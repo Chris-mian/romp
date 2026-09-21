@@ -19217,7 +19217,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     for (const id of refusedIds) {
       const row = document.querySelector<HTMLElement>(noticeRowSelector(id)); if (!row) continue;
       for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
-      const e = row.querySelector<HTMLElement>(".ntc-err"); if (e) { e.textContent = "Refused: " + title; e.style.display = ""; }
+      const e = row.querySelector<HTMLElement>(".ntc-err"); if (e) { e.textContent = title; e.style.display = ""; }   // the frame's title is a sentence already ("That clear did not land"): one line, no doubled refusal (the verifier of PR 1967)
     }
   }
   else if (m.type === "dirCompletions") {                            // the owning kernel's path completions

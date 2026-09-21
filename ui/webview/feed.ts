@@ -6651,9 +6651,28 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // (the click's suppression, released before only when a payload omitted the card, which a refused clear never does) and the cached
     // Undo entry, and the board repaints them where they were, as the dialog says nothing changed
     const refusedIds = Array.isArray(m.itemIds) ? m.itemIds.map(String) : (op === "askClear" && itemId ? [itemId] : []);
-    if ((op === "askClear" || op === "askClearMany" || op === "nodeOverride") && refusedIds.length) {
+    if ((op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll") && refusedIds.length) {
       for (const id of refusedIds) pendingCleared.delete(id);
-      for (let i = clearedStack.length - 1; i >= 0; i--) if (clearedStack[i].some((it) => refusedIds.includes(it.itemId))) clearedStack.splice(i, 1);
+      // the card comes back NOW, in either window (the third review of PR 1967): inside the 180 ms collapse the per-card identity gate
+      // would keep `.dismissing` and the timer would remove the element, and after it dropDismissed has pruned the item from `asks`, so a
+      // bare render() brought nothing back until the next payload; the class comes off and the cached item is re-pushed, as Undo does
+      for (let i = clearedStack.length - 1; i >= 0; i--) {
+        if (!clearedStack[i].some((it) => refusedIds.includes(it.itemId))) continue;
+        for (const it of clearedStack.splice(i, 1)[0]) {
+          if (!refusedIds.includes(it.itemId)) continue;
+          for (const c of cardTwins(it.itemId)) c.classList.remove("dismissing");
+          if (!asks.some((a) => a.itemId === it.itemId)) asks.push(it);
+        }
+      }
+      render();
+    } else if (op === "undoClear" && refusedIds.length) {
+      // a refused undo (the third review of PR 1967): the optimistic restore stood as a phantom the dialog contradicted; the batch the
+      // kernel named leaves `asks` and pendingRestored, is suppressed again and goes back on the Undo stack, since the kernel keeps
+      // it owed and the next Undo reaches it
+      const back = asks.filter((a) => refusedIds.includes(a.itemId));
+      for (const id of refusedIds) { pendingRestored.delete(id); pendingCleared.add(id); }
+      asks = asks.filter((a) => !refusedIds.includes(a.itemId));
+      if (back.length) clearedStack.push(back);
       render();
     }
     if (op === "apiRetry" && sid) rearmLatches({ kind: "retry", sid });
@@ -6750,6 +6769,7 @@ function showPickerDialog(name: string, options: string[]) {
   cancel.onclick = () => overlay.remove();
   box.append(cancel);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.appendChild(box);   // the box INTO the overlay (the verifier of PR 1967, 2026-09-21: built and never attached, so a refusal painted a bare dim sheet with no words and no button)
   document.body.appendChild(overlay);
   (box.querySelector("button") as HTMLElement | null)?.focus();
 }
@@ -6776,6 +6796,7 @@ function showErrDialog(title: string, text: string, copy: string) {
   ok.onclick = () => overlay.remove();
   box.append(ok);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.appendChild(box);   // the box INTO the overlay (the verifier of PR 1967, 2026-09-21: built and never attached, so a refusal painted a bare dim sheet with no words and no button)
   document.body.appendChild(overlay);
   (box.querySelector("button") as HTMLElement | null)?.focus();
 }

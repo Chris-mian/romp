@@ -161,6 +161,9 @@ class ChatNotices(unittest.TestCase):
         km.post_notice(SID, "m1", "New message from api", "hello", producer="postal", actions=_held("m1"), needs_you=True, dismiss_on_action=True, now=100, t=100)
         box = km._chat_notices(SID)
         self.assertEqual([(r["itemId"], r["kind"]) for r in box], [(g1, "goal"), (g4, "goal"), (g5, "goal"), ("notice:%s:m1:1" % SID, "notice")], "goal rows first, then the notices")
+        for r in box[:3]:
+            self.assertNotIn("t", r, "the unkeyed time never rides the wire (the third review of PR 1967): %r" % sorted(r))
+            self.assertEqual(set(r) - {"fix"}, {"itemId", "kind", "title", "body", "cont"}, "the row's face, and nothing else")
         self.assertEqual(box[0]["title"], "which database does the suite target?"); self.assertEqual(box[3]["actions"], _held("m1"))
         self.assertEqual((box[2]["fix"], box[2]["cont"]), ("credential", False), "the credential row: the fix as its action, no Continue")
         km._feed_needs_rows[0] = {}
@@ -168,6 +171,7 @@ class ChatNotices(unittest.TestCase):
         self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))', KSRC,
                       "the chat signature carries the rows' ids and faces in its one value: a brief landing or a Continue offered repaints the box")
         self.assertIn("    _rows_now = _needs_you_rows(feed)", KSRC, "the feed build files the rows beside the needs-you set")
+
         self.assertIn("    if _needs_rows_face(_rows_now) != _needs_rows_face(_feed_needs_rows[0]):\n        _pusher_wake.set()", KSRC, "a row change wakes the pusher, as a set change does")
 
     def test_a_decision_a_clear_and_an_expiry_drop_the_row(self):

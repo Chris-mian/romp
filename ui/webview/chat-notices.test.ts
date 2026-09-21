@@ -99,7 +99,7 @@ test("a refused act re-arms the row the kernel's reply names, with the reason in
     "the card the reply names, and the batch a clears-log refusal names");
   assert.match(h, /const row = document\.querySelector<HTMLElement>\(noticeRowSelector\(id\)\); if \(!row\) continue;/);
   assert.match(h, /b\.disabled = false; b\.textContent = \(b as any\)\._idle \|\| b\.textContent;/, "the latched buttons let go with their idle labels");
-  assert.match(h, /e\.textContent = "Refused: " \+ title; e\.style\.display = "";/, "and the row says why");
+  assert.match(h, /e\.textContent = title; e\.style\.display = "";/, "and the row says why: the frame's title, a sentence, alone (no doubled refusal)");
   // the kernel's clears-log refusal names the request: op, the first id and the batch
   const KERNEL = fs.readFileSync(path.join(UI, "..", "..", "kernel", "kernel.py"), "utf8");
   assert.match(KERNEL, /def _gesture_store_refusal\(client, gesture, skipped, ids=None, op=""\):/);
@@ -108,7 +108,7 @@ test("a refused act re-arms the row the kernel's reply names, with the reason in
   for (const arm of ['_gesture_store_refusal(client, "clear", _skipped, ids=[str(msg["itemId"])], op=str(msg.get("type") or ""))',
                      '_gesture_store_refusal(client, "clear", _skipped, ids=_ids, op=str(msg.get("type") or ""))',
                      '_gesture_store_refusal(client, "drop", _skipped, ids=[str(msg["nodeId"])], op=str(msg.get("type") or ""))']) assert.ok(KERNEL.includes(arm), arm);
-  assert.equal((KERNEL.match(/if LEDGER_KEY not in _skipped/g) || []).length, 2, "askClear and nodeOverride keep the citation on a refusal...");
+  assert.equal((KERNEL.match(/if LEDGER_KEY not in _skipped/g) || []).length, 3, "askClear, nodeOverride and clearAll keep the citations on a refusal...");
   assert.ok(KERNEL.includes("if _ids and LEDGER_KEY not in _skipped:"), "...and so does the batch clear");
 });
 

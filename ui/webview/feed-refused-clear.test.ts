@@ -18,14 +18,23 @@ test("client: the err handler releases the ids a refused clear names and repaint
   assert.ok(i >= 0);
   const h = FEED.slice(i, FEED.indexOf('} else if (m.type === "pickerOptions"', i));
   assert.match(h, /const refusedIds = Array\.isArray\(m\.itemIds\) \? m\.itemIds\.map\(String\) : \(op === "askClear" && itemId \? \[itemId\] : \[\]\);/);
-  assert.match(h, /if \(\(op === "askClear" \|\| op === "askClearMany" \|\| op === "nodeOverride"\) && refusedIds\.length\) \{/, "the three clear requests");
+  assert.match(h, /if \(\(op === "askClear" \|\| op === "askClearMany" \|\| op === "nodeOverride" \|\| op === "clearAll"\) && refusedIds\.length\) \{/, "the four clear requests");
+  // the card returns in either window (the third review): the collapse class off, the cached item re-pushed, as Undo does
+  assert.match(h, /for \(const c of cardTwins\(it\.itemId\)\) c\.classList\.remove\("dismissing"\);/);
+  assert.match(h, /if \(!asks\.some\(\(a\) => a\.itemId === it\.itemId\)\) asks\.push\(it\);/);
+  // a refused undo reverts the optimistic restore (the verifier's medium A): the batch leaves asks and pendingRestored, is suppressed again and goes back on the stack
+  assert.match(h, /\} else if \(op === "undoClear" && refusedIds\.length\) \{/);
+  assert.match(h, /for \(const id of refusedIds\) \{ pendingRestored\.delete\(id\); pendingCleared\.add\(id\); \}/);
+  assert.match(h, /if \(back\.length\) clearedStack\.push\(back\);/);
   assert.match(h, /for \(const id of refusedIds\) pendingCleared\.delete\(id\);/, "the click's suppression lets go");
-  assert.match(h, /clearedStack\.splice\(i, 1\);/, "and the optimistic Undo entry for a clear that never happened goes");
+  assert.match(h, /for \(const it of clearedStack\.splice\(i, 1\)\[0\]\) \{/, "and the optimistic Undo entry for a clear that never happened goes, its items back on the board");
   assert.ok(h.indexOf("render();") > h.indexOf("pendingCleared.delete(id)"), "then the board repaints from the payload that still lists the card");
   assert.ok(h.indexOf("refusedIds") < h.indexOf('if (op === "apiRetry" && sid)'), "ahead of the latch re-arms the frame already drove");
 });
 
 test("kernel: the clears-log refusal names the request the way _refuse_drive's frame does", () => {
   assert.match(KERNEL, /"type": "err", "sid": "", "title": title, "text": text, "op": op or "",\s+"itemId": _ids\[0\] if _ids else "", "itemIds": _ids\}/);
-  assert.ok(KERNEL.includes('_gesture_store_refusal(client, "undo", _undo_clear(), op=str(msg.get("type") or ""))'), "an undo names its op (the request's type) and no ids");
+  assert.ok(KERNEL.includes('_gesture_store_refusal(client, "undo", _undo_clear(batch_out=_ub), ids=_ub, op=str(msg.get("type") or ""))'), "an undo names its op (the request's type) and the batch it reached for (the verifier's medium A)");
+  // the dialogs attach their box (the verifier's medium B, pre-existing on main): the behaviour rides the feed lab; this pins both functions carry the append
+  assert.equal((FEED.match(/overlay\.appendChild\(box\);/g) || []).length, 3, "the quarantine dialog's, and now showErrDialog's and showPickerDialog's");
 });

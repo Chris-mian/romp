@@ -24864,7 +24864,7 @@ def _chat_notices(sid):
     if str(sid) == NOTICE_OWNERLESS_SID:
         return []                                         # the owner-less home is not a session: no chat page, no box
     try:
-        out = [dict(r) for r in ((_feed_needs_rows[0] or {}).get(str(sid)) or [])]
+        out = [{k: v for k, v in r.items() if k not in _NEEDS_ROW_UNKEYED} for r in ((_feed_needs_rows[0] or {}).get(str(sid)) or [])]   # the face only: an unkeyed field never rides the wire (the third review of PR 1967, 2026-09-21)
         for r in _notice_projection(sid, int(time.time()), _cleared_ids()):
             if not r.get("needsYou"):
                 continue
@@ -41245,6 +41245,56 @@ def _store_fault_copy(fault):
 LEDGER_KEY = "ledger:clears"   # the skipped-map key for the clears log itself refusing a write (no session to name; the second executed review of PR 1935, 2026-09-21)
 LEDGER_REJOURNAL_KEY = "ledger:rejournal"   # an undo whose undo rows landed and whose RE-JOURNAL the log then refused (the second review of PR 1967, 2026-09-21)
 _rejournal_owed = {}           # {item id: None}: the clear rows a past undo could not re-journal; the next undo writes them FIRST (the second review of PR 1967, 2026-09-21)
+OWED_FILE = "cleared-owed.jsonl"   # STATE/cleared-owed.jsonl: the owed ids persisted beside the clears log, one {"id"} row each, so a kernel restart
+#                                    keeps the owing (the third review of PR 1967, 2026-09-21: a module dict alone dropped it silently, and the card stayed
+#                                    flag-cleared with no ledger row, hidden and then archived); truncated once the re-journal lands
+
+
+def _owed_persist(ids):
+    """Append the owed ids to OWED_FILE; "" or the fault's copy (the file sits beside the log, so a root that refused the log
+    refuses this too: then the owing lives in this kernel's memory alone, which the dialog says)."""
+    try:
+        p = jd.STATE / OWED_FILE
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a") as f:
+            for iid in ids:
+                f.write(json.dumps({"id": iid}) + "\n")
+        return ""
+    except OSError as e:
+        return _store_fault_copy(e)
+
+
+def _owed_load():
+    """The owed ids on disk joined into _rejournal_owed (a restart's memory is empty; the file is not). Unreadable reads as
+    nothing on disk, and the memory stands."""
+    try:
+        for line in (jd.STATE / OWED_FILE).read_text().splitlines():
+            try:
+                iid = json.loads(line).get("id")
+            except ValueError:
+                continue
+            if iid:
+                _rejournal_owed[str(iid)] = None
+    except OSError:
+        pass
+
+
+def _owed_clear_file():
+    try:
+        (jd.STATE / OWED_FILE).write_text("")
+    except OSError:
+        pass
+
+
+def _owed_note():
+    """The dialog's line on where the owing lives: on disk beside the log (a restart keeps it), or in memory alone when even that
+    file refused (a restart before the log writes again loses the owing, and the card stays hidden: the limit, stated)."""
+    return ("romp saved a note of them beside its records, so a restart keeps it." if not _owed_mem_only[0] else
+            "romp could not save a note of them either, so only this running romp remembers: a restart before it can write again "
+            "loses that, and the cards stay hidden.")
+
+
+_owed_mem_only = [False]         # the last persist refused: the owing is in memory alone (the dialog says so)
 
 
 def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
@@ -41265,17 +41315,18 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
     or the write itself), so the prose says "read or write" and lets the fault text name which; this is
     the user's copy (the save shape added on a review find, 2026-09-08: left to raise, it dropped the
     dashboard's socket without a word)."""
+    _ids = [str(i) for i in (ids or []) if i]           # the batch the gesture named, on EVERY account's frame (the third review of PR 1967, 2026-09-21): the feed
+    #                                                     reverts an optimistic restore or release on it, the chat re-arms the rows
     for key, fault in (skipped or {}).items():
         if key == LEDGER_REJOURNAL_KEY:
             # the undo rows landed, a store then refused its flag step, and the log refused the re-journal that keeps those ids owed
             # (the second review of PR 1967, 2026-09-21): they read as undone while their flags stand, so no later Undo reaches them by the ledger alone. The
             # next Undo writes the re-journal first (_rejournal_owed) and restores them in the same gesture; said as such.
             title = "That undo did not fully land"
-            text = ("The cards of the session romp could not read or write were marked undone, and the clears log then refused the "
-                    "row that keeps them owed (%s), so they stay hidden for now. Press Undo again once romp can write: it re-journals "
-                    "them first and brings them back." % fault)
+            text = ("Those cards were marked undone, but romp could not finish recording it (%s), so they are still hidden. Press Undo "
+                    "again once romp can write and they come back, ahead of the last clear. %s" % (fault, _owed_note()))
             try:
-                client["send"](json.dumps({"type": "err", "sid": "", "title": title, "text": text, "op": op or ""}))
+                client["send"](json.dumps({"type": "err", "sid": "", "title": title, "text": text, "op": op or "", "itemId": _ids[0] if _ids else "", "itemIds": _ids}))
             except Exception:
                 sys.stderr.write("gesture refusal (%s re-journal): %s\n" % (gesture, traceback.format_exc()))
             continue
@@ -41296,7 +41347,6 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                 title = "That clear did not land"
                 text = ("romp could not write its clears log (%s), so nothing was cleared and every card is as it was. "
                         "Try it again once it can." % fault)
-            _ids = [str(i) for i in (ids or []) if i]
             try:
                 client["send"](json.dumps({"type": "err", "sid": "", "title": title, "text": text, "op": op or "",
                                            "itemId": _ids[0] if _ids else "", "itemIds": _ids}))
@@ -41326,7 +41376,8 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                     "session's goals file, which romp could not read or write (%s); nothing else changed there, "
                     "and the other sessions were not affected." % fault)
         try:
-            client["send"](json.dumps({"type": "err", "sid": sid, "title": title, "text": text}))
+            client["send"](json.dumps({"type": "err", "sid": sid, "title": title, "text": text, "op": op or "",
+                                       "itemId": _ids[0] if _ids else "", "itemIds": _ids}))   # the request and its batch, as the ledger accounts carry them
         except Exception:
             sys.stderr.write("gesture refusal (%s %s): %s\n" % (gesture, sid[:8], traceback.format_exc()))
 
@@ -41372,7 +41423,7 @@ def _clear_all(item_ids):
 # <!-- romp-clear-wrap --> marker stays: recorded transcripts still contain old wraps.)
 
 
-def _undo_clear():
+def _undo_clear(batch_out=None):
     """Restore the most-recent clear BATCH — every id cleared at the latest timestamp. So one
     UndoClear undoes a Clear-all as a unit, and a single-card clear restores just that card.
     A session whose goals file cannot be read is left OWED, never consumed: its ids are journaled as
@@ -41385,9 +41436,11 @@ def _undo_clear():
     notices-archive after its undo row lands (_restore_notice_archive, round six), and a session whose notice
     archive could not be read is owed the same way, its fault keyed "notice:<sid>" so the refusal names the store that
     faulted and not the session's every card. Returns {sid | "notice:"+sid: fault} for the sessions skipped."""
+    _owed_load()                                          # a restart's memory is empty; the file beside the log is not (the third review of PR 1967, 2026-09-21)
     if _rejournal_owed:
         # the re-journal a past undo could not write (the log refused after its undo rows landed; the second review of PR 1967, 2026-09-21): written FIRST,
-        # so those ids are the newest batch again and this very Undo restores them; refused again, said again and nothing else runs
+        # so those ids are the newest batch again and this very Undo restores them, AHEAD of the last clear (a reorder the dialog names);
+        # refused again, said again and nothing else runs
         t = time.time()
         try:
             with (jd.STATE / "cleared.jsonl").open("a") as f:
@@ -41397,11 +41450,16 @@ def _undo_clear():
             return {LEDGER_REJOURNAL_KEY: _store_fault_copy(e)}
         _files_stat_mark()
         _rejournal_owed.clear()
+        _owed_clear_file()
+        _owed_mem_only[0] = False
     cur = _cleared_ids()
     if not cur:
         return {}
     newest = max(cur.values())
     restored = [i for i, ct in cur.items() if ct == newest]
+    if batch_out is not None:
+        batch_out.extend(restored)                        # the batch this undo reaches for: a refusal names it (the third review of PR 1967, 2026-09-21), so the feed
+        #                                                   reverts the optimistic restore of exactly these cards
     notices = [i for i in restored if i.startswith("notice:")]     # notice cards have no goal node: their rows come back below (round six)
     restored = [i for i in restored if not i.startswith("notice:")]
     skipped = dict(_restore_goal_archive(restored))   # pull the restored tops back OUT of the archive FIRST,
@@ -41440,6 +41498,7 @@ def _undo_clear():
             # so the ledger alone reaches them no more. Owed in memory, written first by the next Undo, and said under an account of
             # its own beside the stores' faults (the second review of PR 1967, 2026-09-21; LEDGER_KEY's wording says nothing was recorded, which is false here)
             _rejournal_owed.update({iid: None for iid in _rj})
+            _owed_mem_only[0] = bool(_owed_persist(_rj))   # beside the log (a restart keeps it); refused too: memory alone, said (the third review of PR 1967, 2026-09-21)
             skipped[LEDGER_REJOURNAL_KEY] = _store_fault_copy(e)
         skipped.update(late); skipped.update({"notice:" + s: f for s, f in nlate.items()})   # keyed apart: the refusal is worded per store
     return skipped                                    # {sid: fault} for sessions whose store could not be read
@@ -70683,13 +70742,15 @@ class Handler(BaseHTTPRequestHandler):
             d = build_feed(int(time.time())) if _task_tracking_on() else _feed_off_frame(int(time.time()))   # off (T404 round two, low 8): no build; nothing to clear
             # `items` (the old stream deliverables) is no longer a payload key; indexing it raised before
             # _clear_all ever ran, so Clear-all cleared nothing and only the receive loop's stderr line knew
-            _gesture_store_refusal(client, "clear",
-                                   _clear_all([a["itemId"] for a in d["asks"]]
-                                              + [c["itemId"] for c in (d.get("items") or [])]))
-            _send_to_app("chat", {"type": "dropCitationsAll"})   # every card cleared → drop every composer chip
+            _all = [a["itemId"] for a in d["asks"]] + [c["itemId"] for c in (d.get("items") or [])]
+            _skipped = _clear_all(_all)
+            _gesture_store_refusal(client, "clear", _skipped, ids=_all, op=str(msg.get("type") or ""))   # (the third review of PR 1967, 2026-09-21: this arm was left out of the three's fix)
+            if LEDGER_KEY not in _skipped:                  # every card cleared → drop every composer chip; a refused batch cleared none, so every chip stays
+                _send_to_app("chat", {"type": "dropCitationsAll"})
             _mark_views_dirty()
         elif msg and msg.get("type") == "undoClear":
-            _gesture_store_refusal(client, "undo", _undo_clear(), op=str(msg.get("type") or ""))
+            _ub = []
+            _gesture_store_refusal(client, "undo", _undo_clear(batch_out=_ub), ids=_ub, op=str(msg.get("type") or ""))
             _mark_views_dirty()
         elif msg and msg.get("type") == "dismissLane" and msg.get("id"):
             # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). DURABLE since 2026-08-14

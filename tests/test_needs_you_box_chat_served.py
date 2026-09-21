@@ -314,7 +314,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(d["rearmed"], "the row's buttons let go on the kernel's reply (they latched on the press): %r" % d["box"])
         self.assertIn(self.g[2], [x["id"] for x in d["box"]["rows"]], "the row stays")
         self.assertEqual(d["box"]["head"], "Needs you · 4")
-        self.assertIn("Refused", d["rowErr"] or "", "and the row says why: %r" % d["rowErr"])
+        self.assertEqual(d["rowErr"], "That clear did not land", "and the row says why, the frame's title alone (the verifier's low: no doubled refusal): %r" % d["rowErr"])
 
     def test_clear_takes_its_row_off_the_box_with_the_next_frame(self):
         r = self._result()

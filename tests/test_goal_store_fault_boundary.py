@@ -949,6 +949,7 @@ class ActsUnderAFailedWrite(_World):
             p.start()
             self.addCleanup(p.stop)
         getattr(km, "_rejournal_owed", {}).clear()       # a past test's owed re-journal must not ride into this one
+        (jd.STATE / getattr(km, "OWED_FILE", "cleared-owed.jsonl")).unlink(missing_ok=True)
 
     def _dispatch(self, msg):
         sent = []
@@ -1001,6 +1002,63 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual((d_err["op"], d_err["itemIds"]), ("nodeOverride", [A + ":g1"]))
         self.assertEqual(self._drops(), [], "no dropCitation after either refused clear")
 
+    def test_a_clear_all_whose_ledger_write_refuses_names_the_batch_and_keeps_every_citation(self):
+        """The fourth clear arm (the third review of PR 1967: left out of the three's fix): the refusal names the request and the
+        whole batch, and dropCitationsAll is not sent, since nothing was cleared."""
+        with _append_faults(jd.STATE / "cleared.jsonl"):
+            sent = self._dispatch({"type": "clearAll"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["That clear did not land"])
+        self.assertEqual(errs[0]["op"], "clearAll")
+        self.assertEqual(sorted(errs[0]["itemIds"]), sorted([A + ":g1", B + ":g1"]), "the whole board's batch rides the refusal")
+        self.assertEqual([m for app, m in self.app if m.get("type") == "dropCitationsAll"], [], "every composer chip stays")
+        self.assertFalse(self._flag(A, A + ":g1") or self._flag(B, B + ":g1"))
+        sent = self._dispatch({"type": "clearAll"})         # the retry lands: one dropCitationsAll
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [])
+        self.assertEqual(len([m for app, m in self.app if m.get("type") == "dropCitationsAll"]), 1)
+
+    def test_an_undo_refusal_names_the_batch_it_reached_for(self):
+        """The feed restores the batch optimistically on the click; a refusal must name it so the restore is reverted (the third
+        review of PR 1967)."""
+        self._dispatch({"type": "askClearMany", "itemIds": [A + ":g1", B + ":g1"]})
+        with _append_faults(jd.STATE / "cleared.jsonl"):
+            sent = self._dispatch({"type": "undoClear"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["That undo did not land"])
+        self.assertEqual((errs[0]["op"], sorted(errs[0]["itemIds"])), ("undoClear", sorted([A + ":g1", B + ":g1"])))
+
+    def test_the_owed_re_journal_survives_a_restart_beside_the_log_and_the_dialog_states_the_limit_when_that_refuses_too(self):
+        """The two-fault shape, then the kernel's memory emptied (a restart): the owed ids are read back from the file beside the
+        log and re-journaled first, so the next Undo still brings the card back (the third review of PR 1967: a module dict alone
+        dropped the owing silently). When the file refuses too, the dialog says the owing lives in memory alone."""
+        self._dispatch({"type": "askClearMany", "itemIds": [A + ":g1", B + ":g1"]})
+        orig = km._mark_nodes_cleared
+
+        def flag_step_under_fault(ids, value, **kw):
+            with _fault_on(self.b_file):
+                return orig(ids, value, **kw)
+        with mock.patch.object(km, "_mark_nodes_cleared", flag_step_under_fault), _nth_append_faults(jd.STATE / "cleared.jsonl", 2):
+            sent = self._dispatch({"type": "undoClear"})
+        rj = next(m for m in sent if m.get("type") == "err" and m["title"] == "That undo did not fully land")
+        self.assertIn("saved a note of them beside its records, so a restart keeps it", rj["text"])
+        self.assertIn("ahead of the last clear", rj["text"], "the reorder is named")
+        owed = [json.loads(l)["id"] for l in (jd.STATE / km.OWED_FILE).read_text().splitlines() if l.strip()]
+        self.assertEqual(owed, [B + ":g1"], "the owing is on disk")
+        km._rejournal_owed.clear()                          # the restart: memory empty, the file not
+        sent = self._dispatch({"type": "undoClear"})
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [])
+        self.assertFalse(self._flag(B, B + ":g1"), "the next Undo after the restart brings B back")
+        self.assertEqual((jd.STATE / km.OWED_FILE).read_text(), "", "and the owing is settled")
+        # the file beside the log refusing too: the limit, stated
+        self._dispatch({"type": "askClearMany", "itemIds": [A + ":g1", B + ":g1"]})
+        with mock.patch.object(km, "_mark_nodes_cleared", flag_step_under_fault), _nth_append_faults(jd.STATE / "cleared.jsonl", 2), \
+             _append_faults(jd.STATE / km.OWED_FILE):
+            sent = self._dispatch({"type": "undoClear"})
+        rj = next(m for m in sent if m.get("type") == "err" and m["title"] == "That undo did not fully land")
+        self.assertIn("only this running romp remembers", rj["text"])
+        self.assertIn("a restart before it can write again loses that", rj["text"], "the limit is stated where the promise is made")
+        self.assertEqual(km._rejournal_owed, {B + ":g1": None})
+
     def test_an_undo_whose_re_journal_refuses_says_so_and_the_next_undo_re_journals_first(self):
         """Two cards cleared in one batch; the undo's rows land, one store faults at its flag step, and the clears log refuses the
         re-journal that keeps that card owed: the card reads undone with its flag standing, which no later Undo reaches by the
@@ -1019,7 +1077,7 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual(sorted(m["title"] for m in errs), ["That undo did not fully land", "That undo did not land for api"],
                          "the store's own account and the re-journal's, apart: %r" % errs)
         rj = next(m for m in errs if m["title"] == "That undo did not fully land")
-        self.assertIn("re-journals them first", rj["text"], "the remedy is the next Undo, which writes the re-journal first")
+        self.assertIn("Press Undo again once romp can write and they come back, ahead of the last clear", rj["text"], "the remedy is the next Undo, which writes the re-journal first, and the reorder is named")
         self.assertNotIn("was not recorded", rj["text"], "the undo rows DID land: LEDGER_KEY's wording would be false")
         self.assertFalse(self._flag(A, A + ":g1"), "A's undo landed in full")
         self.assertTrue(self._flag(B, B + ":g1"), "B sits flag-cleared: the flag step could not run")

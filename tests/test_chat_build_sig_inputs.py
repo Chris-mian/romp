@@ -1053,6 +1053,18 @@ class Differential(_World):
         finally:
             km._feed_needs_input[0], km._feed_needs_rows[0] = saved_in, saved_rows
 
+    def test_the_unkeyed_row_field_is_pinned_by_value_and_the_rows_other_fields_are_the_key(self):
+        # _NEEDS_ROW_UNKEYED by value, as _CHAT_ROW_UNKEYED is; and every field a goal row carries but the unkeyed one is in the
+        # signature's tuple, so a field added to _needs_you_rows without a place in the key fails here (the third review of PR 1967)
+        self.assertEqual(km._NEEDS_ROW_UNKEYED, {"t"})
+        src = inspect.getsource(km._needs_you_rows)
+        fields = set(re.findall(r'"(itemId|kind|title|body|cont|fix|t)":', src))
+        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"}, "the rows' keyed fields")
+        tup = inspect.getsource(km._chat_build_sig)
+        for f in sorted(fields - km._NEEDS_ROW_UNKEYED):
+            self.assertIn(('n["%s"]' % f) if f == "itemId" else ('n.get("%s")' % f), tup, "the key reads the row's %s" % f)
+        self.assertNotIn('n.get("t")', tup, "and not the unkeyed time")
+
     def test_the_billing_readers_move_acct(self):
         a = self.sig()
         km._claude_account_label = lambda: "someone@example.invalid"
