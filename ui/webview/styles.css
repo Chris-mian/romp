@@ -1646,15 +1646,33 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* WORKING chip: the letters are ONE solid color that breathes between two tones on a sine ease (no
    moving rainbow). Both tones contrast the yellow pill (--st-working-bg). cubic-bezier(0.37,0,0.63,1)
    = ease-in-out-sine. 1.5s period — 2× the old 3s (the user 2026-06-16). The working DOTS stay SOLID
-   (their oscillation was distracting — the user 2026-06-16). */
+   (their oscillation was distracting — the user 2026-06-16).
+   Since 2026-09-21 the breathing is an OPACITY crossfade, not a `color` animation: the black label is
+   the element's own text, and a ::after layer repeats the label (content: attr(data-label)) in teal,
+   stacked exactly over it, fading in and out. `color` is not a compositor property — every frame of a
+   colour animation re-styles the node, rebuilds the display list and re-rasterizes the glyphs, for the
+   whole time a session works (hours), and this pane can carry 20k nodes; `opacity` animates on the
+   compositor with nothing repainted (Firefox GPU-process investigation, the user 2026-09-19). The
+   `/ ""` alternative text keeps the duplicate label out of the accessibility tree. render.ts sets
+   data-label beside textContent at both sites that build the chip. */
 .chip-pulse {
+  position: relative;
+  display: inline-block;
   color: #1a1a1a;
+}
+.chip-pulse::after {
+  content: attr(data-label) / "";
+  position: absolute;
+  inset: 0;
+  color: #0d9488;                /* teal */
+  opacity: 0;
   animation: chip-pulse 1.5s cubic-bezier(0.37, 0, 0.63, 1) infinite;
 }
 @keyframes chip-pulse {
-  0%, 100% { color: #1a1a1a; }   /* near-black */
-  50%      { color: #0d9488; }   /* teal */
+  0%, 100% { opacity: 0; }   /* near-black shows through */
+  50%      { opacity: 1; }   /* teal */
 }
+@media (prefers-reduced-motion: reduce) { .chip-pulse::after { animation: none; } }
 /* the right-side cluster — dir · branch · badges · ctx battery — ONE container carrying the
    right-justify margin, wrapping INTERNALLY with right-aligned rows: a narrow pane's extra rows stay
    clustered on the right edge instead of restarting at the left (the user 2026-08-10, on a phone;
