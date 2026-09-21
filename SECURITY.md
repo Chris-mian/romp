@@ -55,6 +55,14 @@ when the dashboard is added to a home screen, so a token gate there would break
 the install. They are static and read no session state: the manifest is a
 fixed JSON literal (app name and short name, display mode, colors, start URL
 and icon list) and the icons are three PNG files.
+Two routes sit outside that list. `POST /push/ack`, the push worker's report
+that a notification was shown or tapped, runs ahead of the token check and is
+authenticated by the per-push id instead: 128 random bits the kernel minted for
+one notification and handed only to the device it went to, good for two
+timestamps on that one ledger row, a 404 for an unknown id, with the body
+capped at 2 KB before it is read. And a token-less `GET /` is answered with the
+login page above rather than a 403, so a bare open of the dashboard can paste
+the token in.
 
 The practical consequence: another local user on a **shared machine** cannot
 reach your kernel or bus — `/send` (which injects text into a live Claude
