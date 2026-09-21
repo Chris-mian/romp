@@ -160,7 +160,9 @@ const BACKEND = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "sdk
 
 test("the selection menu offers Comment, gated on a real transcript turn", () => {
   assert.match(UI, /mk\("Comment", \(\) => openCommentComposer\(/);
-  assert.match(UI, /q\?\.uuid && activeId && !isProvisionalId\(activeId\)/);
+  // the session must be real and non-provisional; the ANCHOR is the selected turn's own uuid, or
+  // the conversation tip when the passage came from a file viewer instead
+  assert.match(UI, /if \(q\?\.uuid && activeId && !isProvisionalId\(activeId\) && liveSession\(activeId\)\) \{/);
 });
 
 test("marks, badges AND every popover button ride the stable document.body delegate", () => {
@@ -635,7 +637,7 @@ test("a create refused by parse lag holds its mark and retries on the frame even
   // …and the kernel PARKS the lag-refused create and retries it per pusher cycle (the file it is
   // waiting on is its own): a settled session emits no further frames, so the client-side re-post
   // alone starved — the park covers that; the client's frame-keyed belt covers a restart's lost park
-  assert.match(KERNELSRC, /_parked_creates\.append\(\{"sid": sid, "uuid": str\(msg\["uuid"\]\)/);
+  assert.match(KERNELSRC, /_parked_creates\.append\(\{"sid": sid, "uuid": cmt_uuid/);
   assert.match(KERNELSRC, /def _retry_parked_creates\(\):/);
   assert.match(KERNELSRC, /_retry_parked_creates\(\)   # lag-parked comment creates ride every pusher cycle \(T106\)/);
   assert.match(KERNELSRC, /_PARK_MAX_TRIES = 30/);
@@ -743,7 +745,7 @@ test("the create frame carries the id, and a re-post of the held create is the s
   const sent = commentCreateFrame(held);
   assert.deepEqual(sent, { type: "commentCreate", id: ANCHOR.sid, uuid: "a1", exact: "exponential backoff",
                            text: "why jitter?", name: "why-jitter", model: "claude-opus-5", effort: "high",
-                           fast: "on", color: "#112233", createId: held.createId });
+                           fast: "on", color: "#112233", src: "", createId: held.createId });
   held.tries++;                                                   // a transient nack armed the retry
   assert.deepEqual(commentCreateFrame(held), sent, "a retry is the same gesture: the same id, the same words");
 });

@@ -2604,6 +2604,7 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
   // paragraph/list item that names it, like figures in a document (the user 2026-08-15, whose four
   // captioned plots all collected at the message's tail, far from the prose describing each; the
   // 2026-07-20 rule — a rendered image, not a thumbnail — stands, this moves WHERE it renders).
+  // The 2026-07-08 thumbnail strip lives on in the feed's artifact strips, which stay glanceable.
   // Figures mentioned in the same block share one strip; a mention with no block anchor (bare text
   // at the root) keeps the old below-message placement. Absolute AND relative paths work — the
   // kernel resolves a relative one against this session's cwd, same as click-to-open. Per surface:
@@ -7097,6 +7098,7 @@ function showSelectionMenu(e: MouseEvent) {
   const content = document.getElementById("content");
   const sel = window.getSelection();
   const text = sel ? (mentionCopyText(sel)?.text ?? sel.toString()) : "";   // a chip copies as the @name typed, as Ctrl+C does
+  // Transcript selections only: the file viewer mounts its own menu, on every pane that hosts it.
   if (!content || !sel || !sel.anchorNode || !content.contains(sel.anchorNode) || !text.trim()) return;
   e.preventDefault();
   dismissTabMenu();
@@ -9593,7 +9595,7 @@ function cmtBootHolds(tid: string): boolean {
   return Date.now() - t0 < CMT_BOOT_BACKSTOP_MS;
 }
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
-let pendingCommentAnchor: { sid: string; uuid: string; exact: string;
+let pendingCommentAnchor: { sid: string; uuid: string; exact: string; src?: string;
   model?: string; effort?: string; fast?: string; color?: string } | null = null; // create mode (+ the thread's own picks)
 let pendingAdoptTid: string | null = null;                          // commentCreated ack that beat its frame
 let commentPopPos: { x: number; y: number } | null = null;
@@ -10010,8 +10012,8 @@ function pickThreadColor(sid: string): string {
   return free || paletteColors.find((c) => c.toLowerCase() !== parent) || "#e8b220";
 }
 
-function openCommentComposer(sid: string, uuid: string, exact: string, x: number, y: number): void {
-  pendingCommentAnchor = { sid, uuid, exact, color: pickThreadColor(sid) };
+function openCommentComposer(sid: string, uuid: string, exact: string, x: number, y: number, src?: string): void {
+  pendingCommentAnchor = { sid, uuid, exact, src, color: pickThreadColor(sid) };
   openCommentKey = null;
   commentPopPos = { x, y };
   renderCommentPopover();
@@ -16696,6 +16698,57 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
     data: { sid, ts: Date.now(), len: text.length, route: goalCite?.itemId ? "followup" : quoteCites.length ? "quote" : "plain" } });
 }
 
+/** How many messages a Submit would send for `sid`: the staged run, plus one carrying any loose chips. */
+function composerPendingCount(sid: string | null): number {
+  if (!sid) return 0;
+  const cites = composerCitations.get(sid);
+  const hasLooseQuote = !!cites && cites.some((c) => c.quote);
+  return stagedMsgs.list(sid).length + (hasLooseQuote ? 1 : 0);
+}
+
+/** Tell the file viewer what its Submit button would send. The viewer renders in this document but
+ *  imports nothing from it, so the count rides the window channel editorSelection already uses. */
+function notifyComposerPending(sid: string | null): void {
+  if (!sid) return;
+  try { window.postMessage({ romp: "composerPending", sid, n: composerPendingCount(sid) }, "*"); }
+  catch { /* messaging our own window cannot really fail */ }
+}
+
+/** Hold a note the file viewer wrote about a passage: the quote and the words about it, as ONE staged
+ *  message, so Submit sends the batch in the order they were written. Nothing leaves the client here —
+ *  that is the point. A note is durable the instant this runs (it rides the drafts into localStorage),
+ *  so the viewer's dialog closes on the spot, an unreachable host costs nothing, and a tmux session
+ *  can take notes at all. Answers with the new pending count so the viewer can paint both. */
+function stageViewerNote(sid: string, text: string, exact: string, src?: string): void {
+  stagedMsgs.push(sid, { text, cites: [mkQuoteCitation(exact, null, src)] });
+  persistDrafts();
+  if (sid === activeId) renderStagedStrip(sid);
+  notifyComposerPending(sid);   // renderStagedStrip announces too, but only on the pane that HAS a strip
+  try { window.postMessage({ romp: "noteStaged", sid, n: composerPendingCount(sid) }, "*"); }
+  catch { /* messaging our own window cannot really fail */ }
+}
+
+/** Send everything the composer holds for `sid`, staged run first and the loose chips last — the send
+ *  path's own order. Returns how many messages went; 0 means the session was unreachable and nothing
+ *  moved, which the toast says. */
+function submitComposerPending(sid: string): number {
+  if (hostIsDown(sid) || isProvisionalId(sid)) {
+    warnToast("Can't send yet — the session isn't reachable. Your notes stay where they are.");
+    return 0;
+  }
+  let sent = flushStaged(sid);
+  const cites = composerCitations.get(sid);
+  if (cites && cites.some((c) => c.quote)) {
+    routeUserMessage(sid, "", cites);
+    composerCitations.delete(sid);
+    if (sid === activeId) renderComposerChips(sid);
+    persistDrafts();
+    sent += 1;
+  }
+  notifyComposerPending(sid);
+  return sent;
+}
+
 /** Release the tab's staged stack as ONE message: stagedPosts (staged-messages.ts, executed by its test)
  *  composes the staged items in stage order and then the typed message, when the send carries one, into
  *  a single body, so one post makes one bubble and one turn. Two kinds of item still go on their own, at
@@ -16719,6 +16772,7 @@ function flushStaged(sid: string, typed?: { text: string; cites?: Citation[]; im
   function renderStagedStripInner(id: string | null, opts?: { reveal?: "last" }): void {
   const strip = document.getElementById("composer-staged");
   if (!strip) return;
+  notifyComposerPending(id);
   // the list's scroll position survives the rebuild: expanding or discarding an item re-renders the
   // strip, and a fresh list would start at the top, away from the item just clicked. The offset is kept
   // under the tab that built the list it is read from (stagedScroll), so a switch never carries one tab's
@@ -16867,6 +16921,7 @@ function renderComposerChips(id: string | null): void { renderComposerChipsInner
 function renderComposerChipsInner(id: string | null): void {
   const strip = document.getElementById("composer-chips");
   if (!strip) return;
+  notifyComposerPending(id);   // the state is already settled by the time a render is asked for
   closeCitePreview();   // the chip is being rebuilt (or removed) → drop any open audit popover for the old chip
   strip.replaceChildren();
   // an EDIT pill outranks a citation chip (beginComposerEdit clears citations; this is the belt-and-braces)
@@ -19421,6 +19476,17 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   }
   // the editor selection collapsed (deselect / click away) — drop the chip that highlight seeded
   else if (m.type === "editorSelectionCleared") clearEditorCitation(activeId);
+  // The file viewer's Submit: reading a doc and sending the notes it produced should not require
+  // scrolling back to the composer, so the viewer asks THIS document to run its own send path.
+  else if (m.romp === "submitComposer" && typeof m.sid === "string" && m.sid) submitComposerPending(m.sid);
+  else if (m.romp === "composerPendingAsk" && typeof m.sid === "string" && m.sid) notifyComposerPending(m.sid);
+  // A note written in the viewer's comment box: a file passage has no place in the conversation to
+  // branch from, so it stages here instead of minting a thread.
+  else if (m.romp === "stageNote" && typeof m.sid === "string" && m.sid
+           && typeof m.text === "string" && m.text.trim()
+           && typeof m.exact === "string" && m.exact.trim()) {
+    stageViewerNote(m.sid, m.text, m.exact, typeof m.src === "string" ? m.src : undefined);
+  }
   // comment threads (the user 2026-08-13): the per-session thread frame — store, prune dead
   // client-side state, re-anchor the highlights, adopt a parked create ack, refresh the popover
   else if (m.type === "comments" && m.id) {
