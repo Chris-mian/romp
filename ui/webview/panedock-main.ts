@@ -77,7 +77,8 @@ export function isPaneDockingOn(rawSettings: string | null): boolean {
   }
 }
 
-/** The shell's title for a pane, for the free-floating outline (the keyboard palette's words, never chrome). `titles`
+/** The shell's title for a pane (the keyboard palette's words, never chrome; the live outline showed it until 2026-09-21,
+ *  when the user asked the square to say where by its place alone; kept exported, its mapping pinned by the node tests). `titles`
  *  is the pane records' word by rail key (plans/panes-as-data.md section 4: the engine reads it off the rail's buttons
  *  and the body's data-panes rows), so a data pane and the Artifacts pane are named as the rail names them; the shipped
  *  four keep their words when no map is given. */
@@ -306,13 +307,6 @@ class Engine {
     return this.allPaneEls().map((p) => p.querySelector(":scope > iframe") as HTMLIFrameElement | null).filter((f): f is HTMLIFrameElement => !!f);
   }
   private poOn(key: string): boolean { return document.body.classList.contains("po-" + key); }
-  /** The pane records' titles as the shell shows them (paneTitle's map): the rail's buttons and the data-panes rows. */
-  private titleMap(): Record<string, string> {
-    const btns = Array.from(document.querySelectorAll(".rail-btn[data-pane]")).map((b) => ({ key: b.getAttribute("data-pane") || "", text: (b.textContent || "").trim() }));
-    let rows: unknown = null;
-    try { rows = JSON.parse(document.body.getAttribute("data-panes") || "null"); } catch { rows = null; }
-    return titleMapOf(btns, rows);
-  }
   private shown(): Shown {
     const row: PaneId[] = [];
     if (this.poOn("chat") && byId(CHAT)) {
