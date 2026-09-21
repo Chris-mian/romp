@@ -11,7 +11,7 @@ Romp simplifies and automates this management: it tracks every agent and its tas
 
 ### Every session, one view
 
-The timeline shows every session: what's running, what's idle, and what needs you.
+The Sessions pane shows every session on a timeline: what's running, what's idle, and what needs you.
 
 <img src="docs/assets/guide/every-session-timeline.gif" alt="Every session with its status in one view" width="100%">
 
