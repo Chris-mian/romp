@@ -97,6 +97,12 @@ class HeadlessRoutes(unittest.TestCase):
     def tearDownClass(cls):
         cls.srv.shutdown()
 
+    def setUp(self):
+        # the End latch is module state (2026-09-21): the end route's test latches the synthetic sid it ends, and a later
+        # test that parks a pick for the same sid would be refused as a park on an ending session; a live kernel lifts
+        # the latch when the session comes back under its sid, which a Mock backend never does
+        km._ending_sids.clear()
+
     def _post(self, path, body):
         import urllib.request, urllib.error
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path),

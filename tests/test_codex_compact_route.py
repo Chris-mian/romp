@@ -20,6 +20,7 @@ module's journal must never land on these), an invented copy id in the kernel's 
 names, invented prompts. The stub below is the kernel's view of a backend with the verb: compact(sid) answers a
 scripted string and records; send/set_effort record; busy reads True once a compaction stands (the bracket), else
 None; _session/owns/live_sessions answer for the module's sid the way _session_backend's durable-row read does."""
+import inspect
 import json
 import os
 import tempfile
@@ -66,6 +67,8 @@ class _Backend:
         self.calls = []
         self.answer = ""
         self.bracket = False
+        self.live = {}              # what live_sessions reports: a resume or a move makes the row live, a kill takes it out
+        self.move_answer = ""       # SdkBackend.move's shape: "" moved; any other string a refusal after the resume
 
     def compact(self, sid):
         self.calls.append(("compact", sid))
@@ -75,6 +78,10 @@ class _Backend:
 
     def compacting(self, sid):
         return self.bracket
+
+    def clear(self, sid, text):
+        self.calls.append(("clear", sid))
+        return self.answer          # the native clear's verdict: "" ran, "busy" the worker's lock sliver, else the reason
 
     def send(self, sid, text):
         self.calls.append(("send", text))
@@ -87,6 +94,21 @@ class _Backend:
     def busy(self, sid):
         return True if self.bracket else None
 
+    def resume(self, name, sid, cwd=None):
+        self.calls.append(("resume", sid))
+        self.live = {sid: {"state": "waiting"}}
+        return True
+
+    def move(self, sid, path):
+        self.calls.append(("move", sid, path))
+        self.live = {sid: {"state": "waiting"}}   # SdkBackend.move revives a dormant row first, whatever it then answers
+        return self.move_answer
+
+    def kill(self, sid):
+        self.calls.append(("kill", sid))
+        self.live = {}
+        return True
+
     def _session(self, sid):
         return {"sid": sid} if sid == SID else None
 
@@ -94,7 +116,7 @@ class _Backend:
         return sid == SID
 
     def live_sessions(self):
-        return {}
+        return dict(self.live)
 
 
 def _forget(sid):
@@ -108,6 +130,7 @@ def _forget(sid):
     km._compact_clicked.pop(sid, None)
     km._held_working.pop(sid, None)   # the belt's record that the working gate holds this queue: a test that leaves the
                                       # in-flight slot kept leaves it standing, and the next test inherited it (2026-09-21)
+    getattr(km, "_ending_sids", {}).pop(sid, None)     # the End latch (2026-09-21); absent on a kernel before it
 
 
 class _Base(unittest.TestCase):
@@ -597,6 +620,463 @@ class EndHandbackTargets(_Base):
         self.assertNotIn(SID, km._inflight_ops)
         self.assertNotIn(SID, km._drain_hold)
         self.assertNotIn(SID, km._held_working, "the cleanup leaves no belt state for the next test")
+    def _death_record(self, sid):
+        """The kernel's own death marker for `sid`, as _record_death writes it at every End door, restored after."""
+        gd = km.jd.STATE / "gone"
+        gd.mkdir(parents=True, exist_ok=True)
+        path = gd / (sid + ".json")
+        before = path.read_bytes() if path.exists() else None
+        path.write_text(json.dumps({"t": int(time.time()) - 1, "by": "kill"}))
+
+        def restore():
+            if before is None:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                path.write_bytes(before)
+        self.addCleanup(restore)
+
+    def _errs(self):
+        return [m for app, m in self.broadcast if app == "chat" and m.get("type") == "err"]
+
+    def test_a_dead_rows_queue_is_handed_back_at_the_top_of_its_pass_ahead_of_the_gates(self):
+        # The post-merge review of the End hand-back (2026-09-21): a dead row's queue (a park that landed after End's
+        # cancel, a queue mirrored to disk before the End) sat behind a hold nothing would lift, and past the gates went
+        # to the unowned route with the refusal ignored. The backstop runs at the top of the sid's pass, ahead of every
+        # gate, keyed on the death record with no live row: the account hold below is real for the pass and irrelevant.
+        import contextlib, io
+        self._restore_undelivered()
+        self._death_record(SID)
+        text = "typed into a row that had ended"
+        km._pending_ops[SID] = [("send", text, "human", QID, True), ("send", "a notice the kernel composed", None)]
+        km._save_pending_ops()
+        hold = {"reason": "limit", "resetsAt": None, "what": "waiting for your usage limit to reset"}
+        log = io.StringIO()
+        with mock.patch.object(km, "_limit_hold", lambda sid: hold), \
+             mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: km._UNOWNED)), \
+             contextlib.redirect_stderr(log):
+            km._apply_pending_ops()
+        self.assertNotIn(SID, km._pending_ops, "the dead row's queue is gone with it, hold or no hold")
+        self.assertEqual([m.get("copy") for m in self._errs()], [text], "the typed one comes back once, to the chat")
+        self.assertIn("ended", self._errs()[0]["text"])
+        self.assertEqual(self.be.calls, [], "nothing is handed to a backend")
+        self.assertIn("parked send op dropped with the ending session %s" % SID, log.getvalue(), "the machine's, by kind")
+        self.assertNotIn("a notice the kernel composed", log.getvalue())
+        self.assertIs(km._ended_for_good(SID), True, "the key: the marker stands and no backend reports the sid live")
+
+    def test_an_unowned_sid_with_no_death_record_keeps_its_held_queue(self):
+        # The other half of the key (the review's parenthesis): a kernel before its backends are built reads every sid as
+        # unowned, so the unowned route alone is no death. With no marker the held queue waits, as before.
+        km._pending_ops[SID] = [("send", "typed while the backends come up", "human", QID, True)]
+        km._save_pending_ops()
+        hold = {"reason": "limit", "resetsAt": None, "what": "waiting for your usage limit to reset"}
+        with mock.patch.object(km, "_limit_hold", lambda sid: hold), \
+             mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: km._UNOWNED)):
+            km._apply_pending_ops()
+        self.assertEqual([op[1] for op in km._pending_ops.get(SID, [])], ["typed while the backends come up"])
+        self.assertEqual(self._errs(), [], "nothing is handed back for a session that may yet attach")
+        self.assertIs(km._ended_for_good(SID), False, "no marker: the unowned route alone is no death")
+
+    def test_a_send_the_backend_refuses_after_the_pop_comes_back_typed_only(self):
+        # The drain pops a send run whole before the handover and, until 2026-09-21, discarded each send's False: a run
+        # refused after the pop was gone with no modal and no undelivered row. The refusal is read per op now: the
+        # user's words take the not-delivered path to one pane (a chat pane first), a machine's goes to the log by kind, and the reason
+        # is read from the backend at hand (this one still owns the sid: it refused the message itself).
+        import contextlib, io
+        self._restore_undelivered()
+        text = "typed, popped, then refused"
+        km._pending_ops[SID] = [("send", text, "human", QID, True), ("send", "a notice the kernel composed", None)]
+        km._save_pending_ops()
+        self.be.send = lambda sid, t: False
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            km._apply_pending_ops()
+        self.assertNotIn(SID, km._pending_ops)
+        self.assertEqual([m.get("copy") for m in self._errs()], [text])
+        self.assertEqual((self._errs()[0]["sid"], self._errs()[0]["op"]), (SID, "sendMessage"))
+        self.assertIn("backend refused", self._errs()[0]["text"])
+        rows = [json.loads(l) for l in (km.jd.STATE / "undelivered.jsonl").read_text().splitlines() if l.strip()]
+        self.assertEqual([r["text"] for r in rows if r.get("sid") == SID], [text], "kept verbatim, once; the machine's not filed")
+        self.assertIn("parked send op dropped after its backend refused it, for %s" % SID, log.getvalue())
+        self.assertNotIn("a notice the kernel composed", log.getvalue())
+
+    def test_a_refused_send_on_a_row_whose_death_stands_says_ended_though_its_registry_row_remains(self):
+        # The reason is read with the death FIRST (review find, 2026-09-21): the SDK backend's owns() is registry presence,
+        # which a kill does not remove, and the pusher cycle's snapshot predates the End, so a reason that asked the
+        # backend first, or read the snapshot, said the backend refused a message the End had made undeliverable. The
+        # stub's owns() answers True for the sid throughout, the snapshot lists the row, the death record stands, and
+        # the backends read fresh report nothing: the frame says the session ended.
+        self._restore_undelivered()
+        self._death_record(SID)
+        text = "typed, popped, refused by a row whose death stands"
+        km._pending_ops[SID] = [("send", text, "human", QID, True)]
+        km._save_pending_ops()
+        self.be.send = lambda sid, t: False
+        self.assertTrue(self.be.owns(SID), "the registry row remains")
+        km._live_scope.snapshot = {SID: {"state": "waiting", "backend": "codex"}}
+        try:
+            self.assertIs(km._ended_for_good(SID), False, "the cycle's snapshot still lists the row")
+            km._apply_pending_ops()
+        finally:
+            km._live_scope.snapshot = None
+        self.assertEqual([m.get("copy") for m in self._errs()], [text])
+        self.assertIn("ended", self._errs()[0]["text"], self._errs()[0]["text"])
+        self.assertNotIn("backend refused", self._errs()[0]["text"])
+
+    def test_a_park_after_the_end_cancel_is_refused_and_the_sending_pane_is_told(self):
+        # A park landing after End's cancel (the handler read the row as owned before the kill) sat in the dead row's
+        # queue as a queued bubble until the drain got to it (review find, 2026-09-21). The cancel latches the sid, the
+        # park is refused under the same lock, and the sendMessage arm hands the words back to its own pane through the
+        # not-delivered path, the End hand-back's shape. The latch lifts on the event it stands for, the session coming
+        # back under its sid (the revive door, a thread's resume, a move), never on a clock or a liveness snapshot.
+        self._restore_undelivered()
+        text = "typed in the instant after End"
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):   # a park condition: the cue still reads
+            self.assertEqual(km._drop_parked_on_end(SID), 0, "End's cancel, nothing parked yet")
+            self.assertTrue(km._drive({"type": "sendMessage", "id": SID, "text": text}, self.client))
+        self.assertNotIn(SID, km._pending_ops, "the park is refused: no queued bubble on a dead row")
+        self.assertEqual(self.be.calls, [], "and nothing is handed over in its place")
+        errs = [f for f in self.sent if f.get("type") == "err"]
+        self.assertEqual([f.get("copy") for f in errs], [text], "the sending pane gets the words back")
+        self.assertEqual((errs[0]["sid"], errs[0]["op"]), (SID, "sendMessage"))
+        self.assertIn("ended", errs[0]["text"])
+        rows = [json.loads(l) for l in (km.jd.STATE / "undelivered.jsonl").read_text().splitlines() if l.strip()]
+        self.assertEqual([r["text"] for r in rows if r.get("sid") == SID], [text])
+        self.assertIn(SID, km._ending_sids, "the latch stands until the session comes back under its sid")
+
+    # ── the End latch lifts on the event it stands for, never on a clock or a snapshot (the review, 2026-09-21) ──
+
+    # the cycle's stage jobs other than the drain, quieted so the real cycle function runs over the stub; the drain itself
+    # runs real, since it is the one job that writes the latch and reads the snapshot (the fourth review, 2026-09-21)
+    _CYCLE_JOBS = ("_begin_checkpoint_cycle", "_sessions_listing_refresh", "_push_all", "_artifacts_signal",
+                   "_turn_notify_tick", "_persist_checkpoints", "_converge_checkpoints", "_boot_row_backstop", "_kernel_sample_tick",
+                   "_api_health_frame", "_api_health_push")
+
+    def test_a_cycle_whose_snapshot_lists_the_sid_between_the_latch_and_the_kill_leaves_the_latch(self):
+        # Every End door stamps the latch BEFORE the kill and wakes the pusher, so a cycle can start while the kill is
+        # still pending (the SDK kill waits on its lock) with a snapshot that lists the sid live. A lift keyed on that
+        # snapshot behind a second-boundary guard popped the latch before the row died, and a later park landed in the
+        # dead row (review find, 2026-09-21). The real cycle function with the real drain (the one job that writes the
+        # latch and reads the snapshot; the fourth review found it stubbed here), a machine's send in the latched sid's
+        # queue, a snapshot listing the sid and a clock two seconds on: the send drains to the row the snapshot lists,
+        # the latch stands, and a typed park is still refused.
+        self.assertEqual(km._drop_parked_on_end(SID), 0)
+        km._pending_ops[SID] = [("send", "a notice the kernel composed", None)]   # placed behind the latch, as a mirror restores one
+        km._save_pending_ops()
+        snapshot = {SID: {"state": "waiting", "backend": "codex"}}
+        now = int(time.time()) + 2
+        with mock.patch.multiple(km, **{nm: (lambda *a, **k: None) for nm in self._CYCLE_JOBS}):
+            km._live_scope.snapshot = snapshot
+            try:
+                km._pusher_cycle_jobs(now, snapshot, False)
+                km._pusher_cycle_jobs(now, snapshot, True)
+            finally:
+                km._live_scope.snapshot = None
+        self.assertEqual(self.be.calls, [("send", "a notice the kernel composed")], "the drain ran real and delivered the machine's send")
+        self.assertNotIn(SID, km._pending_ops)
+        self.assertIn(SID, km._ending_sids, "a cycle lifts no latch, whatever its snapshot lists and whenever it runs")
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertIsNone(km._send_or_park(self.be, SID, "typed while the kill is pending", user=True, qid=QID))
+        self.assertNotIn(SID, km._pending_ops, "and a park in that window is still refused")
+        for fn in (km._pusher_cycle_jobs, km._apply_pending_ops, km._jobs_pass):
+            src = inspect.getsource(fn)
+            for word in ("_ending_sids", "_lift_end_latch", "_unlatch_ended"):
+                self.assertNotIn(word, src, "%s names no latch sweep" % fn.__name__)
+
+    def test_the_revive_door_lifts_the_latch_and_parks_are_welcome_again(self):
+        # The event the latch stands for: the session comes back under its sid. The real revive door over the stub (a
+        # dead Codex row: _session answers, owns is the SDK's question), its neighbors stubbed the way the Codex revive
+        # tests stub them; after it a park is taken again.
+        self.assertEqual(km._drop_parked_on_end(SID), 0)
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertIsNone(km._send_or_park(self.be, SID, "typed before the revive", user=True, qid=QID), "refused: latched")
+        with mock.patch.multiple(km, _codex_ready=lambda: True, _models_changed=lambda: None, _name_of=lambda s: "web",
+                                 _cwd_of=lambda s: "/TESTDIR", _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: self.fail("a refusal frame: %r" % (msg,))):
+            km._revive_session_inner(SID)
+        self.assertEqual(self.be.calls[-1], ("resume", SID), "the door resumed the row")
+        self.assertNotIn(SID, km._ending_sids, "live again under its sid: the latch is gone")
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertIs(km._send_or_park(self.be, SID, "typed after the revive", user=True, qid=QID), True)
+        self.assertEqual([op[1] for op in km._pending_ops[SID]], ["typed after the revive"], "parks are welcome again")
+
+    def test_a_cue_teardown_whose_kill_raised_lifts_the_latch(self):
+        # The Opening cue's teardown latches before its kill, and a kill that raises is logged, not raised: the session
+        # did not end, so a latch left standing would refuse its parks for the kernel's life. The raise lifts it.
+        import contextlib, io
+        self.be.kill = lambda sid: (_ for _ in ()).throw(RuntimeError("the backend's kill raised"))
+        log = io.StringIO()
+        with mock.patch.object(km, "_path_of", lambda sid, now=None: None), contextlib.redirect_stderr(log):
+            km._end_pending_sid(SID)
+        self.assertIn("cancelCreate kill", log.getvalue())
+        self.assertNotIn(SID, km._ending_sids, "the session did not end: no latch")
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertIs(km._send_or_park(self.be, SID, "typed after the failed teardown", user=True, qid=QID), True)
+
+    def test_a_move_that_answers_ok_lifts_the_latch(self):
+        # SdkBackend.move revives a dormant row in its old folder before moving it, and no kernel road there lifted the
+        # latch, so a move on an ended row left a live session whose every park was refused as ending (the second
+        # review, 2026-09-21). The move's "" is the event: the row is live after it.
+        self.assertEqual(km._drop_parked_on_end(SID), 0)
+        frames = []
+        with mock.patch.multiple(km, _cwd_of=lambda s: "/TESTDIR-moved", _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: frames.append(msg)):
+            self.assertEqual(km._move_now(self.be, SID, "/TESTDIR-moved", 0, ""), "")
+        self.assertEqual(self.be.calls[-1], ("move", SID, "/TESTDIR-moved"))
+        self.assertEqual([f["type"] for f in frames], ["moved"])
+        self.assertNotIn(SID, km._ending_sids, "live after the move: the latch is gone")
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertIs(km._send_or_park(self.be, SID, "typed after the move", user=True, qid=QID), True)
+
+    def test_a_move_the_backend_refused_after_its_resume_lifts_the_latch_too(self):
+        # Executed by the third review over the real SdkBackend.move (2026-09-21): the backend revives the dormant row,
+        # then refuses (the CLI did not start, the connect wait expired, a claim refusal, the CLI's rejection), and a lift
+        # keyed on the "" answer left the live row latched. The move's return is the event; the backends are asked then.
+        self.assertEqual(km._drop_parked_on_end(SID), 0)
+        self.be.move_answer = "the CLI did not start in the new folder"
+        frames = []
+        with mock.patch.multiple(km, _cwd_of=lambda s: "/TESTDIR-moved", _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: frames.append(msg)):
+            self.assertEqual(km._move_now(self.be, SID, "/TESTDIR-moved", 0, ""), self.be.move_answer)
+        self.assertEqual([f["type"] for f in frames], ["moveFailed"], "the refusal is said as before")
+        self.assertNotIn(SID, km._ending_sids, "the row is live after the resume the move made: no latch")
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertIs(km._send_or_park(self.be, SID, "typed after the refused move", user=True, qid=QID), True)
+        self.assertEqual([op[1] for op in km._pending_ops[SID]], ["typed after the refused move"], "a park is taken")
+
+    def test_a_move_that_returns_while_an_end_lands_mid_call_leaves_that_ends_latch(self):
+        # Executed by the fourth review (2026-09-21): an End door latches first, hands the queue back, and only then kills,
+        # so a move returning inside that window reads the row live, and a lift keyed on the read alone popped the newer
+        # End's latch; the kill then left a dead row refused by nothing (a park was taken into its queue, a gateless send
+        # got the fading warn). The latch's generation orders the two events: the move read the counter before its call,
+        # and a latch written after it is left standing. The stub's move runs the End's cancel inside the call.
+        def move(sid, path):
+            self.be.calls.append(("move", sid, path))
+            self.be.live = {sid: {"state": "waiting"}}
+            self.assertEqual(km._drop_parked_on_end(SID), 0)   # the End lands mid-move, before its kill
+            return ""
+        self.be.move = move
+        with mock.patch.multiple(km, _cwd_of=lambda s: "/TESTDIR-moved", _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: None):
+            self.assertEqual(km._move_now(self.be, SID, "/TESTDIR-moved", 0, ""), "")
+        self.assertIn(SID, km._ending_sids, "the End that landed mid-move keeps its latch: its kill follows")
+        self.be.kill(SID)                                      # the door's kill lands
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertIsNone(km._send_or_park(self.be, SID, "typed after the End", user=True, qid=QID), "still refused")
+        self.assertNotIn(SID, km._pending_ops, "no park lands in the dead row's queue")
+
+    def test_a_busy_move_that_returns_while_an_end_lands_mid_call_re_parks_nothing_on_the_dying_row(self):
+        # The move thread's busy re-insert writes the queue directly, outside _park_op_locked, so it never met the latch
+        # (the fifth review, 2026-09-21): an End landing mid-move kept its latch at the return, and the very next statement
+        # re-queued the cwd op on the dying row with a hold armed, a queued bubble the latch refuses everywhere else; at the
+        # cancelled cue's door, which records no death, the drain later fired that move and revived the cancelled session.
+        # The latch is read under the re-insert's own lock hold: the op is dropped by kind, "busy" is still answered.
+        import contextlib, io
+        def move(sid, path):
+            self.be.calls.append(("move", sid, path))
+            self.be.live = {sid: {"state": "waiting"}}
+            self.assertEqual(km._drop_parked_on_end(SID), 0)   # the End lands mid-move, before its kill
+            return "busy"
+        self.be.move = move
+        log = io.StringIO()
+        with mock.patch.multiple(km, _cwd_of=lambda s: "/TESTDIR-moved", _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: None), contextlib.redirect_stderr(log):
+            self.assertEqual(km._move_now(self.be, SID, "/TESTDIR-moved", 0, ""), "busy")
+        self.assertIn(SID, km._ending_sids, "the End that landed mid-move keeps its latch")
+        self.assertNotIn(SID, km._pending_ops, "no cwd chip is re-queued on the dying row")
+        self.assertNotIn(SID, km._drain_hold, "and no retry hold is armed for it")
+        self.assertNotIn(SID, km._move_askers)
+        self.assertIn("parked cwd op dropped with the ending session %s" % SID, log.getvalue(), "dropped by kind, in the log")
+        self.be.kill(SID)                                      # the door's kill lands; a later drain pass has nothing to fire
+        with mock.patch.object(km, "_fire_move", lambda *a: self.fail("a move fired on the dead row")):
+            km._apply_pending_ops()
+
+    def test_a_busy_move_on_an_unlatched_sid_re_parks_at_the_head_as_before(self):
+        # The counterpart the session move modules pin: with no latch the busy answer re-parks the cwd op at the head,
+        # with the retry count bumped and the hold armed.
+        self.be.move_answer = "busy"
+        with mock.patch.multiple(km, _cwd_of=lambda s: "/TESTDIR-moved", _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: None):
+            self.assertEqual(km._move_now(self.be, SID, "/TESTDIR-moved", 0, "w-1"), "busy")
+        self.assertEqual(km._pending_ops.get(SID), [("cwd", "/TESTDIR-moved", 1, None)])
+        self.assertIn(SID, km._drain_hold)
+        self.assertEqual(km._move_askers.pop(SID, None), "w-1")
+
+    def test_a_revive_that_returns_while_an_end_lands_mid_call_leaves_that_ends_latch(self):
+        # The revive door's twin (the fourth review, 2026-09-21): the SDK resume makes the row live, the End lands during
+        # the connect, and the door's exit reads the row live; only a latch that predates the resume lifts.
+        sdk = self.be
+        def connect(sid):
+            sdk.calls.append(("connect", sid))
+            self.assertEqual(km._drop_parked_on_end(SID), 0)   # the End lands mid-revive, before its kill
+            return True
+        sdk.connect = connect
+        with mock.patch.multiple(km, _sdk=lambda: sdk, _codex=lambda: None, _name_of=lambda s: "web",
+                                 _cwd_of=lambda s: "/TESTDIR", _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: self.fail("a refusal frame: %r" % (msg,))):
+            km._revive_session_inner(SID)
+        self.assertEqual(sdk.calls[-2:], [("resume", SID), ("connect", SID)])
+        self.assertIn(SID, km._ending_sids, "the End that landed mid-revive keeps its latch")
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertIsNone(km._send_or_park(self.be, SID, "typed after the End", user=True, qid=QID), "still refused")
+
+    def test_a_typed_clear_whose_busy_re_park_the_latch_refused_is_said_never_queued(self):
+        # The third site of the refused re-parks, missed by the previous amend and executed by the fourth review
+        # (2026-09-21): the native clear's "busy" answer re-parks the words, and a refused re-park filed queued for an op
+        # that vanished, so POST /send and the composer's sendMessage arm reported a typed /clear or /new as queued with
+        # nothing queued and nothing said. The refusal takes the arm's own refused-clear road: filed in the state, one
+        # warn frame on the delivering socket with the copy's id, a row on the bell, and queued stays False.
+        self.assertEqual(km._drop_parked_on_end(SID), 0)
+        self.be.answer = "busy"
+        state = {}
+        self.assertTrue(km._route_meta_command(self.be, SID, "/clear", self.client, state=state, qid=QID))
+        self.assertEqual(self.be.calls, [("clear", SID)], "the verb was asked once")
+        self.assertEqual(state.get("refused_clear"), km._ENDING_PARK_REFUSAL)
+        self.assertFalse(state.get("queued"), "never queued for an op that vanished: %r" % (state,))
+        self.assertEqual(self.sent, [{"type": "warn", "text": km._ENDING_PARK_REFUSAL, "sid": SID, "qid": QID}])
+        self.assertEqual(self._last_notice().get("kind"), "refused")
+        self.assertNotIn(SID, km._pending_ops, "no queued chip for words that went nowhere")
+
+    def test_a_move_whose_backend_raised_lifts_nothing(self):
+        # The counterpart: a raise is not a return, so the backends are not asked and the latch stands (the row's state
+        # is the backend's to settle); the raise is worded as a refusal, as before.
+        self.assertEqual(km._drop_parked_on_end(SID), 0)
+        self.be.move = lambda sid, path: (_ for _ in ()).throw(RuntimeError("mid-move"))
+        with mock.patch.multiple(km, _cwd_of=lambda s: "/TESTDIR-moved", _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: None):
+            self.assertEqual(km._move_now(self.be, SID, "/TESTDIR-moved", 0, ""), "RuntimeError: mid-move")
+        self.assertIn(SID, km._ending_sids)
+
+    def test_a_revive_whose_connect_failed_after_the_resume_lifts_the_latch(self):
+        # The SDK resume alone makes the row live (the registry's alive flips), and the door's connect may fail after
+        # it; a lift on the door's success bit left that live row latched (the third review, 2026-09-21). The door's
+        # exit asks the backends, whatever its verdict: the refusal is still said, and the latch is gone.
+        self.assertEqual(km._drop_parked_on_end(SID), 0)
+        sdk = self.be                                      # the stub wears the SDK's hat: owns() True, resume True, connect False
+        sdk.connect = lambda sid: (sdk.calls.append(("connect", sid)), False)[1]
+        frames = []
+        with mock.patch.multiple(km, _sdk=lambda: sdk, _codex=lambda: None, _name_of=lambda s: "web",
+                                 _cwd_of=lambda s: "/TESTDIR", _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: frames.append((app, msg["type"]))):
+            km._revive_session_inner(SID)
+        self.assertEqual(sdk.calls[-2:], [("resume", SID), ("connect", SID)])
+        self.assertEqual(frames, [("chat", "reviveFailed"), ("feed", "reviveFailed")], "the failed connect is still said")
+        self.assertNotIn(SID, km._ending_sids, "the resume made the row live: the latch is gone")
+
+    def test_a_send_refused_by_a_latched_row_with_no_marker_yet_says_ended(self):
+        # The doors write the death marker only after the kill returns, and the cancelled cue writes none, so a send the
+        # dying row refused during the kill read "backend refused" or "no running backend" from a reason that looked for
+        # the marker first (the third review, 2026-09-21). The End latch is the kernel's earliest record, and it is
+        # read first. No marker, no snapshot, the stub still owns the row: the frame says the session ended.
+        self._restore_undelivered()
+        self.assertEqual(km._drop_parked_on_end(SID), 0)   # latched; no marker is written here
+        self.assertFalse((km.jd.STATE / "gone" / (SID + ".json")).exists())
+        text = "typed, then refused by the dying row during its kill"
+        km._pending_ops[SID] = [("send", text, "human", QID, True)]   # placed behind the latch, as the drain's pop finds it
+        km._save_pending_ops()
+        self.be.send = lambda sid, t: False
+        km._apply_pending_ops()
+        self.assertEqual([m.get("copy") for m in self._errs()], [text])
+        self.assertIn("ended", self._errs()[0]["text"], self._errs()[0]["text"])
+        self.assertNotIn("backend refused", self._errs()[0]["text"])
+
+    def test_a_model_pick_whose_park_the_latch_refused_is_answered_as_a_refusal_never_queued(self):
+        # Three doors reported parked after a park the latch refused, so the op vanished while the route answered
+        # queued (the third review, 2026-09-21). The model pick under a compaction, through the route POST /send takes
+        # and through the WS arm: the state carries the refusal and no queued, the pane hears a settingRefused frame,
+        # the pending dots are taken back, and nothing reaches the backend (the stub has no set_model: a hand-over raises).
+        self.assertEqual(km._drop_parked_on_end(SID), 0)
+        state = {}
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertTrue(km._route_meta_command(self.be, SID, "/model gpt-5-test", self.client, state=state))
+            self.assertTrue(km._drive({"type": "setModel", "id": SID, "value": "gpt-5-test"}, self.client))
+        self.assertFalse(state.get("queued"), "the route never answers queued for a pick that vanished: %r" % (state,))
+        self.assertEqual(state.get("refused"), km._ENDING_PARK_REFUSAL)
+        refused = [f for f in self.sent if f.get("type") == "settingRefused"]
+        self.assertEqual([(f["gesture"], f["sid"], f["flag"], f["text"]) for f in refused],
+                         [("command", SID, "model", km._ENDING_PARK_REFUSAL)] * 2, "the route's door and the WS arm both say it")
+        self.assertNotIn(SID, km._pending_ops)
+        self.assertNotIn(SID, km._model_switch_pending, "the switching dots are taken back")
+
+    def test_a_compact_press_whose_busy_re_park_the_latch_refused_is_said_never_queued(self):
+        # The compact door's "busy" answer re-parks the press; refused by the latch, it answered queued for a press that
+        # vanished (the third review, 2026-09-21). The refusal takes the door's own refusal road: filed in the state, said
+        # on the pressing socket with the copy's id, on the bell, and answered None.
+        self.assertEqual(km._drop_parked_on_end(SID), 0)
+        self.be.answer = "busy"
+        state = {}
+        self.assertIsNone(km._compact_or_park(self.be, SID, state=state, client=self.client, qid=QID))
+        self.assertEqual(state.get("refused"), km._ENDING_PARK_REFUSAL)
+        self.assertEqual(self.sent, [{"type": "warn", "text": km._ENDING_PARK_REFUSAL, "sid": SID, "qid": QID}])
+        self.assertNotIn(SID, km._pending_ops, "no queued chip for a press that went nowhere")
+
+    def test_a_kill_that_raises_at_an_end_door_lifts_the_latch_and_raises_on(self):
+        # The dashboard's End, the end route and the self-close sweep latch before their kill; a kill that raised left
+        # the latch on a row that did not end (the second review, 2026-09-21). The WS arm executed: the latch is gone,
+        # the attribution line names the door, and the raise propagates as it did (no death record for a session that
+        # may be alive; the WS loop logs it). The other doors are pinned to take the same helper.
+        import contextlib, io
+        self.be.kill = lambda sid: (_ for _ in ()).throw(RuntimeError("the backend's kill raised"))
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log), self.assertRaises(RuntimeError):
+            km._drive({"type": "endSession", "id": SID}, self.client)
+        self.assertNotIn(SID, km._ending_sids, "the session did not end: no latch")
+        self.assertIn("via endSession WS op raised; the End latch is lifted", log.getvalue())
+        self.assertFalse((km.jd.STATE / "gone" / (SID + ".json")).exists(), "no death record for a kill that raised")
+        route = inspect.getsource(km.Handler.do_POST)
+        route = route[route.index("via /kill route"):]
+        for src, door in ((inspect.getsource(km._end_on_idle_sweep), "the self-close sweep"), (route[:route.index("_record_death")], "the end route"),
+                          (inspect.getsource(km._end_pending_sid), "the cue's teardown")):
+            self.assertIn("_kill_at_end_door(be, sid, ", src, "%s kills through the helper that lifts on a raise" % door)
+            self.assertNotIn("be.kill(sid)", src, "%s has no bare kill left" % door)
+
+    def test_a_live_sids_standing_marker_costs_the_drain_no_states_read(self):
+        # The snapshot is read first (the second review, 2026-09-21): a marker outlived by a revive (the Codex resume
+        # writes no states row) put the states file's whole read on every drain pass for the revived row's queue. A sid
+        # the cycle's snapshot lists is live, one dict lookup, and nothing else is read: the send delivers, no latch. The
+        # undelivered file is restored although no hand-back is expected: under a kernel that hands this send back, the
+        # row it files must not leak into the module's later undelivered assertions.
+        self._restore_undelivered()
+        self._death_record(SID)
+        km._pending_ops[SID] = [("send", "typed on the revived row", "human", QID, True)]
+        km._save_pending_ops()
+        reads, real_states, real_marker = [], km._last_states_row, km._death_marker
+        live_reads = []
+        km._live_scope.snapshot = {SID: {"state": "waiting", "backend": "codex"}}
+        try:
+            # every read past the snapshot is counted: the states file, the marker (named so it can be: the third review,
+            # 2026-09-21) and a fresh liveness read, which the predicate's own guard would swallow if it merely raised
+            with mock.patch.object(km, "_last_states_row", lambda sid: (reads.append(("states", sid)), real_states(sid))[1]), \
+                 mock.patch.object(km, "_death_marker", lambda sid: (reads.append(("marker", sid)), real_marker(sid))[1]), \
+                 mock.patch.object(km.Sessions, "live", staticmethod(lambda: (live_reads.append(1), {})[1])):
+                km._apply_pending_ops()
+        finally:
+            km._live_scope.snapshot = None
+        self.assertEqual(reads, [], "a sid the snapshot lists is live: no marker read, no states-file read")
+        self.assertEqual(live_reads, [], "and no fresh liveness read")
+        self.assertEqual(self.be.calls, [("send", "typed on the revived row")], "delivered")
+        self.assertNotIn(SID, km._ending_sids)
+        self.assertEqual(self._errs(), [])
+
+    def test_every_road_that_brings_a_sid_back_lifts_the_latch(self):
+        # The two thread roads resume a sid outside the revive door (a relayed thread's reply, a resolved thread's promote);
+        # each lifts the latch on its resume. Source pins, since driving either needs a forking backend and a thread store.
+        for fn in (km._comment_reply, km._comment_promote_inner):
+            src = inspect.getsource(fn)
+            resume, lift = src.index("be.resume("), src.find("_lift_end_latch(tsid)")
+            self.assertGreater(lift, resume, "%s lifts the latch after its resume" % fn.__name__)
+        door = inspect.getsource(km._revive_session_inner)
+        self.assertLess(door.index("since = _end_latch_now()"), door.index("be.resume("),
+                        "the revive door reads the latch generation before its resume (the fourth review)")
+        self.assertLess(door.index("_lift_end_latch_if_live(sid, since)"), door.index("if not ok:"),
+                        "the revive door lifts on fresh liveness at its exit, ahead of its refusal branch, whatever its verdict")
+        move = inspect.getsource(km._move_now)
+        self.assertLess(move.index("since = _end_latch_now()"), move.index("be.move("),
+                        "the move reads the latch generation before its backend call (the fourth review)")
+        self.assertLess(move.index("_lift_end_latch_if_live(sid, since)"), move.index('if res == "busy":'),
+                        "the move lifts on fresh liveness after the backend answered, whatever the answer")
 
 
 class RealBackendCompact(unittest.TestCase):
@@ -806,6 +1286,109 @@ class RealBackendCompact(unittest.TestCase):
         mirror = json.loads(km._PENDING_OPS_FILE.read_text()) if km._PENDING_OPS_FILE.exists() else {}
         self.assertNotIn(sid, mirror, "and the disk mirror does not replay it into a restart")
         self.assertEqual(self.be.pending_queued(sid), [], "the backend's own queue never had it")
+
+    def _parked_behind_an_account_hold(self, text, where, prompted):
+        """A message typed while the account cannot serve a request, parked in the kernel's queue behind the hold
+        (_limit_hold), on a session that was prompted once or never (an Opening cue's spawn). Returns the sid; the
+        files End records and the refusal keeps are restored after the test."""
+        for name in ("gone/%s.json" % SID_REAL, "states/%s.jsonl" % SID_REAL, "undelivered.jsonl", "end-on-idle.json"):
+            self._restore_file(self.root / name)
+        sid = self.be.spawn("web", where, sid=SID_REAL)
+        if prompted:
+            self.assertTrue(self.be.send(sid, "first synthetic turn"))
+            self.assertTrue(self.cbt._lock_free(self.be, sid))
+        hold = {"reason": "limit", "resetsAt": None, "what": "waiting for your usage limit to reset"}
+        with mock.patch.object(km, "_limit_hold", lambda sid: hold):
+            self.assertIs(km._send_or_park(self.be, sid, text, user=True, qid=QID), True, "parks behind the account hold")
+        self.assertEqual([op[:2] for op in km._pending_ops[sid]], [("send", text)])
+        return sid
+
+    def test_cancel_create_hands_a_message_parked_under_the_opening_cue_back(self):
+        # The fourth End door (the post-merge review of the End hand-back, 2026-09-21): the Opening cue's cancel resolves
+        # the name to the just-spawned session and kills it, and a message typed under the cue while the account could
+        # not serve it, parked behind the hold, was dropped with the kill: the drain popped it in the same wake and
+        # handed it to a row that read as unowned. The teardown now cancels the queue before the kill, like the other
+        # three doors; no socket reaches it, so the words go to one pane that renders them (a chat pane first, the feed
+        # when no chat pane is connected).
+        text = "typed under the opening cue, behind the account hold"
+        sid = self._parked_behind_an_account_hold(text, "/TESTDIR-compact-cancel-create", prompted=False)
+        self.assertIs(km._session_has_history(sid), False, "never prompted: the history guard lets the teardown through")
+        n0 = len(self.fake.called("turn_start"))
+        broadcast = []
+        with mock.patch.object(km, "_send_to_app", lambda app, m: broadcast.append((app, m))):
+            km._end_pending_sid(sid)
+        self.assertIn(("chat", {"type": "closed", "id": sid}), broadcast, "the tab closes as before")
+        self._after_end(sid, text, n0, "/TESTDIR-compact-cancel-create",
+                        [m for app, m in broadcast if app == "chat" and m.get("type") == "err" and m.get("copy") == text])
+
+    def test_a_send_run_the_drain_popped_just_before_end_is_handed_back(self):
+        # The drain pops a send run whole before the handover; an End landing in between finds the queue already empty
+        # and hands nothing back, and the delivery discarded the backend's False for a row that had just died (review
+        # find, 2026-09-21). The interleaving is exact: End runs inside the backend's send, after the pop, before the
+        # real send answers. The refused send now takes the not-delivered path to one pane, once.
+        text = "popped by the drain, then the session ended"
+        sid = self._parked_behind_an_account_hold(text, "/TESTDIR-compact-popped-end", prompted=True)
+        n0 = len(self.fake.called("turn_start"))
+        broadcast = []
+        real_send = self.be.send
+
+        def send(sid_, text_):
+            self.assertEqual(km._pending_ops.get(sid) or [], [], "the run is already popped when End lands")
+            self.assertTrue(km._drive({"type": "endSession", "id": sid}, self.client))
+            return real_send(sid_, text_)
+        self.be.send = send
+        try:
+            # the drain runs inside a pusher cycle whose liveness snapshot was taken BEFORE the End: it still lists the
+            # row End kills mid-handover, and the hand-back's reason must not read it (review find, 2026-09-21)
+            km._live_scope.snapshot = km.Sessions.live()
+            self.assertIn(sid, km._live_scope.snapshot, "the cycle's snapshot lists the row, pre-End")
+            with mock.patch.object(km, "_send_to_app", lambda app, m: broadcast.append((app, m))):
+                km._apply_pending_ops()
+        finally:
+            del self.be.send
+            km._live_scope.snapshot = None
+        self.assertEqual([f for f in self.sent if f.get("type") == "err"], [], "End's own cancel found nothing to hand back")
+        self._after_end(sid, text, n0, "/TESTDIR-compact-popped-end",
+                        [m for app, m in broadcast if app == "chat" and m.get("type") == "err" and m.get("copy") == text])
+
+    def test_a_drain_pass_on_a_snapshot_that_predates_the_revive_leaves_the_live_rows_park_and_writes_no_latch(self):
+        # Reproduced by the second review over this backend (2026-09-21): End, then a cycle's snapshot taken before the
+        # revive, the real revive door (the latch lifts), a park on the live row, and a drain pass on that snapshot. The
+        # backstop read the snapshot (no row), the marker (standing: CodexBackend.resume writes no states row) and handed
+        # the park back as ended, re-latching a LIVE row until a restart. The not-live verdict is confirmed against the
+        # backends now before anything is handed back or latched: the park stands under its hold, no latch, no frame.
+        for name in ("gone/%s.json" % SID_REAL, "states/%s.jsonl" % SID_REAL, "undelivered.jsonl", "end-on-idle.json"):
+            self._restore_file(self.root / name)
+        where = "/TESTDIR-compact-stale-snapshot"
+        sid = self.be.spawn("web", where, sid=SID_REAL)
+        self.assertTrue(self.be.send(sid, "first synthetic turn"))
+        self.assertTrue(self.cbt._lock_free(self.be, sid))
+        self.assertTrue(km._drive({"type": "endSession", "id": sid}, self.client))
+        self.assertIs(self.be.owns(sid), False, "End killed the row")
+        self.assertIn(sid, km._ending_sids, "and latched it")
+        stale = km.Sessions.live()                        # a cycle's snapshot, taken between the End and the revive
+        self.assertNotIn(sid, stale)
+        with mock.patch.multiple(km, _codex_ready=lambda: True, _models_changed=lambda: None, _commands_for_cwd=lambda cwd: None,
+                                 _send_to_view=lambda app, msg, wid: self.fail("a refusal frame: %r" % (msg,))):
+            km._revive_session_inner(sid)                 # the real revive door
+        self.assertIs(self.be.owns(sid), True, "live again under its sid")
+        self.assertNotIn(sid, km._ending_sids, "the revive lifted the latch")
+        text = "typed on the revived row, drained on a stale snapshot"
+        hold = {"reason": "limit", "resetsAt": None, "what": "waiting for your usage limit to reset"}
+        with mock.patch.object(km, "_limit_hold", lambda sid: hold):
+            self.assertIs(km._send_or_park(self.be, sid, text, user=True, qid=QID), True, "parks behind the hold, welcome again")
+        broadcast = []
+        km._live_scope.snapshot = stale
+        try:
+            with mock.patch.object(km, "_limit_hold", lambda sid: hold), \
+                 mock.patch.object(km, "_send_to_app", lambda app, m: broadcast.append((app, m))):
+                km._apply_pending_ops()
+        finally:
+            km._live_scope.snapshot = None
+        self.assertEqual([op[1] for op in km._pending_ops.get(sid, [])], [text], "the live row's park stands under the hold")
+        self.assertNotIn(sid, km._ending_sids, "no latch is written for a live row")
+        self.assertEqual([m for app, m in broadcast if m.get("type") == "err"], [], "nothing is handed back")
+        self.assertEqual([f for f in self.sent if f.get("type") == "err"], [], "and nothing reached the pane that pressed End")
 
     def test_end_hands_a_message_parked_behind_a_bracket_the_server_never_ran_back_as_not_delivered(self):
         # The probe replayed through the dashboard's End (the WS op): End killed the row and woke the drain, which
