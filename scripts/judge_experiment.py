@@ -766,8 +766,8 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
         try:
             cost, n, mean_ms = ledger_cost(usage)
             results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
-        except Exception:
-            pass                                     # a ledger read that raises must not lose the summary written just below
+        except Exception as e:
+            results["costError"] = type(e).__name__    # a ledger read that raises is RECORDED, not swallowed: a reader tells a free arm from a broken tally
         flush()                                      # results.json is written in the finally, whatever raised in the loop or after it
     return results
 
@@ -1002,7 +1002,12 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
     for e in manifest["endings"]:
         key = key_of.get(e.get("lane") or e["session"])   # the lane's own store; never the anchor's when a lane hash is present but unresolved
         row_faults = []
-        t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=row_faults) if key else None
+        if key:
+            t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=row_faults)
+            row_err = row_faults[0][1] if row_faults else None
+        else:
+            t1 = None
+            row_err = "unresolved-key"                # the manifest hash resolves to no live session: told apart from a store-less session's genuine null
         faults.extend(row_faults)
         path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % e["id"])), None)
         text = _last_assistant_text(path) if path else ""
@@ -1014,7 +1019,7 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         spent += c1 + c2
         rows.append({"id": e["id"], "class": e["class"], "tierOne": t1, "labelA": a, "labelB": b, "label": a if a == b else None,
                      "spanS": int(time.time() - float(e["cutT"] or 0)),
-                     "tierOneError": row_faults[0][1] if row_faults else None})   # a faulted read, told apart from a genuine tierOne null
+                     "tierOneError": row_err})   # a faulted read or an unresolved key, told apart from a genuine tierOne null
     (run_root / "labels.json").write_text(json.dumps(rows, indent=1))
     both = [r for r in rows if r["tierOne"] and r["label"]]
     agree = sum(1 for r in both if (r["label"] == "finished") == (r["tierOne"] == "finished"))

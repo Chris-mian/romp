@@ -1179,6 +1179,7 @@ class Harness(unittest.TestCase):
         self.je.label(dest, os.path.join(self.td, "runs-m1"), self.state, claude_bin=self.fake, model="fake")
         row = json.loads(Path(self.td, "runs-m1", "labels.json").read_text())[0]
         self.assertIsNone(row["tierOne"], "an unresolved lane never falls through to the anchor's store: tier one is null, not the anchor's finished")
+        self.assertEqual(row["tierOneError"], "unresolved-key", "an unresolvable manifest hash is marked, not passed off as a store-less session's genuine null")
 
     def test_a_registered_same_titled_transcript_is_not_a_lane(self):
         """The `registered` half of the lane exclusion: a fork lane is an UNREGISTERED same-titled transcript. A second
@@ -1260,6 +1261,8 @@ class Harness(unittest.TestCase):
         self.assertIsNone(raised, "the closing ledger read raised, but the finally swallowed it after writing the summary: %r" % raised)
         res = json.loads(Path(run_root, "ledgerboom", "results.json").read_text())
         self.assertEqual(len(res["endings"]), n_endings, "the finally wrote the summary with every ending that ran: %r" % list(res.get("endings", {})))
+        self.assertEqual(res.get("costError"), "RuntimeError", "the failed tally is RECORDED, not a bare pass: a reader tells a free arm from a broken tally: %r" % res.get("costError"))
+        self.assertNotIn("cost", res, "and no cost is written when the tally never produced one")
 
     def test_a_bare_command_or_interrupt_turn_is_no_ending(self):
         sid = SIDS[0]
