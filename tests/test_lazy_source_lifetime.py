@@ -1,4 +1,5 @@
 """A restored view keeps its hydration source when another leaf of the same session restores."""
+import inspect
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -314,6 +315,86 @@ class LazySourceLifetime(Harness):
             self.assertEqual(em.hydrate([atom]), 1)
         self.assertIsNone(atom.get("lazy"))
         self.assertEqual(atom["message"]["content"], [{"type": "text", "text": "prompt for web"}])
+
+    def test_is_lazy_answers_for_a_sentinel_of_a_rebound_class(self):
+        """The same re-execution, seen by the module's one public predicate: is_lazy keys on the body's source slot, as the
+        first loop does, so a bound body built before the module was re-executed still answers True, where a class check
+        against the rebound name answered False for it. The edges hold as before: a plain-dict body, a None body and an
+        atom with no message key have no slot and answer False. The product re-executes the module only at import time,
+        before any body exists, so this pins the module's one rule rather than a reachable defect. Two shapes separate the
+        slot from the lazy marker: a plain-dict body under a marker still present is the mid-fill window (_hydrate_one
+        sets the message and pops the marker as its last write) and answers False, where a marker-keyed predicate says
+        True; a lazy body with no marker answers True, where a predicate wanting both says False. The product never
+        builds the second shape, since the pop is the last write, so that assert pins the rule alone (2026-09-21)."""
+        first = self.make_document("web", G.FSID_A, "web")
+        self.fresh()
+        atom = self.user_atom(self.restore(first), "web")
+        self.assertTrue(em.is_lazy(atom))
+        rebound = type("_LazyBody", (dict,), {})           # the name after a re-execution: another class object
+        with mock.patch.object(em, "_LazyBody", rebound):
+            self.assertTrue(em.is_lazy(atom))
+        plain = {"role": "user", "content": "prompt for web"}
+        self.assertFalse(em.is_lazy({"uuid": "user-web", "message": plain}))
+        self.assertFalse(em.is_lazy({"uuid": "user-web", "message": None}))
+        self.assertFalse(em.is_lazy({"uuid": "user-web"}))
+        self.assertFalse(em.is_lazy({"uuid": "user-web", "lazy": {"k": "u"}, "message": plain}))   # the mid-fill window
+        p = str(self.td / "web" / (G.FSID_A + ".jsonl"))
+        self.assertTrue(em.is_lazy({"uuid": "user-web", "message": em._LazyBody("user-web", p)}))   # the rule, not a product shape
+
+    def test_two_sentinels_of_one_uuid_compare_equal_across_a_rebound_class(self):
+        """The re-execution's shape for equality: the module's class name rebound to a REAL second class, built by
+        executing the module's own class statement again over the helpers it names, so a sentinel of the old class and one
+        of the new class of one uuid meet. They compare equal in both directions, unequal in neither, are members of each
+        other's one-element list, and hash alike, as do two old-class sentinels; equality keys on the source slot and the
+        uuid, and the hash already keyed on the uuid alone. A class-identity check made the cross-class pair unequal, and
+        a check against the rebound name made two old-class sentinels unequal. A plain dict and the unhydrated marker,
+        which carries a uuid but no source slot, stay unequal, as do two sentinels of different uuids. The != side
+        answers the opposite of == throughout, under the rebinding too (the standalone pin of that side is the next test)
+        (2026-09-21)."""
+        u, p = "user-web", str(self.td / "web" / (G.FSID_A + ".jsonl"))
+        a, b, other = em._LazyBody(u, p), em._LazyBody(u, p), em._LazyBody("user-api", p)
+        scope = {"_Unhydrated": em._Unhydrated, "_UNBOUND_LAZY_SOURCE": em._UNBOUND_LAZY_SOURCE, "LazyBodyRead": em.LazyBodyRead}
+        exec(inspect.getsource(em._LazyBody), scope)     # the class statement run again: another class object, same body
+        rebound = scope["_LazyBody"]
+        self.assertIsNot(rebound, em._LazyBody)
+        c = rebound(u, p)
+        with mock.patch.object(em, "_LazyBody", rebound):
+            self.assertTrue(a == b)
+            self.assertTrue(b == a)
+            self.assertTrue(a == c)
+            self.assertTrue(c == a)
+            self.assertFalse(a != c)
+            self.assertFalse(c != a)
+            self.assertIn(a, [c])
+            self.assertIn(c, [a])
+            self.assertIn(a, [b])
+            self.assertEqual(hash(a), hash(b))
+            self.assertEqual(hash(a), hash(c))
+            self.assertFalse(a == other)
+            self.assertFalse(a == {})
+            self.assertFalse(a == em._Unhydrated(u))
+            self.assertFalse(a != b)
+            self.assertFalse(b != a)
+            self.assertTrue(a != other)
+            self.assertTrue(a != {})
+            self.assertTrue(a != em._Unhydrated(u))
+        self.assertTrue(a == b)                             # and with the module's own class back in place
+        self.assertTrue(a == c)
+        self.assertFalse(a != b)
+
+    def test_not_equal_answers_the_opposite_of_equal_for_two_sentinels(self):
+        """Two sentinels of one uuid, the module's own class and no rebinding: == True and != False. The class defined
+        __eq__ alone, and the dict base's own __ne__ sits before object's in the method lookup, so != never consulted the
+        class's __eq__: it compared the two storages, each holding its own unhydrated marker object, and the pair answered
+        both == True and != True. A plain dict and the unhydrated marker stay unequal on the != side as well (2026-09-21)."""
+        u, p = "user-web", str(self.td / "web" / (G.FSID_A + ".jsonl"))
+        a, b = em._LazyBody(u, p), em._LazyBody(u, p)
+        self.assertTrue(a == b)
+        self.assertFalse(a != b)
+        self.assertFalse(b != a)
+        self.assertTrue(a != em._LazyBody("user-api", p))
+        self.assertTrue(a != {})
+        self.assertTrue(a != em._Unhydrated(u))
 
     def test_a_bound_body_missing_from_its_files_map_does_not_borrow_another_documents_path(self):
         """A files map that lacks the body's fsid (hand-edited or corrupt: the writer keys files and fsids from the same
