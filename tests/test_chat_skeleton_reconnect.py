@@ -2181,6 +2181,80 @@ class SkeletonReconnect(unittest.TestCase):
         self.assertEqual(self._diag_rows("chatFull"), [], "and no chatFull row for the base holder")
         self.assertEqual(km._prev_chat_events[S3], self.SESS[S3]["events"], "the cycle's write, as before")
 
+    def test_38b_another_threads_note_with_or_without_its_own_set_open_never_lands_on_this_threads_delivery_set(self):
+        # The pin is on the delivery set being PER THREAD, not on test 38 replayed across two threads (the post-merge
+        # review of the delivery signal, 2026-09-21). Test 38 drives its race on one thread: the connect push runs inline
+        # through the dispatcher inside the targeted push's loop, so its order is the targeted push's set opened first and
+        # the connect push's opened and closed inside it, and the restore in the context manager's finally block keeps
+        # that order clean even under a process-global stack. A shared object in place of the thread-local kept this
+        # module green, so nothing executed pinned the property production rests on: the targeted push's backend thread
+        # and a page's reader thread each with a set open at once, the reader thread's opened FIRST, where a shared stack
+        # counts the reader thread's write as the targeted push's and loses it from the reader's own. Two halves, both
+        # join-based with no timing. Each worker hands any raise back to this thread as a list checked after its join, so
+        # a failure inside a worker reads as the exception and not as an empty record. The isolation half: with this thread's set open, a thread that notes S3 with no set open lands
+        # it nowhere (under a shared object it lands HERE, the one assertion that carries the isolation), and a thread
+        # that opens its own set and notes S2 reads {S2} on its own (true under both, so that half pins that a thread's
+        # own loop records, not the isolation). The lost-write half: the other thread opens its set BEFORE this thread
+        # opens its own, this thread opens, the other notes S2 and reads its set; under a shared stack its write lands on
+        # this thread's set and is missing from its own.
+        raised, other = [], {}                           # a worker's raise, surfaced on this thread after its join
+
+        def note_with_no_set_open():
+            try:
+                km._note_chat_handed(S3)                 # a thread with no ledger open: records nothing, raises nothing
+            except Exception as e:
+                raised.append(e)
+
+        def own_loop():
+            try:
+                with km._chat_delivery() as theirs:
+                    km._note_chat_handed(S2)
+                    other["read"] = set(theirs)
+            except Exception as e:
+                raised.append(e)
+
+        with km._chat_delivery() as mine:
+            t1 = threading.Thread(target=note_with_no_set_open)
+            t1.start()
+            t1.join(10)
+            self.assertFalse(t1.is_alive(), "the no-set thread ran to the end")
+            self.assertEqual(raised, [], "a note on a thread with no set open raises nothing")
+            t2 = threading.Thread(target=own_loop)
+            t2.start()
+            t2.join(10)
+            self.assertFalse(t2.is_alive(), "the thread with its own set ran to the end")
+            self.assertEqual(raised, [], "the thread with its own set raised nothing")
+            km._note_chat_handed(S1)
+            self.assertEqual(mine, {S1}, "this thread's set holds this thread's write alone: another thread's note, with no set "
+                             "open or on its own set, is not this loop's delivery")
+            self.assertEqual(other.get("read"), {S2}, "the other thread's own loop recorded its own write")
+
+        opened, go, reads = threading.Event(), threading.Event(), {}
+
+        def opens_first_notes_second():
+            try:
+                with km._chat_delivery() as theirs:      # the reader thread's set, open before this thread's
+                    opened.set()
+                    reads["waited"] = go.wait(10)        # ...and its write after this thread's is open
+                    km._note_chat_handed(S2)
+                    reads["theirs"] = set(theirs)
+            except Exception as e:
+                raised.append(e)
+            finally:
+                opened.set()                             # a raise before the handshake releases this thread at once, into the check below
+
+        t3 = threading.Thread(target=opens_first_notes_second)
+        t3.start()
+        self.assertTrue(opened.wait(10), "the other thread opened its set")
+        with km._chat_delivery() as mine:                # this thread's set, opened second
+            go.set()
+            t3.join(10)
+            self.assertFalse(t3.is_alive(), "the other thread ran to the end")
+            self.assertEqual(raised, [], "the other thread raised nothing")
+            self.assertTrue(reads.get("waited"), "the other thread wrote after this thread's set was open")
+            self.assertEqual(reads.get("theirs"), {S2}, "a set opened before this thread's still holds its own thread's write")
+            self.assertNotIn(S2, mine, "...and that write is not on this thread's set")
+
     def test_39_the_first_content_frame_over_an_empty_baseline_seeds_through_the_targeted_push_too(self):
         # The targeted push's copy of the seed guard reads the baseline as `not _seen`, absent OR empty, as the connect
         # push's copy does, and test 20 pins that copy alone (the post-merge review of the guard, 2026-09-21). A
