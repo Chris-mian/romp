@@ -5,7 +5,10 @@ name: Docs
 # The build job runs on every docs push (validates `mkdocs build --strict`) AND on every pull request that touches the
 # site's inputs (2026-09-21): the strict build used to run only after the merge, so a docs pull request could land a broken
 # link or an orphan page and the site broke on main (the restoration of 2026-09-20 resolved its links by hand). On a pull
-# request the job builds and stops: no artifact, no publish.
+# request the job builds and stops: no artifact, no publish. The inputs are the docs directory, the site config, the
+# overrides directory and this file, the same set the push trigger names (a README is not read by the site). An orphan
+# page fails the build because mkdocs.yml raises `validation.nav.omitted_files` to warn (MkDocs reports one at info by
+# default, which strict mode does not promote): a page that belongs outside the nav is listed under not_in_nav.
 # The deploy job is GATED so it cleanly skips — rather than fails — until Pages
 # is set up. To publish (free Pages requires a PUBLIC repo):
 #   1. Settings -> Pages -> Source -> "GitHub Actions"
@@ -25,7 +28,6 @@ on:
       - docs/**
       - mkdocs.yml
       - overrides/**
-      - README.md
       - .github/workflows/docs.yml
   workflow_dispatch:
 
