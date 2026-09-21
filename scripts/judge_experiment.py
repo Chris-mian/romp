@@ -42,8 +42,9 @@ COLUMN_OF = {"blocked": "needs_input", "completed": "completed", "cleared": "cle
 SETTLE_S = 120                # a top-level done filed this soon after an ending's cut still belongs to the ending (the closer files at the turn's end)
 FALLBACK_TURN_S = 900         # an ending whose turn start the transcript does not show: the window reaches this far back
 AGREEMENT_GATE_PCT = 90.0     # the labeller's agreement with the user's recorded actions must reach this before its labels count
-FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "timeout", "history-unreadable", "store-quarantined")   # judge-errors rows that mean
-#                                                                                                                    the ending was not judged
+FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",   # judge-errors rows that mean
+                 "history-unreadable", "store-quarantined")   # the ending was not judged (a timeout files under `call`; the two pause kinds,
+#                                                               `auth` and `rate-limited`, and the call-level stand-downs count too)
 ID_EPOCH_RE = re.compile(r"^[0-9a-f-]{36}:(\d{9,11})(?::|$)")   # a turn id or segment id carries its epoch second after the fsid
 
 
@@ -129,11 +130,72 @@ def _ts(rec):
         return None
 
 
+# The event model's authorship and opener rules (kernel/event_model.py: author_of, _is_opener, the atom filter), copied here
+# so the builder loads no romp module against the live roots; tests/test_judge_experiment.py pins parity over one record
+# per author kind, so drift goes red. The regexes are the event model's own.
+SYSTEM_WRAPPER_RE = re.compile(r"^\s*(?:\[SYSTEM NOTIFICATION - NOT USER INPUT\]|<(?:task-notification|system-reminder)\b)")
+TEAMMATE_MSG_RE = re.compile(r"^\s*(?:<\w+>\s*)?(?:(?:Another Claude session|A peer session) sent a message"
+                             r"(?: while you were working)?:|<cross-session-message\b)", re.I)
+SCHEDULED_PREAMBLE_RE = re.compile(r"^\s*\[SCHEDULED TASK - AUTOMATED FIRING OF A CONFIGURED PROMPT\]")
+ROMP_INJECT_RE = re.compile(r"<!--\s*romp-injected\s*-->")
+POSTAL_RE = re.compile(r"<!--\s*romp-msg-id:\s*(\S+?)\s*-->")
+IMG_ECHO_RE = re.compile(r"^\[Image:[^\]]*\]$")
+
+
+def _blocks(rec):
+    c = (rec.get("message") or {}).get("content")
+    if isinstance(c, str):
+        return [{"type": "text", "text": c}]
+    return [b for b in (c or []) if isinstance(b, dict)]
+
+
+def author_of_record(rec):
+    """The event model's author_of over a user record's own fields (an empty postal index; the corpus's sessions are SDK-driven, so
+    an unstamped `sdk` prompt is the human's): human | sdk | romp | system | teammate | a peer dict | None."""
+    blocks = _blocks(rec)
+    origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else {}
+    okind, osub = origin.get("kind"), origin.get("subkind")
+    peer_stamp = okind == "peer" or (okind == "task-notification" and osub == "peer-send-message")
+    if okind == "task-notification" and not peer_stamp:
+        return "sdk" if osub == "scheduled-trigger" else "system"
+    text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+    if text:
+        if SYSTEM_WRAPPER_RE.match(text) and not peer_stamp:
+            return "system"
+        if SCHEDULED_PREAMBLE_RE.match(text) and not peer_stamp:
+            return "sdk"
+        if TEAMMATE_MSG_RE.match(text):
+            return "teammate"
+        m = POSTAL_RE.search(text)
+        if m:
+            return {"peer": None, "mid": m.group(1), "kind": ""}
+        if ROMP_INJECT_RE.search(text):
+            return "romp"
+    if okind and okind != "human":
+        return "teammate" if peer_stamp else "sdk"
+    ps = rec.get("promptSource")
+    if ps == "sdk":
+        return "human"
+    if ps == "system":
+        return "system"
+    if ps in ("typed", "queued"):
+        return "human"
+    return "human" if text else None
+
+
 def user_opens_turn(rec):
-    """The event model's opener rule, copied so the builder loads no romp module: a `user` record that is not meta and carries
-    text (a string, or a content list with a text block; a tool-result-only record carries none) opens a turn. The SDK's
-    composer writes prompts as text-block lists, so a string test alone missed every SDK-driven turn end."""
-    return rec.get("type") == "user" and not rec.get("isMeta") and bool(_text_of(rec).strip())
+    """Whether a transcript record opens a turn, as the event model decides it: a `user` record the atom filter admits (a meta
+    record only when it is a postal delivery; never a compaction summary or an image echo) whose author is human, sdk, romp or a
+    peer; `system` (a task notification, a system-reminder wrapper), `teammate` and tool-result-only records fold in."""
+    if rec.get("type") != "user":
+        return False
+    text = _text_of(rec)
+    if rec.get("isMeta") is True and not POSTAL_RE.search(text):
+        return False
+    if rec.get("isCompactSummary") is True or IMG_ECHO_RE.match(text.strip()):
+        return False
+    a = author_of_record(rec)
+    return a in ("human", "sdk", "romp") or isinstance(a, dict)
 
 
 def turn_ends(records):
@@ -156,6 +218,42 @@ def turn_start(records, end_index):
         if user_opens_turn(r):
             return _ts(r)
     return None
+
+
+def custom_title(path):
+    """The transcript's custom-title record in its head (the judge's `_custom_title`), or None."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(65536).decode("utf-8", "replace")
+    except OSError:
+        return None
+    for line in head.split("\n"):
+        if "custom-title" not in line:
+            continue
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if o.get("type") == "custom-title" and o.get("customTitle"):
+            return o["customTitle"]
+    return None
+
+
+def fork_lanes(project_dir, name, exclude):
+    """The same-customTitle fork transcripts in the session's project directory (the judge's discovery lists each as its own
+    lane): every other transcript there whose head carries the session's name as its custom title."""
+    out = []
+    try:
+        entries = sorted(os.listdir(project_dir))
+    except OSError:
+        return out
+    for fn in entries:
+        stem = fn[:-6] if fn.endswith(".jsonl") else None
+        if not stem or stem in exclude:
+            continue
+        if name and custom_title(os.path.join(project_dir, fn)) == name:
+            out.append(stem)
+    return out
 
 
 def known_fsids(state_root, sid):
@@ -228,8 +326,9 @@ def store_before(store, cut_t, start_t=None, eid=None):
         ep = id_epoch(k)
         if ep is not None and ep < lo:
             placements[k] = v
-        elif ep is not None and ep <= cut_t and "#" in k:
-            placements[k] = v                        # the turn's own prompt-run (or delegation) placement: its mint stands
+        elif ep is not None and ep <= cut_t and k.rsplit("#", 1)[-1] in ("p", "d"):
+            placements[k] = v                        # the turn's own prompt-run (or delegation) placement: its mint stands; the
+            #                                          work-run, live re-plan (#live) and extra-target (#n<i>) keys are the arm's to make
             if isinstance(v, str):
                 targets.add(v)
         else:
@@ -323,7 +422,9 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
             live_store = {}
         dones = top_done_times(live_store)
         found = False
-        for fsid in sorted(known_fsids(state_root, sid)):          # the sid's own transcript and the leaves a /clear or a resume made
+        fsids = known_fsids(state_root, sid)
+        fsids |= set(fork_lanes(claude_root / "projects" / munge(cwd), name, fsids))   # the same-titled fork lanes, each a lane of its own
+        for fsid in sorted(fsids):                                # the sid's own transcript, the leaves a /clear or a resume made, the forks
             transcript = claude_root / "projects" / munge(cwd) / (fsid + ".jsonl")
             if not transcript.is_file():
                 continue
@@ -349,8 +450,8 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
         for want_eligible in (True, False):
             # eligible endings OLDEST first (the user had the most time to act on their cards: tier one's observation span),
             # the rest newest first; round-robin across sessions either way
-            queues = [[x for x in v if x[9] == want_eligible] for v in by_class[c].values()]
-            queues = [(q if want_eligible else list(reversed(q))) for q in queues if q]
+            queues = [[x for x in v if x[9] == want_eligible] for v in by_class[c].values()]   # per session, oldest first
+            queues = [(list(reversed(q)) if want_eligible else q) for q in queues if q]     # pop() takes the last: eligible oldest, others newest
             while queues and len(picked[c]) < per_class:
                 for q in list(queues):
                     if len(picked[c]) >= per_class:
@@ -446,6 +547,22 @@ def column_of(status):
     return COLUMN_OF.get(status, "working")
 
 
+def count_failure_rows(errors_path):
+    """Rows on an arm's judge-errors ledger that mean a call failed, was skipped or its reply was rejected (FAILURE_KINDS); the
+    other rows there are the judges' anomaly notes (a stale close, a workless done), which are verdict facts, not failures."""
+    n = 0
+    try:
+        for line in Path(errors_path).open(encoding="utf-8"):
+            try:
+                if json.loads(line).get("err") in FAILURE_KINDS:
+                    n += 1
+            except ValueError:
+                continue
+    except OSError:
+        return 0
+    return n
+
+
 def ledger_cost(usage_path):
     """(dollars, calls, mean ms) from the arm's own usage ledger."""
     cost, n, ms = 0.0, 0, 0.0
@@ -481,19 +598,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     usage = jd.USAGE
     errors_path = Path(jd.ERRORS)
     def error_rows():
-        """Rows on the arm's own judge-errors ledger that mean a call failed or a reply was rejected (the other rows there are
-        the judges' anomaly notes: a stale close, a workless done, and so on, which are verdict facts, not failures)."""
-        n = 0
-        try:
-            for line in errors_path.open(encoding="utf-8"):
-                try:
-                    if json.loads(line).get("err") in FAILURE_KINDS:
-                        n += 1
-                except ValueError:
-                    continue
-        except OSError:
-            return 0
-        return n
+        return count_failure_rows(errors_path)
     try:
         for e in manifest["endings"]:
             eid = e["id"]
@@ -523,8 +628,11 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                 closed_turns = [t for t in turns if not jd._turn_open(t, turns)]
                 if closed_turns:
                     seg_by_id = {seg["id"]: seg for turn in turns for seg in jd._segs(turn, store)}   # the goal-history map production sends
+                    rows_before = error_rows()
                     if jd._close_turn(store, closed_turns[-1], seg_by_id=seg_by_id) is None:
                         results["closerNone"] += 1
+                        if error_rows() == rows_before:
+                            results["failures"] += 1      # the closer gave nothing and filed no row (the cap road): counted once here
                 jd.rollup_status(store, closed, now=now)
                 jd.save_goals(eid, store)
                 jd._unblock_session(eid, str(path), now)
@@ -546,7 +654,6 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                 break
     finally:
         restore_prompts(jd, saved)
-    results["failures"] += results["closerNone"]
     cost, n, mean_ms = ledger_cost(usage)
     results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
     arm_root.mkdir(parents=True, exist_ok=True)
@@ -634,10 +741,10 @@ def report(corpus, run_root, figure=None):
 def draw_figure(rows, out):
     import cleanplots as cp
     metrics = [("leaks", "Leaks into Completed, must be zero"), ("falseInterrupts", "False interrupts, must not rise"),
-               ("flaps", "Cards that flap between builds"), ("costUsd", "Cost per pass (USD)")]
-    f, axes = cp.fig(rows=1, cols=4, w=22, h=5)
+               ("flaps", "Cards that flap between builds"), ("costUsd", "Cost per pass (USD)"), ("failures", "Failed calls, a row with any is not comparable")]
+    f, axes = cp.fig(rows=1, cols=5, w=27, h=5)
     axes = list(axes.flat) if hasattr(axes, "flat") else list(axes)
-    labels = [r["arm"] for r in rows]
+    labels = [r["arm"] + ("" if r.get("comparable", True) else " (not comparable)") for r in rows]
     for i, (a, (key, xl)) in enumerate(zip(axes, metrics)):
         vals = [float(r[key]) for r in rows]
         base = getattr(a, "ax", a)
@@ -738,7 +845,7 @@ def ask_class(claude_bin, model, text, order, ledger_path):
     return (cls if cls in CLASSES else None), cost
 
 
-def label(corpus, run_root, live_state, claude_bin="claude", model="fable", seed=20260921):
+def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921):
     """The labelling pass: tier one from the live journals (read only) for every ending whose session the live names directory
     still lists; tier two twice per ending with the classes in two orders, the label their agreement; the agreement of tier
     two with tier one on every ending that has both, against AGREEMENT_GATE_PCT. Writes labels.json and labels-summary.json

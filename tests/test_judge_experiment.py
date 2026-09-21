@@ -496,6 +496,30 @@ class Harness(unittest.TestCase):
             inside = os.path.join(self.td, "repo2", "runs"); os.makedirs(os.path.join(self.td, "repo2", ".git"))
             fn(dest, inside, self.state, claude_bin=self.fake, model="fake")
 
+    def test_the_figure_marks_an_arm_that_is_not_comparable(self):
+        rows = [{"arm": "current", "leaks": 3, "falseInterrupts": 0, "flaps": 0, "costUsd": 0.1, "failures": 0, "comparable": True},
+                {"arm": "prose", "leaks": 0, "falseInterrupts": 0, "flaps": 0, "costUsd": 0.1, "failures": 4, "comparable": False}]
+        seen = []
+        class _Ax:
+            def barh(self, *a, **k): pass
+            def set_yticks(self, *a): pass
+            def set_yticklabels(self, labels): seen.append(list(labels))
+            def invert_yaxis(self): pass
+            def annotate(self, *a, **k): pass
+            def set_xlim(self, *a): pass
+        class _Fig:
+            def savefig(self, out, **k): Path(out).write_bytes(b"PNG")
+        stub = types.ModuleType("cleanplots"); stub.fig = lambda **k: (_Fig(), [_Ax() for _ in range(k.get("cols", 5))])
+        saved = sys.modules.get("cleanplots"); sys.modules["cleanplots"] = stub
+        try:
+            self.je.draw_figure(rows, os.path.join(self.td, "f.png"))
+        finally:
+            if saved is not None:
+                sys.modules["cleanplots"] = saved
+            else:
+                sys.modules.pop("cleanplots", None)
+        self.assertIn(["current", "prose (not comparable)"], seen, "the headline artifact says which arm cannot be read: %r" % seen)
+
     def test_the_report_writes_the_table_and_the_figure_road_both_ways(self):
         dest, m = self._corpus()
         run_root = os.path.join(self.td, "runs")
@@ -512,17 +536,21 @@ class Harness(unittest.TestCase):
         # the figure road: a stub library writes the file; no library leaves the note
         png = os.path.join(run_root, "fig.png")
         drawn = []
+        seen_labels = []
         class _Ax:
             def barh(self, *a, **k): pass
             def set_yticks(self, *a): pass
-            def set_yticklabels(self, *a): pass
+            def set_yticklabels(self, labels): seen_labels.append(list(labels))
             def invert_yaxis(self): pass
             def annotate(self, *a, **k): pass
             def set_xlim(self, *a): pass
             def clean(self, **k): pass
         class _Fig:
             def savefig(self, out, **k): drawn.append(out); Path(out).write_bytes(b"PNG")
-        stub = types.ModuleType("cleanplots"); stub.fig = lambda **k: (_Fig(), [_Ax() for _ in range(4)])
+        panels = []
+        def fig(**k):
+            panels.append(k.get("cols")); return _Fig(), [_Ax() for _ in range(k.get("cols", 4))]
+        stub = types.ModuleType("cleanplots"); stub.fig = fig
         saved = sys.modules.get("cleanplots"); sys.modules["cleanplots"] = stub
         try:
             self.je.report(dest, run_root, figure=png)
@@ -532,6 +560,8 @@ class Harness(unittest.TestCase):
             else:
                 sys.modules.pop("cleanplots", None)
         self.assertEqual(drawn, [png]); self.assertTrue(Path(png).exists(), "the figure is written through the library")
+        self.assertEqual(panels, [5], "five panels: the four measures and the failures")
+        self.assertIn(["current"], seen_labels, "a comparable arm is named plainly")
         self.assertFalse(Path(run_root, "figure.note").exists())
         import builtins
         real_import = builtins.__import__
@@ -546,6 +576,216 @@ class Harness(unittest.TestCase):
             builtins.__import__ = real_import
         self.assertIn("no figure", Path(run_root, "figure.note").read_text())
         self.assertFalse(Path(run_root, "fig2.png").exists())
+
+    # ── round two of the fold ──
+    def test_the_opener_rule_matches_the_event_models_over_every_author_kind(self):
+        """Round two: the harness paraphrased the opener rule and ended a turn at every non-meta user record with text, so a
+        system-reminder wrapper, a task-notification wrapper and a teammate delivery each ended a turn the event model folds in,
+        and the turn start moved to the wrapper's time (the store cut then landed mid-turn). The rule is copied faithfully; this
+        pin holds it to the event model's own verdict over one record per author kind, so drift goes red."""
+        sid = SIDS[0]
+        mk = lambda content, **f: dict({"type": "user", "timestamp": iso(T0), "uuid": "x", "sessionId": sid, "cwd": "/TESTDIR",
+                                        "message": {"role": "user", "content": content}}, **f)
+        cases = {
+            "typed": mk("please fix it", promptSource="typed"),
+            "composer blocks": mk([{"type": "text", "text": "please fix it"}], promptSource="sdk"),
+            "no source": mk("please fix it"),
+            "system reminder wrapper": mk("<system-reminder>\nthe hook says something\n</system-reminder>", promptSource="typed"),
+            "notification preamble": mk("[SYSTEM NOTIFICATION - NOT USER INPUT]\nsomething finished", promptSource="sdk"),
+            "task notification origin": mk("a background task finished", promptSource="sdk", origin={"kind": "task-notification"}),
+            "scheduled trigger": mk("run the nightly check", promptSource="sdk", origin={"kind": "task-notification", "subkind": "scheduled-trigger"}),
+            "teammate delivery": mk("Another Claude session sent a message: hello", promptSource="sdk"),
+            "cross-session block": mk("<cross-session-message from=\"x\">hi</cross-session-message>", promptSource="sdk"),
+            "postal delivery, meta": mk("please review\n<!-- romp-msg-id: 1.2_abc.host -->", isMeta=True, promptSource="sdk"),
+            "command echo, meta": mk("<command-name>/clear</command-name>", isMeta=True, promptSource="typed"),
+            "romp injected": mk("status?\n<!-- romp-injected -->", promptSource="sdk"),
+            "peer origin": mk("from a peer", promptSource="sdk", origin={"kind": "peer"}),
+            "coordinator origin": mk("carry on", promptSource="sdk", origin={"kind": "coordinator"}),
+            "system source": mk("harness text", promptSource="system"),
+            "tool result only": mk([{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]),
+            "compact summary": mk("summary of the conversation so far", isCompactSummary=True),
+            "image echo": mk("[Image: a screenshot]", isMeta=True),
+        }
+        self.assertTrue(hasattr(self.je, "author_of_record") and hasattr(self.je, "_blocks"),
+                        "the opener rule is copied from the event model (author_of_record over _blocks), not paraphrased")
+        for name, rec in cases.items():
+            blocks = self.je._blocks(rec)
+            text = self.je._text_of(rec)
+            admitted = not (rec.get("isMeta") is True and not em.POSTAL_RE.search(text)) and not rec.get("isCompactSummary") \
+                and not em.IMG_ECHO_RE.match(text.strip())
+            author = em.author_of(blocks, rec.get("promptSource"), {}, sdk_human=True, origin=rec.get("origin"))
+            expected = admitted and em._is_opener({"type": "user", "author": author})
+            self.assertEqual(self.je.user_opens_turn(rec), expected, "%s: author %r" % (name, author))
+        opens = [n for n, r in cases.items() if self.je.user_opens_turn(r)]
+        self.assertEqual(opens, ["typed", "composer blocks", "no source", "scheduled trigger", "postal delivery, meta", "romp injected", "coordinator origin"])
+        # and over a transcript: wrappers between the answers end nothing
+        recs = [uline(sid, T0, "first ask", "u1"), aline(sid, T0 + 30, "First answer.", "a1", "u1"),
+                mk("<system-reminder>\nnoise\n</system-reminder>", promptSource="typed", uuid="w1", timestamp=iso(T0 + 40)),
+                aline(sid, T0 + 50, "Continued.", "a2", "w1"),
+                mk("[SYSTEM NOTIFICATION - NOT USER INPUT]\na task finished", promptSource="sdk", uuid="w2", timestamp=iso(T0 + 60)),
+                aline(sid, T0 + 70, "Noted the task.", "a3", "w2"),
+                mk("Another Claude session sent a message: ping", promptSource="sdk", uuid="w3", timestamp=iso(T0 + 80)),
+                aline(sid, T0 + 90, "Pong to the peer.", "a4", "w3"),
+                uline(sid, T0 + 600, "second ask", "u2", "a4"), aline(sid, T0 + 630, "Second answer.", "a5", "u2")]
+        ends = self.je.turn_ends(recs)
+        self.assertEqual([recs[i]["uuid"] for i in ends], ["a4", "a5"], "two turns, as the event model reads it; the wrappers end nothing")
+        self.assertEqual(self.je.turn_start(recs, ends[0]), T0, "the first turn starts at its own prompt, not at a wrapper")
+        self.assertEqual(self.je.turn_start(recs, ends[1]), T0 + 600)
+
+    def test_eligible_endings_are_picked_oldest_first(self):
+        """Round two: the branches were swapped, so the eligible endings came newest first, the ones the user had had the least
+        time to act on. With three eligible offers and one slot, the oldest wins."""
+        sid3 = "11111111-2222-3333-4444-eeeeeeeeee03"
+        recs, t, parent = [], T0 + 50000, None
+        for j in range(3):
+            recs.append(uline(sid3, t, "ask %d" % j, "u3%d" % j, parent)); recs.append(aline(sid3, t + 30, "Done %d. I can also tidy the names." % j, "a3%d" % j, "u3%d" % j))
+            parent = "a3%d" % j; t += 600
+        (self.pdir / (sid3 + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        (self.state / "names" / sid3).write_text("api\t%s\t#abcdef\n" % self.cwd)
+        # every offer of the third session completed by the judges in its own turn
+        ends = self.je.turn_ends(recs)
+        log = [{"ev_t": self.je._ts(recs[i]) + 1, "at": self.je._ts(recs[i]) + 2, "src": "closer", "kind": "done", "why": "x"} for i in ends]
+        store = {"rompUuid": sid3, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
+                 "nodes": {sid3 + ":g1": {"id": sid3 + ":g1", "text": "The goal", "parentId": None, "t": T0 + 49000, "trail": [], "log": log}}}
+        (self.state / "goals" / (sid3 + ".json")).write_text(json.dumps(store))
+        m = self._corpus(per_class=1, name="oldest")[1]
+        offers = [e for e in m["endings"] if e["class"] == "offer"]
+        self.assertEqual([(e["session"], e["turn"], e["tierOneEligible"]) for e in offers],
+                         [(hashlib.sha256(sid3.encode()).hexdigest()[:12], 0, True)], "the oldest eligible offer, not the newest: %r" % offers)
+
+    def test_a_pre_turn_top_the_arm_leaves_alone_is_not_scored(self):
+        """Round two: `scored` was unpinned. A seed with two older tops the arm does not touch and the turn's own card: the older
+        ones read unscored, the turn's own scored."""
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 1)
+        start = float(e["startT"])
+        seg0 = "%s:%d:aaaaaaaa" % (sid, start - 5000)
+        nodes = {}
+        for n in ("g1", "g2"):
+            nodes[sid + ":" + n] = {"id": sid + ":" + n, "text": "An older goal %s" % n, "parentId": None, "t": start - 5000, "trail": [seg0],
+                                    "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"},
+                                            {"ev_t": start - 4000, "at": start - 3999, "src": "planner", "kind": "block", "why": "waiting"}]}
+        store = {"rompUuid": sid, "seq": 2, "placementsV": 14, "placements": {seg0: sid + ":g1"}, "status": {}, "nodes": nodes,
+                 "closedTurns": [], "closedSig": {}}
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps(store))
+        dest, m = self._corpus(name="corpus-scored")
+        run_root = os.path.join(self.td, "runs")
+        res = self.je.run_arm(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
+        build = res["endings"][self._ending(m, sid, 1)["id"]]["builds"][-1]
+        self.assertTrue(all(isinstance(v, dict) and "scored" in v for v in build.values()),
+                        "each card carries a scored stamp (the base recorded a bare column): %r" % build)
+        flags = sorted(v["scored"] for v in build.values())
+        self.assertEqual(flags, [False, True], "the pre-turn top the arm rules on this turn scores; the one it leaves alone does not: %r" % build)
+        self.assertEqual(self.je.measure(m, res)["falseInterrupts"], 0, "the untouched inherited blocked top counts against no finished ending")
+
+    def test_the_seed_is_rolled_up_before_the_first_menu(self):
+        """Round two: without the rollup before the first judge, the planner's first menu listed a pre-cut done sub and a
+        user-cleared top (the flag cache the cut strips is what `open_menu` reads). The fake logs the menu it sees."""
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 1)
+        start = float(e["startT"])
+        seg0 = "%s:%d:aaaaaaaa" % (sid, start - 5000)
+        top = {"id": sid + ":g1", "text": "An open top with a finished part", "parentId": None, "t": start - 5000, "trail": [seg0],
+               "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"}]}
+        sub = {"id": sid + ":g2", "text": "The finished part nobody should see", "parentId": sid + ":g1", "t": start - 4900, "trail": [seg0],
+               "log": [{"ev_t": start - 4900, "at": start - 4899, "src": "planner", "kind": "mint"},
+                       {"ev_t": start - 4000, "at": start - 3999, "src": "closer", "kind": "done", "why": "x"}]}
+        cleared = {"id": sid + ":g3", "text": "A top the user crossed off", "parentId": None, "t": start - 4800, "trail": [seg0],
+                   "log": [{"ev_t": start - 4800, "at": start - 4799, "src": "planner", "kind": "mint"},
+                           {"ev_t": start - 3000, "at": start - 2999, "src": "user", "kind": "clear", "why": "seen"}]}
+        store = {"rompUuid": sid, "seq": 3, "placementsV": 14, "placements": {seg0: sid + ":g1"}, "status": {},
+                 "nodes": {n["id"]: n for n in (top, sub, cleared)}, "closedTurns": [], "closedSig": {}}
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps(store))
+        dest, m = self._corpus(name="corpus-menu")
+        run_root = os.path.join(self.td, "runs")
+        self.je.run_arm(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
+        menus = [r["menu"] for r in self._calls("planner") if r["menu"] and "An open top" in r["menu"]]
+        self.assertTrue(menus, "the planner saw the seeded top: %r" % [r["menu"][:60] for r in self._calls("planner")])
+        for menu in menus:
+            self.assertNotIn("The finished part nobody should see", menu, "the pre-cut done sub is off the first menu")
+            self.assertNotIn("A top the user crossed off", menu, "the cleared top is off the first menu")
+
+    def test_failure_rows_of_every_kind_that_means_nothing_was_judged_count_once(self):
+        counter = getattr(self.je, "count_failure_rows", None)
+        self.assertIsNotNone(counter, "the arm counts only the judge-errors rows that mean nothing was judged (the base folded the count into the loop)")
+        ledger = os.path.join(self.td, "judge-errors.jsonl")
+        Path(ledger).write_text("".join(json.dumps({"err": k}) + "\n" for k in ("parse", "auth", "rate-limited", "fast-refused", "scratch", "stale-close", "workless-done", "timeout")))
+        self.assertEqual(counter(ledger), 5, "the pause kinds and the call-level stand-downs count; anomaly notes do not; timeout is no kind the judges write")
+        for k in ("auth", "rate-limited", "fast-refused", "scratch", "call", "parse", "give-up", "pass-crash"):
+            self.assertIn(k, self.je.FAILURE_KINDS)
+        self.assertNotIn("timeout", self.je.FAILURE_KINDS)
+        # a rejected closer reply files its own row: it is counted once, not once as a row and once as a None
+        dest, m = self._corpus()
+        run_root = os.path.join(self.td, "runs")
+        cand = os.path.join(self.td, "prose.json")
+        Path(cand).write_text(json.dumps({"CLOSER_SYS": "CANDIDATE-MARK You are a turn-end auditor in a logging pipeline."}))
+        os.environ["JE_TEST_PROSE"] = "1"
+        res = self.je.run_arm(dest, "prose", cand, run_root, None, self.fake, now=T0 + 10**6)
+        os.environ.pop("JE_TEST_PROSE", None)
+        self.assertGreaterEqual(res["closerNone"], 1, "the closer was reached and its prose rejected")
+        self.assertEqual(res["failures"], res["closerNone"], "a rejected reply is one failure, not two (the row and the None both counted): %r" % {k: res[k] for k in ("failures", "closerNone")})
+
+    def test_the_turns_own_live_and_extra_target_placements_are_the_arms_to_make(self):
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 0)
+        start, cut = float(e["startT"]), float(e["cutT"])
+        segp = "%s:%d:bbbbbbbb" % (sid, start)
+        node = {"id": sid + ":g2", "text": "The turn's own goal", "parentId": None, "t": start, "trail": [segp], "log": []}
+        store = {"rompUuid": sid, "seq": 2, "placementsV": 14, "status": {}, "nodes": {node["id"]: node},
+                 "placements": {segp + "#p": node["id"], segp + "#d": node["id"], segp: node["id"], segp + "#live": node["id"], segp + "#n2": node["id"]}}
+        try:
+            before = self.je.store_before(store, cut, start, e["id"])
+        except TypeError:
+            self.fail("store_before cuts at the turn's start under the ending id (the base cut at the cut alone)")
+        self.assertEqual(sorted(k.rsplit("#", 1)[-1] for k in before["placements"]), ["d", "p"], "only the prompt-run and the delegation keys survive from the turn")
+
+    def test_the_same_titled_fork_lanes_join_the_sessions_transcripts(self):
+        sid = SIDS[0]; fork = "11111111-2222-3333-4444-ffffffffff09"
+        recs = [{"type": "custom-title", "customTitle": "web", "sessionId": fork, "timestamp": iso(T0 + 80000)},
+                uline(fork, T0 + 80000, "in the fork", "u1"), aline(fork, T0 + 80030, "Forked and answered. Which option do you prefer?", "a1", "u1"),
+                uline(fork, T0 + 80600, "and more", "u2", "a1"), aline(fork, T0 + 80630, "Done.", "a2", "u2")]
+        (self.pdir / (fork + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        other = "11111111-2222-3333-4444-ffffffffff08"
+        (self.pdir / (other + ".jsonl")).write_text(json.dumps({"type": "custom-title", "customTitle": "somebody else", "sessionId": other}) + "\n")
+        fl = getattr(self.je, "fork_lanes", None)
+        self.assertIsNotNone(fl, "the builder reads the same-titled fork lanes beside the registry's fsids (the base read neither)")
+        self.assertEqual(fl(self.pdir, "web", {sid}), [fork], "a same-titled transcript is a lane; another title is not")
+        m = self._corpus(name="forks")[1]
+        h = hashlib.sha256(sid.encode()).hexdigest()[:12]
+        self.assertEqual(sum(1 for e in m["endings"] if e["session"] == h), 4, "the fork's two endings join the anchor's two")
+
+    def test_the_skip_counters_count(self):
+        (self.state / "names" / "11111111-2222-3333-4444-eeeeeeeeee07").write_text("gone\t%s\t#abcdef\n" % os.path.join(self.td, "nowhere"))
+        (self.state / "names" / "11111111-2222-3333-4444-eeeeeeeeee08").write_text("one-field-only\n")
+        short = "11111111-2222-3333-4444-eeeeeeeeee09"
+        (self.pdir / (short + ".jsonl")).write_text(json.dumps(uline(short, T0, "only ask", "u1")) + "\n" + json.dumps(aline(short, T0 + 30, "Only answer.", "a1", "u1")) + "\n")
+        (self.state / "names" / short).write_text("short\t%s\t#abcdef\n" % self.cwd)
+        m = self._corpus(name="skips")[1]
+        self.assertIn("skipped", m, "the manifest counts skips (the base wrote none)")
+        self.assertEqual(m["skipped"], {"no-transcript": 1, "few-turns": 1, "unreadable-names-entry": 1})
+        self.assertNotIn("nowhere", json.dumps(m["skipped"]))
+
+    def test_the_label_entry_takes_no_default_binary(self):
+        import inspect
+        sig = inspect.signature(self.je.label)
+        self.assertIs(sig.parameters["claude_bin"].default, inspect.Parameter.empty, "the binary is the caller's to name, on every road")
+
+    def test_the_shared_event_models_checkpoint_provider_survives_an_in_process_arm(self):
+        dest, m = self._corpus()
+        run_root = os.path.join(self.td, "runs")
+        cand = os.path.join(self.td, "candidate.json")
+        Path(cand).write_text(json.dumps({"CLOSER_SYS": "CANDIDATE-MARK You are a turn-end auditor in a logging pipeline."}))
+        self.assertTrue(hasattr(em, "_CKPT_DIR_FN"), "the event model has a checkpoint-dir provider slot (the arm's judge could leave its own)")
+        provider_before = em._CKPT_DIR_FN               # None at the floor: the test wires no kernel
+        saved_env = dict(os.environ)
+        try:
+            self.je.run_arm_inprocess(dest, "inproc2", cand, run_root, None, self.fake, now=T0 + 10**6, builds=1)
+        finally:
+            os.environ.clear(); os.environ.update(saved_env)
+        self.assertIs(em._CKPT_DIR_FN, provider_before, "the arm's judge left the shared provider as it was, not its own scratch-rooted one")
 
 
 if __name__ == "__main__":
