@@ -61313,17 +61313,22 @@ function tlContentH(){try{return tf?tf.contentDocument.body.scrollHeight:0;}catc
 function cap(){return Math.round(window.innerHeight*0.7);}
 // a height the USER dragged to is persisted (romp-tl-h), applied at boot, and autosize stands down for it: an
 // explicit gesture outranks the content fit (the user 2026-09-01, who wanted the dragged band height remembered;
-// before this the band forgot it on every reload)
+// before this the band forgot it on every reload). Standing down still CLAMPS it to the window: autosize is the
+// 'resize' handler, and a band dragged to the 0.85 share of a tall window would otherwise keep that height when
+// the window shrinks, collapsing the pane row to 0px until the next drag (review find 2026-09-21). The clamp is
+// applied, never stored, so growing the window back restores the dragged height.
 var TLK='romp-tl-h',tlUser=null;try{tlUser=parseInt(localStorage.getItem(TLK)||'',10)||null;}catch(e){}
-if(tlUser)col.style.setProperty('--tl',Math.max(48,Math.min(Math.round(window.innerHeight*0.85),tlUser))+'px');
-function autosize(){if(!document.body.classList.contains('po-timeline'))return;if(tlUser)return;var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
+function tlClamp(px){return Math.max(48,Math.min(Math.round(window.innerHeight*0.85),px));}   // the band's floor and viewport-share ceiling, spelled once for the boot, the drag and the re-clamp
+function applyUser(){col.style.setProperty('--tl',tlClamp(tlUser)+'px');}
+if(tlUser)applyUser();
+function autosize(){if(!document.body.classList.contains('po-timeline'))return;if(tlUser){applyUser();return;}var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
 var ghh=document.getElementById('gh');
 if(ghh)ghh.addEventListener('mousedown',function(e){e.preventDefault();document.body.classList.add('drag','dragh');
 // max = the viewport share, NEVER the iframe document's scrollHeight: the timeline document fills whatever
 // height the band has, so 'content height' always equals the CURRENT height, and clamping the drag to it made
 // every drag shrink-only, a downward ratchet (2026-09-01)
-function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;var mx=Math.round(window.innerHeight*0.85);
-var v=Math.max(48,Math.min(mx,px));tlUser=v;col.style.setProperty('--tl',v+'px');}
+function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;
+var v=tlClamp(px);tlUser=v;col.style.setProperty('--tl',v+'px');}
 function up(){document.body.classList.remove('drag','dragh');
 try{if(tlUser)localStorage.setItem(TLK,String(tlUser));}catch(e){}
 window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);}

@@ -21,7 +21,8 @@ the `--g-*` vars the script sets on .row, because the script's `grow` object is 
 Two more stories ride the same run (2026-09-21): a pane reopened from the rail keeps the width it was dragged
 to, with the fair average reserved for a genuine sliver; and the timeline band's drag persists its height
 (`romp-tl-h`), applies it on a reload ahead of the content fit, and takes the viewport share as its maximum
-rather than the iframe's content height. The stub records the `--tl` var on .col for those.
+rather than the iframe's content height. The stub records the `--tl` var on .col for those. A remembered height
+still re-clamps to the window on resize (review find 2026-09-21): standing down for it is not skipping the clamp.
 
 Synthetic only: no network, no real DOM, invented widths.
 """
@@ -240,6 +241,24 @@ BOOT();
 EL['f-timeline'].contentDocument = { body: { scrollHeight: 300 } };
 winFire('romp-panes', {});
 out.tlReload.noUser = COL['--tl'] || null;
+// 12) a remembered height still CLAMPS to the window on resize (review find 2026-09-21): autosize is the window's
+//     'resize' handler (and the band's ResizeObserver's and the romp-panes hook's), and standing down for a dragged
+//     height returned before ANY clamp. A band dragged to 1020 in a 1200px window (exactly its 0.85 share) kept 1020
+//     when the window shrank to 700, and #tl-pane{flex:0 0 var(--tl)} then collapsed the pane row to 0px, recoverable
+//     only by another drag. The stored height is kept as dragged, so growing the window back restores it.
+resetDom();
+STORE['romp-tl-h'] = '1020';
+window.innerHeight = 1200;
+BOOT();
+out.tlResize = { boot: COL['--tl'] };
+window.innerHeight = 700;
+winFire('resize', {});
+out.tlResize.shrunk = COL['--tl'];   // round(700 * 0.85) = 595
+window.innerHeight = 1200;
+winFire('resize', {});
+out.tlResize.restored = COL['--tl'];
+out.tlResize.stored = STORE['romp-tl-h'];
+window.innerHeight = 900;
 BODY.delete('po-timeline');
 console.log(JSON.stringify(out));
 """
@@ -389,6 +408,18 @@ class PaneGuttersExecute(unittest.TestCase):
         self.assertEqual(r["applied"], "700px", "a reload applies the stored height at boot")
         self.assertEqual(r["afterAutosize"], "700px", "and the content fit stands down for it (302px would have won before)")
         self.assertEqual(r["noUser"], "302px", "with no stored height the content fit rules, as before")
+
+    def test_12_a_remembered_height_still_clamps_to_the_window_on_resize(self):
+        # autosize is the window's 'resize' handler (and the band's ResizeObserver's and the romp-panes hook's), and
+        # standing down for a dragged height returned before ANY clamp: a band dragged to 85% of a tall window kept
+        # that height when the window shrank, and #tl-pane{flex:0 0 var(--tl)} collapsed the pane row to 0px,
+        # recoverable only by another drag (review find 2026-09-21). The boot's clamp now runs on every stand-down;
+        # the stored height is untouched, so growing the window back restores it
+        a = self.out["tlResize"]
+        self.assertEqual(a["boot"], "1020px", "1020 in a 1200px window is exactly the 0.85 share: applied as stored")
+        self.assertEqual(a["shrunk"], "595px", "the window shrinks to 700: re-clamped to round(700 * 0.85), not left at 1020")
+        self.assertEqual(a["restored"], "1020px", "growing the window back restores the remembered height")
+        self.assertEqual(a["stored"], "1020", "the clamp is applied, never persisted: romp-tl-h still holds the dragged height")
 
 
 if __name__ == "__main__":
