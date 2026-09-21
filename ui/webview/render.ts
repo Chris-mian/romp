@@ -337,7 +337,8 @@ interface ModelFallback { pick: string; pickValue: string; live: string; cause: 
 interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment?: NoticeAttachment | null;
                        actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[];
                        kind?: "goal" | "notice";   // "goal": a judge's question on a goal card, Reply / Continue where offered / Clear; absent or "notice": a notice with its stored actions, Clear when it has none (plans/needs-you.md, phase three)
-                       cont?: boolean }             // a goal row offers Continue (the kernel: a live session; the feed card's own rule)
+                       cont?: boolean;              // a goal row offers Continue (the kernel: a live session; the feed card's own rule)
+                       fix?: "credential" }         // the judges' credential refused (plans/needs-you.md, the sixth floor): the row's one action is the fix, no Clear
 interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
@@ -14779,7 +14780,7 @@ function renderSubHead(): void {
 // container (installed once, below, like the background box's), so a press lands whatever the rows did meanwhile. The body
 // and the attachment are the notice face the feed card shows (notice-face.ts): one face for both surfaces (low e).
 interface NoticeRowEl extends HTMLElement { _sig?: string; _title?: string; _body?: string; _att?: string }
-function noticeActionsSig(n: ChatNotice): string { return JSON.stringify([n.kind || "notice", !!n.cont, (n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])]); }
+function noticeActionsSig(n: ChatNotice): string { return JSON.stringify([n.kind || "notice", !!n.cont, n.fix || "", (n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])]); }
 function noticeRowSelector(itemId: string): string { return '#notices .ntc-row[data-item="' + itemId.replace(/["\\]/g, "\\$&") + '"]'; }
 function noticeButton(label: string, cls: string, act: string, idx: number): HTMLButtonElement {
   const b = document.createElement("button"); b.className = "ntc-btn " + cls; b.textContent = label; (b as any)._idle = label;
@@ -14792,6 +14793,10 @@ function noticeRowPlain(row: HTMLElement, n: ChatNotice): void {
   const acts = row.querySelector<HTMLElement>(".ntc-actions"), note = row.querySelector<HTMLElement>(".ntc-note");
   if (!acts || !note) return;
   acts.replaceChildren(); note.style.display = "none";
+  if (n.kind === "goal" && n.fix === "credential") {   // the judges' credential refused: the fix is the one action (the gear's Billing block); no Clear, which would hide the fault while the refusals go on
+    acts.appendChild(noticeButton("Fix credential…", "ntc-ok", "ntc-fix", 0));
+    return;
+  }
   if (n.kind === "goal") {   // a goal card's row (plans/needs-you.md, phase three): Reply points the composer at the card, Continue where the card offers it, Clear
     acts.appendChild(noticeButton("Reply", "ntc-ok", "ntc-reply", 0));
     if (n.cont) acts.appendChild(noticeButton("Continue", "ntc-ok", "ntc-cont", 1));
@@ -20846,6 +20851,7 @@ setupSettings();
     "ntc-reply": (el) => { const p = item(el); if (p && activeId) setCitation(activeId, { itemId: p[1].itemId, title: p[1].title }); },
     "ntc-cont": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askFollowUp", itemId: p[1].itemId, sid: activeId, cont: true }); latch(p[0], el as HTMLButtonElement); },
     "ntc-clear": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askClear", itemId: p[1].itemId, sid: activeId }); latch(p[0], el as HTMLButtonElement); },
+    "ntc-fix": () => openSettingsOn("general"),   // the Billing block sits at the top of the General tab; the row stays until the judges' next call succeeds and the card leaves the column
   });
 })();
 // Background-task rows toggle open/closed — delegated to the stable #bg-tasks container (installed once),

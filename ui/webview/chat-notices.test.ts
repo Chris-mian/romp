@@ -20,7 +20,7 @@ const fn = (name: string) => { const i = RENDER.indexOf("function " + name + "("
 
 test("the status carries the rows and the box renders on every status change beside the background box", () => {
   assert.match(RENDER, /interface Status \{ state: ChipState; sinceEpoch: number \| null; modelFallback\?: ModelFallback \| null; notices\?: ChatNotice\[\] \| null;/, "the slice on the status, after main's model-fallback field");
-  assert.match(RENDER, /interface ChatNotice \{ itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment\?: NoticeAttachment \| null;\s*\n\s*actions: \{ label: string; kind\?: string; route\?: string; body: Record<string, unknown> \}\[\];\s*\n\s*kind\?: "goal" \| "notice";[^\n]*\n\s*cont\?: boolean \}/, "the row carries the feed card's attachment too (low e), and since phase three its kind and its Continue offer");
+  assert.match(RENDER, /interface ChatNotice \{ itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment\?: NoticeAttachment \| null;\s*\n\s*actions: \{ label: string; kind\?: string; route\?: string; body: Record<string, unknown> \}\[\];\s*\n\s*kind\?: "goal" \| "notice";[^\n]*\n\s*cont\?: boolean;[^\n]*\n\s*fix\?: "credential" \}/, "the row carries the feed card's attachment too (low e), and since phase three its kind, its Continue offer and its fix");
   // awaitKey is the status key every status-carrying frame compares (the T225 pins): the rows are part of it, so a hold or a
   // decision repaints the box through the same awaitChanged road as the background box
   assert.match(fn("awaitKey"), /\(st\.notices \|\| \[\]\)\.map\(\(n\) => n\.itemId \+ "\/" \+ \(n\.actions \|\| \[\]\)\.length\)\]\);/);
@@ -85,8 +85,8 @@ test("the kernel's answer re-arms the row on a refusal, saying why in the row, a
 });
 
 test("phase three: a goal row's Reply, Continue and Clear on the card's own wires; a no-action notice's Clear; the kind and the offer ride the row's face and its type", () => {
-  assert.match(RENDER, /kind\?: "goal" \| "notice";/, "the row says its kind"); assert.match(RENDER, /cont\?: boolean \}/, "and whether Continue is offered");
-  assert.match(fn("noticeActionsSig"), /JSON\.stringify\(\[n\.kind \|\| "notice", !!n\.cont, \(n\.actions \|\| \[\]\)\.map/, "the face signature carries the kind and the offer: a Continue that appears rebuilds the buttons");
+  assert.match(RENDER, /kind\?: "goal" \| "notice";/, "the row says its kind"); assert.match(RENDER, /cont\?: boolean;/, "and whether Continue is offered");
+  assert.match(fn("noticeActionsSig"), /JSON\.stringify\(\[n\.kind \|\| "notice", !!n\.cont, n\.fix \|\| "", \(n\.actions \|\| \[\]\)\.map/, "the face signature carries the kind, the offer and the fix: a Continue that appears rebuilds the buttons");
   const plain = fn("noticeRowPlain");
   assert.match(plain, /if \(n\.kind === "goal"\) \{[^]*?acts\.appendChild\(noticeButton\("Reply", "ntc-ok", "ntc-reply", 0\)\);\s*\n\s*if \(n\.cont\) acts\.appendChild\(noticeButton\("Continue", "ntc-ok", "ntc-cont", 1\)\);\s*\n\s*acts\.appendChild\(noticeButton\("Clear", "ntc-clear", "ntc-clear", 2\)\);\s*\n\s*return;/, "a goal row: Reply, Continue where offered, Clear");
   assert.match(plain, /if \(!\(n\.actions \|\| \[\]\)\.length\) \{ acts\.appendChild\(noticeButton\("Clear", "ntc-clear", "ntc-clear", 0\)\); return; \}/, "a notice with no stored action offers Clear");
@@ -95,6 +95,9 @@ test("phase three: a goal row's Reply, Continue and Clear on the card's own wire
   assert.match(d, /"ntc-reply": \(el\) => \{ const p = item\(el\); if \(p && activeId\) setCitation\(activeId, \{ itemId: p\[1\]\.itemId, title: p\[1\]\.title \}\); \},/, "Reply points the composer at the card, as a feed card click that lands in the chat does; the row stays until the reply is judged");
   assert.match(d, /"ntc-cont": \(el\) => \{[^\n]*vscodeApi\?\.postMessage\(\{ type: "askFollowUp", itemId: p\[1\]\.itemId, sid: activeId, cont: true \}\); latch\(p\[0\], el as HTMLButtonElement\); \},/, "Continue is the card's Continue wire, and the row latches");
   assert.match(d, /"ntc-clear": \(el\) => \{[^\n]*vscodeApi\?\.postMessage\(\{ type: "askClear", itemId: p\[1\]\.itemId, sid: activeId \}\); latch\(p\[0\], el as HTMLButtonElement\); \},/, "Clear is the card's Clear wire, and the row latches");
+  assert.match(RENDER, /fix\?: "credential" \}/, "the row says when its one action is the credential fix");
+  assert.match(plain, /if \(n\.kind === "goal" && n\.fix === "credential"\) \{[^]*?noticeButton\("Fix credential…", "ntc-ok", "ntc-fix", 0\)\);\s*\n\s*return;/, "the credential row: the fix alone, no Reply, no Continue, no Clear (a Clear would hide the fault while the refusals go on)");
+  assert.match(d, /"ntc-fix": \(\) => openSettingsOn\("general"\),/, "the fix opens the settings' General tab, where the Billing block sits");
   assert.match(fn("buildNoticeHead"), /head\.className = "ntc-head";[^]*?el\("span", "ntc-dot"\)[^]*?el\("span", "ntc-label"\)/, "the header: the dot and the label");
   assert.match(RENDER, /onExternalSettingsChange\(\(\) => renderNotices\(\)\);/, "a settings save repaints the box: the gear's switch takes effect at once");
   const SETTINGS = fs.readFileSync(path.join(UI, "settings.ts"), "utf8");

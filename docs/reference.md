@@ -288,8 +288,11 @@ Above the composer, a box headed **Needs you** lists what the session you are re
 one line per item with a way to act: a question a judge filed (the card's title and its decision brief,
 with **Reply**, which points the composer at that card the way Follow up does, **Continue** while the
 session is live, and **Clear**), and a held message from another session with its own **Approve** and
-**Deny**. A stop the chat already shows inline, a permission prompt or an API error only you can clear,
-is not listed: the tab's red **Blocked** ring and the card's mark say it. The box wears the Needs you
+**Deny**; and, when romp's judges cannot read the session because the credential they bill is
+refused, a row whose one action is **Fix credential…**, which opens the gear's Billing block (no
+Clear: clearing would hide the fault while the refusals go on). A stop the chat already shows
+inline, a permission prompt or an API error only you can clear, is not listed: the tab's red
+**Blocked** ring and the card's mark say it. The box wears the Needs you
 colour the way the background box wears the awaiting green while the session waits, and it hides when
 the session has nothing for you. An item leaves with the frame that resolves it: the reply once the
 judges file it, the decision, the clear. The gear's **Needs you box** setting under Chat, on by

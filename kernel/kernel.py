@@ -34524,7 +34524,7 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         # row reads the same (needsInput === true). Only True is a verdict.
         sig.append(_feed_needs_input_of(sid) is True)
         # notices: the approval box's rows by id (a hold posted, a decision taken), so the box and the ring move in one frame
-        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("body") or "", bool(n.get("cont"))) for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing or Continue moving repaints the box; one value per label
+        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing or Continue moving repaints the box; one value per label
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
         # per-push flag), so a payload built from turn 0 is never served from the cache once the floor climbs
         sig.append(bool(getattr(_live_scope, "chat_floor0", False)))
@@ -55599,10 +55599,14 @@ _feed_needs_rows = [None]        # sid -> the Needs you box's GOAL rows from the
 
 def _hard_stop_card(a):
     """A card the kernel floored to needs-you with a LIVE-BLOCK object (`blocked`: a permission or picker prompt, an on-you
-    API error, the judges' refused credential, a parked handoff): the chat shows the prompt inline and the card carries its
-    own remedy, so the Needs you box lists none of them (plans/needs-you.md: a hard stop is a red mark on the card and the
-    red ring, never a row). A judge's question, a stall floor or an interrupt block ships `blocked` as None."""
-    return isinstance(a.get("blocked"), dict)
+    API error, a parked handoff): the chat shows the prompt inline and the card carries its own remedy, so the Needs you
+    box lists none of them (plans/needs-you.md: a hard stop is a red mark on the card and the red ring, never a row). A
+    judge's question, a stall floor or an interrupt block ships `blocked` as None. The judges' refused CREDENTIAL
+    (`blocked.state` judgeAuth) is the one live-block object that is NOT a stop: the session runs, romp's analysis of it is
+    down, and only the user can fix the key or the login (the design's sixth floor), so its card takes a row whose action is
+    that fix (_needs_you_rows)."""
+    b = a.get("blocked")
+    return isinstance(b, dict) and b.get("state") != "judgeAuth"
 
 
 def _needs_you_rows(feed):
@@ -55616,6 +55620,13 @@ def _needs_you_rows(feed):
     for a in (feed.get("asks") or []):
         sid = a.get("sid")
         if not sid or not _card_needs_you(a) or a.get("provisional") or a.get("notice") or _hard_stop_card(a):
+            continue
+        b = a.get("blocked") if isinstance(a.get("blocked"), dict) else None
+        if b and b.get("state") == "judgeAuth":
+            # the judges' credential refused (plans/needs-you.md, the sixth floor): the row's one action is the credential fix
+            # (the gear's Billing block), no Continue and no Clear, since a Clear would hide the fault while the refusals go on
+            out.setdefault(str(sid), []).append({"itemId": a.get("itemId"), "kind": "goal", "title": a.get("text") or "",
+                                                 "body": b.get("what") or "", "cont": False, "fix": "credential", "t": a.get("t")})
             continue
         out.setdefault(str(sid), []).append({"itemId": a.get("itemId"), "kind": "goal", "title": a.get("text") or "",
                                              "body": a.get("blockSummary") or "", "cont": bool(a.get("live")), "t": a.get("t")})

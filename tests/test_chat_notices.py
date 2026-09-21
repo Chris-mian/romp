@@ -130,7 +130,7 @@ class ChatNotices(unittest.TestCase):
         # the box's goal rows are the last feed build's (_feed_needs_rows), read without a second build; a notice follows them
         rows_fn = getattr(km, "_needs_you_rows", None)
         self.assertIsNotNone(rows_fn, "the kernel projects the box's goal rows from a feed frame")
-        g1, g2, g3, g4 = (SID + ":g%d" % i for i in range(1, 5))
+        g1, g2, g3, g4, g5 = (SID + ":g%d" % i for i in range(1, 6))
         frame = {"asks": [
             {"itemId": g1, "sid": SID, "text": "which database does the suite target?", "blockSummary": "Postgres or SQLite: the fixtures differ",
              "live": True, "t": 100, "board": "feed", "category": "needs_input", "column": "needs_input", "blocked": None},
@@ -144,23 +144,28 @@ class ChatNotices(unittest.TestCase):
             {"itemId": g4, "sid": SID, "text": "a dead session's question", "blockSummary": None, "live": False, "t": 105, "board": "feed", "category": "needs_input", "column": "needs_input", "blocked": None},
             {"itemId": "22222222-2222-3333-4444-000000000902:g1", "sid": "22222222-2222-3333-4444-000000000902", "text": "another session's question", "live": True, "t": 106,
              "board": "feed", "category": "needs_input", "column": "needs_input", "blocked": None},
+            {"itemId": g5, "sid": SID, "text": "the judges cannot read this session", "live": True, "t": 107, "board": "feed", "category": "needs_input", "column": "needs_input",
+             "blocked": {"state": "judgeAuth", "mode": "key", "login": "", "what": "romp can't analyze this session: the API key its judges bill is being refused"}},
         ]}
         rows = rows_fn(frame)
         self.assertEqual(sorted(rows), sorted([SID, "22222222-2222-3333-4444-000000000902"]), "rows per session, only sessions with one")
         self.assertEqual(rows[SID], [
             {"itemId": g1, "kind": "goal", "title": "which database does the suite target?", "body": "Postgres or SQLite: the fixtures differ", "cont": True, "t": 100},
-            {"itemId": g4, "kind": "goal", "title": "a dead session's question", "body": "", "cont": False, "t": 105}],
+            {"itemId": g4, "kind": "goal", "title": "a dead session's question", "body": "", "cont": False, "t": 105},
+            {"itemId": g5, "kind": "goal", "title": "the judges cannot read this session", "body": "romp can't analyze this session: the API key its judges bill is being refused", "cont": False, "fix": "credential", "t": 107}],
             "the judge's questions in the frame's order: a working card, a live-block card, the placeholder and the notice card stay out; "
-            "no brief yet reads as an empty line; Continue only on a live session")
+            "no brief yet reads as an empty line; Continue only on a live session; the judges' credential refusal is a row whose action is the fix")
         self.assertTrue(km._hard_stop_card(frame["asks"][2]) and not km._hard_stop_card(frame["asks"][0]), "a hard stop is a card with a live-block object")
+        self.assertFalse(km._hard_stop_card(frame["asks"][6]), "the judges' credential refusal is NOT a hard stop (plans/needs-you.md, the sixth floor): the session runs")
         km._feed_needs_rows[0] = rows
         km.post_notice(SID, "m1", "New message from api", "hello", producer="postal", actions=_held("m1"), needs_you=True, dismiss_on_action=True, now=100, t=100)
         box = km._chat_notices(SID)
-        self.assertEqual([(r["itemId"], r["kind"]) for r in box], [(g1, "goal"), (g4, "goal"), ("notice:%s:m1:1" % SID, "notice")], "goal rows first, then the notices")
-        self.assertEqual(box[0]["title"], "which database does the suite target?"); self.assertEqual(box[2]["actions"], _held("m1"))
+        self.assertEqual([(r["itemId"], r["kind"]) for r in box], [(g1, "goal"), (g4, "goal"), (g5, "goal"), ("notice:%s:m1:1" % SID, "notice")], "goal rows first, then the notices")
+        self.assertEqual(box[0]["title"], "which database does the suite target?"); self.assertEqual(box[3]["actions"], _held("m1"))
+        self.assertEqual((box[2]["fix"], box[2]["cont"]), ("credential", False), "the credential row: the fix as its action, no Continue")
         km._feed_needs_rows[0] = {}
         self.assertEqual([r["kind"] for r in km._chat_notices(SID)], ["notice"], "a frame that re-filed the goals drops their rows")
-        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("body") or "", bool(n.get("cont"))) for n in (_chat_notices(sid) or ())))', KSRC,
+        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))', KSRC,
                       "the chat signature carries the rows' ids and faces in its one value: a brief landing or a Continue offered repaints the box")
         self.assertIn("    _rows_now = _needs_you_rows(feed)", KSRC, "the feed build files the rows beside the needs-you set")
         self.assertIn("    if _rows_now != _feed_needs_rows[0]:\n        _pusher_wake.set()", KSRC, "a row change wakes the pusher, as a set change does")
@@ -198,7 +203,7 @@ class ChatNotices(unittest.TestCase):
         self.assertIn('"needsYou": needs_you,', src)
         self.assertIn('"notices": _chat_notices(sid),', src, "beside needsYou on the STATUS, so a status-only delta carries a decision")
         self.assertIn("sig.append(_feed_needs_input_of(sid) is True)\n", KSRC)
-        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("body") or "", bool(n.get("cont"))) for n in (_chat_notices(sid) or ())))', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
+        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
         labels = km._CHAT_SIG_LABELS
         self.assertEqual(labels[labels.index("needs") + 1], "notices", "one label per signature position, the new one right after needs (the builder appends them in that order)")
 
