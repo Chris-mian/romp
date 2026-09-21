@@ -65447,7 +65447,7 @@ def _landing():
             "<meta name=theme-color id=meta-theme content='#1e1e1e'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
             ":root{--accent:#9cd2ff;--accent-fg:#0c1a2e}"
-            ":root{--st-5xx-bg:#cb94d1;--st-5xx-ink:#8a8aff}"   # the 5xx tokens the API-health cell paints, declared where they resolve (plans/needs-you.md; mirrors styles.css); a rule of their own, so the accent line's byte pins keep meaning what they say
+            ":root{--st-5xx-bg:#cb94d1;--st-5xx-ink:#8a8aff}"   # the 5xx tokens the API-health cell paints, declared where they resolve (plans/needs-you.md; mirrors styles.css); a rule of their own (PR 1935 round four, 2026-09-21: declared inside the accent rule they broke its byte pins in two unrelated modules), so the accent line's byte pins keep meaning what they say
             # The menu vocabulary's tokens (CLAUDE.md "Menus and dropdowns wear ONE vocabulary"), defined
             # HERE because the shell loads no sheet: the bell popover reads them, with the same dark
             # literals as var() fallbacks in its rules. Byte-equal to styles.css's :root values.
