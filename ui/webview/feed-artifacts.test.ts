@@ -40,8 +40,13 @@ test("kernel: a card's artifacts are HOISTED from its whole subtree, then existe
   assert.match(KERNEL, /for p in \(\(nodes\.get\(nid\) or \{\}\)\.get\("artifacts"\) or \[\]\):\n\s+if p not in acc:/,
                "pre-order union, card's own paths first, no path listed twice");
   assert.match(KERNEL, /if nid in seen:/, "a malformed parent cycle can't spin the feed build");
-  assert.match(KERNEL, /"artifacts": _feed_artifacts\(_subtree_artifacts\(nodes, children, nid\), fsid\)/,
-               "build_feed ships the hoisted list, not just the card node's own");
+  assert.match(KERNEL, /"artifacts": _subtree_artifacts\(nodes, children, nid\) or None/,
+               "the derivation ships the hoisted list, not just the card node's own");
+  // the existence check is the FOLD's, not the memoized derivation's: each session's entry is memoized
+  // under its own inputs, so a filter inside it would hold a since-deleted artifact on the card until
+  // those inputs happened to move
+  assert.match(KERNEL, /card\["artifacts"\] = _feed_artifacts\(card\["artifacts"\], card\.get\("sid"\)\)/,
+               "the fold existence-filters per build, like the age tint");
   assert.match(KERNEL, /def _feed_artifacts\(paths, sid\):/);
   assert.match(KERNEL, /if os\.path\.isabs\(ap\) and os\.path\.isfile\(ap\) and ap not in out:/,
                "the filesystem is the authority on what a card may show");
