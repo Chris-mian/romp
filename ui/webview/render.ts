@@ -19180,11 +19180,13 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "noticeActionDone" && typeof m.itemId === "string" && m.itemId) {
     const row = document.querySelector<HTMLElement>(noticeRowSelector(m.itemId));
     if (row) {
-      if (m.ok) { row.remove(); const host = document.getElementById("notices"); if (host && !host.querySelector(".ntc-row")) host.style.display = "none"; }
+      // `held` (the second executed review of PR 1935, 2026-09-21): the words went out but the dismissal's write refused: the row
+      // stays with its buttons spent and says so; a plain success drops the row; a refusal re-arms it and says why
+      if (m.ok && !m.held) { row.remove(); const host = document.getElementById("notices"); if (host && !host.querySelector(".ntc-row")) host.style.display = "none"; }
       else {
-        for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
+        if (!m.ok) for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
         const e = row.querySelector<HTMLElement>(".ntc-err");
-        if (e) { e.textContent = "Refused: " + String(m.error || "the kernel did not say why"); e.style.display = ""; }
+        if (e) { e.textContent = (m.ok ? "Done, but " : "Refused: ") + String(m.error || "the kernel did not say why"); e.style.display = ""; }
       }
     }
   }

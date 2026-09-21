@@ -76,9 +76,15 @@ test("the kernel's answer re-arms the row on a refusal, saying why in the row, a
   assert.ok(i >= 0, "the handler sits in the inbound dispatch");
   const h = RENDER.slice(i, RENDER.indexOf('else if (m.type === "err"', i));
   assert.match(h, /document\.querySelector<HTMLElement>\(noticeRowSelector\(m\.itemId\)\)/, "the row by the answer's id (a remote host's is prefixed on the way in, like the row's)");
-  assert.match(h, /if \(m\.ok\) \{ row\.remove\(\);/);
-  assert.match(h, /b\.disabled = false; b\.textContent = \(b as any\)\._idle \|\| b\.textContent;/);
-  assert.match(h, /e\.textContent = "Refused: " \+ String\(m\.error \|\| "the kernel did not say why"\); e\.style\.display = "";/);
+  // `held` (the second executed review of PR 1935, carried here): a delivery whose dismissal's write refused keeps the row with its
+  // buttons spent and says so; a plain success drops the row; a refusal re-arms the buttons and says why
+  assert.match(h, /if \(m\.ok && !m\.held\) \{ row\.remove\(\);/);
+  assert.match(h, /if \(!m\.ok\) for \(const b of Array\.from\(row\.querySelectorAll\("button"\)\) as HTMLButtonElement\[\]\) \{ b\.disabled = false; b\.textContent = \(b as any\)\._idle \|\| b\.textContent; \}/);
+  assert.match(h, /e\.textContent = \(m\.ok \? "Done, but " : "Refused: "\) \+ String\(m\.error \|\| "the kernel did not say why"\); e\.style\.display = "";/);
+  const FEEDSRC = fs.readFileSync(path.join(UI, "feed.ts"), "utf8");
+  assert.match(FEEDSRC, /const held = !!m\.ok && !!m\.held;/, "the feed card keeps a held card too");
+  assert.match(FEEDSRC, /if \(m\.ok && dismisses && !held\) \{/); assert.match(FEEDSRC, /\} else if \(!held\) \{/, "a held card's buttons stay spent");
+  assert.match(FEEDSRC, /else if \(held\) feedToast\("The card's action ran, but " \+ String\(m\.error \|\| "the card could not be dismissed"\) \+ "\."\);/);
   assert.match(RENDER, /const BOXES_BELOW = \["notices", "bg-tasks", "footer"\];/); assert.match(RENDER, /for \(const boxId of BOXES_BELOW\) \{/, "the bottom-box rule covers the approval box (low a); the list is shared with the footprint record (the review of PR 1926)");
   const FED = fs.readFileSync(path.join(UI, "federation.ts"), "utf8");
   assert.match(FED, /out\.status = \{ \.\.\.out\.status, notices: out\.status\.notices\.map\(\(n: any\) => \(n && typeof n === "object" && typeof n\.itemId === "string"\) \? \{ \.\.\.n, itemId: prefixNoticeId\(host, n\.itemId\) \} : n\) \};/, "the slice's ids wear the host (medium 2)");

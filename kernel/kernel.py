@@ -19630,17 +19630,22 @@ def _predict_working(flavor, ids=None, sid=None):
         _send_to_app("feed", {"type": "cardPredict", "ids": ids, "flavor": flavor})
 
 
-def _ack_card_move(ids, ok):
+def _ack_card_move(ids, ok, why=""):
     """ANSWER the prediction _predict_working just fired (the user 2026-07-21). The client used to give a
     prediction 4 seconds to be confirmed by a payload and then toast "that follow-up didn't move the card to
     Working" — a TIMER standing in for an event the kernel already knows exactly: whether the reopen applied.
     So say it. ok=False is the only genuine failure (the goal is gone from the store, or sealed by a view
     clear) and is the only thing worth interrupting the user about; ok=True hands the card back to the
-    kernel's own state, which `buildId` lets the client wait for without guessing (see _next_feed_build_id)."""
+    kernel's own state, which `buildId` lets the client wait for without guessing (see _next_feed_build_id).
+    `why` (the second executed review of PR 1935, 2026-09-21) is the user's copy of a store fault when the reopen's WRITE refused: the
+    card is still on the board then, and the client says so instead of calling it gone."""
     ids = [i for i in ids if i]
     if ids:
-        _send_to_app("feed", {"type": "cardMoveAck", "ids": ids, "ok": bool(ok),
-                              "buildId": _feed_build_id[0]})
+        frame = {"type": "cardMoveAck", "ids": ids, "ok": bool(ok),
+                 "buildId": _feed_build_id[0]}
+        if why:
+            frame["why"] = why
+        _send_to_app("feed", frame)
 
 
 def _ask_lost(sid, client):
@@ -19886,8 +19891,16 @@ def _drive(msg, client):
                 if iid else text)
         # Mid-compaction the whole send is PARKED (queued bubble; delivered when compaction ends — _send_or_park);
         # the backend echoes the send for itself.
-        if _send_or_park(be, sid, body, qid=_client_qid(msg, sid, be),
-                         user=not msg.get("nudge"), paths=_wire_paths(msg)) is None:   # a follow-up is the user's; a nudge is romp's; its attachments ride as a send's do (T373 fold round two)
+        try:
+            _handed = _send_or_park(be, sid, body, qid=_client_qid(msg, sid, be),
+                                    user=not msg.get("nudge"), paths=_wire_paths(msg))   # a follow-up is the user's; a nudge is romp's; its attachments ride as a send's do (T373 fold round two)
+        except OSError as e:
+            # the send's own state write refused (a parked op's file, the queue's mirror; the second executed review of PR 1935, 2026-09-21): the
+            # refusal this arm already has, with the cause, where the raise used to reach the receive loop's OSError arm and tear
+            # the socket down with the typed text (Continue, a typed reply and the modal's Check status all ride this arm)
+            _refuse_drive(client, t, sid, msg, why="romp could not write its state (%s)" % _store_fault_copy(e))
+            return True
+        if _handed is None:
             # the feed predicted the move on the click; the err frame carrying op + itemId is what it reverts
             # on (_refuse_drive's shape), so the card comes back at once with the reason, not on the backstop
             _refuse_drive(client, t, sid, msg, why="No running backend owns this session")
@@ -19896,7 +19909,7 @@ def _drive(msg, client):
             _predict_working("followup", ids=[iid])       # instant cue to every feed view (chat-typed citation
             #                                               follow-ups included) — the reopen below is what the
             #                                               next push confirms it against
-            ok = False
+            ok, why = False, ""
             try:
                 ok = bool(jd.optimistic_followup(sid, iid, text=text, now=int(time.time())))
                 if ok:
@@ -19912,9 +19925,14 @@ def _drive(msg, client):
                     # block, nothing to read (the audited case: 2h45m, ended only by the user noticing).
                     # Same event-voids-episode reasoning as the awaiting lift's call; live records stay.
                     _drop_auto_nudge_rec(str(iid))
+            except OSError as e:
+                # the store refused the reopen's write: the card stays where it was, and the ack carries the cause so the pane
+                # says that instead of "the card is gone" (the second executed review of PR 1935, 2026-09-21)
+                why = _store_fault_copy(e)
+                sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
             except Exception:
                 sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
-            _ack_card_move([iid], ok)                     # …and TELL the client, instead of it timing us out
+            _ack_card_move([iid], ok, why=why)            # …and TELL the client, instead of it timing us out
     # (the cardMove op — the feed's "Move to Working" button/drag — was REMOVED, the user 2026-07-25:
     # zero recorded uses, and a reply to the card reopens/unblocks it with actual context. jd's replay
     # still accepts historical "move" journal events.)
@@ -20017,7 +20035,18 @@ def _drive(msg, client):
         # ONE retry decision, all of it kernel state — see _fire_api_retry (shared with the kernel's own
         # _auto_retry_tick, which drives recovery unattended since 2026-08-11; this route remains for the
         # manual Retry-now button and the dashboard tick's redundant asks, both idempotent against it).
-        if not _fire_api_retry(sid, be, manual=bool(msg.get("manual"))) and msg.get("manual"):
+        _said = False
+        try:
+            _fired = _fire_api_retry(sid, be, manual=bool(msg.get("manual")))
+        except OSError as e:
+            # the retry's state write refused (the suppression ledger, a parked op; the second executed review of PR 1935, 2026-09-21): a manual
+            # Retry hears it on the frame it already has; the auto tick asks again, so its refusal is the log's alone
+            _fired, _said = False, True
+            sys.stderr.write("apiRetry %s: %s\n" % (sid[:8], _store_fault_copy(e)))
+            if msg.get("manual"):
+                client["send"](json.dumps({"type": "retryRefused", "sid": sid,
+                                           "text": "Couldn't retry: romp could not write its state (%s)." % _store_fault_copy(e)}))
+        if not _fired and not _said and msg.get("manual"):
             # the backend refused the send (review find, 2026-09-08): the feed's Retry latched "Retrying…" on
             # the click and re-arms on the kernel's reply for that request, matched by sid. Nothing answered a
             # refused send before, so the button stayed latched until the card happened to be re-sent. A SOFT
@@ -20095,11 +20124,15 @@ def _drive(msg, client):
         # per-session billing (login vs the manager env's API key) — SDK-only, applied via reconnect
         # like /effort; mid-compaction → parked in the same FIFO. LOUD on refusal (fail loudly): Codex
         # sessions and a keyless manager can't apply it, and a silent swallow leaves a dead control.
-        if not _set_auth_or_park(be, sid, str(msg["value"])):
+        try:
+            _took, _oswhy = _set_auth_or_park(be, sid, str(msg["value"])), ""
+        except OSError as e:                          # the park's or the backend's state write refused: said on the frame below, never a torn socket (the second executed review of PR 1935, 2026-09-21)
+            _took, _oswhy = False, "romp could not write its state (%s)" % _store_fault_copy(e)
+        if not _took:
             # the backend names the reason it refused (no login signed in / no apiKeyHelper / a managed
             # helper: auth_unavailable_why) when it had one; the generic text covers the rest (a Codex
             # session, an unknown sid)
-            why = str(getattr(be, "auth_unavailable_why", lambda v: "")(str(msg["value"])) or "")
+            why = _oswhy or str(getattr(be, "auth_unavailable_why", lambda v: "")(str(msg["value"])) or "")
             client["send"](json.dumps({"type": "warn",
                                        "text": ("Couldn't switch the account this session bills: %s." % why) if why
                                        else "Couldn't switch the account this session bills — "
@@ -24984,6 +25017,7 @@ def _notice_cards(now, cleared, alive_sids=None):
 
 
 _notice_inflight = set()                   # (item id, kind, body json) of the actions running right now: one delivery per click
+_notice_spent_mem = set()                  # (sid, key, rev) whose acted row could not be WRITTEN: this kernel still refuses a second run (the second executed review of PR 1935, 2026-09-21)
 
 
 def _notice_action(item_id, kind, body, inp=None):
@@ -25032,7 +25066,7 @@ def _notice_action_run(m, item_id, kind, body, inp):
         # the one-shot mark is the store's own acted row (round five): the cleared ledger's Undo restores the card, and a
         # refusal keyed on the ledger let the restored card deliver the words a second time. A card that does not dismiss
         # on its action is meant to run again.
-        if any(a.get("op") == "acted" and a.get("key") == key and int(a.get("rev") or 0) == rev for a in _notice_rows(sid)):
+        if (sid, key, rev) in _notice_spent_mem or any(a.get("op") == "acted" and a.get("key") == key and int(a.get("rev") or 0) == rev for a in _notice_rows(sid)):
             return False, "that card's action ran already"
         if item_id in _cleared_ids():
             return False, "that card was dismissed"
@@ -25044,7 +25078,7 @@ def _notice_action_run(m, item_id, kind, body, inp):
         try:
             ok, err, _queued = _deliver_text(target, str(body.get("text") or ""), plain=True)
         except Exception as e:                         # a delivery fault is the answer, never the socket's death
-            return False, "the action could not be delivered (%s)" % e
+            return False, "the action could not be delivered (%s)" % _store_fault_copy(e)
     elif kind == "quarantine":
         # the verdict on a held message, by the bus that owns delivery and the held file, with the card's OWNER as the
         # recipient (the bus checks it serves that session, 2026-09-18); a deny's note rides as the bus's feedback. The held
@@ -25061,7 +25095,7 @@ def _notice_action_run(m, item_id, kind, body, inp):
         try:
             ok, err = _bus_quarantine_act(qbody)
         except Exception as e:
-            return False, "the verdict could not reach the postal bus (%s)" % e
+            return False, "the verdict could not reach the postal bus (%s)" % _store_fault_copy(e)
         if ok:
             with _notice_lock:                          # the decision retires the card whatever the ledger later says
                 _notice_append(sid, {"op": "expire", "t": int(time.time()), "key": key, "rev": rev, "sid": sid})
@@ -25072,15 +25106,24 @@ def _notice_action_run(m, item_id, kind, body, inp):
         try:
             ack = _answer_setting_proposal(dict(body))
         except Exception as e:
-            return False, "the answer could not be applied (%s)" % e
+            return False, "the answer could not be applied (%s)" % _store_fault_copy(e)
         ok, err = bool(ack.get("ok")), str(ack.get("error") or "")
     else:
         return False, "no such action on that card"
     if ok and row.get("dismissOnAction"):
         with _notice_lock:                              # the acted mark first, then the dismissal: a crash between the two leaves
-            _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "kind": kind})   # a spent card, never a re-runnable one
-        _clear_ask(item_id)
+            spent = _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "kind": kind})   # a spent card, never a re-runnable one
+        if spent:
+            _notice_spent_mem.add((sid, key, rev))      # the acted row could not be written: this kernel still refuses a second run
+        held = _clear_ask(item_id)                      # {} or {LEDGER_KEY: fault}: the clears log refused (never a raise)
         _mark_views_dirty()
+        if held:
+            # delivered, not dismissed (the second executed review of PR 1935, 2026-09-21): the answer says both, so the pane keeps the card and
+            # leaves its button spent. The raise out of the dismissal used to answer ok false for words that had gone out, and
+            # the redial's click was then refused as already run with nothing on screen to say the words had landed. (An acted
+            # row that could not be written while the dismissal did land is the in-memory mark's case above: the card is gone
+            # as asked, so the answer is a plain success.)
+            return True, "the card could not be dismissed (%s)" % held.get(LEDGER_KEY)
     return ok, err
 
 
@@ -40933,6 +40976,9 @@ def _store_fault_copy(fault):
     return text.replace(str(jd.STATE) + os.sep, "")
 
 
+LEDGER_KEY = "ledger:clears"   # the skipped-map key for the clears log itself refusing a write (no session to name; the second executed review of PR 1935, 2026-09-21)
+
+
 def _gesture_store_refusal(client, gesture, skipped):
     """A user gesture (a clear, a sub-goal drop, an undo) that a session's UNREADABLE goal store made us
     skip must say so on the socket that made it (the standing rule: a refusal of a user gesture reaches
@@ -40952,6 +40998,26 @@ def _gesture_store_refusal(client, gesture, skipped):
     the user's copy (the save shape added on a review find, 2026-09-08: left to raise, it dropped the
     dashboard's socket without a word)."""
     for key, fault in (skipped or {}).items():
+        if key == LEDGER_KEY:
+            # the clears log itself refused the write (the second executed review of PR 1935, 2026-09-21): no session to name, and an account per gesture, since in every
+            # shape nothing at all changed on disk (a clear's rows never landed, so no node was flagged either)
+            if gesture == "undo":
+                title = "That undo did not land"
+                text = ("romp could not write its clears log (%s), so that undo was not recorded and its cards stay hidden. "
+                        "They are still held for you; press Undo again once it can." % fault)
+            elif gesture == "drop":
+                title = "That sub-goal was not cleared"
+                text = ("romp could not write its clears log (%s), so nothing changed and the row is as it was. "
+                        "Try it again once it can." % fault)
+            else:
+                title = "That clear did not land"
+                text = ("romp could not write its clears log (%s), so nothing was cleared and every card is as it was. "
+                        "Try it again once it can." % fault)
+            try:
+                client["send"](json.dumps({"type": "err", "sid": "", "title": title, "text": text}))
+            except Exception:
+                sys.stderr.write("gesture refusal (%s ledger): %s\n" % (gesture, traceback.format_exc()))
+            continue
         notices = key.startswith("notice:")          # an undo whose NOTICE archive faulted: worded per store (round six, low), since
         sid = key[len("notice:"):] if notices else key   # the session's goal cards did come back
         who = _name_of(sid) or sid[:8]
@@ -40992,11 +41058,18 @@ def _clear_all(item_ids):
     seen = set(item_ids)
     item_ids = item_ids + [i for i in _delegation_linked_ids(item_ids) if i not in seen]   # + the delegation's peer copy
     p = jd.STATE / "cleared.jsonl"
-    p.parent.mkdir(parents=True, exist_ok=True)
     t = time.time()
-    with p.open("a") as f:
-        for iid in item_ids:
-            f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a") as f:
+            for iid in item_ids:
+                f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+    except OSError as e:
+        # the clears log itself refused the write (a read-only root; the second executed review of PR 1935, 2026-09-21): nothing hid, so no node is
+        # flagged either, and the gesture's socket hears it under LEDGER_KEY (_gesture_store_refusal). Left to raise, the receive
+        # loop's OSError arm, which is for the socket's own failures, tore every pane's connection down and the redial brought
+        # the card back with no word why.
+        return {LEDGER_KEY: _store_fault_copy(e)}
     _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     skipped = _mark_nodes_cleared(item_ids, True)     # durable node flag → no grouper re-wrap, no column bounce
     # CLEAR IS SILENT (the user 2026-08-23, reversing the 2026-07-24 wrap-up): the session hears
@@ -41036,9 +41109,16 @@ def _undo_clear():
     restored = [i for i in restored if not i.startswith("notice:")]
     skipped = dict(_restore_goal_archive(restored))   # pull the restored tops back OUT of the archive FIRST,
     restored = [i for i in restored if i.rsplit(":", 1)[0] not in skipped]   # (a session it could not read
-    with (jd.STATE / "cleared.jsonl").open("a") as f:   # keeps its clear rows: still the newest batch)
-        for iid in restored + notices:
-            f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
+    try:
+        with (jd.STATE / "cleared.jsonl").open("a") as f:   # keeps its clear rows: still the newest batch)
+            for iid in restored + notices:
+                f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
+    except OSError as e:
+        # the clears log refused the undo rows (the second executed review of PR 1935, 2026-09-21): nothing is journaled, so the batch stays the
+        # newest and the next Undo retries exactly it (the tops the archive restore pulled back a moment ago sit flag-cleared
+        # in the live store, hidden as before, and the retry's restore passes them over as not archived); said on the socket
+        skipped[LEDGER_KEY] = _store_fault_copy(e)
+        return skipped
     _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     late = _mark_nodes_cleared(restored, False) if restored else {}   # so this finds the nodes → un-set the durable flag → real status
     nlate = _restore_notice_archive(notices)          # a notice card's rows come back OUT of notices-archive now its undo row is down
@@ -41052,11 +41132,14 @@ def _undo_clear():
         # per row split a two-card batch into two one-card batches and each further Undo brought back one
         # card, against the promise that the next Undo restores exactly them (review find, 2026-09-08).
         t = time.time()
-        with (jd.STATE / "cleared.jsonl").open("a") as f:
-            for iid in restored + notices:
-                if iid.rsplit(":", 1)[0] in late or (iid.startswith("notice:") and iid.split(":", 3)[1] in nlate):
-                    f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
-        _files_stat_mark()                            # the re-journal is a clears-log write too
+        try:
+            with (jd.STATE / "cleared.jsonl").open("a") as f:
+                for iid in restored + notices:
+                    if iid.rsplit(":", 1)[0] in late or (iid.startswith("notice:") and iid.split(":", 3)[1] in nlate):
+                        f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+            _files_stat_mark()                        # the re-journal is a clears-log write too
+        except OSError as e:                          # the store and the log both refusing: said under LEDGER_KEY beside the stores' faults
+            skipped[LEDGER_KEY] = _store_fault_copy(e)
         skipped.update(late); skipped.update({"notice:" + s: f for s, f in nlate.items()})   # keyed apart: the refusal is worded per store
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
@@ -70149,8 +70232,12 @@ class Handler(BaseHTTPRequestHandler):
                                              msg.get("body") if isinstance(msg.get("body"), dict) else {},
                                              msg.get("input") if isinstance(msg.get("input"), dict) else {})
             except Exception as e:                     # said to the asking pane; the socket lives on
-                _nok, _nerr = False, "the action failed (%s)" % e
-            client["send"](json.dumps({"type": "noticeActionDone", "itemId": str(msg["itemId"]), "ok": bool(_nok), "error": _nerr or ""}))
+                _nok, _nerr = False, "the action failed (%s)" % _store_fault_copy(e)   # never the state root in a frame (the second executed review of PR 1935, 2026-09-21)
+            # `held`: the words went out but the card could not be dismissed (a state write refused after the delivery): the pane
+            # keeps the card and leaves its button spent (the second executed review of PR 1935, 2026-09-21: the raise out of the dismissal answered ok false for a delivery that
+            # had happened, and the redial's click was then refused as already run with nothing on screen saying the words landed)
+            client["send"](json.dumps({"type": "noticeActionDone", "itemId": str(msg["itemId"]), "ok": bool(_nok), "error": _nerr or "",
+                                       "held": bool(_nok and _nerr)}))
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
             # modal surgical override: cross a node off (op:resolve → nodeComplete) or drop it
             # (op:clear → the user-authority clear verdict, same seam as a card Clear, scoped to the
@@ -70174,7 +70261,7 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         _rok, _rerr = False, "the goal store would not accept that change"
                 except Exception as _e:
-                    _rok, _rerr = False, (str(_e) or _e.__class__.__name__)
+                    _rok, _rerr = False, _store_fault_copy(_e)   # the user's copy: no state root in a frame a federated pane may show (the second executed review of PR 1935, 2026-09-21)
                     sys.stderr.write("nodeOverride resolve: %s\n" % traceback.format_exc())
                 _send_to_app("feed", {"type": "nodeOverrideResult", "nodeId": _rnid,
                                       "op": "resolve", "ok": _rok, "error": _rerr})
@@ -70201,7 +70288,7 @@ class Handler(BaseHTTPRequestHandler):
                     _dok, _derr = True, ""
                     _mark_views_dirty()
             except Exception as _e:
-                _dok, _derr = False, (str(_e) or _e.__class__.__name__)
+                _dok, _derr = False, _store_fault_copy(_e)   # as nodeOverrideResult: the frame never carries the state root
                 sys.stderr.write("redistill: %s\n" % traceback.format_exc())
             _send_to_app("feed", {"type": "redistillResult", "itemId": _dnid, "ok": _dok, "error": _derr})
         elif msg and msg.get("type") == "cardOpened" and msg.get("itemId"):

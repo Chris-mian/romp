@@ -4,6 +4,7 @@ store STATE/notices/<sid>.jsonl; post_notice(...) -> (row, error) behind its doo
 dismissal, a revision, an expiry); the actions allowlist executed by the kernel on the gesture; the attachment verdict by
 the preview's confinement; retention to the archive; the memo bound. Hermetic: a temp state root, a synthetic session in
 the notes-api demo world; nothing touches the live state root."""
+import errno
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -253,6 +255,41 @@ class Actions(unittest.TestCase):
         self.assertEqual(km._notice_action(iid, "/watch", {}), (False, "no such action on that card"))
         self.assertEqual(km._notice_action("notice:%s:gone:1" % SID, "/send", {}), (False, "that notice is gone"))
         self.assertEqual(km._notice_action("%s:g1" % SID, "/send", {}), (False, "not a notice card"))
+
+    def test_a_delivery_whose_dismissal_write_refuses_answers_ok_with_the_card_held_and_never_delivers_twice(self):
+        # the second executed review of PR 1935 (carried into phase three): the words went out, then the clears log refused the
+        # dismissal's row. The answer used to be the raise, framed ok false, and the redial's click was refused as already run.
+        acts = [{"label": "Send", "route": "/send", "body": {"text": "x"}}]
+        km.post_notice(SID, "k3", "t", producer="cli", actions=acts, dismiss_on_action=True, now=100)
+        iid = "notice:%s:k3:1" % SID
+        ledger = km.jd.STATE / "cleared.jsonl"
+        orig_open = Path.open
+
+        def faulting(p, mode="r", *a, **kw):
+            if p == ledger and "a" in mode:
+                raise OSError(errno.EROFS, "Read-only file system", str(ledger))
+            return orig_open(p, mode, *a, **kw)
+        with mock.patch.object(Path, "open", faulting):
+            ok, e = km._notice_action(iid, "/send", {"text": "x"})
+        self.assertTrue(ok, "delivered")
+        self.assertIn("could not be dismissed", e)
+        self.assertIn("Read-only file system", e)
+        self.assertNotIn(str(km.jd.STATE), e, "no state root in the answer")
+        self.assertEqual(self.w.delivered, [(SID, "x")], "delivered once")
+        self.assertNotIn(iid, km._cleared_ids(), "the card stays: its dismissal did not land")
+        self.assertEqual(km._notice_action(iid, "/send", {"text": "x"}), (False, "that card's action ran already"),
+                         "the acted row landed, so the redial's click delivers nothing")
+        self.assertEqual(self.w.delivered, [(SID, "x")])
+        # the acted row itself refusing while the dismissal lands: the card goes as asked (a plain success) and this kernel
+        # still refuses a second run from its in-memory mark
+        km.post_notice(SID, "k4", "t", producer="cli", actions=[{"label": "Send", "route": "/send", "body": {"text": "y"}}],
+                       dismiss_on_action=True, now=100)
+        iid4 = "notice:%s:k4:1" % SID
+        with mock.patch.object(km, "_notice_append", lambda sid, row: "the notice could not be saved (Read-only file system)"):
+            self.assertEqual(km._notice_action(iid4, "/send", {"text": "y"}), (True, ""))
+        self.assertIn(iid4, km._cleared_ids(), "dismissed as asked")
+        self.assertEqual(km._notice_action(iid4, "/send", {"text": "y"}), (False, "that card's action ran already"))
+        self.assertEqual([d for d in self.w.delivered if d == (SID, "y")], [(SID, "y")], "one delivery")
 
     def test_the_target_is_the_notices_own_session_and_the_text_takes_the_plain_message_door(self):
         # the review of PR 1757, high: an older row whose body names another session (written before the check refused it)

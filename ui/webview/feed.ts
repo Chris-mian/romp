@@ -387,11 +387,14 @@ function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
 // went out. ok=true records the buildId the prediction must outlive and re-arms the window SILENTLY: the
 // kernel has spoken, so nothing from here on is worth a toast, but a prediction must never outlive the
 // answer either, so the backstop stays armed in case a payload goes missing.
-function ackFollowMove(itemId: string, ok: boolean, buildId: number, host: string) {
+function ackFollowMove(itemId: string, ok: boolean, buildId: number, host: string, why = "") {
   if (!pendingFollowMove.has(itemId)) return;
   if (!ok) {
     clearFollowMove(itemId, "ack-fail");
-    feedToast("Your reply was sent, but that card isn’t on the board any more to move to Working.");
+    // `why` (the second executed review of PR 1935, 2026-09-21): the store REFUSED the reopen's write, so the card is still on the
+    // board and the toast says that; without it the one answer was "gone", and a card that had stayed read as vanished
+    feedToast(why ? "Your reply was sent, but the card could not be moved to Working: " + why
+                  : "Your reply was sent, but that card isn’t on the board any more to move to Working.");
     render();
     return;
   }
@@ -6605,13 +6608,17 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     const dismisses = twins.some((c) => !!((c as any)._it?.notice?.dismissOnAction)) || !!asks.find((a) => a.itemId === m.itemId)?.notice?.dismissOnAction;
     // the card's modal, when it shows this card (round four of PR 1831): a success on a dismissing card closes it with the card;
     // any other answer re-renders it, which rebuilds the notice face and so re-arms its buttons (the same rule as the card's)
-    if (fullscreenAskId === m.itemId) { if (m.ok && dismisses) fullscreenAskId = null; renderModal(); }
-    if (m.ok && dismisses) {
+    // `held` (the second executed review of PR 1935, 2026-09-21): the words went out but the dismissal's write refused, so the card
+    // STAYS and its buttons stay spent (a re-armed button would offer the delivery again; the kernel refuses it, but the pane
+    // should not ask); the toast says both halves. Before this the answer was ok false for a delivery that had happened.
+    const held = !!m.ok && !!m.held;
+    if (fullscreenAskId === m.itemId) { if (m.ok && dismisses && !held) fullscreenAskId = null; renderModal(); }
+    if (m.ok && dismisses && !held) {
       pendingCleared.add(m.itemId);   // a push already in flight must not paint it back before the kernel's rebuild lands
       for (const c of twins) c.dispatchEvent(new MouseEvent("mouseleave"));   // removed under the pointer: the card's own leave logic (freezeLeave, the hover highlight off or back to the pin), as the clear paths dispatch it (round six, low)
       for (const c of twins) { c.remove(); if (askEls.get(m.itemId) === c) askEls.delete(m.itemId); if (fsAskEls.get(m.itemId) === c) fsAskEls.delete(m.itemId); }
       dropDismissed([m.itemId]);
-    } else {
+    } else if (!held) {
       for (const c of twins) {
         for (const b of Array.from(((c as any)._nActions as HTMLElement | undefined)?.querySelectorAll("button") || []) as HTMLButtonElement[]) {
           b.disabled = false; b.textContent = (b as any)._idle || b.textContent;
@@ -6619,6 +6626,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       }
     }
     if (!m.ok) feedToast("The card's action was refused: " + String(m.error || "unknown error"));
+    else if (held) feedToast("The card's action ran, but " + String(m.error || "the card could not be dismissed") + ".");
   } else if (m.type === "retryRefused" && typeof m.sid === "string" && m.sid) {
     // the backend could not take the manual retry's send: the Retry this page latched lets go, and says why
     if (rearmLatches({ kind: "retry", sid: m.sid })) feedToast(String(m.text || "Couldn't retry: the kernel refused it."));
@@ -6675,9 +6683,10 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // which kernel's counter `bid` is on: federation stamps a remote ack with its host (prefixInbound);
     // an unstamped ack came from the local kernel — host "", the same value hostOf gives local cards
     const ackHost = typeof m.host === "string" ? m.host : "";
+    const why = typeof m.why === "string" ? m.why : "";   // the user's copy of a store fault, when the reopen's write refused
     for (const raw of m.ids.map(String)) {
       const top = asks.find((a) => a.itemId === raw) ?? asks.find((a) => a.tree?.some((n) => n.id === raw));
-      ackFollowMove(top ? top.itemId : raw, !!m.ok, bid, ackHost);
+      ackFollowMove(top ? top.itemId : raw, !!m.ok, bid, ackHost, why);
     }
   }
 }));

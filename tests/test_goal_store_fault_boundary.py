@@ -897,5 +897,168 @@ class GestureRefusal(_World):
         self.assertEqual([m for m in sent if m.get("type") == "err"], [], "no refusal without a skipped session")
 
 
+@contextlib.contextmanager
+def _append_faults(path):
+    """Every APPEND to `path` raises EROFS with the absolute path in its text (a read-only state root); every other open is
+    untouched, so the stores still read and the clears log still reads."""
+    orig_open = Path.open
+
+    def faulting(p, mode="r", *a, **kw):
+        if p == path and "a" in mode:
+            raise OSError(errno.EROFS, "Read-only file system", str(path))
+        return orig_open(p, mode, *a, **kw)
+    with mock.patch.object(Path, "open", faulting):
+        yield
+
+
+class ActsUnderAFailedWrite(_World):
+    """The acts a Needs you row offers (Clear, Continue, a typed reply, the modal's Drop and Done, Retry now, a billing pick,
+    a notice card's button) when the state write behind them REFUSES (a read-only root): the socket that asked hears it and
+    lives, every frame names the file and never the state root, and a delivery that happened is never answered as a failure
+    (the second executed review of PR 1935, carried into phase three). Before this a raise out of any of these reached the
+    receive loop's OSError arm, which is for the socket's own failures, and every pane's connection was torn down."""
+
+    def setUp(self):
+        super().setUp()
+        sessions = [{"sid": A, "name": "web", "path": "/nonexistent/%s.jsonl" % A, "anchor": 0, "mtime": 0},
+                    {"sid": B, "name": "api", "path": "/nonexistent/%s.jsonl" % B, "anchor": 0, "mtime": 0}]
+        self.live = {A: _TM(), B: _TM()}
+        self.app = []                                     # what the kernel broadcast to an app (the result frames, the ack)
+        for p in (mock.patch.object(km, "_alive_sessions", lambda now, live_map: list(sessions)),
+                  mock.patch.object(km, "_warm_fleet_bg", lambda now: None),
+                  mock.patch.object(km, "_live_map", lambda: dict(self.live)),
+                  mock.patch.object(km, "_send_to_app", lambda app, m: self.app.append((app, m))),
+                  mock.patch.object(km, "_name_of", lambda sid: {A: "web", B: "api"}.get(sid)),   # ours: the drive arms run
+                  mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: mock.MagicMock()))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _dispatch(self, msg):
+        sent = []
+        client = {"app": "feed", "alive": True, "send": lambda s: sent.append(json.loads(s))}
+        km.Handler._dispatch_ws(object.__new__(km.Handler), msg, client)
+        return sent
+
+    def _flag(self, sid, nid):
+        return bool(jd.load_goals(sid)["nodes"][nid].get("cleared"))
+
+    # ── the clears log (Clear, Clear on a header, Clear all, Drop, Undo) ──────────────────────────────────────────────
+    def test_a_clear_whose_ledger_write_refuses_answers_the_socket_and_changes_nothing(self):
+        gid = A + ":g1"
+        with _append_faults(jd.STATE / "cleared.jsonl"):
+            sent = self._dispatch({"type": "askClear", "itemId": gid})   # raised OSError out of the handler before this
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual(len(errs), 1, "one refusal on the socket that asked")
+        self.assertEqual(errs[0]["title"], "That clear did not land")
+        self.assertIn("clears log", errs[0]["text"])
+        self.assertIn("Read-only file system", errs[0]["text"], "and it says why")
+        self.assertIn("nothing was cleared", errs[0]["text"], "and what did not happen")
+        self.assertNotIn(str(jd.STATE), errs[0]["text"], "the dialog names no state root")
+        self.assertFalse((jd.STATE / "cleared.jsonl").exists(), "no row landed")
+        self.assertFalse(self._flag(A, gid), "no node was flagged: the clear did not happen at all")
+        sent = self._dispatch({"type": "askClear", "itemId": gid})   # the retry, once the log writes again
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [])
+        self.assertTrue(self._flag(A, gid))
+        self.assertIn(gid, km._cleared_ids())
+
+    def test_a_clear_all_and_a_sub_goal_drop_answer_the_same_way(self):
+        with _append_faults(jd.STATE / "cleared.jsonl"):
+            many = self._dispatch({"type": "askClearMany", "itemIds": [A + ":g1", B + ":g1"]})
+            drop = self._dispatch({"type": "nodeOverride", "sid": A, "nodeId": A + ":g1", "op": "clear"})
+        self.assertEqual([m["title"] for m in many if m.get("type") == "err"], ["That clear did not land"],
+                         "one dialog for the whole batch: the log is one file")
+        self.assertEqual([m["title"] for m in drop if m.get("type") == "err"], ["That sub-goal was not cleared"])
+        self.assertIn("the row is as it was", [m for m in drop if m.get("type") == "err"][0]["text"])
+        self.assertFalse((jd.STATE / "cleared.jsonl").exists())
+        self.assertFalse(self._flag(A, A + ":g1") or self._flag(B, B + ":g1"))
+
+    def test_an_undo_whose_ledger_write_refuses_stays_owed_and_the_next_undo_restores(self):
+        gid = A + ":g1"
+        self._dispatch({"type": "askClear", "itemId": gid})              # a clear that landed
+        self.assertTrue(self._flag(A, gid))
+        with _append_faults(jd.STATE / "cleared.jsonl"):
+            sent = self._dispatch({"type": "undoClear"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["That undo did not land"])
+        self.assertIn("press Undo again", errs[0]["text"], "the one true remedy")
+        self.assertNotIn(str(jd.STATE), errs[0]["text"])
+        self.assertTrue(self._flag(A, gid), "still hidden: nothing was journaled")
+        self.assertIn(gid, km._cleared_ids(), "the batch stays the newest, so the next Undo retries exactly it")
+        sent = self._dispatch({"type": "undoClear"})
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [])
+        self.assertFalse(self._flag(A, gid), "restored")
+        self.assertEqual(km._cleared_ids(), {})
+
+    # ── the result frames name no state root ──────────────────────────────────────────────────────────────────────────
+    def test_a_resolve_a_redistill_and_a_notice_action_that_raise_name_no_state_root(self):
+        boom = OSError(errno.EROFS, "Read-only file system", str(self.a_file))
+
+        def raiser(*a, **k):
+            raise boom
+        with mock.patch.object(km, "_resolve_node", raiser):
+            self._dispatch({"type": "nodeOverride", "sid": A, "nodeId": A + ":g1", "op": "resolve"})
+        with mock.patch.object(jd, "append_override", raiser):
+            self._dispatch({"type": "redistill", "sid": A, "itemId": A + ":g1"})
+        with mock.patch.object(km, "_notice_action", raiser):
+            sent = self._dispatch({"type": "noticeAction", "itemId": "notice:%s:k:1" % A, "kind": "send", "body": {}})
+        frames = [m for app, m in self.app if m.get("type") in ("nodeOverrideResult", "redistillResult")]
+        done = [m for m in sent if m.get("type") == "noticeActionDone"]
+        self.assertEqual([m["type"] for m in frames], ["nodeOverrideResult", "redistillResult"])
+        self.assertEqual(len(done), 1)
+        for m in frames + done:
+            self.assertFalse(m["ok"])
+            self.assertIn("Read-only file system", m["error"], "the errno text stays")
+            self.assertIn("goals/" + A + ".json", m["error"], "and the file, relative to the state root")
+            self.assertNotIn(str(jd.STATE), m["error"], "a frame a federated pane may show names no state root")
+        self.assertFalse(done[0]["held"], "a refusal is not a held delivery")
+        # a delivery whose dismissal refused: ok, with the card held (the pane keeps it and leaves the button spent)
+        with mock.patch.object(km, "_notice_action", lambda *a, **k: (True, "the card could not be dismissed (x)")):
+            sent = self._dispatch({"type": "noticeAction", "itemId": "notice:%s:k:1" % A, "kind": "send", "body": {}})
+        done = [m for m in sent if m.get("type") == "noticeActionDone"]
+        self.assertEqual((done[0]["ok"], done[0]["held"]), (True, True))
+
+    # ── Continue, a typed reply, the modal's Check status; a billing pick; Retry now ───────────────────────────────────
+    def test_a_reply_whose_send_write_refuses_is_refused_on_the_frame_the_arm_has(self):
+        boom = OSError(errno.EROFS, "Read-only file system", str(jd.STATE / "pending-ops" / (A + ".json")))
+        with mock.patch.object(km, "_send_or_park", mock.Mock(side_effect=boom)):
+            sent = self._dispatch({"type": "askFollowUp", "itemId": A + ":g1", "text": "and the fix?"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual(len(errs), 1, "the refusal dialog the arm already had, not a torn socket")
+        self.assertEqual((errs[0]["op"], errs[0]["itemId"]), ("askFollowUp", A + ":g1"), "the card's own latch releases")
+        self.assertIn("could not write its state", errs[0]["text"])
+        self.assertIn("pending-ops/" + A + ".json", errs[0]["text"])
+        self.assertNotIn(str(jd.STATE), errs[0]["text"])
+        self.assertEqual(errs[0]["copy"], "and the fix?", "the typed text rides back")
+        self.assertEqual([m for app, m in self.app if m.get("type") == "cardMoveAck"], [], "no move was predicted, none is answered")
+
+    def test_a_reply_whose_reopen_write_refuses_acks_with_the_cause_instead_of_calling_the_card_gone(self):
+        boom = OSError(errno.EROFS, "Read-only file system", str(self.a_file))
+        with mock.patch.object(km, "_send_or_park", lambda *a, **k: True), \
+             mock.patch.object(jd, "optimistic_followup", mock.Mock(side_effect=boom)):
+            sent = self._dispatch({"type": "askFollowUp", "itemId": A + ":g1", "cont": True})
+        acks = [m for app, m in self.app if m.get("type") == "cardMoveAck"]
+        self.assertEqual(len(acks), 1)
+        self.assertFalse(acks[0]["ok"])
+        self.assertIn("goals/" + A + ".json", acks[0]["why"], "the cause rides the ack")
+        self.assertNotIn(str(jd.STATE), acks[0]["why"])
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [], "the words went out: no refusal dialog")
+
+    def test_a_billing_pick_and_a_manual_retry_whose_write_refuses_are_said_on_their_frames(self):
+        boom = OSError(errno.EROFS, "Read-only file system", str(jd.STATE / "pending-ops" / (A + ".json")))
+        with mock.patch.object(km, "_set_auth_or_park", mock.Mock(side_effect=boom)):
+            sent = self._dispatch({"type": "setAuth", "id": A, "value": "login"})
+        warns = [m for m in sent if m.get("type") == "warn"]
+        self.assertEqual(len(warns), 1)
+        self.assertIn("could not write its state", warns[0]["text"])
+        self.assertNotIn(str(jd.STATE), warns[0]["text"])
+        with mock.patch.object(km, "_fire_api_retry", mock.Mock(side_effect=boom)):
+            sent = self._dispatch({"type": "apiRetry", "id": A, "manual": True})
+        refused = [m for m in sent if m.get("type") == "retryRefused"]
+        self.assertEqual(len(refused), 1, "the manual Retry hears it on the frame that releases its latch")
+        self.assertEqual(refused[0]["sid"], A)
+        self.assertIn("could not write its state", refused[0]["text"])
+        self.assertNotIn(str(jd.STATE), refused[0]["text"])
+
+
 if __name__ == "__main__":
     unittest.main()
