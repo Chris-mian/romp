@@ -49,7 +49,7 @@ export const RING_TEST: Record<RingId, (s: TabStateLike | null | undefined) => b
   "ring-needs-you": (s) => { const c = tabStateClass(s); return c === "tab-awaiting" || c === "tab-blocked"; },
   // the MAGENTA ring (the Needs you ring; yellow until 2026-09-21, the ask ring of 2026-09-13): the feed filed a card of this session under needs-you (status.needsYou,
   // the kernel's per-session read of the feed's needs_input column in build_session, the same verdict the
-  // section-at-a-glance row's chip and the feed's Blocked list speak, so the three can never disagree) and the tab is
+  // section-at-a-glance row's chip and the feed's Needs you column speak, so the three can never disagree) and the tab is
   // not dead. The session may be idle, awaiting background work or still WORKING while the card waits, and the ring
   // shows in every one of those, composed with the working dot rather than replacing it: a session with something
   // waiting on you should grab attention without a click, even while it goes on working. Only TRUE is a verdict: null

@@ -93,6 +93,7 @@
                        white outline (background→transparent, border→currentColor, the user 2026-07-25).
                        feed-css-vars.test.ts now holds the whole file to "define it here or carry a fallback". */
   --st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;   /* the RETRYING amber — mirrors styles.css (tokenised 2026-09-08) */
+  --st-5xx-bg: #cb94d1; --st-5xx-fg: #1e1030;   /* the 5xx lilac (T316; apart from the Needs you magenta since 2026-09-21), mirrors styles.css */
   --st-needs-bg: #d946ef; --st-needs-fg: #2a0a2a;   /* the NEEDS YOU magenta (plans/needs-you.md): mirrors styles.css, so the column chip, the question marks and the settings' ring demo resolve it in every theme */
 
   /* Card background + border are set inline per card (the hawaii recency tint).
@@ -173,7 +174,7 @@ body.theme-light {
   --st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;
   --st-compacting-bg: #0F766E; --st-compacting-fg: #ffffff;
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
-  --st-5xx-bg: #4c1d95; --st-5xx-fg: #ffffff;   /* the 5xx purple (T316; apart from the Needs you magenta since 2026-09-21), mirrors styles.css */
+  --st-5xx-bg: #4c1b7e; --st-5xx-fg: #ffffff;   /* the 5xx deep violet (T316; apart from the Needs you magenta since 2026-09-21), mirrors styles.css */
   --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;
   --st-needs-bg: #a21caf; --st-needs-fg: #ffffff;   /* the Needs you magenta in the light palette, mirrors styles.css */
   --radius-menu: 6px;

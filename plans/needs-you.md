@@ -34,7 +34,7 @@ Every claim the design leans on, read at `upstream/main` 55d8e8f0.
   the kernel table to the pane's). The pane's column header chip is `.fcol-chip-blocked { background: #c0392b }`
   (`ui/webview/feed.css`), the modal's blocked node label the same red as a white-on-red chip (`.st-question .ftree-meta`),
   and the checkbox notation's blocked mark a red pause inside a red ring (`.fcheck.question .fcheck-mark`, `--err`: `#c0392b` in feed.css's dark root, `#B02A1C` in its light root,
-  which `feed.css` defines as `#c0392b` because that sheet has its own root). The category id `needs_input` is a wire
+  since that sheet has its own root). The category id `needs_input` is a wire
   value (every kernel and pane, federation included) and does not change; only the title, the chip class's colour and
   the copy do.
 - **What files a card there.** The kernel's category expression in `_feed_session_entry` floors a card on a live
@@ -140,11 +140,18 @@ has its own root; every state token is mirrored there today); the mobile page's 
 
 Both clear the ring and pair floors `theme-parity.test.ts` holds (3:1), and the dark hue sits apart from the working
 gold, the retrying amber and both reds under a red-green deficiency (the test's pairwise pins extend to it). The 5xx
-marks of the API-health cell's tip and detail on the landing page (`--st-5xx-bg`, the `.ah-seg-serverErrors` fill;
-`--st-5xx-ink`, the `.ah-c-r5xx` text) are a purple apart from the Needs you magenta in both themes: measured, OKLab
-distance x100, dark fill `#7e22ce` 19.3 and ink `#c4b5fd` 22.8 from `#d946ef`, light fill and ink `#4c1d95` 18.0 from
-`#a21caf` (the light 5xx value had been byte-identical to the token, the dark fill 7.5 away); theme-parity.test.ts pins
-the token against the fill and the ink per theme at the categorical floor of 15.
+marks of the API-health cell's tip and detail on the landing page (`--st-5xx-bg`, the histogram's `.ah-seg-serverErrors`
+band; `--st-5xx-ink`, the `.ah-c-r5xx` digits in the tip's line; the landing's inline sheet declares both, mirrors of
+styles.css) are chosen by the validator's two floors (OKLab x100 at least 15 to full-colour readers, at least 8 under the
+Machado protan and deutan simulations) against every colour each mark shares a surface with. Dark: the fill `#cb94d1`
+(a lilac) 6.90:1 on the tip's ground, from the Needs you magenta 17.0 / 12.0, the accent band 15.9 / 10.0, the 429 band
+20.2 / 17.6, the other band 29.9 / 25.7; the ink `#8b7ec8` (a violet) 4.70:1, from the accent ink on its line 22.3 / 21.0,
+the 429 ink 20.3 / 14.0, the words gray 15.7 / 15.6, and from the magenta 17.7 in full colour and 5.6 under a deficiency,
+the ONE pair conceded on purpose (no violet ink clears the accent and the magenta at once under red-green CVD; the two
+never share a line). Light: one deep violet `#4c1b7e` for fill and ink, 9.97:1 on the cream page, from the magenta
+19.1 / 11.6, the accent 31.6 / 25.6, the 429 red 27.1 / 21.0, the words 19.7 / 18.2, the other band's indigo 18.9 / 18.7.
+The first purple of phase two (`#7e22ce`, 2.39:1 on the tip's ground; then `#c4b5fd`, 8.5 from the accent ink it shared a
+line with) was replaced by these under the reviews; theme-parity.test.ts pins every figure.
 
 Where the token paints, and only there:
 
@@ -156,11 +163,11 @@ Where the token paints, and only there:
 - the tab ring `ring-waiting-on-you` and the group pip `ask`;
 - the phone picker's chip border and row bar;
 - the outline of the Needs you box below (phase three);
-- the settings' ring demo.
+- the settings' ring demo;
 - the sessions pane's lane chip for a session in the column (`ui/romp-timeline-view.js`, `BADGE.needs`, drawn on the
   canvas in the same pair);
 - the status chip's Needs you state, `.chip-needsInput` and its legacy twin `.chip-awaiting`, wherever the shared chip is
-  painted: the bar under the transcript, the tag overview rows and the comment popover's statusline;
+  painted: the bar under the transcript, the tag overview rows and the comment popover's statusline.
 
 Red stays on: the Blocked ring and its translucent fill, the hard-stop marks on a card (the ⏸ live-block badge, the
 ⚠ API-error badge), the chat chip's **API error**, the unread passage's dashed box (a different meaning, the same

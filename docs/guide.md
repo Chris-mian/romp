@@ -91,7 +91,7 @@ go away, and Romp is a chat tool.
 
 The Sessions pane holds the timeline, one row per session. A bar is a stretch
 where the session was working, and a circle is a message you sent. A striped
-stretch means the session stopped and needed you: it was waiting on your input.
+stretch means the session had stopped and needed you.
 
 ![A timeline lane per session, with status and context at the left](assets/guide/timeline-annotated.png){ width="100%" }
 

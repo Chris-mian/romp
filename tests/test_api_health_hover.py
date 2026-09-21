@@ -763,7 +763,7 @@ class Script(unittest.TestCase):
 
     def test_the_section_draws_stacked_bars_a_vertical_legend_and_an_age_in_words(self):
         # T316 (the user's design): one stacked histogram per machine (successes in the accent, 429 in the blocked red, 5xx
-        # in the 5xx magenta, the other band for no-connection and other-status failures only when present), no peak text,
+        # in the 5xx purple, the other band for no-connection and other-status failures only when present), no peak text,
         # one ceiling label; the legend vertical, its class tokens in their inks (T340), the other line only when it applies;
         # the as-of stamp an age
         self.assertIn("var h='<div class=\"ru-tip-win ah-hist\"><div class=ru-tip-name><span>History</span>'+ago+'</div>';", HIST)
@@ -822,10 +822,10 @@ class Script(unittest.TestCase):
         # each with its light twin; the bars' fills as classes with their light twins; the swatches keep the chip colours
         for dark, light in ((".ah-c-ok{color:var(--accent,#9cd2ff)}", "body.theme-light .ah-c-ok{color:#C2410C}"),
                             (".ah-c-r429{color:#ef6b6f}", "body.theme-light .ah-c-r429{color:#B02A1C}"),
-                            (".ah-c-r5xx{color:var(--st-5xx-ink,#c4b5fd)}", "body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1d95)}"),   # the inks through the token since 2026-09-21 (plans/needs-you.md: apart from the Needs you magenta)
+                            (".ah-c-r5xx{color:var(--st-5xx-ink,#8b7ec8)}", "body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}"),   # the inks through the token since 2026-09-21 (plans/needs-you.md: apart from the Needs you magenta)
                             (".ah-c-none{color:#d9f99d}", "body.theme-light .ah-c-none{color:#4f46e5}"),   # T340: the other band's hue as ink
                             (".ah-seg-ok{fill:var(--accent,#9cd2ff)}", "body.theme-light .ah-seg-ok{fill:#C2410C}"),
-                            (".ah-seg-serverErrors{fill:var(--st-5xx-bg,#7e22ce)}", "body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1d95)}"),
+                            (".ah-seg-serverErrors{fill:var(--st-5xx-bg,#cb94d1)}", "body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1b7e)}"),
                             (".ah-seg-noStatus,.ah-seg-other{fill:#d9f99d}", "body.theme-light .ah-seg-noStatus,body.theme-light .ah-seg-other{fill:#4f46e5}")):
             self.assertIn(dark, html, dark)
             self.assertIn(light, html, "the light twin: " + light)

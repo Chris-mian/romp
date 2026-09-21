@@ -349,7 +349,7 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("if(!wd){wd=document.createElement('span');wd.className='workdot';", js)   # in-place form: one dot node, created once, classes toggled (2026-08-19)  # gold dot when working
         # awaitingBg is read off the desktop tab's own green dot (no tab-working class on an awaiting tab)
         self.assertIn("awaitbg:!!t.querySelector('.tab-dot.await')", js)
-        # the ASK RING (2026-09-13; a widget with a switch since 2026-09-14): the desktop tab's ring-waiting-on-you class
+        # the NEEDS YOU RING (the ask ring of 2026-09-13; a widget with a switch since 2026-09-14): the desktop tab's ring-waiting-on-you class
         # (something of the session's is waiting on you) is scraped beside the dots, and the picker paints it on the row (a
         # magenta bar at the left edge) and the current chip (its border goes dashed magenta), off the same status token the
         # desktop ring wears — so the phone's list says which sessions need you without a tap through each, and a ring

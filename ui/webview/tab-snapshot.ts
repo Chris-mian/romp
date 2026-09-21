@@ -28,7 +28,7 @@ export interface SnapSessionLike {
 export interface SnapLedgerLike {
   summary?: string | null; workingNote?: string | null;
   /** the feed's verdict, from the kernel's last feed build: true when one of this session's cards is filed
-   *  under needs-you there (the column the feed's Blocked list is), false when none is, null when no feed
+   *  under needs-you there (the column the feed's Needs you column is), false when none is, null when no feed
    *  has been built since the kernel started (the first push cycle) */
   needsInput?: boolean | null;
   tree?: ReadonlyArray<{ text?: string; current?: boolean }> | null;
@@ -51,7 +51,7 @@ export interface SnapRow {
   /** the state in words: the row's spoken label and its title; "" for idle/ready */
   state: string;
   /** on YOU, by the feed's rule: a card of this session filed under needs-you in the kernel's last feed
-   *  build (the same column the feed's Blocked list shows: a question the agent asked and stopped on, a
+   *  build (the same column the feed's Needs you column shows: a question the agent asked and stopped on, a
    *  live prompt, an API error only you can clear); plus the tab's own alarm-red cases, which the feed
    *  build can trail by one push */
   needsYou: boolean;
