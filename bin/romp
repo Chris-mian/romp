@@ -87,7 +87,7 @@ EOF
     _romp_cmd "romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [-b <board>] [-c <category>]" - "Post a NOTICE CARD to the feed (no judge): with no session (none named outside one, or --no-session inside one) it shows at the TOP under Notes; -k names the card (a second post under it revises it; absent, a key is minted and printed); romp card \"title\" \"text\" is the shorthand; --body-file, --attach <path>, --needs-you, --expires <s>, --producer; the card moves only on your dismissal, a new revision or its expiry; a home shows at most fifty live cards, the oldest superseded past that"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> [--tag <label>] <text>" - "Hand a session a message; scripts/cron SHOULD pass --tag so it renders machine-sent, not as your typed words"
-    _romp_cmd "romp compact <session> [--wait]" -       "Compact a session's context in place (Claude's /compact; on a Codex session, Codex's own compaction, no summary text) — queued safely if a turn is open; --wait blocks until it finishes (--timeout <s>, default 600)"
+    _romp_cmd "romp compact <session> [--wait]" -       "Compact a session's context in place (Claude's /compact; on a Codex session, Codex's own compaction, no summary text) — queued safely if a turn is open; --wait blocks until it finishes (--timeout <s>, default 600) and exits 1 with the notice when the compaction ended loudly instead (a notice new since the read before the request; for a queued compaction, new since the first sample after the turn)"
     _romp_cmd "romp interrupt <session>"   -            "Interrupt a session's current turn"
     _romp_cmd "romp end <session>"         -            "End a session"
     _romp_cmd "romp checkin <host>"        -            "Publish this machine to an attached hub (romp checkout withdraws)"
@@ -1845,6 +1845,45 @@ if [[ "${1:-}" == "compact" ]]; then
         esac
     done
     _kport="${ROMP_KERNEL_PORT:-29855}"
+    # One /sessions read for the session named: its state ("compacting" or "quiet"), then its launch error as
+    # "<at><TAB><text>" (both empty when none); "gone" when no row wears the name; "unknown" when the kernel did
+    # not answer or the body did not parse (a transient kernel blip is not "session gone"). A compaction that ends
+    # loudly drops the compacting bit exactly as a clean end does and leaves the backend's notice on the row's
+    # launchError (2026-09-21), so the bit alone read "done" over an uncompacted thread.
+    _c_read_info() {
+        local rows
+        rows="$(_romp_token_cfg | curl -sf -m 5 --config - "http://127.0.0.1:$_kport/sessions")" || rows=""
+        if [[ -z "$rows" ]]; then echo unknown; return 0; fi
+        python3 -c 'import json,sys
+who = sys.argv[2]
+try: rows = json.loads(sys.argv[1])
+except Exception: rows = None
+if rows is None: print("unknown")
+else:
+    for r in rows:
+        if r.get("name") == who or r.get("id") == who:
+            le = r.get("launchError") if isinstance(r.get("launchError"), dict) else {}
+            print("\t".join(["compacting" if r.get("compacting") else "quiet", str(le.get("at") or ""),
+                             " ".join(str(le.get("text") or "").split())])); break
+    else: print("gone")' "$rows" "$_c_who" 2>/dev/null || echo unknown
+    }
+    _c_base=""; _c_base_unknown=""
+    if [[ -n "$_c_wait" ]]; then
+        # the baseline notice: what stood on the row BEFORE this request, so a compaction that ends loudly before the
+        # first poll is read as this wait's and not as a standing one (a baseline taken from the first poll after the
+        # request read such an end as standing and waited out the timeout; 2026-09-21). Read up to three times: a read
+        # that fails (a kernel blip, a body that did not parse) is not an empty baseline, or a standing notice would
+        # read as new and a clean compaction exit 1; still unknown after that, the wait is refused below, after the
+        # request, since a compaction queued behind a turn takes its baseline from the arming sample instead.
+        _c_info="unknown"
+        for _c_try in 1 2 3; do
+            _c_info="$(_c_read_info)"
+            [[ "$_c_info" == "unknown" ]] || break
+            sleep 1
+        done
+        if [[ "$_c_info" == "unknown" ]]; then _c_base_unknown=1
+        elif [[ "$_c_info" == *$'\t'* ]]; then _c_base="${_c_info#*$'\t'}"; fi
+    fi
     _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$_c_who")"
     _resp="$(_romp_token_cfg | curl -sf -m 10 --config - -X POST "http://127.0.0.1:$_kport/compact"                   -H 'Content-Type: application/json' -d "$_payload")"         || { echo "romp compact: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" != *'"ok": true'* && "$_resp" != *'"ok":true'* ]]; then
@@ -1872,27 +1911,40 @@ if [[ "${1:-}" == "compact" ]]; then
     # NB the arming is two statements, not a command-substitution assignment: under set -e an
     # assignment adopts the substitution's failing status and kills the script (review find — the
     # queued+--wait path died before its first poll).
+    if [[ -z "$_c_queued" && -n "$_c_base_unknown" ]]; then
+        # an immediate compaction is judged against the notice that stood before the request, and that read never
+        # answered: proceeding on an empty baseline read a standing notice as this compaction's failure (2026-09-21)
+        echo "romp compact: --wait can't judge this compaction from here: the kernel's session list did not answer before the request, so a notice from before it cannot be told from this one's. The compaction was still requested" >&2
+        exit 1
+    fi
     _c_start="$(date +%s)"; _c_seen=""; _c_armed=""
     [[ -n "$_c_queued" ]] || _c_armed=1
     while :; do
-        _c_rows="$(_romp_token_cfg | curl -sf -m 5 --config - "http://127.0.0.1:$_kport/sessions")" || _c_rows=""
-        if [[ -z "$_c_rows" ]]; then
-            _c_state="unknown"                       # a transient kernel blip is not "session gone"
-        else
-            _c_state="$(python3 -c 'import json,sys
-who = sys.argv[2]
-try: rows = json.loads(sys.argv[1])
-except Exception: rows = None
-if rows is None: print("unknown")
-else:
-    for r in rows:
-        if r.get("name") == who or r.get("id") == who:
-            print("compacting" if r.get("compacting") else "quiet"); break
-    else: print("gone")' "$_c_rows" "$_c_who" 2>/dev/null || echo unknown)"
+        _c_info="$(_c_read_info)"
+        _c_state="${_c_info%%$'\t'*}"; _c_notice=""
+        if [[ "$_c_info" == *$'\t'* ]]; then
+            _c_notice="${_c_info#*$'\t'}"            # "<at><TAB><text>": the notice's identity, not its words alone
         fi
         if [[ "$_c_state" == "quiet" && -z "$_c_armed" ]]; then
-            _c_armed=1
-        elif [[ "$_c_state" == "compacting" && -n "$_c_armed" ]]; then
+            # a QUEUED compaction arms on the first sample that reads not compacting, and takes its baseline from that
+            # sample, not from the read before the request: ours cannot have fired before the session went quiet, so a
+            # notice standing here is the prior compaction's loud end or a failed turn's, not ours (2026-09-21; judged
+            # against the pre-request read, a clean queued compaction exited 1 over the prior one's notice). A
+            # compaction of ours that fired and failed before this sample is baselined away with it and reported by
+            # the timeout below, never attributed
+            _c_armed=1; _c_base="$_c_notice"
+        fi
+        if [[ -n "$_c_armed" && ( "$_c_state" == "quiet" || "$_c_state" == "compacting" ) \
+              && -n "${_c_notice#*$'\t'}" && "$_c_notice" != "$_c_base" ]]; then
+            # the notice is judged NEW against the baseline (the read before the request for an immediate compaction,
+            # the arming sample for a queued one), not merely present: the compact verb does not clear a standing
+            # notice when it latches a new bracket, so a later clean wait on the same thread would otherwise exit 1
+            # over a notice from before it; and it is read whether or not a compacting sample was caught, since a
+            # compaction can run and fail between two polls
+            echo "romp compact: $_c_who did not compact: ${_c_notice#*$'\t'}" >&2
+            exit 1
+        fi
+        if [[ "$_c_state" == "compacting" && -n "$_c_armed" ]]; then
             _c_seen=1
         elif [[ "$_c_state" == "quiet" && -n "$_c_seen" ]]; then
             echo "romp compact: done — $_c_who compacted ($(( $(date +%s) - _c_start ))s)"

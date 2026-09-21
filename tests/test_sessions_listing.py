@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GET /sessions is served from the cycle's snapshot (plans/sessions-route-from-the-cycle.md): the pusher's cycle builds the
 listing once when its exact key moved (the live rows, the names snapshot, the working-notes store, the registry revision, the
-compacting bits) and every request serves the kept JSON; a request before the first cycle builds once and is served from the
+compacting bits, the launch errors) and every request serves the kept JSON; a request before the first cycle builds once and is served from the
 kept listing by the next; ?threads=1 rides its own key. The postal bus reads this route for its roster (list_agents, the
 send's liveness check), so a session's start, rename and death reach the roster within one cycle, and the rows keep the
 fields the bus reads. Hermetic: a temp state root, two synthetic sessions on disk, the live map stubbed."""
@@ -141,6 +141,30 @@ class OneListingPerChange(_Listing):
         self.assertEqual(set(miss), {"first", "rows", "names", "notes", "registry"}, "each miss names its input: %r" % miss)
         self._cycle()
         self.assertEqual(self._stats()[0]["built"], 5, "and a quiet cycle builds nothing")
+
+    def test_a_rows_launch_error_rides_the_listing_and_its_change_rebuilds_once(self):
+        # `romp compact --wait` reads the row's launch error beside its compacting bit (the second review of the native
+        # compaction, 2026-09-21): a compaction that ended loudly drops the compacting bit exactly as a clean end does and
+        # leaves the notice on the backend's launch error, so the row carries that record, and it is a key input, or the
+        # kept listing would serve the pre-failure row until some other input moved.
+        errs, reads = {}, []
+        saved = km._launch_error
+        km._launch_error = lambda sid: (reads.append(str(sid)), errs.get(str(sid)))[1]
+        self.addCleanup(setattr, km, "_launch_error", saved)
+        self._cycle()
+        self.assertIsNone(next(r for r in self._body() if r["id"] == SID)["launchError"], "no failure: the field is there and empty")
+        self.assertEqual(reads.count(SID), 1, "one backend read per session per cycle: the key and the row share the cycle's memo (%r)" % reads)
+        errs[SID] = {"text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was",
+                     "at": NOW + 1.5, "limit": False, "noRetry": True}
+        self._cycle()
+        self.assertEqual(next(r for r in self._body() if r["id"] == SID)["launchError"], errs[SID], "the backend's record, whole")
+        self.assertEqual(self._stats()[0]["built"], 2, "the notice is a key input: one rebuild")
+        self._cycle()
+        self.assertEqual(self._stats()[0]["built"], 2, "and a quiet cycle builds nothing")
+        errs.pop(SID)                                                                  # the next accepted turn clears it
+        self._cycle()
+        self.assertIsNone(next(r for r in self._body() if r["id"] == SID)["launchError"])
+        self.assertEqual(self._stats()[0]["built"], 3)
 
     def test_a_start_a_rename_and_a_death_reach_the_roster_within_one_cycle(self):
         """The postal bus's roster (list_agents, the send's liveness check) reads this route: a session that started is

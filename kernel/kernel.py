@@ -28138,14 +28138,16 @@ def _sessions_listing_key(live_map, names):
     (name, dir and the two identity colours: a move rewrites the names entry), the working-notes store (the note per sid,
     keyed by the store's entries' stats), the registry's rows revision (lastSid rides the SDK registry; a write that changes
     it moves the revision, a write of a field no row reads does not; the revision counts THIS process's writes, so a lastSid
-    the outgoing kernel wrote during a handover reaches the rows when another input moves) and each row's compacting bit (the live row against the cached parse). A field whose input is not
+    the outgoing kernel wrote during a handover reaches the rows when another input moves), each row's compacting bit (the live row against the cached parse) and each
+    row's launch error (its text and stamp, _launch_error_key: the notice a compaction that ended loudly leaves while the
+    compacting bit falls, 2026-09-21; read once per sid per cycle, the row takes the same read). A field whose input is not
     here cannot be added without adding the input."""
     try:
         paths = {s["sid"]: s["path"] for s in _sessions(time.time())}   # the cycle's own sweep (memoized on the scope): the
     except Exception:                                                   #  transcript the compacting read is disproved against
         paths = {}
     rows = tuple(sorted((str(sid), (m or {}).get("state"), (m or {}).get("since"), (m or {}).get("backend"),
-                         bool(_compacting_now(sid, tm=m, path=paths.get(sid))))
+                         bool(_compacting_now(sid, tm=m, path=paths.get(sid))), _launch_error_key(sid))
                         for sid, m in (live_map or {}).items()))
     try:
         with os.scandir(WORKING_DIR) as it:
@@ -28158,6 +28160,31 @@ def _sessions_listing_key(live_map, names):
     except Exception:
         names_key = (repr(nm),)
     return (rows, hash(names_key), notes, _reg_rev())
+
+
+def _launch_error_scoped(sid):
+    """_launch_error through the cycle's memo (2026-09-21): inside a pusher cycle the first read per sid is kept on
+    _live_scope.launch_errors (opened and closed with the cycle's other memos, the _sessions idiom) and served to every
+    reader after it, so the listing's key and its rows, which both read it, cost one backend read per session per cycle
+    (the SDK backend's read is a registry file per session); outside a cycle every read is fresh, as _sessions behaves."""
+    sid = str(sid)
+    memo = getattr(_live_scope, "launch_errors", None)
+    if memo is None:
+        return _launch_error(sid)
+    if sid not in memo:
+        memo[sid] = _launch_error(sid)
+    return memo[sid]
+
+
+def _launch_error_key(sid):
+    """The hashable identity of a row's launch error for the listing's key (2026-09-21): its text and stamp, None when
+    the session runs fine. The record itself rides the row (_session_listing_row, through the same cycle memo); the key
+    needs only what tells one notice from another, and _launch_error's own guard makes a backend hiccup read as none
+    here as it does there."""
+    le = _launch_error_scoped(sid)
+    if not isinstance(le, dict):
+        return None
+    return (str(le.get("text") or ""), str(le.get("at") or ""))
 
 
 def _sessions_listing_miss(prev, cur):
@@ -28286,12 +28313,18 @@ def _session_listing_row(sid, meta, notes, path):
                 # parse), exposed so `romp compact --wait` and scripted recycling can watch a
                 # compaction start and clear through the kernel's own read, never a scrape.
                 "compacting": bool(_compacting_now(sid, tm=meta, path=path)),
+                # launchError: the backend's record of why the session cannot run ({text, at, limit, an optional
+                # noRetry}, SessionBackend.launch_error; None when it runs fine), beside compacting so `romp compact
+                # --wait` can tell a compaction that ended loudly (the bit falls as on a clean end, the notice stands)
+                # from one that finished (the second review of the native compaction, 2026-09-21). Through the cycle's
+                # memo: the listing's key read it already (_launch_error_scoped)
+                "launchError": _launch_error_scoped(sid),
                 "working": notes.get(sid, ""), "backend": meta.get("backend", "")}
     except Exception:
         sys.stderr.write("session row for %s failed (kept minimal): %s\n"
                          % (sid, traceback.format_exc()))
         return {"id": sid, "name": sid[:8], "state": meta.get("state", ""), "dir": "",
-                "bg": "", "fg": "", "lastSid": sid, "compacting": False,
+                "bg": "", "fg": "", "lastSid": sid, "compacting": False, "launchError": None,
                 "working": "", "backend": meta.get("backend", "")}
 
 
@@ -59247,6 +59280,8 @@ def _pusher_cycle():
         #                                         forks); the wide walk under ("wide", window)): ~35 sweeps
         #                                         per cycle became one
         _live_scope.auth = {}                   # …and the cycle's billing-availability memo (_auth_avail_status)
+        _live_scope.launch_errors = {}          # …and the cycle's launch-error memo (_launch_error_scoped): the listing's
+        #                                       key and its rows read one record per session (2026-09-21)
         _live_scope.subagent_trees = {}         # …and the cycle's subagents-tree samples (_subagent_tree): one sample per
         #                                       root per cycle for every tree that exists, validated or walked by the
         #                                       first reader and served to every reader after it: the chat builds'
@@ -59272,6 +59307,7 @@ def _pusher_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
+        _live_scope.launch_errors = None
         _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
@@ -59504,6 +59540,7 @@ def _jobs_cycle():
         _live_scope.paths = {}
         _live_scope.sessions = {}
         _live_scope.auth = {}
+        _live_scope.launch_errors = {}          # the pass's launch-error memo (_launch_error_scoped, 2026-09-21)
         _live_scope.subagent_trees = {}         # the pass's subagents-tree samples (2026-09-18): the reminder walk's
         #                                       _session_awaiting readers and _mark_nudge_failed read the same roots per pass
         _live_scope.msgsum = [_MSGSUM_UNSET]
@@ -59517,6 +59554,7 @@ def _jobs_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
+        _live_scope.launch_errors = None
         _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _live_scope.files_stat = None
