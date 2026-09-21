@@ -362,27 +362,31 @@ async function toggleMidDrag(dir, dd, paneKey, { escape = false, show = false } 
 }
 // the band RE-SIZED under a column drag (the shell's autosize follows the band's content, with no gesture on the band): the
 // drag's next frames keep the new height, the release or Escape keeps it, the store gets it once
-async function bandGrowMidDrag({ escape = false } = {}) {
-  const d = (await divs()).filter((x) => x.dir === "row")[0]; if (!d) return { error: "no row divider", divs: await divs(), rects: await rectsOf() };
+async function bandGrowMidDrag({ escape = false, dir = "row", far = false } = {}) {
+  const d = (await divs()).filter((x) => x.dir === dir)[0]; if (!d) return { error: "no " + dir + " divider", divs: await divs(), rects: await rectsOf() };
   const before = await rectsOf(); const p = pairAt(d, before); if (!p.L || !p.R) return { error: "no pair", div: d, rects: before }; const w0 = await writes(pb);
   const x0 = d.x + d.w / 2, y0 = d.y + d.h / 2;
+  const mv = async (dd, steps = 4) => { if (dir === "row") await pb.mouse.move(x0 + dd, y0, { steps }); else await pb.mouse.move(x0, y0 + dd, { steps }); };
+  const edgeOf = (rs) => (dir === "row" ? rs[p.L].x + rs[p.L].w : rs[p.L].y + rs[p.L].h);
   const tl0 = await tlOf(); const band0 = (await rect(pb, "#tl-pane")).h;
   await pb.mouse.move(x0, y0); await pb.mouse.down(); await frame(pb);
-  await pb.mouse.move(x0 - 60, y0, { steps: 4 }); await frame(pb); await frame(pb);
-  const mid = { rects: await rectsOf(), tl: await tlOf() };
+  await mv(-60); await frame(pb); await frame(pb);
+  const mid = { rects: await rectsOf(), tl: await tlOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 60 };
   await tlFrB.evaluate(() => { const g = document.createElement("div"); g.id = "lab-grow"; g.style.height = "150px"; document.body.appendChild(g); });
   await pb.waitForFunction((t) => document.querySelector(".col").style.getPropertyValue("--tl") !== t, tl0, { timeout: 5000 }).catch(() => {});
   await frame(pb); await frame(pb);
-  const grown = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), writes: await kitWrites(w0) };
-  await pb.mouse.move(x0 - 100, y0, { steps: 4 }); await frame(pb); await frame(pb);   // another frame of the drag
-  const later = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), pointer: x0 - 100, writes: await kitWrites(w0) };
+  const grown = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 60, writes: await kitWrites(w0) };   // no move since the growth: the edge re-applied against the re-read geometry
+  await mv(-100); await frame(pb); await frame(pb);   // another frame of the drag
+  const later = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 100, writes: await kitWrites(w0) };
+  let farPoint = null;
+  if (far) { await mv(900, 6); await frame(pb); await frame(pb); const rs = await rectsOf(); farPoint = { rects: rs, edge: edgeOf(rs), pointer: (dir === "row" ? x0 : y0) + 900 }; }
   if (escape) { await pb.keyboard.press("Escape"); await frame(pb); }
   await pb.mouse.up(); await frame(pb); await frame(pb);
-  const after = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), stored: await storedLayout(), writes: await kitWrites(w0) };
+  const after = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), stored: await storedLayout(), writes: await kitWrites(w0), farPoint };
   await tlFrB.evaluate(() => { const g = document.getElementById("lab-grow"); if (g) g.remove(); });
   await pb.waitForFunction((t) => document.querySelector(".col").style.getPropertyValue("--tl") === t, tl0, { timeout: 5000 }).catch(() => {});
   await frame(pb); await frame(pb);
-  return { escape, pair: p, tl0, band0, mid, grown, later, after, back: { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h } };
+  return { escape, dir, far, pair: p, tl0, band0, mid, grown, later, after, back: { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h } };
 }
 // the kit's BAND edge (the col-dir divider whose bottom meets the band's top): the band's height follows the pointer's distance
 // from its bottom, live per frame; the store is written once at release, never per frame, and nothing on Escape
@@ -431,6 +435,9 @@ out.kitToggleHideEscape = await toggleMidDrag("row", -60, "files", { escape: tru
 out.kitToggleShowRelease = await toggleMidDrag("row", -60, "files", { show: true });
 out.kitBandGrowRelease = tlFrB ? await bandGrowMidDrag() : { error: "no timeline frame" };
 out.kitBandGrowEscape = tlFrB ? await bandGrowMidDrag({ escape: true }) : { error: "no timeline frame" };
+// the divider between STACKED panes (the chat over the docked feed, under the band's split): the band's growth moves its avail, its rect
+// and the pair, so the drag's edge must be re-read (round four): the edge at the pointer with no move, the far drag at the minimum
+out.kitBandGrowStacked = tlFrB ? await bandGrowMidDrag({ dir: "col", far: true }) : { error: "no timeline frame" };
 out.kitBand = await dragBandKit([-40, -20, 30]);
 out.kitBandEscape = await dragBandKit([-30, 20], { escape: true });
 // a reload restores the persisted layout: the rects before and after, and the stored string against the layout after
@@ -450,6 +457,21 @@ process.exit(0);
 
 def _leaves(node):
     return [p for k in node["kids"] for p in _leaves(k)] if "kids" in node else [node["pane"]]
+
+
+def _split_holding(node, a, b):
+    """The split whose direct kids hold leaves `a` and `b` in adjacent positions (the dragged pair's split), or None."""
+    if "kids" not in node:
+        return None
+    ls = [_leaves(k) for k in node["kids"]]
+    for i in range(len(ls) - 1):
+        if a in ls[i] and b in ls[i + 1] and len(ls[i]) == 1 and len(ls[i + 1]) == 1:
+            return node
+    for k in node["kids"]:
+        r = _split_holding(k, a, b)
+        if r is not None:
+            return r
+    return None
 
 
 def _fixed_px(node, pane):
@@ -740,7 +762,7 @@ class ServedLiveDividers(unittest.TestCase):
             if not t["show"]:
                 self.assertIn("files-pane", at["stored"]["parsed"].get("parked", []), "a hidden pane is parked, once")
             self.assertFalse(at["pressed"], "%s: the drag ended at the toggle (new information under the held pointer)" % name)
-            self.assertEqual(at["writes"], 2, "%s: the drag's commit and the reconcile's write: %r" % (name, at["writes"]))
+            self.assertEqual(at["writes"], 1, "%s: ONE store write at the toggle: the drag lands without writing and the reconcile writes the corrected layout (round four: the commit's write of the press-tree layout was a second, stale write): %r" % (name, at["writes"]))
             # the drag's last position landed: a pane HIDDEN gives its room to every remaining kid in proportion, so the dragged pair keeps
             # its SHARE; a pane SHOWN docks at the right end and splits the last leaf's share in half (splitAt), so the dragged pair's
             # left pane keeps its width less its part of the one new gutter
@@ -752,7 +774,7 @@ class ServedLiveDividers(unittest.TestCase):
                 self._within(share(at["rects"]), share(t["mid"]["rects"]), 0.01, "%s: the drag's last position landed (the pair's share held through the close): mid %r after %r" % (name, t["mid"]["rects"], at["rects"]))
             self.assertEqual(t["afterMore"]["rects"], at["rects"], "%s: more travel under the held pointer moves nothing" % name)
             self.assertEqual(t["afterUp"]["rects"], at["rects"], "%s: the release (or Escape) after changes nothing" % name)
-            self.assertEqual(t["afterUp"]["writes"], 2, "%s: and writes nothing more" % name)
+            self.assertEqual(t["afterUp"]["writes"], 1, "%s: and writes nothing more" % name)
             self.assertEqual(t["afterUp"]["stored"]["raw"], at["stored"]["raw"])
             self.assertEqual(sorted(t["restored"]["rects"].keys()), sorted(t["before"].keys()), "%s: the pane put back" % name)
         # a reload restores the persisted layout: the same panes, the columns at their widths (the band's height is content-sized by the
@@ -781,6 +803,33 @@ class ServedLiveDividers(unittest.TestCase):
             self.assertEqual(b["after"]["writes"], 1, "%s: one store write, at the end: %r" % (name, b["after"]["writes"]))
             self._within(_fixed_px(b["after"]["stored"]["parsed"]["tree"], "tl-pane"), grown_px, 1.5, "%s: the store carries the new band px" % name)
             self._within(b["back"]["band"], b["band0"], 1.5, "%s: the content shrunk back, the band follows" % name)
+
+    def test_a_divider_between_stacked_panes_under_the_band_re_reads_its_edge_when_the_band_grows(self):
+        # round four: the reconcile's carry left the drag's avail, rect, pair sizes and press origin as recorded at the press, so under
+        # the band's split a divider between stacked panes clamped, resized and persisted against a geometry that was gone (the edge 87 px
+        # behind the pointer with no move, the far drag leaving the bottom pane at 96 px under the 120 minimum, the store holding it)
+        r = self._result()
+        b = r["kitBandGrowStacked"]
+        self.assertNotIn("error", b, b)
+        self.assertEqual(b["dir"], "col")
+        self.assertNotEqual(b["grown"]["tl"], b["tl0"], "the band grew under the drag: %r" % b["grown"]["tl"])
+        self._within(b["mid"]["edge"] + 3.5, b["mid"]["pointer"], 1.5, "before the growth the edge sits at the pointer")
+        self._within(b["grown"]["edge"] + 3.5, b["grown"]["pointer"], 1.5, "after the growth, with NO move, the edge is back at the pointer (the re-read geometry re-applied): %r" % {k: b["grown"][k] for k in ("edge", "pointer", "tl")})
+        self._within(b["later"]["edge"] + 3.5, b["later"]["pointer"], 1.5, "and follows the next move: %r" % {k: b["later"][k] for k in ("edge", "pointer")})
+        fp = b["after"]["farPoint"]
+        self.assertIsNotNone(fp)
+        R = b["pair"]["R"]
+        self._within(fp["rects"][R]["h"], 120.0, 1.5, "the far drag stops with the bottom pane at the real minimum, 120 px (the stale press values left it at 96): %r" % fp["rects"][R])
+        self._within(b["after"]["rects"][R]["h"], 120.0, 1.5, "the release keeps it")
+        tree = b["after"]["stored"]["parsed"]["tree"]
+        L = b["pair"]["L"]
+        pair_split = _split_holding(tree, L, R)
+        self.assertIsNotNone(pair_split, "the store holds the pair's split: %r" % tree)
+        i = _leaves(pair_split["kids"][0]) == [L] and 0 or [k for k, kid in enumerate(pair_split["kids"]) if L in _leaves(kid)][0]
+        rl, rr = pair_split["ratios"][i], pair_split["ratios"][i + 1]
+        avail = b["after"]["rects"][L]["h"] + b["after"]["rects"][R]["h"]
+        self._within(rr * avail, 120.0, 1.5, "the store's ratios match the screen: the bottom pane's share is 120 px of the pair: %r" % pair_split["ratios"])
+        self.assertEqual(b["after"]["writes"], 1, "one store write, at the release")
 
     def test_the_kits_band_edge_resizes_live_persists_once_at_release_and_nothing_on_escape(self):
         r = self._result()

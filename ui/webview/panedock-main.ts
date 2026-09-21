@@ -36,7 +36,7 @@ import {
 import { paneSourceOk } from "./pane-source";
 import {
   BAND, CHAT, DEFAULT_BAND_PX, FEED, FILES, FLEET, GUTTER, LAYOUT_KEY, RING, type Payload, type Shown, type Zone,
-  bandPxOf, colNumberOf, crossedSlop, dragEdge, edgeClamp, grabbable, growKey, isChatPane, landingRect, planTabDrop, reconcileShown, roundRect, seedLayout, zoneAt,
+  bandPxOf, colNumberOf, crossedSlop, dragEdge, edgeAt, edgeClamp, grabbable, growKey, isChatPane, landingRect, planTabDrop, pressGeometry, reconcileShown, roundRect, seedLayout, zoneAt,
 } from "./pane-dock";
 
 export const PANE_DOCKING_CLASS = "pane-docking";
@@ -145,7 +145,7 @@ const CONTROL_SEL = "button,a,input,textarea,select,[role=button],[contenteditab
 const TOP_RUN_SEL = "#tabbar,#tabs,.tab-strip-end,.fileview-bar";
 
 interface Press { pane: PaneId; frame: HTMLIFrameElement | null; win: Window; x0: number; y0: number; armed: boolean; zone: Zone | null }
-interface DivDrag { edge: EdgeRect; x0: number; y0: number; want: number | null; raf: number; start: Layout; tl0: string; a0: number; b0: number }
+interface DivDrag { edge: EdgeRect; x0: number; y0: number; px: number; py: number; want: number | null; raf: number; start: Layout; tl0: string; a0: number; b0: number }
 
 function byId(id: string): HTMLElement | null { return document.getElementById(id); }
 /** One layout per animation frame for a divider drag (plans/pane-docking.md section 12): arm `f` for the next frame and return its
@@ -341,8 +341,27 @@ class Engine {
       // into the press tree, so every later frame and the commit keep it.
       const sh = this.shown();
       const next = reconcileShown(this.lay, sh);
-      if (!sameSet(leaves(next.tree), leaves(this.lay.tree)) || !sameSet(next.parked, this.lay.parked)) this.endDiv(true);
-      else if (sh.band) d.start = { ...d.start, tree: setFixed(d.start.tree, BAND, sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX) };
+      if (!sameSet(leaves(next.tree), leaves(this.lay.tree)) || !sameSet(next.parked, this.lay.parked)) this.endDiv(true, false);   // landed, not written: the reconcile below writes the corrected layout once
+      else if (sh.band) {
+        d.start = { ...d.start, tree: setFixed(d.start.tree, BAND, sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX) };
+        // the drag's EDGE re-read from the rebased press tree (the 1927 read, round four): under the band's split a divider between
+        // stacked panes has its avail, its rect and the pair's sizes move with the band, so the press values would clamp, resize
+        // and persist against a geometry that is gone (the edge 87 px behind the pointer with no move; the pushed pane persisted
+        // under the minimum). The press origin shifts by the edge's displacement, so the pointer's travel stays relative to the
+        // edge; the last pointer place is re-clamped and a frame re-applies it, so the edge is at the pointer with no move.
+        const box = this.box();
+        const e2 = box ? edgeAt(d.start.tree, box, GUTTER, d.edge.path, d.edge.i) : null;
+        if (e2) {
+          d.x0 += e2.rect.x - d.edge.rect.x; d.y0 += e2.rect.y - d.edge.rect.y;
+          const g = pressGeometry(d.start.tree, e2);
+          d.edge = e2; d.a0 = g.a0; d.b0 = g.b0;
+          if (d.want !== null && !e2.fixed) {
+            const raw = e2.dir === "row" ? d.px - d.x0 : d.py - d.y0;
+            d.want = edgeClamp(d.a0, d.b0, raw, this.minFrac(e2) * e2.avail);
+            if (!d.raf) d.raf = frameOnce(() => this.applyDiv());
+          }
+        }
+      }
     }
     const next = reconcileShown(this.lay, this.shown());
     const changed = serialise(next) !== serialise(this.lay);
@@ -514,7 +533,7 @@ class Engine {
   private onKey(e: KeyboardEvent): void {
     if (!this.on) return;
     if (e.key === "Escape" && this.press && this.press.armed) { e.preventDefault(); e.stopPropagation(); this.cancelPress(); return; }
-    if (e.key === "Escape" && this.div && e.type === "keydown") { e.preventDefault(); e.stopPropagation(); this.endDiv(false); return; }   // a divider drag: the pre-drag sizes, live, nothing written
+    if (e.key === "Escape" && this.div && e.type === "keydown") { e.preventDefault(); e.stopPropagation(); this.endDiv(false); return; }   // a divider drag: the press tree back, live (the band's height for its own edge); written only when the restored layout differs from the stored one
     if (e.key === "Alt") this.setAlt(e.type === "keydown");
   }
   /** Option/Alt held: the open hand over every pane, content included (the cursor is inherited, so each pane
@@ -767,15 +786,16 @@ class Engine {
     // EVERY edge resizes LIVE, one layout per animation frame (plans/pane-docking.md section 12): a move records the clamped
     // position and arms a frame; the frame applies the latest (a burst of moves costs one relayout, a frame without a move
     // nothing); the iframes are pointer-transparent for the drag (RESIZE_CLASS); the store is written once, at release;
-    // Escape restores the pre-drag tree and band height live and writes nothing. No landing line.
+    // Escape restores the press tree live (the band's height too for the band's own edge) and writes only when the restored
+    // layout differs from the stored one (a reconcile under the drag deferred its write: reconcile, endDiv). No landing line.
     if (!this.lay) return;
     const tl0 = this.col ? this.col.style.getPropertyValue("--tl") : "";
     // the pair's sizes AT THE PRESS are the drag's frame of reference: every frame applies the pointer's absolute travel to the
     // tree as it was at the press, and the clamp holds against these (the 1927 read: clamping against the tree the drag rewrote
     // every frame shrank the window each frame and the edge stopped at half its range)
-    const split = this.splitAt(edge.path);
-    const a0 = split ? edge.avail * split.ratios[edge.i] : 0, b0 = split ? edge.avail * split.ratios[edge.i + 1] : 0;
-    this.div = { edge, x0: e.clientX, y0: e.clientY, want: null, raf: 0, start: parse(serialise(this.lay)) as Layout, tl0, a0, b0 };
+    const start = parse(serialise(this.lay)) as Layout;
+    const { a0, b0 } = pressGeometry(start.tree, edge);
+    this.div = { edge, x0: e.clientX, y0: e.clientY, px: e.clientX, py: e.clientY, want: null, raf: 0, start, tl0, a0, b0 };
     document.body.classList.add(RESIZE_CLASS, edge.dir === "row" && !edge.fixed ? RESIZE_X_CLASS : RESIZE_Y_CLASS);   // the divider's own cursor, over every pane
     const mv = (ev: Event) => this.onDivMove(ev as PointerEvent);
     const up = () => this.endDiv(true);
@@ -784,19 +804,13 @@ class Engine {
     this.divOff = () => { window.removeEventListener("pointermove", mv, true); window.removeEventListener("pointerup", up, true); };
   }
 
-  private splitAt(path: number[]): { ratios: number[] } | null {
-    if (!this.lay) return null;
-    let n: any = this.lay.tree;
-    for (const i of path) { if (!n || !n.kids || !n.kids[i]) return null; n = n.kids[i]; }
-    return n && n.kids ? (n as { ratios: number[] }) : null;
-  }
-
   private minFrac(edge: EdgeRect): number { return Math.min(0.25, MIN_PX / Math.max(1, edge.avail)); }
 
   private onDivMove(e: PointerEvent): void {
     const d = this.div;
     if (!d) return;
     e.preventDefault();
+    d.px = e.clientX; d.py = e.clientY;   // the pointer's last place: a rebase under the drag re-clamps against it (reconcile)
     if (d.edge.fixed) {
       // the band's edge: its height in px follows the pointer, through the shipped --tl (the observer re-renders)
       if (!this.col) return;
@@ -833,7 +847,9 @@ class Engine {
     this.lay = { ...this.lay, tree }; this.render();
   }
 
-  private endDiv(commit: boolean): void {
+  /** End the drag: `commit` lands the last recorded position (and renders), Escape restores; `write` (the release's default) persists
+   *  the commit; a reconcile that ends the drag under a toggled pane lands without writing and writes the corrected layout itself. */
+  private endDiv(commit: boolean, write = true): void {
     const d = this.div;
     if (this.divOff) { this.divOff(); this.divOff = null; }
     if (!d) { this.div = null; document.body.classList.remove(RESIZE_CLASS, RESIZE_X_CLASS, RESIZE_Y_CLASS); return; }
@@ -841,7 +857,7 @@ class Engine {
     if (commit) this.applyDiv();   // the last recorded position lands (and renders) before the write
     this.div = null;
     document.body.classList.remove(RESIZE_CLASS, RESIZE_X_CLASS, RESIZE_Y_CLASS);
-    if (commit) this.persist();
+    if (commit) { if (write) this.persist(); }
     else {
       // Escape (or the kit going off mid-drag): the press tree back, live (rebased with what a reconcile changed under the
       // drag: reconcile). The band's height variable is restored for the BAND'S edge only, and first, so the style observer's

@@ -516,7 +516,14 @@ amount) holds the line where it was on screen. The vertical split's own rule (th
 unchanged. The
 result persists ONCE, at release, to the store each drag already writes (`romp-pane-grow`, `romp-layout`,
 `romp-chat-cols`; the band persists nothing, as today), never per frame. Escape during a drag restores the pre-drag
-sizes live (the grows, the tree, the `--tl`, the ratio as they were at the press) and ends the drag without a write.
+sizes live (the grows, the tree, the ratio as they were at the press; the band's height for the band's own edge, since
+a column drag never touched it) and ends the drag without a write, except that the kit writes when the restored layout
+differs from the stored one (a reconcile under the drag, the band re-sized by the shell's `autosize`, deferred its write).
+A reconcile under a kit drag reaches the press tree the frames are built from: a change of the leaf set ends the drag at
+its last position, landed, and the reconcile writes the corrected layout once; the band's px is carried into the press
+tree, and the drag's edge is re-read from it (a divider between stacked panes under the band's split moves with the band:
+its avail, its rect and the pair's sizes; the press origin shifts by the edge's displacement, so the edge stays at the
+pointer with no move and the far drag stops at the real minimum).
 Escape is heard wherever the keyboard sits: a divider press prevents the default, so a focused pane keeps the keyboard
 and its document, not the shell's, sees the key; the drag therefore listens on the window and on every same-origin
 pane document for its duration. A URL-source pane (`data-protocol=none`, a foreign origin) cannot be listened in, so

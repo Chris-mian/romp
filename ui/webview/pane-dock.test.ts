@@ -10,7 +10,8 @@ import {
   edgeZone, zoneAt, landingRect, grabbable, crossedSlop, growKey, seedLayout, defaultDock, reconcileShown,
   bandPxOf, roundRect, colNumberOf, ownerColumn, planTabDrop, type Shown,
 } from "./pane-dock";
-import { layout, leaves, isSplit, has, type Split, type Layout } from "./pane-tree";
+import { layout, leaves, isSplit, has, setFixed, type Split, type Layout } from "./pane-tree";
+import * as PDockNS from "./pane-dock";
 import * as PDock from "./pane-dock";
 // the divider drag's pure half is read by name off the module so a build at a base without it still builds and the pins red on behaviour
 const edgeClamp = (PDock as unknown as Record<string, (a0: number, b0: number, px: number, minPx: number) => number>).edgeClamp;
@@ -263,4 +264,38 @@ test("dragEdge: a horizontal edge follows the pointer's absolute travel from the
   const committed = dragEdge(start, [], 1, 150, avail, minFrac);
   assert.deepEqual(dragEdge(start, [], 1, 150, avail, minFrac), committed, "the release lands the last recorded position: a pure function of the press and the travel");
   assert.deepEqual(px(dragEdge(start, [], 1, 0, avail, 0)), [600, 300, 400], "no travel: the start");
+});
+
+// A drag's edge under a BAND RE-SIZE (the 1927 read, round four): a divider between stacked panes under the band's split moves with
+// the band, and so do its avail and the pair's sizes; the engine re-reads them from the rebased press tree with these two pure reads
+// (the press values clamped and resized against a geometry that was gone: the edge 87 px behind the pointer, the pushed pane
+// persisted at 96 px under the 120 minimum). Read off the module so a build at a base without them still builds.
+test("edgeAt and pressGeometry: the edge between stacked panes under the band re-read after the band grows, its avail smaller by the growth, the pair's sizes with it, the far clamp at the real minimum", () => {
+  const edgeAt = (PDockNS as unknown as Record<string, (t: Split, box: { x: number; y: number; w: number; h: number }, g: number, path: number[], i: number) => { rect: { x: number; y: number; w: number; h: number }; avail: number; dir: string; fixed: boolean; path: number[]; i: number } | null>).edgeAt;
+  const pressGeometry = (PDockNS as unknown as Record<string, (t: Split, e: unknown) => { a0: number; b0: number }>).pressGeometry;
+  assert.equal(typeof edgeAt, "function", "the edge re-read"); assert.equal(typeof pressGeometry, "function", "the pair's sizes");
+  // the lab's dock-under-chat tree: a column of [the row [the chat over the feed, the outline, the files pane], the band fixed 97]
+  const tree: Split = { dir: "col", kids: [{ dir: "row", kids: [{ dir: "col", kids: [{ pane: CHAT }, { pane: FEED }], ratios: [0.5, 0.5] }, { pane: FLEET }, { pane: FILES }], ratios: [0.6, 0.2, 0.2] }, { pane: BAND }], ratios: [1, 0], fixed: [null, 97] };
+  const box = { x: 0, y: 0, w: 1500, h: 870 };
+  const e0 = edgeAt(tree, box, GUTTER, [0, 0], 0);
+  assert.ok(e0 && e0.dir === "col" && !e0.fixed, "the chat|feed edge, between stacked panes");
+  const g0 = pressGeometry(tree, e0);
+  assert.equal(Math.round(e0!.avail), Math.round(870 - GUTTER - 97 - GUTTER), "its avail is the column's height less the band and two gutters");
+  assert.equal(Math.round(g0.a0 + g0.b0), Math.round(e0!.avail), "the pair fills it");
+  // the band grows 150 px under the drag (the shell's autosize): the same edge, re-read from the rebased press tree
+  const t2 = setFixed(tree, BAND, 247) as Split;
+  const e2 = edgeAt(t2, box, GUTTER, [0, 0], 0)!;
+  assert.equal(Math.round(e0!.avail - e2.avail), 150, "its avail is smaller by the growth");
+  assert.equal(Math.round(e0!.rect.y - e2.rect.y), 75, "and the divider moved up by the chat's share of it (the origin shift the engine applies)");
+  const g2 = pressGeometry(t2, e2);
+  assert.equal(Math.round(g2.a0 + g2.b0), Math.round(e2.avail), "the pair's sizes re-derived from the new avail");
+  // the far drag clamps at the REAL minimum against the re-derived geometry (against the press values it landed the feed at 96 px)
+  const minFrac = Math.min(0.25, 120 / e2.avail);
+  const want = edgeClamp(g2.a0, g2.b0, 900, minFrac * e2.avail);
+  const after = dragEdge(t2, [0, 0], 0, want, e2.avail, minFrac) as Split;
+  const inner = (after.kids[0] as Split).kids[0] as Split;
+  assert.equal(Math.round(inner.ratios[1] * e2.avail), 120, "the feed at 120 px");
+  const stale = edgeClamp(g0.a0, g0.b0, 900, Math.min(0.25, 120 / e0!.avail) * e0!.avail);
+  const staleAfter = dragEdge(t2, [0, 0], 0, stale, e0!.avail, Math.min(0.25, 120 / e0!.avail)) as Split;
+  assert.ok(Math.round(((staleAfter.kids[0] as Split).kids[0] as Split).ratios[1] * e2.avail) < 120, "the press values would have left it under the minimum (the review's 96 px)");
 });
