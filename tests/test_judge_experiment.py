@@ -211,7 +211,7 @@ class Harness(unittest.TestCase):
         self.assertTrue(list(Path(dest, "claude", "projects").glob("*/%s.jsonl" % eid)), "each ending is its own truncated transcript")
         self.assertTrue(Path(dest, "state", "romp", "names", eid).exists(), "each ending has its names entry")
         self.assertEqual(Path(dest, "state", "romp", "session-hosts").read_text(), "off")
-        self.assertEqual(m["skipped"], {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0}, "skips are counted, never named")
+        self.assertEqual(m.get("skipped"), {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0}, "skips are counted, never named")
         # the journal is cut at the turn's start: a row before it stays, in the ending's own re-keyed journal; a later one goes
         e0 = self._ending(m, SIDS[0], 0)
         (self.state / "overrides" / (SIDS[0] + ".jsonl")).write_text(
@@ -269,7 +269,9 @@ class Harness(unittest.TestCase):
         (self.state / "sdk" / (sid + ".json")).write_text(json.dumps({"sid": sid, "lastSid": leaf}))
         (self.state / "episodes" / (sid + ".jsonl")).write_text(json.dumps({"fsid": "11111111-2222-3333-4444-ffffffffff02"}) + "\n")
         (self.state / "states" / (sid + ".jsonl")).write_text(json.dumps({"resumeFork": {"from": "11111111-2222-3333-4444-ffffffffff03", "to": leaf}}) + "\n")
-        self.assertEqual(self.je.known_fsids(self.state, sid), {sid, leaf, "11111111-2222-3333-4444-ffffffffff02", "11111111-2222-3333-4444-ffffffffff03"})
+        fsids = getattr(self.je, "known_fsids", None)
+        self.assertIsNotNone(fsids, "the builder reads the registry's transcripts (the base read the sid's own only)")
+        self.assertEqual(fsids(self.state, sid), {sid, leaf, "11111111-2222-3333-4444-ffffffffff02", "11111111-2222-3333-4444-ffffffffff03"})
         recs = [uline(leaf, T0 + 90000, "after the clear", "u1"), aline(leaf, T0 + 90030, "Cleared and continued. Which option do you prefer?", "a1", "u1"),
                 uline(leaf, T0 + 90600, "one more", "u2", "a1"), aline(leaf, T0 + 90630, "Done.", "a2", "u2")]
         (self.pdir / (leaf + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
@@ -317,7 +319,10 @@ class Harness(unittest.TestCase):
         start, cut = float(e["startT"]), float(e["cutT"])
         store = self._live_store_with_done(sid, start, cut, [])
         eid = e["id"]
-        before = self.je.store_before(store, cut, start, eid)
+        try:
+            before = self.je.store_before(store, cut, start, eid)
+        except TypeError:
+            self.fail("store_before takes the turn's start and the ending id (the base cut at the turn's end under the session id)")
         self.assertEqual(before["rompUuid"], eid)
         self.assertNotIn(sid, json.dumps(before), "every id prefix is the ending's now")
         g1, g2 = before["nodes"].get(eid + ":g1"), before["nodes"].get(eid + ":g2")
@@ -374,9 +379,9 @@ class Harness(unittest.TestCase):
         cand_res = self.je.run_arm(dest, "candidate", cand, run_root, None, self.fake, now=T0 + 10**6)
         self.assertEqual(self._tree_hash(dest), corpus_before, "the corpus is copied, never written")
         mb, mc = self.je.measure(m, base), self.je.measure(m, cand_res)
-        self.assertEqual((mb["endings"], mb["leaks"], mb["falseInterrupts"], mb["flaps"], mb["comparable"]), (4, 3, 0, 0, True),
+        self.assertEqual((mb["endings"], mb["leaks"], mb["falseInterrupts"], mb["flaps"], mb.get("comparable")), (4, 3, 0, 0, True),
                          "the current prompt files the offer, the question and the undone item as done: three leaks: %r" % mb)
-        self.assertEqual((mc["endings"], mc["leaks"], mc["falseInterrupts"], mc["flaps"], mc["comparable"]), (4, 0, 0, 0, True),
+        self.assertEqual((mc["endings"], mc["leaks"], mc["falseInterrupts"], mc["flaps"], mc.get("comparable")), (4, 0, 0, 0, True),
                          "the candidate blocks all three and leaves the finished thread alone: %r" % mc)
         self.assertGreater(mb["costUsd"], 0); self.assertEqual(mb["calls"], round(mb["costUsd"] / 0.01), "one fixed-cost row per call")
         finished = [e["id"] for e in m["endings"] if e["class"] == "finished"][0]
@@ -411,10 +416,10 @@ class Harness(unittest.TestCase):
         os.environ["JE_TEST_PROSE"] = "1"
         res = self.je.run_arm(dest, "prose", cand, run_root, None, self.fake, now=T0 + 10**6)
         os.environ.pop("JE_TEST_PROSE", None)
-        self.assertGreaterEqual(res["closerNone"], 4, "every closer reply was prose the parser rejected: %r" % res["closerNone"])
-        self.assertGreaterEqual(res["failures"], res["closerNone"])
+        self.assertGreaterEqual(res.get("closerNone", 0), 4, "every closer reply was prose the parser rejected (the base counted nothing): %r" % res.get("closerNone"))
+        self.assertGreaterEqual(res.get("failures", 0), res.get("closerNone", 0))
         mm = self.je.measure(m, res)
-        self.assertFalse(mm["comparable"]); self.assertEqual(mm["failures"], res["failures"])
+        self.assertIs(mm.get("comparable"), False, "a row with failures is not comparable: %r" % mm); self.assertEqual(mm.get("failures"), res["failures"])
         rows = self.je.report(dest, run_root, figure=None)
         table = Path(run_root, "table.md").read_text()
         self.assertIn("not comparable", table); self.assertIn("| prose |", table)
