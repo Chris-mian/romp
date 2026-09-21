@@ -38,6 +38,6 @@ test("the kernel lifts the launch error's noRetry onto the status; only the brac
   assert.match(KERNEL, /"apiNoRetry": _launch_no_retry,/);
   assert.match(CONTRACT, /`noRetry`/, "the contract names the optional key");
   const ends = BACKEND.match(/"limit": False, "noRetry": True\}/g) || [];
-  assert.equal(ends.length, 2, "two writers cover the bracket's three loud ends: the status handler (systemError and notLoaded) and the pump's client-death arm; no other launch-error writer carries it");
+  assert.equal(ends.length, 3, "three writers cover the bracket's loud ends: the status handler (systemError and notLoaded), the pump's client-death arm, and the registry load's restart end (a compaction whose outcome the new kernel cannot learn, 2026-09-21); no turn-failure writer carries it");
   assert.match(BACKEND, /"text": "codex %s rejected: %s" % \(e\.operation, e\),\n\s+"at": time\.time\(\), "limit": False\}/, "a failed turn's notice keeps its Retry");
 });

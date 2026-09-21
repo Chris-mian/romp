@@ -4519,6 +4519,201 @@ class NativeCompact(unittest.TestCase):
         self.assertTrue(any(w and "app-server ended" in w["text"] for w in writes), "the loud record was committed")
         self.assertIsNone(writes[-1], "the None commits last: the stale record never overwrote it")
 
+    # ── the bracket in the registry row (2026-09-21, the post-merge review of the native compaction) ──────────────
+
+    def _row(self, be, sid):
+        return json.loads(be._reg_path().read_text())[sid]
+
+    def test_a_restart_mid_compaction_ends_the_bracket_as_an_unknown_outcome(self):
+        # The registry load restored the launch error and no bracket, so after a kernel restart mid-compaction the row
+        # read compacting False with no notice, and a wait that had seen compacting printed done over an outcome nobody
+        # recorded (the post-merge review of the native compaction, 2026-09-21). The app-server is the kernel's child
+        # and ended with it, so no status will ever end a restored bracket: the load turns a row still reading
+        # compacting into a loud end worded as an unknown outcome (a noRetry notice, the mark the CLI's wait reads as a
+        # compaction's end), replacing a restored notice, which is older than the restart, and writes compacting False
+        # back so a second restart does not re-fire it. The row is the snapshot the latch leaves, written by hand here.
+        be, fake, tmp, sid = self._turned()
+        reg = be._reg_path()
+
+        def plant(notice):
+            rows = json.loads(reg.read_text())
+            rows[sid]["compacting"] = True
+            rows[sid]["launchError"] = notice
+            reg.write_text(json.dumps(rows))
+        plant(None)
+        logs = []
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs.append)   # the kernel restart
+        self.assertIs(be2.compacting(sid), False, "no bracket is restored: nothing would ever end it")
+        self.assertIs(be2.busy(sid), False)
+        self.assertEqual(be2.live_sessions()[sid]["state"], "waiting")
+        err = be2.launch_error(sid)
+        self.assertIsNotNone(err, "the restart is a loud end, not a silent one")
+        self.assertIn("restarted", err["text"])
+        self.assertIn("compacting", err["text"])
+        self.assertIn("unknown", err["text"])
+        self.assertIs(err.get("noRetry"), True, "the mark the wait reads as a compaction's end")
+        self.assertFalse(err["limit"])
+        row = self._row(be2, sid)
+        self.assertIs(row["compacting"], False, "written back: a second restart has nothing to re-fire")
+        self.assertEqual(row["launchError"], err, "the notice survives the next restart as every launch error does")
+        self.assertEqual([l for l in logs if l.startswith("compaction of")],
+                         ["compaction of web ended: %s" % err["text"]], "logged in the shape of every loud end")
+        # a notice restored beside the bracket is older than the restart: the restart's replaces it
+        plant({"text": "an older synthetic failure", "at": 1.0, "limit": False})
+        be3 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs.append)
+        err3 = be3.launch_error(sid)
+        self.assertIn("restarted", err3["text"])
+        self.assertNotIn("older synthetic failure", err3["text"])
+        self.assertGreater(err3["at"], err["at"], "a new end, a new stamp: the wait's identity is (at, text)")
+        self.assertEqual(self._row(be3, sid)["launchError"], err3)
+        logs4 = []
+        be4 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs4.append)   # the second restart
+        self.assertEqual(be4.launch_error(sid), err3, "restored as any launch error, at its original stamp")
+        self.assertEqual([l for l in logs4 if l.startswith("compaction of")], [], "not re-fired")
+        self.assertIs(be4.compacting(sid), False)
+        # the row still runs, and the next accepted turn clears the notice, as it clears every bracket end's
+        self.assertTrue(be4.send(sid, "after the restart"))
+        self.assertTrue(until(lambda: not be4.busy(sid) and not be4.pending_queued(sid)))
+        self.assertIsNone(be4.launch_error(sid))
+        self.assertEqual(_boundaries(_records(tmp)), [], "no divider for an end nobody saw")
+
+    def test_a_row_saved_with_the_bracket_down_or_without_the_field_loads_quietly(self):
+        # the snapshot carries the bracket (down after the first turn), and neither that row nor one from before the
+        # field existed fires the restart notice
+        be, fake, tmp, sid = self._turned()
+        self.assertIs(self._row(be, sid)["compacting"], False, "the snapshot carries the bracket")
+        logs = []
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs.append)
+        self.assertIsNone(be2.launch_error(sid))
+        reg = be._reg_path()
+        rows = json.loads(reg.read_text())
+        del rows[sid]["compacting"]                   # the former schema
+        reg.write_text(json.dumps(rows))
+        be3 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs.append)
+        self.assertIsNone(be3.launch_error(sid))
+        self.assertIs(be3.compacting(sid), False)
+        self.assertEqual([l for l in logs if l.startswith("compaction of")], [])
+
+    def test_the_latch_the_relatch_and_the_clean_end_are_in_the_row(self):
+        # compact() saves the bracket before the request goes out; the worker's re-latch on the server's Compact
+        # refusal saves it too; the clean end writes it back down. Each save runs under s.lock, the lock compacting()
+        # reads under, so the row is read the moment the flag is observed, no wait.
+        be, fake, tmp, sid = self._turned()
+        self.assertEqual(be.compact(sid), "")
+        self.assertIs(self._row(be, sid)["compacting"], True, "saved at the latch, before the request returns")
+        _status(fake, "T-1", "active")
+        _status(fake, "T-1", "idle")
+        self.assertTrue(until(lambda: be.compacting(sid) is False))
+        row = self._row(be, sid)
+        self.assertIs(row["compacting"], False, "the clean end writes it back")
+        self.assertIsNone(row["launchError"])
+        fake.compacting = True
+        self.assertTrue(be.send(sid, "into a foreign compaction"))
+        self.assertTrue(until(lambda: be.compacting(sid) is True), "the refusal latches the bracket")
+        self.assertIs(self._row(be, sid)["compacting"], True, "the re-latch is in the row too")
+        fake.compacting = False
+        _status(fake, "T-1", "idle")
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+        self.assertIs(self._row(be, sid)["compacting"], False)
+
+    def test_the_loud_ends_write_the_bracket_down_and_the_notice_in_one_row(self):
+        # systemError, then the client's death: the bit falls and the notice lands in the same registry write, so the
+        # row a restart reads is the loud end's, never a clean-looking one and never an unknown outcome
+        be, fake, tmp, sid = self._turned()
+        self.assertEqual(be.compact(sid), "")
+        _status(fake, "T-1", "active")
+        _status(fake, "T-1", "systemError")
+        self.assertTrue(until(lambda: be.compacting(sid) is False))
+        row = self._row(be, sid)
+        self.assertIs(row["compacting"], False)
+        self.assertIn("systemError", row["launchError"]["text"])
+        be, fake, tmp, sid = self._turned()
+        self.assertEqual(be.compact(sid), "")
+        _status(fake, "T-1", "active")
+        self.assertTrue(until(lambda: self._active_seen(be, sid)))
+        fake.close()                                  # the app-server is gone
+        self.assertTrue(until(lambda: be.compacting(sid) is False))
+        row = self._row(be, sid)
+        self.assertIs(row["compacting"], False)
+        self.assertIn("app-server", row["launchError"]["text"])
+        logs = []
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: FakeClient(), log=logs.append)   # the restart after it
+        self.assertIn("app-server", be2.launch_error(sid)["text"], "the loud end's notice, not the restart's")
+        self.assertIs(be2.compacting(sid), False)
+        self.assertEqual([l for l in logs if l.startswith("compaction of")], [])
+
+    def test_the_accepted_turn_kill_resume_and_a_raising_request_write_the_bracket_down(self):
+        # the accepted turn: a bracket compact() latched that the server never took up (no active seen) is ended by a
+        # send the server accepts, and the turn's ACK write carries the end
+        be, fake, tmp, sid = self._turned()
+        self.assertEqual(be.compact(sid), "")
+        self.assertIs(self._row(be, sid)["compacting"], True)
+        self.assertTrue(be.send(sid, "a send the server accepts"))
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+        self.assertIs(self._row(be, sid)["compacting"], False, "the accepted turn's ACK carries the end")
+        self.assertTrue(_lock_free(be, sid))
+        # kill under a standing bracket, then a revive: kill's write carries the end, resume's the reset
+        self.assertEqual(be.compact(sid), "")
+        self.assertIs(self._row(be, sid)["compacting"], True)
+        self.assertTrue(be.kill(sid))
+        row = self._row(be, sid)
+        self.assertEqual((row["dead"], row["compacting"]), (True, False), "kill's write carries the end")
+        s = be._session(sid)
+        with s.lock:                                  # a late latch on the dead row, as the resume test above plants it
+            s.compacting = True
+            be._save_registry(s, fields=("compacting",))
+        self.assertIs(self._row(be, sid)["compacting"], True)
+        self.assertTrue(be.resume("web", sid))
+        row = self._row(be, sid)
+        self.assertEqual((row["dead"], row["compacting"]), (False, False), "resume's write carries the reset")
+        # a request that raises unlatches in the row too
+
+        class Raising(FakeClient):
+            def thread_compact(self, tid):
+                self._rec("thread_compact", tid)
+                raise RuntimeError("synthetic compact failure")
+        fake2 = Raising()
+        be2, _, tmp2 = build(factory=lambda: fake2)
+        sid2 = be2.spawn("api", "/TESTDIR")
+        self.assertTrue(be2.send(sid2, "first synthetic turn"))
+        self.assertTrue(_lock_free(be2, sid2))
+        self.assertTrue(be2.compact(sid2).startswith("Couldn't compact"))
+        self.assertIs(self._row(be2, sid2)["compacting"], False)
+        self.assertEqual(fake2.called("thread_compact"), [("thread_compact", "T-1")])
+
+    def test_a_latch_the_row_cannot_hold_refuses_the_compaction_and_leaves_the_row_unchanged(self):
+        # The latch's save is part of the request (review find, 2026-09-21): a bracket the registry cannot hold would
+        # start a compaction whose restart outcome nothing could record, a false durability claim. So a raising
+        # registry write at the latch unlatches under the same lock, before anything was published, and refuses in
+        # words with the save's reason; no request goes out, the disk row is as it was, the end counter does not move,
+        # and the row compacts once the registry is writable again.
+        logs = []
+        be, fake, tmp, sid = self._turned(log=logs.append)
+        s = be._session(sid)
+        before = json.loads(be._reg_path().read_text())
+        with s.lock:
+            ends = s.compact_ends
+
+        def full(rows):
+            raise OSError(28, "No space left on device")
+        with mock.patch.object(be, "_write_registry_locked", full):
+            why = be.compact(sid)
+        self.assertTrue(why.startswith("Couldn't compact this conversation"), why)
+        self.assertIn("record", why)
+        self.assertIn("No space left on device", why, "the save's reason, in the refusal")
+        self.assertEqual(fake.called("thread_compact"), [], "no request went out")
+        self.assertIs(be.compacting(sid), False)
+        self.assertIs(be.busy(sid), False)
+        self.assertEqual(be.live_sessions()[sid]["state"], "waiting")
+        self.assertIsNone(be.launch_error(sid), "a refusal in words, not a notice")
+        self.assertEqual(json.loads(be._reg_path().read_text()), before, "the disk row is as it was")
+        with s.lock:
+            self.assertEqual(s.compact_ends, ends, "no bracket stood: the end counter does not move")
+        self.assertTrue(any(l.startswith("compaction bracket registry save:") for l in logs), logs)
+        self.assertEqual(be.compact(sid), "", "writable again: the row compacts, no stale bracket refuses it")
+        self.assertEqual(fake.called("thread_compact"), [("thread_compact", "T-1")])
+        self.assertIs(self._row(be, sid)["compacting"], True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
