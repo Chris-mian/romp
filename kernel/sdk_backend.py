@@ -644,12 +644,25 @@ def _parse_router_models(raw):
     return out
 
 
+_ROUTER_IDS = frozenset()   # the ids the kernel installed this life (declared or from the gateway's listing), told through
+#                             set_router_ids; monotonic on purpose (a session still running a removed id keeps its badge)
+
+
+def set_router_ids(ids):
+    """The kernel's word on the gateway ids it installed (kernel._router_tell_backend, at every apply and remove): the
+    declared list this module can read itself PLUS the ids a gateway's listing added, which only the kernel knows. The
+    badge, the served-model learn and the live count read the union through _router_declared."""
+    global _ROUTER_IDS
+    _ROUTER_IDS = frozenset(str(i) for i in (ids or ()) if i)
+
+
 def _router_declared():
-    """The gateway ids the operator declared for this service (the environment the manager handed the process; a
-    short split per call, no memo, so a test's env change is seen). The BADGE's use: a declared id is a real model id
-    the CLI may report and is shown verbatim — the Extra models switch's state plays no part, because a session still
-    running a removed id keeps its badge."""
-    return frozenset(_parse_router_models(os.environ.get("ROMP_ROUTER_MODELS")))
+    """The gateway ids this process knows: the operator's ROMP_ROUTER_MODELS (the environment the manager handed the
+    process; a short split per call, no memo, so a test's env change is seen) united with the ids the kernel told it
+    (set_router_ids: a listing's ids). The BADGE's use: such an id is a real model id the CLI may report and is shown
+    verbatim — the Extra models switch's state plays no part, because a session still running a removed id keeps its
+    badge."""
+    return frozenset(_parse_router_models(os.environ.get("ROMP_ROUTER_MODELS"))) | _ROUTER_IDS
 
 
 def pretty_model(raw: str) -> str:

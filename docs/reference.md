@@ -385,7 +385,12 @@ change on an explicit pick.
 
 The switch's status line in the gear comes from the authed `/models` payload's `router` section,
 `{"enabled", "declared", "gateway", "error"}`: the ids the kernel parsed out of the variable, whether
-a gateway is configured, and the fault when the declaration could not be read. `/version` carries
+a gateway is configured (`ANTHROPIC_BASE_URL` in the service's environment first, else in Claude
+Code's managed or user settings, pointing anywhere but Anthropic), and the standing advisory while
+the switch is on: nothing declared, no gateway, live sessions still on a removed model, or a
+settings file that could not be read (a fixed phrase; the detail goes to the kernel log). A
+declared id the first-party grammar owns (a Claude version id) is skipped, said once in the log,
+and a listing that arrives after the switch was turned off installs nothing. `/version` carries
 `routerModels`, the switch's value, for the gear's checkbox.
 
 ### Per-session billing (login vs API key)

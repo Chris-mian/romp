@@ -3131,7 +3131,16 @@ def _note_unknown_model(mid):
 # the operator's explicit intent, and a silent gate is the detect-and-override this design replaces.
 ROUTER_MODELS_FILE = "router-models.json"    # the Extra models switch: {"enabled": bool, "gt": epoch-ms}; per-install
 _ROUTER_INSTALLED = set()                    # the ids THIS switch added to MODEL_CHOICES — the exact undo set
+_ROUTER_INSTALLED_BY_SET = {"_MODEL_VALUES": set(), "_JUDGE_MODEL_VALUES": set()}   # per set, only what the apply ADDED to it: an id a
+#                                              set already held (a version id in the judge tiers' allowed set) is never stripped on off
+_ROUTER_EVER = set()                         # every id installed this kernel life, declared or listed: what the backend's badge is told,
+#                                              monotonic on purpose (a session still running a removed id keeps its badge verbatim)
+_ROUTER_GEN = [0]                            # the switch's generation: bumped under _SETTINGS_LOCK at every applied flip and at boot; an
+#                                              apply or remove carrying an older generation is stale (a listing fetch that lands after an
+#                                              off flip, a declared apply delayed past a concurrent off) and is discarded, never installed
 _router_status_note = [None]                 # the standing advisory (no gateway / nothing declared / N live on a removed id)
+_router_probe_said = [None]                  # the settings-read fault last said on stderr (once per distinct fault; the payload carries a
+#                                              static phrase, never the file's path)
 
 
 def _parse_router_models(raw):
@@ -3162,24 +3171,36 @@ def _router_label(mid):
     return "%s-%s %s" % (m.group(1).upper(), m.group(2), m.group(3).capitalize()) if m else str(mid or "")
 
 
+ROUTER_SETTINGS_FAULT = "Claude Code settings could not be read"   # the advisory's static phrase for a read fault: never the path
+
+
 def _router_gateway_configured():
-    """(configured, error): whether the operator's Claude Code settings point ANTHROPIC_BASE_URL somewhere other
-    than Anthropic, the sign a gateway is in place. Read through the credentials module the kernel already holds
-    (managed settings first, then the user's, under CLAUDE_CONFIG_DIR: Claude Code's own precedence and the floor
-    the test suite sets), never a hand-rolled home-directory read. A read fault is reported in the advisory."""
+    """(configured, error): whether ANTHROPIC_BASE_URL points somewhere other than Anthropic, the sign a gateway is in
+    place. The kernel's own environment first (sessions inherit it, and service.env is where the docs send the operator),
+    then the operator's Claude Code settings through the credentials module the kernel already holds (managed settings,
+    then the user's, under CLAUDE_CONFIG_DIR: Claude Code's own precedence), never a hand-rolled home-directory read. A
+    read fault is a STATIC phrase in the advisory (the payload reaches every authed viewer; a file's path does not belong
+    there) with the detail on stderr once per distinct fault."""
+    def _gateway(base):
+        host = (urlparse(base).hostname or "").lower()
+        return bool(host) and not host.endswith("anthropic.com")
+    base = (os.environ.get("ANTHROPIC_BASE_URL") or "").strip()
+    if base:
+        return (_gateway(base), None)
     try:
         for path in jd._cred.settings_files(None, operator_only=True):
             d = jd._cred._read_settings(path)
             env = d.get("env") if isinstance(d, dict) else None
             base = str((env or {}).get("ANTHROPIC_BASE_URL") or "").strip() if isinstance(env, dict) else ""
             if base:
-                host = (urlparse(base).hostname or "").lower()
-                return (bool(host) and not host.endswith("anthropic.com"), None)
+                return (_gateway(base), None)
         return (False, None)
-    except jd._cred.CredentialError as e:
-        return (False, str(e))
     except Exception as e:
-        return (False, "%s: %s" % (type(e).__name__, e))
+        detail = "%s: %s" % (type(e).__name__, e)
+        if _router_probe_said[0] != detail:
+            _router_probe_said[0] = detail
+            sys.stderr.write("extra models: %s (%s)\n" % (ROUTER_SETTINGS_FAULT, detail))
+        return (False, ROUTER_SETTINGS_FAULT)
 
 
 def _fetch_router_models(url, timeout=4):
@@ -3199,31 +3220,71 @@ def _fetch_router_models(url, timeout=4):
     return out
 
 
-def _apply_router_families(ids):
+def _router_first_party(mid):
+    """True for an id the first-party grammar owns (a family's version id, or an id the catalog files under a family):
+    such an id is never a gateway row, on either road (the declared list, the gateway's listing)."""
+    return bool(_catalog_family(mid)) or bool(_MODEL_ID_RE.match(mid))
+
+
+def _router_tell_backend():
+    """The backend's badge is told every id installed this kernel life (declared or listed): sdk_backend reads
+    ROMP_ROUTER_MODELS itself, so a URL-sourced id would otherwise be unknown to pretty_model, the served-model learn
+    and the live count. Only a module already loaded is told (a box without the SDK dependency has none)."""
+    m = sys.modules.get("romp_sdk_backend")
+    fn = getattr(m, "set_router_ids", None) if m is not None else None
+    if fn is not None:
+        try:
+            fn(sorted(_ROUTER_EVER))
+        except Exception:
+            sys.stderr.write("extra models: the backend could not be told the installed ids: %s" % traceback.format_exc())
+
+
+def _apply_router_families(ids, gen=None, reason=""):
     """Install gateway ids as top-level picker choices, ADD-ONLY, after the first-party families. Mutates
     MODEL_CHOICES in place and updates the pick vouch's _MODEL_VALUES and the judge's allowed set, so every
-    picker, _vouched_model and the judge follow with no re-import; records what it added in _ROUTER_INSTALLED.
-    No colour rank. Returns the ids newly added. The caller sends the models frame OUTSIDE _catalog_lock."""
+    picker, _vouched_model and the judge follow with no re-import; records what it added in _ROUTER_INSTALLED
+    and, per set, in _ROUTER_INSTALLED_BY_SET (only the ids the set did not already hold). A first-party id on
+    either road is skipped, said once on stderr: it would install a duplicate tinted row and its removal would
+    strip a version id from the judge tiers' allowed set. `gen`, when given, is the switch generation the caller
+    captured; under _catalog_lock an older generation than the current one is stale (a later flip happened) and
+    nothing is installed. No colour rank. Returns the ids newly added. The caller sends the models frame OUTSIDE
+    _catalog_lock."""
+    skipped = [g for g in ids if g and _router_first_party(g)]
+    if skipped:
+        sys.stderr.write("extra models%s: %d first-party id(s) skipped (never a gateway row): %s\n"
+                         % (" (%s)" % reason if reason else "", len(skipped), ", ".join(skipped)))
     with _catalog_lock:
+        if gen is not None and gen != _ROUTER_GEN[0]:
+            sys.stderr.write("extra models%s: a stale apply (switch generation %d, now %d) discarded; nothing installed\n"
+                             % (" (%s)" % reason if reason else "", gen, _ROUTER_GEN[0]))
+            return []
         have = {m["value"] for m in MODEL_CHOICES}
-        added = [g for g in ids if g and g not in have]
+        added = [g for g in ids if g and g not in have and not _router_first_party(g)]
         if not added:
             return []
         MODEL_CHOICES.extend({"value": g, "label": _router_label(g)} for g in added)
         for name in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES"):
             st = globals().get(name)
             if isinstance(st, set):
-                st.update(added)
+                fresh = [g for g in added if g not in st]
+                st.update(fresh)
+                _ROUTER_INSTALLED_BY_SET[name].update(fresh)
         _ROUTER_INSTALLED.update(added)
+        _ROUTER_EVER.update(added)
+    _router_tell_backend()
     return added
 
 
-def _remove_router_families():
-    """The exact reverse of every apply: only the ids THIS switch installed leave MODEL_CHOICES and both value sets,
-    never anything the first-party catalog holds. A session already running a removed id keeps running it (the
-    pick just stops being offered; a later pick of it is refused by _vouched_model). Returns the ids removed; the
-    caller sends the models frame OUTSIDE _catalog_lock."""
+def _remove_router_families(gen=None):
+    """The exact reverse of every apply: only the ids THIS switch installed leave MODEL_CHOICES, and each value set
+    loses only what the apply added to IT (_ROUTER_INSTALLED_BY_SET), never anything the first-party catalog holds. A
+    session already running a removed id keeps running it (the pick just stops being offered; a later pick of it is
+    refused by _vouched_model). `gen` as for the apply: an older generation than the current one is a remove delayed
+    past a later flip, discarded. Returns the ids removed; the caller sends the models frame OUTSIDE _catalog_lock."""
     with _catalog_lock:
+        if gen is not None and gen != _ROUTER_GEN[0]:
+            sys.stderr.write("extra models: a stale remove (switch generation %d, now %d) discarded\n" % (gen, _ROUTER_GEN[0]))
+            return []
         gone = sorted(_ROUTER_INSTALLED)
         if not gone:
             return []
@@ -3232,20 +3293,24 @@ def _remove_router_families():
         for name in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES"):
             st = globals().get(name)
             if isinstance(st, set):
-                st.difference_update(gs)
+                st.difference_update(_ROUTER_INSTALLED_BY_SET[name])
+            _ROUTER_INSTALLED_BY_SET[name].clear()
         _ROUTER_INSTALLED.clear()
+    _router_tell_backend()
     return gone
 
 
 def _router_live_on(ids):
     """How many live sessions run one of `ids` right now (the switch-off advisory), read off the liveness snapshot
-    the kernel already holds — never a registry file of its own. Best-effort: 0 on any failure."""
+    the kernel already holds — never a registry file of its own. The row's `model` is the badge's label, which for
+    a gateway id the backend has been told (_router_tell_backend) is the raw id, so the match is on the id. None,
+    loud on stderr, when the snapshot cannot be read: the advisory then says the count is unknown rather than 0."""
     try:
         rows = _live_map() or {}
-        return sum(1 for r in rows.values()
-                   if isinstance(r, dict) and str(r.get("model") or r.get("liveModel") or "") in ids)
+        return sum(1 for r in rows.values() if isinstance(r, dict) and str(r.get("model") or "") in ids)
     except Exception:
-        return 0
+        sys.stderr.write("extra models: the live sessions could not be counted: %s" % traceback.format_exc())
+        return None
 
 
 def _router_models_on():
@@ -3269,10 +3334,12 @@ def _router_models_gt():
     return _gt_int(d.get("gt")) if isinstance(d, dict) else 0
 
 
-def _router_apply_declared(reason):
+def _router_apply_declared(reason, gen=None):
     """Install the declared list now (synchronous and network-free), and when ROMP_ROUTER_MODELS_URL names a
     gateway that lists models, fetch that list on a thread and union it in — never on the caller's thread (the
-    WS reader, the boot path). Refreshes the advisory. Returns the ids the declared list added."""
+    WS reader, the boot path). `gen` is the switch generation the caller captured under _SETTINGS_LOCK; both the
+    synchronous apply and the fetch thread's apply carry it, so a flip that happens meanwhile makes them stale
+    (nothing installs under an off store). Refreshes the advisory. Returns the ids the declared list added."""
     declared = _router_declared_families()
     gw, gerr = _router_gateway_configured()
     if not declared:
@@ -3284,14 +3351,14 @@ def _router_apply_declared(reason):
         sys.stderr.write("extra models (%s): %s\n" % (reason, _router_status_note[0]))
     else:
         _router_status_note[0] = None
-    added = _apply_router_families(declared)
+    added = _apply_router_families(declared, gen=gen, reason=reason)
     if added:
         sys.stderr.write("extra models (%s): %d joined the pickers: %s\n" % (reason, len(added), ", ".join(added)))
     url = (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()
     if url:
         def go():
             try:
-                more = _apply_router_families(_fetch_router_models(url))
+                more = _apply_router_families(_fetch_router_models(url), gen=gen, reason=reason)
                 if more:
                     sys.stderr.write("extra models (%s): %d more from the gateway's list: %s\n"
                                      % (reason, len(more), ", ".join(more)))
@@ -3323,16 +3390,22 @@ def _set_router_models(enabled, gt=None):
         except OSError as e:
             sys.stderr.write("romp-kernel: the extra models switch could not be written (%s); nothing applied\n" % e)
             return None
+        _ROUTER_GEN[0] += 1
+        gen = _ROUTER_GEN[0]
     if enabled:
-        _router_apply_declared("switch on")
+        _router_apply_declared("switch on", gen=gen)
     else:
-        gone = _remove_router_families()
+        gone = _remove_router_families(gen=gen)
         live = _router_live_on(set(gone)) if gone else 0
-        _router_status_note[0] = ("%d live session(s) still run a removed model; a later pick of one is refused" % live
-                                  if live else None)
+        if live is None:
+            _router_status_note[0] = "the live sessions could not be counted; one may still run a removed model"
+        else:
+            _router_status_note[0] = ("%d live session(s) still run a removed model; a later pick of one is refused" % live
+                                      if live else None)
         if gone:
             sys.stderr.write("extra models (switch off): %d left the pickers: %s%s\n"
-                             % (len(gone), ", ".join(gone), " — %d live session(s) keep running one" % live if live else ""))
+                             % (len(gone), ", ".join(gone),
+                                " — %s live session(s) keep running one" % ("?" if live is None else live) if live else ""))
     _models_changed()
     return stamp
 
@@ -3340,9 +3413,10 @@ def _set_router_models(enabled, gt=None):
 def _router_status():
     """The authed /models payload's `router` section, what the gear's status line reads: the switch, the ids THIS
     kernel parsed at start, whether a gateway is configured, and the standing advisory (or null)."""
+    on = _router_models_on()
     gw, gerr = _router_gateway_configured()
-    return {"enabled": _router_models_on(), "declared": _router_declared_families(), "gateway": bool(gw),
-            "error": _router_status_note[0] or gerr}
+    return {"enabled": on, "declared": _router_declared_families(), "gateway": bool(gw),
+            "error": (_router_status_note[0] or gerr) if on else None}   # an advisory is about a switch that is ON
 
 
 def _router_models_boot():
@@ -3350,7 +3424,10 @@ def _router_models_boot():
     ROMP_MODEL_CATALOG=off (a hermetic lab serves the shipped list alone). Returns the ids installed."""
     if (os.environ.get("ROMP_MODEL_CATALOG") or "").strip().lower() == "off" or not _router_models_on():
         return []
-    return _router_apply_declared("boot")
+    with _SETTINGS_LOCK:
+        _ROUTER_GEN[0] += 1
+        gen = _ROUTER_GEN[0]
+    return _router_apply_declared("boot", gen=gen)
 
 
 def _catalog_public_status():
@@ -19127,8 +19204,9 @@ def _sdk_locked():
             except Exception:
                 sys.stderr.write("model catalog boot: %s\n" % traceback.format_exc())
             try:
-                # the Extra models switch: the operator's declared gateway families join the pickers here
-                # when the switch is on — off-network on the boot path (see _router_models_boot)
+                # the Extra models switch: the operator's declared gateway families join the pickers here when
+                # the switch is on; the declared list installs synchronously, and a gateway's listing (a URL is
+                # set) is fetched on its own thread, never on this one (see _router_models_boot)
                 _router_models_boot()
             except Exception:
                 sys.stderr.write("extra models boot: %s\n" % traceback.format_exc())
