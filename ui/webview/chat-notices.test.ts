@@ -81,7 +81,7 @@ test("the kernel's answer re-arms the row on a refusal, saying why in the row, a
   // buttons spent and says so; a plain success drops the row; a refusal re-arms the buttons and says why
   assert.match(h, /if \(m\.ok && !m\.held\) \{ row\.remove\(\);/);
   assert.match(h, /if \(!m\.ok\) for \(const b of Array\.from\(row\.querySelectorAll\("button"\)\) as HTMLButtonElement\[\]\) \{ b\.disabled = false; b\.textContent = \(b as any\)\._idle \|\| b\.textContent; \}/);
-  assert.match(h, /e\.textContent = \(m\.ok \? "Done, but " : "Refused: "\) \+ String\(m\.error \|\| "the kernel did not say why"\); e\.style\.display = "";/);
+  assert.match(h, /e\.textContent = \(m\.ok \? "That action ran, but " : "That action was refused: "\) \+ String\(m\.error \|\| "the kernel did not say why"\); e\.style\.display = "";/, "one shape for both refusal rows: a sentence, as the err path's title is (the round-three verifier)");
   const FEEDSRC = fs.readFileSync(path.join(UI, "feed.ts"), "utf8");
   assert.match(FEEDSRC, /const held = !!m\.ok && !!m\.held;/, "the feed card keeps a held card too");
   assert.match(FEEDSRC, /if \(m\.ok && dismisses && !held\) \{/); assert.match(FEEDSRC, /\} else if \(!held\) \{/, "a held card's buttons stay spent");

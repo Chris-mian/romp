@@ -19198,7 +19198,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
       else {
         if (!m.ok) for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
         const e = row.querySelector<HTMLElement>(".ntc-err");
-        if (e) { e.textContent = (m.ok ? "Done, but " : "Refused: ") + String(m.error || "the kernel did not say why"); e.style.display = ""; }
+        if (e) { e.textContent = (m.ok ? "That action ran, but " : "That action was refused: ") + String(m.error || "the kernel did not say why"); e.style.display = ""; }   // one shape for both refusal rows (the round-three verifier): a sentence, as the err path's title is
       }
     }
   }

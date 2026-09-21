@@ -1118,9 +1118,10 @@ class ActsUnderAFailedWrite(_World):
         with _fault_on(self.b_file):
             sent = self._dispatch({"type": "askClearMany", "itemIds": [A + ":g1", B + ":g1"]})
         errs = [m for m in sent if m.get("type") == "err"]
-        self.assertEqual([(m["title"], m["itemIds"]) for m in errs], [("That clear did not fully land for api", [B + ":g1"])],
-                         "the clear's per-session account names that session's card alone")
+        self.assertEqual([(m["title"], m["itemIds"], m["sid"], m["op"]) for m in errs], [("That clear did not fully land for api", [], B, "askClearMany")],
+                         "the clear's per-session account names NO card: the ledger took the clear, nothing is undelivered (the round-three verifier); the frame keeps the session for the latches")
         self.assertTrue(self._flag(A, A + ":g1"), "A's clear landed in full")
+        self.assertIn(B + ":g1", km._cleared_ids(), "B's card is off the board too: the ledger row landed")
 
     def test_the_owed_notes_faults_are_said_and_a_stale_row_is_not_re_journaled(self):
         """The third review's low: the note's truncate passed on OSError, so every later Undo re-journaled the stale id; its read

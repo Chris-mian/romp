@@ -41441,6 +41441,9 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
         notices = key.startswith("notice:")          # an undo whose NOTICE archive faulted: worded per store (round six, low), since
         sid = key[len("notice:"):] if notices else key   # the session's goal cards did come back
         _ids = [i for i in _batch if (i.startswith("notice:%s:" % sid) if notices else (not i.startswith("notice:") and i.rsplit(":", 1)[0] == sid))]   # this session's own
+        if gesture == "clear":
+            _ids = []                                  # a clear the ledger TOOK: the cards are off the board, nothing undelivered, so the frame names no card (the
+            #                                            round-three verifier: named, the feed undid a clear that happened and dropped its Undo entry)
         who = _name_of(sid) or sid[:8]
         if gesture == "undo" and notices:
             title = "That undo did not fully land for %s" % who

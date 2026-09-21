@@ -6679,7 +6679,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     else if (op === "askFollowUp" && itemId) {
       rearmLatches({ kind: "followup", itemId });
       if (pendingFollowMove.has(itemId)) revertFollowMove(itemId);
-    } else if (!op && sid) rearmLatches({ kind: "session", sid });
+    } else if (sid) rearmLatches({ kind: "session", sid });   // a session account re-arms its Retry and Revive whether or not `op` rides (the round-three verifier: keyed on op being empty, a landed clear's frame with op skipped it)
   } else if (m.type === "pickerOptions" && typeof m.name === "string") {
     // the host read the blocked session's live resume-picker screen — show the
     // same options in-page; a choice goes back as keystrokes (transport only,

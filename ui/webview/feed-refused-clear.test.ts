@@ -30,6 +30,8 @@ test("client: the err handler releases the ids a refused clear names and repaint
   assert.match(h, /for \(const it of clearedStack\.splice\(i, 1\)\[0\]\) \{/, "and the optimistic Undo entry for a clear that never happened goes, its items back on the board");
   assert.ok(h.indexOf("render();") > h.indexOf("pendingCleared.delete(id)"), "then the board repaints from the payload that still lists the card");
   assert.ok(h.indexOf("refusedIds") < h.indexOf('if (op === "apiRetry" && sid)'), "ahead of the latch re-arms the frame already drove");
+  assert.match(h, /\} else if \(sid\) rearmLatches\(\{ kind: "session", sid \}\);/, "a session account re-arms the session's latches whether or not op rides (the round-three verifier)");
+  assert.doesNotMatch(h, /else if \(!op && sid\)/);
 });
 
 test("kernel: the clears-log refusal names the request the way _refuse_drive's frame does", () => {
