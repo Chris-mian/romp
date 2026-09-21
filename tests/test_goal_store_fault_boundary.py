@@ -1059,6 +1059,36 @@ class ActsUnderAFailedWrite(_World):
         self.assertIn("a restart before it can write again loses that", rj["text"], "the limit is stated where the promise is made")
         self.assertEqual(km._rejournal_owed, {B + ":g1": None})
 
+    def test_the_press_after_the_two_fault_undo_with_the_log_still_refusing_names_what_the_feed_restored(self):
+        """The double-fault window's other side (the manager's read of round three): owed ids present, a later clear landed, then
+        Undo with the log refusing again. The re-journal-first write refuses, and the refusal must name the newest clear (the batch
+        the feed restored optimistically on the click) plus the owed ids, under an account for its own case, so the feed reverts the
+        phantom; before this the function returned before its batch was filled and the frame named nothing."""
+        self._dispatch({"type": "askClearMany", "itemIds": [A + ":g1", B + ":g1"]})
+        orig = km._mark_nodes_cleared
+
+        def flag_step_under_fault(ids, value, **kw):
+            with _fault_on(self.b_file):
+                return orig(ids, value, **kw)
+        with mock.patch.object(km, "_mark_nodes_cleared", flag_step_under_fault), _nth_append_faults(jd.STATE / "cleared.jsonl", 2):
+            self._dispatch({"type": "undoClear"})           # the two-fault shape: A back, B owed
+        self.assertEqual(km._rejournal_owed, {B + ":g1": None})
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})   # a later clear lands: the newest batch, the one the feed's Undo would restore
+        with _append_faults(jd.STATE / "cleared.jsonl"):
+            sent = self._dispatch({"type": "undoClear"})    # the re-journal-first write refuses again
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["That undo did not land"])
+        self.assertIn("Nothing changed", errs[0]["text"], "the account for its own case: nothing new was marked undone this press")
+        self.assertNotIn("were marked undone", errs[0]["text"], "not the first fault's words")
+        self.assertEqual((errs[0]["op"], sorted(errs[0]["itemIds"])), ("undoClear", sorted([A + ":g1", B + ":g1"])),
+                         "the newest clear the feed restored on the click, plus the owed card")
+        self.assertTrue(self._flag(A, A + ":g1"), "the last clear stands")
+        self.assertTrue(self._flag(B, B + ":g1"), "the owed card stays hidden")
+        self.assertEqual(km._rejournal_owed, {B + ":g1": None}, "still owed")
+        sent = self._dispatch({"type": "undoClear"})        # writable again: the owed card first, then the newest clear on the press after
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [])
+        self.assertFalse(self._flag(B, B + ":g1"), "the owed card comes back ahead of the last clear (the reorder the dialog names)")
+
     def test_an_undo_whose_re_journal_refuses_says_so_and_the_next_undo_re_journals_first(self):
         """Two cards cleared in one batch; the undo's rows land, one store faults at its flag step, and the clears log refuses the
         re-journal that keeps that card owed: the card reads undone with its flag standing, which no later Undo reaches by the

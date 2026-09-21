@@ -41277,6 +41277,7 @@ def _store_fault_copy(fault):
 
 LEDGER_KEY = "ledger:clears"   # the skipped-map key for the clears log itself refusing a write (no session to name; the second executed review of PR 1935, 2026-09-21)
 LEDGER_REJOURNAL_KEY = "ledger:rejournal"   # an undo whose undo rows landed and whose RE-JOURNAL the log then refused (the second review of PR 1967, 2026-09-21)
+LEDGER_REJOURNAL_AGAIN_KEY = "ledger:rejournal-again"   # a later undo whose re-journal-FIRST write refused again: nothing changed this press (the manager's read of round three, 2026-09-21)
 _rejournal_owed = {}           # {item id: None}: the clear rows a past undo could not re-journal; the next undo writes them FIRST (the second review of PR 1967, 2026-09-21)
 OWED_FILE = "cleared-owed.jsonl"   # STATE/cleared-owed.jsonl: the owed ids persisted beside the clears log, one {"id"} row each, so a kernel restart
 #                                    keeps the owing (the third review of PR 1967, 2026-09-21: a module dict alone dropped it silently, and the card stayed
@@ -41351,6 +41352,18 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
     _ids = [str(i) for i in (ids or []) if i]           # the batch the gesture named, on EVERY account's frame (the third review of PR 1967, 2026-09-21): the feed
     #                                                     reverts an optimistic restore or release on it, the chat re-arms the rows
     for key, fault in (skipped or {}).items():
+        if key == LEDGER_REJOURNAL_AGAIN_KEY:
+            # the press after the two-fault undo, with the log still refusing (the manager's read of round three, 2026-09-21): nothing new was marked undone,
+            # the owed cards stay hidden and the last clear stands; the frame names the newest batch the feed restored on the click
+            # plus the owed ids, so the feed reverts exactly what it restored
+            title = "That undo did not land"
+            text = ("Nothing changed: romp still could not finish recording the earlier undo (%s), so those cards stay hidden and the "
+                    "last clear stands. Press Undo again once romp can write. %s" % (fault, _owed_note()))
+            try:
+                client["send"](json.dumps({"type": "err", "sid": "", "title": title, "text": text, "op": op or "", "itemId": _ids[0] if _ids else "", "itemIds": _ids}))
+            except Exception:
+                sys.stderr.write("gesture refusal (%s re-journal again): %s\n" % (gesture, traceback.format_exc()))
+            continue
         if key == LEDGER_REJOURNAL_KEY:
             # the undo rows landed, a store then refused its flag step, and the log refused the re-journal that keeps those ids owed
             # (the second review of PR 1967, 2026-09-21): they read as undone while their flags stand, so no later Undo reaches them by the ledger alone. The
@@ -41473,14 +41486,19 @@ def _undo_clear(batch_out=None):
     if _rejournal_owed:
         # the re-journal a past undo could not write (the log refused after its undo rows landed; the second review of PR 1967, 2026-09-21): written FIRST,
         # so those ids are the newest batch again and this very Undo restores them, AHEAD of the last clear (a reorder the dialog names);
-        # refused again, said again and nothing else runs
+        # refused again, said under an account of its own, naming the batch the feed restored on the click (the newest clear as the
+        # ledger reads now) plus the owed ids, so the feed reverts exactly that (the manager's read of round three, 2026-09-21); nothing else runs
         t = time.time()
         try:
             with (jd.STATE / "cleared.jsonl").open("a") as f:
                 for iid in list(_rejournal_owed):
                     f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
         except OSError as e:
-            return {LEDGER_REJOURNAL_KEY: _store_fault_copy(e)}
+            if batch_out is not None:
+                _cur = _cleared_ids()
+                _newest = [i for i, ct in _cur.items() if _cur and ct == max(_cur.values())]
+                batch_out.extend(_newest + [i for i in _rejournal_owed if i not in _newest])
+            return {LEDGER_REJOURNAL_AGAIN_KEY: _store_fault_copy(e)}
         _files_stat_mark()
         _rejournal_owed.clear()
         _owed_clear_file()

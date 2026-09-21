@@ -35,6 +35,8 @@ test("client: the err handler releases the ids a refused clear names and repaint
 test("kernel: the clears-log refusal names the request the way _refuse_drive's frame does", () => {
   assert.match(KERNEL, /"type": "err", "sid": "", "title": title, "text": text, "op": op or "",\s+"itemId": _ids\[0\] if _ids else "", "itemIds": _ids\}/);
   assert.ok(KERNEL.includes('_gesture_store_refusal(client, "undo", _undo_clear(batch_out=_ub), ids=_ub, op=str(msg.get("type") or ""))'), "an undo names its op (the request's type) and the batch it reached for (the verifier's medium A)");
+  // the double-fault window's other side (round four): the re-journal-first refusal fills the batch too, so the feed's revert has ids
+  assert.match(KERNEL, /batch_out\.extend\(_newest \+ \[i for i in _rejournal_owed if i not in _newest\]\)\s+return \{LEDGER_REJOURNAL_AGAIN_KEY: _store_fault_copy\(e\)\}/);
   // the dialogs attach their box (the verifier's medium B, pre-existing on main): the behaviour rides the feed lab; this pins both functions carry the append
   assert.equal((FEED.match(/overlay\.appendChild\(box\);/g) || []).length, 3, "the quarantine dialog's, and now showErrDialog's and showPickerDialog's");
 });
