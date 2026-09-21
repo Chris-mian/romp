@@ -300,7 +300,7 @@ body.theme-light {
   --st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;
   --st-compacting-bg: #0F766E; --st-compacting-fg: #ffffff;
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
-  --st-5xx-bg: #4c1b7e; --st-5xx-fg: #ffffff; --st-5xx-ink: #4c1b7e;   /* the 5xx deep violet in the light palette, fill and ink alike: 9.97:1 on the cream page, 11.90:1 on white, white on it 11.90:1; from the Needs you magenta 19.1 / 11.6, the accent 31.6 / 25.6, the 429 red 27.1 / 21.0, the words 19.7 / 18.2, the other band's indigo 18.9 / 18.7 (both floors clear) */
+  --st-5xx-bg: #4c1b7e; --st-5xx-fg: #ffffff; --st-5xx-ink: #4c1b7e;   /* the 5xx deep violet in the light palette, fill and ink alike: 11.90:1 on the tip's white, where the bars and the rows sit (9.97:1 on the cream page behind it), 10.63:1 on the detail's row hover wash (5% black over the white), white on it 11.90:1; from the Needs you magenta 19.1 / 11.6, the accent 31.6 / 25.6, the 429 band #e5484d 35.4 / 25.1, the 429 ink #B02A1C 27.1 / 21.0, the words 19.7 / 18.2, the other band's indigo 18.9 / 18.7 (both floors clear) */
   --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;   /* the retrying amber in the light palette: 4.86:1 on the card, white on it 6.18:1 */
   /* the NEEDS YOU magenta in the light palette (plans/needs-you.md, 2026-09-21; the dark olive of the ask yellow before it):
      the same hue as the dark token, darkened for the cream page. 5.30:1 on the page, white on it 6.32:1; OKLab distance

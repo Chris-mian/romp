@@ -151,8 +151,9 @@ detail's row hover wash, from the accent ink on its line 19.2 / 18.9, the 429 in
 the other-count ink 38.0 / 36.8, and from the magenta 17.4 in full colour and 2.7 under a deficiency, the ONE pair conceded
 on purpose (no violet or blue ink clears the accent ink, the other-count ink and the magenta at once under red-green CVD
 while reading 4.5:1 on the hover wash; the two never share a line). Light: one deep violet `#4c1b7e` for fill and ink,
-9.97:1 on the cream page and 11.90:1 on white, from the magenta 19.1 / 11.6, the accent 31.6 / 25.6, the 429 red 27.1 /
-21.0, the words 19.7 / 18.2, the other band's indigo 18.9 / 18.7. The purples of phase two's earlier rounds (`#7e22ce`,
+11.90:1 on the tip's white, where the bars and the rows sit (9.97:1 on the cream page behind it), and 10.63:1 on the
+detail's row hover wash, from the magenta 19.1 / 11.6, the accent 31.6 / 25.6, the 429 band `#e5484d` 35.4 / 25.1, the 429
+ink `#B02A1C` 27.1 / 21.0, the words 19.7 / 18.2, the other band's indigo 18.9 / 18.7. The purples of phase two's earlier rounds (`#7e22ce`,
 2.39:1 on the tip's ground; `#c4b5fd`, 8.5 from the accent ink it shared a line with; `#8b7ec8`, 3.93:1 on the hover
 wash) were replaced by these under the reviews; theme-parity.test.ts pins the floors and the conceded pair.
 

@@ -141,7 +141,7 @@ for (const sheet of ["styles.css", "feed.css"]) {
       }
       // a skip must be loud (PR #763 item 6): pin how many pairs actually ran per sheet/theme —
       // grow these numbers when PAIRS grows, never let them silently shrink
-      const expected = sheet === "styles.css" ? PAIRS.length : 24;   // feed's :root holds a deliberate subset (+ the retrying pair, 2026-09-08; + the two ask pairs, 2026-09-14: the settings' ring demo reads the token there)
+      const expected = sheet === "styles.css" ? PAIRS.length : 24;   // feed's :root holds a deliberate subset (+ the retrying pair, 2026-09-08; + the two ask pairs, 2026-09-14: the settings' ring demo reads the token there; + the two 5xx pairs, PR 1935 rounds three and four, 2026-09-21: --st-5xx-bg on --bg and --st-5xx-fg on --st-5xx-bg, the feed's root declaring the fill and its text ink)
       // T337: the postal kind words also sit on the PROVISIONAL card (a sent card not yet landed wears the pending
       // bubble's dress: an 8.5% wash of --you over the page, styles.css .queued-bubble, no element opacity since the
       // fade moved into the dress's colours), the darkest ground they meet; each reads at 4.5:1 there too
@@ -257,7 +257,7 @@ test("the 5xx marks of the API-health cell clear the validator's two floors agai
     const inkLit = KERNEL.match(dark ? /\.ah-c-r5xx\{color:(?:var\(--st-5xx-ink,)?(#[0-9a-fA-F]{6})\)?\}/ : /body\.theme-light \.ah-c-r5xx\{color:(?:var\(--st-5xx-ink,)?(#[0-9a-fA-F]{6})\)?\}/);
     const ink = inkTok ? inkTok[1] : inkLit![1];
     // the cell's other colours, the landing's literals (T340): the 429 fill and ink, the other band, the tip's words
-    // the 429 BAND is var(--st-blocked-bg,#e5484d) in both themes (the landing paints no light override for it); the 429 INK is re-inked for the light
+    // the 429 BAND is var(--st-blocked-bg,#e5484d) in both themes (the landing paints no light override for it; the fourth review, 2026-09-21); the 429 INK is re-inked for the light
     const red429 = "#e5484d", ink429 = dark ? "#ef6b6f" : "#B02A1C", other = dark ? "#d9f99d" : "#4f46e5", words = dark ? "#a9b1ba" : "#5D574E";
     const name = dark ? "dark" : "light";
     const check = (what: string, a: string, bb: string, floorFull: number, floorCvd: number) => {
@@ -278,16 +278,23 @@ test("the 5xx marks of the API-health cell clear the validator's two floors agai
     // once under red-green CVD while reading 4.5:1 on the detail's hover wash; the two never share a line), recorded in
     // plans/needs-you.md and styles.css: the floor here is 2, so a drift lower still reddens
     check("the 5xx ink against the Needs you token", ink, needs, 15, dark ? 2 : 8);
-    // the contrasts the marks need where they sit: the fill 3:1 on the tip's ground, the ink 4.5:1
-    const page = rgbOf(props(b).get("--bg")!, [30, 30, 30])!;   // the dark --bg is a var() with a fallback: the sheet's own parser resolves it
-    assert.ok(contrast(hex(fill), page) >= 3, `${name}: the 5xx fill on the page = ${contrast(hex(fill), page).toFixed(2)} < 3`);
-    assert.ok(contrast(hex(ink), page) >= 4.5, `${name}: the 5xx ink on the page = ${contrast(hex(ink), page).toFixed(2)} < 4.5`);
-    // ...and on the detail's row hover wash (the landing's .ah-row:hover: 6% white over the dark page, 5% black over the light), where
-    // a waiting row's 5xx code sits in the same ink (the fourth review: the violet before this read 3.93:1 there)
-    const hover = rgbOf(dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)", page)!;
-    assert.ok(contrast(hex(ink), hover) >= 4.5, `${name}: the 5xx ink on the row hover wash = ${contrast(hex(ink), hover).toFixed(2)} < 4.5`);
-    const KERNEL_HOVER = dark ? ".ah-row:hover{background:rgba(255,255,255,0.06)}" : "body.theme-light .ah-row:hover{background:rgba(0,0,0,0.05)}";
-    assert.ok(KERNEL.includes(KERNEL_HOVER), `${name}: the landing's row hover wash is the one measured`);
+    // the contrasts the marks need where they sit: the fill 3:1 and the ink 4.5:1 on the TIP's ground, read from the landing's
+    // #ah-tip rule per theme (#1e1e1e dark, #FFFFFF light): the bars and the rows live in #ah-tip, not on the page (the fifth review,
+    // 2026-09-21: this read the page's --bg, cream in the light, a stricter ground for a dark ink than the tip's white, so nothing was
+    // falsely green; PAIRS keeps both tokens on the page's --bg as well)
+    const tipRule = KERNEL.match(dark ? /"#ah-tip,#ru-tip\{[^"]*?background:(#[0-9a-fA-F]{6})/ : /"body\.theme-light #ah-tip,body\.theme-light #ru-tip\{[^"]*?background:(#[0-9a-fA-F]{6})/);
+    assert.ok(tipRule, `${name}: the landing paints the tip's ground`);
+    const tip = hex(tipRule![1]);
+    assert.ok(contrast(hex(fill), tip) >= 3, `${name}: the 5xx fill on the tip's ground ${tipRule![1]} = ${contrast(hex(fill), tip).toFixed(2)} < 3`);
+    assert.ok(contrast(hex(ink), tip) >= 4.5, `${name}: the 5xx ink on the tip's ground ${tipRule![1]} = ${contrast(hex(ink), tip).toFixed(2)} < 4.5`);
+    // ...and on the detail's row hover wash, where a waiting row's 5xx code sits in the same ink (the fourth review, 2026-09-21: the violet
+    // before this read 3.93:1 there). The wash is PARSED from the landing's .ah-row:hover rule per theme (6% white dark, 5% black
+    // light today) and composited over the tip's ground, so a changed wash moves the measurement rather than a text pin (the fifth review)
+    const washRule = KERNEL.match(dark ? /"\.ah-row:hover\{background:(rgba\([^)]*\))\}/ : /"body\.theme-light \.ah-row:hover\{background:(rgba\([^)]*\))\}/);
+    assert.ok(washRule, `${name}: the landing paints the row hover wash`);
+    const hover = rgbOf(washRule![1], tip);
+    assert.ok(hover, `${name}: the hover wash ${washRule![1]} parses`);
+    assert.ok(contrast(hex(ink), hover!) >= 4.5, `${name}: the 5xx ink on the row hover wash ${washRule![1]} over ${tipRule![1]} = ${contrast(hex(ink), hover!).toFixed(2)} < 4.5`);
     pairs.push([name, fill, ink, 15, 8]);
   }
   assert.equal(pairs.length, 2);
