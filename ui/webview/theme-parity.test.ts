@@ -64,6 +64,9 @@ const PAIRS: Array<[string, string, number]> = [
   ["--dim", "--bg", 4.5],
   ["--fg", "--surface-raised", 4.5],
   ["--accent", "--bg", 3],
+  ["--st-5xx-bg", "--bg", 3],      // the API-health cell's 5xx bar on the tip's ground (PR 1935 round three: the first purple sat at 2.39:1)
+  ["--st-5xx-ink", "--bg", 4.5],   // the 5xx digits in the tip
+  ["--st-5xx-fg", "--st-5xx-bg", 3],   // text on the 5xx fill (the pair every state token carries)
   ["--cmt-hl-outline", "--bg", 3],   // the comment notch (the rail tick's fill): a LINE, so it must read against the page (T310)
   ["--st-awaiting-bg", "--bg", 3],   // the unread passage's dashed box and ring, and the tick's halo (2026-09-12): a line in the needs-you red
   ["--accent-fg", "--accent", 3],
@@ -82,8 +85,8 @@ const PAIRS: Array<[string, string, number]> = [
   ["--st-ready-fg", "--st-ready-bg", 3],
   ["--st-blocked-fg", "--st-blocked-bg", 3],
   ["--st-retrying-fg", "--st-retrying-bg", 3],       // 2026-09-08: the retrying amber tokenised (#e67e22/#2a1500 dark, #9C4A0C/#fff light)
-  ["--st-ask-fg", "--st-ask-bg", 3],                 // 2026-09-13: the ask yellow (#f5d33f/#332600 dark, #7a6400/#fff light)
-  ["--st-ask-bg", "--bg", 3],                        // …and the ask RING is a line on the page (the tab's dashed outline, the folded header's pip)
+  ["--st-needs-fg", "--st-needs-bg", 3],             // 2026-09-20: the Needs you magenta (#d946ef/#2a0a2a dark, #a21caf/#fff light; plans/needs-you.md)
+  ["--st-needs-bg", "--bg", 3],                      // …and the Needs you RING is a line on the page (the tab's dashed outline, the folded header's pip)
   // (--st-compacting-fg on --st-compacting-bg is deliberately NOT paired: the dark teal + white pairing predates
   // this file and sits at 2.49:1, and decision 3 of the 2026-09-08 notice audit keeps dark byte-identical; the
   // light re-ink — #0F766E, 4.30:1 on the card, white on it 5.47:1 — is pinned by value in notice-vocab.test.ts)
@@ -138,7 +141,7 @@ for (const sheet of ["styles.css", "feed.css"]) {
       }
       // a skip must be loud (PR #763 item 6): pin how many pairs actually ran per sheet/theme —
       // grow these numbers when PAIRS grows, never let them silently shrink
-      const expected = sheet === "styles.css" ? PAIRS.length : 22;   // feed's :root holds a deliberate subset (+ the retrying pair, 2026-09-08; + the two ask pairs, 2026-09-14: the settings' ring demo reads the token there)
+      const expected = sheet === "styles.css" ? PAIRS.length : 24;   // feed's :root holds a deliberate subset (+ the retrying pair, 2026-09-08; + the two ask pairs, 2026-09-14: the settings' ring demo reads the token there; + the two 5xx pairs, PR 1935 rounds three and four, 2026-09-21: --st-5xx-bg on --bg and --st-5xx-fg on --st-5xx-bg, the feed's root declaring the fill and its text ink)
       // T337: the postal kind words also sit on the PROVISIONAL card (a sent card not yet landed wears the pending
       // bubble's dress: an 8.5% wash of --you over the page, styles.css .queued-bubble, no element opacity since the
       // fade moved into the dress's colours), the darkest ground they meet; each reads at 4.5:1 there too
@@ -173,19 +176,17 @@ for (const sheet of ["styles.css", "feed.css"]) {
   });
 }
 
-// THE RING HUES, ALL PAIRS PER THEME (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear
-// (the two reds, the yellow, the amber) are told apart by colour alone — same shape, same dash, on different tabs — so
-// every pair of ring hues must stay apart for full-colour readers (OKLab distance x100 at least 15) AND under the two
-// red-green deficiencies (at least 8 after the Machado, Oliveira and Fernandes 2009 simulation at severity 1.0), the
-// floors the dataviz palette validator applies to categorical marks; the yellow ring against the two DOTS it can sit
-// beside (the working gold and the await-green, a 7px disc inside a 2px outline: shape and position tell them apart
-// too) needs the deficiency floor only. The light palette's convention (the same hue darkened to lightness 0.5 for 3:1
-// on cream) puts a second yellow on the working gold, and hue alone does not survive a red-green deficiency, so the
-// light ring yellow leaves by LIGHTNESS: #504100 (hue 94, lightness 0.38) is the only axis left that clears every
-// pair; a lighter olive collides with the amber under a deficiency (the branch's #7a6400: 0.1 against #9C4A0C).
-// The dark lemon stands as the author left it: 9.5 from the working gold to full-colour readers (a known pair, the
-// dot and the ring differ in shape and position), every other pair well over the floors. The ring also reads at 3:1
-// on the hovered tab and the selected tab's fill, the two washes a ring can sit on besides the page.
+// THE RING HUES, ALL PAIRS PER THEME (the rings-as-widgets change, 2026-09-14; the Needs you magenta, 2026-09-21): the three
+// dashed rings a tab can wear (the two reds, the magenta, the amber) are told apart by colour alone (same shape, same dash,
+// on different tabs), so every pair of ring hues must stay apart for full-colour readers (OKLab distance x100 at least 15)
+// AND under the two red-green deficiencies (at least 8 after the Machado, Oliveira and Fernandes 2009 simulation at severity
+// 1.0), the floors the dataviz palette validator applies to categorical marks; the Needs you ring against the two DOTS it can
+// sit beside (the working gold and the await-green, a 7px disc inside a 2px outline: shape and position tell them apart too)
+// needs the deficiency floor only. The magenta clears every floor with room in both themes: dark #d946ef sits 24 to 31 from
+// the other rings for full-colour readers, 23.7 to 28.7 under the deficiencies, 27.5 to 32.5 from the dots, 38.6 from the
+// working gold; light #a21caf 22 to 25 from the rings, 21.7 to 22.3 under the deficiencies, 22.7 to 30.2 from the dots, 29.4
+// from the gold (the yellow it replaced sat 9.5 from the gold in the dark theme and needed a lightness trick in the light one).
+// The ring also reads at 3:1 on the hovered tab and the selected tab's fill, the two washes a ring can sit on besides the page.
 function oklab(rgb: [number, number, number]): [number, number, number] {
   const lin = rgb.map((c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }) as [number, number, number];
   return oklabFromLin(lin);
@@ -210,32 +211,92 @@ function deltaE(a: [number, number, number], b: [number, number, number], kind?:
 }
 const cvdWorst = (a: [number, number, number], b: [number, number, number]) => Math.min(deltaE(a, b, "protan"), deltaE(a, b, "deutan"));
 
-test("the ring hues stay apart in BOTH themes, every pair: rings against rings for full-colour readers and under red-green deficiencies, the yellow ring against the dots under the deficiencies; the yellow reads on every tab ground", () => {
+test("the ring hues stay apart in BOTH themes, every pair: rings against rings for full-colour readers and under red-green deficiencies, the Needs you ring against the dots under the deficiencies; the magenta reads on every tab ground", () => {
   const css = read("styles.css");
   for (const [name, theme] of [["dark", props(block(css, ":root {"))], ["light", props(block(css, "body.theme-light {"))]] as const) {
     const page = rgbOf(theme.get("--bg")!, [30, 30, 30])!;
     const tok = (t: string) => rgbOf(theme.get(t)!, page)!;
-    const rings: Record<string, [number, number, number]> = { awaiting: tok("--st-awaiting-bg"), blocked: tok("--st-blocked-bg"), ask: tok("--st-ask-bg"), retrying: tok("--st-retrying-bg") };
+    const rings: Record<string, [number, number, number]> = { awaiting: tok("--st-awaiting-bg"), blocked: tok("--st-blocked-bg"), ask: tok("--st-needs-bg"), retrying: tok("--st-retrying-bg") };
     const dots: Record<string, [number, number, number]> = { working: tok("--st-working-bg"), awaitbg: tok("--st-awaitbg-bg") };
     for (const other of ["awaiting", "blocked", "retrying"]) {
       const n = deltaE(rings.ask, rings[other]), c = cvdWorst(rings.ask, rings[other]);
-      assert.ok(n >= 15, `${name}: the yellow ring against the ${other} ring reads ${n.toFixed(1)} to full-colour readers (floor 15)`);
-      assert.ok(c >= 8, `${name}: the yellow ring against the ${other} ring reads ${c.toFixed(1)} under a red-green deficiency (floor 8)`);
+      assert.ok(n >= 15, `${name}: the Needs you ring against the ${other} ring reads ${n.toFixed(1)} to full-colour readers (floor 15)`);
+      assert.ok(c >= 8, `${name}: the Needs you ring against the ${other} ring reads ${c.toFixed(1)} under a red-green deficiency (floor 8)`);
     }
     for (const dot of Object.keys(dots)) {
       const c = cvdWorst(rings.ask, dots[dot]);
-      assert.ok(c >= 8, `${name}: the yellow ring against the ${dot} dot reads ${c.toFixed(1)} under a red-green deficiency (floor 8)`);
+      assert.ok(c >= 8, `${name}: the Needs you ring against the ${dot} dot reads ${c.toFixed(1)} under a red-green deficiency (floor 8)`);
     }
-    // the light theme clears the full-colour floor against the dots too; the dark lemon's known 9.5 against the gold is pinned so it cannot slide
+    // the light theme clears the full-colour floor against the dots too; the dark magenta clears the full-colour floor against the gold as well
     const gold = deltaE(rings.ask, dots.working);
-    assert.ok(gold >= (name === "light" ? 15 : 9), `${name}: the yellow ring against the working gold reads ${gold.toFixed(1)}`);
+    assert.ok(gold >= 15, `${name}: the Needs you ring against the working gold reads ${gold.toFixed(1)}`);
     // the grounds a ring sits on: the page (PAIRS above), the hovered tab (a 6% white wash) and the selected tab's fill
     const hover = [0, 1, 2].map((i) => Math.round(255 * 0.06 + page[i] * 0.94)) as [number, number, number];
     const active = rgbOf(theme.get("--tab-active-bg")!, page)!;
     for (const [g, ground] of [["hovered tab", hover], ["selected tab", active]] as const) {
-      assert.ok(contrast(rings.ask, ground) >= 3, `${name}: the yellow ring on the ${g} = ${contrast(rings.ask, ground).toFixed(2)} < 3`);
+      assert.ok(contrast(rings.ask, ground) >= 3, `${name}: the Needs you ring on the ${g} = ${contrast(rings.ask, ground).toFixed(2)} < 3`);
     }
   }
   // the light value itself, so a re-ink is a deliberate change here and in feed.css (tab-rings.test.ts pins the two sheets equal)
-  assert.match(block(css, "body.theme-light {"), /--st-ask-bg: #504100; --st-ask-fg: #ffffff;/);
+  assert.match(block(css, "body.theme-light {"), /--st-needs-bg: #a21caf; --st-needs-fg: #ffffff;/);
+});
+
+test("the 5xx marks of the API-health cell clear the validator's two floors against every colour they share a surface with, in both themes; the one conceded pair is the dark ink against the Needs you magenta under a deficiency, recorded", () => {
+  // plans/needs-you.md: the cell sits on the landing page beside every session's state. The FILL is the histogram's 5xx band (beside the
+  // accent, 429 and other bands); the INK is a count's digits in the tip's line (beside the accent ink, the 429 ink and the words gray);
+  // both against the Needs you token, since the magenta is on the same page. Floors: 15 to full-colour readers, 8 under protan and deutan
+  // (cvdWorst), the ring pairs' own. The ink falls back to the landing sheet's literal when the token is absent, so a tree without the
+  // token reds here on a DISTANCE, not on a missing name.
+  const css = read("styles.css"); const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  const hex = (v: string) => rgbOf(v, [0, 0, 0])!;
+  const pairs: Array<[string, string, string, number, number]> = [];   // theme, a, b, floor full, floor cvd
+  for (const theme of [":root {", "body.theme-light {"]) {
+    const b = block(css, theme), dark = theme === ":root {";
+    const needs = b.match(/--st-needs-bg: (#[0-9a-fA-F]{6});/)![1], fill = b.match(/--st-5xx-bg: (#[0-9a-fA-F]{6});/)![1], accent = b.match(/--accent: (#[0-9a-fA-F]{6});/)![1];
+    const inkTok = b.match(/--st-5xx-ink: (#[0-9a-fA-F]{6});/);
+    const inkLit = KERNEL.match(dark ? /\.ah-c-r5xx\{color:(?:var\(--st-5xx-ink,)?(#[0-9a-fA-F]{6})\)?\}/ : /body\.theme-light \.ah-c-r5xx\{color:(?:var\(--st-5xx-ink,)?(#[0-9a-fA-F]{6})\)?\}/);
+    const ink = inkTok ? inkTok[1] : inkLit![1];
+    // the cell's other colours, the landing's literals (T340): the 429 fill and ink, the other band, the tip's words
+    // the 429 BAND is var(--st-blocked-bg,#e5484d) in both themes (the landing paints no light override for it; the fourth review, 2026-09-21); the 429 INK is re-inked for the light
+    const red429 = "#e5484d", ink429 = dark ? "#ef6b6f" : "#B02A1C", other = dark ? "#d9f99d" : "#4f46e5", words = dark ? "#a9b1ba" : "#5D574E";
+    const name = dark ? "dark" : "light";
+    const check = (what: string, a: string, bb: string, floorFull: number, floorCvd: number) => {
+      const full = deltaE(hex(a), hex(bb)), cvd = cvdWorst(hex(a), hex(bb));
+      assert.ok(full >= floorFull, `${name}: ${what} ${a} against ${bb} =${full.toFixed(1)} < ${floorFull} (full colour)`);
+      assert.ok(cvd >= floorCvd, `${name}: ${what} ${a} against ${bb} =${cvd.toFixed(1)} < ${floorCvd} (under a red-green deficiency)`);
+    };
+    check("the 5xx fill against the Needs you token", fill, needs, 15, 8);
+    check("the 5xx fill against the accent band", fill, accent, 15, 8);
+    check("the 5xx fill against the 429 band", fill, red429, 15, 8);
+    check("the 5xx fill against the other band", fill, other, 15, 8);
+    check("the 5xx ink against the accent ink on the same line", ink, accent, 15, 8);
+    check("the 5xx ink against the 429 ink on the same line", ink, ink429, 15, 8);
+    check("the 5xx ink against the tip's words", ink, words, 15, 8);
+    check("the 5xx ink against the other-count ink on the same line", ink, other, 15, 8);
+    // the ink against the Needs you token: 15 to full-colour readers in both themes; under a deficiency the light clears 8 and the
+    // DARK pair is conceded on purpose at 2.7 (no violet or blue ink clears the accent ink, the other-count ink and the magenta at
+    // once under red-green CVD while reading 4.5:1 on the detail's hover wash; the two never share a line), recorded in
+    // plans/needs-you.md and styles.css: the floor here is 2, so a drift lower still reddens
+    check("the 5xx ink against the Needs you token", ink, needs, 15, dark ? 2 : 8);
+    // the contrasts the marks need where they sit: the fill 3:1 and the ink 4.5:1 on the TIP's ground, read from the landing's
+    // #ah-tip rule per theme (#1e1e1e dark, #FFFFFF light): the bars and the rows live in #ah-tip, not on the page (the fifth review,
+    // 2026-09-21: this read the page's --bg, cream in the light, a stricter ground for a dark ink than the tip's white, so nothing was
+    // falsely green; PAIRS keeps both tokens on the page's --bg as well)
+    const tipRule = KERNEL.match(dark ? /"#ah-tip,#ru-tip\{[^"]*?background:(#[0-9a-fA-F]{6})/ : /"body\.theme-light #ah-tip,body\.theme-light #ru-tip\{[^"]*?background:(#[0-9a-fA-F]{6})/);
+    assert.ok(tipRule, `${name}: the landing paints the tip's ground`);
+    const tip = hex(tipRule![1]);
+    assert.ok(contrast(hex(fill), tip) >= 3, `${name}: the 5xx fill on the tip's ground ${tipRule![1]} = ${contrast(hex(fill), tip).toFixed(2)} < 3`);
+    assert.ok(contrast(hex(ink), tip) >= 4.5, `${name}: the 5xx ink on the tip's ground ${tipRule![1]} = ${contrast(hex(ink), tip).toFixed(2)} < 4.5`);
+    // ...and on the detail's row hover wash, where a waiting row's 5xx code sits in the same ink (the fourth review, 2026-09-21: the violet
+    // before this read 3.93:1 there). The wash is PARSED from the landing's .ah-row:hover rule per theme (6% white dark, 5% black
+    // light today) and composited over the tip's ground, so a changed wash moves the measurement rather than a text pin (the fifth review)
+    const washRule = KERNEL.match(dark ? /"\.ah-row:hover\{background:(rgba\([^)]*\))\}/ : /"body\.theme-light \.ah-row:hover\{background:(rgba\([^)]*\))\}/);
+    assert.ok(washRule, `${name}: the landing paints the row hover wash`);
+    const hover = rgbOf(washRule![1], tip);
+    assert.ok(hover, `${name}: the hover wash ${washRule![1]} parses`);
+    assert.ok(contrast(hex(ink), hover!) >= 4.5, `${name}: the 5xx ink on the row hover wash ${washRule![1]} over ${tipRule![1]} = ${contrast(hex(ink), hover!).toFixed(2)} < 4.5`);
+    pairs.push([name, fill, ink, 15, 8]);
+  }
+  assert.equal(pairs.length, 2);
+  assert.ok(KERNEL.includes(".ah-c-r5xx{color:var(--st-5xx-ink,#8a8aff)}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}"), "the landing's inks ride the token");
 });

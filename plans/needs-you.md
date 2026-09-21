@@ -3,8 +3,8 @@
 **The ask (the user, 2026-09-20; paraphrased throughout, never quoted).** The feed's middle column, titled Blocked
 today, becomes **Needs you** and holds everything the user can give feedback on: what a session cannot proceed
 without, what it asked the user to clarify, and what it offered to do next. That is one category on purpose, since
-an item moves between those states; a session fully stopped (a permission prompt, an approval, an API error only the
-user can clear, or simply stopped waiting for input) is a **hard stop**, a mark on top of the category, never a
+an item moves between those states; a session fully stopped (a permission or approval prompt, or an API error only the
+user can clear) is a **hard stop**, a mark on top of the category, never a
 second column. The two dashed tab rings are renamed and one is recoloured: the red ring (today's Needs you row in the
 settings' Tab widgets: a stopped session) becomes **Blocked**; the yellow ring (today's Waiting on you row: a card of
 the session's in the column) becomes **Needs you** and turns **magenta**, because yellow already means working. One
@@ -33,8 +33,8 @@ Every claim the design leans on, read at `upstream/main` 55d8e8f0.
   `feed-col-head-case.test.ts` and `board-def.test.ts` hold the header triples to it, `tests/test_card_boards.py` holds
   the kernel table to the pane's). The pane's column header chip is `.fcol-chip-blocked { background: #c0392b }`
   (`ui/webview/feed.css`), the modal's blocked node label the same red as a white-on-red chip (`.st-question .ftree-meta`),
-  and the checkbox notation's blocked mark a red pause inside a red ring (`.fcheck.question .fcheck-mark`, `--err`,
-  which `feed.css` defines as `#c0392b` because that sheet has its own root). The category id `needs_input` is a wire
+  and the checkbox notation's blocked mark a red pause inside a red ring (`.fcheck.question .fcheck-mark`, `--err`: `#c0392b` in feed.css's dark root, `#B02A1C` in its light root,
+  since that sheet has its own root). The category id `needs_input` is a wire
   value (every kernel and pane, federation included) and does not change; only the title, the chip class's colour and
   the copy do.
 - **What files a card there.** The kernel's category expression in `_feed_session_entry` floors a card on a live
@@ -42,9 +42,14 @@ Every claim the design leans on, read at `upstream/main` 55d8e8f0.
   stop only the user can clear (the status flags `apiTooLong`, `apiSpendLimit`, `apiModelLimit`, `apiAuthErr`,
   `apiRefusal`, the same five `tabStateClass` reads for the red tab), on a judge's question verdict (a node with status
   `question`, the blocker's brief), on the idle hold of a blocking request, and on a held peer message (a notice card
-  with `needsYou`). The hard stop is therefore already a distinguishable subset: the card carries `blocked.state` in
-  the two prompt states, or its session's status carries one of the five API flags; a judge's question carries
-  neither.
+  with `needsYou`), and on the judges' credential being refused (`_jauth_map`: the session's focus top floors with
+  `blocked.state` `judgeAuth` and the `.fask-jauth` badge; the session itself runs, romp's analysis of it is down,
+  and only the user can fix the key or the login). The hard stop is therefore already a distinguishable subset: the
+  card carries `blocked.state` in the two prompt states, or its session's status carries one of the five API flags; a
+  judge's question carries neither, and the credential refusal is a Needs you item without the mark by this note's
+  own definition (the session is not stopped): its badge takes the category's token, and phase three's box row for
+  it carries the credential fix as its action and no Clear, since a Clear would hide the fault while the refusals
+  continue.
 - **The rings.** `ui/webview/tab-state.ts` names three ring ids in precedence order: `ring-needs-you` (the RED ring;
   its test is `tabStateClass(s) === "tab-awaiting" || "tab-blocked"`, a live prompt or an on-you API stop),
   `ring-waiting-on-you` (the YELLOW ring; its test is `status.needsYou === true` and the tab not closed, the kernel's
@@ -76,9 +81,11 @@ Every claim the design leans on, read at `upstream/main` 55d8e8f0.
   bottom; `render.ts` names the three boxes `notices`, `bg-tasks`, `footer`). Neither has a settings switch today.
 - **The colour red, three tokens.** `--st-awaiting-bg #c0392b` (a live prompt: the tab state, the column chip, the
   modal's chip, `--err`), `--st-blocked-bg #e5484d` (an API stop: the tab state, the API-error badge on a card, the
-  group pip's `blocked`), and the alarm fill on a blocked tab. Magenta exists once, as `--st-5xx-bg` (`#c026d3` dark,
-  `#A21CAF` light): the 5xx segment of the API-health histograms on the `/perf` page and nowhere the user reads
-  state.
+  group pip's `blocked`), and the alarm fill on a blocked tab. Magenta existed once more, as `--st-5xx-bg` (`#c026d3`
+  dark, `#A21CAF` light) and the two literal inks of `.ah-c-r5xx` (`#e879f9` dark, `#86198F` light): the 5xx marks of
+  the API-health cell's hover tip and detail (and the legend, on every hover), which sit on the LANDING page beside
+  every session's state (`/perf` and `/api-health` answer JSON). Phase two moved the 5xx hue to a purple apart from the Needs you magenta and routed the inks through a token
+  (below).
 - **Notifications.** The bell and the phone push fire on a card ENTERING `needs_input` or `completed`
   (`_feed_notifications`, `notify: ["needs_input", "completed"]`); their copy names the card, not the column.
 - **The docs.** `docs/guide.md` says Blocked seven times (the ring paragraph, the chip paragraph, the sessions
@@ -95,7 +102,8 @@ approval, and the offers a session made of what to do next (the judges' change; 
 id stays `needs_input`; the title, the chip class's colour and every user-facing word change.
 
 The **hard stop** is a mark ON a card in that column, never a place: a card whose session is fully stopped (its
-`blocked.state` a prompt state, or its session's status carrying one of the five on-you API flags) wears a red mark
+`blocked.state` a prompt state, or its session's status carrying one of the five on-you API flags; a `judgeAuth`
+state is not a stop and wears no mark) wears a red mark
 where today's ⏸ live-block badge and ⚠ API-error badge sit (the same two elements: they are the hard stop already,
 and they keep their red). A card in the column without the mark is something the user can answer at their pace while
 the session goes on. The judge's question mark in the tree (the red pause in a ring, the white-on-red node label) is
@@ -125,17 +133,29 @@ magenta ring under a red header; the user asked for the inconsistency resolved i
 ### The colour rule
 
 One token, `--st-needs-bg` with its text pair `--st-needs-fg`, in `styles.css` and mirrored in `feed.css` (that sheet
-has its own root; every state token is mirrored there today) and in the mobile page's inline sheet:
+has its own root; every state token is mirrored there today); the mobile page's inline sheet reads it with the dark value as its fallback (`var(--st-needs-bg,#d946ef)`), the pair itself arriving through styles.css:
 
 - dark `#d946ef` on `#1e1e1e`: 4.8:1 as a line on the page, 5.2:1 for a dark text pair (`#2a0a2a`), 3.5:1 for white;
 - light `#a21caf` on `#F1EAE2`: 5.3:1 on the page, 6.3:1 for white text.
 
 Both clear the ring and pair floors `theme-parity.test.ts` holds (3:1), and the dark hue sits apart from the working
 gold, the retrying amber and both reds under a red-green deficiency (the test's pairwise pins extend to it). The 5xx
-magenta of the API-health histogram (`--st-5xx-bg`) is a different token on a page that shows no session state; the
-light values coincide by design (the same violet family) and the dark differ; the note records the shared family so
-nobody reads the histogram's segment as a needs-you mark, and phase two may shift the 5xx dark hue if the lab finds
-the two within a step of each other on the `/perf` page.
+marks of the API-health cell's tip and detail on the landing page (`--st-5xx-bg`, the histogram's `.ah-seg-serverErrors`
+band; `--st-5xx-ink`, the `.ah-c-r5xx` digits in the tip's line and the detail's rows; the landing's inline sheet declares
+both in rules of their own, mirrors of styles.css) are chosen by the validator's two floors (OKLab x100 at least 15 to
+full-colour readers, at least 8 under the Machado protan and deutan simulations) against every colour each mark shares a
+surface with, and by the contrasts each needs on every ground it sits on. Dark: the fill `#cb94d1` (a lilac) 6.90:1 on the
+tip's ground and 6.19:1 over the graph's wash, from the Needs you magenta 17.0 / 12.0, the accent band 15.9 / 10.0, the
+429 band 20.2 / 17.6, the other band 29.9 / 25.7; the ink `#8a8aff` (a periwinkle) 5.68:1 on the ground and 4.76:1 on the
+detail's row hover wash, from the accent ink on its line 19.2 / 18.9, the 429 ink 25.4 / 21.0, the words gray 17.0 / 16.4,
+the other-count ink 38.0 / 36.8, and from the magenta 17.4 in full colour and 2.7 under a deficiency, the ONE pair conceded
+on purpose (no violet or blue ink clears the accent ink, the other-count ink and the magenta at once under red-green CVD
+while reading 4.5:1 on the hover wash; the two never share a line). Light: one deep violet `#4c1b7e` for fill and ink,
+11.90:1 on the tip's white, where the bars and the rows sit (9.97:1 on the cream page behind it), and 10.63:1 on the
+detail's row hover wash, from the magenta 19.1 / 11.6, the accent 31.6 / 25.6, the 429 band `#e5484d` 35.4 / 25.1, the 429
+ink `#B02A1C` 27.1 / 21.0, the words 19.7 / 18.2, the other band's indigo 18.9 / 18.7. The purples of phase two's earlier rounds (`#7e22ce`,
+2.39:1 on the tip's ground; `#c4b5fd`, 8.5 from the accent ink it shared a line with; `#8b7ec8`, 3.93:1 on the hover
+wash) were replaced by these under the reviews; theme-parity.test.ts pins the floors and the conceded pair.
 
 Where the token paints, and only there:
 
@@ -147,11 +167,17 @@ Where the token paints, and only there:
 - the tab ring `ring-waiting-on-you` and the group pip `ask`;
 - the phone picker's chip border and row bar;
 - the outline of the Needs you box below (phase three);
-- the settings' ring demo.
+- the settings' ring demo;
+- the sessions pane's lane chip for a session in the column (`ui/romp-timeline-view.js`, `BADGE.needs`, drawn on the
+  canvas in the same pair);
+- the status chip's Needs you state, `.chip-needsInput` and its legacy twin `.chip-awaiting`, wherever the shared chip is
+  painted: the bar under the transcript, the tag overview rows and the comment popover's statusline.
 
 Red stays on: the Blocked ring and its translucent fill, the hard-stop marks on a card (the ⏸ live-block badge, the
 ⚠ API-error badge), the chat chip's **API error**, the unread passage's dashed box (a different meaning, the same
-family, left alone by this note).
+family, left alone by this note). Two card badges LEFT the red family in phase two, since neither is a hard stop: the
+⚠ retrying badge (`.fask-retrying`) wears the retrying amber its ring, chip and lane badge already wear, and the
+⚠ credential badge (`.fask-jauth`) is filled in the Needs you pair, filled against outlined kept.
 
 ### The status chip: Needs you on every surface
 
@@ -169,7 +195,7 @@ page, the sessions pane), and the lab reads the word on each.
 The box wears the awaiting box's dress in the category's colour (the user's first amendment): the same appearance as the
 background-tasks box `#bg-tasks` today, a thin line around the edge, the same shape and the same placement between the
 transcript and the composer, the line in the Needs you token instead of the await-green; and its rows are the shape the
-closed requests pull request drew, one line per item with a way to act. It holds the session's Needs you items that are NOT
+closed requests pull request drew (#994, "Requests from sessions: what a session needs from you, held until you or it says otherwise": one line per request at the bottom of the transcript, Reply and Dismiss), one line per item with a way to act. It holds the session's Needs you items that are NOT
 hard blocks: the permission and approval prompts the chat already shows inline stay out, and the box lists the judge's
 questions (the card's title, its decision brief as the line), the offers a session made, the blocking requests under the
 idle hold, and the held peer messages with their actions. The approval box (`#notices`, plans/notice-cards.md) already is a

@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>the outline</title>
+<!--
+  The guide's outline figure (docs/guide.md, "The outline"): each session's tasks as a tree, on the live sheets
+  (ui/webview/styles.css for the .ledger-* tree, then ui/webview/fleet-pane.css for the pane's frame, the order
+  the kernel's page uses; linked, not copied, so the figure follows the sheets), class for class as fleet.ts
+  builds a session block (.fl-session with its .fl-head, the .ledger-tree of .ledger-tnode rows: the mark, the
+  text, the time). A done row's mark is the checked disc; a task that needs you wears the ⏸ mark in the
+  category's colour (plans/needs-you.md). Synthetic: the notes-api demo world, invented tasks. Render from
+  this directory with:
+    chrome --headless=new --screenshot=../outline.png --window-size=1280,441 \
+           --force-device-scale-factor=2 --hide-scrollbars file://.../outline.html
+-->
+<link rel="stylesheet" href="../../../../ui/webview/styles.css">
+<link rel="stylesheet" href="../../../../ui/webview/fleet-pane.css">
+<style>
+  html, body { margin: 0; background: #0f1218; }
+  #fig { position: relative; width: 1280px; height: 441px; overflow: hidden; border: 1px solid rgba(156, 210, 255, 0.35); box-sizing: border-box; font-size: 15px; font-family: "Liberation Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  #fleet-search-bar { padding: 10px 12px; }
+  #fleet-search { width: 100%; box-sizing: border-box; font-size: 15px; padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12); background: #2a2d33; color: #d6d9de; }
+  #fleet-list { padding: 4px 12px 0; }
+  .fl-session { margin: 4px 0 8px; }
+  .fl-head { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; padding: 4px 6px; }
+  .fl-caret { color: #d6d9de; font-size: 12px; }
+  .ledger-tree { margin-left: 8px; }
+  .ledger-tnode { display: flex; align-items: center; gap: 9px; padding: 4px 8px; margin: 1px 0; border-radius: 6px; font-size: 15px; }
+  .ledger-tnode.done .ledger-ttext { color: #6fcf7f; }
+  .ledger-tnode.sub { margin-left: 26px; }
+  .ledger-tri { width: 12px; color: #9a9fa8; font-size: 11px; }
+  .ledger-ttext { flex: 1 1 auto; }
+  .ledger-ttime { color: #6fcf7f; font-size: 14px; }
+  .ledger-tnode.blocked .ledger-ttext, .ledger-tnode.blocked .ledger-ttime { color: #d6d9de; }
+  #fleet-foot { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid rgba(255,255,255,0.10); background: #16181c; font-size: 14px; }
+  .fl-foot-btn { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.18); background: #2a2d33; color: #d6d9de; }
+  .fl-foot-toggle { display: inline-flex; align-items: center; gap: 6px; }
+  #fleet-foot input[type=range] { flex: 1 1 auto; accent-color: #9cd2ff; }
+  .spacer { flex: 1 1 auto; }
+</style>
+<div id="fig">
+  <div id="fleet-search-bar"><div id="fleet-search-wrap"><input id="fleet-search" type="search" placeholder="Search sessions and tasks…"></div></div>
+  <div id="fleet-list">
+    <div class="fl-session">
+      <div class="fl-head"><span class="fl-caret">&#9660;</span><span class="fl-sesslabel" style="color:#8f9a7c"><span class="fl-sesslabel-name">tests</span></span></div>
+      <div class="ledger-tree">
+        <div class="ledger-tnode done"><span class="ledger-tri"></span><span class="ledger-tmark">✓</span><span class="ledger-ttext">Add edge-case tests for notes API</span><span class="ledger-ttime">(1d ago)</span></div>
+      </div>
+    </div>
+    <div class="fl-session">
+      <div class="fl-head"><span class="fl-caret">&#9660;</span><span class="fl-sesslabel" style="color:#4EA8A9"><span class="fl-sesslabel-name">web</span></span></div>
+      <div class="ledger-tree">
+        <div class="ledger-tnode blocked"><span class="ledger-tri">&#9660;</span><span class="ledger-tmark">⏸</span><span class="ledger-ttext">Minimal web UI for notes API</span></div>
+        <div class="ledger-tnode done sub"><span class="ledger-tri"></span><span class="ledger-tmark">✓</span><span class="ledger-ttext">Reviewed API code (stdlib server, GET/POST /notes, JSON only)</span><span class="ledger-ttime">(1d ago)</span></div>
+      </div>
+    </div>
+    <div class="fl-session">
+      <div class="fl-head"><span class="fl-caret">&#9660;</span><span class="fl-sesslabel" style="color:#e0a030"><span class="fl-sesslabel-name">api</span></span></div>
+      <div class="ledger-tree">
+        <div class="ledger-tnode done"><span class="ledger-tri">&#9654;</span><span class="ledger-tmark">✓</span><span class="ledger-ttext">Add PUT/DELETE /notes/&lt;id&gt; endpoints with tests</span><span class="ledger-ttime">(1d ago)</span></div>
+        <div class="ledger-tnode done"><span class="ledger-tri"></span><span class="ledger-tmark">✓</span><span class="ledger-ttext">Add DELETE /notes/&lt;id&gt; endpoint</span><span class="ledger-ttime">(1d ago)</span></div>
+      </div>
+    </div>
+  </div>
+  <div id="fleet-foot">
+    <label class="fl-foot-toggle"><input type="checkbox" checked> Group</label>
+    <button class="fl-foot-btn">Collapse</button><button class="fl-foot-btn">Expand</button>
+    <span>&le; 9d</span><input type="range" min="0" max="100" value="1">
+    <label class="fl-foot-toggle"><input type="checkbox" checked> Show completed</label>
+  </div>
+</div>

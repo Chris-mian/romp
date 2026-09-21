@@ -1,9 +1,9 @@
-"""The chat page's approval box and the ask ring for a held message (plans/notice-cards.md, "Action kinds and the held-mail card",
+"""The chat page's approval box and the Needs you ring for a held message (plans/notice-cards.md, "Action kinds and the held-mail card",
 2026-09-19): a hermetic kernel over one synthetic live session in the notes-api demo world, the real /chat page served from a
 copy of the built bundle, driven by Playwright, the feed pane closed. A message from a DIRECTED peer held under
 STATE/postal/quarantine before boot becomes a notice card at the first build (the kernel's backfill; the chat is a feed
 audience, so the feed builds with no feed pane), and the chat page shows it in the #notices box above the background box with
-Approve and Deny while the session's tab wears the ask ring. Approve reaches the kernel's noticeAction op and, with no postal
+Approve and Deny while the session's tab wears the Needs you ring. Approve reaches the kernel's noticeAction op and, with no postal
 bus in the lab, is refused as unreachable: the buttons re-arm and the row says why. Deny opens the optional note inline with two
 choices and a way back; Deny without note posts the bare verdict and is refused the same way. The decision itself is the bus's
 success (unit-tested with the act stubbed), so the lab takes it the way the runner records it, an expire row in the notice
@@ -406,7 +406,7 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertIn(TEXT, f["body"], "the message text is the row's body")
         self.assertEqual(f["buttons"], [{"label": "Approve", "disabled": False}, {"label": "Deny", "disabled": False}], "two actions of the kind, no Edit")
         self.assertIsNotNone(f["tabClasses"], "the session's tab")
-        self.assertIn("ring-waiting-on-you", f["tabClasses"], "the ask ring: a held message blocks the session until decided: %r (%s)" % (f["tabClasses"], why()))
+        self.assertIn("ring-waiting-on-you", f["tabClasses"], "the Needs you ring: a held message blocks the session until decided: %r (%s)" % (f["tabClasses"], why()))
         self.assertTrue(f["scrollable"], "the transcript scrolls (sixty turns), so the bottom is a real position")
         self.assertTrue(f["settled"], "the box's height is the one its last observer pass reported: the event the read holds at (pass: %r; %s)" % (f["pass"], why()))
         self.assertTrue(f["atBottom"], "the at-bottom reader stayed at the bottom when the box appeared (the box is a box below, low a), read settled (geometry: %r; pass: %r; %s)" % (f.get("geometry"), f["pass"], why()))
@@ -465,7 +465,7 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertIsNotNone(d)
         self.assertFalse(d["row"], "the row left with the frame that dropped it"); self.assertEqual(d["rows"], [], "all three decided")
         self.assertEqual(d["boxDisplay"], "none", "no row: the box hides")
-        self.assertNotIn("ring-waiting-on-you", d["tabClasses"] or [], "the ask ring left with the decision: %r" % d["tabClasses"])
+        self.assertNotIn("ring-waiting-on-you", d["tabClasses"] or [], "the Needs you ring left with the decision: %r" % d["tabClasses"])
 
 
 if __name__ == "__main__":

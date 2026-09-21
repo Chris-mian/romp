@@ -1443,7 +1443,7 @@ def _open_turn_progress(turns):
     (the user 2026-08-13: "always some detail about why they're working" — a tool count that climbs
     and a timer that runs make a silently-stuck session visible at a glance, because a frozen count
     under a climbing timer LOOKS wrong). None when the last turn ended: the other spin states
-    (Analyzing…, Awaiting…, the stall chip, the Blocked floors) own every idle beat, so this covers
+    (Analyzing…, Awaiting…, the stall chip, the Needs you floors) own every idle beat, so this covers
     exactly the case that used to be mute — an ordinary working card with its turn open. Derived from
     the same cached parse as the working dot; a tool use is an assistant record's tool_use block."""
     em.hydrate(turns[-1].get("atoms") or []) if turns else None   # the last turn (T323 stage 4a)
@@ -12579,7 +12579,7 @@ def _persist_checkpoints(now):
 def _interrupt_block_tick(now, live_map):
     """Interrupt → Blocked, INDEPENDENT of the auto-nudge switch (the user 2026-07-14). A session the
     user genuinely STOPPED mid-turn is waiting on their next instruction: its focus goal needs THEM, so
-    it belongs in the Blocked (needs-you) column — never sitting quietly in Working. This flip used to
+    it belongs in the Needs you column, never sitting quietly in Working. This flip used to
     live inside _auto_nudge_tick, so it only happened with auto-nudge ON; it is a needs-you rule, not a
     nudge feature, so it runs every push regardless of the toggle. A MACHINE cut (kernel restart /
     process death) is NOT a user stop — _interrupt_marks already excludes it — so those are continued,
@@ -40252,7 +40252,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     if _session_flag(sid, "hideFromFeed"):       # muted → out of task tracking: the ledger shows no goal tree / current task
         tree, current, recent_tops = [], None, []
     # the FEED's per-session needs-you verdict, read ONCE for this build: the ledger (needsInput, the section
-    # rows' word) and the status (needsYou, the tab's ask ring) both carry it, and two reads could straddle a
+    # rows' word) and the status (needsYou, the tab's Needs you ring) both carry it, and two reads could straddle a
     # concurrent pusher's swap of the set (a connect-thread build races the cycle) — a row saying "needs you"
     # beside a tab with no ring, in the same frame (review find, 2026-09-13)
     needs_you = _feed_needs_input_of(sid)
@@ -40263,7 +40263,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
               # line. Kept for a muted session: it is the session's own statement, not a goal the judges track.
               "workingNote": Sessions.working_note(sid),
               # the FEED's per-session needs-you verdict: True when the last feed build filed a card of this
-              # session under needs_input (the column the feed's Blocked list is: a judge-filed block, a live
+              # session under needs_input (the feed's Needs you column: a judge-filed block, a live
               # prompt, an on-you API error), False when none, None before the first feed build since start.
               # The section view's row reads it for its "needs you" word, so the two panes agree; the tab's own
               # chip rule misses the common case (a session that asked and went idle). Read from the feed build
@@ -40368,9 +40368,9 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # (tab-state.ts RING_TEST, the Waiting-on-you ring widget): True when the last feed build filed a card of this session
                   # under needs_input — a judge-filed block (the session asked something, a decision is
                   # pending), a stalled card, a held peer message, a live prompt — False when none, None
-                  # before the first feed build since start. The tab wears a dashed yellow ring for it in
-                  # every live state, working included (the ask ring, 2026-09-13: a session with something
-                  # waiting on you should grab attention without a click, even while it goes on working
+                  # before the first feed build since start. The tab wears a dashed magenta ring for it in
+                  # every live state, working included (the Needs you ring, the ask ring of 2026-09-13: a session with a card that
+                  # needs you should grab attention without a click, even while it goes on working
                   # in the background; the red ring stays the live prompt's and outranks it; since
                   # 2026-09-14 each ring is a widget with its own switch in the settings). The same
                   # set the ledger's needsInput reads, so the strip, the section rows and the feed agree;
@@ -41496,7 +41496,7 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
     planner has minted ANY goal — e.g. an SDK session that fired an AskUserQuestion on its very first turn
     (the user 2026-06-27). The hard-block floor (build_feed) can only floor an EXISTING focus card under
     BLOCKED; with zero goals there is no node to floor (store['lastNode'] is None), so the blocked session
-    would be INVISIBLE in the feed — exactly the bug where a hard block never reached the Blocked column and
+    would be INVISIBLE in the feed: exactly the bug where a hard block never reached the Needs you column and
     the planner looked like it never ran (it can't: there's no settled work to plan until the ask is answered).
 
     This synthesizes an ephemeral needs-input card from the LIVE prompt, mirroring _provisional_card's
@@ -42371,7 +42371,7 @@ def _feed_nudge_key(ctx, entry):
 
 
 def _feed_stalls_key(ctx, entry):
-    """Only the deferral records this entry read (the Stalled section, the Analyzing swirl, the Blocked
+    """Only the deferral records this entry read (the Stalled section, the Analyzing swirl, the Needs you
     filing), from the build's own _stalled_goals() snapshot in ctx, keyed by the exact node ids in the
     entry's `reads`. The body reads a record by exact node id, a foreign-owned id included, so a slice on
     the session's own id prefix missed those; the board-wide nudge identity covered them until the nudge
@@ -42518,7 +42518,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
       stalls: the deferral records of _stalled_goals() as (gid, why, since), sorted, for the exact node ids the
         previous entry read (a foreign-owned id included: the body reads a record by exact node id, so a slice on
         the session's own id prefix missed a foreign-id node's hold). The stalled section, the in-flight swirl and
-        the Blocked filing. A deps component, re-evaluated over the new entry.
+        the Needs you filing. A deps component, re-evaluated over the new entry.
       nudge: count, failed/failedAt and the last eight displayed history timestamps for the exact node ids
         the previous entry read. The pre-build snapshot also feeds the body; unrelated ledger writes and
         other sessions' history do not invalidate this entry. A deps component, populated on a cold build.
@@ -50187,7 +50187,7 @@ def _light_status(sid, path, tm, now):
     stops = cm.stops_for(_colormap())
     return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "provisional": True,
             "faded": _idle_faded(chip, since, now),      # the built status's own fact (T155), so the chip reads it the same
-            "needsYou": _feed_needs_input_of(sid),       # the yellow ask ring's one input (round four): the feed's verdict, a membership read
+            "needsYou": _feed_needs_input_of(sid),       # the magenta Needs you ring's one input (round four): the feed's verdict, a membership read
             # the painter's context gauge and tints (round three): the row carries the context, the colours are the built
             # status's own derivations over it (cm.ramp on the global colormap, cm.context_rgb), so a cold tab's gauge and
             # its model and effort tints paint as built for as long as the tab stays unbuilt
@@ -55943,7 +55943,7 @@ def _needs_input_sids(feed):
     """The sids with a card that needs the user: _card_needs_you, the one board-aware rule the badge reads too (the 1861
     read: this read of `column` and the badge's read of `category` disagreed the moment a notice card's two fields could
     differ, so the ring stayed off for a card in Blocked and lit for one the pane showed under Working). Placeholders
-    count too: the Blocked list shows them."""
+    count too: the Needs you column shows them."""
     return frozenset(str(a.get("sid")) for a in (feed.get("asks") or [])
                      if _card_needs_you(a) and a.get("sid"))
 
@@ -56166,7 +56166,7 @@ def _build_feed_locked(now, live_map, sig):
     _needs_now = _needs_input_sids(feed)                  # the per-session needs-you the session ledgers read
     if _needs_now != _feed_needs_input[0]:
         # A push builds the chat sessions BEFORE the feed, so the ledger's needsInput and the status's needsYou
-        # (the tab's ask ring) shipped this cycle carry the PREVIOUS build's set; the change lands on the next
+        # (the tab's Needs you ring) shipped this cycle carry the PREVIOUS build's set; the change lands on the next
         # cycle, whose chat signatures (`needs`) rebuild the sessions whose verdict moved. Make that cycle now —
         # the _mark_views_dirty pattern — so the ring and the section row trail the card by one build, not by
         # up to a backstop tick (review find, 2026-09-13: a ring a full tick late is a ring that can be stale
@@ -56322,7 +56322,7 @@ _CODE_BOARDS = {
     "feed": {
         "id": "feed", "title": "Feed",
         "categories": [{"id": "working", "title": "Working", "chip": "working"},
-                       {"id": "needs_input", "title": "Blocked", "chip": "blocked"},
+                       {"id": "needs_input", "title": "Needs you", "chip": "blocked"},   # the category everything you can act on files under (plans/needs-you.md); the chip class name is a schema value and stays
                        {"id": "completed", "title": "Completed", "chip": "completed"}],
         "defaultCategory": "working",
         "rules": [],                                   # the feed's category rule is code: the expression in _feed_session_entry
@@ -56977,10 +56977,10 @@ def _board_needs_you(board):
 
 def _card_needs_you(a):
     """THE one rule for "this card needs the user" (the 1861 read, medium): the card sits in its OWN board's needs-you category,
-    read from `category` (an older kernel's frame: `column`). The badge (_needs_you_count), the yellow ask ring
+    read from `category` (an older kernel's frame: `column`). The badge (_needs_you_count), the magenta Needs you ring
     (_needs_input_sids, and through it build_session's needsYou) and the pane's lens (feed.ts isNeedsYou(boardOf(card), ...))
     all read this; a board that names no needs-you category has no card that needs the user. A provisional placeholder is
-    a caller's concern (the badge skips it, the ring counts it: the Blocked list shows it)."""
+    a caller's concern (the badge skips it, the ring counts it: the Needs you column shows it)."""
     nb = _board_needs_you(a.get("board"))
     return nb is not None and a.get("category", a.get("column")) == nb
 
@@ -60560,10 +60560,10 @@ _CHAT_MOBILE_CSS = (
     "#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     "#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}"   # green when idle-waiting-on-bg-work
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
-    # something of the current session's is waiting on you (the desktop tab's dashed yellow ring, the class ring-waiting-on-you):
-    # the chip's border takes the ring — dashed, in the ask yellow — over the identity color (declared after
+    # a card of the current session's needs you (the desktop tab's dashed magenta ring, the class ring-waiting-on-you):
+    # the chip's border takes the ring, dashed, in the Needs you magenta, over the identity color (declared after
     # #mcur.colored so it wins at equal specificity)
-    "#mcur.ask{border-color:var(--st-ask-bg,#f5d33f);border-style:dashed}"
+    "#mcur.ask{border-color:var(--st-needs-bg,#d946ef);border-style:dashed}"
     "#mtag-slot{flex:0 0 auto;display:flex;align-items:center;gap:5px}"   # T161: the tag control's slot, sized by the shared button's own inline metrics
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
     "background:var(--btn-bg,#2a2a2a);color:#bbbbbb;border:1px solid var(--hairline,#3a3a3a);border-radius:6px;font-size:16px;line-height:1}"
@@ -60597,9 +60597,9 @@ _CHAT_MOBILE_CSS = (
     ".mrow .mclose{flex:0 0 auto;margin-left:8px;padding:0 6px;color:#8a8a8a;font-size:20px;line-height:1}"
     ".mrow .mclose:active{color:#e5484d}"
     ".mrow.active{background:#0d3a5c}"
-    # a row whose session has something waiting on you: a yellow bar at its left edge — the desktop tab's
-    # dashed ring (ring-waiting-on-you), in the one ask token, on a list row where a ring would fight the hairlines
-    ".mrow.ask{border-left:3px solid var(--st-ask-bg,#f5d33f);padding-left:9px}"
+    # a row whose session has a card that needs you: a magenta bar at its left edge, the desktop tab's
+    # dashed ring (ring-waiting-on-you), in the one Needs you token, on a list row where a ring would fight the hairlines
+    ".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}"
     # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
     # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
     # (cloned) and the count; no caret and no pointer, since the phone folds nothing
@@ -60682,7 +60682,7 @@ function rowUpdate(row,s){row.classList.toggle('active',!!s.active);
 // who tapped a remote session on the phone and nothing happened)
 row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
 row.classList.toggle('pending',pendingId===s.id);
-row.classList.toggle('ask',!!s.ask);   // the desktop tab's yellow ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): something of this session's is waiting on you
+row.classList.toggle('ask',!!s.ask);   // the desktop tab's magenta ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): a card of this session's needs you
 var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
 wd.classList.toggle('await',!s.working&&!!s.awaitbg);}
@@ -60714,7 +60714,7 @@ if(!act)act=first;   // the first SESSION row, never a heading
 var nm=cur.querySelector('.nm');
 var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg))?'':'none';   // gold working / green awaiting dot, matching desktop
 wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working));
-cur.classList.toggle('ask',!!(act&&act.ask));   // the current chip wears the yellow ring too
+cur.classList.toggle('ask',!!(act&&act.ask));   // the current chip wears the magenta ring too
 if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}
@@ -62837,7 +62837,7 @@ manual:'Auto-retry and the judges are paused: you stopped them.'};
 var RESUME='Resume all auto-retries',STOP='Stop all auto-retries';   // the chat card's own words
 var NOTSENT='Not sent: the dashboard is disconnected. Try again.';
 var LOST='Connection lost before the answer arrived. When it is back, the button shows the current state.';
-// a waiting row's class words (T340, the user 2026-09-11): the status code itself wears its class ink, the 5xx magenta for a
+// a waiting row's class words (T340, the user 2026-09-11): the status code itself wears its class ink, the 5xx purple for a
 // 529 or any other 5xx, the 429 red for a 429, so the number says what it is; the words beside it stay plain
 function clsWords(r){var st=r.status?esc(r.status):'';
 if(r.cls==='429')return '<span class=ah-c-r429>429</span> rate limited';if(r.cls==='529')return '<span class=ah-c-r5xx>529</span> overloaded';
@@ -62898,7 +62898,7 @@ return dup?fam+' · '+(b.label||b.auth||key.split('|')[0]):fam;}
 // window counts every attempt once and says how many of them had no status, with the shares' base named beside them:
 // '15 attempts, 7 of them without a status · 25% 429 · 0% 5xx of the other 8'.
 // the histogram (T316, the user's design): one bar per bin, STACKED bottom-up, successes in the accent, 429 attempts in
-// the blocked red, 5xx (529 included) in the 5xx magenta, and the other band (no connection, another status) in a hue of
+// the blocked red, 5xx (529 included) in the 5xx purple, and the other band (no connection, another status) in a hue of
 // its own only when the range holds any; one ceiling label, no peak text; the timeline's clocks along the bottom. The
 // hover draws the day as 96 quarter-hour bars; the detail draws the chosen range, larger. Colours through the tokens
 // (fallbacks for a var-less harness). EVERY attribute quoted: this goes through innerHTML (the spend chart's lesson).
@@ -65527,6 +65527,7 @@ def _landing():
             "<meta name=theme-color id=meta-theme content='#1e1e1e'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
             ":root{--accent:#9cd2ff;--accent-fg:#0c1a2e}"
+            ":root{--st-5xx-bg:#cb94d1;--st-5xx-ink:#8a8aff}"   # the 5xx tokens the API-health cell paints, declared where they resolve (plans/needs-you.md; mirrors styles.css); a rule of their own (PR 1935 round four, 2026-09-21: declared inside the accent rule they broke its byte pins in two unrelated modules), so the accent line's byte pins keep meaning what they say
             # The menu vocabulary's tokens (CLAUDE.md "Menus and dropdowns wear ONE vocabulary"), defined
             # HERE because the shell loads no sheet: the bell popover reads them, with the same dark
             # literals as var() fallbacks in its rules. Byte-equal to styles.css's :root values.
@@ -65919,18 +65920,18 @@ def _landing():
             ".ah-foot{margin-top:7px;padding-top:5px;border-top:1px solid rgba(255,255,255,0.08);gap:12px}"
             ".ah-link{cursor:pointer;color:var(--accent)}"
             # T316: a machine line's pieces in their class colours (successes the accent, 429 the blocked red, 5xx the 5xx
-            # magenta, no connection and other statuses the other band's hue), the vertical legend with the class tokens in
+            # purple, no connection and other statuses the other band's hue), the vertical legend with the class tokens in
             # those inks (T340: no swatches), the stacked bars (the hover's small, the detail's large), the detail's range
             # chips and width. The other band (T340, the user 2026-09-11): the label gray sat on the accent in the dark; the
             # band is a pale lime in the dark (#d9f99d) and an indigo in the light (#4f46e5), each at least 8 OKLab CVD units
-            # and 15 normal-vision units from the accent, the 429 red and its ink, the 5xx magenta and its ink, the retrying
+            # and 15 normal-vision units from the accent, the 429 red and its ink, the 5xx purple and its ink, the retrying
             # amber and the working yellow of its theme (the dataviz validator, all pairs; no one hue clears both themes:
-            # blues and violets fold into the magenta or its pink ink under red-green CVD in the dark, greens fold into the
+            # blues and violets fold into the 5xx purple or its ink under red-green CVD in the dark, greens fold into the
             # clay accent, the red and the amber in the light, warm neutrals sit within 15 of the pale accent in the dark)
             # the counts' TEXT inks per theme (review find: the chip colours as text sit under 4.5:1 on the tip; the
-            # failure line's precedent is #ef6b6f dark / #B02A1C light): 429 the error-text red, 5xx a lighter magenta in
-            # the dark, a deeper one in the light; the swatches and the bars keep the chip colours
-            ".ah-c-ok{color:var(--accent,#9cd2ff)}.ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:#e879f9}"
+            # failure line's precedent is #ef6b6f dark / #B02A1C light): 429 the error-text red, 5xx a violet ink in
+            # the dark (a lilac fill), a deep violet in the light; the swatches and the bars keep the chip colours
+            ".ah-c-ok{color:var(--accent,#9cd2ff)}.ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:var(--st-5xx-ink,#8a8aff)}"
             ".ah-c-none{color:#d9f99d}.ah-mline .ah-desc{opacity:1}.ah-mline .ah-c-plain{color:#a9b1ba}"
             ".ah-win,.ah-ago{margin-left:auto}"
             # the legend carries no group opacity (T340 review: a descendant cannot exceed its group's, so a faded legend put every
@@ -65939,7 +65940,7 @@ def _landing():
             ".ah-lrow{display:flex;align-items:center;gap:6px}.ah-lt{font-weight:600}.ah-lrow > span:last-child{opacity:.75}"
             # the bars' fills, one class per stack segment; the other band's hue written out per theme (no token: a class of
             # this popup alone, not a status the rest of the dashboard names)
-            ".ah-seg-ok{fill:var(--accent,#9cd2ff)}.ah-seg-rateLimited{fill:var(--st-blocked-bg,#e5484d)}.ah-seg-serverErrors{fill:var(--st-5xx-bg,#c026d3)}"
+            ".ah-seg-ok{fill:var(--accent,#9cd2ff)}.ah-seg-rateLimited{fill:var(--st-blocked-bg,#e5484d)}.ah-seg-serverErrors{fill:var(--st-5xx-bg,#cb94d1)}"
             ".ah-seg-noStatus,.ah-seg-other{fill:#d9f99d}"
             # the gridlines as classes too (T338): the ceiling's and the ticks', a hairline the light card can see
             ".ah-gridy{stroke:rgba(255,255,255,0.10)}.ah-gridx{stroke:rgba(255,255,255,0.06)}"
@@ -66343,6 +66344,7 @@ def _landing():
             # so the dark rendering is byte-identical. Accent goes clay (#C2410C) via the same --accent var
             # every accent consumer already reads.
             "body.theme-light{--accent:#C2410C;--accent-fg:#FFF8F2;background:#F1EAE2}"
+            "body.theme-light{--st-5xx-bg:#4c1b7e;--st-5xx-ink:#4c1b7e}"
             # the light theme's menu tokens — the values styles.css's body.theme-light block resolves
             # them to, so the bell popover is the same cream card every other menu is
             "body.theme-light{--menu-bg:#FBF6EF;--menu-fg:#1F1E1D;--menu-border:rgba(0,0,0,0.12);--menu-hover:rgba(0,0,0,0.06);"
@@ -66437,10 +66439,10 @@ def _landing():
             # the failure line in the light theme's error-text red (styles.css --err #B02A1C, about 6.6:1 on white;
             # the dark line's #ef6b6f is 3.0:1 there)
             "body.theme-light .ah-err{color:#B02A1C}"
-            # T316, the light tip is white: the counts' inks (the clay accent, the light error red, a deep magenta 6.5:1, the
+            # T316, the light tip is white: the counts' inks (the clay accent, the light error red, a deep violet 11.90:1, the
             # other band's indigo 6.3:1) and the bars' fills in the light palette's chip colours (T340: no swatches)
-            "body.theme-light .ah-c-ok{color:#C2410C}body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:#86198F}body.theme-light .ah-c-none{color:#4f46e5}"
-            "body.theme-light .ah-seg-ok{fill:#C2410C}body.theme-light .ah-seg-serverErrors{fill:#A21CAF}body.theme-light .ah-seg-noStatus,body.theme-light .ah-seg-other{fill:#4f46e5}"
+            "body.theme-light .ah-c-ok{color:#C2410C}body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}body.theme-light .ah-c-none{color:#4f46e5}"
+            "body.theme-light .ah-seg-ok{fill:#C2410C}body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1b7e)}body.theme-light .ah-seg-noStatus,body.theme-light .ah-seg-other{fill:#4f46e5}"
             "body.theme-light .ah-gridy{stroke:rgba(0,0,0,0.14)}body.theme-light .ah-gridx{stroke:rgba(0,0,0,0.08)}"
             "body.theme-light .ah-word{color:#1F1E1D}"
             "body.theme-light .ah-btn{background:#F1EAE2;border-color:rgba(0,0,0,0.12);color:#1F1E1D}"

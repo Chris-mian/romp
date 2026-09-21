@@ -46,7 +46,7 @@ function bundle(): string {
   const esbuild = req("esbuild");
   const contents = `
 import { MENTION_MAX_ROWS, mentionQuery, rankMentions, mentionMoreNote, mentionToken, insertMention, mentionKeyAction, mentionSegments } from "./composer-mention";
-const CHIP_LABEL: any = { working: "Working", ready: "Ready", idle: "Idle", closed: "Closed", needsInput: "Blocked" };
+const CHIP_LABEL: any = { working: "Working", ready: "Ready", idle: "Idle", closed: "Closed", needsInput: "Needs you" };
 const el = (tag: string, cls?: string) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 import { hostNameNodes, hostPartsNodes } from "./host-prefix";   // the real renderers: a remote chip's host must wear .host-prefix
 const isProvisionalId = (id: string) => id.startsWith("prov:");

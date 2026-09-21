@@ -324,7 +324,7 @@ test("the paint wears the shared state → class rule (tab-state.ts), and the si
   assert.ok(tab2.has("tab-retrying") && !tab2.has("tab-blocked"), "a transient API error auto-retries: amber");
 });
 
-test("the RINGS ride beside the state class as one class at a time — a working tab wears the yellow with its dot — the yellow's flip alone repaints once, and a switch off takes the ring away (2026-09-13, widgets since 2026-09-14)", () => {
+test("the RINGS ride beside the state class as one class at a time: a working tab wears the magenta with its dot; the magenta's flip alone repaints once, and a switch off takes the ring away (2026-09-13, widgets since 2026-09-14)", () => {
   const { H, api, sessions, settings } = world();
   api.renderTabs();
   assert.equal(H.bar.wipes, 1);
@@ -333,10 +333,10 @@ test("the RINGS ride beside the state class as one class at a time — a working
   api.renderTabs();
   assert.equal(H.bar.wipes, 2, "the verdict alone is a repaint: the signature reads needsYou");
   const b = H.bar.tabs().find((t) => t.dataset.id === "b")!;
-  assert.ok(b.has("tab-working") && b.has("ring-waiting-on-you"), "gold dot AND yellow ring: the ring does not replace the state");
+  assert.ok(b.has("tab-working") && b.has("ring-waiting-on-you"), "gold dot AND magenta ring: the ring does not replace the state");
   api.renderTabs();
   assert.equal(H.bar.wipes, 2, "unchanged: no rebuild");
-  // the yellow ring switched off in the settings: one repaint (settings.tabWidgets is in the signature), the class gone, the state kept
+  // the magenta ring switched off in the settings: one repaint (settings.tabWidgets is in the signature), the class gone, the state kept
   api.set({ settings: { ...settings, tabWidgets: { on: { "ring-waiting-on-you": false }, order: [], opts: {} } } });
   api.renderTabs();
   assert.equal(H.bar.wipes, 3, "the switch alone is a repaint");
@@ -361,8 +361,8 @@ test("the RINGS ride beside the state class as one class at a time — a working
   sessions.get("a").status = { state: "needsInput", needsYou: true };
   api.renderTabs();
   const a2 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
-  assert.ok(a2.has("tab-awaiting") && a2.has("ring-needs-you") && !a2.has("ring-waiting-on-you"), "red outranks yellow: one ring class");
-  // the red ring switched off: the same tab wears the yellow (a card of its IS waiting on you), the state class untouched
+  assert.ok(a2.has("tab-awaiting") && a2.has("ring-needs-you") && !a2.has("ring-waiting-on-you"), "red outranks magenta: one ring class");
+  // the red ring switched off: the same tab wears the magenta (a card of its DOES need you), the state class untouched
   api.set({ settings: { ...settings, tabWidgets: { on: { "ring-needs-you": false }, order: [], opts: {} } } });
   api.renderTabs();
   const a3 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
@@ -373,14 +373,14 @@ test("the RINGS ride beside the state class as one class at a time — a working
   const a4 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
   assert.ok(a4.has("tab-awaiting") && !a4.className.includes("ring-"), "no ring at all");
   api.set({ settings });
-  // an API retry: the amber ring; a card on it: the yellow outranks the amber
+  // an API retry: the amber ring; a card on it: the magenta outranks the amber
   sessions.get("a").status = { state: "retrying" };
   api.renderTabs();
   assert.ok(H.bar.tabs().find((t) => t.dataset.id === "a")!.has("ring-retrying"));
   sessions.get("a").status = { state: "retrying", needsYou: true };
   api.renderTabs();
   const a5 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
-  assert.ok(a5.has("tab-retrying") && a5.has("ring-waiting-on-you") && !a5.has("ring-retrying"), "yellow over amber");
+  assert.ok(a5.has("tab-retrying") && a5.has("ring-waiting-on-you") && !a5.has("ring-retrying"), "magenta over amber");
 });
 
 test("the dot slot explains its state on hover: a visible dot carries the feed's phrase for that state, the hidden slot says nothing", () => {

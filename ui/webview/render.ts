@@ -336,7 +336,7 @@ interface ModelFallback { pick: string; pickValue: string; live: string; cause: 
 // (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19); the actions are of a KIND the kernel defines.
 interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment?: NoticeAttachment | null;
                        actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[] }
-interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you: the red tab) rather than a transient API error (amber, retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Needs you ring widget wears a dashed magenta ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring of 2026-09-13, renamed and recoloured 2026-09-21); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -6218,7 +6218,7 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); }
   });
   // The header's order mirrors the feed's grouped headers (T284, the user 2026-09-09: the caret sat
-  // beside the chip at the left; the feed's Working / Blocked / Completed headers and its session
+  // beside the chip at the left; the feed's Working / Needs you / Completed headers and its session
   // headers put the name at the left and the caret with its count together at the RIGHT): the tag's
   // chip first, then the caret and the count right after it, then (folded) the gist's pip last — so
   // the folded and the open row share one shape and the caret is always the chip's neighbour. The
@@ -6241,8 +6241,8 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
   head.appendChild(n);
   if (collapsed) {
     // the folded gist, MEMBER-derived: one pip by the TAB's own ring rule (tab-state.ts) — red for a
-    // hidden member blocked on you or waiting for you, yellow for one with something waiting on you (the
-    // ask ring, 2026-09-13 — a fold must not hide it), gold for working, amber for an API error
+    // hidden member stopped on you, magenta for one with a card that needs you (the Needs you ring,
+    // the ask ring of 2026-09-13; a fold must not hide it), gold for working, amber for an API error
     // retrying on its own (the tab renders that amber too; a red pip there was a false interrupt).
     // After the count and small, so the header still reads as a label; the tooltip names the sessions.
     // Over the HIDDEN members only: a pinned member's own tab shows its state. Not the header's own
@@ -6336,10 +6336,10 @@ function applyTabStatus(tab: HTMLElement, s: { id?: string; status: Partial<Stat
   if (stateCls) tab.classList.add(stateCls);
   // …and the RING beside it (the rings-as-widgets change, 2026-09-14): the dashed outline is a WIDGET of the
   // registry now, one of three with a switch each in the settings (red for a live prompt or an API stop only
-  // you can clear, yellow for a card of the session's under needs-you, in every live state the ask ring of
+  // you can clear, magenta for a card of the session's under needs-you, in every live state the ask ring of
   // 2026-09-13 rides working included, amber for an API retry on its own), and the tab wears ONE at a time:
   // composeTabRing takes every ring class off, then puts on the first switched-on ring whose predicate
-  // holds, red over yellow over amber. The predicates are tab-state.ts's (RING_TEST), shared with the
+  // holds, red over magenta over amber. The predicates are tab-state.ts's (RING_TEST), shared with the
   // folded header's pip; the strip's signature reads the inputs (the state, the flags, needsYou) and
   // settings.tabWidgets, so a card entering or leaving the column, and a switch flipped, always repaint.
   composeTabRing(tab, s.id || "", s.status, settings.tabWidgets);
@@ -6755,12 +6755,12 @@ function renderTabs() {
       if (renderKind(skeletonTabs, id, !!s) === "skeleton") {                                              // makeSkeletonTab's reads:
         const m = tabMeta.get(id), kst = skeletonTabs.status.get(id) as Status | undefined;               // the kernel's list + its
         return ["k", m?.name || s?.name, (m?.color || s?.color)?.bg, (m?.color || s?.color)?.fg, id === peekId,   // status frames, never the
-                kst?.state, kst && tabStateClass(kst), kst?.needsYou === true, !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379); + the feed's needs-you verdict, the yellow ring's input (2026-09-13)
+                kst?.state, kst && tabStateClass(kst), kst?.needsYou === true, !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379); + the feed's needs-you verdict, the magenta ring's input (2026-09-13)
       }
       if (!s) { const m = tabMeta.get(id); return ["p", m?.name, m?.color?.bg, m?.color?.fg, down, note]; }   // makePlaceholderTab's reads
       const st = s.status;
       return [s.name, s.color?.bg, s.color?.fg, st.state, tabStateClass(st), st.needsYou === true, !!st.faded,
-              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints; + the feed's needs-you verdict (2026-09-13): a card entering or leaving needs-you repaints the yellow ring (the state class already carries the red and amber rings' inputs; settings.tabWidgets below carries the switches)
+              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints; + the feed's needs-you verdict (2026-09-13): a card entering or leaving needs-you repaints the magenta ring (the state class already carries the red and amber rings' inputs; settings.tabWidgets below carries the switches)
     }),
   ]);
   const mslotEl = document.getElementById("mtag-slot");
@@ -13098,7 +13098,7 @@ function fillSnapshotRow(btn: HTMLElement, r: SnapRow, now: number): void {
   if (r.color) name.style.color = r.color.bg;
   btn.appendChild(name);
   // the state in words, when the row says one: the SHARED status chip (status-chip.ts), the same words and dress the
-  // bar under the transcript wears for the session you are reading — Blocked (API error when that is the state) on
+  // bar under the transcript wears for the session you are reading: Needs you (API error when that is the state) on
   // you, "Awaiting 3 agents" / "Awaiting watch" / the peer's name for background work (T322b, the user 2026-09-10:
   // a grey outlined pill of the row's own reading "waiting" was not it). The model picks the chip (tab-snapshot.ts
   // snapshotRow); the pip stays beside it: the strip's colour language says the state, the chip says what.
@@ -14784,7 +14784,7 @@ function renderSubHead(): void {
 // sits nearest the composer. Today that is a message a DIRECTED peer sent this session, held by the postal bus: Approve
 // delivers and Deny drops, both actions of the quarantine kind the kernel runs through the bus's act road (the same
 // noticeAction wire the feed card posts; the kernel answers noticeActionDone by the row's id). The rows are status.notices,
-// so the box vanishes on the decision with the frame that drops the row, and the tab's ask ring (status.needsYou) goes with
+// so the box vanishes on the decision with the frame that drops the row, and the tab's Needs you ring (status.needsYou) goes with
 // it. Rendered on every status change like renderBgTasks (awaitKey carries the rows), but RECONCILED IN PLACE, keyed by the
 // notice id (the review of PR 1890, medium 1): a rebuild that replaced every row destroyed a pressed button before its mouseup
 // (a second hold landing mid-press: no click, nothing posted, nothing latched) and wiped a row's refusal line at the next

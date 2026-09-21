@@ -132,7 +132,7 @@ yields nothing rather than an error.
 
 ### Card boards: your own categories
 
-`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log. The feed pane shows one board at a time: the View menu gains a **Board** row per board the kernel carries (the feed first) once a second board exists, the pick survives a reload, and a board created by `romp card -b` is a row on the next frame; a data board's cards sit under its own categories, sorted by its definition, with no session grouping unless the definition asks for it. A feed page opened with `?board=<id>` shows that board with the Board rows hidden, the hook a pane per board mounts on. A pick naming a board the frame no longer carries shows the feed and says so on the View button.
+`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`; `blocked` is the Needs you chip's dress, the magenta of the category, its name kept as a schema value, and no chip value paints red, which is the hard stop's alone), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log. The feed pane shows one board at a time: the View menu gains a **Board** row per board the kernel carries (the feed first) once a second board exists, the pick survives a reload, and a board created by `romp card -b` is a row on the next frame; a data board's cards sit under its own categories, sorted by its definition, with no session grouping unless the definition asks for it. A feed page opened with `?board=<id>` shows that board with the Board rows hidden, the hook a pane per board mounts on. A pick naming a board the frame no longer carries shows the feed and says so on the View button.
 
 ### Moving a session to another folder
 
@@ -1905,7 +1905,7 @@ variables bound this:
   the default is `1800`, thirty minutes. A message older than this at the
   restart is not re-fed: it is kept in the chat marked never delivered, where
   it can be restored or dismissed, and a notice card (the section above) is
-  posted for the session, under Blocked, one per session per restart, naming
+  posted for the session, under Needs you, one per session per restart, naming
   how many messages were dropped and, for each, its time and its text. The
   card offers **Send again** for each message (up to three; with two or more
   there is also **Send all again**, which re-sends them as one message in
@@ -3721,7 +3721,7 @@ in the windows. The hover reads the document as counts, never as the state
 machine's vocabulary: one line per machine, named by its kernel's own name,
 with its successful requests in the accent and each failure class counted in
 its own colour only when present (429s in the blocked red, 5xx with 529 in the
-5xx magenta, no-connection and other-status failures in the other band's own
+5xx purple, no-connection and other-status failures in the other band's own
 hue: a pale lime in the dark theme, an indigo in the light); no
 traffic reads as "no API traffic"; a machine whose sessions are waiting or
 whose kernel is paused shows that kernel's own words instead. The window the
@@ -3732,7 +3732,7 @@ and a machine not reachable keeps its own line saying so. The word `unknown`
 stays in the document and appears nowhere on the dashboard. Under the lines,
 the **History** draws one stacked histogram per machine from the `ledger`:
 one bar per bin, successes in the accent, 429 attempts in red and 5xx in
-magenta stacked on them, and a band of its own hue (a pale lime in the dark
+purple stacked on them, and a band of its own hue (a pale lime in the dark
 theme, an indigo in the light) for no-connection and other-status failures
 only when the range or a counted line holds any; one ceiling label, no peak
 figure; along the bottom the clock times of the timeline pane's own axis (its
@@ -4742,25 +4742,26 @@ before, and a click that lands while text is selected inside a link opens nothin
 
 ### The rings on a tab
 
-A tab wears a dashed red ring while its session is stopped on a
-permission or picker prompt. When the feed shows one of the session's cards under Blocked (it
-asked you something, it is waiting on a decision, a peer's message is waiting for your say, or
-a stalled task needs a look), the tab wears a dashed yellow ring instead, whether the session
-is idle, waiting on background work or still working, so the sessions that need you stand out
-in the strip without a click through each of them; a working session keeps its gold dot inside
-the ring. The ring follows the feed, one refresh behind it at most, and goes when the card
-does: answer it, resolve it or clear it and the tab is plain again. A red ring outranks the
-yellow one; the amber ring of a session retrying an API error on its own gives way to it. The
-three rings are rows of **Settings**, **Chat**, **Tab widgets** (**Needs you**, **Waiting on
-you**, **Retrying**), each with its own switch, listed in that order because a tab wears one
-ring at a time and the first that applies wins: red over yellow over amber. A ring switched off
-leaves the tab with its dot; the small dot on a folded group's header and the phone's picker
-follow the same switches. With
-notifications on, the card entering Blocked is also what notifies you (see [Notifications on
-your phone](guide.md#notifications-on-your-phone)): the ring is that card, shown in the strip, and it
-stays as long as the card does, including across a kernel restart, which announces nothing. On
-a phone, the session picker marks the same sessions with a yellow bar at the row's left edge,
-and the button that names the current session wears the dashed yellow border.
+A tab wears a dashed red ring, **Blocked**, while its session is stopped: on a permission or
+picker prompt, or on an API error only you can clear. When the feed shows one of the session's
+cards under Needs you (it asked you something, it is waiting on a decision, a peer's message is
+waiting for your say, or a stalled task needs a look), the tab wears a dashed magenta ring
+instead, **Needs you**, whether the session is idle, waiting on background work or still working,
+so the sessions that need you stand out in the strip without a click through each of them; a
+working session keeps its gold dot inside the ring. The ring follows the feed, one refresh behind
+it at most, and goes when the card does: answer it, resolve it or clear it and the tab is plain
+again. A red ring outranks the magenta one; the amber ring of a session retrying an API error on
+its own gives way to it. The three rings are rows of **Settings**, **Chat**, **Tab widgets**
+(**Blocked**, **Needs you**, **Retrying**), each with its own switch, listed in that order because
+a tab wears one ring at a time and the first that applies wins: red over magenta over amber. A
+ring switched off leaves the tab with its dot; the small dot on a folded group's header and the
+phone's picker follow the same switches. With notifications on, the card entering Needs you is
+also what notifies you (see [Notifications on your phone](guide.md#notifications-on-your-phone)):
+the ring is that card, shown in the strip, and it stays as long as the card does, including across
+a kernel restart, which announces nothing. On a phone, the session picker marks the same sessions
+with a magenta bar at the row's left edge, and the button that names the current session wears the
+dashed magenta border. One colour, the Needs you colour, marks the category everywhere: the column's
+chip, a card's question mark, the ring, the picker's bar.
 
 ### Tags and groups in the tab strip
 
@@ -4773,8 +4774,8 @@ own at the end. A session with several tags appears under each of them; every co
 session (click either to open it, and closing either ends it). Each header shows the tag's color and name, then a chevron and a
 member count. Click a header, or press Enter on it, to fold its section down to the header
 alone; the count then says how many tabs are folded away, and a small dot after it shows when
-one of them is busy or needs you: red when one is blocked or waiting on you, otherwise yellow
-when one has something waiting on you, otherwise gold when one is working, otherwise amber
+one of them is busy or needs you: red when one is stopped on you (a prompt, or an API error only
+you can clear), otherwise magenta when one has a card that needs you, otherwise gold when one is working, otherwise amber
 when one hit an API error and is retrying on its own (hover it for their names). To keep one tab visible while its section is folded, right-click
 the tab and pick **Show when folded** under **Tags**;
 the header's count then leaves that tab out; when every tab in a section is set to
@@ -4809,8 +4810,8 @@ row per session, with its color, a dot for its state (yellow working, red stoppe
 API error only you can clear, amber retrying an API error on its own, teal compacting, green waiting
 on background work, none while it is idle), a state chip when the state is worth a word, what it is
 doing now in a few words, and how long ago it last did anything. The chip is the one the bar under
-the transcript wears for the session you are reading, with the same words and colours: **Blocked**
-when the feed shows one of the session's cards under Blocked or the session is stopped on a prompt
+the transcript wears for the session you are reading, with the same words and colours: **Needs you**
+when the feed shows one of the session's cards under Needs you or the session is stopped on a prompt
 (**API error** when it is stopped on one only you can clear), and **Awaiting** with what is awaited
 (**Awaiting 3 agents**, **Awaiting watch**, the peer's name) when it is waiting on background work.
 A session that asked a question and went quiet shows the chip with no dot: the dot follows the
@@ -4819,7 +4820,7 @@ its work so far, else from the last task it had; a session that has published a 
 working on shows the note as a quieter second line. Hover a row for its last message, shown without
 its formatting; click one to open that session, which also opens its section if the section is
 folded (with several tags, the first folded group of them). The rows update as the sessions work and
-change only when something about a session changes; the **Blocked** chip follows the feed, one
+change only when something about a session changes; the **Needs you** chip follows the feed, one
 refresh behind it at most. The transcript comes back when you pick a session, press Escape, or click
 that header again while its section is open and holds the tab you are reading.
 

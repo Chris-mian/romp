@@ -18,7 +18,7 @@ const BOARD_SRC = read("ui", "webview", "board-def.ts");
 
 // today's three header triples, exactly as ensureCols spelt them before the extraction (feed-col-head-case.test.ts pinned
 // the literal table; it now pins the definition through columnTable)
-const TRIPLES = [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]];
+const TRIPLES = [["asks", "Working", "working"], ["needsInput", "Needs you", "blocked"], ["completed", "Completed", "completed"]];   // the middle column is Needs you (plans/needs-you.md); its chip class name is a schema value
 
 test("the feed definition equals today's literals: the columns, their titles and chips, in the build order", () => {
   assert.deepEqual(columnTable(FEED_BOARD).map((t) => [...t]), TRIPLES);

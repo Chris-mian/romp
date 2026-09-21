@@ -94,7 +94,7 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
 .fl-hover-sub .t{min-width:0}
 .fl-hover-sub.done{opacity:0.6}
 .fl-hover-sub.done .m{color:#54b204}
-.fl-hover-sub.blocked .m{color:#e5484d}
+.fl-hover-sub.blocked .m{color:var(--st-needs-bg,#d946ef)}   /* the hover card's Needs you mark: the category's colour (plans/needs-you.md), the fallback for a page without the token */
 .fl-hover-more{color:var(--vscode-descriptionForeground,#9a9a9a);margin-top:2px}
 /* .fl-back's navy chip reads clay-on-navy at ~2.3:1 in light (PR #763 item 10) — a light chip */
 body.theme-light .fl-back{background:#F3E0D5;color:#8A3A10;border-color:#E0C4B0}

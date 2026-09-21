@@ -986,8 +986,8 @@ class ViewBuilder(unittest.TestCase):
         load_goals replays over it, live under the fixture's own temp root (setUp rebinds jd.GOALDIR and
         jd.STATE), so no other module's journaled gesture on the shared placeholder sid reaches it.
 
-        The STATUS carries the same verdict as needsYou (2026-09-13): the tab strip's ask ring reads it there —
-        a skeleton tab gets status frames alone, and the rule reads one object — so the two fields must move
+        The STATUS carries the same verdict as needsYou (2026-09-13): the tab strip's Needs you ring reads it there
+        (a skeleton tab gets status frames alone, and the rule reads one object), so the two fields must move
         together at every step; the chip state stays what the live state says (the idle main thread's "ready"
         here), since the ring rides beside the state class rather than replacing it. And a feed build that MOVES
         the set wakes the pusher (the _mark_views_dirty pattern): a push builds the chat sessions before the feed,
@@ -1011,7 +1011,7 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(live_map[SID]["state"], "idle", "while the chip is idle: the tab's rule alone shows nothing")
             m = km.build_session(SID, NOW)
             self.assertIs(m["ledger"]["needsInput"], True, "the row's needs-you = the feed's column")
-            self.assertIs(m["status"]["needsYou"], True, "the tab's ask ring = the same column, on the status")
+            self.assertIs(m["status"]["needsYou"], True, "the tab's Needs you ring = the same column, on the status")
             self.assertEqual(m["status"]["state"], "ready", "the chip is still the live state (an idle main thread reads ready): the ring composes with it, never replaces it")
             # the judges rule the block answered: the store now holds the goal working; a dirty mark bypasses
             # the rebuild throttle the way the reply handler does
