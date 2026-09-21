@@ -28167,14 +28167,18 @@ def _sessions_listing_key(live_map, names):
     it moves the revision, a write of a field no row reads does not; the revision counts THIS process's writes, so a lastSid
     the outgoing kernel wrote during a handover reaches the rows when another input moves), each row's compacting bit (the live row against the cached parse) and each
     row's launch error (its text and stamp, _launch_error_key: the notice a compaction that ended loudly leaves while the
-    compacting bit falls, 2026-09-21; read once per sid per cycle, the row takes the same read). A field whose input is not
-    here cannot be added without adding the input."""
+    compacting bit falls, 2026-09-21). The bit and the notice are one read per sid per cycle, compacting then notice, kept
+    on the listing's pair memo and served to the row (_listing_pair_scoped): the row read the bit fresh while its notice
+    came from the key's read, so a loud end landing between the two built a row reading not compacting with no notice, a
+    clean end's shape, whenever another input moved in the same cycle or on the first cycle, and `romp compact --wait`
+    printed done over an uncompacted thread (the post-merge review of the native compaction, 2026-09-21). A field whose
+    input is not here cannot be added without adding the input."""
     try:
         paths = {s["sid"]: s["path"] for s in _sessions(time.time())}   # the cycle's own sweep (memoized on the scope): the
     except Exception:                                                   #  transcript the compacting read is disproved against
         paths = {}
-    rows = tuple(sorted((str(sid), (m or {}).get("state"), (m or {}).get("since"), (m or {}).get("backend"),
-                         bool(_compacting_now(sid, tm=m, path=paths.get(sid))), _launch_error_key(sid))
+    rows = tuple(sorted((str(sid), (m or {}).get("state"), (m or {}).get("since"), (m or {}).get("backend"))
+                        + _listing_pair_key(sid, m, paths.get(sid))
                         for sid, m in (live_map or {}).items()))
     try:
         with os.scandir(WORKING_DIR) as it:
@@ -28192,8 +28196,9 @@ def _sessions_listing_key(live_map, names):
 def _launch_error_scoped(sid):
     """_launch_error through the cycle's memo (2026-09-21): inside a pusher cycle the first read per sid is kept on
     _live_scope.launch_errors (opened and closed with the cycle's other memos, the _sessions idiom) and served to every
-    reader after it, so the listing's key and its rows, which both read it, cost one backend read per session per cycle
-    (the SDK backend's read is a registry file per session); outside a cycle every read is fresh, as _sessions behaves."""
+    reader after it, so the listing, which reads it once at its key through the pair memo (_listing_pair_scoped), costs
+    one backend read per session per cycle (the SDK backend's read is a registry file per session); outside a cycle every
+    read is fresh, as _sessions behaves."""
     sid = str(sid)
     memo = getattr(_live_scope, "launch_errors", None)
     if memo is None:
@@ -28203,15 +28208,42 @@ def _launch_error_scoped(sid):
     return memo[sid]
 
 
-def _launch_error_key(sid):
-    """The hashable identity of a row's launch error for the listing's key (2026-09-21): its text and stamp, None when
-    the session runs fine. The record itself rides the row (_session_listing_row, through the same cycle memo); the key
-    needs only what tells one notice from another, and _launch_error's own guard makes a backend hiccup read as none
-    here as it does there."""
-    le = _launch_error_scoped(sid)
+def _launch_error_key(le):
+    """The hashable identity of a row's launch error `le` for the listing's key (2026-09-21): its text and stamp, None when
+    the session runs fine. The record itself rides the row (_session_listing_row, the same read through the pair memo);
+    the key needs only what tells one notice from another, and _launch_error's own guard makes a backend hiccup read as
+    none here as it does there."""
     if not isinstance(le, dict):
         return None
     return (str(le.get("text") or ""), str(le.get("at") or ""))
+
+
+def _listing_pair_scoped(sid, tm, path):
+    """One row's (compacting, launchError) for the /sessions listing, read in that order: the compacting bit
+    (_compacting_now over the live meta `tm` and the transcript `path` the caller holds) and then the backend's launch
+    error (_launch_error_scoped). Inside a listing refresh the first read per sid is kept on _live_scope.listing_pairs
+    (opened and closed by _sessions_listing_refresh around its key and its build, the _sessions idiom, thread-confined)
+    and served to the row, so the key and the row read one world: the row read the bit fresh while its notice came from
+    the key's read, and a loud end (the bit falls, the notice lands) between the two yielded not compacting with no
+    notice, a clean end's shape, on any cycle another key input moved in or on the first cycle (the post-merge review of
+    the native compaction, 2026-09-21). The order matters on its own: an end landing between the pair's two reads yields (compacting, notice),
+    which `romp compact --wait` judges a loud end, where notice then bit would yield the clean end's shape again. Scoped
+    to the listing pair alone: the chip, the drive-op gates and the drain read _compacting_now fresh. Outside a refresh
+    (a request's own build, GET /sessions/by-fsid) the pair is read fresh, in the same order."""
+    sid = str(sid)
+    memo = getattr(_live_scope, "listing_pairs", None)
+    if memo is None:
+        return bool(_compacting_now(sid, tm=tm, path=path)), _launch_error_scoped(sid)
+    if sid not in memo:
+        compacting = bool(_compacting_now(sid, tm=tm, path=path))
+        memo[sid] = (compacting, _launch_error_scoped(sid))
+    return memo[sid]
+
+
+def _listing_pair_key(sid, tm, path):
+    """The pair's two key components: the compacting bit, and the launch error's identity (_launch_error_key)."""
+    compacting, le = _listing_pair_scoped(sid, tm, path)
+    return compacting, _launch_error_key(le)
 
 
 def _sessions_listing_miss(prev, cur):
@@ -28228,16 +28260,20 @@ def _sessions_listing_refresh(now, live_map):
     """The pusher's job (rule 1): the /sessions rows rebuilt once when their key moved, from the cycle's own liveness and
     names snapshots, and kept with their JSON for every request until the next change."""
     names = getattr(_live_scope, "names", None)
-    key = _sessions_listing_key(live_map, names)
-    if _SESSIONS_LISTING["key"] == key and _SESSIONS_LISTING["json"] is not None:
-        return
-    why = _sessions_listing_miss(_SESSIONS_LISTING["key"], key)
-    try:
-        rows = _session_rows_from(live_map)
-        body = json.dumps(rows)
-    except Exception:
-        _SESSIONS_LISTING["fault"] = time.time()          # the kept listing is stale from here: requests build for themselves
-        raise                                             #  (below) until a build lands; the job's own try writes the line
+    _live_scope.listing_pairs = {}                        # the pair memo (_listing_pair_scoped, 2026-09-21): the key's reads
+    try:                                                  #  below are the rows' reads, one world for both
+        key = _sessions_listing_key(live_map, names)
+        if _SESSIONS_LISTING["key"] == key and _SESSIONS_LISTING["json"] is not None:
+            return
+        why = _sessions_listing_miss(_SESSIONS_LISTING["key"], key)
+        try:
+            rows = _session_rows_from(live_map)
+            body = json.dumps(rows)
+        except Exception:
+            _SESSIONS_LISTING["fault"] = time.time()      # the kept listing is stale from here: requests build for themselves
+            raise                                         #  (below) until a build lands; the job's own try writes the line
+    finally:
+        _live_scope.listing_pairs = None
     _SESSIONS_LISTING.update({"key": key, "rows": rows, "json": body, "fault": None, "built": _SESSIONS_LISTING["built"] + 1})
     _SESSIONS_LISTING["missBy"][why] = _SESSIONS_LISTING["missBy"].get(why, 0) + 1   # the thread rows keep their own key (below)
 
@@ -28329,6 +28365,7 @@ def _session_listing_row(sid, meta, notes, path):
     on it), so the failing row is kept minimal. Same per-row contract as the SDK merge's guard (2026-08-31)."""
     try:
         bg, fg = _identity_of(sid)
+        compacting, launch_error = _listing_pair_scoped(sid, meta, path)
         return {"id": sid, "name": _name_of(sid) or sid[:8], "state": meta.get("state", ""),
                 "dir": _cwd_of(sid), "bg": bg, "fg": fg,
                 # lastSid: the session's CURRENT transcript fsid (SDK registry join, mtime-memoized).
@@ -28339,13 +28376,14 @@ def _session_listing_row(sid, meta, notes, path):
                 # compacting: the corroborated signal the chat chip uses (_compacting_now, cached
                 # parse), exposed so `romp compact --wait` and scripted recycling can watch a
                 # compaction start and clear through the kernel's own read, never a scrape.
-                "compacting": bool(_compacting_now(sid, tm=meta, path=path)),
+                "compacting": compacting,
                 # launchError: the backend's record of why the session cannot run ({text, at, limit, an optional
                 # noRetry}, SessionBackend.launch_error; None when it runs fine), beside compacting so `romp compact
                 # --wait` can tell a compaction that ended loudly (the bit falls as on a clean end, the notice stands)
-                # from one that finished (the second review of the native compaction, 2026-09-21). Through the cycle's
-                # memo: the listing's key read it already (_launch_error_scoped)
-                "launchError": _launch_error_scoped(sid),
+                # from one that finished (the second review of the native compaction, 2026-09-21). The two are one
+                # read, compacting then notice, taken at the listing's key and served here (_listing_pair_scoped): read
+                # apart, a loud end between them gave this row a clean end's shape (2026-09-21)
+                "launchError": launch_error,
                 "working": notes.get(sid, ""), "backend": meta.get("backend", "")}
     except Exception:
         sys.stderr.write("session row for %s failed (kept minimal): %s\n"
