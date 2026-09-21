@@ -2,8 +2,7 @@
 # Guide
 
 This guide walks through Romp one feature at a time, at the level of what you
-see and do. Each part links into the [Reference](reference.md), where the
-detail behind it lives.
+see and do. The [Reference](reference.md) documents the same features in full.
 
 ## The Romp user interface
 
@@ -14,45 +13,40 @@ complementary views of what the agents are doing:
   agent, with features that make a long session easier to scan.
 - **[The feed](#the-feed)** is Romp's task-management layer: what is in
   progress, what needs your input, and what is done.
-- **[The timeline](#the-timeline)** is the history of what each session worked
-  on and how they coordinated; click any part to jump to that moment in the
-  chat.
+- **[The sessions pane](#the-sessions-pane)** holds the timeline: what each
+  session worked on and how they coordinated; click any part to jump to that
+  moment in the chat.
 - **[The outline](#the-outline)** lists every session with its tasks, for
   reviewing what a session has done and searching across all of them.
 
-[Two more panes](#the-other-panes) wait in the settings for when you want them.
+[Two more panes](#the-other-panes), Files and Artifacts, are off by default.
 
 ### The chat
 
 ![Tool calls fold into runs; each expands to one line per call](assets/guide/chat-detail.png){ width="100%" }
 
-Tool calls fold into runs, so a long session reads as the work it did rather
-than as a wall of output. Each run opens to a line per call.
+Tool calls fold into runs, and each run opens to one line per call.
 
-Writing to a session is more than a text box. Drop a file anywhere on the pane
-to attach it, type `@` and a few letters to name another session, and take a
-message back out of the queue with the pencil in its corner while the session
-is still busy. [The rest of it](reference.md#the-chat-pane-in-detail).
+The message box also supports attachments, session names and recall. A file
+dropped anywhere on the pane attaches to the next message, `@` and the first
+letters of a session's name insert that name, and the pencil on a message the
+session has not taken yet puts it back in the box.
 
-Files open where you are reading. Click a path or a markdown link and the file
-opens in the viewer, rendered, at a text size you control. Select a passage and
-it lands in the composer as a quote chip, so reviewing a document is a series
-of notes rather than lines copied by hand.
-[More](reference.md#opening-a-markdown-document).
+A path or a markdown link in the chat opens the file in the viewer, rendered. A
+passage selected there lands in the composer as a quote, labelled with the file
+and the line it came from.
 
 Tabs carry the state of their sessions. A tab wears a ring while its session
 needs you, tags group the strip into sections, and a tab can take a hot key of
-your own. [More](reference.md#tags-and-groups-in-the-tab-strip).
+your own.
 
 What a session needs from you sits in a box above its composer, one line per
 item with a way to act: a question with **Reply**, **Continue** and **Clear**, a
 held message with its own buttons. A stop the chat shows inline is not listed;
-the ring says it. [More](reference.md#what-a-session-needs-from-you).
+the ring says it.
 
-Two or three sessions can sit side by side: drag a tab to the right edge and
-the chat splits into columns, each a full chat with its own tab strip and
-composer, four at most.
-[More](reference.md#columns-and-a-hot-key-per-tab).
+Drag a tab to the right edge and the chat splits into columns, each a full chat
+with its own tab strip and composer, four at most.
 
 ### The feed
 
@@ -82,30 +76,27 @@ tasks, and a task can be handed from one session to another.
 Press <span class="romp-btn">Clear</span> on a card when you are done with it. A
 cleared card is archived, and no more work is added to it.
 
-Not every card comes from a judge. `romp card` posts one from a script or an
-agent, with a title, a body and a picture if you want one; a card that
-names no session sits at the top of the feed under Notes.
-[More](reference.md#notice-cards-a-feed-card-without-a-judge).
+`romp card` posts a card from a script or an agent, with a title, a body and a
+picture if you want one; a card that names no session sits at the top of the
+feed under Notes.
 
-You can also make boards of your own. `romp board define` sets a board's
-categories, how its cards sort and which of them rings the bell, and the feed's
-**View** button then offers a row per board.
-[More](reference.md#card-boards-your-own-categories).
+`romp board define` adds a board beside the feed: its categories, how its cards
+sort, and which category rings the bell. The feed's **View** button then offers
+a row per board.
 
 **View** also holds the feed's own layout: the sort direction, a single column,
 cards grouped by session, and a section at the top for the session you are
-reading in the chat. [More](reference.md#the-feeds-layout-controls).
+reading in the chat.
 
 Task tracking has a master switch, at the top of its own settings tab and on by
 default. Off, the judges do not run and cost nothing, the feed and the outline
 go away, and Romp is a chat tool.
-[More](reference.md#the-task-tracking-switch).
 
-### The timeline
+### The sessions pane
 
-Each row is one session. A bar is a stretch where the session was working, and a
-circle is a message you sent. A striped stretch means the session is blocked,
-waiting on your input.
+The Sessions pane holds the timeline, one row per session. A bar is a stretch
+where the session was working, and a circle is a message you sent. A striped
+stretch means the session stopped and needed you: it was waiting on your input.
 
 ![A timeline lane per session, with status and context at the left](assets/guide/timeline-annotated.png){ width="100%" }
 
@@ -124,9 +115,8 @@ find past work: the search box reaches every session, live or closed.
 
 ![The outline: each session's tasks as a tree](assets/guide/outline.png){ width="100%" }
 
-Right-click a session's name here to rename or end it. Renaming is safe: the
-name is a label, and the session's mail, goals and history follow the session
-itself. [More](reference.md#renaming-and-ending-a-session-from-the-outline).
+Right-click a session's name here to rename or end it. A rename changes the
+label only: the session's mail, goals and history follow the session itself.
 
 ### The other panes
 
@@ -135,15 +125,13 @@ Panes:
 
 - **Files** keeps the file viewer in a column of its own, so an open file
   covers neither the chat nor the feed.
-  [More](reference.md#the-files-pane).
 - **Artifacts**, which is experimental, lists the files a session wrote, showed
   or was handed, its pictures as thumbnails.
-  [More](reference.md#the-artifacts-pane-experimental).
 
-**Pane docking**, in the same settings section and also off by default, lets you
-arrange the panes yourself: grab a pane by its empty space, drop it on another
-pane's half, and drag the dividers between them. A session tab dropped that way
-becomes a chat pane of its own. [More](reference.md#pane-docking).
+**Pane docking**, in the same settings section and also off by default, arranges
+the panes by dragging: grab a pane by its empty space, drop it on another pane's
+half, and drag the dividers between them. A session tab dropped that way becomes
+a chat pane of its own.
 
 ## Automatic nudges
 
@@ -204,10 +192,7 @@ romp mail inbox                                                              # r
 ```
 
 Names resolve against the currently live sessions; sending to a dead session's
-name errors instead of silently parking mail. The full mail surface, shell and
-in-session, is in the [Reference](reference.md#mail-from-the-terminal), which
-also explains why a session's peers are the ones romp's own tools
-[list](reference.md#romps-mail-tools-and-claude-codes-own).
+name errors instead of silently parking mail.
 
 ## Sessions, revival, and search
 
@@ -226,11 +211,10 @@ A session can move to another folder, for when the code it works on moves.
 Right-click its tab and choose **Move to folder…**, or run `romp move <session>
 <dir>`: its conversation, name, mail and history stay with it, and the agent
 reads the new folder's `CLAUDE.md` from the next turn.
-[More](reference.md#moving-a-session-to-another-folder).
 
 Words your team coined wear a quiet dotted underline wherever a session writes
 them: hover one for the definition, click it to open the group's glossary at
-that entry. [More](reference.md#the-glossary).
+that entry.
 
 Search reaches inside sessions, not just across their names. As sessions run, a
 lightweight index judge writes each one a headline and an abstract of what it
@@ -258,7 +242,6 @@ the LLM calls in Romp's judge pipeline.
 It runs as a login service, so it is up whenever you are logged in. `romp down`
 stops it, giving turns in flight a few seconds to finish first, and `romp up`
 brings every session back with its history.
-[More](reference.md#stopping-the-kernel-on-purpose).
 
 ### Linking kernels on other machines
 
@@ -367,15 +350,14 @@ The mechanics, including how the tunnels and the check-in handshake work, are in
 
 ### Settings across machines
 
-Settings follow you as far as they sensibly can. How a page looks is kept in the
-browser you are using, and what the kernel acts on, Auto Nudge or Task tracking
-for instance, is sent to every machine you are connected to.
+How a page looks is kept in the browser you are using. What the kernel acts on,
+Auto Nudge or Task tracking for instance, is sent to every machine you are
+connected to.
 
 A machine that was set differently while you were apart asks rather than
 changes: a line under the row, and a card on the feed, each offering **Apply**
 or **Keep mine**. A picker above the settings tabs says which machine you are
 setting, and pins a value there when you pick one.
-[More](reference.md#settings-across-machines).
 
 ## Remote access
 
@@ -392,9 +374,9 @@ ssh -N -L 29855:127.0.0.1:29855 <the machine running romp>
 ```
 
 Then open `http://127.0.0.1:29855` as usual. Tailscale, set up as for a phone
-below, is the other good path. Avoid VS Code's port forwarder for the browser
-dashboard:
-[why](reference.md#the-vs-code-port-forwarder-and-the-browser-dashboard).
+below, is the other path. VS Code's port forwarder is a poor one for the
+dashboard: it carries every socket over the one channel it shares with your
+editor, and does not close the far end when a pane goes away.
 
 ### From your phone
 
@@ -424,22 +406,26 @@ If you change the kernel's port later, re-run that command. The proxy remembers
 the port you gave it, so a stale mapping leaves the phone on a dead page while
 the machine itself looks healthy.
 
-Three settings in the Tailscale app decide whether the machine can serve at all,
-and a tailnet you share with other people needs a rule of its own.
-[The full setup, with both
-warnings](reference.md#reaching-romp-from-a-phone-the-full-tailscale-setup).
+Three settings in the Tailscale app on that machine decide whether it can serve
+at all: allow incoming connections, use Tailscale DNS settings, and launch
+Tailscale at login.
+
+On a tailnet you share with other people, `tailscale serve` exposes Romp to
+every device on it, with the access token the only thing in front of your
+agents. Keep the tailnet to your own devices, or write an ACL that restricts the
+kernel's machine to them.
 
 #### Notifications on your phone
 
-Romp can buzz your phone when a session needs you or finishes a task, so you can
-put the phone down while the sessions work. Tap the bell, in the bar along the
-bottom on a phone and at the bottom right on a desktop, then turn on
-**Notifications** and **This device** and send yourself a test.
+Romp can buzz your phone when a session needs you or finishes a task. Tap the
+bell, in the bar along the bottom on a phone and at the bottom right on a
+desktop, then turn on **Notifications** and **This device** and send yourself a
+test.
 
 On an iPhone, add Romp to the Home Screen first (share sheet, then **Add to Home
 Screen**) and open it from there: iOS only lets an installed app receive
 notifications. Tapping a notification brings Romp forward on the session it was
-about. [Every switch](reference.md#notifications-on-a-phone-or-browser).
+about.
 
 ## Security and trust
 
@@ -457,7 +443,6 @@ mode `0600` (readable only by your own user account). Local tools (the CLI,
 hooks, the bus, the editor extension) read that file and send it automatically,
 so you never type it. Only liveness probes and the few files a browser fetches
 to install Romp on a Home Screen are exempt.
-[More](reference.md#the-token-file-minting-permissions-and-refusals).
 
 A browser cannot read that file, which is why the link `romp` prints carries the
 token in it. The first visit trades it for a year-long cookie, so the bare
@@ -513,14 +498,13 @@ Romp spends tokens on top of what you spend yourself. If you are running models
 like Opus or Fable at high effort, the judging costs much less than the sessions
 themselves.
 
-Settings, Debug holds **Token usage analytics**, which puts your sessions'
-tokens beside the judges' over a period you pick, and the bottom bar's spend
-readout asks the same question in dollars, by session.
-[More](reference.md#token-usage-the-two-panels).
+Settings, Debug holds **Token usage analytics**: your sessions' tokens beside
+the judges' over a period you pick. The bottom bar's spend readout shows the
+same split in dollars, by session.
 
 You can also reconfigure the judges from the gear: the high-volume indexing tier
 defaults to Haiku, and the judgment tier defaults to Sonnet.
 
 The bottom bar carries a small dot for how the API is treating your sessions:
 red while errors are being met on any connected machine, gray when nothing is
-calling it. [What it reads](reference.md#the-api-health-signal).
+calling it.

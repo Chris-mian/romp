@@ -260,10 +260,22 @@ elsewhere, so these pages buy a first reader's understanding and spend nothing e
 - **The install command inside the first screen** of the install page, above everything
   optional. A visitor came for that line; the interpreter rules and the service's
   environment are reference material.
-- **One short paragraph per feature, and a link.** A new capability gets a paragraph in
-  the guide saying what it does for a person, and its detail goes into a named section
-  of `docs/reference.md` that the paragraph links to. Moving text OFF these pages is
-  always welcome; adding to them is what needs a reason.
+- **One short paragraph per feature, no trailing link.** A new capability gets a
+  paragraph in the guide stating what it does, and its detail goes into
+  `docs/reference.md` under a heading that matches the feature's name. The guide points
+  at the reference once, in its opening line; a paragraph never ends by sending the
+  reader somewhere else, and no page tells a reader that the details are elsewhere or
+  that an agent can find them. Moving text OFF these pages is always welcome; adding to
+  them is what needs a reason.
+- **State what a thing does; do not sell it.** No benefit claims the reader can judge
+  for themselves, no "more than a text box", no "opens where you are reading": name the
+  behaviour ("the message box also supports attachments, session names and recall"). And
+  write each page as it stands, never as a response to how it used to read.
+- **A link carries the reason a reader would want it**, in the same clause, and then
+  goes: "On a machine with several Pythons, [which one runs the kernel](...) matters".
+- **Call each part of the interface what the interface calls it.** The pane labelled
+  Sessions holds the timeline; write "the Sessions pane", not "the timeline", for the
+  pane.
 - **Process documents stay out of the site's navigation.** `docs/pr-tiers.md` and the
   plans are contributor process, reachable by path and by URL (`not_in_nav` in
   `mkdocs.yml`); the site's top-level sections are for people using romp.

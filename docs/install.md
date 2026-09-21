@@ -12,6 +12,9 @@
     sudo apt install python3 nodejs npm    # Ubuntu / Debian
     ```
 
+On a machine with several Pythons, [which one runs the
+kernel](reference.md#the-kernels-python) matters.
+
 ## Install
 
 ```bash
@@ -26,12 +29,6 @@ The same command updates Romp later. To remove Romp, run `romp uninstall` (add
 
 This clones Romp to `~/romp` and installs the newest release.
 [What it installs, in detail](architecture.md#what-the-installer-sets-up).
-
-Two operational details live in the reference rather than here: [which Python
-runs the kernel](reference.md#the-kernels-python), which matters on a machine
-with several of them, and [what the login service
-reads](reference.md#service-environment-and-credentials), including the copy of
-`node` it runs on macOS.
 
 ### Manual and custom installs
 
@@ -68,5 +65,5 @@ open Romp from the sidebar.
 
 <video src="../assets/guide/first-session.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
 
-Then read the [guide](guide.md), which walks through the interface one feature
-at a time.
+Next: the [guide](guide.md), which walks through the interface one feature at a
+time.

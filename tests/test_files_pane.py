@@ -365,7 +365,6 @@ class Relay(unittest.TestCase):
         _has(self, "While the pane is open, a file link clicked in the chat opens in it.", ref.replace("\n", " "))
         guide = (Path(ROOT) / "docs" / "guide.md").read_text()
         _has(self, "**Files** keeps the file viewer in a column of its own", guide.replace("\n", " "))
-        _has(self, "reference.md#the-files-pane", guide)
         self.assertLess(guide.index("### The outline"), guide.index("### The other panes"))
         self.assertLess(guide.index("### The other panes"), guide.index("## Automatic nudges"))
 

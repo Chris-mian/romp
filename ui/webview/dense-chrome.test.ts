@@ -235,7 +235,7 @@ test("the reference names the setting by its gear label, and its paragraph leads
   const at = REF.indexOf("**Compact tabs and agents**");
   assert.ok(REF.indexOf("## The chat pane in detail") < at && at < REF.indexOf("## The feed's layout controls"),
     "among the chat pane's own sections, with the other chat settings");
-  assert.ok(GUIDE.includes("reference.md#the-chat-pane-in-detail"), "and the guide sends the reader there");
+  assert.ok(!GUIDE.includes("Compact tabs and agents"), "the gear label is reference detail: the guide names no setting here");
   const para = REF.slice(REF.lastIndexOf("\n\n", at), REF.indexOf("\n\n", at));
   assert.ok(para.indexOf("background-work panel") < para.indexOf("tab strip"),
     "the panel first (every layout has it), then the strip, which the phone layout replaces with the session picker");
