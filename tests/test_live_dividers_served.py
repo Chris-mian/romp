@@ -23,8 +23,10 @@ The four: (1) the shipped column gutters (kit off), (2) the sessions band's heig
 split divider (kit off, a session moved down), (4) the docking kit's dividers (kit on: a divider between columns and one
 between rows). The lab also measures the cost the design names: frames per second from the shell's requestAnimationFrame
 timestamps during a drag across the row with every pane on, and the browser's long-animation-frame entries over that span
-(reported in the RESULT), and pins the longest animation-frame callback the shell runs over the drag, the one cost that does not
-move with the CPU quota. Runs when ROMP_SERVED_TESTS_REQUIRE=1 (CI); skips where no Chromium
+(reported in the RESULT), and pins a COUNT of the page's own work per frame: how many of the timed callbacks (the frame callbacks,
+the ResizeObserver and MutationObserver callbacks, the mousemove and pointermove listeners, in the shell and in every pane frame)
+ran longer than 40 ms over the drag, at most forty of some 2300 (the control none; a half-core quota 13 and 16, since a cgroup
+quota throttles the process inside a callback now and then; a 60 ms busy view observer 168, an 80 ms busy pointer handler 96). Runs when ROMP_SERVED_TESTS_REQUIRE=1 (CI); skips where no Chromium
 is installed. Synthetic fixtures only."""
 import json
 import os
@@ -103,12 +105,9 @@ const instrument = async (page) => page.evaluate(() => {
   const w = window; w.__writes = {}; const set = Storage.prototype.setItem;
   Storage.prototype.setItem = function (k, v) { w.__writes[k] = (w.__writes[k] || 0) + 1; return set.call(this, k, v); };
   w.__frames = []; w.__framesOn = false;
-  // the page's own frame callbacks TIMED: the shell's frame helpers read window.requestAnimationFrame at call time, so every callback
-  // they arm runs through this wrapper; the longest one over a drag is the cost that is load-independent (a busy frame in the gutter's
-  // apply() is 80 ms whatever the CPU quota; a starved CPU stretches the drag over more frames but each callback stays a few ms)
-  const raf0 = w.requestAnimationFrame.bind(w); w.__cbMax = 0; w.__cbN = 0; w.__cbLong = 0;
-  w.requestAnimationFrame = (cb) => raf0((t) => { const s = performance.now(); try { return cb(t); } finally { const d = performance.now() - s; w.__cbN++; if (d > w.__cbMax) w.__cbMax = d; if (d > 40) w.__cbLong++; } });
-  const loop = (t) => { if (w.__framesOn) w.__frames.push(t); raf0(loop); }; raf0(loop);
+  // the timed callbacks' counters (__cbN, __cbMax, __cbLong) live in every document since the context's init script; the frame
+  // sampler below runs through the same wrapper (a sample is microseconds; it never counts as long)
+  const loop = (t) => { if (w.__framesOn) w.__frames.push(t); requestAnimationFrame(loop); }; requestAnimationFrame(loop);
   w.__loaf = []; try { new PerformanceObserver((l) => { for (const e of l.getEntries()) w.__loaf.push({ t: e.startTime, d: e.duration }); }).observe({ type: "long-animation-frame", buffered: false }); } catch (e) { w.__loafErr = String(e); }
   return true;
 });
@@ -122,6 +121,17 @@ const ctxA = await browser.newContext({ viewport: { width: 1500, height: 900 } }
 const page = await ctxA.newPage();
 page.on("pageerror", (e) => out.errors.push("A: " + String(e).slice(0, 200)));
 await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.showFilesControl = true; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });
+// the page's own work per frame TIMED, in every document of this context (the shell and each pane frame, before their scripts run): the
+// bodies of the requestAnimationFrame callbacks, the ResizeObserver and MutationObserver callbacks (the chat's reflow rule among them),
+// and the mousemove and pointermove listeners; each run over 40 ms is counted (the seventh review: a count over the frame callbacks alone
+// let a 60 ms busy view observer and an 80 ms busy pointer handler pass). The cost leg resets the counters in every frame and sums them.
+await page.addInitScript(() => { const w = window; w.__cbMax = 0; w.__cbN = 0; w.__cbLong = 0;
+  const time = (fn) => function (...a) { const s0 = performance.now(); try { return fn.apply(this, a); } finally { const d = performance.now() - s0; w.__cbN++; if (d > w.__cbMax) w.__cbMax = d; if (d > 40) w.__cbLong++; } };
+  const raf0 = w.requestAnimationFrame.bind(w); w.requestAnimationFrame = (cb) => raf0(time(cb));
+  for (const K of ["ResizeObserver", "MutationObserver"]) { const O = w[K]; if (typeof O === "function") w[K] = class extends O { constructor(cb) { super(time(cb)); } }; }
+  const add = EventTarget.prototype.addEventListener, rem = EventTarget.prototype.removeEventListener;
+  EventTarget.prototype.addEventListener = function (t, l, o) { if ((t === "mousemove" || t === "pointermove") && typeof l === "function") { if (!l.__timed) l.__timed = time(l); return add.call(this, t, l.__timed, o); } return add.call(this, t, l, o); };
+  EventTarget.prototype.removeEventListener = function (t, l, o) { return rem.call(this, t, (l && l.__timed) || l, o); }; });
 await page.goto(cfg.url);
 await page.waitForSelector("#f-chat", { timeout: 30000 }).catch(async () => { await die("no chat frame"); });
 await page.waitForFunction(() => Array.from(document.querySelectorAll("iframe")).some((f) => (f.getAttribute("src") || "").startsWith("/chat")), null, { timeout: 20000 });
@@ -272,15 +282,20 @@ out.probesAfterAll = { chat: await probeAlive(chatFr), feed: await probeAlive(fe
   const cdp = await ctxA.newCDPSession(page); await cdp.send("Performance.enable");
   const metric = async (name) => { const r = await cdp.send("Performance.getMetrics"); const e = (r.metrics || []).find((x) => x.name === name); return e ? e.value : null; };
   const layouts0 = await metric("LayoutCount"), styles0 = await metric("RecalcStyleCount");
-  await page.evaluate(() => { window.__frames = []; window.__loaf = []; window.__framesOn = true; window.__cbMax = 0; window.__cbN = 0; window.__cbLong = 0; });
+  await page.evaluate(() => { window.__frames = []; window.__loaf = []; window.__framesOn = true; });
+  for (const fr of page.frames()) await fr.evaluate(() => { window.__cbMax = 0; window.__cbN = 0; window.__cbLong = 0; }).catch(() => {});   // every document's counters, the shell's and the panes'
   const t0 = Date.now();
   await page.mouse.move(x0, y0); await page.mouse.down();
   await page.mouse.move(x0 - 320, y0, { steps: 24 }); await page.mouse.move(x0 + 320, y0, { steps: 48 }); await page.mouse.move(x0, y0, { steps: 24 });
   await page.mouse.up(); await frame(page);
   const ms = Date.now() - t0;
   const m = await page.evaluate(() => { const f = window.__frames; window.__framesOn = false; const span = f.length > 1 ? f[f.length - 1] - f[0] : 0; const gaps = []; for (let i = 1; i < f.length; i++) gaps.push(f[i] - f[i - 1]);
-    return { frames: f.length, spanMs: Math.round(span), fps: span > 0 ? Math.round((f.length - 1) * 1000 / span) : null, maxGapMs: Math.round(Math.max(0, ...gaps)), loaf: window.__loaf.length, loafMaxMs: Math.round(Math.max(0, ...window.__loaf.map((e) => e.d))), loafErr: window.__loafErr || null,
-      cbMaxMs: Math.round(window.__cbMax * 10) / 10, cbCount: window.__cbN, cbLong: window.__cbLong }; });
+    return { frames: f.length, spanMs: Math.round(span), fps: span > 0 ? Math.round((f.length - 1) * 1000 / span) : null, maxGapMs: Math.round(Math.max(0, ...gaps)), loaf: window.__loaf.length, loafMaxMs: Math.round(Math.max(0, ...window.__loaf.map((e) => e.d))), loafErr: window.__loafErr || null }; });
+  // the timed callbacks over the drag, summed over every document of the page (the shell and the pane frames)
+  const cb = { cbMaxMs: 0, cbCount: 0, cbLong: 0, docs: 0 };
+  for (const fr of page.frames()) { const c = await fr.evaluate(() => ({ max: window.__cbMax || 0, n: window.__cbN || 0, long: window.__cbLong || 0 })).catch(() => null); if (!c) continue; cb.docs++; cb.cbCount += c.n; cb.cbLong += c.long; if (c.max > cb.cbMaxMs) cb.cbMaxMs = c.max; }
+  cb.cbMaxMs = Math.round(cb.cbMaxMs * 10) / 10;
+  Object.assign(m, cb);
   const layouts1 = await metric("LayoutCount"), styles1 = await metric("RecalcStyleCount");
   out.cost = Object.assign({ dragMs: ms, panes: out.panesOn, layouts: layouts1 !== null && layouts0 !== null ? layouts1 - layouts0 : null, styleRecalcs: styles1 !== null && styles0 !== null ? styles1 - styles0 : null }, m);
   if (cfg.shots) { await page.mouse.move(x0, y0); await page.mouse.down(); await page.mouse.move(x0 - 200, y0, { steps: 12 }); await frame(page); await page.screenshot({ path: cfg.shots + "-mid.png" }); await page.mouse.up(); await frame(page); await page.screenshot({ path: cfg.shots + "-after.png" }); }
@@ -663,19 +678,22 @@ class ServedLiveDividers(unittest.TestCase):
         self._within(ve["after"]["T"]["h"], ve["before"]["T"]["h"], 1.0, "Escape restores the split's heights: %r" % {"before": ve["before"], "after": ve["after"], "points": ve["points"]})
         self.assertEqual(ve["after"]["writes"], 0)
         self.assertEqual(r["probesAfterAll"], {"chat": True, "feed": True}, "the iframes keep their content through every drag")
-        # (5) the cost, measured and BOUNDED on the page's own work per frame, as a COUNT: how many of the animation-frame callbacks
-        # the shell ran over the drag took longer than 40 ms (the verifier's read: a frame-rate pin is wall-clock and reds under a
-        # half-core quota with nothing wrong; the layout count over CDP rises under load too, since a starved CPU stretches the drag
-        # over more frames; and a cgroup quota can throttle the process inside ONE callback, so the longest callback alone is not
-        # load-independent either: 74 ms once in two loaded runs). An 80 ms busy loop in the gutter's apply() makes EVERY applied
-        # frame's callback long; a starved CPU makes at most a few. The frame rate, the long-frame count, the layout and style-recalc
-        # counts and the longest callback are reported beside it, present but not pinned
+        # (5) the cost, measured and BOUNDED on the page's own work per frame, as a COUNT: how many of the timed callbacks over the
+        # drag took longer than 40 ms, in the shell and in every pane frame: the frame callbacks, the ResizeObserver and
+        # MutationObserver callbacks (the chat's reflow rule among them) and the mousemove and pointermove listeners (the seventh
+        # review: the frame callbacks alone let a 60 ms busy view observer and an 80 ms busy pointer handler pass). A frame-rate pin is
+        # wall-clock and reds under a half-core quota with nothing wrong; the layout count over CDP rises under load too; and a cgroup
+        # quota can throttle the process inside a callback, so the longest callback alone is not load-independent either. A busy loop
+        # in any of those makes EVERY run of it long; a starved CPU makes a few of some 2300. The bound sits between the two, measured:
+        # the control 0, a half-core quota 13 and 16, the 60 ms busy view observer 168, the 80 ms busy pointer handler 96. The frame
+        # rate, the long-frame count, the layout and style-recalc counts and the longest callback are reported, not pinned
         c = r["cost"]
         self.assertGreater(c["frames"], 10, "frames were sampled during the drag: %r" % c)
-        self.assertGreater(c["cbCount"], 10, "the shell's frame callbacks were timed: %r" % c)
+        self.assertGreater(c["cbCount"], 10, "the page's callbacks were timed: %r" % c)
+        self.assertGreaterEqual(c["docs"], 2, "in the shell and the pane frames: %r" % c)
         self.assertIsNotNone(c["fps"]); self.assertIsNotNone(c["loaf"]); self.assertIsNotNone(c["cbMaxMs"])
         self.assertIsNotNone(c["layouts"], "the shell's layouts over the drag were counted (CDP Performance metrics): %r" % c)
-        self.assertLessEqual(c["cbLong"], 10, "at most ten of the shell's animation-frame callbacks over the drag run longer than 40 ms (a busy frame in the gutter's apply makes every one long; a starved CPU a few): %r" % c)
+        self.assertLessEqual(c["cbLong"], 40, "at most forty of the page's timed callbacks (frame, observer, pointer; the shell and the pane frames) over the drag run longer than 40 ms (a busy loop in any of them makes every run long, 96 and 168 on the two mutants; a starved CPU a few, 13 and 16 at half a core): %r" % c)
 
     def test_escape_from_a_keyboard_inside_a_pane_and_a_release_with_no_frame_between_on_the_shipped_gutter(self):
         # the drag listens on every same-origin pane document (dragKeys): with the chat's composer focused the top document's
