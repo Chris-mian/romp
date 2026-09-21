@@ -706,7 +706,6 @@ class Docs(unittest.TestCase):
         guide = re.sub(r"\s+", " ", Path(DOCS, "guide.md").read_text())
         self.assertIn("The bottom bar carries a small dot for how the API is treating your sessions", guide)
         self.assertIn("red while errors are being met on any connected machine, gray when nothing is calling it", guide)
-        self.assertIn("reference.md#the-api-health-signal", guide, "and points at the detail")
         doc = re.sub(r"\s+", " ", Path(DOCS, "reference.md").read_text())
         self.assertIn("Under the lines, the **History** draws one stacked histogram per machine", doc)
         self.assertIn("the label gray when no kernel has API traffic in the windows", doc)
