@@ -15,6 +15,7 @@ root. Every model call is paid by whoever owns the binary named in `--claude-bin
 `run` (`inf` for none): nothing here can tell a real binary from a fake, so nothing runs without both being said.
 """
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -40,7 +41,6 @@ UNDONE_RE = re.compile(r"\b(not (yet )?done|left (undone|for later|open)|to ?do|
 QUESTION_RE = re.compile(r"\?\s*$")
 BUDGET_OVERRUN = 1.2          # a run stops once its ledger passes this multiple of its budget
 COLUMN_OF = {"blocked": "needs_input", "completed": "completed", "cleared": "cleared"}   # the store-derivable part of the feed's rule
-FALLBACK_TURN_S = 900         # an ending whose turn start the transcript does not show: the window's start reaches this far back
 AGREEMENT_GATE_PCT = 90.0     # the labeller's agreement with the user's recorded actions must reach this before its labels count
 FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",
                  "unregistered-caller", "history-unreadable", "store-quarantined")   # judge-errors rows that mean the ending was not judged:
@@ -73,8 +73,8 @@ def id_epoch(ident):
 
 # ── the corpus ──────────────────────────────────────────────────────────────────────────────────
 def classify_ending(text):
-    """The heuristic pre-pass over a turn's last assistant text: one of CLASSES. The selection, not the truth (the labels
-    are the design's tiers); an offer outranks a question outranks an undone item, and the rest is finished."""
+    """The heuristic pre-pass over a turn's last NON-COMMAND assistant text (the caller passes it): one of CLASSES. The
+    selection, not the truth; an offer outranks a question outranks an undone item, and the rest is finished."""
     t = (text or "").strip()
     if not t:
         return "finished"
@@ -167,21 +167,42 @@ def _event_model():
     return _EM[0]
 
 
+def _worked_assistant_atom(turn):
+    """The event model's own line (kernel/judge.py _seg_command_worked): a turn put the MODEL to work iff it has an assistant
+    atom that is not the `command`-flagged local-command stdout echo."""
+    return any(a.get("type") == "assistant" and not a.get("command") for a in (turn.get("atoms") or []))
+
+
+def _atom_text(a):
+    body = a.get("text") if isinstance(a.get("text"), str) else (a.get("message") or {}).get("content")
+    return _text_of({"message": {"content": body}})
+
+
 def session_endings(path, fsid):
-    """(records, [(end_index, start_t)]): one entry per ENDED turn of the transcript, from the event model's own segmentation.
-    `end_index` is the record index of the turn's last atom (the truncation point); `start_t` is the turn's own start."""
+    """(records, [(end_index, start_t, last_text)]) per ENDED turn the model WORKED, from the event model's segmentation. A turn
+    with no non-command assistant atom (a bare /model or /usage, an idle compaction with no continuation) or an interrupt tail
+    is not an ending: it inflates the finished class and the denominator without a card to judge. `end_index` is the record of
+    the turn's last atom (so an interrupted continuation still reads open to the arm's judges); `start_t` is the turn's own
+    start, None when the turn has no opener (the ending is then ineligible); `last_text` is the turn's last NON-COMMAND
+    assistant text, what classify_ending reads."""
     records = _records(path)
     uuid_idx = {r.get("uuid"): i for i, r in enumerate(records) if r.get("uuid")}
-    sess = _event_model().parse_session(str(path), rompuuid=fsid)   # a parse that raises is surfaced (the repo's fail-loud rule): the
-    #                                                                 builder counts it under `skipped["parse-failed"]` and logs the type
+    em = _event_model()
+    sess = em.parse_session(str(path), rompuuid=fsid)   # a parse that raises is surfaced (fail loud): the builder counts parse-failed
     out = []
     for turn in sess.get("turns") or []:
-        if not turn.get("ended"):
+        atoms = turn.get("atoms") or []
+        if not turn.get("ended") or not _worked_assistant_atom(turn):
             continue
-        idxs = [uuid_idx[a.get("uuid")] for a in (turn.get("atoms") or []) if a.get("uuid") in uuid_idx]
-        if idxs:
-            out.append((max(idxs), float(turn.get("t") or 0)))
-    out.sort()
+        if atoms and getattr(em, "is_interrupt_record", None) and em.is_interrupt_record(atoms[-1]):
+            continue                                  # an interrupted turn is open to the judges, not an ending
+        idxs = [uuid_idx[a.get("uuid")] for a in atoms if a.get("uuid") in uuid_idx]
+        if not idxs:
+            continue
+        last_text = next((_atom_text(a) for a in reversed(atoms) if a.get("type") == "assistant" and not a.get("command")), "")
+        start = float(turn["t"]) if turn.get("trigger") else None
+        out.append((max(idxs), start, last_text))
+    out.sort(key=lambda x: x[0])
     return records, out
 
 
@@ -194,7 +215,7 @@ def turn_ends(records):
             for r in records:
                 f.write(json.dumps(r) + "\n")
         fsid = next((r.get("sessionId") for r in records if r.get("sessionId")), "s")
-        return [i for i, _ in session_endings(p, fsid)[1]]
+        return [t[0] for t in session_endings(p, fsid)[1]]
     finally:
         os.unlink(p)
 
@@ -207,7 +228,7 @@ def turn_start(records, end_index):
             for r in records:
                 f.write(json.dumps(r) + "\n")
         fsid = next((r.get("sessionId") for r in records if r.get("sessionId")), "s")
-        return next((t for i, t in session_endings(p, fsid)[1] if i == end_index), None)
+        return next((st for i, st, _tx in session_endings(p, fsid)[1] if i == end_index), None)
     finally:
         os.unlink(p)
 
@@ -260,18 +281,20 @@ def known_fsids(state_root, sid):
     itself, the registry's lastSid, each /clear episode head and both ends of every resume fork."""
     out = {str(sid)}
     state_root = Path(state_root)
-    try:
-        reg = json.loads((state_root / "sdk" / (sid + ".json")).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        reg = {}
-    if isinstance(reg, dict) and reg.get("lastSid"):
-        out.add(str(reg["lastSid"]))
+    reg_path = state_root / "sdk" / (sid + ".json")
+    if reg_path.is_file():
+        reg = json.loads(reg_path.read_text(encoding="utf-8"))   # a corrupt registry RAISES (the builder counts registry-unreadable)
+        if isinstance(reg, dict) and reg.get("lastSid"):
+            out.add(str(reg["lastSid"]))
     for sub, pick in (("episodes", lambda r: [r.get("fsid")]),
                       ("states", lambda r: [(r.get("resumeFork") or {}).get(k) for k in ("from", "to")])):
+        fp = state_root / sub / (sid + ".jsonl")
         try:
-            lines = (state_root / sub / (sid + ".jsonl")).read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
+            lines = fp.read_text(encoding="utf-8").splitlines()
+        except OSError as e:
+            if e.errno in (errno.ENOENT, errno.ENOTDIR):
+                continue                              # absent: contributes nothing, as before
+            raise                                     # a real read fault (EACCES, EIO): surfaced, the builder counts it
         for line in lines:
             try:
                 r = json.loads(line)
@@ -283,11 +306,12 @@ def known_fsids(state_root, sid):
 
 
 def in_turn_window(t, start_t, cut_t):
-    """Whether a verdict time belongs to the ending's turn: from the turn's start (or FALLBACK_TURN_S before the cut when the
-    transcript shows no start) to the cut. No closer or planner done carries an evidence time after its own cut, so a done
-    past the cut is the next turn's."""
-    lo = start_t if start_t is not None else cut_t - FALLBACK_TURN_S
-    return lo <= t <= cut_t          # no closer or planner done carries an evidence time after its own cut; a later one is the next turn's
+    """Whether a verdict time belongs to the ending's turn: from the turn's start to the cut. No closer or planner done carries
+    an evidence time past its own cut, so a done after the cut is the next turn's; an ending with no turn start (None) has no
+    window and is ineligible."""
+    if start_t is None:
+        return False
+    return start_t <= t <= cut_t
 
 
 DROP_STORE_FIELDS = ("seams", "closeFails", "confirming", "groupedSig", "consolidatedSig", "rewindSwept", "summaryQuote",
@@ -316,7 +340,7 @@ def store_before(store, cut_t, start_t=None, eid=None):
     """The goal store as the judges held it when the ending's turn OPENED, keyed for the arm. Every id prefix (the session
     id) becomes the ending id, so the arm's segment and turn ids match the seed's (`_placed_key` and the closer's one-shot
     read them; without the re-key the planner re-planned the whole history on every build). The cut is the turn's start
-    (`start_t`; FALLBACK_TURN_S before the cut when the transcript shows none): nodes born before it, each node's verdict
+    (`start_t`; the cut itself when the transcript shows no start): nodes born before it, each node's verdict
     log cut to events before it (`ev_t`, then `at`), trails to segments before it, `closedTurns`, `closedSig` and
     placements to turns and segments before it; the ending turn's own prompt-run placement (`#p`, and a delegation's `#d`)
     and the node it points to are kept, so the planner runs the turn's work-run once, as the live pass would; the flag
@@ -329,7 +353,7 @@ def store_before(store, cut_t, start_t=None, eid=None):
     card is the arm's to rule on, open at the seed."""
     sid = str(store.get("rompUuid") or "")
     src = deep_rekey(store, sid, eid) if (eid and sid) else store
-    lo = start_t if start_t is not None else cut_t - FALLBACK_TURN_S
+    lo = start_t if start_t is not None else cut_t
     placements, targets, dropped_segs = {}, set(), set()
     for k, v in (src.get("placements") or {}).items():
         ep = id_epoch(k)
@@ -352,8 +376,8 @@ def store_before(store, cut_t, start_t=None, eid=None):
         trail = list(nd.get("trail") or [])
         if trail and trail[0] in dropped_segs and not target:
             continue                                 # minted from a segment the copy does not hold
-        log = [e for e in (nd.get("log") or [])
-               if (event_time(e) or 0) < lo or (target and (event_time(e) or 0) <= cut_t and e.get("kind") in ("mint", "sub"))]
+        log = [e for e in (nd.get("log") or []) if (event_time(e) or 0) < lo]   # a node is kept by BIRTH; its verdict rows before the turn stay,
+        #                                                                          the turn's own drop (no writer emits a `mint` row to keep)
         nd2 = {k: v for k, v in nd.items() if k not in DROP_NODE_FIELDS}
         nd2["log"] = log
         nd2["trail"] = [t for t in trail if (id_epoch(t) or 0) < lo or (target and (id_epoch(t) or 0) <= cut_t)]
@@ -403,12 +427,17 @@ def store_with_archive(state_root, sid):
     if live.is_file():
         store = json.loads(live.read_text(encoding="utf-8"))   # a corrupt live store RAISES (fail loud): the caller counts store-unreadable
     if not isinstance(store, dict):
-        store = {}
+        raise ValueError("goal store top level is not an object")   # a non-object top is a fault, not an empty store
     nodes = dict(store.get("nodes") or {})
+    swept = set(store.get("rewindSwept") or {})      # ids the rewind path tombstoned: their archive copies are not cleared subtrees
     arch_path = state_root / "goals-archive" / (sid + ".json")
     if arch_path.is_file():
         arch = json.loads(arch_path.read_text(encoding="utf-8"))   # a corrupt archive RAISES too
+        if not isinstance(arch, dict):
+            raise ValueError("goal archive top level is not an object")
         for nid, nd in (arch.get("nodes") or {}).items():
+            if nid in swept:
+                continue                             # a rewound node, not a user-cleared card: never unioned in
             nodes.setdefault(nid, nd)                # the live store wins a shared key; a cleared top lives only in the archive
     store = dict(store)
     store["nodes"] = nodes
@@ -441,8 +470,17 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
     names_dir = state_root / "names"
     picked = {c: [] for c in CLASSES}
     candidates = []
-    skipped = {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0, "store-unreadable": 0}
-    for entry in sorted(names_dir.iterdir()) if names_dir.is_dir() else []:
+    skipped = {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0,
+               "store-unreadable": 0, "registry-unreadable": 0}
+    dones_by_key = {}                                  # store key -> the top-done times of that lane's own store (cached)
+    def dones_for(key):
+        if key not in dones_by_key:
+            dones_by_key[key] = top_done_times(store_with_archive(state_root, key))
+        return dones_by_key[key]
+    entries = [e for e in (sorted(names_dir.iterdir()) if names_dir.is_dir() else [])]
+    registered = {e.name for e in entries}             # every session's sid: a fork lane is never one of these
+    claimed = set()                                    # transcript paths an earlier session already took as its own
+    for entry in entries:
         try:
             fields = entry.read_text(encoding="utf-8").strip().split("\t")
         except OSError:
@@ -455,34 +493,42 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
         color = fields[2] if len(fields) > 2 else "#888888"
         sid = entry.name
         try:
-            live_store = store_with_archive(state_root, sid)
-        except (OSError, ValueError) as e:
-            skipped["store-unreadable"] += 1
-            sys.stderr.write("judge-experiment: a goal store could not be read (%s); the session is skipped\n" % type(e).__name__)
+            own = known_fsids(state_root, sid)         # the sid, its /clear and resume leaves: all keyed under the sid
+        except (OSError, ValueError):
+            skipped["registry-unreadable"] += 1
+            sys.stderr.write("judge-experiment: a registry or lineage record could not be read; the session is skipped\n")
             continue
-        dones = top_done_times(live_store)
+        pdir = claude_root / "projects" / munge(cwd)
+        lanes = set(fork_lanes(pdir, name, registered | own))   # same-titled forks, excluding every registered sid and the own leaves
         found = False
-        fsids = known_fsids(state_root, sid)
-        fsids |= set(fork_lanes(claude_root / "projects" / munge(cwd), name, fsids))   # the same-titled fork lanes, each a lane of its own
-        for fsid in sorted(fsids):                                # the sid's own transcript, the leaves a /clear or a resume made, the forks
-            transcript = claude_root / "projects" / munge(cwd) / (fsid + ".jsonl")
-            if not transcript.is_file():
+        for fsid in sorted(own | lanes):
+            transcript = pdir / (fsid + ".jsonl")
+            if not transcript.is_file() or str(transcript) in claimed:
                 continue
+            claimed.add(str(transcript))
             found = True
+            is_lane = fsid in lanes and fsid not in own
+            store_key = fsid if is_lane else sid       # a title lane's store/journal is keyed under its own stem; the leaves' under the sid
+            try:
+                dones = dones_for(store_key)
+            except (OSError, ValueError):
+                skipped["store-unreadable"] += 1
+                sys.stderr.write("judge-experiment: a goal store could not be read; the lane is skipped\n")
+                continue
             try:
                 records, endings = session_endings(transcript, fsid)
-            except Exception as e:
+            except Exception:
                 skipped["parse-failed"] += 1
-                sys.stderr.write("judge-experiment: the event model could not parse a transcript (%s); skipped\n" % type(e).__name__)
+                sys.stderr.write("judge-experiment: the event model could not parse a transcript (%s); skipped\n" % type(sys.exc_info()[1]).__name__)
                 continue
             if len(endings) < min_turns:
                 skipped["few-turns"] += 1
                 continue
-            for k, (i, start_t) in enumerate(endings):
+            for k, (i, start_t, last_text) in enumerate(endings):
                 cut_t = _ts(records[i]) or 0
-                cls = classify_ending(_text_of(records[i]))
-                eligible = any(in_turn_window(t, start_t, cut_t) for t in dones)   # a top-level done in the turn's window: tier one can label it
-                candidates.append((sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid))
+                cls = classify_ending(last_text)
+                eligible = any(in_turn_window(t, start_t, cut_t) for t in dones)
+                candidates.append((sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key))
         if not found:
             skipped["no-transcript"] += 1
     # spread across sessions: round-robin over sessions within each class, the tier-one-eligible endings first
@@ -491,10 +537,11 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
         by_class[cand[7]].setdefault(cand[0], []).append(cand)
     for c in CLASSES:
         for want_eligible in (True, False):
-            # eligible endings OLDEST first (the user had the most time to act on their cards: tier one's observation span),
-            # the rest newest first; round-robin across sessions either way
-            queues = [[x for x in v if x[9] == want_eligible] for v in by_class[c].values()]   # per session, oldest first
-            queues = [(list(reversed(q)) if want_eligible else q) for q in queues if q]     # pop() takes the last: eligible oldest, others newest
+            # eligible endings OLDEST first (the user had the most time to act on their cards), the rest newest first;
+            # each session's list sorted by the cut TIME first (candidates arrive in stem order, not time), then pop() takes
+            # the last: for eligible, oldest; for the rest, newest
+            queues = [sorted((x for x in v if x[9] == want_eligible), key=lambda x: x[6]) for v in by_class[c].values()]
+            queues = [(list(reversed(q)) if want_eligible else q) for q in queues if q]
             while queues and len(picked[c]) < per_class:
                 for q in list(queues):
                     if len(picked[c]) >= per_class:
@@ -508,7 +555,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
     (dest / "state" / "romp" / "session-hosts").write_text("off")
     manifest = {"built": now, "classes": list(CLASSES), "endings": [], "skipped": skipped}
     for c in CLASSES:
-        for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid in picked[c]:
+        for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key in picked[c]:
             eid = str(uuid.uuid5(uuid.NAMESPACE_URL, "romp-judge-experiment:%s:%s:%d" % (sid, fsid, k)))
             pdir = dest / "claude" / "projects" / munge(cwd)
             pdir.mkdir(parents=True, exist_ok=True)
@@ -518,14 +565,14 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                     fh.write(json.dumps(r) + "\n")
             (dest / "state" / "romp" / "names" / eid).write_text("%s\t%s\t%s\n" % (name, cwd, color))
             try:
-                store = store_with_archive(state_root, sid)
+                store = store_with_archive(state_root, store_key)   # the lane's own store (its stem for a title lane, the sid otherwise)
             except (OSError, ValueError):
-                continue                              # already counted above for this session
+                continue                              # already counted above for this lane
             before = store_before(store, cut_t, start_t, eid) if store.get("nodes") else None
             if before is not None:                        # a session with no store yet starts the arm fresh (load_goals mints the shape)
                 (dest / "state" / "romp" / "goals" / (eid + ".json")).write_text(json.dumps(before))
-            lo = start_t if start_t is not None else cut_t - FALLBACK_TURN_S
-            ov = state_root / "overrides" / (sid + ".jsonl")
+            lo = start_t if start_t is not None else cut_t
+            ov = state_root / "overrides" / (store_key + ".jsonl")   # the lane's own journal
             if ov.is_file():
                 kept = []
                 for l in ov.read_text(encoding="utf-8").splitlines():
@@ -533,10 +580,11 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                         row = json.loads(l)
                     except ValueError:
                         continue
-                    if float(row.get("t") or 0) < lo:
-                        kept.append(json.dumps(deep_rekey(row, sid, eid)))
+                    if start_t is not None and float(row.get("t") or 0) < start_t:
+                        kept.append(json.dumps(deep_rekey(row, store_key, eid)))
                 (dest / "state" / "romp" / "overrides" / (eid + ".jsonl")).write_text("".join(x + "\n" for x in kept))
-            manifest["endings"].append({"id": eid, "session": hashlib.sha256(sid.encode()).hexdigest()[:12], "turn": k,
+            manifest["endings"].append({"id": eid, "session": hashlib.sha256(sid.encode()).hexdigest()[:12],
+                                        "lane": hashlib.sha256(store_key.encode()).hexdigest()[:12], "turn": k,
                                         "class": cls, "cutT": cut_t, "startT": start_t, "tierOneEligible": bool(eligible),
                                         "topsBefore": sorted(n.split(":")[-1] for n, nd in (before or {"nodes": {}})["nodes"].items()
                                                              if nd.get("parentId") is None)})
@@ -639,55 +687,72 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     errors_path = Path(jd.ERRORS)
     def error_rows():
         return count_failure_rows(errors_path)
+    def flush():
+        arm_root.mkdir(parents=True, exist_ok=True)
+        (arm_root / "results.json").write_text(json.dumps(results, indent=1))
     try:
         for e in manifest["endings"]:
             eid = e["id"]
             path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % eid)), None)
             if path is None:
                 continue
-            lo = e.get("startT") if e.get("startT") is not None else float(e["cutT"] or 0) - FALLBACK_TURN_S
+            lo = e.get("startT")
             seed_path = corpus / "state" / "romp" / "goals" / (eid + ".json")
             seed = seed_path.read_text() if seed_path.is_file() else None
             builds_out = []
-            for _b in range(builds):
-                errs0 = error_rows()
-                target = state / "romp" / "goals" / (eid + ".json")             # the same store copy for every build
-                if seed is None:
-                    target.unlink(missing_ok=True)
-                else:
-                    target.write_text(seed)
-                jd.parse_cache_clear()
-                session = jd.parsed_session(eid, [str(path)], now)
-                turns = session.get("turns") or []
-                store = jd.load_goals(eid)
-                closed = jd._session_settled(eid, str(path), session, store, now=now)   # the settled gate over the ending's own transcript
-                jd.rollup_status(store, closed, now=now)                            # the flags from the seed's diary, before the first menu
-                jd.save_goals(eid, store)
-                jd._plan_session(eid, str(path), now)
-                store = jd.load_goals(eid)
-                closed_turns = [t for t in turns if not jd._turn_open(t, turns)]
-                if closed_turns:
-                    seg_by_id = {seg["id"]: seg for turn in turns for seg in jd._segs(turn, store)}   # the goal-history map production sends
-                    rows_before = error_rows()
-                    if jd._close_turn(store, closed_turns[-1], seg_by_id=seg_by_id) is None:
-                        results["closerNone"] += 1
-                        if error_rows() == rows_before:
-                            results["failures"] += 1      # the closer gave nothing and filed no row (the cap road): counted once here
-                jd.rollup_status(store, closed, now=now)
-                jd.save_goals(eid, store)
-                jd._unblock_session(eid, str(path), now)
-                store = jd.load_goals(eid)
-                tops = {}
-                for nid, nd in (store.get("nodes") or {}).items():
-                    if nd.get("parentId") is not None:
-                        continue
-                    born = float(nd.get("t") or 0)
-                    verdict_in_turn = any(ev.get("kind") in ("done", "block") and (event_time(ev) or 0) >= lo for ev in (nd.get("log") or []))
-                    tops[nid.split(":")[-1]] = {"column": column_of((store.get("status") or {}).get(nid)),
-                                                "scored": bool(born >= lo or verdict_in_turn)}   # the ending's own card, not one it inherited
-                builds_out.append(tops)
-                results["failures"] += error_rows() - errs0
+            try:
+                for _b in range(builds):
+                    errs0 = error_rows()
+                    target = state / "romp" / "goals" / (eid + ".json")             # the same store copy for every build
+                    if seed is None:
+                        target.unlink(missing_ok=True)
+                    else:
+                        target.write_text(seed)
+                    jd.parse_cache_clear()
+                    session = jd.parsed_session(eid, [str(path)], now)
+                    turns = session.get("turns") or []
+                    store = jd.load_goals(eid)
+                    closed = jd._session_settled(eid, str(path), session, store, now=now)   # the settled gate over the ending's own transcript
+                    jd.rollup_status(store, closed, now=now)                            # the flags from the seed's diary, before the first menu
+                    jd.save_goals(eid, store)
+                    jd._plan_session(eid, str(path), now)
+                    store = jd.load_goals(eid)
+                    closed_turns = [t for t in turns if not jd._turn_open(t, turns)]
+                    if closed_turns:
+                        seg_by_id = {seg["id"]: seg for turn in turns for seg in jd._segs(turn, store)}   # the goal-history map production sends
+                        rows_before = error_rows()
+                        if jd._close_turn(store, closed_turns[-1], seg_by_id=seg_by_id) is None:
+                            results["closerNone"] += 1
+                            if error_rows() == rows_before:
+                                results["failures"] += 1      # the closer gave nothing and filed no row (the cap road): counted once here
+                    jd.rollup_status(store, closed, now=now)
+                    jd.save_goals(eid, store)
+                    jd._unblock_session(eid, str(path), now)
+                    store = jd.load_goals(eid)
+                    tops = {}
+                    for nid, nd in (store.get("nodes") or {}).items():
+                        if nd.get("parentId") is not None:
+                            continue
+                        born = float(nd.get("t") or 0)
+                        # SCORED for this ending: born in the turn, OR the ARM filed a done/block on it this build. record_verdict
+                        # stamps a verdict's `at` with the pass's `now`, so a row the ARM wrote reads `at` == now while a seed row
+                        # kept its earlier `at`; that parts them. A lift RIDER's done keeps the lift's own ev_t (before the turn),
+                        # so an ev_t test missed its leak; the arm's filing catches it (the rider residual: a done the arm files
+                        # for an EARLIER turn's lift also reads scored, named here and left as the one over-count).
+                        arm_filed = any(ev.get("kind") in ("done", "block") and float(ev.get("at") or 0) >= now
+                                        for ev in (nd.get("log") or []))
+                        scored = bool((lo is not None and born >= lo) or arm_filed)
+                        tops[nid.split(":")[-1]] = {"column": column_of((store.get("status") or {}).get(nid)), "scored": scored}
+                    builds_out.append(tops)
+                    results["failures"] += error_rows() - errs0
+            except Exception as ex:                       # one ending's build must not abort the arm: file it, keep the rest
+                jd._log_judge_error("planner", eid, "pass-crash", note=repr(ex)[:200])
+                results["failures"] += 1
+                results["endings"][eid] = {"class": e["class"], "builds": builds_out, "crashed": repr(ex)[:200]}
+                flush()
+                continue
             results["endings"][eid] = {"class": e["class"], "builds": builds_out}
+            flush()
             cost, n, _ = ledger_cost(usage)
             if budget_usd is not None and cost > budget_usd * BUDGET_OVERRUN:
                 results["stopped"] = {"after": eid, "cost": round(cost, 4), "budget": budget_usd}
@@ -696,6 +761,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
         restore_prompts(jd, saved)
     cost, n, mean_ms = ledger_cost(usage)
     results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
+    flush()
     arm_root.mkdir(parents=True, exist_ok=True)
     (arm_root / "results.json").write_text(json.dumps(results, indent=1))
     return results
@@ -917,15 +983,20 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
     run_root.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((corpus / "manifest.json").read_text())
     names_dir = live_state / "names"
-    sid_of = {}
+    key_of = {}                                        # session/lane hash -> the sid or lane stem to read the store and journal under
     for n in (os.listdir(names_dir) if names_dir.is_dir() else []):
-        sid_of[hashlib.sha256(n.encode()).hexdigest()[:12]] = n
+        key_of[hashlib.sha256(n.encode()).hexdigest()[:12]] = n
+    goals_dir = live_state / "goals"
+    for f in (os.listdir(goals_dir) if goals_dir.is_dir() else []):
+        if f.endswith(".json"):
+            stem = f[:-5]
+            key_of.setdefault(hashlib.sha256(stem.encode()).hexdigest()[:12], stem)
     ledger = run_root / "labeller-ledger.jsonl"
     rng = random.Random(seed)
     rows, spent, faults = [], 0.0, []
     for e in manifest["endings"]:
-        sid = sid_of.get(e["session"])
-        t1 = tier_one_label(live_state, sid, float(e["cutT"] or 0), e.get("startT"), faults=faults) if sid else None
+        key = key_of.get(e.get("lane")) or key_of.get(e["session"])   # the lane's own store when the ending is a fork lane
+        t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=faults) if key else None
         path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % e["id"])), None)
         text = _last_assistant_text(path) if path else ""
         a, c1 = ask_class(claude_bin, model, text, list(CLASSES), ledger)
