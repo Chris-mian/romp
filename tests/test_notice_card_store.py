@@ -62,11 +62,13 @@ class World:
         km._NOTICE_MEMO.clear(); km._NOTICE_SWEPT.clear()
         for k in km._NOTICE_MEMO_STATS: km._NOTICE_MEMO_STATS[k] = 0
         km._CLEARED_MEMO["slot"] = None
+        km._notice_spent_mem.clear()   # the in-memory one-shot marks (an acted row the store refused): a fresh world starts with none
 
     def close(self):
         (km._live_map, km._cwd_of, km._mark_views_dirty, km._push_soon, km._deliver_text, km.Sessions.live) = self.saved
         km.jd._rebind_state(self.orig_state); km.NAMES = self.orig_names
         km._NOTICE_MEMO.clear(); km._NOTICE_SWEPT.clear(); km._CLEARED_MEMO["slot"] = None
+        km._notice_spent_mem.clear()
         self.td.cleanup()
 
     def png(self, name="figure.png"):
@@ -290,6 +292,19 @@ class Actions(unittest.TestCase):
         self.assertIn(iid4, km._cleared_ids(), "dismissed as asked")
         self.assertEqual(km._notice_action(iid4, "/send", {"text": "y"}), (False, "that card's action ran already"))
         self.assertEqual([d for d in self.w.delivered if d == (SID, "y")], [(SID, "y")], "one delivery")
+
+    def test_a_dismissal_that_landed_is_a_plain_success_though_the_goals_directory_is_unreadable(self):
+        # the verifier's read of PR 1967: _clear_all's verdict carries the flag step's per-session store faults too, and a notice card
+        # has no goal node, so a store fault alone must not answer "could not be dismissed" for a card the ledger row took off the board
+        acts = [{"label": "Send", "route": "/send", "body": {"text": "z"}}]
+        km.post_notice(SID, "k5", "t", producer="cli", actions=acts, dismiss_on_action=True, now=100)
+        iid = "notice:%s:k5:1" % SID
+        fault = OSError(errno.EACCES, "Permission denied", str(km.jd.GOALDIR))
+        with mock.patch.object(km.jd, "load_goals_or_fault", lambda sid: (None, fault)):
+            ok, e = km._notice_action(iid, "/send", {"text": "z"})
+        self.assertEqual((ok, e), (True, ""), "delivered and dismissed: the ledger row landed, and no held copy names a fault the card has no node for")
+        self.assertIn(iid, km._cleared_ids(), "the card is gone")
+        self.assertEqual(self.w.delivered[-1], (SID, "z"))
 
     def test_the_target_is_the_notices_own_session_and_the_text_takes_the_plain_message_door(self):
         # the review of PR 1757, high: an older row whose body names another session (written before the check refused it)

@@ -6647,6 +6647,15 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // and Revive, as before. One naming neither answers no request here.
     const op = typeof m.op === "string" ? m.op : "";
     const itemId = typeof m.itemId === "string" ? m.itemId : "";
+    // a clear the clears log refused (the second review of PR 1967, 2026-09-21): the reply names the batch's ids; they leave pendingCleared
+    // (the click's suppression, released before only when a payload omitted the card, which a refused clear never does) and the cached
+    // Undo entry, and the board repaints them where they were, as the dialog says nothing changed
+    const refusedIds = Array.isArray(m.itemIds) ? m.itemIds.map(String) : (op === "askClear" && itemId ? [itemId] : []);
+    if ((op === "askClear" || op === "askClearMany" || op === "nodeOverride") && refusedIds.length) {
+      for (const id of refusedIds) pendingCleared.delete(id);
+      for (let i = clearedStack.length - 1; i >= 0; i--) if (clearedStack[i].some((it) => refusedIds.includes(it.itemId))) clearedStack.splice(i, 1);
+      render();
+    }
     if (op === "apiRetry" && sid) rearmLatches({ kind: "retry", sid });
     else if (op === "askFollowUp" && itemId) {
       rearmLatches({ kind: "followup", itemId });

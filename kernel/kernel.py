@@ -19733,18 +19733,20 @@ def _refuse_drive(client, op, sid, msg, why=None):
             text = msg[k]
             break
     what = _FOREIGN_OP_VERB.get(op, "action")
+    _kept = ""                                   # the append's own outcome words the dialog (the second review of PR 1967, 2026-09-21: the text claimed the file while the append sat silent)
     try:
         with (jd.STATE / "undelivered.jsonl").open("a") as fh:
             fh.write(json.dumps({"at": int(time.time()), "op": op, "sid": sid, "what": what,
                                  "itemId": msg.get("itemId") or "", "text": text}) + "\n")
-    except OSError:
-        pass
+    except OSError as e:
+        _kept = _store_fault_copy(e)
     sys.stderr.write("undeliverable %s: %s %s — %r\n" % (op, why or "this kernel has no session", sid, text[:200]))
     detail = ("Nothing was sent. %s, so it could not deliver your %s. "
-              "Your text is saved verbatim in undelivered.jsonl under romp's state directory."
               % ((why + " (session %s)" % sid) if why else
                  ("This romp kernel has no session with id %s — on a board showing more than one machine, that "
-                  "means the pane addressed the wrong kernel" % sid), what))
+                  "means the pane addressed the wrong kernel" % sid), what)
+              + ("Your text is saved verbatim in undelivered.jsonl under romp's state directory." if not _kept else
+                 "romp could not write undelivered.jsonl either (%s); the Copy button below is the one record of your text." % _kept))
     try:
         # `sid` rides along so the shell's error-center entry carries the session it was meant for, the way
         # every card-badge entry does — the bell is a log you read later, and "which one?" is the first thing
@@ -25115,7 +25117,12 @@ def _notice_action_run(m, item_id, kind, body, inp):
             spent = _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "kind": kind})   # a spent card, never a re-runnable one
         if spent:
             _notice_spent_mem.add((sid, key, rev))      # the acted row could not be written: this kernel still refuses a second run
-        held = _clear_ask(item_id)                      # {} or {LEDGER_KEY: fault}: the clears log refused (never a raise)
+        _skipped = _clear_ask(item_id)                  # _clear_all's verdict: {LEDGER_KEY: fault} when the clears log refused (never a raise), else the
+        #                                                 per-session store faults of the flag step, which a notice card has no node for: its dismissal
+        #                                                 IS the ledger row, so only the ledger's refusal leaves the card on the board (the verifier's
+        #                                                 read of PR 1967, 2026-09-21: a store fault alone answered "could not be dismissed (None)" for a card
+        #                                                 that was gone)
+        held = {LEDGER_KEY: _skipped[LEDGER_KEY]} if LEDGER_KEY in _skipped else {}
         _mark_views_dirty()
         if held:
             # delivered, not dismissed (the second executed review of PR 1935, 2026-09-21): the answer says both, so the pane keeps the card and
@@ -34726,7 +34733,7 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         # row reads the same (needsInput === true). Only True is a verdict.
         sig.append(_feed_needs_input_of(sid) is True)
         # notices: the approval box's rows by id (a hold posted, a decision taken), so the box and the ring move in one frame
-        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing or Continue moving repaints the box; one value per label
+        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing, a Continue moving or a retitle (the judge retitles a top under its id; the second review of PR 1967, 2026-09-21) repaints the box; `t` is _NEEDS_ROW_UNKEYED; one value per label
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
         # per-push flag), so a payload built from turn 0 is never served from the cache once the floor climbs
         sig.append(bool(getattr(_live_scope, "chat_floor0", False)))
@@ -40977,9 +40984,11 @@ def _store_fault_copy(fault):
 
 
 LEDGER_KEY = "ledger:clears"   # the skipped-map key for the clears log itself refusing a write (no session to name; the second executed review of PR 1935, 2026-09-21)
+LEDGER_REJOURNAL_KEY = "ledger:rejournal"   # an undo whose undo rows landed and whose RE-JOURNAL the log then refused (the second review of PR 1967, 2026-09-21)
+_rejournal_owed = {}           # {item id: None}: the clear rows a past undo could not re-journal; the next undo writes them FIRST (the second review of PR 1967, 2026-09-21)
 
 
-def _gesture_store_refusal(client, gesture, skipped):
+def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
     """A user gesture (a clear, a sub-goal drop, an undo) that a session's UNREADABLE goal store made us
     skip must say so on the socket that made it (the standing rule: a refusal of a user gesture reaches
     the user). The feed's `err` dialog is the existing "that action did not land" surface, bell included;
@@ -40998,9 +41007,24 @@ def _gesture_store_refusal(client, gesture, skipped):
     the user's copy (the save shape added on a review find, 2026-09-08: left to raise, it dropped the
     dashboard's socket without a word)."""
     for key, fault in (skipped or {}).items():
+        if key == LEDGER_REJOURNAL_KEY:
+            # the undo rows landed, a store then refused its flag step, and the log refused the re-journal that keeps those ids owed
+            # (the second review of PR 1967, 2026-09-21): they read as undone while their flags stand, so no later Undo reaches them by the ledger alone. The
+            # next Undo writes the re-journal first (_rejournal_owed) and restores them in the same gesture; said as such.
+            title = "That undo did not fully land"
+            text = ("The cards of the session romp could not read or write were marked undone, and the clears log then refused the "
+                    "row that keeps them owed (%s), so they stay hidden for now. Press Undo again once romp can write: it re-journals "
+                    "them first and brings them back." % fault)
+            try:
+                client["send"](json.dumps({"type": "err", "sid": "", "title": title, "text": text, "op": op or ""}))
+            except Exception:
+                sys.stderr.write("gesture refusal (%s re-journal): %s\n" % (gesture, traceback.format_exc()))
+            continue
         if key == LEDGER_KEY:
             # the clears log itself refused the write (the second executed review of PR 1935, 2026-09-21): no session to name, and an account per gesture, since in every
-            # shape nothing at all changed on disk (a clear's rows never landed, so no node was flagged either)
+            # shape nothing at all changed on disk (a clear's rows never landed, so no node was flagged either). The frame names the REQUEST
+            # (`op`, the batch's `itemIds`, the first as `itemId`; the second review of PR 1967, 2026-09-21): the feed releases the click's suppression of those cards
+            # and repaints them, the chat re-arms the row's buttons, the way _refuse_drive's frame names the post it answers.
             if gesture == "undo":
                 title = "That undo did not land"
                 text = ("romp could not write its clears log (%s), so that undo was not recorded and its cards stay hidden. "
@@ -41013,8 +41037,10 @@ def _gesture_store_refusal(client, gesture, skipped):
                 title = "That clear did not land"
                 text = ("romp could not write its clears log (%s), so nothing was cleared and every card is as it was. "
                         "Try it again once it can." % fault)
+            _ids = [str(i) for i in (ids or []) if i]
             try:
-                client["send"](json.dumps({"type": "err", "sid": "", "title": title, "text": text}))
+                client["send"](json.dumps({"type": "err", "sid": "", "title": title, "text": text, "op": op or "",
+                                           "itemId": _ids[0] if _ids else "", "itemIds": _ids}))
             except Exception:
                 sys.stderr.write("gesture refusal (%s ledger): %s\n" % (gesture, traceback.format_exc()))
             continue
@@ -41100,6 +41126,18 @@ def _undo_clear():
     notices-archive after its undo row lands (_restore_notice_archive, round six), and a session whose notice
     archive could not be read is owed the same way, its fault keyed "notice:<sid>" so the refusal names the store that
     faulted and not the session's every card. Returns {sid | "notice:"+sid: fault} for the sessions skipped."""
+    if _rejournal_owed:
+        # the re-journal a past undo could not write (the log refused after its undo rows landed; the second review of PR 1967, 2026-09-21): written FIRST,
+        # so those ids are the newest batch again and this very Undo restores them; refused again, said again and nothing else runs
+        t = time.time()
+        try:
+            with (jd.STATE / "cleared.jsonl").open("a") as f:
+                for iid in list(_rejournal_owed):
+                    f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+        except OSError as e:
+            return {LEDGER_REJOURNAL_KEY: _store_fault_copy(e)}
+        _files_stat_mark()
+        _rejournal_owed.clear()
     cur = _cleared_ids()
     if not cur:
         return {}
@@ -41132,14 +41170,18 @@ def _undo_clear():
         # per row split a two-card batch into two one-card batches and each further Undo brought back one
         # card, against the promise that the next Undo restores exactly them (review find, 2026-09-08).
         t = time.time()
+        _rj = [iid for iid in restored + notices if iid.rsplit(":", 1)[0] in late or (iid.startswith("notice:") and iid.split(":", 3)[1] in nlate)]
         try:
             with (jd.STATE / "cleared.jsonl").open("a") as f:
-                for iid in restored + notices:
-                    if iid.rsplit(":", 1)[0] in late or (iid.startswith("notice:") and iid.split(":", 3)[1] in nlate):
-                        f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+                for iid in _rj:
+                    f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
             _files_stat_mark()                        # the re-journal is a clears-log write too
-        except OSError as e:                          # the store and the log both refusing: said under LEDGER_KEY beside the stores' faults
-            skipped[LEDGER_KEY] = _store_fault_copy(e)
+        except OSError as e:
+            # the store and the log both refusing, AFTER the undo rows landed: those ids read as undone with their flags standing,
+            # so the ledger alone reaches them no more. Owed in memory, written first by the next Undo, and said under an account of
+            # its own beside the stores' faults (the second review of PR 1967, 2026-09-21; LEDGER_KEY's wording says nothing was recorded, which is false here)
+            _rejournal_owed.update({iid: None for iid in _rj})
+            skipped[LEDGER_REJOURNAL_KEY] = _store_fault_copy(e)
         skipped.update(late); skipped.update({"notice:" + s: f for s, f in nlate.items()})   # keyed apart: the refusal is worded per store
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
@@ -56026,6 +56068,14 @@ _built_timeline = [None, None, 0.0, 0.0]          # [fleet_sig, payload, built_a
 # and the bells read (_needs_you_count), never re-derived.
 _feed_needs_input = [None]
 _feed_needs_rows = [None]        # sid -> the Needs you box's GOAL rows from the last feed build (plans/needs-you.md, phase three); None before it
+_NEEDS_ROW_UNKEYED = frozenset(("t",))   # a goal row's fields the box does not draw: outside the chat key (_chat_build_sig) AND the wake compare
+#                                          below, as _CHAT_ROW_UNKEYED is for the liveness row; every other field (itemId, kind, title, body,
+#                                          cont, fix) is the row's face and moves both (the second review of PR 1967, 2026-09-21)
+
+
+def _needs_rows_face(rows):
+    """The box's goal rows without their unkeyed fields: what a change of must repaint the box, and nothing else."""
+    return {sid: [{k: v for k, v in r.items() if k not in _NEEDS_ROW_UNKEYED} for r in lst] for sid, lst in (rows or {}).items()}
 
 
 def _hard_stop_card(a):
@@ -56300,7 +56350,7 @@ def _build_feed_locked(now, live_map, sig):
         _pusher_wake.set()
     _feed_needs_input[0] = _needs_now
     _rows_now = _needs_you_rows(feed)                    # the Needs you box's goal rows (plans/needs-you.md, phase three)
-    if _rows_now != _feed_needs_rows[0]:
+    if _needs_rows_face(_rows_now) != _needs_rows_face(_feed_needs_rows[0]):
         _pusher_wake.set()                               # a row's line, its Continue or its presence moved with the set unchanged: the box
         #                                                  follows the card by one build, as the ring does above
     _feed_needs_rows[0] = _rows_now
@@ -70229,8 +70279,10 @@ class Handler(BaseHTTPRequestHandler):
             # (wireNodeZones sends the clicked node's own id), so collect the card's whole subtree BEFORE
             # the clear archives it out of the live store, and drop a chip citing ANY of those nodes.
             _gone = _subtree_item_ids(str(msg["itemId"]))
-            _gesture_store_refusal(client, "clear", _clear_ask(msg["itemId"]))
-            _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})
+            _skipped = _clear_ask(msg["itemId"])
+            _gesture_store_refusal(client, "clear", _skipped, ids=[str(msg["itemId"])], op="askClear")
+            if LEDGER_KEY not in _skipped:     # a clear the log refused changed nothing, so the composer's citation stays too (the second review of PR 1967, 2026-09-21)
+                _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})
             _mark_views_dirty()                # cleared.jsonl is invisible to the fleet sig → dirty-rebuild now
         elif msg and msg.get("type") == "askClearMany" and isinstance(msg.get("itemIds"), list):
             # ONE batch for a multi-card gesture (the feed's session Clear and the ask-group Clear): one
@@ -70242,8 +70294,9 @@ class Handler(BaseHTTPRequestHandler):
             _gone = []
             for _i in _ids:
                 _gone.extend(x for x in _subtree_item_ids(_i) if x not in _gone)
-            _gesture_store_refusal(client, "clear", _clear_all(_ids))
-            if _ids:
+            _skipped = _clear_all(_ids)
+            _gesture_store_refusal(client, "clear", _skipped, ids=_ids, op="askClearMany")
+            if _ids and LEDGER_KEY not in _skipped:   # (as askClear: a refused batch cleared nothing)
                 _send_to_app("chat", {"type": "dropCitation", "itemId": _ids[0], "itemIds": _gone})
             _mark_views_dirty()
         elif msg and msg.get("type") == "noticeAction" and msg.get("itemId"):
@@ -70292,8 +70345,10 @@ class Handler(BaseHTTPRequestHandler):
                                       "op": "resolve", "ok": _rok, "error": _rerr})
             elif msg.get("op") == "clear":
                 _gone = _subtree_item_ids(str(msg["nodeId"]))
-                _gesture_store_refusal(client, "drop", _clear_all([str(msg["nodeId"])]))   # a SUB-goal: its own account
-                _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["nodeId"]), "itemIds": _gone})
+                _skipped = _clear_all([str(msg["nodeId"])])
+                _gesture_store_refusal(client, "drop", _skipped, ids=[str(msg["nodeId"])], op="nodeOverride")   # a SUB-goal: its own account
+                if LEDGER_KEY not in _skipped:   # (as askClear: a refused drop changed nothing)
+                    _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["nodeId"]), "itemIds": _gone})
                 _mark_views_dirty()
         elif msg and msg.get("type") == "redistill" and msg.get("sid") and msg.get("itemId"):
             # The warn modal's "Try again" (the user 2026-08-13): re-arm this card's GIVEN-UP summary
@@ -70338,7 +70393,7 @@ class Handler(BaseHTTPRequestHandler):
             _send_to_app("chat", {"type": "dropCitationsAll"})   # every card cleared → drop every composer chip
             _mark_views_dirty()
         elif msg and msg.get("type") == "undoClear":
-            _gesture_store_refusal(client, "undo", _undo_clear())
+            _gesture_store_refusal(client, "undo", _undo_clear(), op="undoClear")
             _mark_views_dirty()
         elif msg and msg.get("type") == "dismissLane" and msg.get("id"):
             # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). DURABLE since 2026-08-14

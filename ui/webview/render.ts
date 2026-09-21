@@ -18670,7 +18670,10 @@ function awaitKey(st: Status | undefined): string {
   return JSON.stringify([st.state, st.awaitingWhy || "", st.awaitingKind || "", st.awaitingCount ?? null,
                          st.awaitingTasks || [], st.awaitingTaskIds || [], st.bgServiceIds || [], st.awaitingItems || [],   // the verdict repaints the box (round two, low 1)
                          (st.awaitingPeers || []).map((p) => [p.host || "", p.name || ""]),
-                         (st.notices || []).map((n) => n.itemId + "/" + (n.actions || []).length)]);   // the approval box's rows (2026-09-19)
+                         // the approval box's rows by id AND face (2026-09-19; the second review of PR 1967, 2026-09-21): a brief landing, a Continue offered,
+                         // a retitle or the credential fix repaints the box, not only a row coming or going (the key was id and action count; goal rows
+                         // carry no actions, so a status-only frame with a new brief left the row's body empty until the next gesture)
+                         (st.notices || []).map((n) => JSON.stringify([n.itemId, n.kind || "notice", n.title || "", n.body || "", !!n.cont, n.fix || "", (n.actions || []).length]))]);
 }
 
 function statusOnly(msg: any) {
@@ -19205,6 +19208,15 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
                 copy ? [{ label: "Copy my text", value: "copy" }, { label: "Dismiss", value: "ok" }]
                      : [{ label: "Dismiss", value: "ok" }],
                 (v) => { if (v === "copy") navigator.clipboard?.writeText(copy); });
+    // a refused act from the Needs you box (the second review of PR 1967, 2026-09-21): the kernel's reply names the card (`itemId`; a
+    // clears-log refusal names the batch's `itemIds`), so the row's latched buttons let go with the reason in the row and the act can be
+    // retried from the box; before this only noticeActionDone re-armed a row, which a goal row's acts never receive
+    const refusedIds = [typeof m.itemId === "string" ? m.itemId : "", ...(Array.isArray(m.itemIds) ? m.itemIds.map(String) : [])].filter(Boolean);
+    for (const id of refusedIds) {
+      const row = document.querySelector<HTMLElement>(noticeRowSelector(id)); if (!row) continue;
+      for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
+      const e = row.querySelector<HTMLElement>(".ntc-err"); if (e) { e.textContent = "Refused: " + title; e.style.display = ""; }
+    }
   }
   else if (m.type === "dirCompletions") {                            // the owning kernel's path completions
     // a NEGATIVE reqId is the move dialog's ask (showMovePrompt) — routed before the picker's handler,

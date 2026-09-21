@@ -98,7 +98,7 @@ CENSUS = {
     "_effort_color": ("pure", "over the effort string and the colormap name"),
     "_effort_tone": ("pure", "over the effort string"),
     "_feed_needs_input_of": ("sig", "needs", "the last feed build's needs-you set, as the boolean for this session (None and False share a value)"),
-    "_chat_notices": ("sig", "notices", "the approval box's rows by id: this session's needs-you notices with actions, the notice store's projection with the cleared ledger applied (2026-09-19)"),
+    "_chat_notices": ("sig", "notices", "the Needs you box's rows by id and face: this session's goal rows from the last feed build (plans/needs-you.md, phase three: title, brief, Continue, the credential fix; the row's time is _NEEDS_ROW_UNKEYED) and its needs-you notices with actions, the notice store's projection with the cleared ledger applied (2026-09-19)"),
     "_fold_tasks": ("memo", "pure over the parse's turns (transcript, live); the per-turn memo is keyed on each turn's atoms and fingerprint"),
     "_genuine_queued": ("pure", "over a queued text"),
     "_git_branch": ("sig", "cwd"),
@@ -1030,6 +1030,28 @@ class Differential(_World):
             self.assertEqual(self.moved(a, self.sig()), ("needs",), "a card of this session under needs-you is the verdict that rebuilds")
         finally:
             km._feed_needs_input[0] = saved
+
+    def test_a_goal_rows_face_moves_notices_and_its_time_does_not(self):
+        # the Needs you box's goal rows (plans/needs-you.md, phase three) ride the `notices` label by id AND face: a brief landing, a
+        # Continue offered, a retitle (the judge retitles a top under its id) or the credential fix repaints the box; the row's `t` is
+        # unkeyed (_NEEDS_ROW_UNKEYED: the box does not draw it), so a re-file that moves only the time rebuilds nothing
+        saved_in, saved_rows = km._feed_needs_input[0], km._feed_needs_rows[0]
+        try:
+            km._feed_needs_input[0] = frozenset([SID])
+            row = {"itemId": SID + ":g9", "kind": "goal", "title": "wire the fixtures", "body": "", "cont": False, "t": 1}
+            km._feed_needs_rows[0] = {SID: [dict(row)]}
+            a = self.sig()
+            km._feed_needs_rows[0] = {SID: [dict(row, t=2)]}
+            self.assertEqual(self.sig(), a, "the time alone: unkeyed, nothing the row draws")
+            for k, v in (("body", "which database does the suite target?"), ("cont", True), ("title", "wire the fixtures into the suite"), ("fix", "credential")):
+                km._feed_needs_rows[0] = {SID: [dict(row)]}                  # from the base row each time: one field moves, nothing reverts
+                b = self.sig()
+                km._feed_needs_rows[0] = {SID: [dict(row, **{k: v})]}
+                self.assertEqual(self.moved(b, self.sig()), ("notices",), "the row's %s is its face: it moves the label" % k)
+            km._feed_needs_rows[0] = {SID: []}
+            self.assertEqual(self.moved(self.sig(), a), ("notices",), "a row coming or going moves it too")
+        finally:
+            km._feed_needs_input[0], km._feed_needs_rows[0] = saved_in, saved_rows
 
     def test_the_billing_readers_move_acct(self):
         a = self.sig()

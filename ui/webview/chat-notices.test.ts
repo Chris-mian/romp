@@ -23,7 +23,8 @@ test("the status carries the rows and the box renders on every status change bes
   assert.match(RENDER, /interface ChatNotice \{ itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment\?: NoticeAttachment \| null;\s*\n\s*actions: \{ label: string; kind\?: string; route\?: string; body: Record<string, unknown> \}\[\];\s*\n\s*kind\?: "goal" \| "notice";[^\n]*\n\s*cont\?: boolean;[^\n]*\n\s*fix\?: "credential" \}/, "the row carries the feed card's attachment too (low e), and since phase three its kind, its Continue offer and its fix");
   // awaitKey is the status key every status-carrying frame compares (the T225 pins): the rows are part of it, so a hold or a
   // decision repaints the box through the same awaitChanged road as the background box
-  assert.match(fn("awaitKey"), /\(st\.notices \|\| \[\]\)\.map\(\(n\) => n\.itemId \+ "\/" \+ \(n\.actions \|\| \[\]\)\.length\)\]\);/);
+  // by id AND face (the second review of PR 1967): a brief landing, a Continue offered, a retitle or the credential fix repaints the box
+  assert.match(fn("awaitKey"), /\(st\.notices \|\| \[\]\)\.map\(\(n\) => JSON\.stringify\(\[n\.itemId, n\.kind \|\| "notice", n\.title \|\| "", n\.body \|\| "", !!n\.cont, n\.fix \|\| "", \(n\.actions \|\| \[\]\)\.length\]\)\)\]\);/);
   assert.match(fn("awaitChanged"), /if \(sid === activeId\) renderBgTasks\(\);\s*\n\s*if \(sid === activeId\) renderNotices\(\);/);
   assert.match(RENDER, /renderBgTasks\(\); \/\/ swap in the active session's background-task box \(or hide if none\)\s*\n\s*renderNotices\(\); \/\/ swap in the active session's approval box/, "the tab switch");
   assert.match(RENDER, /    renderBgTasks\(\);\s*\n\s*renderNotices\(\);\s*\n\s*\} else if \(!activeId\) \{/, "the session frame");
@@ -88,6 +89,26 @@ test("the kernel's answer re-arms the row on a refusal, saying why in the row, a
   assert.match(RENDER, /const BOXES_BELOW = \["notices", "bg-tasks", "footer"\];/); assert.match(RENDER, /for \(const boxId of BOXES_BELOW\) \{/, "the bottom-box rule covers the approval box (low a); the list is shared with the footprint record (the review of PR 1926)");
   const FED = fs.readFileSync(path.join(UI, "federation.ts"), "utf8");
   assert.match(FED, /out\.status = \{ \.\.\.out\.status, notices: out\.status\.notices\.map\(\(n: any\) => \(n && typeof n === "object" && typeof n\.itemId === "string"\) \? \{ \.\.\.n, itemId: prefixNoticeId\(host, n\.itemId\) \} : n\) \};/, "the slice's ids wear the host (medium 2)");
+});
+
+test("a refused act re-arms the row the kernel's reply names, with the reason in the row (the second review of PR 1967)", () => {
+  const i = RENDER.indexOf('else if (m.type === "err" && typeof m.text === "string" && m.text) {');
+  assert.ok(i >= 0);
+  const h = RENDER.slice(i, RENDER.indexOf('else if (m.type === "dirCompletions")', i));
+  assert.match(h, /const refusedIds = \[typeof m\.itemId === "string" \? m\.itemId : "", \.\.\.\(Array\.isArray\(m\.itemIds\) \? m\.itemIds\.map\(String\) : \[\]\)\]\.filter\(Boolean\);/,
+    "the card the reply names, and the batch a clears-log refusal names");
+  assert.match(h, /const row = document\.querySelector<HTMLElement>\(noticeRowSelector\(id\)\); if \(!row\) continue;/);
+  assert.match(h, /b\.disabled = false; b\.textContent = \(b as any\)\._idle \|\| b\.textContent;/, "the latched buttons let go with their idle labels");
+  assert.match(h, /e\.textContent = "Refused: " \+ title; e\.style\.display = "";/, "and the row says why");
+  // the kernel's clears-log refusal names the request: op, the first id and the batch
+  const KERNEL = fs.readFileSync(path.join(UI, "..", "..", "kernel", "kernel.py"), "utf8");
+  assert.match(KERNEL, /def _gesture_store_refusal\(client, gesture, skipped, ids=None, op=""\):/);
+  assert.match(KERNEL, /"itemId": _ids\[0\] if _ids else "", "itemIds": _ids\}\)\)/);
+  for (const arm of ['_gesture_store_refusal(client, "clear", _skipped, ids=[str(msg["itemId"])], op="askClear")',
+                     '_gesture_store_refusal(client, "clear", _skipped, ids=_ids, op="askClearMany")',
+                     '_gesture_store_refusal(client, "drop", _skipped, ids=[str(msg["nodeId"])], op="nodeOverride")']) assert.ok(KERNEL.includes(arm), arm);
+  assert.equal((KERNEL.match(/if LEDGER_KEY not in _skipped/g) || []).length, 2, "askClear and nodeOverride keep the citation on a refusal...");
+  assert.ok(KERNEL.includes("if _ids and LEDGER_KEY not in _skipped:"), "...and so does the batch clear");
 });
 
 test("phase three: a goal row's Reply, Continue and Clear on the card's own wires; a no-action notice's Clear; the kind and the offer ride the row's face and its type", () => {

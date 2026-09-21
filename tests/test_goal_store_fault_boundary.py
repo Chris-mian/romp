@@ -898,6 +898,22 @@ class GestureRefusal(_World):
 
 
 @contextlib.contextmanager
+def _nth_append_faults(path, nth):
+    """The `nth` APPEND to `path` raises EROFS; the others land. The undo's second clears-log append is its re-journal."""
+    orig_open = Path.open
+    seen = [0]
+
+    def faulting(p, mode="r", *a, **kw):
+        if p == path and "a" in mode:
+            seen[0] += 1
+            if seen[0] == nth:
+                raise OSError(errno.EROFS, "Read-only file system", str(path))
+        return orig_open(p, mode, *a, **kw)
+    with mock.patch.object(Path, "open", faulting):
+        yield
+
+
+@contextlib.contextmanager
 def _append_faults(path):
     """Every APPEND to `path` raises EROFS with the absolute path in its text (a read-only state root); every other open is
     untouched, so the stores still read and the clears log still reads."""
@@ -932,6 +948,7 @@ class ActsUnderAFailedWrite(_World):
                   mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: mock.MagicMock()))):
             p.start()
             self.addCleanup(p.stop)
+        getattr(km, "_rejournal_owed", {}).clear()       # a past test's owed re-journal must not ride into this one
 
     def _dispatch(self, msg):
         sent = []
@@ -941,6 +958,9 @@ class ActsUnderAFailedWrite(_World):
 
     def _flag(self, sid, nid):
         return bool(jd.load_goals(sid)["nodes"][nid].get("cleared"))
+
+    def _drops(self):
+        return [m for app, m in self.app if app == "chat" and m.get("type") == "dropCitation"]
 
     # ── the clears log (Clear, Clear on a header, Clear all, Drop, Undo) ──────────────────────────────────────────────
     def test_a_clear_whose_ledger_write_refuses_answers_the_socket_and_changes_nothing(self):
@@ -956,10 +976,15 @@ class ActsUnderAFailedWrite(_World):
         self.assertNotIn(str(jd.STATE), errs[0]["text"], "the dialog names no state root")
         self.assertFalse((jd.STATE / "cleared.jsonl").exists(), "no row landed")
         self.assertFalse(self._flag(A, gid), "no node was flagged: the clear did not happen at all")
+        # the frame names the REQUEST (the second review of PR 1967): the feed releases the click's suppression of that card and repaints
+        # it, the chat re-arms the row's buttons; and the composer's citation stays, since nothing was cleared
+        self.assertEqual((errs[0]["op"], errs[0]["itemId"], errs[0]["itemIds"]), ("askClear", gid, [gid]))
+        self.assertEqual(self._drops(), [], "no dropCitation after a refused clear")
         sent = self._dispatch({"type": "askClear", "itemId": gid})   # the retry, once the log writes again
         self.assertEqual([m for m in sent if m.get("type") == "err"], [])
         self.assertTrue(self._flag(A, gid))
         self.assertIn(gid, km._cleared_ids())
+        self.assertEqual([d["itemId"] for d in self._drops()], [gid], "the landed clear drops the citation, once")
 
     def test_a_clear_all_and_a_sub_goal_drop_answer_the_same_way(self):
         with _append_faults(jd.STATE / "cleared.jsonl"):
@@ -971,6 +996,44 @@ class ActsUnderAFailedWrite(_World):
         self.assertIn("the row is as it was", [m for m in drop if m.get("type") == "err"][0]["text"])
         self.assertFalse((jd.STATE / "cleared.jsonl").exists())
         self.assertFalse(self._flag(A, A + ":g1") or self._flag(B, B + ":g1"))
+        m_err = [m for m in many if m.get("type") == "err"][0]; d_err = [m for m in drop if m.get("type") == "err"][0]
+        self.assertEqual((m_err["op"], m_err["itemIds"]), ("askClearMany", [A + ":g1", B + ":g1"]), "the batch's ids ride the refusal")
+        self.assertEqual((d_err["op"], d_err["itemIds"]), ("nodeOverride", [A + ":g1"]))
+        self.assertEqual(self._drops(), [], "no dropCitation after either refused clear")
+
+    def test_an_undo_whose_re_journal_refuses_says_so_and_the_next_undo_re_journals_first(self):
+        """Two cards cleared in one batch; the undo's rows land, one store faults at its flag step, and the clears log refuses the
+        re-journal that keeps that card owed: the card reads undone with its flag standing, which no later Undo reaches by the
+        ledger alone. The refusal has its own account (LEDGER_KEY's says nothing was recorded, false here), the ids are owed in
+        memory, and the next Undo writes the re-journal FIRST and restores the card in the same gesture."""
+        self._dispatch({"type": "askClearMany", "itemIds": [A + ":g1", B + ":g1"]})
+        self.assertTrue(self._flag(A, A + ":g1") and self._flag(B, B + ":g1"))
+        orig = km._mark_nodes_cleared
+
+        def flag_step_under_fault(ids, value, **kw):
+            with _fault_on(self.b_file):
+                return orig(ids, value, **kw)
+        with mock.patch.object(km, "_mark_nodes_cleared", flag_step_under_fault), _nth_append_faults(jd.STATE / "cleared.jsonl", 2):
+            sent = self._dispatch({"type": "undoClear"})    # append 1: the undo rows land; append 2: the re-journal refused
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual(sorted(m["title"] for m in errs), ["That undo did not fully land", "That undo did not land for api"],
+                         "the store's own account and the re-journal's, apart: %r" % errs)
+        rj = next(m for m in errs if m["title"] == "That undo did not fully land")
+        self.assertIn("re-journals them first", rj["text"], "the remedy is the next Undo, which writes the re-journal first")
+        self.assertNotIn("was not recorded", rj["text"], "the undo rows DID land: LEDGER_KEY's wording would be false")
+        self.assertFalse(self._flag(A, A + ":g1"), "A's undo landed in full")
+        self.assertTrue(self._flag(B, B + ":g1"), "B sits flag-cleared: the flag step could not run")
+        self.assertEqual(km._cleared_ids(), {}, "and the ledger reads B as undone: the ledger alone reaches it no more")
+        self.assertEqual(self._feed_rows(B), {}, "hidden, as the dialog says")
+        sent = self._dispatch({"type": "undoClear"})        # writable again: the re-journal goes first, then the restore
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [])
+        self.assertFalse(self._flag(B, B + ":g1"), "the next Undo brings B back")
+        self.assertEqual(km._cleared_ids(), {})
+        self.assertIn(B + ":g1", self._feed_rows(B))
+        self.assertEqual(km._rejournal_owed, {}, "nothing owed once the re-journal landed")
+
+    def _feed_rows(self, sid):
+        return {a["itemId"]: a for a in km.build_feed(NOW, self.live)["asks"] if a["itemId"].startswith(sid)}
 
     def test_an_undo_whose_ledger_write_refuses_stays_owed_and_the_next_undo_restores(self):
         gid = A + ":g1"
@@ -1029,7 +1092,18 @@ class ActsUnderAFailedWrite(_World):
         self.assertIn("pending-ops/" + A + ".json", errs[0]["text"])
         self.assertNotIn(str(jd.STATE), errs[0]["text"])
         self.assertEqual(errs[0]["copy"], "and the fix?", "the typed text rides back")
+        self.assertIn("saved verbatim in undelivered.jsonl", errs[0]["text"], "the append landed, so the dialog may say so")
+        self.assertTrue((jd.STATE / "undelivered.jsonl").exists())
         self.assertEqual([m for app, m in self.app if m.get("type") == "cardMoveAck"], [], "no move was predicted, none is answered")
+        # the undelivered append refusing too (the whole root read-only): the dialog says so and names the Copy button as the one record
+        with mock.patch.object(km, "_send_or_park", mock.Mock(side_effect=boom)), _append_faults(jd.STATE / "undelivered.jsonl"):
+            sent = self._dispatch({"type": "askFollowUp", "itemId": A + ":g1", "text": "still here?"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual(len(errs), 1)
+        self.assertIn("could not write undelivered.jsonl either", errs[0]["text"])
+        self.assertNotIn("saved verbatim", errs[0]["text"], "no claim of a file that was not written")
+        self.assertNotIn(str(jd.STATE), errs[0]["text"])
+        self.assertEqual(errs[0]["copy"], "still here?", "the copy is the record")
 
     def test_a_reply_whose_reopen_write_refuses_acks_with_the_cause_instead_of_calling_the_card_gone(self):
         boom = OSError(errno.EROFS, "Read-only file system", str(self.a_file))

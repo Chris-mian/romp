@@ -34,6 +34,9 @@ import test_ship_reship_served as _lab  # noqa: E402  the lab kernel's environme
 from test_live_paused_window_browser import _free_port  # noqa: E402
 
 SID = "cccccccc-1111-2222-3333-444444444444"
+API = "dddddddd-1111-2222-3333-444444444444"     # a second session with a question and NO hard stop: its tab wears the Needs you ring
+API_Q = "which port should the api listen on in the fixtures?"
+BRIEF = "the suite targets Postgres in CI and SQLite locally; which should the fixtures load into?"
 MID = "aaaaaaaa-bbbb-cccc-dddd-000000000301"
 TOKEN_RGB = "rgb(217, 70, 239)"          # --st-needs-bg, the dark theme (styles.css)
 QUESTIONS = ["which database does the suite target?", "should the parser keep the legacy header?", "is the fixtures directory versioned?"]
@@ -55,12 +58,13 @@ const readBox = () => page.evaluate(() => {
   const box = document.getElementById("notices"); const cs = box ? getComputedStyle(box) : null;
   const rows = box ? Array.from(box.querySelectorAll(".ntc-row")) : [];
   const tab = document.querySelector('#tabs .tab[data-id]');
+  const tabs = Object.fromEntries(Array.from(document.querySelectorAll('#tabs .tab[data-id]')).map((t) => [t.getAttribute("data-id"), t.className]));   // every tab's classes by sid: the rings
   return { shown: !!box && box.style.display !== "none" && !!cs && cs.display !== "none", border: cs ? cs.borderTopColor : null, borderLeft: cs ? cs.borderLeftWidth : null,
            head: box ? ((box.querySelector(".ntc-head .ntc-label") || {}).textContent || null) : null,
            dot: box && box.querySelector(".ntc-head .ntc-dot") ? getComputedStyle(box.querySelector(".ntc-head .ntc-dot")).backgroundColor : null,
            rows: rows.map((r) => ({ id: r.getAttribute("data-item"), title: (r.querySelector(".ntc-title") || {}).textContent, body: (r.querySelector(".ntc-body") || {}).textContent,
                                    buttons: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => b.textContent), disabled: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => b.disabled) })),
-           tabClasses: tab ? tab.className : null };
+           tabClasses: tab ? tab.className : null, tabs };
 });
 const waitRows = (n, ms) => page.waitForFunction((n) => document.querySelectorAll("#notices .ntc-row").length === n, n, { timeout: ms }).then(() => true).catch(() => false);
 await page.goto(cfg.chat);
@@ -76,6 +80,22 @@ out.hardStop = await feed.waitForSelector(g4Sel, { state: "attached", timeout: 6
   const badge = c ? c.querySelector(".fask-api") : null; const badges = c ? Array.from(c.querySelectorAll("a, span")).map((x) => x.textContent || "").filter((t) => t.startsWith("⚠")) : [];
   return { col: c ? c.parentElement.id : null, badges }; }, g4Sel)).catch(() => ({ col: null, badges: [] }));
 await feed.close();
+// 1b. a brief lands on the first question's card (the judge's blockSummary, written to the store): the row's body follows within the
+// next frames with no gesture (the second review of PR 1967: the box repainted only when a row came or went)
+const store = JSON.parse(fs.readFileSync(cfg.store, "utf8")); store.nodes[cfg.g1].blockSummary = cfg.brief; store.seq = (store.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store));
+fs.utimesSync(cfg.order, new Date(), new Date());   // the judge's own write ends a pass that bumps the view signature's generation; this stand-in moves a file the signature stats
+out.brief = { landed: await page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g1), brief: cfg.brief }, { timeout: 60000 }).then(() => true).catch(() => false) };
+out.brief.box = await readBox();
+// 2a. a Clear the clears log REFUSES (the log made read-only): the dialog says nothing changed, the row stays and its buttons let go
+fs.chmodSync(cfg.ledger, 0o444);
+await page.click(rowSel(cfg.g3) + ' [data-act="ntc-clear"]');
+out.refused = { dialog: await page.waitForSelector("#confirm", { timeout: 30000 }).then(() => page.evaluate(() => (document.getElementById("confirm") || {}).textContent || "")).catch(() => null) };
+out.refused.rearmed = await page.waitForFunction((s) => { const r = document.querySelector(s); return !!r && Array.from(r.querySelectorAll(".ntc-actions button")).every((b) => !b.disabled); }, rowSel(cfg.g3), { timeout: 30000 }).then(() => true).catch(() => false);
+out.refused.box = await readBox();
+out.refused.rowErr = await page.evaluate((s) => { const r = document.querySelector(s); const e = r && r.querySelector(".ntc-err"); return e && e.style.display !== "none" ? e.textContent : null; }, rowSel(cfg.g3));
+await page.evaluate(() => { const b = Array.from(document.querySelectorAll("#confirm button")).find((x) => /Dismiss/.test(x.textContent || "")); if (b) b.click(); });
+await page.waitForSelector("#confirm", { state: "detached", timeout: 10000 }).catch(() => {});
+fs.chmodSync(cfg.ledger, 0o644);
 // 2. Clear on the third question: the card's own askClear wire; the row leaves with the next frame
 await page.click(rowSel(cfg.g3) + ' [data-act="ntc-clear"]');
 out.clearLatched = await page.evaluate((s) => { const r = document.querySelector(s); return r ? Array.from(r.querySelectorAll("button")).every((b) => b.disabled) : null; }, rowSel(cfg.g3));
@@ -143,6 +163,14 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         Path(state, "sdk", SID + ".json").write_text(json.dumps(
             {"sid": SID, "name": "web", "cwd": cwd, "mode": "auto", "effort": "high", "lastSid": SID, "alive": True,
              "model": "claude-opus-5", "liveModel": "Opus 5"}))
+        # api: one question and no hard stop, so its tab wears the Needs you ring (the switch leg reads it: web's red ring is painted
+        # first and alone, so a regression dropping the magenta ring would pass on web's tab); web stays first, the active tab
+        Path(state, "names", API).write_text("api\t%s\t#1EA1EB\t#ffffff\n" % cwd)
+        Path(state, "sdk", API + ".json").write_text(json.dumps(
+            {"sid": API, "name": "api", "cwd": cwd, "mode": "auto", "effort": "high", "lastSid": API, "alive": True,
+             "model": "claude-opus-5", "liveModel": "Opus 5"}))
+        Path(state, "session-order.json").write_text(json.dumps([SID, API]))
+        Path(state, "cleared.jsonl").write_text("")      # present, so the refused-clear leg can take its write bit away and give it back
         t0 = int(time.time()) - 3600
         iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t))
         recs, parent = [], None
@@ -175,8 +203,22 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         nodes[g4] = {"id": g4, "text": "wire the fixtures directory into the integration suite", "parentId": None, "nodeComplete": False, "blocked": False,
                      "cleared": False, "trail": [], "t": t0 + 300, "log": []}
         status[g4] = "working"
-        Path(state, "goals", SID + ".json").write_text(json.dumps(
+        cls.store = os.path.join(state, "goals", SID + ".json")
+        Path(cls.store).write_text(json.dumps(
             {"rompUuid": SID, "seq": 5, "lastNode": g4, "closedTurns": [], "nodes": nodes, "placements": {}, "status": status}))
+        cls.ledger = os.path.join(state, "cleared.jsonl")
+        cls.order = os.path.join(state, "session-order.json")
+        Path(proj, API + ".jsonl").write_text(json.dumps(
+            {"type": "user", "uuid": "p1", "parentUuid": None, "timestamp": iso(t0 + 20), "sessionId": API, "promptSource": "typed",
+             "message": {"role": "user", "content": "set up the api fixtures"}}) + "\n" + json.dumps(
+            {"type": "assistant", "uuid": "q1", "parentUuid": "p1", "timestamp": iso(t0 + 24), "sessionId": API,
+             "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn", "content": [{"type": "text", "text": API_Q}]}}) + "\n")
+        Path(state, "states", API + ".jsonl").write_text(json.dumps({"t": t0 + 30, "state": "idle"}) + "\n")
+        ga = API + ":g1"
+        Path(state, "goals", API + ".json").write_text(json.dumps(
+            {"rompUuid": API, "seq": 1, "lastNode": ga, "closedTurns": [], "placements": {}, "status": {ga: "blocked"},
+             "nodes": {ga: {"id": ga, "text": "set up the api fixtures", "parentId": None, "nodeComplete": False, "blocked": True, "blockWhy": API_Q,
+                            "cleared": False, "trail": [], "t": t0 + 20, "log": [_block(t0 + 25, "asked: " + API_Q)]}}}))
         # a message from a DIRECTED peer, held for the user's decision: a needs-you notice with Approve and Deny at the first build
         Path(state, "postal", "quarantine", MID + ".json").write_text(json.dumps(
             {"mid": MID, "to": "web", "toId": SID, "frm": "api", "frmId": "11111111-2222-3333-4444-666666666666",
@@ -212,8 +254,8 @@ class NeedsYouBoxChatServed(unittest.TestCase):
             cfg = os.path.join(self.lab, "needsbox.json")
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
-                json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "sid": SID, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
-                           "reply": "Postgres, the same as production"}, f)
+                json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
+                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "ledger": self.ledger, "order": self.order}, f)
             driver = os.path.join(self.lab, "needsbox.mjs")
             Path(driver).write_text(DRIVER)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=600,
@@ -255,6 +297,24 @@ class NeedsYouBoxChatServed(unittest.TestCase):
             self.assertEqual(row["disabled"], [False, False, False])
         self.assertEqual(b["rows"][3]["buttons"], ["Approve", "Deny"], "the held message keeps its stored actions")
         self.assertIn("ring-needs-you", b["tabClasses"] or "", "the tab wears the red Blocked ring for the hard stop (it outranks the Needs you ring): %r" % b["tabClasses"])
+        self.assertIn("ring-waiting-on-you", (b["tabs"] or {}).get(API) or "", "api's tab, a question and no hard stop, wears the Needs you ring: %r" % b["tabs"])
+
+    def test_a_brief_landing_on_a_card_reaches_its_row_with_no_gesture(self):
+        r = self._result()
+        self.assertTrue(r["brief"]["landed"], "the row's body follows the brief written to the store within the next frames: %r (kernel: %s)" % (r["brief"]["box"], self._kernel_tail()))
+        row = next((x for x in r["brief"]["box"]["rows"] if x["id"] == self.g[0]), None)
+        self.assertEqual(row and row["body"].strip(), BRIEF, "the brief is the row's body (the face renders it as markdown, with its trailing newline)")
+        self.assertEqual(r["brief"]["box"]["head"], "Needs you · 4", "and nothing else moved")
+
+    def test_a_clear_the_clears_log_refuses_leaves_the_row_and_re_arms_its_buttons_and_says_so(self):
+        r = self._result()
+        d = r["refused"]
+        self.assertIn("That clear did not land", d["dialog"] or "", "the dialog says so: %r" % d["dialog"])
+        self.assertIn("nothing was cleared", d["dialog"] or "")
+        self.assertTrue(d["rearmed"], "the row's buttons let go on the kernel's reply (they latched on the press): %r" % d["box"])
+        self.assertIn(self.g[2], [x["id"] for x in d["box"]["rows"]], "the row stays")
+        self.assertEqual(d["box"]["head"], "Needs you · 4")
+        self.assertIn("Refused", d["rowErr"] or "", "and the row says why: %r" % d["rowErr"])
 
     def test_clear_takes_its_row_off_the_box_with_the_next_frame(self):
         r = self._result()
@@ -278,8 +338,10 @@ class NeedsYouBoxChatServed(unittest.TestCase):
     def test_the_switch_hides_the_box_and_leaves_the_ring_and_back_on_the_box_returns(self):
         r = self._result()
         self.assertTrue(r["off"]["hidden"], "the box hides on the save: %r" % r["off"]["box"])
-        self.assertIn("ring-needs-you", r["off"]["box"]["tabClasses"] or "", "the ring stays: the switch is the box's alone")
+        self.assertIn("ring-needs-you", r["off"]["box"]["tabClasses"] or "", "the red ring stays: the switch is the box's alone")
+        self.assertIn("ring-waiting-on-you", (r["off"]["box"]["tabs"] or {}).get(API) or "", "and the Needs you ring on api's tab stays too: %r" % r["off"]["box"]["tabs"])
         self.assertTrue(r["on"]["shown"], "back on, the box returns with its rows: %r" % r["on"]["box"])
+        self.assertIn("ring-waiting-on-you", (r["on"]["box"]["tabs"] or {}).get(API) or "")
 
 
 if __name__ == "__main__":
