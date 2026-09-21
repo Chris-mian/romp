@@ -86,6 +86,15 @@ keep their places), is reduced to the panes the layout still knows (a column clo
 and is dropped once nothing is parked. The band keeps its own road (the root's bottom, fixed); a tab drop's hint
 wins over the memory for its column; the phone is untouched, since the kit stays off there.
 
+Sharpened once more by the review of the feature PR (2026-09-21): the memory is REBUILT at every park from the shown
+tree, with the earlier parked panes re-inserted by the show's own rule, so a pane turned on or a column opened while
+another was hidden is known to it and a resize made meanwhile keeps its ratios. The band is the neighbour of last
+resort: with every row pane hidden, a shown pane comes back above the band (a column over it, never a row beside it),
+and the memory-less road does the same. A stranger pane (one the memory never knew, turned on while a pane was
+hidden) in the neighbour's split does not stop the returning pane joining that split as a sibling with its remembered
+share, so the room comes from the whole row and not from the neighbour alone; only a split the memory knew as a
+separate group (a chat over its feed inside a row) wraps, so that group comes back as a group.
+
 ## 3. The options
 
 **A. One chat button toggles every chat column as one group; hide remembers the tree, show restores it.**
