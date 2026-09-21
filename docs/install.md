@@ -12,9 +12,6 @@
     sudo apt install python3 nodejs npm    # Ubuntu / Debian
     ```
 
-On a machine with several Pythons, [which one runs the
-kernel](reference.md#the-kernels-python) matters.
-
 ## Install
 
 ```bash
@@ -27,8 +24,10 @@ Open a new terminal afterwards, so `~/romp/bin` is on your `PATH`, and type
 The same command updates Romp later. To remove Romp, run `romp uninstall` (add
 `--purge` to delete recorded sessions too).
 
-This clones Romp to `~/romp` and installs the newest release.
-[What it installs, in detail](architecture.md#what-the-installer-sets-up).
+This clones Romp to `~/romp` and installs the newest release, mostly as
+[symlinks back into that clone](architecture.md#what-the-installer-sets-up), so
+updating the clone updates the installation with it. On a machine with several
+Pythons, [which one runs the kernel](reference.md#the-kernels-python) matters.
 
 ### Manual and custom installs
 

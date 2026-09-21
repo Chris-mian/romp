@@ -235,7 +235,11 @@ test("the reference names the setting by its gear label, and its paragraph leads
   const at = REF.indexOf("**Compact tabs and agents**");
   assert.ok(REF.indexOf("## The chat pane in detail") < at && at < REF.indexOf("## The feed's layout controls"),
     "among the chat pane's own sections, with the other chat settings");
-  assert.ok(!GUIDE.includes("Compact tabs and agents"), "the gear label is reference detail: the guide names no setting here");
+  // the wording pass (2026-09-20) took the guide's deep link to this section out: the guide's one
+  // pointer at the reference is its opening line, and a feature's paragraph says what the feature
+  // does. The base guide never named the gear label, so pinning its absence pinned nothing.
+  assert.ok(!GUIDE.includes("reference.md#the-chat-pane-in-detail"),
+    "the guide no longer deep-links the chat pane's reference section");
   const para = REF.slice(REF.lastIndexOf("\n\n", at), REF.indexOf("\n\n", at));
   assert.ok(para.indexOf("background-work panel") < para.indexOf("tab strip"),
     "the panel first (every layout has it), then the strip, which the phone layout replaces with the session picker");

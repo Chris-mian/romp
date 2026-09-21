@@ -64,7 +64,7 @@ to, then open it for the full detail.
 ## Every machine, one place { .feature-h }
 
 Sessions on your server appear alongside your laptop's, agents hand off work
-across [machines](guide.md#linking-kernels-on-other-machines), and you can view
-everything from a laptop or [a phone](guide.md#from-your-phone).
+across [machines](guide.md#linking-kernels-on-other-machines), and
+[a phone](guide.md#from-your-phone) shows the same dashboard as the laptop.
 
 ![Sessions on two machines, gathered into one dashboard and the same view on a phone](assets/guide/every-machine.png){ width="100%" }
