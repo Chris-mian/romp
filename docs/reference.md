@@ -2082,14 +2082,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   rewind; `lastGone:<family>` for a held last edge the next list no longer
   carried; `changeAt0` for a change at the list's first event against a held
   base: a genuine first-event change (a floor advance that moved the list's
-  first event reads here too), or the cycle's repair after two whole-frame
-  senders raced on a baseline-less sid (a sid's first whole frame seeds the
-  shared baseline, whichever sender sent it, so its later senders diff against
-  it instead of re-sending the whole session; two senders that both read it
-  absent leave none and mark the session, no single-client push re-seeds it in
-  between, and the next cycle's full repairs every client and clears the mark;
-  in the
-  `chatFull` row below the racing shape has `changeFrom` 0 with both edges
+  first event reads here too), or a change of 0 against a held base, which
+  only a sender that read the shared baseline absent produces (a sid's first
+  whole frame seeds the baseline, whichever sender sent it, so its later
+  senders diff against it instead of re-sending the whole session), in two
+  faces: the cycle's repair after two whole-frame senders raced on a
+  baseline-less sid (two senders that both read it absent before their builds
+  leave none and mark the session, no single-client push re-seeds it in
+  between, and the next cycle's full repairs every client and clears the
+  mark), and the detector's accepted false positive, a sender whose build the
+  cycle's write landed inside with its own list the newer one: it sends every
+  base holder the full, pops the cycle's baseline and marks the session with
+  no client stale, and the next cycle sends every base holder the full once
+  more (the boot's attach handshake beside the cycle's cold build of the same
+  tab, two frames and two rows per client where a tail went before; a stamp
+  of the build's start beside the baseline, its own item, removes it); in the
+  `chatFull` row below every change-0 face has `changeFrom` 0 with both edges
   held, the floor's has `firstHeld` false);
   `changeBelowFirst` for a change at or before the held first edge;
   `inverted` for a base whose last edge sits before its first; `empty` for a

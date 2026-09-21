@@ -1592,6 +1592,141 @@ class SkeletonReconnect(unittest.TestCase):
         self.assertNotIn(S1, km._chat_baseline_raced, "the cycle that sent the fulls clears the mark")
         self.assertEqual(km._prev_chat_events[S1], self.SESS[S1]["events"], "and writes the baseline")
 
+    def _build_hosts(self, second, inside, after):
+        """Wrap the stubbed builder so the FIRST S1 build computes its payload from the transcript as it stands, then sets
+        the u3 card to `inside`, runs `second` (a whole-frame sender that builds, sends and then seeds or writes) INSIDE
+        the build, sets the card to `after` and only then hands the first payload back: two builders whose transcript
+        reads and whose baseline reads interleave. Returns the list the wrapper appends to when it fires."""
+        real = km.build_session
+        fired = []
+
+        def build(sid, now, live_map=None, **kw):
+            m = real(sid, now, live_map, **kw)
+            if sid == S1 and not fired:
+                fired.append(1)
+                self.SESS[S1]["events"][3]["md"] = inside    # the transcript as the inner sender's build reads it
+                km.build_session = real                      # the inner sender builds whole, with the stock stub
+                try:
+                    second()
+                finally:
+                    km.build_session = build
+                self.SESS[S1]["events"][3]["md"] = after     # the transcript as every later build reads it
+            return m
+        km.build_session = build
+        return fired
+
+    def _older_build_hosts(self, second):
+        """The first S1 build is the OLDER one (the u3 card pending): the card fills inside it and `second` builds the
+        filled list, so the sender whose build read the transcript first is the one whose baseline read lands after the
+        other's seed."""
+        return self._build_hosts(second, inside="m3 filled", after="m3 filled")
+
+    def _the_repair_files_a_row_per_stale_holder(self, a, b, rows0, stale):
+        """The next cycle reads the baseline absent and sends every base holder the full: a client holding the older card
+        gets the changeAt0 full with its row; one already holding the filled build is sent the identical full, which
+        dedups on its slot (test 25), so the rows added count the stale holders alone."""
+        self._the_cycle_repairs(a, b)
+        self.assertNotIn(S1, km._chat_baseline_raced, "the cycle reached every client with a full: the mark clears with its write")
+        rows = [r["data"] for r in self._diag_rows("chatFull")[rows0:]]
+        self.assertEqual([(r["reason"], r["changeFrom"], r["firstHeld"], r["lastHeld"]) for r in rows],
+                         [("changeAt0", 0, True, True)] * stale, "one changeAt0 full per stale holder, each with its row")
+
+    def test_28_a_sender_whose_build_read_the_transcript_before_a_racing_seed_takes_the_detectors_road(self):
+        # The seed's lower bound (the post-merge review of the seed, 2026-09-19): the detector compares the baseline the
+        # sender READ against the one in the map at its seed step, and that read sat AFTER the build. A sender whose
+        # build read the transcript BEFORE another sender's, but whose baseline read landed after that sender's seed,
+        # read the seed as a PRESENT baseline: it diffed its older list against the newer one, sent the difference as
+        # tails (or, to a fresh client, as a full), and its seed declined, since a present baseline is never touched.
+        # The map then held the newer list while some client held the older card, the next cycle diffed equal lists,
+        # and the client kept the stale card with no row and no mark. The interleaving, on a baseline-less sid: the
+        # targeted push T builds the list with the u3 card pending; while its build runs, the card fills and a connect
+        # push C for page b builds the filled list, hands b its full and seeds it; T's baseline read then finds C's
+        # list. Note that the strand reaches the NEWER sender's own client too: b had the filled card from C, and T's
+        # tail anchored at the change regressed it. Both reads now come BEFORE the build, so T reads the baseline as it
+        # stood when its build began, absent here, sends fulls, and its seed step finds a list it did not read: the
+        # detector's road, a pop and a mark, and the next cycle's full repairs every base holder with a row each. The
+        # cost, stated in the seed's docstring: two fulls per client per race, where the strand was silent.
+        a = self._client(active=S1, proto=2)
+        b = self._client(active=S1, proto=2)
+        km._clients.extend([a, b])
+        fired = self._older_build_hosts(lambda: km._push([b], connect=True))   # C, inside T's build
+        km._push_session_now(S1)                         # T: its build read the transcript first
+        self.assertEqual(fired, [1], "the connect push ran inside the targeted push's build")
+        self.assertNotIn(S1, km._prev_chat_events, "T's seed found a list it did not read and popped it")
+        self.assertNotIn(S1, km._prev_chat_ledger)
+        self.assertIn(S1, km._chat_baseline_raced, "...and marked the sid: the race is on record")
+        self.assertEqual(self._u3(a)[-1], ("session", "m3"), "a holds T's older build")
+        self.assertEqual(self._u3(b)[-1], ("session", "m3"),
+                         "b held the filled card from C's full; T's older list regressed it, as a change-0 full against b's base "
+                         "(T read the baseline absent; read present, as before, T sent the same regression as a tail at the change)")
+        rows0 = len(self._diag_rows("chatFull"))
+        self._the_repair_files_a_row_per_stale_holder(a, b, rows0, stale=2)   # both hold the older card
+
+    def test_28b_the_connect_push_as_the_older_builder_takes_the_detectors_road_too(self):
+        # The other pairing: the connect push A for page a builds the list with u3 pending; inside its build the card
+        # fills and the targeted push B builds the filled list, hands a and b their fulls and seeds it; A's baseline
+        # read then finds B's list, sends a a tail anchored at the change that regresses the card B had just filled,
+        # and its seed declines. a kept the stale card until a reconnect, with no row and no mark. Read before the
+        # build, A finds the baseline absent, its seed pops B's list and marks the sid, and the next cycle repairs.
+        a = self._client(active=S1, proto=2)
+        b = self._client(active=S1, proto=2)
+        km._clients.extend([a, b])
+        km._built_chat.clear()                           # nothing cached: the connect push builds
+        fired = self._older_build_hosts(lambda: km._push_session_now(S1))   # B, inside A's build
+        km._push([a], connect=True)                      # A: its build read the transcript first
+        self.assertEqual(fired, [1], "the targeted push ran inside the connect push's build")
+        self.assertNotIn(S1, km._prev_chat_events, "A's seed found a list it did not read and popped it")
+        self.assertNotIn(S1, km._prev_chat_ledger)
+        self.assertIn(S1, km._chat_baseline_raced)
+        self.assertEqual(self._u3(a)[-1], ("session", "m3"), "a held the filled card from B's full; A's older change-0 full regressed it")
+        self.assertEqual(self._u3(b)[-1], ("session", "m3 filled"), "b holds B's filled build: A targeted a alone")
+        rows0 = len(self._diag_rows("chatFull"))
+        self._the_repair_files_a_row_per_stale_holder(a, b, rows0, stale=1)   # a alone; b's identical full dedups
+
+    def test_28c_the_cycles_write_landing_inside_a_newer_senders_build_reads_as_a_race_the_accepted_cost(self):
+        """The accepted cost of reading the baseline before the build, pinned so the deferred build-start stamp has its red
+        test for this face (the review of the change, 2026-09-21). The detector compares the baseline a sender READ with
+        the one in the map at its seed step, and with the read before the build it can no longer tell a racing
+        single-client SEED that landed mid-build (test 28: the sender's list the OLDER one, a client stranded without the
+        pop) from the cycle's every-client WRITE landing mid-build with the sender's list the NEWER one: no client is
+        stale, yet the seed reads absent-then-different, pops the cycle's baseline and marks the sid. The map's content
+        carries no order (a filled card has the length of its unfilled twin), and a written-by-the-cycle flag is not
+        sound (a connect seed, then the cycle's tails and write, then an older targeted push's fulls: declining the pop
+        there re-opens the strand), so the pop stands and the cost is paid: the sender's change-0 full to every base
+        holder with a changeAt0 row each, then the next cycle's change-0 full to every base holder with a row each. The
+        kernel before this change sent one tail per client here, no mark, no row, and this test against it fails at the
+        first frame assertion (each client holds the cycle's full then a tail): that is its red, the changed behavior
+        pinned, not a defect it caught. The boot's ordinary interleaving: the cycle's cold build of the watched tab beside
+        the attach handshake's targeted push, the transcript moving between the two reads. Bounded by the number of
+        senders building the sid at once; a stamp of the build's start kept beside the baseline, its own item, is the
+        discriminator that removes it."""
+        a = self._client(active=S1, proto=2)
+        b = self._client(active=S1, proto=2)
+        km._clients.extend([a, b])
+        self.SESS[S1]["events"][3]["md"] = "m3 filled"   # the transcript as T's build reads it: the NEWER list
+        fired = self._build_hosts(lambda: km._push([a, b]), inside="m3", after="m3 filled")   # the cycle inside T's build, over the
+        km._push_session_now(S1)                         # OLDER transcript its own build read first; T read the baseline absent
+        self.assertEqual(fired, [1], "the cycle built, sent and wrote inside the targeted push's build")
+        for cl in (a, b):
+            self.assertEqual(self._u3(cl), [("session", "m3"), ("session", "m3 filled")],
+                             "the cycle's noBase full, then T's change-0 full: every client holds the newer list, nobody is stale")
+        self.assertNotIn(S1, km._prev_chat_events, "T's seed read the baseline absent and found the cycle's list: popped")
+        self.assertIn(S1, km._chat_baseline_raced, "...and marked, with no stale holder: the false positive")
+        rows = [r["data"] for r in self._diag_rows("chatFull")]
+        self.assertEqual([(r["reason"], r["changeFrom"], r["firstHeld"], r["lastHeld"]) for r in rows],
+                         [("changeAt0", 0, True, True)] * 2, "T's full to each base holder, filed as the racing shape")
+        self.SESS[S1]["status"]["state"] = "waiting"     # flipped, so the next cycle's full is not T's frame deduping on the slot (test 18)
+        km._built_chat.clear()
+        km._push([a, b])                                 # the next cycle: the baseline absent, so every base holder gets the full
+        for cl in (a, b):
+            self.assertEqual(self._sessions(cl).count(S1), 3, "a third whole frame for a client that was never stale")
+            self.assertEqual(self._u3(cl)[-1], ("session", "m3 filled"))
+        rows = [r["data"] for r in self._diag_rows("chatFull")[2:]]
+        self.assertEqual([(r["reason"], r["changeFrom"], r["firstHeld"], r["lastHeld"]) for r in rows],
+                         [("changeAt0", 0, True, True)] * 2, "...with its row per base holder")
+        self.assertNotIn(S1, km._chat_baseline_raced, "the cycle's write clears the mark")
+        self.assertEqual(km._prev_chat_events[S1], self.SESS[S1]["events"], "and re-establishes the baseline")
+
 
 class RestartDiet(unittest.TestCase):
     """The user's ruling (2026-09-14): after a reload the selected tab builds first, the strip's other tabs spread over later refreshes,
