@@ -355,7 +355,7 @@ test("remembered: a column closed while hidden leaves the memory with it; the ch
   // the column closes while hidden: its element is gone, so its park is pruned, and so is its remembered place
   lay = reconcileShown(lay, shown([FLEET, FEED], { present: [CHAT, FLEET, FEED, BAND] }));
   assert.deepEqual(lay.parked, [CHAT]);
-  assert.ok(mem(lay) && !has(mem(lay)!, "chat-pane-2"), "no record of the closed column: %s".replace("%s", JSON.stringify(mem(lay))));
+  assert.ok(mem(lay) && !has(mem(lay)!, "chat-pane-2"), "no record of the closed column: " + (mem(lay) ? shape(mem(lay)!) : "none"));
   lay = reconcileShown(lay, shown([CHAT, FLEET, FEED], { present: [CHAT, FLEET, FEED, BAND] }));
   assert.equal(shape(lay.tree), "col[row[fleet-pane,feed-pane,chat-pane],tl-pane]", "the chat at the right end, where it was (its default dock is the left)");
   assert.equal(mem(lay), undefined);
@@ -486,7 +486,7 @@ test("remembered: a column dragged out and closed while a pane is hidden leaves 
   assert.equal(shape(lay.tree), "col[row[chat-pane,col[fleet-pane,chat-pane-2]],tl-pane]");
   lay = reconcileShown(lay, shown([CHAT, FLEET], { present: [CHAT, FLEET, FEED, FILES, BAND] }));                   // the column closed, its element gone
   assert.equal(shape(lay.tree), "col[row[chat-pane,fleet-pane],tl-pane]");
-  assert.ok(mem(lay) && has(mem(lay)!, FEED) && !has(mem(lay)!, "chat-pane-2"), "the memory keeps the feed and drops the closed column: " + shape(mem(lay)!));
+  assert.ok(mem(lay) && has(mem(lay)!, FEED) && !has(mem(lay)!, "chat-pane-2"), "the memory keeps the feed and drops the closed column: " + (mem(lay) ? shape(mem(lay)!) : "none"));
   lay = reconcileShown(lay, shown([CHAT, FLEET, FEED]));
   assert.equal(shape(lay.tree), shape(before), "the feed back under the chat");
   sameRects(lay.tree, before, "as before the hide");
@@ -517,4 +517,50 @@ test("remembered: a stranger pane in the neighbour's split does not stop the ret
   assert.equal(shape(lay.tree), "col[row[chat-pane,fleet-pane,feed-pane,files-pane],tl-pane]", "the feed a sibling right of the outline, not a nested pair with it");
   const row = (lay.tree as Split).kids[0] as Split;
   assert.ok(Math.abs(row.ratios[2] / row.ratios[1] - 40 / 34) < 1e-9, "the feed's share beside the outline is its remembered one: " + row.ratios.join(","));
+});
+
+// ── round four (the second review): the last-resort road only for a lone band; the band as a parked pane through the rebuild; the
+//    nearest-leaf fallback ──
+test("remembered: with a stranger shown above the band, a returning pane whose neighbours are all hidden takes its default dock, never a full-width row of its own under the stranger", () => {
+  const seed = seed3();
+  let lay: Layout = seed;
+  lay = reconcileShown(lay, shown([]));                                                          // every row pane hidden: the band alone
+  lay = reconcileShown(lay, shown([FILES]));                                                     // a stranger turned on above the band
+  assert.equal(shape(lay.tree), "col[files-pane,tl-pane]");
+  lay = reconcileShown(lay, shown([CHAT, FILES]));                                               // the chat back: its neighbours hidden, the band no longer alone
+  assert.equal(shape(lay.tree), "col[row[chat-pane,files-pane],tl-pane]", "the chat docks beside the stranger (its default), not as a row of its own between the stranger and the band");
+  const rs = rectsOf(lay.tree);
+  assert.ok(rs[CHAT].w < 600 && rs[CHAT].h > 700, "the chat a column beside the files pane, full height: " + JSON.stringify(rs[CHAT]));
+  lay = reconcileShown(lay, shown([CHAT, FLEET, FEED, FILES]));                                  // the outline and the feed: beside the chat, as remembered
+  assert.equal(shape(lay.tree), "col[row[chat-pane,fleet-pane,feed-pane,files-pane],tl-pane]");
+  lay = reconcileShown(lay, shown([CHAT, FLEET, FEED]));                                         // the stranger off: the seed
+  assert.equal(shape(lay.tree), shape(seed.tree));
+  sameRects(lay.tree, seed.tree, "the seed back once the stranger is off");
+});
+
+test("remembered: the band as a parked pane rides the rebuild fixed (band off, then the feed off, both back: the seed)", () => {
+  const seed = seed3();
+  let lay: Layout = seed;
+  lay = reconcileShown(lay, shown([CHAT, FLEET, FEED], { band: false }));                        // the band off: the memory taken with the band in it
+  assert.deepEqual(lay.parked, [BAND]);
+  lay = reconcileShown(lay, shown([CHAT, FLEET], { band: false }));                              // the feed off: the memory rebuilt from the row alone, the band re-inserted by the rebuild
+  const m = mem(lay) as Split;
+  assert.equal(shape(m), "col[row[chat-pane,fleet-pane,feed-pane],tl-pane]", "the memory holds the band under the row");
+  assert.equal(m.fixed && m.fixed[1], 200, "the band fixed at its px in the memory");
+  assert.equal(m.ratios[1], 0, "with a zero ratio, as a fixed kid has");
+  lay = reconcileShown(lay, shown([CHAT, FLEET, FEED]));                                         // both back
+  assert.equal(shape(lay.tree), shape(seed.tree));
+  sameRects(lay.tree, seed.tree, "the seed's rectangles back, the band at the bottom");
+  assert.equal(mem(lay), undefined);
+});
+
+test("remembered: a remembered neighbour whose leaves are shown but no longer one node (a stranger inside it) takes the returning pane at its nearest leaf", () => {
+  let lay: Layout = seed3();
+  lay = { ...lay, tree: move(lay.tree, FEED, FLEET, "bottom") };                                 // the feed under the outline: row[chat, col[fleet, feed]]
+  lay = reconcileShown(lay, shown([FLEET, FEED]));                                               // the chat hidden
+  lay = reconcileShown(lay, shown([FLEET, FEED, FILES]));                                        // the files pane on: right of the feed, inside the outline's column
+  assert.equal(shape(lay.tree), "col[col[fleet-pane,row[feed-pane,files-pane]],tl-pane]");
+  lay = reconcileShown(lay, shown([CHAT, FLEET, FEED, FILES]));                                  // the chat back: its neighbour col[fleet, feed] is scattered, so it docks left of the outline, the unit's first leaf
+  assert.equal(shape(lay.tree), "col[col[row[chat-pane,fleet-pane],row[feed-pane,files-pane]],tl-pane]");
+  assert.deepEqual(leaves(lay.tree), [CHAT, FLEET, FEED, FILES, BAND]);
 });

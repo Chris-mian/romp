@@ -95,6 +95,15 @@ hidden) in the neighbour's split does not stop the returning pane joining that s
 share, so the room comes from the whole row and not from the neighbour alone; only a split the memory knew as a
 separate group (a chat over its feed inside a row) wraps, so that group comes back as a group.
 
+The band is the neighbour of last resort only when it is ALL the tree shows (the second review of the feature PR,
+2026-09-21): with a stranger pane shown above the band, a returning pane whose remembered neighbours are all hidden takes
+its default dock beside the stranger instead of a full-width row of its own between the stranger and the band. The cost,
+accepted: with the band the only remembered neighbour left, the first pane back sits beside the stranger at the default
+dock's share, and the arrangement is rebuilt around it rather than exactly (every pane hidden, a stranger turned on and
+off again gives the seed back flat). And with the band OFF, a pane whose remembered neighbours are all hidden has no place
+to be re-inserted at a stranger's park: it waits in the parked list without a place and returns at its default dock,
+which the rule intends (keeping the old memory would cost the stranger its place).
+
 ## 3. The options
 
 **A. One chat button toggles every chat column as one group; hide remembers the tree, show restores it.**

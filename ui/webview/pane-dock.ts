@@ -161,7 +161,7 @@ export function seedLayout(sh: Shown): Layout {
  *  of the whole tree as a fixed kid. Returns the target leaf and edge, or null to dock against the root. */
 export function defaultDock(tree: Node, pane: PaneId): { target: PaneId; edge: Edge } | null {
   const ls = leaves(tree).filter((p) => !isBand(p));
-  if (!ls.length) return isBand(pane) || !has(tree, BAND) ? null : { target: BAND, edge: "top" };   // only the band shown: a pane comes back ABOVE it, never beside it as a row (the round-three read)
+  if (!ls.length) return isBand(pane) || !has(tree, BAND) ? null : { target: BAND, edge: "top" };   // only the band shown: a pane comes back ABOVE it, never beside it as a row (the 1985 read)
   const chats = ls.filter(isChatPane);
   const lastChat = chats.length ? chats[chats.length - 1] : null;
   if (isBand(pane)) return null;
@@ -194,7 +194,7 @@ export function pruneTo(tree: Node, keep: ReadonlyArray<PaneId>): Node | null {
 /** The memory after a park from `before` (the tree as shown right before it): `before` itself, the freshest arrangement with
  *  its ratios (so a resize made while a pane was hidden stands, and a pane turned on or a column opened meanwhile is known),
  *  with every pane the standing memory knew and `before` does not (the earlier parked panes) re-inserted by the show's own
- *  rule, beside its remembered neighbour with its remembered share (the round-three read: a memory kept only while it pruned
+ *  rule, beside its remembered neighbour with its remembered share (the 1985 read: a memory kept only while it pruned
  *  to the shown tree's exact shape was replaced by a stranger and undid a resize). A pane whose neighbours are all hidden
  *  waits in `parked` without a place and returns at its default dock. */
 export function remember(memory: Node | undefined, before: Node): Node {
@@ -222,7 +222,7 @@ function nodeWithLeaves(tree: Node, set: ReadonlyArray<PaneId>): Node | null {
  *  split's leaves, or a stranger the memory never knew, `known`), its share `rel` times the unit's; else the unit wrapped in
  *  a new two-kid split of that direction (shares rel to 1), so a group the memory kept apart (a chat over its feed inside a
  *  row) comes back as a group and the next returning pane finds it whole, while a stranger pane turned on meanwhile does
- *  not make the neighbour alone pay for the return (the round-three read). A pane fixed in the memory (the band) rides as a
+ *  not make the neighbour alone pay for the return (the 1985 read). A pane fixed in the memory (the band) rides as a
  *  fixed kid of `px`; a FIXED unit takes the pane as a ratio sibling of equal share and is never wrapped (a wrap would put
  *  the pane inside the band's px): null then, for the caller to try further. */
 function insertBeside(tree: Node, unit: Node, pane: PaneId, dir: "row" | "col", first: boolean, rel: number, within: ReadonlySet<PaneId>, known: ReadonlySet<PaneId>, px: number | null = null): Node | null {
@@ -259,10 +259,9 @@ function insertBeside(tree: Node, unit: Node, pane: PaneId, dir: "row" | "col", 
  *  had, with its remembered share. From the pane's leaf upward, each remembered split's other kids are tried nearest first: a
  *  kid the tree shows whole (its shown leaves are one node of the tree, whatever happened inside) takes the pane as a sibling
  *  (or a wrap when the directions differ); failing that, the pane docks at the nearest shown leaf of the nearest kid; failing
- *  that, a fixed kid of the split (the band) is the neighbour of last resort: the pane goes on its remembered side of it, a
- *  ratio kid beside the fixed one (with only the band shown, a column of the pane over the band, never a row beside it: the
- *  round-three read). Null when the memory has nothing to say (the pane unknown to it, or none of its neighbours shown): the
- *  caller falls to the default dock. When nothing moved since the hide, the insertions rebuild the remembered tree exactly,
+ *  that, when the band is ALL the tree shows, the band is the neighbour of last resort: the pane goes on its remembered side of
+ *  it, a column of the pane over the fixed band, never a row beside it (the 1985 read). Null when the memory has nothing to say
+ *  (the pane unknown to it, none of its neighbours shown and a stranger beside the band): the caller falls to the default dock. When nothing moved since the hide, the insertions rebuild the remembered tree exactly,
  *  shares included. */
 export function placeFrom(memory: Node, tree: Node, pane: PaneId): Node | null {
   if (!has(memory, pane) || has(tree, pane)) return null;
@@ -299,7 +298,10 @@ export function placeFrom(memory: Node, tree: Node, pane: PaneId): Node | null {
       const edge: Edge = a.dir === "row" ? (nearLeaf.first ? "left" : "right") : (nearLeaf.first ? "top" : "bottom");
       return splitAt(tree, nearLeaf.leaf, pane, edge);
     }
-    if (fixedKid !== null) {
+    if (fixedKid !== null && leaves(tree).every(isBand)) {
+      // only when the band is ALL the tree shows: with a stranger shown above it, a pane whose neighbours are all hidden takes its
+      // default dock beside the stranger instead (the 1985 read, round four: the road fired between the stranger and the band and
+      // gave the pane a full-width row of its own at half the height, every later pane wrapping inside it)
       const node = nodeWithLeaves(tree, leaves(a.kids[fixedKid]).filter((q) => has(tree, q)));
       if (node) { const placed = insertBeside(tree, node, pane, a.dir, i < fixedKid, 1, new Set(leaves(a)), known, ownPx); if (placed) return placed; }
     }
@@ -316,7 +318,8 @@ export function reconcileShown(cur: Layout, sh: Shown): Layout {
   const want = new Set<PaneId>(sh.row.concat(sh.band ? [BAND] : []));
   let lay: Layout = cur;
   // park what is gone (the only-pane refusal is fine: a tree of one hidden pane is replaced below), remembering the
-  // arrangement as shown right before (section 6): the memory stands when it still describes this tree, else this tree is it
+  // arrangement as shown right before (section 6): this tree, with every pane the standing memory knew and this tree lacks put
+  // back beside its remembered neighbour (remember)
   const before = cur.tree;
   let parkedAny = false;
   for (const p of leaves(lay.tree)) {
@@ -359,7 +362,7 @@ export function reconcileShown(cur: Layout, sh: Shown): Layout {
   // pane whose element is gone (a closed chat column: nothing is mounted to re-open)
   const parked = lay.parked.filter((q) => !has(lay.tree, q) && (!sh.present || sh.present.includes(q)));
   // the memory (section 6): reduced to the panes the layout still knows (the tree's and the parked), so a column closed while
-  // hidden leaves no record; dropped when nothing is parked, or when it names no hidden pane (nothing left to say)
+  // hidden leaves no record; dropped when nothing is parked
   const remembered = parked.length && lay.remembered ? pruneTo(lay.remembered, leaves(lay.tree).concat(parked)) : null;
   const out: Layout = { v: 1, tree: lay.tree, parked };
   if (remembered) out.remembered = remembered;
