@@ -896,6 +896,52 @@ console.log(JSON.stringify(out));
 """
 
 
+# ── the chat columns' open tabs: the union told to every protocol pane, a closed column pruned (the Artifacts pane's design, 9.2) ──
+# The shell keys each chat frame's posted set by the frame the post came from (a chat frame alone: another pane's post is refused),
+# tells the union in column order, and, when a column that emptied closes (the split script removes its frame and then dispatches
+# romp-chat-cols with open false), re-tells the union with the gone frame pruned: the empty set that column posted on its way out
+# reached the shell after its frame was gone and matched no iframe, so the union kept it (the reviewers of PR 1925, 2026-09-21).
+_TABS_SEED = r"""
+const LISTENERS = {}; const addPrev = global.addEventListener;
+global.addEventListener = (ev, f) => { addPrev(ev, f); (LISTENERS[ev] = LISTENERS[ev] || []).push(f); };
+frames['f-chat-2'] = { attrs: { src: '/chat?col=2' }, getAttribute: (a) => null, setAttribute() {}, addEventListener() {},
+  contentWindow: { postMessage: (m) => { (POSTED['chat-2'] = POSTED['chat-2'] || []).push(JSON.parse(JSON.stringify(m))); } } };
+Object.keys(frames).forEach((id) => { frames[id].id = id; });
+const qsaPrev = document.querySelectorAll; document.querySelectorAll = (sel) => (sel === 'iframe' ? Object.keys(frames).map((id) => frames[id]) : qsaPrev(sel));
+window.__rompChatColumnIds = () => ['f-chat', 'f-chat-2'];
+"""
+_TABS_DRIVER = r"""
+const told = () => (POSTED.chat || []).filter((m) => m && m.romp === 'chatTabs').map((m) => m.tabs.map((t) => t.id));   // read at the chat frame, a loaded protocol pane (the harness's artifacts frame carries data-src alone: not loaded, not told)
+const deliver = (frameId, tabs) => { const e = { source: frames[frameId] ? frames[frameId].contentWindow : {}, data: { romp: 'chatTabs', tabs } }; (LISTENERS.message || []).forEach((f) => f(e)); };
+const out = {};
+deliver('f-chat', [{ id: 'web', name: 'web' }, { id: 'tests', name: 'tests' }]);
+deliver('f-chat-2', [{ id: 'api', name: 'api' }]);
+out.union = told().slice(-1)[0]; out.toldAfterTwo = told().length;
+deliver('f-feed', [{ id: 'rogue', name: 'rogue' }]);   // not a chat frame: refused, nothing re-told
+out.toldAfterRogue = told().length;
+delete frames['f-chat-2'];                             // the split script removed the emptied column's frame...
+deliver('f-chat-2', []);                               // ...its empty set arrives from a window no iframe owns any more: refused...
+(LISTENERS['romp-chat-cols'] || []).forEach((f) => f({ detail: { col: 2, open: false } }));   // ...and the script says the column closed
+out.afterClose = told().slice(-1)[0]; out.toldAfterClose = told().length;
+console.log(JSON.stringify(out));
+"""
+
+
+class ChatTabsUnion(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        keys = ["chat", "feed", "artifacts"]
+        cls.out = _run(_COLLAPSE_HARNESS.replace("__KEYS__", json.dumps(keys)).replace("__SEED__", _TABS_SEED) + km._LANDING_COLLAPSE_JS + _TABS_DRIVER)
+
+    def test_the_union_is_told_in_column_order_and_a_post_from_a_pane_that_is_no_chat_frame_is_refused(self):
+        self.assertEqual(self.out["union"], ["web", "tests", "api"], "the first column's tabs, then the second's")
+        self.assertEqual(self.out["toldAfterRogue"], self.out["toldAfterTwo"], "the feed's post is not a chat frame's: nothing re-told")
+
+    def test_a_column_that_emptied_and_closed_is_pruned_from_the_union_on_the_split_scripts_word(self):
+        self.assertEqual(self.out["afterClose"], ["web", "tests"], "the gone column's set is pruned and the union re-told: %r" % (self.out,))
+        self.assertEqual(self.out["toldAfterClose"], self.out["toldAfterRogue"] + 1, "one re-tell for the close (the refused empty set told nothing)")
+
+
 class PaneEnabledReader(unittest.TestCase):
     def test_the_head_defines_it_before_any_iframe_and_the_scripts_ask_it(self):
         html = km._landing()

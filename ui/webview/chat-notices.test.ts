@@ -73,7 +73,7 @@ test("the kernel's answer re-arms the row on a refusal, saying why in the row, a
   assert.match(h, /if \(m\.ok\) \{ row\.remove\(\);/);
   assert.match(h, /b\.disabled = false; b\.textContent = \(b as any\)\._idle \|\| b\.textContent;/);
   assert.match(h, /e\.textContent = "Refused: " \+ String\(m\.error \|\| "the kernel did not say why"\); e\.style\.display = "";/);
-  assert.match(RENDER, /for \(const boxId of \["notices", "bg-tasks", "footer"\]\) \{/, "the bottom-box rule covers the approval box (low a)");
+  assert.match(RENDER, /const BOXES_BELOW = \["notices", "bg-tasks", "footer"\];/); assert.match(RENDER, /for \(const boxId of BOXES_BELOW\) \{/, "the bottom-box rule covers the approval box (low a); the list is shared with the footprint record (the review of PR 1926)");
   const FED = fs.readFileSync(path.join(UI, "federation.ts"), "utf8");
   assert.match(FED, /out\.status = \{ \.\.\.out\.status, notices: out\.status\.notices\.map\(\(n: any\) => \(n && typeof n === "object" && typeof n\.itemId === "string"\) \? \{ \.\.\.n, itemId: prefixNoticeId\(host, n\.itemId\) \} : n\) \};/, "the slice's ids wear the host (medium 2)");
 });

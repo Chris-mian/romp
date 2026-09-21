@@ -1,6 +1,6 @@
 # The Artifacts pane (2026-09-19)
 
-An optional pane, off by default, experimental: a session selector at its top and, under it, every file that was put
+An optional pane, off by default, experimental: a session picker at its top and, under it, every file that was put
 into that session's thread, as a file list, and for images a grid of BIG thumbnails, so that when a session produces a
 run of plots the user can open the pane and cycle through them large. Nothing is injected into any session and no
 instruction changes: this is an on-top read of what already happened, by deterministic rules only (no judge, no model
@@ -78,7 +78,7 @@ for host routing, and one bundle `ui/webview/artifacts.ts`.
   lock. The lock and the picked session are remembered per browser
   (`localStorage`, keys `romp:artifacts:sid` and `romp:artifacts:lock`). A page with no shell (opened alone) has no tabs to
   list and falls back to the picker's list (`requestSessions`), the first landing's behaviour.
-- **The list and the grid.** Under the selector, the images of the selection (`kind === "image"`, existing, not
+- **The list and the grid.** Under the picker, the images of the selection (`kind === "image"`, existing, not
   refused) render as a grid of large thumbnails (a minimum of 220 px a side, three across at the pane's default width,
   `object-fit: contain`, newest first), each loaded through the file route with the session's sid, lazily
   (`loading="lazy"`). Below the grid, every entry as a file list row: the name in the link dress, the folder dimmed, the
@@ -114,7 +114,8 @@ for host routing, and one bundle `ui/webview/artifacts.ts`.
 - The walk is one pass over `turns[].atoms[]`: assistant blocks for rules 1 and 2, user blocks and text for rule 3; then
   the de-duplication, the stat, the route's verdict, the sort and the cap. Since pass two the walk is INCREMENTAL per
   session (section 9.4): an in-memory memo per sid keeps the mentions map and the identity of the last turn walked
-  (its position and its fork-stable turn id), and a request after growth walks only the turns after it, hydrating only
+  (its position, its fork-stable turn id, its atom count and its last atom's uuid), and a request after growth walks from that
+  turn on (the last walked turn may have grown; a rewind inside it walks the session whole), hydrating only
   those, merging into the map (the latest mention still wins); a parse whose turns no longer carry that prefix (a full
   re-assembly rather than a fold) is walked whole again. The stat and the route's verdict run over every entry on every
   answer (a file can appear or vanish between growths), which is at most the cap.
@@ -175,7 +176,7 @@ Pass two's tests are listed in section 9.6; the first landing's are these.
   setting).
 - Served lab: `tests/test_artifacts_pane_served.py`: a hermetic kernel over one synthetic session in the notes-api world
   with a transcript carrying two written files (one since deleted), one rendered image path and one drop; the control
-  turned on through the setting; the pane toggled on; the selector naming the session; the list's four rows newest
+  turned on through the setting; the pane toggled on; the picker naming the session; the list's four rows newest
   first with the missing mark; the grid's thumbnails loaded through the file route; a click opening the large view and
   the arrows cycling; the `viewFile` relay posted to the shell; the pane toggled off; and, with the control off, no rail
   button and no request made (the off state costs nothing).
@@ -187,7 +188,8 @@ Pass two's tests are listed in section 9.6; the first landing's are these.
   in tool RESULTS (a `Read` of a file is not putting it into the thread).
 - A pushed LISTING or a per-session index on disk (the growth signal of section 9.4 is a few bytes and the walk memo is
   memory only); a pin of the file's bytes (the chat's mention pins stay the chat's).
-- Polling of any kind: the pane learns of growth from the kernel's signal, of tab changes from the shell's broadcast.
+- Polling of any kind: the pane learns of growth from the kernel's signal (a compare the pusher's event-woken cycle makes, with
+  the 0.5 s backstop that cycle already keeps; no timer of the pane's own), of tab changes from the shell's broadcast.
 - The panes-as-data registry itself (the timeline owner's design); this pane is written to fit it.
 
 ## 8. Privacy
@@ -198,7 +200,8 @@ minted under its own temp root; no real transcript or path is copied anywhere.
 ## 9. Pass two (2026-09-20): remote sessions, the open-tabs scope, the picker's dress, growth, the lock
 
 The user tried the pane and asked for five things (paraphrased by the manager, 2026-09-20). Every premise below was
-checked in the code it names (the line numbers are main's at 10f33abb). The invariants of sections 1, 2 and 7 hold:
+checked in the code it names (the anchors are symbols; the line numbers were main's at 10f33abb, before the pass landed). The
+invariants of sections 1, 2 and 7 hold:
 deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 
 ### 9.1 Remote sessions: the transport already works, only the selector never offered one
@@ -262,7 +265,9 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   under the button, dismissal, keyboard (arrows, Home, End, Enter, Escape) and focus return all shared, no hex outside a
   `var()` fallback (`ui/CLAUDE.md`, the menu rule). The current session's row wears the `--check-bg` mark. The page
   already loads `styles.css` (`kernel.py:60466`), so the dress needs no new stylesheet beyond the button's own rule.
-- The button reads as the strip's tab would: the dress above, a chevron, and the lock beside it; the identity dot of the
+- The button reads as the strip's tab would, its name lifted to the T390 lightness floor (`--peer-ink-l`, the oklch line of
+  `.session-name.colored`) so a dark identity colour stays legible on both themes where the strip's tab has its own fade
+  rules: the dress above, a chevron, and the lock beside it; the identity dot of the
   first landing is gone (the colour is on the name now).
 
 ### 9.4 Growth: a signal from the kernel, an incremental walk, no polling
@@ -270,12 +275,14 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 - Today growth reaches nothing but the chat: the pusher wakes on the backend's push (`kernel.py:18772`), `_push` builds
   per app audience (`kernel.py:54393`) and no audience names `artifacts`; the page's shim is `no_stale` (no pushed view,
   `kernel.py:60471`); the pane's only growth road was the Refresh button (`artifacts.ts:68`).
-- **The watch.** The pane sends `watchArtifacts {sid}` when its shown session changes (and `{sid: null}` when it shows
+- **The watch.** The pane sends `watchArtifacts {sid}` when its shown session changes (and `{sid, unwatch: true}` for the
+  previous session, on its own kernel, when it shows
   none); federation routes it by the sid to the owning kernel like `listArtifacts`. The kernel records the one watched
   bare sid on the client (`client["artifacts"]`). In the pusher cycle (`_pusher_cycle`, `kernel.py:58907`), for each live
   `artifacts` client with a watched sid, the kernel reads that session's transcript version, the `(mtime, size)` of its
-  file (the first component of `_chat_build_sig`, `kernel.py:34372`, through `_session_row`), one stat per cycle per
-  watching client, and when it differs from the last version sent to that client, sends ONE `artifactsChanged {sid,
+  file (the first component of `_chat_build_sig`, through `_session_row`), one stat per cycle per WATCHED SESSION (a dict
+  from sid to version, built once per cycle), and when it differs from the last version sent to a watching client (the
+  compare and the stamp under that client's lock), sends ONE `artifactsChanged {sid,
   version}` frame (the version compare is the dedup; the watch op stamps the version at watch time, so the listing the
   pane asks for beside the watch is not answered by a signal for the same bytes). Nothing else is pushed; an unwatched
   session costs nothing;
@@ -288,8 +295,10 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   pane re-arms on every (re)open (the shim's `romp:wsup` for the local kernel, federation's `romp:hostRelayUp` for a
   host's relay), never on the shown session changing, and re-asks the listing, since a growth during the outage was
   never signalled (round two, the medium; with no Refresh control left, this is the recovery).
-- **The incremental walk** (section 4, amended): `_ARTIFACTS_WALK_MEMO[sid] = {last: (index, turn id), mentions}`, in
-  memory, no lock beyond the pusher's (the op runs on the socket thread; the memo is guarded by one lock). On a request
+- **The incremental walk** (section 4, amended): `_ARTIFACTS_MEMO[sid] = {idx, tid, n, uuidN, mentions, cands, t}`, in
+  memory, guarded by `_ARTIFACTS_MEMO_LOCK` (the op runs on the socket thread). `cands` holds rule 2's unadmitted prose
+  candidates by absolute path, re-judged on every answer (`_artifacts_admit`), so a file named before it existed lists once
+  it does. On a request
   the kernel reads the parse as today; if the memo's turn id is still the id of the turn at the memo's index (turn ids
   are fork-stable, `event_model.py:4144`; a serve or a fold leaves every previously emitted atom in place,
   `event_model.py:7203`), it walks `turns[index:]`, the last walked turn INCLUDED (a turn keeps its id while it gains
@@ -298,8 +307,8 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   their mentions into the map (the latest mention wins; a re-walked mention is the same mention); otherwise it walks
   everything and replaces the memo. The items step (stat, verdict, sort, cap) runs over the merged map every time. A session no longer
   listed keeps a memo until the kernel restarts or the memo count passes a small cap (the least recently listed goes).
-- The design rule this follows: an exact event (the transcript's version moved) over a time heuristic; the pane never
-  polls and the kernel never re-walks what it walked.
+- The design rule this follows: an exact event (the transcript's version moved) over a time heuristic, read on the
+  pusher's event-woken cycle; the pane never polls and the kernel re-walks only the last walked turn and what came after it.
 
 ### 9.5 The lock and the follow
 
@@ -329,10 +338,11 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 
 - Kernel: `tests/test_artifacts_list.py`: the watch op recorded per client and the `artifactsChanged` signal sent once per
   version move from the pusher cycle (a second cycle with no growth sends nothing; a growth sends one); the incremental
-  walk (a memo whose turn id still stands walks only the new turns, hydrates only those, and merges with the latest
+  walk (a memo whose turn id, atom count and last atom still stand walks from that turn on, hydrates only those, and merges with the latest
   mention winning; a prefix that changed walks whole); the active-chat frame reaching an `artifacts` client on its
   `ready` and on the chat's switch.
-- Pane: `ui/webview/artifacts.test.ts`: the selection machine (follow, pick locks, toggle, unlock jumps, a closed tab);
+- Pane: `ui/webview/artifacts.test.ts`: the selection machine (follow, a pick never changes the lock, toggle, unlock keeps the
+  shown session, a closed tab); the listing signature; the echo watermark (relays A, B, C, then B's echo dropped);
   the picker's row model over a `chatTabs` union (order kept, duplicates across columns collapsed, a stored selection
   not open marked); pins on the shared label helper and the ctx-menu card.
 - Served labs: the two-kernel lab for remote sessions (9.1); the scope lab (two chat columns holding two sessions, a

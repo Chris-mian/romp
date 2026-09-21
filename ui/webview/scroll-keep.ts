@@ -93,7 +93,9 @@ export function followBoxBelow(stick: boolean, dh: number): boolean {
  *  scrollTop across the growth, so the pre-growth distance from the bottom is today's distance less what #content gave up:
  *  the box's FOOTPRINT change, its border box plus its vertical margins (`dfoot`), never the observer's content-rect delta,
  *  which misses the borders and the margin a box brings when it first shows (10.7 px there, and the 2 px band read the
- *  reader as scrolled up). Pure, so node executes it with the captured numbers. */
+ *  reader as scrolled up). The clientHeight is an integer and the footprint is not, so the distance carries a residual under
+ *  one pixel (the review of PR 1926): a reader exactly at the band's edge can read past it, an edge accepted rather than
+ *  rounded (either rounding misreads the browser's other one). Pure, so node executes it with the captured numbers. */
 export function atBottomBeforeGrowth(scrollHeight: number, scrollTop: number, clientHeight: number, dfoot: number): boolean {
   return atBottomDist(scrollHeight - scrollTop - (clientHeight + dfoot));
 }
