@@ -179,11 +179,14 @@ test("contain: layout on .fileview-md in BOTH sheets, byte-equal, with the media
 /** A phrase as a document wraps it: any run of whitespace between words. */
 const prose = (words: string) => new RegExp(words.trim().split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"));
 
-test("the guide says what a file's own HTML may do, in the terms the code enforces", () => {
-  const guide = fs.readFileSync(path.join(ROOT, "docs", "guide.md"), "utf8");
-  const at = guide.indexOf("**A file's own HTML.**");
-  assert.ok(at >= 0, "the guide has the paragraph");
-  const para = guide.slice(at, guide.indexOf("\n\n", at));
+test("the reference says what a file's own HTML may do, in the terms the code enforces", () => {
+  // the paragraph moved out of the guide with the rest of the chat pane's detail (CLAUDE.md
+  // "The documentation front pages"); it is a section of its own now, and the pin follows it
+  const ref = fs.readFileSync(path.join(ROOT, "docs", "reference.md"), "utf8");
+  const head = ref.indexOf("### A file's own HTML\n");
+  assert.ok(head >= 0, "the reference has the section");
+  const at = ref.indexOf("\n\n", head) + 2;
+  const para = ref.slice(at, ref.indexOf("\n\n", at));
   assert.match(para, /`<style>`/);
   assert.match(para, /user-content-/);
   assert.match(para, /`color` and `background-color`/);

@@ -18,6 +18,8 @@ const FEED = read("ui", "webview", "feed.css");
 const RENDER = read("ui", "webview", "render.ts");
 const GEAR = read("ui", "webview", "gear.js");
 const GUIDE = read("docs", "guide.md");
+// the chat pane's own settings moved to the reference (CLAUDE.md "The documentation front pages")
+const REF = read("docs", "reference.md");
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // the FIRST rule for a selector at the start of a line: the default, written above the dense block
@@ -227,12 +229,14 @@ test("the dense sizes are the sheet's own rungs and none is under the 10px floor
   lacks(stripComments(CSS), /\n\.tab(?:[.:][^ {\n]*)? [^{\n]+\{[^}]*font-size: [\d.]+em/, "no other em-sized .tab descendant rule exists in the sheet (add it to the list above if one appears)");
 });
 
-test("the guide names the setting by its gear label, and its paragraph leads with the panel and qualifies the strip", () => {
-  has(GUIDE, /\*\*Compact tabs and agents\*\*/, "the gear label, bold like the other settings named there");
-  has(GUIDE, /about four/, "the cap in rows");
-  const at = GUIDE.indexOf("**Compact tabs and agents**");
-  assert.ok(GUIDE.indexOf("### The chat") < at && at < GUIDE.indexOf("### The feed"), "in the chat section, with the other chat settings");
-  const para = GUIDE.slice(GUIDE.lastIndexOf("\n\n", at), GUIDE.indexOf("\n\n", at));
+test("the reference names the setting by its gear label, and its paragraph leads with the panel and qualifies the strip", () => {
+  has(REF, /\*\*Compact tabs and agents\*\*/, "the gear label, bold like the other settings named there");
+  has(REF, /about four/, "the cap in rows");
+  const at = REF.indexOf("**Compact tabs and agents**");
+  assert.ok(REF.indexOf("## The chat pane in detail") < at && at < REF.indexOf("## The feed's layout controls"),
+    "among the chat pane's own sections, with the other chat settings");
+  assert.ok(GUIDE.includes("reference.md#the-chat-pane-in-detail"), "and the guide sends the reader there");
+  const para = REF.slice(REF.lastIndexOf("\n\n", at), REF.indexOf("\n\n", at));
   assert.ok(para.indexOf("background-work panel") < para.indexOf("tab strip"),
     "the panel first (every layout has it), then the strip, which the phone layout replaces with the session picker");
   assert.match(para, /session picker stands in for the strip/);

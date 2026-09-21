@@ -18,7 +18,8 @@ const VIEW = fs.readFileSync(path.join(UI, "file-view.ts"), "utf8");
 const BROWSE = fs.readFileSync(path.join(UI, "file-browse.ts"), "utf8");
 const RENDER = fs.readFileSync(path.join(UI, "render.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
-const GUIDE = fs.readFileSync(path.resolve(process.cwd(), "..", "docs", "guide.md"), "utf8");
+// the chat pane's own detail moved to the reference (CLAUDE.md "The documentation front pages")
+const REF = fs.readFileSync(path.resolve(process.cwd(), "..", "docs", "reference.md"), "utf8");
 
 const SID = "11111111-2222-3333-4444-555555555555";
 const g = globalThis as any;
@@ -165,9 +166,9 @@ test("an oversize PDF's tab is not a dead end, and the listing marks such a file
   assert.equal((relay.match(/_attachment_disposition\(os\.path\.basename\(rp\), kind="inline"\)/g) || []).length, 2, "HEAD and GET");
 });
 
-test("the guide says so, in the user's terms", () => {
-  const flat = GUIDE.replace(/\s+/g, " ");
-  assert.match(flat, /\*\*Opening a PDF\.\*\* [^*]{0,160}opens inside the dashboard like an image/);
+test("the reference says so, in the user's terms", () => {
+  const flat = REF.replace(/\s+/g, " ");
+  assert.match(flat, /### Opening a PDF [^#]{0,160}opens inside the dashboard like an image/);
   assert.match(flat, /Cmd-click it instead \(Ctrl on Windows and Linux\), or middle-click, and it opens in a new browser tab in the browser's own viewer/);
   assert.match(flat, /If the browser blocks that new tab, the PDF opens inside the dashboard instead; a PDF too large to show offers a download in its place\./);
 });
