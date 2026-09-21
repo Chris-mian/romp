@@ -106,6 +106,8 @@ def _forget(sid):
     km._inflight_ops.pop(sid, None)
     km._model_switch_pending.pop(sid, None)
     km._compact_clicked.pop(sid, None)
+    km._held_working.pop(sid, None)   # the belt's record that the working gate holds this queue: a test that leaves the
+                                      # in-flight slot kept leaves it standing, and the next test inherited it (2026-09-21)
 
 
 class _Base(unittest.TestCase):
@@ -441,6 +443,41 @@ class EndHandbackTargets(_Base):
         self.assertEqual(km._pending_ops.get(SID), [("compact",)], "exactly the in-flight slot remains")
         self.assertEqual(log.getvalue().count("parked compact op dropped with the ending session %s" % SID), 1)
 
+    def test_an_emptied_queue_takes_the_drain_hold_and_the_held_working_latch_with_it(self):
+        # The two per-sid latches the hand-back pops when the queue empties had no test (the post-merge review of
+        # #1970, 2026-09-21): the drain hold (a window the drain skips the sid for) and the belt's held-working record
+        # (_mark_held_working: the working gate holds this queue). An emptied queue leaves neither behind: nothing is
+        # left for the hold to protect, and the next hold on this sid must say again.
+        self._restore_undelivered()
+        km._park_op(SID, ("send", "words the user typed", "human", QID, True))
+        km._drain_hold[SID] = (time.monotonic() + 60, False)
+        km._mark_held_working(SID, time.monotonic())
+        self.assertIn(SID, km._held_working, "seeded: the belt records the hold")
+        self.assertEqual(km._drop_parked_on_end(SID), 1)
+        self.assertNotIn(SID, km._pending_ops)
+        self.assertNotIn(SID, km._drain_hold, "no queue, no hold")
+        self.assertNotIn(SID, km._held_working, "no queue, no belt state")
+
+    def test_a_kept_in_flight_slot_keeps_both_latches_and_the_cleanup_drops_the_belt_state(self):
+        # With the in-flight head kept the queue is not empty, so both latches stand for the op the drain still
+        # holds. The module's cleanup (_forget) then has to drop the held-working latch as well as the hold, or the
+        # next test inherits belt state for this sid; the latch survived _forget before 2026-09-21.
+        self._restore_undelivered()
+        km._park_op(SID, ("send", "in the backend's hands", "human", QID, True))
+        km._park_op(SID, ("send", "typed behind it", "human", None, True))
+        ops = km._pending_ops[SID]
+        km._inflight_ops[SID] = ops[0]
+        km._drain_hold[SID] = (time.monotonic() + 60, False)
+        km._mark_held_working(SID, time.monotonic())
+        self.assertEqual(km._drop_parked_on_end(SID), 1, "the one behind the in-flight head")
+        self.assertEqual(km._pending_ops.get(SID), [ops[0]], "exactly the in-flight slot remains")
+        self.assertIn(SID, km._drain_hold, "a kept slot keeps its hold")
+        self.assertIn(SID, km._held_working, "and its belt state")
+        _forget(SID)
+        self.assertNotIn(SID, km._inflight_ops)
+        self.assertNotIn(SID, km._drain_hold)
+        self.assertNotIn(SID, km._held_working, "the cleanup leaves no belt state for the next test")
+
 
 class RealBackendCompact(unittest.TestCase):
     """The route, the gates and the drain over the REAL CodexBackend with the codex-backend module's own scripted
@@ -602,10 +639,11 @@ class RealBackendCompact(unittest.TestCase):
                 path.write_bytes(before)
         self.addCleanup(restore)
 
-    def _parked_behind_a_bracket_nothing_ends(self, text, where):
+    def _bracket_nothing_ends(self, where):
         """The second review's probe (2026-09-21): a compaction the server acks and never runs (the bracket stands with
-        no status seen), then a message typed under it, parked in the kernel's queue. Returns the sid; the files End
-        records and the refusal keeps are restored after the test."""
+        no status seen). Returns the sid; the files End records and the refusal keeps are restored after the test. Split
+        from the park below after the post-merge review of #1970 (2026-09-21), so a case can park through a live road
+        (the send route, the sendCommand door) instead of the helper's own park."""
         for name in ("gone/%s.json" % SID_REAL, "states/%s.jsonl" % SID_REAL, "undelivered.jsonl", "end-on-idle.json"):
             self._restore_file(self.root / name)
         sid = self.be.spawn("web", where, sid=SID_REAL)
@@ -613,14 +651,22 @@ class RealBackendCompact(unittest.TestCase):
         self.assertTrue(self.cbt._lock_free(self.be, sid))
         self.assertIs(km._compact_or_park(self.be, sid), False, "fired now: the ack, and no status ever follows")
         self.assertIs(km._compacting_now(sid), True, "the bracket stands with no active seen")
+        return sid
+
+    def _parked_behind_a_bracket_nothing_ends(self, text, where):
+        """The probe's bracket, then a message typed under it, parked in the kernel's queue with BOTH markers the
+        hand-back's predicate reads (the user flag and a press-minted copy id: the composer's park)."""
+        sid = self._bracket_nothing_ends(where)
         self.assertIs(km._send_or_park(self.be, sid, text, user=True, qid=QID), True, "parks behind the bracket")
         self.assertEqual([op[:2] for op in km._pending_ops[sid]], [("send", text)])
         return sid
 
-    def _after_end(self, sid, text, n0, where, errs):
+    def _after_end(self, sid, text, n0, where, errs, op="sendMessage"):
         """What every End door owes the parked message: the drain's pass in End's own wake (the push-soon), then a
         Revive and another pass, and the text reaches the not-delivered frame exactly once and the thread never; the
-        undelivered file keeps it once; the queue and its disk mirror no longer hold the sid."""
+        undelivered file keeps it once; the queue and its disk mirror no longer hold the sid. `op` is the request the
+        frame and the file name: a parked message is handed back as a sendMessage, a parked command as a sendCommand
+        (2026-09-21)."""
         self.assertIs(self.be.owns(sid), False, "End killed the row")
         km._apply_pending_ops()
         self.assertTrue(self.be.resume("web", sid, cwd=where))
@@ -630,11 +676,12 @@ class RealBackendCompact(unittest.TestCase):
         self.assertTrue(delivered or errs, "the text reached neither the thread nor the not-delivered frame: dropped silently")
         self.assertEqual(delivered, [], "nothing typed under the cue runs unasked on the row End killed or the revived one")
         self.assertEqual(len(errs), 1, errs)
-        self.assertEqual((errs[0]["sid"], errs[0]["op"]), (sid, "sendMessage"))
+        self.assertEqual((errs[0]["sid"], errs[0]["op"]), (sid, op))
         self.assertIn("not delivered", errs[0]["title"])
         self.assertIn("ended", errs[0]["text"])
         rows = [json.loads(l) for l in (self.root / "undelivered.jsonl").read_text().splitlines() if l.strip()]
-        self.assertEqual([(r["sid"], r["text"]) for r in rows if r.get("sid") == sid], [(sid, text)], "kept verbatim, once")
+        self.assertEqual([(r["sid"], r["op"], r["text"]) for r in rows if r.get("sid") == sid], [(sid, op, text)],
+                         "kept verbatim, once, under the request's verb")
         self.assertNotIn(sid, km._pending_ops, "the ending session's queue is gone with it")
         mirror = json.loads(km._PENDING_OPS_FILE.read_text()) if km._PENDING_OPS_FILE.exists() else {}
         self.assertNotIn(sid, mirror, "and the disk mirror does not replay it into a restart")
@@ -733,6 +780,112 @@ class RealBackendCompact(unittest.TestCase):
         self.assertIn(("chat", {"type": "closed", "id": sid}), broadcast)
         self._after_end(sid, text, n0, "/TESTDIR-compact-end-sweep",
                         [m for app, m in broadcast if app == "chat" and m.get("type") == "err" and m.get("copy") == text])
+
+    def test_end_hands_back_a_send_parked_with_the_user_flag_and_no_press_id(self):
+        # Every End case above parks with both markers (user=True, qid=QID), so the hand-back predicate's flag-only
+        # half was pinned by nothing (the post-merge review of #1970, 2026-09-21), while an untagged romp send parks
+        # with the flag alone: POST /send and `romp send` land in _deliver_text, which sets the user flag from the
+        # absence of the romp-tag comment the CLI adds only on --tag and mints no press id. Parked through that
+        # route, the op's PROPERTY is what the case asserts (the flag True, the id None), never its tuple spelling.
+        text = "typed into romp send behind a cue nothing ends"
+        sid = self._bracket_nothing_ends("/TESTDIR-compact-end-flag-only")
+        self.assertEqual(km._deliver_text(sid, text), (True, "", True), "the send route parks it and answers queued")
+        ops = km._pending_ops[sid]
+        self.assertEqual([op[:2] for op in ops], [("send", text)])
+        self.assertIs(km._op_user(ops[0]), True, "the user's words")
+        self.assertIsNone(km._op_qid(ops[0]), "and no press id rode")
+        n0 = len(self.fake.called("turn_start"))
+        self.assertTrue(km._drive({"type": "endSession", "id": sid}, self.client))
+        self._after_end(sid, text, n0, "/TESTDIR-compact-end-flag-only",
+                        [f for f in self.sent if f.get("type") == "err" and f.get("copy") == text])
+
+    def test_end_hands_back_a_command_parked_through_the_send_command_door(self):
+        # The predicate's command arm had no case either (the post-merge review of #1970, 2026-09-21). The lane
+        # menu's sendCommand door parks a typed slash command with the flag alone; on a Codex session that is a head
+        # outside the refused and setter sets, prose to the model, parked as a ("command", ...) op while the bracket
+        # stands. End hands it back under the command's own verb, and the thread never runs it. The door resolves an
+        # id or a name in its name slot; the sid keeps the case free of a name lookup.
+        cmd = "/cost"
+        sid = self._bracket_nothing_ends("/TESTDIR-compact-end-command")
+        self.assertTrue(km._drive({"type": "sendCommand", "name": sid, "cmd": cmd}, self.client))
+        self.assertEqual(self.sent, [], "no refusal: the command parked")
+        ops = km._pending_ops[sid]
+        self.assertEqual([op[:2] for op in ops], [("command", cmd)])
+        self.assertIs(km._op_user(ops[0]), True, "the user typed it")
+        self.assertIsNone(km._op_qid(ops[0]), "and the door mints no press id")
+        n0 = len(self.fake.called("turn_start"))
+        self.assertTrue(km._drive({"type": "endSession", "id": sid}, self.client))
+        errs = [f for f in self.sent if f.get("type") == "err" and f.get("copy") == cmd]
+        self._after_end(sid, cmd, n0, "/TESTDIR-compact-end-command", errs, op="sendCommand")
+        self.assertEqual(errs[0]["title"], "That command was not delivered")
+
+    def _end_over_the_socket(self, sid, text):
+        """The dashboard's End (the WS op) on the chat pane's socket; returns the frames that pane got carrying `text`."""
+        self.assertTrue(km._drive({"type": "endSession", "id": sid}, self.client))
+        return [f for f in self.sent if f.get("type") == "err" and f.get("copy") == text]
+
+    def _end_over_the_route(self, sid, text):
+        """romp end (POST /end, no socket); returns the chat broadcast's frames carrying `text`."""
+        import threading
+        from http.server import ThreadingHTTPServer
+        import urllib.request
+        broadcast = []
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        req = urllib.request.Request("http://127.0.0.1:%d/end" % srv.server_address[1], method="POST",
+                                     data=json.dumps({"id": sid}).encode(),
+                                     headers={"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
+        with mock.patch.object(km, "_send_to_app", lambda app, m: broadcast.append((app, m))):
+            with urllib.request.urlopen(req, timeout=10) as r:
+                self.assertEqual((r.status, json.loads(r.read().decode()).get("ok")), (200, True))
+        return [m for app, m in broadcast if app == "chat" and m.get("type") == "err" and m.get("copy") == text]
+
+    def _end_by_the_sweep(self, sid, text):
+        """romp end self, deferred to idle: the pusher's sweep, its own transcript read stubbed quiet; returns the chat
+        broadcast's frames carrying `text`."""
+        broadcast = []
+        km._end_on_idle_save({sid})
+        with mock.patch.object(km, "_send_to_app", lambda app, m: broadcast.append((app, m))), \
+             mock.patch.object(km, "_parse", lambda path, sid, now: {"turns": []}), \
+             mock.patch.object(km, "_session_working", lambda turns: False):
+            km._end_on_idle_sweep(int(time.time()), km.Sessions.live())
+        self.assertEqual(km._end_on_idle_load(), set(), "the wish is spent")
+        return [m for app, m in broadcast if app == "chat" and m.get("type") == "err" and m.get("copy") == text]
+
+    def _ended_with_a_drain_on_the_kills_heels(self, text, where, door):
+        """The hand-back runs BEFORE the kill: the claim every End door's order rests on, pinned after the post-merge
+        review of #1970 found it asserted by nothing (2026-09-21). The backend's kill is wrapped to run the real kill
+        and then one drain pass, the pass End's own wake brought before the hand-back existed. Handed back first,
+        the queue is already empty when that pass runs and the text reaches the frame once. Handed back after, the
+        pass pops the send to the row the kill just left unowned, whose refusal the delivery ignores, and the
+        hand-back then finds nothing: no frame anywhere, the second review's silent drop."""
+        sid = self._parked_behind_a_bracket_nothing_ends(text, where)
+        n0 = len(self.fake.called("turn_start"))
+        real_kill = self.be.kill
+        parked_at_kill = []
+
+        def kill_then_drain(sid_):
+            parked_at_kill.append(sid_ in km._pending_ops)
+            r = real_kill(sid_)
+            km._apply_pending_ops()
+            return r
+        with mock.patch.object(self.be, "kill", kill_then_drain):
+            errs = door(sid, text)
+        self._after_end(sid, text, n0, where, errs)
+        self.assertEqual(parked_at_kill, [False], "the queue was handed back before the kill ran, and the kill ran once")
+
+    def test_the_socket_end_hands_back_before_the_kill(self):
+        text = "typed behind a cue, ended over the socket with a drain on the kill's heels"
+        self._ended_with_a_drain_on_the_kills_heels(text, "/TESTDIR-compact-end-order-socket", self._end_over_the_socket)
+
+    def test_the_end_route_hands_back_before_the_kill(self):
+        text = "typed behind a cue, ended from the shell with a drain on the kill's heels"
+        self._ended_with_a_drain_on_the_kills_heels(text, "/TESTDIR-compact-end-order-route", self._end_over_the_route)
+
+    def test_the_self_close_sweep_hands_back_before_the_kill(self):
+        text = "typed behind a cue, ended by the session itself with a drain on the kill's heels"
+        self._ended_with_a_drain_on_the_kills_heels(text, "/TESTDIR-compact-end-order-sweep", self._end_by_the_sweep)
 
 
 if __name__ == "__main__":
