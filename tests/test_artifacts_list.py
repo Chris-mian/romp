@@ -8,6 +8,7 @@ test asks the way the pane asks, through the op on a fake socket over a session 
 the page test drives the real GET dispatcher: at the base each red is the pane's own behaviour (the op unanswered, a row
 missing, the route answering 404, the landing lacking the rail button), never a helper's missing name (round two, M4).
 Synthetic only: a hermetic state root, a private placeholder sid, invented paths under the test's own temp folder."""
+import time
 import inspect
 import io
 import html as html_mod
@@ -332,6 +333,30 @@ class Growth(ViaOp):
         km._pusher_cycle()
         self.assertEqual(len([f for f in self.frames if f["type"] == "artifactsChanged"]), 2, "the next growth, the next frame")
 
+    def test_two_clients_watching_one_session_cost_one_stat_per_cycle_and_both_hear_the_move(self):
+        # the reviewers of PR 1925 (H): the version is read once per WATCHED SESSION per cycle, never once per watching client
+        frames2 = []
+        other = {"app": "artifacts", "wid": "w8", "alive": True, "sent": {}, "send": lambda raw: frames2.append(json.loads(raw))}
+        with km._clients_lock:
+            km._clients.append(other)
+        try:
+            km.Handler._dispatch_ws(None, {"type": "watchArtifacts", "sid": SID}, self.client)
+            km.Handler._dispatch_ws(None, {"type": "watchArtifacts", "sid": SID}, other)
+            self.grow(1_700_000_040)
+            calls = []
+            real = km._artifacts_version
+            km._artifacts_version = lambda sid, now: (calls.append(sid) or real(sid, now))
+            try:
+                km._artifacts_signal(int(time.time()))
+            finally:
+                km._artifacts_version = real
+            self.assertEqual(calls, [SID], "one stat for the one watched session, two clients")
+            self.assertEqual((len([f for f in self.frames if f["type"] == "artifactsChanged"]), len([f for f in frames2 if f["type"] == "artifactsChanged"])), (1, 1), "both clients hear the move")
+        finally:
+            with km._clients_lock:
+                if other in km._clients:
+                    km._clients.remove(other)
+
     def test_a_client_watching_nothing_is_never_signalled(self):
         # a pin of the cost rule (green at the base by construction, where no signal exists): a client watching nothing costs nothing
         self.grow(1_700_000_030)
@@ -340,9 +365,11 @@ class Growth(ViaOp):
 
 
 class Memo(ViaOp):
-    """Pass two, section 9.4: the walk is incremental per session. The memo keeps the last walked turn's position and fork-stable id;
-    a listing after growth walks only the turns after it (the walk is wrapped here to record what it was handed) and merges, the
-    latest mention still winning; a prefix that changed (another id at the memo's position) walks the whole session again."""
+    """Pass two, section 9.4: the walk is incremental per session. The memo keeps the last walked turn's position, its fork-stable
+    id, its atom count and its last atom's uuid; a listing after growth re-walks that turn and those after it, once per ask (the
+    walk is wrapped here to record what it was handed) and merges, the latest mention still winning; a prefix that changed (another
+    id at the memo's position, or a rewind inside the open turn) walks the whole session again. Rule 2's unadmitted prose
+    candidates ride the memo, capped newest-first, and are re-judged on every answer."""
 
     def setUp(self):
         super().setUp()
@@ -350,7 +377,7 @@ class Memo(ViaOp):
         self.walked = []
         real = km._artifacts_walk
         self.real_walk = real
-        km._artifacts_walk = lambda turns, sid, link_cache=None: (self.walked.append([t.get("id") for t in turns]) or real(turns, sid, link_cache=link_cache))
+        km._artifacts_walk = lambda turns, sid, link_cache=None, **kw: (self.walked.append([t.get("id") for t in turns]) or real(turns, sid, link_cache=link_cache, **kw))   # **kw: the candidates map of the fix pass, absent at the base
 
     def tearDown(self):
         km._artifacts_walk = self.real_walk
@@ -395,6 +422,43 @@ class Memo(ViaOp):
         self.assertEqual([it["name"] for it in r["items"]], ["b.md", "a.md"], "the file written later in the same turn lists: the last walked turn is walked again")
         self.assertEqual(self.walked[-1], ["T1"], "…and only it")
 
+    def test_a_prose_mention_of_a_file_created_afterwards_lists_once_it_exists_while_the_memo_stands(self):
+        # the reviewers of PR 1925 (F): rule 2's admission ran in the walk alone, so a candidate refused at one listing was re-judged
+        # only while its turn was the memo's last; a file mentioned in T1 and created out of band after T2 never listed
+        w = self.w
+        later, other = str(w.cwd / "later.md"), str(w.cwd / "other.md")
+        t1 = self.turn("T1", 100, [_atom("assistant", 100, text="the notes will land at %s" % later, uuid="a1")])
+        t2 = self.turn("T2", 200, [_write(200, other)])
+        self.assertEqual([it["name"] for it in self.listing([t1, t2])["items"]], ["other.md"], "a path-shaped word that is no file yet is not an artifact")
+        Path(later).write_text("# now\n")
+        self.assertEqual([it["name"] for it in self.listing([t1, t2])["items"]], ["other.md", "later.md"], "created afterwards out of band: the candidate is re-judged on every answer and lists")
+        self.assertEqual(self.walked[-1], ["T2"], "with the memo standing: the last walked turn alone was walked")
+
+    def test_the_candidate_map_is_bounded_newest_first_so_a_long_session_naming_many_missing_paths_pays_a_bounded_stat(self):
+        # round two of PR 1951: the re-judged candidates were unbounded and re-stat'ed whole on every answer; the cap keeps the newest
+        cap = getattr(km, "_ARTIFACTS_CANDS_CAP", 64)   # absent before the cap landed: the red is then the behaviour (every token kept), never this name
+        w = self.w
+        n = cap + 6
+        atoms = [_atom("assistant", 100 + i, text="see %s" % str(w.cwd / ("never-%03d.md" % i)), uuid="c%d" % i) for i in range(n)]
+        other = str(w.cwd / "other.md"); Path(other).write_text("o")
+        t1, t2 = self.turn("T1", 100, atoms), self.turn("T2", 500, [_write(500, other)])   # the mentions in a CLOSED turn: the memo re-walks the last turn alone, so only the map re-judges them
+        self.assertEqual([it["name"] for it in self.listing([t1, t2])["items"]], ["other.md"], "none of the mentioned files exists yet: nothing of theirs lists")
+        with km._ARTIFACTS_MEMO_LOCK:
+            cands = dict(km._ARTIFACTS_MEMO[SID]["cands"])
+        self.assertEqual(len(cands), cap, "the map holds the cap, not every token")
+        self.assertNotIn(str(w.cwd / "never-000.md"), cands, "the oldest left"); self.assertIn(str(w.cwd / ("never-%03d.md" % (n - 1))), cands, "the newest stayed")
+        Path(w.cwd / "never-000.md").write_text("late"); Path(w.cwd / ("never-%03d.md" % (n - 1))).write_text("late")
+        self.assertEqual([it["name"] for it in self.listing([t1, t2])["items"]], ["other.md", "never-%03d.md" % (n - 1)], "an evicted candidate is not re-judged; a kept one lists once created")
+
+    def test_a_rewind_inside_the_open_turn_walks_the_session_whole_and_the_vanished_mention_leaves(self):
+        # the reviewers of PR 1925 (K): a rewind keeps the turn's id while atoms vanish; the memo holds the atom count and the last atom's uuid
+        w = self.w
+        a, b = str(w.cwd / "a.md"), str(w.cwd / "b.md")
+        Path(a).write_text("a"); Path(b).write_text("b")
+        self.assertEqual([it["name"] for it in self.listing([self.turn("T1", 100, [_write(100, a), _write(120, b)])])["items"]], ["b.md", "a.md"])
+        r = self.listing([self.turn("T1", 100, [_write(100, a)])])
+        self.assertEqual([it["name"] for it in r["items"]], ["a.md"], "the vanished mention is gone: the turn's atoms changed under the same id, so the session was walked whole")
+
     def test_a_changed_prefix_walks_the_whole_session_again(self):
         # a pin of the fallback (green at the base by construction, where every listing walks whole): the memo must never trust a prefix another id sits on
         w = self.w
@@ -430,9 +494,9 @@ class Focus(ViaOp):
         km._ACTIVE_CHAT_NONCE_BY_WID.clear(); km._ACTIVE_CHAT_NONCE_BY_WID.update(self.saved_focus[1])
         super().tearDown()
 
-    def client(self, app, wid):
+    def client(self, app, wid, **extra):
         frames = []
-        c = {"app": app, "wid": wid, "alive": True, "sent": {}, "_frames": frames, "send": lambda raw: frames.append(json.loads(raw))}
+        c = dict({"app": app, "wid": wid, "alive": True, "sent": {}, "_frames": frames, "send": lambda raw: frames.append(json.loads(raw))}, **extra)
         with km._clients_lock:
             km._clients.append(c)
         self.made.append(c)
@@ -445,8 +509,27 @@ class Focus(ViaOp):
         self.assertEqual([f for f in feed["_frames"] if f["type"] == "activeChat"], [{"type": "activeChat", "id": SID, "nonce": 3}], "the feed as before")
         self.assertEqual([f for f in other["_frames"] if f["type"] == "activeChat"], [], "another window's pane hears nothing")
 
-    def test_the_ready_arm_hands_the_focus_to_an_artifacts_client_too(self):
-        self.assertIn('if client.get("app") in ("feed", "artifacts"):\n                _send_active_chat(client)', KSRC, "the ready arm's audience")
+    def test_a_relay_kind_client_hears_no_active_chat_while_the_record_and_the_nonce_are_still_written(self):
+        # the reviewers of PR 1925 (I): under federation a switch reached the pane from three speakers (the shell, the local kernel, the
+        # tab's host kernel through the hub's relay socket), and the late one decided; a relay-kind client is out of the audience
+        chat, art, spliced = self.client("chat", "w7"), self.client("artifacts", "w7"), self.client("artifacts", "w7", kind="relay")
+        km._relay_active_chat(chat, SID, nonce=5)
+        self.assertEqual([f for f in art["_frames"] if f["type"] == "activeChat"], [{"type": "activeChat", "id": SID, "nonce": 5}], "the window's own pane hears the tab")
+        self.assertEqual([f for f in spliced["_frames"] if f["type"] == "activeChat"], [], "the relay-kind client does not")
+        self.assertEqual((km._ACTIVE_CHAT_BY_WID.get("w7"), km._ACTIVE_CHAT_NONCE_BY_WID.get("w7")), (SID, 5), "the record and the nonce are written all the same")
+
+    def test_the_ready_arm_hands_the_focus_to_an_artifacts_client_and_never_to_a_relay_kind_one(self):
+        # the ready arm sends the window's focus BEFORE its connect push; the fake clients cannot take that push, so its failure is swallowed
+        # and the frames sent ahead of it are read (a positive control beside the relay-kind client, so a failure before the send shows)
+        chat = self.client("chat", "w8"); km._relay_active_chat(chat, SID, nonce=1)
+        art, spliced = self.client("artifacts", "w8"), self.client("artifacts", "w8", kind="relay")
+        for c in (art, spliced):
+            try:
+                km.Handler._dispatch_ws(None, {"type": "ready"}, c)
+            except Exception:
+                pass
+        self.assertEqual([f["id"] for f in art["_frames"] if f["type"] == "activeChat"], [SID], "a reloaded pane learns the focus on ready")
+        self.assertEqual([f for f in spliced["_frames"] if f["type"] == "activeChat"], [], "the relay-kind client never does")
 
 
 def _has(tc, needle, hay):
@@ -471,7 +554,7 @@ class Shell(unittest.TestCase):
         _has(self, "<div class=rail-btn data-pane=artifacts>Artifacts</div>", h)
         self.assertNotIn("<button data-pane=artifacts>", h, "experimental: no phone tab")
         _has(self, '<div class=gv id=gv-artifacts></div><div class=pane id=artifacts-pane><iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div>', h)
-        self.assertLess(h.index("id=files-pane"), h.index("id=gv-artifacts")); self.assertLess(h.index("id=artifacts-pane"), h.index("id=gv-ghost"))
+        self.assertLess(h.index("id=files-pane"), h.index("id=gv-artifacts")); self.assertLess(h.index("id=artifacts-pane"), h.index("id=col-ghost"))
         _has(self, "#artifacts-pane{flex:var(--g-artifacts,40) 1 0}body:not(.po-artifacts) #artifacts-pane{display:none}", h)
         _has(self, "body:not(.po-artifacts) #gv-artifacts,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files) #gv-artifacts{display:none}", h)
         m = re.search(r"<body class='po-chat po-feed po-timeline' data-panes=\"([^\"]*)\">", h)
@@ -491,7 +574,8 @@ class Shell(unittest.TestCase):
         # optional pane when enabled, never for a generic one (DPX); the apply copies it for a generic pane when its po flag is on.
         js = km._LANDING_COLLAPSE_JS
         _has(self, "if(en){if(!(k in DPX)&&f&&!f.getAttribute('src')&&f.getAttribute('data-src'))f.setAttribute('src',f.getAttribute('data-src'));", js)
-        _has(self, "var gf=document.getElementById('f-'+k);if(po[k]&&gf&&!gf.getAttribute('src')&&gf.getAttribute('data-src'))gf.setAttribute('src',gf.getAttribute('data-src'));", js)
+        _has(self, "var gf=document.getElementById('f-'+k);var load=mob?(tab===k&&(k in po)):!!po[k];", js)   # on a phone by the tab alone (the registry fix PR, 2026-09-21), on a desktop by the rail flag
+        _has(self, "if(load&&gf&&!gf.getAttribute('src')&&gf.getAttribute('data-src'))gf.setAttribute('src',gf.getAttribute('data-src'));", js)
         _has(self, "function optOn(){var on={};OPT.forEach(function(k){on[k]=!DPX[k];});", js)   # an experimental record is off in the gear until asked for
         st = open(os.path.join(ROOT, "ui", "webview", "settings.ts")).read()
         for gone in ("showArtifactsControl: boolean", "showArtifactsControl: false", "s.showArtifactsControl ="):
@@ -505,7 +589,7 @@ class Shell(unittest.TestCase):
         _has(self, "function tellAll(m){KEYS.forEach(function(k){tell(document.getElementById('f-'+k),m);});}", js)
         _has(self, "window.__rompTellPanes=tellAll;", js)
         _has(self, "if(!m||m.romp!=='chatTabs'||!Array.isArray(m.tabs))return;", js)
-        _has(self, "if(f.contentWindow===e.source)src=f.id;});if(!src||!(src==='f-chat'||src.indexOf('f-chat-')===0))return;", js)   # the set is keyed by the posting CHAT frame (a column or a bottom chat pane), never by anything the message claims, and another pane's post is ignored (round two, low a)
+        # the chat-frame gate (a post from a pane that is no chat frame is refused) is executed in tests/test_pane_state_broadcast.py ChatTabsUnion
         _has(self, "function chatTabsUnion(){var order=(window.__rompChatColumnIds?window.__rompChatColumnIds():['f-chat']),out=[],seen={};", js)
         _has(self, "Object.keys(TABSETS).filter(function(id){return !!document.getElementById(id);})", js)   # a closed column's set leaves with its frame
         _has(self, "function chatTabsMsg(){return {romp:'chatTabs',tabs:chatTabsUnion()};}", js)

@@ -93,7 +93,9 @@ export function followBoxBelow(stick: boolean, dh: number): boolean {
  *  scrollTop across the growth, so the pre-growth distance from the bottom is today's distance less what #content gave up:
  *  the box's FOOTPRINT change, its border box plus its vertical margins (`dfoot`), never the observer's content-rect delta,
  *  which misses the borders and the margin a box brings when it first shows (10.7 px there, and the 2 px band read the
- *  reader as scrolled up). Pure, so node executes it with the captured numbers. */
+ *  reader as scrolled up). The clientHeight is an integer and the footprint is not, so the distance carries a residual under
+ *  one pixel (the review of PR 1926): a reader exactly at the band's edge can read past it, an edge accepted rather than
+ *  rounded (either rounding misreads the browser's other one). Pure, so node executes it with the captured numbers. */
 export function atBottomBeforeGrowth(scrollHeight: number, scrollTop: number, clientHeight: number, dfoot: number): boolean {
   return atBottomDist(scrollHeight - scrollTop - (clientHeight + dfoot));
 }
@@ -126,4 +128,14 @@ export function followTail(distBefore: number, heightBefore: number, heightAfter
  *  event). Off: nothing — the clamp cannot reach a reader more than the shrink above the bottom. Pure. */
 export function followTailShrink(stick: boolean, dh: number): boolean {
   return stick && dh < 0;
+}
+/** The transcript RE-FLOWED under a follow-mode reader (plans/pane-docking.md section 12, the 1927 read): a divider drag that
+ *  narrows the chat column wraps every line longer, the view GROWS, and the browser keeps scrollTop, so a reader at the true
+ *  bottom is silently the growth above it; a widening shrinks the view and the clamp moves them (followTailShrink's case).
+ *  Neither followTail (the append rebuild's) nor followBoxBelow (the boxes' observer's) runs on a resize. The rule: the view's
+ *  RECORDED follow mode (`stick`, the pre-change truth) and a WIDTH change decide, and any height change then writes the
+ *  reader to the new bottom; a height change with the width unchanged is an append's or a box's, and stays theirs. A
+ *  scrolled-up reader is untouched (the browser's scroll anchoring keeps their line). Pure, so node executes it. */
+export function followReflow(stick: boolean, widthChanged: boolean, dh: number): boolean {
+  return stick && widthChanged && dh !== 0;
 }

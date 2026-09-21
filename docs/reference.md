@@ -132,7 +132,7 @@ yields nothing rather than an error.
 
 ### Card boards: your own categories
 
-`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log. The feed pane shows one board at a time: the View menu gains a **Board** row per board the kernel carries (the feed first) once a second board exists, the pick survives a reload, and a board created by `romp card -b` is a row on the next frame; a data board's cards sit under its own categories, sorted by its definition, with no session grouping unless the definition asks for it. A feed page opened with `?board=<id>` shows that board with the Board rows hidden, the hook a pane per board mounts on. A pick naming a board the frame no longer carries shows the feed and says so on the View button.
+`romp board define <id> (--from <path> | --json <text>) | list | show <id> | remove <id>` manages the **card boards** beyond the built-in feed (`plans/card-boards.md`). A board's definition is one JSON object: its `id`, a `title`, one to eight `categories` (each an `id`, a `title` and a `chip` from `working`, `blocked`, `completed` or `neutral`; `blocked` is the Needs you chip's dress, the magenta of the category, its name kept as a schema value, and no chip value paints red, which is the hard stop's alone), a `defaultCategory`, post-time `rules` (each `{when: {needsYou?, producer?, keyPrefix?}, category}`, the first match filing a card), a `sort` and optional `subSorts` (`{key: t | session | owner | title, dir: asc | desc}`), `groupBy` (`"session"` or `null`), `order` rules, the `notify` list (the categories whose entry rings the bell) and the `needsYou` category (the one the app badge counts), and `kinds`. The kernel validates every member and refuses an unknown one by name; `define` replaces a board whole but refuses to drop a category that still holds standing cards, and `remove` refuses while a card names the board. The feed itself is code-defined and cannot be redefined. Definitions live under the state root in `boards/<id>.json` and reach the dashboard on the next frame; a file edited in place there is read on the next frame too, and a file outside the schema is skipped with a line in the kernel log. The feed pane shows one board at a time: the View menu gains a **Board** row per board the kernel carries (the feed first) once a second board exists, the pick survives a reload, and a board created by `romp card -b` is a row on the next frame; a data board's cards sit under its own categories, sorted by its definition, with no session grouping unless the definition asks for it. A feed page opened with `?board=<id>` shows that board with the Board rows hidden, the hook a pane per board mounts on. A pick naming a board the frame no longer carries shows the feed and says so on the View button.
 
 ### Moving a session to another folder
 
@@ -1905,7 +1905,7 @@ variables bound this:
   the default is `1800`, thirty minutes. A message older than this at the
   restart is not re-fed: it is kept in the chat marked never delivered, where
   it can be restored or dismissed, and a notice card (the section above) is
-  posted for the session, under Blocked, one per session per restart, naming
+  posted for the session, under Needs you, one per session per restart, naming
   how many messages were dropped and, for each, its time and its text. The
   card offers **Send again** for each message (up to three; with two or more
   there is also **Send all again**, which re-sends them as one message in
@@ -2078,18 +2078,35 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   unaffected, since a client whose redial is unresolved holds no base for any
   session), and the re-entry of a tab that left the strip (the pusher forgets
   every client's base for it along with its baseline, since the page tore the
-  tab down when the strip stopped listing it); `baseGone` for a fork or a
+  tab down when the strip stopped listing it; one exception, stated not fixed:
+  the page keeps a strip-omitted tab the frame's `live` field lists, so for a
+  live session that the strip omits, the pusher forgets bases the page still
+  holds, and the re-listing is a row-less `noBase` full per client, since the
+  dedup slot is popped with the base); `baseGone` for a fork or a
   rewind; `lastGone:<family>` for a held last edge the next list no longer
   carried; `changeAt0` for a change at the list's first event against a held
   base: a genuine first-event change (a floor advance that moved the list's
-  first event reads here too), or the cycle's repair after two whole-frame
-  senders raced on a baseline-less sid (a sid's first whole frame seeds the
-  shared baseline, whichever sender sent it, so its later senders diff against
-  it instead of re-sending the whole session; two senders that both read it
-  absent leave none and mark the session, no single-client push re-seeds it in
-  between, and the next cycle's full repairs every client and clears the mark;
-  in the
-  `chatFull` row below the racing shape has `changeFrom` 0 with both edges
+  first event reads here too), or a change of 0 against a held base, which
+  only a sender that read the shared baseline absent produces (a sid's first
+  whole frame to reach a client seeds the baseline, whichever sender sent it,
+  so its later senders diff against it instead of re-sending the whole
+  session), in three faces, the boot's ordinary interleaving in either order
+  (the cycle's cold build of the watched tab beside the attach handshake's
+  targeted push): a strand's repair, when the sender's list was the older one
+  and a whole-frame writer landed inside its build, so its seed popped the
+  baseline and marked the session, and the next cycle whose loop reads the
+  baseline absent sends every base holder the full and takes the mark off
+  with its write (a cycle that sent tails leaves it for the next one); the
+  detector's accepted false positive, when the sender's list was the newer
+  one, so it marks the session with no client stale and sends one full and
+  one row per client where a tail went before, and the next cycle's full
+  goes once more only when the session frame moved or the 60-second repost
+  window passed since, else it dedups on the client's slot and files no row;
+  and the cycle itself as the sender that read the baseline absent with a
+  seed landing inside its build, a race the detector does not mark (nothing
+  marked, no strand), one full and one row per base holder where a tail went
+  before, and tails with no new row at the next cycle; in the
+  `chatFull` row below every change-0 face has `changeFrom` 0 with both edges
   held, the floor's has `firstHeld` false);
   `changeBelowFirst` for a change at or before the held first edge;
   `inverted` for a base whose last edge sits before its first; `empty` for a
@@ -2488,7 +2505,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   same tab counts again on every later push until the page asks for it, 2026-09-14),
   `active_built` and `bg_built` (rebuilds of the watched tab
   against rebuilds of a background tab), `moved` (builds not cached because
-  an input moved while they ran; the next cycle builds them again) and
+  an input moved while they ran; the next cycle builds them again),
+  `baselineRaced` (the chat wire's shared delta baseline was popped by the
+  seed's detector and the session marked: two whole-frame senders raced on a
+  session with no baseline, or the detector's accepted false positive named
+  under `changeAt0` above; the mark's only other trace is the next cycle's
+  `changeAt0` rows, filed only for a base holder alive then whose repair did
+  not dedup), `baselineRepaired` (a cycle whose loop read the baseline absent
+  sent every base holder the full and its write took a standing mark off;
+  raced minus repaired is the marks still standing plus the tabs that left the
+  strip, whose eviction clears the mark with no repair) and
   `bg_miss`, a map from each labelled component of that signature
   (`transcript`, `states`, `store`, `hold`, `archive`, `episodes`, `reg`,
   `gone`, `tasks`, `cut`, `live`, `row`, `clock`, `backend`, `ops`, `limit`,
@@ -2531,7 +2557,21 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `miss_by`'s `auth`, the machine's key on hand), `retry`, `agents`, `tasks`,
   plus `presence` for a row that appeared, left or changed shape): the key
   folds only the row fields a card reads, so a context refresh or a
-  background agent's tool call moves no key. `reg` is the SDK registry
+  background agent's tool call moves no key. `failed` counts the card builds
+  that raised (a memoized entry's decode, the key, the derivation, its
+  dependency key, the serialization or the memo put), cumulative, and
+  `failing` the sessions whose last build did, a standing fault rather than
+  history. `coldLive` counts, per session per build, each living session not
+  hidden from the feed, with a transcript, whose cache-only parse read
+  missed; a session nothing has parsed at its current version (no client's
+  tab, no judge, no background warm, none of the card build's own parse
+  paths, nor any other road that parses through the parse store) rides it
+  every build, and the warm gate leaves an unmoved, idle session cold by
+  design, so a standing count is those sessions, not a fault.
+  `coldFlip` counts the subset the memo held warm and re-read in place with
+  one kernel parse (also under `parses.kernel`) instead of deriving cold;
+  `coldFlip` climbing every build for one session with no appends means its
+  parse never stores, which should not occur. `reg` is the SDK registry
   record's state plus the two fields a card reads, `bgLedger` and
   `spawnedAt`, and the death marker's identity; the record's other fields
   move `reg` no further, and a transcript-less live row's `cwd`, `lastSid`
@@ -3681,7 +3721,7 @@ in the windows. The hover reads the document as counts, never as the state
 machine's vocabulary: one line per machine, named by its kernel's own name,
 with its successful requests in the accent and each failure class counted in
 its own colour only when present (429s in the blocked red, 5xx with 529 in the
-5xx magenta, no-connection and other-status failures in the other band's own
+5xx purple, no-connection and other-status failures in the other band's own
 hue: a pale lime in the dark theme, an indigo in the light); no
 traffic reads as "no API traffic"; a machine whose sessions are waiting or
 whose kernel is paused shows that kernel's own words instead. The window the
@@ -3692,7 +3732,7 @@ and a machine not reachable keeps its own line saying so. The word `unknown`
 stays in the document and appears nowhere on the dashboard. Under the lines,
 the **History** draws one stacked histogram per machine from the `ledger`:
 one bar per bin, successes in the accent, 429 attempts in red and 5xx in
-magenta stacked on them, and a band of its own hue (a pale lime in the dark
+purple stacked on them, and a band of its own hue (a pale lime in the dark
 theme, an indigo in the light) for no-connection and other-status failures
 only when the range or a counted line holds any; one ceiling label, no peak
 figure; along the bottom the clock times of the timeline pane's own axis (its
@@ -4702,25 +4742,26 @@ before, and a click that lands while text is selected inside a link opens nothin
 
 ### The rings on a tab
 
-A tab wears a dashed red ring while its session is stopped on a
-permission or picker prompt. When the feed shows one of the session's cards under Blocked (it
-asked you something, it is waiting on a decision, a peer's message is waiting for your say, or
-a stalled task needs a look), the tab wears a dashed yellow ring instead, whether the session
-is idle, waiting on background work or still working, so the sessions that need you stand out
-in the strip without a click through each of them; a working session keeps its gold dot inside
-the ring. The ring follows the feed, one refresh behind it at most, and goes when the card
-does: answer it, resolve it or clear it and the tab is plain again. A red ring outranks the
-yellow one; the amber ring of a session retrying an API error on its own gives way to it. The
-three rings are rows of **Settings**, **Chat**, **Tab widgets** (**Needs you**, **Waiting on
-you**, **Retrying**), each with its own switch, listed in that order because a tab wears one
-ring at a time and the first that applies wins: red over yellow over amber. A ring switched off
-leaves the tab with its dot; the small dot on a folded group's header and the phone's picker
-follow the same switches. With
-notifications on, the card entering Blocked is also what notifies you (see [Notifications on
-your phone](guide.md#notifications-on-your-phone)): the ring is that card, shown in the strip, and it
-stays as long as the card does, including across a kernel restart, which announces nothing. On
-a phone, the session picker marks the same sessions with a yellow bar at the row's left edge,
-and the button that names the current session wears the dashed yellow border.
+A tab wears a dashed red ring, **Blocked**, while its session is stopped: on a permission or
+picker prompt, or on an API error only you can clear. When the feed shows one of the session's
+cards under Needs you (it asked you something, it is waiting on a decision, a peer's message is
+waiting for your say, or a stalled task needs a look), the tab wears a dashed magenta ring
+instead, **Needs you**, whether the session is idle, waiting on background work or still working,
+so the sessions that need you stand out in the strip without a click through each of them; a
+working session keeps its gold dot inside the ring. The ring follows the feed, one refresh behind
+it at most, and goes when the card does: answer it, resolve it or clear it and the tab is plain
+again. A red ring outranks the magenta one; the amber ring of a session retrying an API error on
+its own gives way to it. The three rings are rows of **Settings**, **Chat**, **Tab widgets**
+(**Blocked**, **Needs you**, **Retrying**), each with its own switch, listed in that order because
+a tab wears one ring at a time and the first that applies wins: red over magenta over amber. A
+ring switched off leaves the tab with its dot; the small dot on a folded group's header and the
+phone's picker follow the same switches. With notifications on, the card entering Needs you is
+also what notifies you (see [Notifications on your phone](guide.md#notifications-on-your-phone)):
+the ring is that card, shown in the strip, and it stays as long as the card does, including across
+a kernel restart, which announces nothing. On a phone, the session picker marks the same sessions
+with a magenta bar at the row's left edge, and the button that names the current session wears the
+dashed magenta border. One colour, the Needs you colour, marks the category everywhere: the column's
+chip, a card's question mark, the ring, the picker's bar.
 
 ### Tags and groups in the tab strip
 
@@ -4733,8 +4774,8 @@ own at the end. A session with several tags appears under each of them; every co
 session (click either to open it, and closing either ends it). Each header shows the tag's color and name, then a chevron and a
 member count. Click a header, or press Enter on it, to fold its section down to the header
 alone; the count then says how many tabs are folded away, and a small dot after it shows when
-one of them is busy or needs you: red when one is blocked or waiting on you, otherwise yellow
-when one has something waiting on you, otherwise gold when one is working, otherwise amber
+one of them is busy or needs you: red when one is stopped on you (a prompt, or an API error only
+you can clear), otherwise magenta when one has a card that needs you, otherwise gold when one is working, otherwise amber
 when one hit an API error and is retrying on its own (hover it for their names). To keep one tab visible while its section is folded, right-click
 the tab and pick **Show when folded** under **Tags**;
 the header's count then leaves that tab out; when every tab in a section is set to
@@ -4769,8 +4810,8 @@ row per session, with its color, a dot for its state (yellow working, red stoppe
 API error only you can clear, amber retrying an API error on its own, teal compacting, green waiting
 on background work, none while it is idle), a state chip when the state is worth a word, what it is
 doing now in a few words, and how long ago it last did anything. The chip is the one the bar under
-the transcript wears for the session you are reading, with the same words and colours: **Blocked**
-when the feed shows one of the session's cards under Blocked or the session is stopped on a prompt
+the transcript wears for the session you are reading, with the same words and colours: **Needs you**
+when the feed shows one of the session's cards under Needs you or the session is stopped on a prompt
 (**API error** when it is stopped on one only you can clear), and **Awaiting** with what is awaited
 (**Awaiting 3 agents**, **Awaiting watch**, the peer's name) when it is waiting on background work.
 A session that asked a question and went quiet shows the chip with no dot: the dot follows the
@@ -4779,7 +4820,7 @@ its work so far, else from the last task it had; a session that has published a 
 working on shows the note as a quieter second line. Hover a row for its last message, shown without
 its formatting; click one to open that session, which also opens its section if the section is
 folded (with several tags, the first folded group of them). The rows update as the sessions work and
-change only when something about a session changes; the **Blocked** chip follows the feed, one
+change only when something about a session changes; the **Needs you** chip follows the feed, one
 refresh behind it at most. The transcript comes back when you pick a session, press Escape, or click
 that header again while its section is open and holds the tab you are reading.
 
@@ -4917,9 +4958,9 @@ empty background (the feed between cards, the Sessions band outside its lanes,
 the Outline below its rows, the Files pane's empty state). The pointer is an
 open hand over a surface you can grab and a closed hand while you hold one. A
 press lifts only after a few pixels of travel, so a click, a text selection and
-a scroll are never a drag, and Escape cancels. A blue outline shows where the
-pane will land: the left, right, top or bottom half of the pane under the
-pointer. Dropping splits that pane, and every internal edge becomes a divider
+a scroll are never a drag, and Escape cancels. An outline in the accent color
+shows where the pane will land: the left, right, top or bottom half of the pane
+under the pointer. Dropping splits that pane, and every internal edge becomes a divider
 you can drag.
 
 A session tab is a payload too. Drag one into a pane's half and it becomes a
@@ -5041,6 +5082,15 @@ tab. Focus moves to a different session only when
 you pick a tab, or when you close the active tab yourself (then the pane returns
 to the tab you used before it).
 
+## A postal card's head and its delivery mark
+
+The head names both ends, the other session and this one, each in its session's
+color, and carries the delivery mark at its right edge: sent, delivered, read,
+parked while the recipient is unreachable, bounced, or recalled. A send that
+failed has no mark at all, and the tool call's result says what happened. An
+incoming message that waited while the session was offline wears the parked
+mark. Hovering a mark gives the state and when it was reached.
+
 ## A comment thread's mail
 
 A comment thread's mail is off, both directions, until you break it out: peers
@@ -5076,6 +5126,11 @@ Not the same tools: romp peers are discovered only through the postal service's 
 
 ## The VS Code port forwarder and the browser dashboard
 
+The dashboard's panes are long-lived sockets, and how a forwarder treats them
+decides whether a closed pane is really closed. OpenSSH forwards each
+browser socket one-to-one and propagates closes, so a pane that goes away is
+gone on both ends.
+
 !!! warning "The VS Code port forwarder is not a good path for the browser dashboard"
 
     VS Code's Remote and Tunnels port forwarder multiplexes every forwarded
@@ -5092,11 +5147,15 @@ Not the same tools: romp peers are discovered only through the postal service's 
     previous socket at once, and the timeline and feed cross the wire as
     deltas instead of whole payloads. That keeps a forwarded dashboard usable,
     but the forwarder still carries every byte over a channel it shares with
-    your editor, so prefer one of the two paths above. The VS Code romp view
-    is a different case: its sockets run on the kernel's own machine and close
-    when a panel closes, so it never leaks connections, but under Remote or
-    Tunnels the extension still relays each whole view payload to the local
-    window as it changes. It does not yet take the deltas the browser panes do.
+    your editor, so prefer a path that gives each pane its own socket: plain ssh
+    port forwarding, which the guide sets up under
+    [From another machine](guide.md#from-another-machine), or
+    [Tailscale](#reaching-romp-from-a-phone-the-full-tailscale-setup). The VS
+    Code romp view is a different case: its sockets run on the kernel's own
+    machine and close when a panel closes, so it never leaks connections, but
+    under Remote or Tunnels the extension still relays each whole view payload
+    to the local window as it changes. It does not yet take the deltas the
+    browser panes do.
     A pane that falls 16 MB behind is dropped and reconnects on its own; the
     drop is logged in the kernel log and shows in the Log (the settings panel's "Open log" button carries the unread count on the desktop; the phone's bottom bar reddens its bell), so a
     link that cannot keep up reads as what it is rather than as a flaky network.
@@ -5253,6 +5312,35 @@ be read, or a symlink at that path, refuses to start instead of minting a
 replacement nobody else holds. Under the service that refusal repeats in
 `manager.log` every 10 seconds until you repair the file; the kernel then comes
 back on its own.
+
+A few routes answer without the token: the liveness probes `/healthz`,
+`/version` and `/busy` on the kernel and `/ping` on the bus, and the install
+files `/manifest.webmanifest` and the three home-screen icons under `/media/`
+(`romp-touch-180.png`, `romp-app-192.png`, `romp-app-512.png`, a fixed list of
+names rather than a path prefix). They are fixed files that read no session
+state, and a browser fetches the manifest and its icons with credentials
+omitted, so a gate there would refuse them at the moment an install consults
+them. `/busy`'s count is exempt as a probe; its drain hold is a write and takes
+the token like any other.
+
+Two routes answer outside that shape. `POST /push/ack`, which the push worker
+uses to report that a notification was shown or tapped, is served ahead of the
+token check and authenticated by the per-push id instead: 128 random bits the
+kernel minted for one notification and handed only to the device that
+notification went to. A report on a valid id stamps that row's shown or tapped
+time, where the first stamp stands so a repeated report changes nothing, and
+records the worker's build string, which every report rewrites. A shown report
+also marks the older unsettled, untapped pushes for the same session on that
+device superseded, since the show replaced their notifications. And the
+request's origin, read from its `Origin` header, else its `Referer`, else the
+forwarded headers or `Host`, is recorded on that device's subscription when
+none is on file; a recorded origin stands, and a different one is logged as a
+conflict. An unknown id is a 404, and the body is capped at 2 KB before a byte
+of it is read.
+
+A token-less `GET /` is not refused either: the gate runs and fails, and the
+answer is the page that asks for the token rather than a 403, so a bare open of
+the dashboard has somewhere to paste it.
 
 ## Switches
 

@@ -2672,8 +2672,11 @@ PY
     MOCK_CURL_PANES="$rows" run "$ROMP_SCRIPT" pane show scratch
     [[ "$status" -eq 1 ]]
     [[ "$output" == *"no pane scratch"* ]]
+    # an empty list never comes from the door (the shipped panes are listed first), so the command has no line for it: it prints the
+    # rows it was given, here none, and exits 0 (the 1919 read: the branch that said "no panes" was unreachable, and is gone)
     MOCK_CURL_PANES='{"panes": [], "rev": "0"}' run "$ROMP_SCRIPT" pane list
-    [[ "$output" == *"the kernel lists no panes"* ]]
+    [[ "$status" -eq 0 ]]
+    [[ -z "$output" ]]
     # remove posts the id; a refusal names the reason and exits 1
     : > "$MOCK_LOG"
     MOCK_CURL_PANE_DEFINED='{"ok": true, "rev": "0"}' run "$ROMP_SCRIPT" pane remove notes

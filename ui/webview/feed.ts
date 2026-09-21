@@ -1999,7 +1999,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
       // 2026-07-11): an ancestor of a blocked sub wears the ⏸ too, so the block is visible even while the
       // branch is collapsed — its tooltip points DOWN to the real ask.
       mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "";
-      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside is blocked — expand to find it" : "blocked — needs you";
+      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside it needs you: expand to find it" : "needs you";
       const txt = el("span", "fcheck-text"); txt.textContent = s.text; linkifyPrRefs(txt, prRepoOf(it.sid));
       row.append(tri, mark, txt);
       if (s.cleared) row.appendChild(clearedTag());   // the strike alone doesn't say WHY — see CLEARED_TIP
@@ -3252,7 +3252,7 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   // "jump to where this got checked off" on an item the agent hasn't crossed off (the user 2026-07-01).
   // Defense-in-depth for the kernel's _agent_open_set fix: correct even if a stale build serves status:"done".
   // ...and a rolled-UP question ancestor (qderived) is not itself resolved: the block landed on a
-  // descendant, so its own anchor is its mint, and the hover must not claim "marked blocked" here.
+  // descendant, so its own anchor is its mint, and the hover must not claim "filed under Needs you" here.
   const resolved = (node.status === "done" || (node.status === "question" && !node.qderived)) && node.auth !== "open";
   // time-nav fallback for the work jump: where it resolved (mt) for resolved nodes, the newest
   // activity (last) for open ones — matching the newest-seg work anchor (the user 2026-07-20)
@@ -3269,8 +3269,8 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
     ev.stopPropagation(); focusEcho(navSid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: node.promptAnchorUuid ?? null });
   };
   if (!wire) return goWork;
-  // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
-  const workTitle = node.status === "question" && !node.qderived ? "jump to where this got marked blocked"
+  // tooltip names the destination by status: a node that needs you was "filed under Needs you", a done node "checked off"
+  const workTitle = node.status === "question" && !node.qderived ? "jump to where this was filed under Needs you"
                   : resolved ? "jump to where this got checked off" : "jump to the latest work on this";
   const linkHover = (group: HTMLElement[]) => {
     const on = () => group.forEach((g) => g.classList.add("lz-hl"));
@@ -3307,7 +3307,7 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
 function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: Map<string, AskTreeNode>, briefs: Map<string, AskQuestion>, seen: Set<string>, depth: number, parentWho: string) {
   const repeat = seen.has(node.id);
   // An optimistically-done sub-goal reads as done for this whole render, by rewriting the node rather
-  // than patching the DOM after the fact: the mark, the strike-through class, the "Blocked" label and
+  // than patching the DOM after the fact: the mark, the strike-through class, the "Needs you" label and
   // the action buttons all derive from status, so one substitution keeps them agreeing instead of three
   // separate edits that can drift from how a genuinely-done node draws (see pendingDone).
   if (!repeat && pendingDone.has(node.id) && node.status !== "done") node = { ...node, status: "done" };
@@ -3327,7 +3327,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   line.appendChild(tri);
   const mark = el("span", "ftree-mark"); mark.textContent = nodeMark(node); line.appendChild(mark);
   // blocked rolls UP (kernel flatten, the user 2026-07-11): a rolled-up ancestor's ⏸ says the block is below
-  if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside is blocked — the ⏸ below is the ask" : "blocked — needs you";
+  if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside it needs you: the ⏸ below is the ask" : "needs you";
   const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; linkifyPrRefs(txt, prRepoOf(it.sid)); line.appendChild(txt);
   if (node.cleared) line.appendChild(clearedTag());   // same one-word story as the card checklist
   if (node.parked && node.parked.n && !node.cleared) line.appendChild(parkedTag(node.parked.n));   // and the parked hint
@@ -3344,9 +3344,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     line.appendChild(who);
   }
   const meta = el("span", "ftree-meta");
-  // a node needing the user reads as "Blocked" (red) — the marker + this label are the block
+  // a node needing the user reads as "Needs you" (the category's colour): the marker + this label are the block
   // signal, distinct from a recency-tinted age (the user 2026-06-17). Other states show "(Xm ago)".
-  meta.textContent = node.status === "question" ? (node.qderived ? "Blocked inside" : "Blocked") : "(" + relAge(hostNow - node.last) + ")";
+  meta.textContent = node.status === "question" ? (node.qderived ? "Needs you inside" : "Needs you") : "(" + relAge(hostNow - node.last) + ")";   // the category's word (plans/needs-you.md)
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
   // Whole-line click NAVIGATES into the chat. PREFERRED: node.anchorUuid (kernel 996ebd7) deep-links to
@@ -3427,7 +3427,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     // "Follow up": re-target the footer composer at THIS sub so the answer files under it and unblocks just
     // this branch (the judge reopens + force-files under any node id — no kernel change).
     const fu = el("button", "ftree-act-btn ftree-act-fup"); fu.textContent = "Follow up";
-    fu.title = node.status === "question" ? "follow up on this specific blocked sub-goal" : "follow up on this specific sub-goal";
+    fu.title = node.status === "question" ? "follow up on this sub-goal that needs you" : "follow up on this specific sub-goal";
     fu.onclick = (ev) => { ev.stopPropagation(); openSubFollowUp?.(node.id, node.text || "(sub-goal)"); };
     acts.append(fu);
     line.appendChild(acts);
@@ -5039,7 +5039,7 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
 
 // ── THE FOCUSED SESSION SECTION (T347, the user 2026-09-11, who wanted the focused session's cards on top) ──
 // When a tab has focus in the chat pane, the feed puts that session's cards ABOVE the board: the session's
-// name as the head, the board's three columns (Working / Blocked / Completed, the same chips), a horizontal
+// name as the head, the board's three columns (Working / Needs you / Completed, the same chips), a horizontal
 // rule under it. The board below stays exactly as it is, so those cards appear twice. A VIEW, not a move:
 // the section has its own elements and caches (fsAskEls / fsGroupEls, keys "f:a:…" / "f:g:…"), and
 // nothing below is touched by it — the FLIP capture reads #feed-cols, the modal's and the keyboard scope's

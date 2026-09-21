@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>the timeline, annotated</title>
+<!--
+  The guide's annotated timeline (docs/guide.md, "The timeline"): a composed scene of the sessions pane's
+  anatomy from ui/romp-timeline-view.js (the gutter: name in the identity colour, the feed and mail toggles,
+  model and effort, the status pill in the BADGE colours, the context battery; the lanes: bars on faint
+  baselines, message dots with white rings, the striped stretch where the session stopped on you), with
+  the callouts drawn in the page. The pill colours mirror BADGE (working #E0B020, ready #2B7FB8, needs
+  #d946ef: the Needs you category, plans/needs-you.md). Synthetic: the notes-api demo world (web, api,
+  tests), invented times. Render from this directory with:
+    chrome --headless=new --screenshot=../timeline-annotated.png --window-size=1248,286 \
+           --force-device-scale-factor=2 --hide-scrollbars file://.../timeline-annotated.html
+-->
+<style>
+  :root { --bg: #0f1218; --pane: #1c1e22; --hair: rgba(255,255,255,0.08); --fg: #d6d9de; --dim: #9a9fa8;
+          --c-api: #1EA1EB; --c-tests: #8f9a7c; --c-web: #4EA8A9;
+          --working: #E0B020; --working-fg: #332600; --ready: #2B7FB8; --ready-fg: #ffffff; --needs: #d946ef; --needs-fg: #2a0a2a;
+          --battery: #54B204; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: var(--bg); }
+  body { font: 15px/1.3 "Liberation Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: var(--fg); }
+  #fig { position: relative; width: 1248px; height: 286px; overflow: hidden; }
+  .pane { position: absolute; left: 24px; top: 54px; width: 1200px; height: 168px; background: var(--pane); border-radius: 10px; }
+  .row { position: absolute; left: 0; height: 40px; width: 100%; display: flex; align-items: center; }
+  .row.r1 { top: 12px; } .row.r2 { top: 52px; } .row.r3 { top: 92px; }
+  .name { width: 60px; margin-left: 12px; font-weight: 700; font-size: 17px; }
+  .ico { width: 20px; margin-left: 10px; text-align: center; color: #9cd2ff; font-size: 15px; }
+  .model { width: 140px; margin-left: 12px; color: #9cd2ff; font-weight: 600; font-size: 16px; display: flex; gap: 14px; }
+  .pill { display: inline-block; min-width: 76px; text-align: center; padding: 3px 10px; border-radius: 12px; font-size: 13px; font-weight: 800; letter-spacing: 0.04em; margin-left: 10px; }
+  .bat { margin-left: 16px; width: 74px; height: 22px; border: 1px solid rgba(255,255,255,0.35); border-radius: 6px; position: relative; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .bat i { position: absolute; left: 3px; top: 3px; bottom: 3px; width: var(--w); background: var(--battery); border-radius: 2px; }
+  .bat b { position: relative; }
+  .lanes { position: absolute; left: 500px; top: 0; right: 40px; height: 160px; }
+  .base { position: absolute; left: 0; right: 0; height: 2px; background: rgba(255,255,255,0.10); }
+  .grid { position: absolute; top: 4px; height: 122px; width: 1px; background: rgba(255,255,255,0.10); }
+  .bar { position: absolute; height: 12px; border-radius: 6px; }
+  .bar.striped { background: repeating-linear-gradient(135deg, var(--c-web) 0 8px, rgba(255,255,255,0.85) 8px 12px); }
+  .dot { position: absolute; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #fff; }
+  .tick { position: absolute; top: 134px; font-size: 14px; color: var(--dim); transform: translateX(-50%); }
+  .lock { position: absolute; right: 14px; bottom: 6px; color: var(--dim); font-size: 16px; }
+  .call { position: absolute; background: #fff; color: #000; font-weight: 700; font-size: 14px; padding: 5px 11px; border-radius: 9px; white-space: nowrap; }
+  .box { position: absolute; border: 2px solid #fff; border-radius: 6px; }
+  svg.leaders { position: absolute; left: 0; top: 0; width: 1248px; height: 286px; pointer-events: none; }
+  svg.leaders line { stroke: #fff; stroke-width: 2; }
+</style>
+<div id="fig">
+  <div class="pane">
+    <div class="row r1"><span class="name" style="color:var(--c-api)">api</span><span class="ico">&#9745;</span><span class="ico">&#9993;</span>
+      <span class="model"><span>Opus 5</span><span>high</span></span><span class="pill" style="background:var(--working);color:var(--working-fg)">Working</span>
+      <span class="bat" style="--w:6px"><i></i><b>9%</b></span></div>
+    <div class="row r2"><span class="name" style="color:var(--c-tests)">tests</span><span class="ico">&#9745;</span><span class="ico">&#9993;</span>
+      <span class="model"><span>Opus 5</span><span>high</span></span><span class="pill" style="background:var(--ready);color:var(--ready-fg)">Ready</span>
+      <span class="bat" style="--w:3px"><i></i><b>3%</b></span></div>
+    <div class="row r3"><span class="name" style="color:var(--c-web)">web</span><span class="ico">&#9745;</span><span class="ico">&#9993;</span>
+      <span class="model"><span>Opus 5</span><span>high</span></span><span class="pill" style="background:var(--needs);color:var(--needs-fg)">Needs you</span>
+      <span class="bat" style="--w:3px"><i></i><b>3%</b></span></div>
+    <div class="lanes">
+      <div class="grid" style="left:80px"></div><div class="grid" style="left:180px"></div><div class="grid" style="left:280px"></div>
+      <div class="grid" style="left:380px"></div><div class="grid" style="left:480px"></div><div class="grid" style="left:580px"></div>
+      <div class="base" style="top:31px"></div><div class="base" style="top:71px"></div><div class="base" style="top:111px"></div>
+      <div class="dot" style="left:278px;top:22px;background:var(--c-api)"></div>
+      <div class="bar" style="left:300px;top:26px;width:150px;background:var(--c-api)"></div>
+      <div class="dot" style="left:636px;top:22px;background:var(--c-api)"></div>
+      <div class="bar" style="left:646px;top:26px;width:34px;background:var(--c-api)"></div>
+      <div class="dot" style="left:278px;top:102px;background:var(--c-web)"></div>
+      <div class="bar striped" style="left:300px;top:106px;width:380px"></div>
+      <div class="tick" style="left:80px">10:27</div><div class="tick" style="left:180px">10:28</div><div class="tick" style="left:280px">10:29</div>
+      <div class="tick" style="left:380px">10:30</div><div class="tick" style="left:480px">10:31</div><div class="tick" style="left:580px">10:32</div>
+    </div>
+    <div class="lock">&#128275;</div>
+  </div>
+  <!-- the callouts: boxes around the anatomy, labels above and below, leaders between -->
+  <div class="box" style="left:30px;top:64px;width:58px;height:120px"></div>
+  <div class="box" style="left:100px;top:64px;width:30px;height:120px"></div>
+  <div class="box" style="left:134px;top:64px;width:30px;height:120px"></div>
+  <div class="box" style="left:168px;top:64px;width:150px;height:120px"></div>
+  <div class="box" style="left:796px;top:72px;width:30px;height:28px"></div>
+  <div class="box" style="left:818px;top:76px;width:160px;height:20px"></div>
+  <div class="box" style="left:818px;top:156px;width:388px;height:20px"></div>
+  <svg class="leaders">
+    <line x1="140" y1="30" x2="118" y2="64"/><line x1="360" y1="30" x2="300" y2="64"/>
+    <line x1="820" y1="30" x2="812" y2="72"/><line x1="1080" y1="30" x2="900" y2="76"/>
+    <line x1="60" y1="184" x2="120" y2="248"/><line x1="152" y1="184" x2="300" y2="248"/><line x1="1010" y1="176" x2="1010" y2="248"/>
+  </svg>
+  <div class="call" style="left:84px;top:16px">On the feed, or off</div>
+  <div class="call" style="left:300px;top:16px">Model and effort</div>
+  <div class="call" style="left:762px;top:16px">A message you sent</div>
+  <div class="call" style="left:1010px;top:16px">The session working</div>
+  <div class="call" style="left:42px;top:246px">One lane per session</div>
+  <div class="call" style="left:236px;top:246px">Messages on, or isolated</div>
+  <div class="call" style="left:916px;top:246px">Striped: stopped, needs you</div>
+</div>

@@ -13,7 +13,7 @@ complementary views of what the agents are doing:
   agent, with features that make a long session easier to scan.
 - **[The feed](#the-feed)** is Romp's task-management layer: what is in
   progress, what needs your input, and what is done.
-- **[The sessions pane](#the-sessions-pane)** holds the timeline: what each
+- **[The Sessions pane](#the-sessions-pane)** holds the timeline: what each
   session worked on and how they coordinated; click any part to jump to that
   moment in the chat.
 - **[The outline](#the-outline)** lists every session with its tasks, for
@@ -29,8 +29,9 @@ Tool calls fold into runs, and each run opens to one line per call.
 
 The message box also supports attachments, session names and recall. A file
 dropped anywhere on the pane attaches to the next message, `@` and the first
-letters of a session's name insert that name, and the pencil on a message the
-session has not taken yet puts it back in the box.
+letters of a session's name list the live sessions that match, and picking one
+inserts it. The pencil on a message the session has not taken yet puts it back
+in the box.
 
 A path or a markdown link in the chat opens the file in the viewer, rendered. A
 passage selected there lands in the composer as a quote, labelled with the file
@@ -53,7 +54,7 @@ Cards sit in three columns:
 
 - <span class="romp-chip romp-chip-working">Working</span>: the session is
   actively working on the task.
-- <span class="romp-chip romp-chip-blocked">Blocked</span>: it needs your
+- <span class="romp-chip romp-chip-needs">Needs you</span>: it needs your
   input to move on.
 - <span class="romp-chip romp-chip-completed">Completed</span>: done, ready
   for you to review and clear.
@@ -87,11 +88,11 @@ Task tracking has a master switch, at the top of its own settings tab and on by
 default. Off, the judges do not run and cost nothing, the feed and the outline
 go away, and Romp is a chat tool.
 
-### The sessions pane
+### The Sessions pane
 
 The Sessions pane holds the timeline, one row per session. A bar is a stretch
 where the session was working, and a circle is a message you sent. A striped
-stretch means the session is blocked, waiting on your input.
+stretch means the session had stopped and needed you.
 
 ![A timeline lane per session, with status and context at the left](assets/guide/timeline-annotated.png){ width="100%" }
 
@@ -139,7 +140,7 @@ Romp asks the agent, item by item, where each open piece stands: continue what
 it can, and say what blocks the rest.
 
 - If the agent can keep going, it does, and you were never interrupted.
-- If something needs you, the card flips to <span class="romp-chip romp-chip-blocked">Blocked</span> and names exactly what
+- If something needs you, the card flips to <span class="romp-chip romp-chip-needs">Needs you</span> and names exactly what
   it needs.
 
 Nudging engages only when you are not actively messaging the session, so it
@@ -221,7 +222,8 @@ Sessions run on one of two backends, chosen per session:
 
 - **Claude Code (the default).** The kernel runs the Claude Code session
   itself, through the Claude Agent SDK.
-- **Codex.** An OpenAI Codex agent; see [Codex](codex.md).
+- **Codex.** An OpenAI Codex agent, which needs [its own one-time
+  setup](codex.md) on each machine.
 
 The backends interleave freely, so Codex sessions and Claude Code sessions sit
 side by side in the interface and message each other like any other pair.
@@ -280,8 +282,10 @@ access token over ssh so your browser can authorize against it.
 A row reading **kernel not answering** means no Romp kernel is running there:
 click **Start**, which brings that machine's Romp up to date with this one's
 and boots it. Romp never starts a remote kernel by itself, since a stopped one
-may be stopped on purpose. Detaching keeps the machine under **Previously
-attached**, so re-linking later is one click.
+may be stopped on purpose.
+
+Detaching keeps the machine under **Previously attached**, so re-linking later
+is one click, and the machine comes back with the trust level you last gave it.
 
 #### Mail across linked machines
 
@@ -292,9 +296,6 @@ happens to mail arriving from it:
 - **directed**, the default: held for your approval as a needs-you card.
 - **isolated**: no mail either way; its sessions still appear in your
   interface.
-
-Which to choose, and what each one guards against, is in
-[Security and trust](#security-and-trust).
 
 Machines that a linked machine can reach appear to you too, under **Reachable
 via relay**: no tunnel of your own, their mail arriving one hop through the
@@ -332,6 +333,10 @@ way in to it; untick the box and it forgets you. Romp calls this checking in,
 and the always-on machine the hub, which is where `romp checkin` and
 `romp checkout` get their names.
 
+Restarting Romp from the hub's interface restarts the machines linked to it as
+well. A machine that checked in is asked to restart itself only, so anything
+attached to that machine alone is restarted from its own interface.
+
 #### Hand the connection to a different machine
 
 The add-host box has a **from** picker. Leave it on *this machine* and the
@@ -339,9 +344,6 @@ tunnel lives here, dropping when this kernel stops. Choose an attached host
 instead and the attach is forwarded to that kernel, which dials out itself, so
 the connection outlives your laptop. That machine needs its own ssh access to
 the target.
-
-The mechanics, including how the tunnels and the check-in handshake work, are in
-[How Romp works](architecture.md).
 
 ### Settings across machines
 
@@ -483,9 +485,10 @@ under your own user account can read the token too, so two sessions on the same
 machine are separated by policy rather than by this boundary.
 
 The lines Romp can actually enforce are per-user (the token file) and
-per-machine (the trust level). Full details, including how to report a
-vulnerability, are in
-[SECURITY.md](https://github.com/romp-on/romp/blob/main/SECURITY.md).
+per-machine (the trust level);
+[SECURITY.md](https://github.com/romp-on/romp/blob/main/SECURITY.md) states the
+trust model in full and names the private channel for reporting a
+vulnerability.
 
 ## How many tokens does Romp use?
 
@@ -494,8 +497,8 @@ like Opus or Fable at high effort, the judging costs much less than the sessions
 themselves.
 
 Settings, Debug holds **Token usage analytics**: your sessions' tokens beside
-the judges' over a period you pick. The bottom bar's spend readout shows the
-same split in dollars, by session.
+the judges' over a period you pick. The bottom bar's spend readout opens API
+spend: the sessions' spend in dollars, by session and over time.
 
 You can also reconfigure the judges from the gear: the high-volume indexing tier
 defaults to Haiku, and the judgment tier defaults to Sonnet.

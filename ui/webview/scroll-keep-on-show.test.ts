@@ -77,7 +77,7 @@ test("render.ts: the reshow decision counts a live durable seek for the tab as n
 });
 
 test("render.ts: the #content scroll listener keeps the active view's saved spot current (passive, no timer)", () => {
-  assert.match(RENDER, /import \{ followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, reshowStick, atBottomBeforeGrowth \} from "\.\/scroll-keep";/);   // + followTail (T262: follow only on new content); + atBottomBeforeGrowth (2026-09-20: the box-below pass's pre-growth read)
+  assert.match(RENDER, /import \{ followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, followReflow, reshowStick, atBottomBeforeGrowth \} from "\.\/scroll-keep";/);   // + followTail (T262: follow only on new content); + atBottomBeforeGrowth; + followReflow (live dividers)
   // …and stands down while a deferred build is pending: the reveal's clamp fires a scroll event before the land
   assert.match(RENDER, /c\.addEventListener\("scroll", \(\) => \{\n\s*if \(c\.clientHeight <= 0\) return;\n\s*followReader\(activeId \? views\.get\(activeId\) : null, c\.scrollTop, atBottom\(c\), pendingBuildRaf != null\);\n(?:.*\n){0,12}?\s*\}, \{ passive: true \}\);/);   // up to twelve lines follow the follow rule (three of them the settle's gesture-evidence note, T386 round two): the gesture classification, its mark on the view for the edge check (T366), the gesture row and the sh/ch note
   // landActive's landing rule itself is unchanged — its INPUT is what the fix repairs
@@ -174,5 +174,7 @@ test("where the reader stood before a box below grew: the footprint added back, 
   assert.equal(atBottomBeforeGrowth(8819, 8174, 447, 189.265625 + 8), true, "the footprint (border box plus margin) puts the reader at the bottom before the growth: re-pin");
   assert.equal(atBottomBeforeGrowth(8819, 8174, 447, 187.265625), false, "the content-rect delta alone reads them 10.7 px above the bottom: the bug the payload named");
   assert.equal(atBottomBeforeGrowth(8819, 8174 - 40, 447, 197.265625), false, "a reader 40 px up stays where they were");
-  assert.equal(atBottomBeforeGrowth(8819, 8422, 397, 50.78), true, "a box growing while shown (no margin change): the footprint delta equals the content delta");
+  assert.equal(atBottomBeforeGrowth(8819, 8371.22, 397, 50.78), true, "a box growing while shown by 50.78 px: a reader whose top line is 50.78 px above the post-growth bottom stood at the pre-growth bottom");
+  assert.equal(atBottomBeforeGrowth(8819, 8371.22, 397, 0), false, "…and without the growth added back the same reader reads as scrolled up (the review of PR 1926)");
+  assert.equal(atBottomBeforeGrowth(8819, 8422, 397, 50.78), true, "a reader already written to the NEW bottom before the pass reads as at the bottom too: the band has no bound below zero");
 });

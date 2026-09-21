@@ -55,6 +55,21 @@ when the dashboard is added to a home screen, so a token gate there would break
 the install. They are static and read no session state: the manifest is a
 fixed JSON literal (app name and short name, display mode, colors, start URL
 and icon list) and the icons are three PNG files.
+Two routes sit outside that list. `POST /push/ack`, the push worker's report
+that a notification was shown or tapped, runs ahead of the token check and is
+authenticated by the per-push id instead: 128 random bits the kernel minted for
+one notification and handed only to the device it went to. What a valid id
+reaches is that device's push state: it stamps the row's shown or tapped time
+(the first stamp stands) and records the worker's build string, which every
+report rewrites; a shown report marks the older unsettled, untapped pushes for
+the same session on that device superseded; and the request's origin, read from
+its `Origin` header, else its `Referer`, else the forwarded headers or `Host`,
+is recorded on that device's subscription when none is on file, which matters
+because the `navigate` URL of the device's next declarative Apple push is
+built on that recorded origin. A recorded origin stands and a conflicting one
+is logged, an unknown id is a 404, and the body is capped at 2 KB before it is
+read. And a token-less `GET /` is answered with the login page above rather
+than a 403, so a bare open of the dashboard can paste the token in.
 
 The practical consequence: another local user on a **shared machine** cannot
 reach your kernel or bus — `/send` (which injects text into a live Claude

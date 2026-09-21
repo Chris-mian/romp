@@ -163,6 +163,19 @@ out.labSrc = await page.evaluate(() => document.getElementById("f-lab").getAttri
 out.artifactsAfterGear = await page.evaluate(() => { const b = document.querySelector(".rail-btn[data-pane=artifacts]"); const f = document.getElementById("f-artifacts");
   return { hidden: !!b && b.hidden, on: document.body.classList.contains("po-artifacts"), src: f ? f.getAttribute("src") : "absent" }; });
 out.settingsPanes = await page.evaluate(() => { try { return JSON.parse(localStorage.getItem("romp:settings") || "{}").panes || null; } catch (e) { return null; } });
+// ---- 4b. a HAND row flipped keeps the registry keys (the 1919 read, still standing at 1922: the hand rows' handler rewrote the set from
+// three keys, so flipping Sessions, the Outline or the Feed dropped every registry key: the Artifacts control hid and its column
+// closed while its row read checked, and a data pane's stored false came back on) ----
+await gf.evaluate(() => { const i = document.getElementById("rs-pane-notes"); i.checked = false; i.dispatchEvent(new Event("change", { bubbles: true })); });   // a data pane hidden by its row: stored false
+await page.waitForFunction(() => document.querySelector(".rail-btn[data-pane=notes]").hidden, null, { timeout: 5000 }).catch(() => {});
+await gf.evaluate(() => { const i = document.getElementById("rs-pane-feed"); i.checked = false; i.dispatchEvent(new Event("change", { bubbles: true })); });   // a HAND row flipped
+await page.waitForFunction(() => document.querySelector(".rail-btn[data-pane=feed]").hidden, null, { timeout: 5000 }).catch(() => {});
+await page.waitForTimeout(300);
+out.afterFeedFlip = await page.evaluate(() => ({ panes: (() => { try { return JSON.parse(localStorage.getItem("romp:settings") || "{}").panes || null; } catch (e) { return null; } })(),
+  feedHidden: document.querySelector(".rail-btn[data-pane=feed]").hidden, notesHidden: document.querySelector(".rail-btn[data-pane=notes]").hidden,
+  artifactsHidden: document.querySelector(".rail-btn[data-pane=artifacts]").hidden, labOn: document.body.classList.contains("po-lab"), notesOn: document.body.classList.contains("po-notes") }));
+await gf.evaluate(() => { for (const id of ["rs-pane-feed", "rs-pane-notes"]) { const i = document.getElementById(id); i.checked = true; i.dispatchEvent(new Event("change", { bubbles: true })); } });   // both back
+await page.waitForFunction(() => !document.querySelector(".rail-btn[data-pane=notes]").hidden && !document.querySelector(".rail-btn[data-pane=feed]").hidden, null, { timeout: 5000 }).catch(() => {});
 
 // ---- 5. a define while the page is open ----
 await page.evaluate(() => { window.__probe = 1; });
@@ -182,7 +195,7 @@ out.afterReload = { later: !!(await page.$(".rail-btn[data-pane=later]")), body:
 
 // ---- 6. the docking kit reads the list (plans/panes-as-data.md section 4): a data pane is a tree leaf with a ring, drops into a half-zone ----
 const frame = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1)))));
-await page.evaluate(() => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.paneDocking = true; localStorage.setItem("romp:settings", JSON.stringify(s)); });
+await page.evaluate(() => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.paneDocking = true; s.panes = Object.assign({}, s.panes || {}, { artifacts: true }); localStorage.setItem("romp:settings", JSON.stringify(s)); });   // the kit on; the Artifacts pane enabled in the gear (step 4 clicked its row; said here, not relied on)
 await page.reload();
 await page.waitForSelector(".rail-btn[data-pane=notes]", { timeout: 20000 }).catch(async () => { await die("no notes rail button after the kit's reload"); });
 out.kitOn = await page.waitForFunction(() => !!(window.__rompPaneDock && window.__rompPaneDock.on() && window.__rompPaneDock.layout()), null, { timeout: 15000 }).then(() => true).catch(() => false);
@@ -228,7 +241,7 @@ out.kitArtifacts = { leaves: await leavesOf(), rect: (await rectsOf())["artifact
 const mctx = await browser.newContext({ viewport: { width: 420, height: 860 }, hasTouch: true, isMobile: true });
 // the pane's desktop flag OFF in this browser (a rail toggle from an earlier desktop visit): on a phone the pane shows by its TAB alone,
 // so its iframe must load from the tap, never from the desktop flag (the 1922 read: a tab tapped showed a blank pane)
-await mctx.addInitScript(() => { try { localStorage.setItem("romp-panes", JSON.stringify({ notes: false })); } catch (e) {} });
+await mctx.addInitScript(() => { if (window.top !== window) return; try { localStorage.setItem("romp-panes", JSON.stringify({ notes: false })); } catch (e) {} });   // the top document only: an init script runs in every same-origin frame too, and would re-seed after the shell's own writes
 const mp = await mctx.newPage();
 const notesRequests = [];
 mp.on("request", (rq) => { if (/\/pane\/notes\/(\?|$)/.test(rq.url())) notesRequests.push(rq.url()); });
@@ -248,6 +261,42 @@ await mp.click("#mtabs button[data-pane=chat]"); await mp.waitForTimeout(300);
 await mp.click("#mtabs button[data-pane=notes]"); await mp.waitForTimeout(600);
 out.phoneRequests = notesRequests.length;
 await mctx.close();
+
+// ---- 8. a PHONE at 390 by 844 with NOTHING stored: a generic pane loads by its TAB alone (the 1922 read: the gear's row tap loaded the
+// tabless Artifacts page into a hidden 0x0 frame, and a reload loaded it again from the persisted rail flag) ----
+const artRequests = [];
+const pctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+const pp = await pctx.newPage();
+pp.on("request", (rq) => { if (/\/artifacts(\?|$)/.test(rq.url())) artRequests.push(rq.url()); });
+await pp.goto(cfg.url);
+await pp.waitForSelector("#mtabs button[data-pane=chat]", { timeout: 20000 }).catch(async () => { await die("no phone tab bar at 390"); });
+await pp.waitForTimeout(800);
+await pp.evaluate(() => window.__rompOpenSettings && window.__rompOpenSettings());
+let pgf = null;
+for (let i = 0; i < 150 && !pgf; i++) { for (const f of pp.frames()) { if (await f.$("#rs-pane-artifacts").catch(() => null)) { pgf = f; break; } } if (!pgf) await pp.waitForTimeout(100); }
+if (!pgf) await die("no settings frame on the phone");
+await pgf.evaluate(() => { const i = document.getElementById("rs-pane-artifacts"); i.checked = true; i.dispatchEvent(new Event("change", { bubbles: true })); });
+await pp.waitForTimeout(800);
+out.phoneRowTap = await pp.evaluate(() => ({ src: document.getElementById("f-artifacts").getAttribute("src"), tab: document.body.getAttribute("data-tab"), on: document.body.classList.contains("po-artifacts"),
+  panes: (() => { try { return JSON.parse(localStorage.getItem("romp:settings") || "{}").panes || null; } catch (e) { return null; } })(), requests: 0 }));
+out.phoneRowTap.requests = artRequests.length;
+await pctx.close();
+// both flags stored and the tab remembered: a boot loads nothing and lands on the chat (the fallback for a pane with no tab)
+const qctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+await qctx.addInitScript(() => { if (window.top !== window) return; try { localStorage.setItem("romp:settings", JSON.stringify({ panes: { artifacts: true } })); localStorage.setItem("romp-panes", JSON.stringify({ artifacts: true, notes: true })); localStorage.setItem("romp-mobile-tab", "artifacts"); } catch (e) {} });   // the top document only (an iframe's load would re-seed the remembered tab after the shell repaired it)
+const qp = await qctx.newPage();
+const bootRequests = [];
+qp.on("request", (rq) => { if (/\/artifacts(\?|$)|\/pane\/notes\/(\?|$)/.test(rq.url())) bootRequests.push(rq.url()); });
+await qp.goto(cfg.url);
+await qp.waitForSelector("#mtabs button[data-pane=chat]", { timeout: 20000 }).catch(async () => { await die("no phone tab bar at 390 (second boot)"); });
+await qp.waitForTimeout(1000);
+out.phoneBoot = await qp.evaluate(() => ({ artSrc: document.getElementById("f-artifacts").getAttribute("src"), notesSrc: document.getElementById("f-notes").getAttribute("src"), tab: document.body.getAttribute("data-tab"),
+  artOn: document.body.classList.contains("po-artifacts"), chatShown: document.getElementById("f-chat").classList.contains("m-on"), remembered: localStorage.getItem("romp-mobile-tab") }));
+out.phoneBoot.requests = bootRequests.slice();
+// the notes tab tapped: its page loads then, once
+await qp.click("#mtabs button[data-pane=notes]"); await qp.waitForTimeout(800);
+out.phoneNotesTap = { notesSrc: await qp.evaluate(() => document.getElementById("f-notes").getAttribute("src")), requests: bootRequests.slice() };
+await qctx.close();
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
 process.exit(0);
@@ -325,7 +374,9 @@ class ServedPaneRegistry(unittest.TestCase):
             d.shutdown()
         shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
 
-    def test_data_panes_render_dock_and_speak_the_protocol_a_url_pane_is_sandboxed_and_mute_and_a_define_offers_a_reload(self):
+    _res = None
+
+    def _drive(self):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
             json.dump({"url": "http://127.0.0.1:%d/?token=%s" % (self.port, self.token), "api": "http://127.0.0.1:%d" % self.port, "token": self.token,
@@ -348,6 +399,24 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         r = json.loads(line[len("RESULT:"):])
         self.assertNotIn("died", r, "driver aborted early: %r" % r)
+        return r
+
+    def _result(self):
+        # one drive per class (the driver runs every leg in one browser session); a failure, a skip or a launch error is cached
+        # and re-raised by every test, so the record is measured once and each leg's verdict stands on its own
+        cls = type(self)
+        if cls._res is None:
+            try:
+                cls._res = ("ok", self._drive())
+            except Exception as e:
+                cls._res = ("err", e)
+        kind, val = cls._res
+        if kind == "err":
+            raise val
+        return val
+
+    def test_data_panes_render_dock_and_speak_the_protocol_a_url_pane_is_sandboxed_and_mute_and_a_define_offers_a_reload(self):
+        r = self._result()
         # 1. the landing
         self.assertEqual([b["pane"] for b in r["rail"]], ["chat", "timeline", "fleet", "feed", "files", "artifacts", "docs", "lab", "notes"], r["rail"])
         by = {b["pane"]: b for b in r["rail"]}
@@ -431,6 +500,49 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertEqual((r["phonePage"] or {}).get("title"), "Notes", "the page is up, its shim with it: %r" % r["phonePage"])
         self.assertEqual(r["phoneRequests"], 1, "the page is requested once, however many times its tab is tapped: %r" % r["phoneRequests"])
         self.assertGreater((r["kitArtifacts"]["rect"] or {"w": 0})["w"], 60, "the Artifacts leaf has a rectangle: %r; after the drop: %r" % (r["kitArtifacts"], r["kitAfterDrop"]["rects"]))
+
+    def test_a_hand_row_flipped_in_the_gear_keeps_the_registry_keys(self):
+        r = self._result()
+        # 4b. a hand row flipped keeps the registry keys (the 1919 read): the Feed off leaves the Artifacts control and the hidden Notes pane as they were
+        f = r["afterFeedFlip"]
+        self.assertEqual({k: f["panes"].get(k) for k in ("feed", "artifacts", "lab", "notes")}, {"feed": False, "artifacts": True, "lab": True, "notes": False}, "the whole set survives the hand row's flip: %r" % f["panes"])
+        self.assertTrue(f["feedHidden"], "the Feed's button hidden by its row")
+        self.assertFalse(f["artifactsHidden"], "the Artifacts control stays (its key survived)"); self.assertTrue(f["labOn"], "the Lab pane stays on screen")
+        self.assertTrue(f["notesHidden"], "the Notes pane stays hidden (its stored false survived)"); self.assertFalse(f["notesOn"])
+
+    def test_on_a_phone_a_generic_pane_loads_by_its_tab_alone_never_by_the_desktop_flag(self):
+        r = self._result()
+        # 8. the phone at 390 by 844 (the 1922 read): the gear's row tap enables the tabless Artifacts pane and loads NOTHING; a boot with both
+        # flags stored and the tab remembered loads nothing and lands on the chat; a tabbed pane's tap loads its page, once
+        pt = r["phoneRowTap"]
+        self.assertEqual((pt["panes"] or {}).get("artifacts"), True, "the row enabled the pane: %r" % pt)
+        self.assertIsNone(pt["src"], "no src: a pane with no tab is never loaded on a phone: %r" % pt); self.assertEqual(pt["requests"], 0, "and nothing requested")
+        self.assertEqual(pt["tab"], "chat")
+        pb2 = r["phoneBoot"]
+        self.assertEqual((pb2["artSrc"], pb2["notesSrc"], pb2["tab"], pb2["chatShown"]), (None, None, "chat", True), "a boot with both flags stored and artifacts remembered: nothing loaded, the chat shown: %r" % pb2)
+        self.assertEqual(pb2["requests"], [], "no page requested at boot: %r" % pb2["requests"])
+        self.assertEqual(pb2["remembered"], "chat", "the remembered tab is repaired to the chat")
+        self.assertEqual(r["phoneNotesTap"]["notesSrc"], "/pane/notes/", "the notes tab tapped loads its page")
+        self.assertEqual(len(r["phoneNotesTap"]["requests"]), 1, "once: %r" % r["phoneNotesTap"]["requests"])
+
+
+class TheBuiltBundles(unittest.TestCase):
+    """The BUILT shell bundles read the shell's source check (plans/panes-as-data.md section 5): the palette and the docking kit. This
+    module runs in CI's browser job with the extension built, where tests/test_pane_registry.py's source-level census cannot (the 1919
+    read: its bundle leg skipped in every pytest cell, so its pass was invisible)."""
+
+    def test_the_built_palette_and_docking_bundles_read_the_shells_check(self):
+        dist = os.path.join(EXT, "dist")
+        names = ["palette-main", "panedock-main"]
+        if not all(os.path.exists(os.path.join(dist, n + ".js")) for n in names):
+            if not os.path.isdir(os.path.join(EXT, "node_modules")):
+                if REQUIRE:
+                    raise AssertionError("ROMP_SERVED_TESTS_REQUIRE=1 but the extension deps are absent")
+                raise unittest.SkipTest("extension deps absent (npm ci not run here): the built bundles cannot be read")
+            b = subprocess.run(["node", "esbuild.js"], cwd=EXT, capture_output=True, text=True)
+            self.assertEqual(b.returncode, 0, b.stderr[-500:])
+        for n in names:
+            self.assertIn("__rompPaneSourceOk", open(os.path.join(dist, n + ".js")).read(), "the built %s bundle reads the shell's check" % n)
 
 
 if __name__ == "__main__":

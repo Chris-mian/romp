@@ -62,9 +62,9 @@ test("the anchor is a (now, nowAt) pair that travels with the frame: a re-emit a
 });
 
 test("an unstamped element is left alone", () => {
-  const plain = mk(); plain.textContent = "Blocked";       // a question node's meta carries no age
+  const plain = mk(); plain.textContent = "Needs you";     // a question node's meta carries no age
   assert.equal(paintAge(plain, 5, rel, tint), false);
-  assert.equal(plain.textContent, "Blocked");
+  assert.equal(plain.textContent, "Needs you");
   const junk = mk(); junk.dataset.ageT = "not-a-number";
   assert.equal(refreshAges([plain, junk], 5, rel, tint), 0);
 });

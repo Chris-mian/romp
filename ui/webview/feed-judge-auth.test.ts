@@ -39,9 +39,10 @@ test("the card face carries the explanation itself — a message, not just a chi
   assert.match(FEED, /dle\.textContent = it\.blocked\.what \|\| ""/);
 });
 
-test("filled red — a new chip style, same size as its api-trouble siblings (same information type)", () => {
+test("filled in the Needs you token (not a hard stop: the session runs, the credential fix is yours; plans/needs-you.md), same size as its api-trouble siblings (same information type)", () => {
   assert.match(CSS, /\.fask-jauth \{[^}]*font-size: 0\.7em/, "same size as .fask-apierror / .fask-retrying");
-  assert.match(CSS, /\.fask-jauth \{[^}]*background: #c0392b/, "filled, not outlined — 'romp can't even look'");
+  assert.match(CSS, /\.fask-jauth \{[^}]*background: var\(--st-needs-bg\); border: 1px solid var\(--st-needs-bg\)/, "filled, not outlined, in the category's colour");
+  assert.doesNotMatch(CSS, /\.fask-jauth \{[^}]*#c0392b/, "the alarm red is the hard stop's alone");
 });
 
 test("the kernel floors a latched session's focus card with the judgeAuth story", () => {

@@ -66,13 +66,13 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   // T404: General opens with the account, then the panes (the Files control among them), Appearance, Permissions, This machine, the
   // shortcuts; Debug opens with the judges' debug views, then the diagnostics (Updates went to General)
   const G = ps.general;
-  assert.ok(G.indexOf(">Account<") < G.indexOf("id=rs-panes-sec") && G.indexOf("id=rs-panes-sec") < G.indexOf("id=rs-filesctl") && G.indexOf("id=rs-filesctl") < G.indexOf("data-section=appearance>Appearance<")
+  assert.ok(G.indexOf(">Account<") < G.indexOf("id=rs-panes-sec") && G.indexOf("id=rs-panes-sec") < G.indexOf("id=rs-filesctl") && G.indexOf("id=rs-filesctl") < G.indexOf("id=rs-panes-data") && G.indexOf("id=rs-panes-data") < G.indexOf("id=rs-panedock") && G.indexOf("id=rs-panedock") < G.indexOf("data-section=appearance>Appearance<")
             && G.indexOf("data-section=appearance>Appearance<") < G.indexOf(">Permissions<") && G.indexOf(">Permissions<") < G.indexOf("id=rs-fileedit") && G.indexOf("id=rs-fileedit") < G.indexOf(">This machine<")
             && G.indexOf(">This machine<") < G.indexOf("id=rs-conserve") && G.indexOf("id=rs-conserve") < G.indexOf("id=rs-updates") && G.indexOf("id=rs-updates") < G.indexOf(">Keyboard shortcuts<"),
-            "General: Account, Panes (with the Files control), Appearance, Permissions, This machine, Keyboard shortcuts");
+            "General: Account, Panes (with the Files control, then the registry rows, then the Pane docking switch), Appearance, Permissions, This machine, Keyboard shortcuts");
   assert.match(G, /<b>Allow file editing<\/b>/, "the permission row's name (T404)");
   assert.match(G, /<label class="rs-row rs-panes-row"><input type=checkbox id=rs-filesctl>' \+[^\n]*\n\s*'<span><b>Files<\/b>'/, "the Files row reads Files, like Sessions, Outline and Feed above it (T407), and is a Panes row like them, so the off-dashboard hide takes it (T404's tidy)");
-  assert.match(GEAR, /delete o\.filesControl; delete o\.fileLinkPane;/, "load() drops both dead keys, so neither survives a gear save (T404's tidy)");
+  assert.match(GEAR, /delete o\.filesControl; delete o\.fileLinkPane; delete o\.showArtifactsControl;/, "load() drops the three dead keys, so none survives a gear save (T404's tidy; the Artifacts control's key since the registry fix: save() writes the whole object, so a kept key was re-persisted forever)");
   assert.match(ps.chat, /The summaries are output tokens the session pays for, which is why this row sits under Chat and not Display\./, "the Thinking row says why it is Chat's (T404's tidy)");
   // the popover stays inside the card (the T408 read): a row whose popover would run past the card's bottom opens it above
   const CSS2 = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.css"), "utf8");
@@ -238,7 +238,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.match(GEAR, /function paintWidgets\(\) \{ tabSection\.paint\(\); ringSection\.paint\(\); statusSection\.paint\(\); \}/, "one repaint covers the three sections");
   // THE RINGS (2026-09-14): a third section of the same builder over the registry's rings, under the title rows and their
   // preview, sharing the tab section's store and save (settings.tabWidgets, the tabCtx mirror, the repaint); no divider,
-  // no grip and no drag (reorder: false — the order is the precedence, red over yellow over amber, the registry's); the
+  // no grip and no drag (reorder: false: the order is the precedence, red over magenta over amber, the registry's); the
   // demo is a miniature tab wearing the ring its predicate lights on its demo status, a plain tab once switched off
   const chatPane = panes().chat;
   assert.ok(chatPane.indexOf("id=rs-widgets") < chatPane.indexOf("Rings around the tab. One at a time: the first that applies wins, in this order.") && chatPane.indexOf("Rings around the tab.") < chatPane.indexOf("id=rs-rings") && chatPane.indexOf("id=rs-rings") < chatPane.indexOf("data-section=statusline"), "the hint and the rings' host follow the title rows, before the Status line section");
@@ -295,4 +295,24 @@ test("the Token usage panel's every close returns to the settings card (the T409
   // stands, so the answer takes the layer down first, one level; every open and close of the settings resets the layer the same way
   assert.match(GEAR, /window\.__rompSettingsClose = function \(\) \{ if \(raBack && !raBack\.hidden\) \{ raHide\(\); return true; \}/, "a press with the keyboard in the shell document reaches the panel");
   assert.match(GEAR, /function openSettings\(tab, section\) \{\s*\n\s*if \(raBack && !raBack\.hidden\) raHide\(\);/, "an open while the panel is up lands on the card, never under the layer");
+});
+
+// The hand rows' handler rewrites the stored pane set through panesOf (the 1919 read, still standing at 1922: three keys alone, so a
+// flip of Sessions, the Outline or the Feed dropped every registry key: the Artifacts control hid and its column closed while its row
+// read checked, and a data pane's stored false came back on). Executed: the function as gear.js defines it.
+test("panesOf keeps every stored boolean member beside the three hand keys, and nothing that is not a boolean", () => {
+  const at = GEAR.indexOf("function panesOf(s) {");
+  assert.ok(at >= 0, "panesOf as written");
+  let depth = 0, end = -1;
+  for (let k = GEAR.indexOf("{", at); k < GEAR.length; k++) { if (GEAR[k] === "{") depth++; else if (GEAR[k] === "}") { depth--; if (depth === 0) { end = k + 1; break; } } }   // to the function's closing brace, whatever its line shape
+  assert.ok(end > at, "panesOf's closing brace");
+  const panesOf = new Function(GEAR.slice(at, end) + "; return panesOf;")() as (s: unknown) => Record<string, boolean>;
+  assert.deepEqual(panesOf({ panes: { timeline: true, fleet: true, feed: true, lab: true, notes: false, junk: "x", n: 1 } }),
+    { timeline: true, fleet: true, feed: true, lab: true, notes: false }, "the registry keys survive; a stray stored value does not ride along");
+  assert.deepEqual(panesOf({ panes: { fleet: false } }), { timeline: true, fleet: false, feed: true }, "a missing hand key reads as shown");
+  assert.deepEqual(panesOf({}), { timeline: true, fleet: true, feed: true }); assert.deepEqual(panesOf(null), { timeline: true, fleet: true, feed: true });
+  // the handler's write: one hand key flipped keeps the rest of the set
+  const s = { panes: panesOf({ panes: { timeline: true, fleet: true, feed: true, artifacts: true, notes: false } }) };
+  s.panes.fleet = false;
+  assert.deepEqual(s.panes, { timeline: true, fleet: false, feed: true, artifacts: true, notes: false }, "an Outline uncheck leaves the Artifacts control and the hidden data pane as they were");
 });

@@ -395,6 +395,7 @@ const BADGE_FS = 9;
 const NICE = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800];
 const BADGE = { working: { bg: '#E0B020', fg: '#332600' }, ready: { bg: '#2B7FB8', fg: '#ffffff' },
                 attention: { bg: '#C0392B', fg: '#ffffff' }, compacting: { bg: '#11808f', fg: '#ffffff' },
+                needs: { bg: '#d946ef', fg: '#2a0a2a' },   // the Needs you chip (plans/needs-you.md): the category's colour, mirrors --st-needs-bg; this file loads standalone
                 retrying: { bg: '#e67e22', fg: '#2a1500' },   // amber: soft-blocked on an API rate-limit/overload auto-retry (api 2026-06-23)
                 awaitbg: { bg: '#54B204', fg: '#0c1a00' } };  // romp brand green: idle, waiting on bg work — matches the chat chip (--st-awaitbg-bg; the user 2026-07-22)
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
@@ -819,7 +820,7 @@ function badgeFor(s) {
   // chip vocabulary below; the legacy raw names stay accepted for the cold-skeleton fallback.
   else if (s.state === 'blocked') m = { label: 'API error', kind: 'attention' };  // same red the chat chip shows
   else if (s.state === 'interrupting') m = { label: 'Interrupting', kind: 'working' };  // stop in flight
-  else if (s.state === 'permission' || s.state === 'needsInput' || s.state === 'awaiting') m = { label: 'Blocked', kind: 'attention' };   // 'awaiting' = the legacy name, an older remote kernel
+  else if (s.state === 'permission' || s.state === 'needsInput' || s.state === 'awaiting') m = { label: 'Needs you', kind: 'needs' };   // the Needs you chip on the lane (plans/needs-you.md); 'awaiting' = the legacy name, an older remote kernel
   // AWAITING dispatched/background work: its OWN chip state now ('awaitingBg', the kernel's shared
   // _session_chip split, the user 2026-07-13 — no longer folded into working) in the romp brand GREEN
   // (recolored from the original straw, the user 2026-07-22): visibly held rather than producing. The
@@ -6297,7 +6298,7 @@ class TimelinePanel {
         plot.appendChild(stripe);
         const sh = el('rect', { x: bx0, y: y - 7, width: Math.max(2, bx1 - bx0), height: 14, fill: 'transparent' }); sh.style.cursor = 'pointer';
         const end = open ? 'now' : clock(b0);
-        const shtml = () => '<div class="r"><span class="chip" style="background:' + BADGE.attention.bg + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">blocked</span></div><div class="b">blocked on your input · ' + clock(a0) + '–' + end + '</div>';
+        const shtml = () => '<div class="r"><span class="chip" style="background:' + BADGE.needs.bg + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">needs you</span></div><div class="b">' + (open ? 'needs you' : 'needed you') + ' · ' + clock(a0) + '–' + end + '</div>';   // the stretch's tip agrees with the lane's badge (plans/needs-you.md): the Needs you swatch and word
         const grow = (h) => { for (const r of [back, stripe]) { r.setAttribute('y', y - h / 2); r.setAttribute('height', h); } };
         sh.addEventListener('mouseenter', (e) => { grow(eh); this.showTip(shtml(), e); });
         sh.addEventListener('mousemove', (e) => this.moveTip(e));

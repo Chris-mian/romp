@@ -30,8 +30,8 @@ test("a follow-mode reader follows the bottom when a box below grows or shrinks;
 
 test("render.ts observes #bg-tasks and #footer and writes the new bottom through the scroll-write helper", () => {
   assert.match(RENDER, /import \{[^}]*\bfollowBoxBelow\b[^}]*\} from "\.\/scroll-keep";/);
-  assert.match(RENDER, /for \(const boxId of \["notices", "bg-tasks", "footer"\]\) \{/);
-  const m = RENDER.match(/for \(const boxId of \["notices", "bg-tasks", "footer"\]\) \{([\s\S]*?)\n\}/);
+  assert.match(RENDER, /const BOXES_BELOW = \["notices", "bg-tasks", "footer"\];/); assert.match(RENDER, /for \(const boxId of BOXES_BELOW\) \{/);
+  const m = RENDER.match(/for \(const boxId of BOXES_BELOW\) \{([\s\S]*?)\n\}/);
   assert.ok(m, "the boxes-below observer block");
   const body = m![1];
   assert.match(body, /new ResizeObserver\(/);
@@ -44,8 +44,10 @@ test("render.ts observes #bg-tasks and #footer and writes the new bottom through
   assert.ok(body.indexOf("lastH = h;") < body.indexOf('new CustomEvent("romp:box-below"'), "the event fires after the pass's own work, never before it");
   assert.match(body, /writeScroll\(content, content\.scrollHeight, "box-below", true\);\s*\n\s*v\.scrollTop = content\.scrollTop;[^\n]*\n\s*v\.stick = true;[^\n]*\n\s*repinned = true;/, "re-pinned is the write's branch, and the record says follow mode");
   // the pre-growth truth: the geometry with the growth added back to #content's height, for a growth only (a shrink is the browser's clamp)
-  assert.match(body, /const wasAtBottom = !!\(content && lastH >= 0 && dh > 0 && atBottomBeforeGrowth\(content\.scrollHeight, content\.scrollTop, content\.clientHeight, dfoot\)\);/, "where the reader stood before the growth: the box's FOOTPRINT change added back (2026-09-20), never the content rect's");
-  assert.match(body, /const foot = boxFootprint\(box\);/); assert.match(body, /const dfoot = lastFoot >= 0 \? foot - lastFoot : 0;/); assert.match(body, /lastH = h; lastFoot = foot;/);
+  assert.match(body, /const wasAtBottom = !!\(content && lastH >= 0 && dfoot > 0 && atBottomBeforeGrowth\(content\.scrollHeight, content\.scrollTop, content\.clientHeight, dfoot\)\);/, "where the reader stood before the growth: the box's FOOTPRINT change added back (2026-09-20), never the content rect's");
+  // the growth added back (the review of PR 1926): this box's content delta while shown (a stale recorded footprint after a margin-only change), its whole footprint on a first show, the other boxes' change since the last pass, one shared record refreshed at every pass
+  assert.match(body, /dfoot \+= id === boxId \? \(prev > 0 \? dh : now\[id\]\) : now\[id\] - prev;/); assert.match(body, /lastH = h; for \(const id of BOXES_BELOW\) FEET\[id\] = now\[id\];/);
+  assert.match(RENDER, /const FEET: Record<string, number> = \{\};/); assert.doesNotMatch(body, /lastFoot/, "no per-box footprint memory remains");
   assert.match(RENDER, /function boxFootprint\(box: HTMLElement\): number \{\s*\n\s*const r = box\.getBoundingClientRect\(\);\s*\n\s*if \(!\(r\.height > 0\)\) return 0;\s*\n\s*const cs = getComputedStyle\(box\);\s*\n\s*return r\.height \+ \(parseFloat\(cs\.marginTop\) \|\| 0\) \+ \(parseFloat\(cs\.marginBottom\) \|\| 0\);/, "the footprint: the border box plus the vertical margins, 0 while hidden");
   // the boxes ABOVE keep their own (opposite) rule
   assert.match(RENDER, /for \(const boxId of \["tabbar", "ledger"\]\) \{/);

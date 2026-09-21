@@ -8,7 +8,7 @@ phasing is built so nothing before it changes a persisted record or the feed pro
 
 A design line for an ask on the user's list (the user, 2026-09-18, about 12:50 PM PT: they want
 romp's cards made wholly generic, so that they can create a system of cards with categories other
-than the feed's Blocked, Completed and Working, different sub-sorts, and different buttons than
+than the feed's Needs you, Completed and Working, different sub-sorts, and different buttons than
 Background and Summary, with today's feed becoming one instantiation of the card UI; they suspected
 it might already be so and asked for another pass). The manager's ruling on the one question the
 draft asked (2026-09-18): a board the user can make without a release is the destination, not a
@@ -36,7 +36,7 @@ generic model has to reach:
   Working, never a column (`col = "awaiting"` at `:41662`, folded into `had_awaiting`). The renderer's
   `AskItem.column` is typed to the same three strings (`ui/webview/feed.ts:102`), `askColumn()`
   (`:485`) maps them to the local keys `asks`, `needsInput`, `completed`, and `ensureCols` builds the
-  columns from the literal table `["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"],
+  columns from the literal table `["asks", "Working", "working"], ["needsInput", "Needs you", "blocked"],
   ["completed", "Completed", "completed"]` (`:4782`; a second copy for the focused-session section at
   `:5020`). The user docs say the same three (`docs/guide.md:319`).
 - **Every kernel-made card family sets its column by hand.** The provisional placeholder
@@ -121,9 +121,10 @@ Board {
   kinds: string[]      // the card kinds this board renders, from the fixed set below; default ["notice"]
 }
 Category  { id: string /* the id grammar */; title: string /* <= 40, default: the id upper-cased */; chip: Chip /* default "neutral" */ }
-Chip      = "working" | "blocked" | "completed" | "neutral"     // the state-chip classes styles.css has (.chip-working,
-                                                               //   .chip-blocked, .chip-completed; neutral = the dim .chip);
-                                                               //   a fifth colour is a release
+Chip      = "working" | "blocked" | "completed" | "neutral"     // the column-chip classes feed.css has (.fcol-chip-working gold,
+                                                               //   .fcol-chip-blocked the Needs you magenta, the name a schema value,
+                                                               //   .fcol-chip-completed blue; neutral = the dim chip); no chip value
+                                                               //   paints red, the hard stop's alone; a fifth colour is a release
 SortKey   { key: "t" | "session" | "owner" | "title"; dir: "asc" | "desc" }   // the fixed set; a fifth key is a release
 Rule      { when: Predicate; category: string /* one of the board's ids */ }
 Predicate { needsYou?: boolean; producer?: string; keyPrefix?: string }       // every present member must hold (AND);
@@ -200,7 +201,7 @@ FEED_BOARD: Board = {
   id: "feed", title: "Feed",
   categories: [
     { id: "working",     title: "Working",   chip: "working"   },   // feed.ts:4782, local key "asks"
-    { id: "needs_input", title: "Blocked",   chip: "blocked"   },   // local key "needsInput"
+    { id: "needs_input", title: "Needs you", chip: "blocked"   },   // local key "needsInput"; the title since plans/needs-you.md, the chip name a schema value
     { id: "completed",   title: "Completed", chip: "completed" },
   ],
   defaultCategory: "working",

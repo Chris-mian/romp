@@ -338,7 +338,7 @@ state comes from `states/` regardless.)
 **The only cards are top-level goals.** One card per top-level goal, bucketed into
 the three columns by the rolled-up status the producer already wrote (working /
 blocked / completed). A sub-goal never gets its own card: a block anywhere in the
-tree rolls UP, so the *top-level card* moves to BLOCKED and its modal shows which
+tree rolls UP, so the *top-level card* moves to Needs you and its modal shows which
 leaf is blocking; likewise a completed step shows inside the modal, not as its own
 Completed card. No read-time DAG rebuild, no status derivation, no handoff repair.
 

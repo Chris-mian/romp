@@ -8,7 +8,7 @@
 // west of UTC with daylight saving (the process zone is pinned first thing, so local midnights are NOT epoch multiples and
 // March and November carry a transition), so the local-midnight and DST claims are pinned by something. And the popup's
 // legend and waiting rows (T340, the user 2026-09-11): no swatches, the class tokens in their inks at full strength, the
-// status code coloured in a row's words, the other band's hue distinct from the accent, the red, the magenta and the
+// status code coloured in a row's words, the other band's hue distinct from the accent, the red, the 5xx purple and the
 // retrying amber per theme.
 process.env.TZ = "America/Los_Angeles";   // before any Date: the zone the tests below reason in (node re-reads it)
 import { test } from "node:test";
@@ -157,7 +157,7 @@ test("T340: no swatches; the class tokens wear their inks with the explanation b
   const cls = new Function("var esc=function(s){return String(s);};\n" + between("function clsWords(r){", "// The pause control.") + "\nreturn clsWords;")() as (r: any) => string;
   assert.equal(cls({ cls: "429", status: 429 }), "<span class=ah-c-r429>429</span> rate limited");
   assert.equal(cls({ cls: "529", status: 529 }), "<span class=ah-c-r5xx>529</span> overloaded");
-  assert.equal(cls({ cls: "error", status: 503 }), "error <span class=ah-c-r5xx>503</span>", "any 5xx wears the magenta ink");
+  assert.equal(cls({ cls: "error", status: 503 }), "error <span class=ah-c-r5xx>503</span>", "any 5xx wears the purple ink");
   assert.equal(cls({ cls: "error", status: 400 }), "error 400", "a status of another class stays plain");
   assert.equal(cls({ cls: "error" }), "error");
   assert.equal(cls({ cls: "offline" }), "offline");
@@ -240,9 +240,15 @@ test("T340: every token stands at full strength: the effective opacity of its wh
       assert.equal(effectiveOpacity(c[name]), 1, `${name} (${light ? "light" : "dark"}): no ancestor fades it`);
     }
     // the inks, each composited at the chain's effective opacity (1 here; a re-introduced fade would lower the ratio)
+    // the 5xx ink is a token since 2026-09-21 (plans/needs-you.md): resolved per theme from styles.css, never a literal here, so a
+    // re-inked token is measured (the retired literals #e879f9 and #86198F were the last 5xx colours this test walked)
+    const STYLES = read("ui", "webview", "styles.css");
+    const block = light ? STYLES.slice(STYLES.indexOf("body.theme-light {")) : STYLES.slice(STYLES.indexOf(":root {"), STYLES.indexOf("body.theme-light {"));
+    const inkTok = block.match(/--st-5xx-ink: (#[0-9a-fA-F]{6});/);
+    assert.ok(inkTok, (light ? "light" : "dark") + ": styles.css declares --st-5xx-ink");
     const ink: Record<string, string> = light
-      ? { legendToken: "#B02A1C", rowToken: "#86198F", lineToken: "#C2410C", axisLabel: "#6b6560", since: "#6b6560", other: "#4f46e5", words: "#5D574E" }
-      : { legendToken: "#ef6b6f", rowToken: "#e879f9", lineToken: "#9cd2ff", axisLabel: "#8b939c", since: "#8b939c", other: "#d9f99d", words: "#a9b1ba" };
+      ? { legendToken: "#B02A1C", rowToken: inkTok![1], lineToken: "#C2410C", axisLabel: "#6b6560", since: "#6b6560", other: "#4f46e5", words: "#5D574E" }
+      : { legendToken: "#ef6b6f", rowToken: inkTok![1], lineToken: "#9cd2ff", axisLabel: "#8b939c", since: "#8b939c", other: "#d9f99d", words: "#a9b1ba" };
     for (const [name, hex] of Object.entries(ink)) {
       const alpha = name in c ? effectiveOpacity((c as any)[name]) : 1;
       const ratio = contrast(hex, surface, alpha);
@@ -272,5 +278,5 @@ test("T340: the other band's hue per theme, and the inks and fills that follow i
     assert.ok(KERNEL.includes(rule), rule);
   }
   for (const gone of [".ah-sw{", ".ah-lsw{", ".ah-sw-r429{", ".ah-sw-r5xx{", ".ah-sw-none{", "body.theme-light .ah-sw-"]) assert.ok(!KERNEL.includes(gone), gone + " is gone");
-  assert.ok(KERNEL.includes(".ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:#e879f9}") && KERNEL.includes("body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:#86198F}"));
+  assert.ok(KERNEL.includes(".ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:var(--st-5xx-ink,#8a8aff)}") && KERNEL.includes("body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}"));   // the 5xx ink through its token since 2026-09-21 (plans/needs-you.md)
 });

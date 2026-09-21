@@ -1,9 +1,9 @@
-"""The chat page's approval box and the ask ring for a held message (plans/notice-cards.md, "Action kinds and the held-mail card",
+"""The chat page's approval box and the Needs you ring for a held message (plans/notice-cards.md, "Action kinds and the held-mail card",
 2026-09-19): a hermetic kernel over one synthetic live session in the notes-api demo world, the real /chat page served from a
 copy of the built bundle, driven by Playwright, the feed pane closed. A message from a DIRECTED peer held under
 STATE/postal/quarantine before boot becomes a notice card at the first build (the kernel's backfill; the chat is a feed
 audience, so the feed builds with no feed pane), and the chat page shows it in the #notices box above the background box with
-Approve and Deny while the session's tab wears the ask ring. Approve reaches the kernel's noticeAction op and, with no postal
+Approve and Deny while the session's tab wears the Needs you ring. Approve reaches the kernel's noticeAction op and, with no postal
 bus in the lab, is refused as unreachable: the buttons re-arm and the row says why. Deny opens the optional note inline with two
 choices and a way back; Deny without note posts the bare verdict and is refused the same way. The decision itself is the bus's
 success (unit-tested with the act stubbed), so the lab takes it the way the runner records it, an expire row in the notice
@@ -118,11 +118,12 @@ first.geometry = await page.evaluate(() => { const c = document.getElementById("
 let race = null;
 if (first.row) {
   await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollTop - 300; });
-  await page.waitForFunction(() => { const j = document.getElementById("jump-bottom"); return !!j && !j.hidden; }, null, { timeout: 15000 }).catch(() => {});
+  await timed("jump", page.waitForFunction(() => { const j = document.getElementById("jump-bottom"); return !!j && !j.hidden; }, null, { timeout: 15000 }));   // the scroll-up's premise, recorded (the review of PR 1926): asserted, never swallowed
+  const preDist = await page.evaluate(() => { const c = document.getElementById("content"); return c.scrollHeight - c.scrollTop - c.clientHeight; });
   const before = await lastPass();
   await page.evaluate((s) => { document.getElementById("jump-bottom").click(); const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Deny").click(); }, rowSel);
   const settledRace = await settled();
-  race = { settled: settledRace, before, pass: await lastPass(), atBottom: await atBottomNow(), boxHeight: await page.evaluate(() => document.getElementById("notices").getBoundingClientRect().height) };
+  race = { settled: settledRace, before, preDist, jumpWait: waits.jump, pass: await lastPass(), atBottom: await atBottomNow(), boxHeight: await page.evaluate(() => document.getElementById("notices").getBoundingClientRect().height) };
   await page.evaluate((s) => { const r = document.querySelector(s); Array.from(r.querySelectorAll("button")).find((x) => x.textContent === "Back").click(); }, rowSel);
   race.backSettled = await settled(); race.back = await facts();
 }
@@ -187,6 +188,114 @@ await browser.close();
 """
 
 
+# ── the approval box APPEARING after boot, the reader at the bottom, a scroll event between the growth and the pass ─────
+# The review of PR 1926: the wiring of the pre-growth decision (render.ts: the FOOTPRINT change added back, `dfoot` in place of the
+# content-rect delta `dh`) was guarded by text pins alone; the class above writes the held message before the kernel boots, so its
+# first leg covers the backfill road and the load ordering decides whether the geometric read is ever consulted. Here the message is
+# written AFTER boot, once the transcript is scrollable and the reader is at the bottom, and a MutationObserver on #notices' style
+# dispatches ONE synthetic scroll on the transcript when display leaves none: the microtask runs before the rendering update, so
+# followReader records the grown geometry (the revoked record), and the observer's pass alone can re-pin, by the geometry. Base red
+# and the `dh` mutant red (the pre-growth distance reads the borders and the margin, 10 px, outside the band); the hook's premise is
+# asserted too (fired exactly once, the post-scroll distance about the footprint), so the leg cannot pass vacuously.
+DRIVER_APPEARS = r"""
+import { createRequire } from "node:module";
+import fs from "node:fs";
+const require = createRequire(process.env.EXT_PKG);
+const { chromium } = require("playwright");
+const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));
+let browser;
+try { browser = await chromium.launch(cfg.launch || {}); }
+catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
+const out = { errors: [] };
+const ctx = await browser.newContext({ viewport: { width: 1100, height: 720 } });
+const page = await ctx.newPage();
+page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 200)));
+page.on("console", (m) => { if (m.type() === "error") out.errors.push("console: " + m.text().slice(0, 200)); });
+const waits = {};
+const timed = async (label, p) => { const t0 = Date.now(); const ok = await p.then(() => true).catch(() => false); waits[label] = { ok, ms: Date.now() - t0 }; return ok; };
+await page.addInitScript(() => { window.__labBoxBelow = {}; window.addEventListener("romp:box-below", (e) => { const d = e.detail;
+  window.__labBoxBelow[d.id] = { n: ((window.__labBoxBelow[d.id] || {}).n || 0) + 1, height: d.height, repinned: d.repinned }; }); });
+await page.goto(cfg.chat);
+await page.waitForSelector("#tabs .tab", { timeout: 30000 }).catch(() => {});
+// the premise: the transcript scrollable and the reader at the bottom (the boot's follow mode), the box hidden
+await timed("bottom", page.waitForFunction(() => { const c = document.getElementById("content"); const b = document.getElementById("notices");
+  return !!c && !!b && b.style.display === "none" && c.scrollHeight > c.clientHeight + 40 && (c.scrollHeight - c.scrollTop - c.clientHeight) < 2; }, null, { timeout: 90000 }));
+out.before = await page.evaluate(() => { const c = document.getElementById("content"); return { sh: c.scrollHeight, st: c.scrollTop, ch: c.clientHeight, pass: (window.__labBoxBelow || {}).notices || null }; });
+// the hook: on the box's first show, one synthetic scroll on the transcript in the mutation's microtask (before the rendering update)
+await page.evaluate(() => { const b = document.getElementById("notices"); const c = document.getElementById("content");
+  window.__hook = { fired: 0, dist: null, chAfter: null, foot: null };
+  new MutationObserver(() => { if (b.style.display === "none" || window.__hook.fired > 0) return; window.__hook.fired++;
+    const cs = getComputedStyle(b); const r = b.getBoundingClientRect();
+    window.__hook.foot = r.height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+    window.__hook.dist = c.scrollHeight - c.scrollTop - c.clientHeight; window.__hook.chAfter = c.clientHeight;
+    c.dispatchEvent(new Event("scroll")); }).observe(b, { attributes: true, attributeFilter: ["style"] }); });
+// the held message, written now: the kernel's quarantine watch shows the box
+fs.writeFileSync(cfg.qdir + "/" + cfg.mid + ".json", JSON.stringify({ mid: cfg.mid, to: "web", toId: cfg.sid, frm: "api", frmId: "11111111-2222-3333-4444-666666666666",
+  body: cfg.text, kind: "coordinate", origin: "TESTHOST", via: "peer", at: Math.floor(Date.now() / 1000) - 60 }));
+const rowSel = '#notices .ntc-row[data-item="notice:' + cfg.sid + ":" + cfg.mid + ':1"]';
+await timed("row", page.waitForFunction((s) => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && !!document.querySelector(s); }, rowSel, { timeout: 90000 }));
+const settledFn = () => { const b = document.getElementById("notices"); const rec = (window.__labBoxBelow || {}).notices; if (!b || !rec) return false;
+  const cs = getComputedStyle(b); const r = b.getBoundingClientRect().height;
+  const content = r > 0 ? r - parseFloat(cs.borderTopWidth) - parseFloat(cs.borderBottomWidth) - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) : 0;
+  return Math.abs(content - rec.height) < 0.02; };
+out.settled = await timed("settled", page.waitForFunction(settledFn, null, { timeout: 15000 }));
+out.after = await page.evaluate(() => { const c = document.getElementById("content"); const b = document.getElementById("notices"); const cs = getComputedStyle(b); const r = b.getBoundingClientRect();
+  return { sh: c.scrollHeight, st: c.scrollTop, ch: c.clientHeight, atBottom: (c.scrollHeight - c.scrollTop - c.clientHeight) < 2, pass: (window.__labBoxBelow || {}).notices || null,
+    foot: r.height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0), hook: window.__hook }; });
+out.waits = waits;
+process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
+await browser.close();
+"""
+
+
+class HeldMailAppearsAfterBoot(unittest.TestCase):
+    maxDiff = None
+    _r = None
+
+    @classmethod
+    def setUpClass(cls):
+        HeldMailChatServed.setUpClass.__func__(cls, with_held=False)
+
+    @classmethod
+    def _skip(cls, why):
+        HeldMailChatServed._skip.__func__(cls, why)
+
+    @classmethod
+    def tearDownClass(cls):
+        HeldMailChatServed.tearDownClass.__func__(cls)
+
+    def _result(self):
+        if getattr(type(self), "_fail", None):
+            self.fail(type(self)._fail)
+        if self._r is None:
+            cfg = os.path.join(self.lab, "appears.json")
+            with open(cfg, "w") as f:
+                json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID, "mid": MID, "qdir": self.qdir, "text": TEXT}, f)
+            driver = os.path.join(self.lab, "appears.mjs")
+            Path(driver).write_text(DRIVER_APPEARS)
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=400,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+            if "browser-launch-failed" in p.stderr:
+                self._skip("no playwright browser on this box")
+            line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
+            if line is None:
+                type(self)._fail = "the driver produced no RESULT (stderr: %s; kernel: %s)" % (p.stderr[-2000:], open(self.klog).read()[-1500:])
+                self.fail(type(self)._fail)
+            type(self)._r = json.loads(line[len("RESULT:"):])
+        print("HELDAPPEARS:", json.dumps(self._r), file=sys.stderr)
+        return self._r
+
+    def test_a_box_that_first_shows_under_a_scroll_event_re_pins_the_reader_by_the_pre_growth_geometry(self):
+        r = self._result(); a, h = r["after"], r["after"]["hook"]
+        why = lambda: "waits %r before %r after %r errors %r" % (r["waits"], r["before"], {k: v for k, v in a.items() if k != "hook"}, r["errors"])
+        self.assertTrue(r["waits"]["bottom"]["ok"] and r["waits"]["row"]["ok"] and r["settled"], "the premise and the pass: " + why())
+        self.assertEqual(h["fired"], 1, "the hook fired exactly once, on the box's first show: %r" % h)
+        self.assertLess(abs(h["dist"] - h["foot"]), 2, "the synthetic scroll read the reader a footprint above the new bottom (the revoked record): %r" % h)
+        self.assertLess(abs((r["before"]["ch"] - h["chAfter"]) - h["foot"]), 2, "what the transcript gave up is the box's FOOTPRINT (borders and margins in), within the band: %r vs %r" % (r["before"]["ch"] - h["chAfter"], h["foot"]))
+        self.assertTrue(a["pass"] and a["pass"]["repinned"], "the observer's pass re-pinned the reader by the pre-growth geometry, the record having said scrolled-up: " + why())
+        self.assertTrue(a["atBottom"], "the reader is at the bottom after the box showed: " + why())
+
+
 class HeldMailChatServed(unittest.TestCase):
     maxDiff = None
 
@@ -197,7 +306,7 @@ class HeldMailChatServed(unittest.TestCase):
         raise unittest.SkipTest(why)
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls, with_held=True):
         if not os.path.isdir(os.path.join(EXT, "node_modules", "playwright")):
             cls._skip("extension deps absent (npm ci not run here): the served guard needs them")
         cls.lab = tempfile.mkdtemp(prefix="held-mail-chat-")
@@ -233,7 +342,7 @@ class HeldMailChatServed(unittest.TestCase):
             parent = a
         Path(proj, SID + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         cls.held = os.path.join(cls.state, "postal", "quarantine", MID + ".json")
-        Path(cls.held).write_text(json.dumps(
+        if with_held: Path(cls.held).write_text(json.dumps(
             {"mid": MID, "to": "web", "toId": SID, "frm": "api", "frmId": "11111111-2222-3333-4444-666666666666", "body": TEXT,
              "kind": "coordinate", "origin": "TESTHOST", "via": "peer", "at": int(time.time()) - 600}))
         cls.notices = os.path.join(cls.state, "notices", SID + ".jsonl")
@@ -297,7 +406,7 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertIn(TEXT, f["body"], "the message text is the row's body")
         self.assertEqual(f["buttons"], [{"label": "Approve", "disabled": False}, {"label": "Deny", "disabled": False}], "two actions of the kind, no Edit")
         self.assertIsNotNone(f["tabClasses"], "the session's tab")
-        self.assertIn("ring-waiting-on-you", f["tabClasses"], "the ask ring: a held message blocks the session until decided: %r (%s)" % (f["tabClasses"], why()))
+        self.assertIn("ring-waiting-on-you", f["tabClasses"], "the Needs you ring: a held message blocks the session until decided: %r (%s)" % (f["tabClasses"], why()))
         self.assertTrue(f["scrollable"], "the transcript scrolls (sixty turns), so the bottom is a real position")
         self.assertTrue(f["settled"], "the box's height is the one its last observer pass reported: the event the read holds at (pass: %r; %s)" % (f["pass"], why()))
         self.assertTrue(f["atBottom"], "the at-bottom reader stayed at the bottom when the box appeared (the box is a box below, low a), read settled (geometry: %r; pass: %r; %s)" % (f.get("geometry"), f["pass"], why()))
@@ -306,6 +415,7 @@ class HeldMailChatServed(unittest.TestCase):
         r = self._result()
         x = r["race"]
         self.assertIsNotNone(x)
+        self.assertTrue(x["jumpWait"]["ok"] and x["preDist"] > 100, "the premise: the reader was scrolled up and the jump chip showed before the click (wait %r, distance %r)" % (x["jumpWait"], x["preDist"]))
         self.assertTrue(x["settled"], "the box settled after the note step opened under the jump (pass: %r)" % x["pass"])
         self.assertGreater(x["pass"]["height"], x["before"]["height"], "the note step grew the box, the scenario's premise: %r -> %r" % (x["before"], x["pass"]))
         self.assertTrue(x["atBottom"], "the jump's write to the bottom and the box's growth in one task: the write's echo keeps follow mode and the pass re-pins the reader to the new bottom (pass: %r)" % x["pass"])
@@ -355,7 +465,7 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertIsNotNone(d)
         self.assertFalse(d["row"], "the row left with the frame that dropped it"); self.assertEqual(d["rows"], [], "all three decided")
         self.assertEqual(d["boxDisplay"], "none", "no row: the box hides")
-        self.assertNotIn("ring-waiting-on-you", d["tabClasses"] or [], "the ask ring left with the decision: %r" % d["tabClasses"])
+        self.assertNotIn("ring-waiting-on-you", d["tabClasses"] or [], "the Needs you ring left with the decision: %r" % d["tabClasses"])
 
 
 if __name__ == "__main__":

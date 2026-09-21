@@ -2,7 +2,7 @@
 """T347 (the user 2026-09-11, who wanted the focused session's cards on top of the feed): THE FOCUSED SESSION SECTION.
 
 When a session tab has focus in the chat pane, the feed shows that session's cards ABOVE a horizontal divider — the
-board's three columns (Working / Blocked / Completed), a miniature of the feed for one session, headed by the session's
+board's three columns (Working / Needs you / Completed), a miniature of the feed for one session, headed by the session's
 name — while the board below stays exactly as it is, so those cards appear twice. OFF by default; the View menu's
 fourth row ("Show focused session") switches it, persisted in the feed's view state under `focused`; the kernel relays
 the chat pane's active tab to the feed clients of the same window as {type:"activeChat", id}. EVENT-based: the section
@@ -361,7 +361,7 @@ class ServedFocusedSessionSection(unittest.TestCase):
         self.assertFalse(on["emptyShown"], "no quiet line while the session has cards: %r" % on["emptyText"])
         self.assertTrue(on["colsShown"])
         # the board's three columns, the board's chips, one fold caret per block (T410); each column counts its one card
-        self.assertEqual(on["chips"], ["Working", "Blocked", "Completed"], "the same column chips as the board: %r" % on["chips"])
+        self.assertEqual(on["chips"], ["Working", "Needs you", "Completed"], "the same column chips as the board: %r" % on["chips"])
         self.assertEqual(on["folds"], 3, "one fold caret per block (T410), the label's caret aside")
         self.assertEqual(on["counts"], {"asks": "1", "needsInput": "1", "completed": "1"}, "one card per column: %r" % on["counts"])
         # exactly web's cards, per column the same titles as web's cards on the board, under the section's own keys
