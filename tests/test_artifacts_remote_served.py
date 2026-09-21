@@ -50,6 +50,12 @@ const page = await ctx.newPage();
 page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 200)));
 // the pane enabled in the gear's Panes section (the experimental record's row), written as the gear writes it
 await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.panes = Object.assign({}, s.panes || {}, { artifacts: true }); localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });
+// every frame records its outbound frames by type and sid (the pane's watch and listing on the host relay: the frame-order pin of the
+// reload leg) and counts the relay's opens; installed before any navigation, so the reload's boot is read whole
+await page.addInitScript(() => { window.__sends = []; window.__relayUps = 0;
+  window.addEventListener("romp:hostRelayUp", () => { window.__relayUps++; });
+  const orig = WebSocket.prototype.send; WebSocket.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type) window.__sends.push({ type: m.type, sid: m.sid || null }); } catch (e) {} return orig.call(this, d); }; });
+const waitFile = async (p, ms) => { for (let i = 0; i < ms / 250; i++) { if (fs.existsSync(p)) return true; await page.waitForTimeout(250); } return false; };
 await page.goto(cfg.landing);
 await page.waitForSelector("#f-chat", { timeout: 30000 });
 const findFrame = async (re) => { for (let i = 0; i < 150; i++) { const f = page.frames().find((fr) => re.test(fr.url())); if (f) return f; await page.waitForTimeout(200); } return null; };
@@ -58,7 +64,7 @@ const cf = await findFrame(/\/chat(\?|$)/);
 if (cf) await cf.waitForSelector('#tabs .tab[data-id="TESTHOST:' + cfg.rsid + '"]', { timeout: 90000 }).catch(() => {});
 out.tabs = cf ? await cf.evaluate(() => Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id"))) : null;
 await page.click('.rail-btn[data-pane="artifacts"]');
-const fr = await findFrame(/\/artifacts(\?|$)/);
+let fr = await findFrame(/\/artifacts(\?|$)/);
 out.frame = !!fr;
 if (fr) {
   await fr.waitForSelector("#art-pick", { timeout: 30000 }).catch(() => {});
@@ -91,6 +97,37 @@ if (fr) {
   await fr.click('#art-picker .ctx-item[data-sid="' + cfg.lsid + '"]', { timeout: 15000 }).catch(() => {});
   await fr.waitForFunction(() => Array.from(document.querySelectorAll(".art-row .art-name")).some((n) => n.textContent === "report.md"), null, { timeout: 60000 }).catch(() => {});
   out.local = await fr.evaluate(() => ({ rows: Array.from(document.querySelectorAll(".art-row .art-name")).map((n) => n.textContent), prefix: (document.querySelector("#art-pick .host-prefix") || {}).textContent || null }));
+  // (B) the owning host DOWN at selection time (the reviewers of PR 1925): the test stops the remote kernel on the stage file, the hub's
+  // tunnel health marks the host down and federation publishes it; picking the remote then shows the disconnected note, never a wait
+  // that nothing could end; the remote back (the test's second stage) lists with no click
+  fs.writeFileSync(cfg.stage + "/stage-1", "");
+  const acked1 = await waitFile(cfg.stage + "/ack-1", 60000);
+  const down = await fr.waitForFunction(() => { const f = window.__rompFed; return !!f && typeof f.down === "function" && f.down().indexOf("TESTHOST") >= 0; }, null, { timeout: 120000 }).then(() => true).catch(() => false);
+  await fr.click("#art-pick", { timeout: 15000 }).catch(() => {});
+  await fr.waitForSelector('#art-picker .ctx-item[data-sid="TESTHOST:' + cfg.rsid + '"]', { timeout: 15000 }).catch(() => {});
+  await fr.click('#art-picker .ctx-item[data-sid="TESTHOST:' + cfg.rsid + '"]', { timeout: 15000 }).catch(() => {});
+  const noted = await fr.waitForFunction(() => /disconnected/.test((document.querySelector(".art-err") || {}).textContent || ""), null, { timeout: 30000 }).then(() => true).catch(() => false);
+  out.hostDown = { acked1, down, noted, ...(await fr.evaluate(() => ({ err: (document.querySelector(".art-err") || {}).textContent || "", wait: (document.querySelector(".art-empty") || {}).textContent || "",
+    spin: (() => { const o = document.getElementById("pane-spin"); return o ? !o.classList.contains("gone") : null; })(), rows: document.querySelectorAll(".art-row").length }))) };
+  fs.writeFileSync(cfg.stage + "/stage-2", "");
+  const acked2 = await waitFile(cfg.stage + "/ack-2", 120000);
+  const relisted = await fr.waitForFunction(() => document.querySelectorAll(".art-row").length >= 2 && !document.querySelector(".art-err"), null, { timeout: 180000 }).then(() => true).catch(() => false);
+  out.hostBack = { acked2, relisted, ...(await fr.evaluate(() => ({ rows: Array.from(document.querySelectorAll(".art-row .art-name")).map((n) => n.textContent), err: (document.querySelector(".art-err") || {}).textContent || "", relayUps: window.__relayUps }))) };
+  // (the re-arm, executed) the persisted remote selection and the lock survive a reload; the pane boots before federation holds a conn
+  // for the host (its boot frames have nothing to ride: the ask is deferred to the relay's open), so on the host relay the open's re-arm
+  // sends the watch and then the ONE listing, and nothing else follows
+  await fr.click("#art-lock", { timeout: 15000 }).catch(() => {});
+  await fr.waitForFunction(() => { const l = document.getElementById("art-lock"); return !!l && l.getAttribute("aria-pressed") === "true"; }, null, { timeout: 10000 }).catch(() => {});
+  await page.reload(); await page.waitForSelector("#f-chat", { timeout: 30000 });
+  fr = await findFrame(/\/artifacts(\?|$)/);
+  if (fr) {
+    await fr.waitForFunction(() => document.querySelectorAll(".art-row").length >= 2, null, { timeout: 120000 }).catch(() => {});
+    await fr.waitForFunction(() => window.__relayUps > 0 && window.__sends.some((x) => x.type === "artifactsListing" || x.type === "listArtifacts"), null, { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(1500);   // a second ask that will not come cannot be awaited: the frames are read after the listing landed and a pause
+    out.reloaded = await fr.evaluate((rid) => ({ prefix: (document.querySelector("#art-pick .host-prefix") || {}).textContent || null, name: (document.querySelector("#art-pick .session-name") || {}).textContent || null,
+      lock: (document.getElementById("art-lock") || {}).getAttribute("aria-pressed"), rows: Array.from(document.querySelectorAll(".art-row .art-name")).map((n) => n.textContent), relayUps: window.__relayUps,
+      frames: window.__sends.filter((x) => (x.type === "watchArtifacts" || x.type === "listArtifacts") && (x.sid === rid || x.sid === "TESTHOST:" + rid)).map((x) => x.type) }), cfg.rsid);
+  }
 }
 process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
@@ -175,6 +212,9 @@ class ArtifactsRemoteServed(unittest.TestCase):
                                    _records(SID_R, ["docs/remote-notes.md"], ["plots/remote-figure.png"]),
                                    {"docs/remote-notes.md": "# notes on the remote\n", "plots/remote-figure.png": PNG})
             cls.procs.append(rp)
+            cls.remote_args = (cls.lab, "testhost", cls.rport, cls.rtoken, SID_R, "api", COLOR_R,
+                               _records(SID_R, ["docs/remote-notes.md"], ["plots/remote-figure.png"]),
+                               {"docs/remote-notes.md": "# notes on the remote\n", "plots/remote-figure.png": PNG})   # the reboot of the down-host leg
             hp, cls.hlog = _kernel(cls.lab, "hub", cls.hport, cls.htoken, SID_L, "web", COLOR_L,
                                    _records(SID_L, ["report.md"], []), {"report.md": "# the report\n"})
             cls.procs.append(hp)
@@ -218,12 +258,36 @@ class ArtifactsRemoteServed(unittest.TestCase):
             self.fail(type(self)._fail)
         if type(self)._r is None:
             cfg = os.path.join(self.lab, "cfg.json")
+            stage = os.path.join(self.lab, "stage"); os.makedirs(stage, exist_ok=True)
             with open(cfg, "w") as f:
-                json.dump({"landing": "http://127.0.0.1:%d/?token=%s" % (self.hport, self.htoken), "rsid": SID_R, "lsid": SID_L}, f)
+                json.dump({"landing": "http://127.0.0.1:%d/?token=%s" % (self.hport, self.htoken), "rsid": SID_R, "lsid": SID_L, "stage": stage}, f)
             driver = os.path.join(self.lab, "driver.mjs")
             Path(driver).write_text(DRIVER)
-            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=500,
-                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+            # the driver and this test meet on stage files: at stage-1 the remote kernel is stopped (the host down), at stage-2 it is
+            # booted again on the same port (the host back); each wait is bounded and ends with the driver's exit too
+            p = subprocess.Popen(["node", driver], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                 env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+            def reached(name, secs):
+                for _ in range(secs * 2):
+                    if os.path.exists(os.path.join(stage, name)) or p.poll() is not None:
+                        return p.poll() is None
+                    time.sleep(0.5)
+                return False
+            if reached("stage-1", 420):
+                rp = self.procs[0]; rp.kill(); rp.wait()
+                Path(stage, "ack-1").write_text("")
+            if reached("stage-2", 420):
+                try:
+                    rp2, self.rlog = _kernel(*self.remote_args)
+                    self.procs.append(rp2)
+                except unittest.SkipTest as e:
+                    type(self)._fail = "the remote kernel did not come back: %s" % e
+                Path(stage, "ack-2").write_text("")
+            try:
+                out, err = p.communicate(timeout=600)
+            except subprocess.TimeoutExpired:
+                p.kill(); out, err = p.communicate()
+            p.stdout, p.stderr = out, err
             if "browser-launch-failed" in p.stderr:
                 self._skip("no playwright browser on this box")
             line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
@@ -279,6 +343,25 @@ class ArtifactsRemoteServed(unittest.TestCase):
         self.assertNotIn("TESTHOST%3A", t["src"]); self.assertNotIn("TESTHOST:", t["src"].split("sid=")[1])
         self.assertTrue(t["loaded"], "the bytes came through the relay and decoded: %r" % t)
         self.assertEqual(m["lock"], "false", "a fresh browser starts unlocked and following")
+
+    def test_a_remote_picked_while_its_host_is_down_shows_the_note_in_place_of_the_wait_and_lists_when_the_host_is_back(self):
+        # the reviewers of PR 1925 (B): the host down at selection time left "Reading the thread…" for good; the note (host-prefix.ts
+        # hostDownNote) stands in its place, the loader is down, and the host's return lists with no click (the relay's reopen re-asks)
+        r = self._result(); d, b = r.get("hostDown") or {}, r.get("hostBack") or {}
+        self.assertTrue(d.get("acked1") and d.get("down"), "the remote was stopped and federation published the host down: %r%s" % (d, self.logs()))
+        self.assertTrue(d.get("noted"), "the disconnected note in place of the wait: %r" % d)
+        self.assertIn("TESTHOST is disconnected", d.get("err", "")); self.assertEqual((d.get("wait"), d.get("spin"), d.get("rows")), ("", False, 0), "no wait text, the loader down, no rows: %r" % d)
+        self.assertTrue(b.get("acked2") and b.get("relisted"), "the host back: the listing came with no click: %r%s" % (b, self.logs()))
+        self.assertEqual(sorted(b.get("rows") or []), ["remote-figure.png", "remote-notes.md"]); self.assertEqual(b.get("err"), "")
+
+    def test_a_persisted_remote_selection_and_the_lock_survive_a_reload_and_the_relays_open_re_sends_the_watch_alone(self):
+        # the re-arm executed (in place of two regexes): the pane boots before federation holds a conn for the host, so its boot frames
+        # cannot ride anything and the ask is deferred; the relay's open re-arms the watch and asks the ONE listing, nothing follows
+        r = self._result(); x = r.get("reloaded") or {}
+        self.assertEqual((x.get("prefix"), x.get("name"), x.get("lock")), ("TESTHOST:", "api", "true"), "the remote selection and the lock survive the reload: %r" % x)
+        self.assertEqual(sorted(x.get("rows") or []), ["remote-figure.png", "remote-notes.md"])
+        self.assertGreaterEqual(x.get("relayUps") or 0, 1, "the relay opened after the pane booted: %r" % x)
+        self.assertEqual(x.get("frames"), ["watchArtifacts", "listArtifacts"], "the frame order on the host relay: the re-arm's watch, the one listing: %r%s" % (x, self.logs()))
 
     def test_the_local_session_lists_its_own_file_when_picked(self):
         r = self._result()

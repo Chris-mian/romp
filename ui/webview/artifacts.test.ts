@@ -6,7 +6,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { gridItems, cycleEntries, viaWord, rowRoute, ago, type ArtifactItem, nextSelection, normalizeTabs, shownRow } from "./artifacts-model";
+import { gridItems, cycleEntries, viaWord, rowRoute, ago, type ArtifactItem, nextSelection, normalizeTabs, shownRow, listingSig, echoAccepted, type RelayMark } from "./artifacts-model";
 
 const UI = path.resolve(process.cwd(), "..", "ui", "webview");
 const item = (p: string, over: Partial<ArtifactItem> = {}): ArtifactItem =>
@@ -59,7 +59,7 @@ test("the pieces outside the kernel: the retired setting dropped at load, the ge
   assert.match(ART, /img\.src = fileUrl\(it\.path, sel\.sid\);/, "thumbnails through the token-authed file route with the session's sid");
   assert.doesNotMatch(ART, /new WebSocket|fetch\(/, "no file server of its own, no fetch: the route and the socket the shim gives it");
   // round two (2026-09-19): the cap says the newest of more, once; a kind the viewer does not show is listed plain and a click says so
-  assert.match(ART, /count\.textContent = listing\.capped \? "the newest " \+ listing\.max \+ " files of more" : listing\.items\.length \+ \(listing\.items\.length === 1 \? " file" : " files"\);/);
+  assert.match(ART, /count\.textContent = listing && !listing\.error \? \(listing\.capped \? "the newest " \+ listing\.max \+ " files of more" : listing\.items\.length \+ \(listing\.items\.length === 1 \? " file" : " files"\)\) : "";/, "the count in the bar, re-read in place");
   assert.match(ART, /if \(it\.kind === "other"\) \{ note\("The viewer cannot show " \+ it\.name \+ ": not a kind it renders\."\); return; \}/);
 });
 
@@ -90,24 +90,29 @@ test("the picker's rows are the shell's union made safe; the shown session's row
 
 test("the page: the picker in the strip's label and the menu card, the lock, the watch, the shell's signals, no Refresh, no native select", () => {
   const ART = fs.readFileSync(path.join(UI, "artifacts.ts"), "utf8");
-  assert.match(ART, /import \{ sessionLabelNodes, hostOf \} from "\.\/host-prefix";/, "the strip's label, shared (and the host of a sid, for the re-arm)");
+  assert.match(ART, /import \{ sessionLabelNodes, hostOf, hostIsDown, hostDownNote \} from "\.\/host-prefix";/, "the strip's label, shared (the host of a sid for the re-arm; the down set and its note for an unreachable host)");
   assert.match(ART, /import \{ menuCard, showMenuCard, closeContextMenu \} from "\.\/ctx-menu";/, "the card is the menu builder's");
-  assert.match(ART, /pick\.append\(\.\.\.sessionLabelNodes\(shown\.row\.name, shown\.row\.id, shown\.row\.color\)\);/, "the button wears the label");
+  assert.match(ART, /parts\.push\(\.\.\.sessionLabelNodes\(shown\.row\.name, shown\.row\.id, shown\.row\.color\)\);/, "the button wears the label, its children replaced in place");
   assert.match(ART, /b\.append\(\.\.\.sessionLabelNodes\(t\.name, t\.id, t\.color\)\); row\.appendChild\(b\);/, "each row wears the label");
   assert.match(ART, /const card = menuCard\(\{ className: "art-picker", id: "art-picker" \}\);/);
   assert.match(ART, /apply\(\{ type: "pick", id \}\)/, "a row click is a pick through the machine");
   assert.match(ART, /"art-lock": \(\) => apply\(\{ type: "toggleLock" \}\),/, "the lock button toggles through the machine");
   assert.match(ART, /if \(m\.romp === "chatTabs"\) \{ tabs = normalizeTabs\(m\.tabs\); for \(const t of tabs\) known\.set\(t\.id, t\); apply\(\{ type: "tabsChanged", tabs \}\); return; \}/, "the shell's union, every tab's name remembered");
-  assert.match(ART, /if \(m\.romp === "activeChat" \|\| m\.type === "activeChat"\) \{ apply\(\{ type: "activeChat", id: typeof m\.id === "string" && m\.id \? m\.id : null \}\); return; \}/, "the shell's relay and the kernel's frame");
+  assert.match(ART, /if \(m\.romp === "activeChat"\) \{[^\n]*\n\s*const id = [^\n]*\n\s*relayMark = \{ sid: id, nonce: typeof m\.nonce === "number" \? m\.nonce : null \};/, "the shell's relay is the mark");
+  assert.match(ART, /if \(m\.type === "activeChat"\) \{[^\n]*\n\s*const id = [^\n]*\n\s*if \(!echoAccepted\(relayMark, id, m\.nonce\)\) return;/, "the kernel's frame is judged against it (the reviewers of PR 1925, E)");
   assert.match(ART, /ask\(\{ type: "watchArtifacts", sid: watched, unwatch: true \}\);/, "the previous watch dropped on its own kernel");
   assert.match(ART, /if \(sid\) ask\(\{ type: "watchArtifacts", sid \}\);/, "the shown session watched");
-  assert.match(ART, /if \(m\.type === "artifactsChanged"\) \{[^\n]*\n\s*if \(m\.sid !== sel\.sid\) return;[^\n]*\n\s*if \(onScreen\(\)\) requestListing\(\); else stale = true;/, "growth: re-ask on screen, stale off screen");
+  assert.match(ART, /if \(m\.type === "artifactsChanged"\) \{[^\n]*\n\s*if \(m\.sid !== sel\.sid\) return;[^\n]*\n\s*if \(!onScreen\(\) \|\| loading\) \{ stale = true; return; \}[^\n]*\n\s*requestListing\(\);/, "a growth signal re-asks on screen, or marks the listing stale off screen or under an ask in flight (one re-ask once its answer lands)");
+  assert.match(ART, /if \(stale && onScreen\(\)\) requestListing\(\);/, "…the re-ask after the accepted answer");
   assert.match(ART, /if \(!framed\) requestSessions\(\);/, "the picker's list only for a page with no shell");
   assert.match(ART, /vscodeApi\?\.postMessage\(\{ type: "ready" \}\);/, "the handshake every pane sends: the kernel's active chat comes on it (9.5)");
   assert.match(ART, /window\.addEventListener\("romp:wsup", \(\) => rearm\(""\)\);/, "the watch re-armed on the local socket's (re)open (round two, medium)");
   assert.match(ART, /window\.addEventListener\("romp:hostRelayUp", \(ev\) => rearm\(String\(\(ev as CustomEvent\)\.detail\?\.host \|\| ""\)\)\);/, "…and on a host's relay socket reopening");
-  assert.match(ART, /ask\(\{ type: "watchArtifacts", sid: sel\.sid \}\); watched = sel\.sid;\s*\n\s*if \(onScreen\(\)\) requestListing\(\); else stale = true;/, "the re-arm never depends on the sid changing, and re-asks the listing");
-  assert.match(ART, /if \(hadFocus\) document\.getElementById\(hadFocus\)\?\.focus\(\);/, "a repaint keeps the focus on the bar's button (round two, low c)");
+  assert.match(ART, /ask\(\{ type: "watchArtifacts", sid: sel\.sid \}\); watched = sel\.sid;\s*\n\s*if \(!downSeen\.has\(host\)\) return;\s*\n\s*downSeen\.delete\(host\);\s*\n\s*if \(onScreen\(\)\) requestListing\(\); else stale = true;/, "the re-arm: the watch on every open, the listing re-asked only after a drop on this page (the reviewers of PR 1925, J)");
+  assert.match(ART, /window\.addEventListener\("romp:wsdown", \(\) => \{ downSeen\.add\(""\); \}\);/, "the local drop");
+  assert.match(ART, /if \(hostIsDown\(sel\.sid\)\) \{ downSeen\.add\(h\); if \(!listing\) requestListing\(\); \}/, "a host down while the wait shows: the note in its place, on the down set's event (B)");
+  assert.match(ART, /if \(bar && body\) return \{ bar, body \};/, "the bar's buttons are built once and updated in place: the focus and an open card stay (the lab reads the element across a repaint)");
+  assert.match(ART, /window\.dispatchEvent\(new CustomEvent\("romp:artifacts-listing", \{ detail: \{ sid: next\.sid, reqId: m\.reqId, n: answers, same \} \}\)\);/, "an accepted listing is an event on the page: the follow lab holds its reads on the followed session's answer, never on the bar's name or a wall-clock wait (the flake of 2026-09-21 on main)");
   assert.match(ART, /const shown = shownRow\(tabs, sel\.sid, known\);/, "the last known name for a closed tab (low d)");
   assert.doesNotMatch(ART, /art-refresh|"Refresh"|createElement\("select"\)|art-dot/, "no Refresh button, no native select, no identity dot");
   assert.match(ART, /localStorage\.setItem\(LOCK_KEY, on \? "1" : "0"\)/, "the lock persists per browser");
@@ -120,4 +125,27 @@ test("the page: the picker in the strip's label and the menu card, the lock, the
   assert.match(RENDER, /noteOrphanState\(\);[^\n]*\n\s*postChatTabs\(ids\.filter\(\(id\) => heldHere\(id\) && !isSubId\(id\) && !isProvisionalId\(id\)\)\);/, "the column posts its OWN membership (the partition, not the display-narrowed subset) from renderTabs");
   assert.match(RENDER, /window\.parent\.postMessage\(\{ romp: "chatTabs", tabs \}, "\*"\);/);
   assert.match(RENDER, /if \(sig === chatTabsSig\) return;/, "posted only when the set changed");
+});
+
+test("the listing signature: what the pane paints per row, so a same-signature answer touches nothing; size and mtime are not painted", () => {
+  const a = [item("/srv/notes-api/report.md", { t: 300 }), item("/srv/notes-api/figures/loss.png", { kind: "image", t: 100 })];
+  assert.equal(listingSig(a), listingSig(a.map((it) => ({ ...it, size: 999, mtime: 555 }))), "size and mtime are not painted: the same signature");
+  assert.notEqual(listingSig(a), listingSig([{ ...a[0], exists: false }, a[1]]), "a file gone: another signature");
+  assert.notEqual(listingSig(a), listingSig([a[1], a[0]]), "the order is part of it (newest first)");
+  assert.notEqual(listingSig(a), listingSig([item("/srv/notes-api/new.md", { t: 400 }), ...a]), "a new row");
+});
+
+test("the kernel's echo of a tab switch is applied only when not behind the last shell relay: relays A, B, C, then B's echo", () => {
+  assert.equal(echoAccepted(null, "B", 2), true, "before any relay arrived (a reloaded pane's ready answer): applied");
+  const mark: RelayMark = { sid: "C", nonce: 3 };
+  assert.equal(echoAccepted(mark, "B", 2), false, "B's echo landing after the relay of C: dropped, it moved the pane backward");
+  assert.equal(echoAccepted(mark, "C", 3), true, "C's own echo: applied (a no-op on the machine)");
+  assert.equal(echoAccepted(mark, "C", 4), true, "a later nonce for the same id");
+  assert.equal(echoAccepted(mark, "C", 2), false, "the same id under an earlier nonce: dropped");
+  assert.equal(echoAccepted({ sid: "C", nonce: null }, "C", 2), true, "a relay without a nonce compares ids alone");
+  assert.equal(echoAccepted(mark, "C", undefined), true, "an echo without a nonce compares ids alone");
+  let s = { sid: null as string | null, locked: false }; let m: RelayMark | null = null;
+  for (const [id, nonce] of [["A", 1], ["B", 2], ["C", 3]] as [string, number][]) { m = { sid: id, nonce }; s = nextSelection(s, { type: "activeChat", id }); }
+  if (echoAccepted(m, "B", 2)) s = nextSelection(s, { type: "activeChat", id: "B" });
+  assert.deepEqual(s, { sid: "C", locked: false }, "the pane ends on C: the nonce is per chat frame, so the id is matched before the nonce is compared");
 });

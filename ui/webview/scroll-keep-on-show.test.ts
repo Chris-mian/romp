@@ -174,5 +174,7 @@ test("where the reader stood before a box below grew: the footprint added back, 
   assert.equal(atBottomBeforeGrowth(8819, 8174, 447, 189.265625 + 8), true, "the footprint (border box plus margin) puts the reader at the bottom before the growth: re-pin");
   assert.equal(atBottomBeforeGrowth(8819, 8174, 447, 187.265625), false, "the content-rect delta alone reads them 10.7 px above the bottom: the bug the payload named");
   assert.equal(atBottomBeforeGrowth(8819, 8174 - 40, 447, 197.265625), false, "a reader 40 px up stays where they were");
-  assert.equal(atBottomBeforeGrowth(8819, 8422, 397, 50.78), true, "a box growing while shown (no margin change): the footprint delta equals the content delta");
+  assert.equal(atBottomBeforeGrowth(8819, 8371.22, 397, 50.78), true, "a box growing while shown by 50.78 px: a reader whose top line is 50.78 px above the post-growth bottom stood at the pre-growth bottom");
+  assert.equal(atBottomBeforeGrowth(8819, 8371.22, 397, 0), false, "…and without the growth added back the same reader reads as scrolled up (the review of PR 1926)");
+  assert.equal(atBottomBeforeGrowth(8819, 8422, 397, 50.78), true, "a reader already written to the NEW bottom before the pass reads as at the bottom too: the band has no bound below zero");
 });

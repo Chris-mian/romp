@@ -528,8 +528,10 @@ test("redial stays LOCAL with its host INTACT: the local kernel owns the tunnel,
 test("the classes are an explicit list: every held type is in BOOKKEEPING, a gesture and an unknown type are not, and a key never leaks a type-only collision across sessions", () => {
   for (const t of ["activeTab", "needFull", "needSlot", "loadOlder", "loadAround", "loadTurns", "loadEpisode", "imgRequest", "commentSeen",
                    "dotHover", "hoverHighlight", "showAskPath", "timelineHover", "dirComplete",
-                   "cardOpened", "locateDiag", "orderAudit"])
+                   "cardOpened", "locateDiag", "orderAudit", "watchArtifacts", "listArtifacts"])
     assert.ok(BOOKKEEPING.has(t), t + " is held, not toasted");
+  assert.notEqual(bookkeepingKey({ type: "watchArtifacts", sid: "S1" }), bookkeepingKey({ type: "watchArtifacts", sid: "S2" }), "the Artifacts pane's watch is held per session");
+  assert.notEqual(bookkeepingKey({ type: "listArtifacts", sid: "S1" }), bookkeepingKey({ type: "listArtifacts", sid: "S2" }), "…and so is its listing ask");
   for (const t of ["sendMessage", "createSession", "openSession", "renameSession", "askClear", "askClearMany", "clearAll",
                    "undoClear", "tagEdit", "editTag", "reviveSession", "interrupt", "stopTask", "cardNotify", "viewReadOnly",
                    "requestSessions", "reply", "zzzNotAKnownType"])

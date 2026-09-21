@@ -65,9 +65,9 @@ report rewrites; a shown report marks the older unsettled, untapped pushes for
 the same session on that device superseded; and the request's origin, read from
 its `Origin` header, else its `Referer`, else the forwarded headers or `Host`,
 is recorded on that device's subscription when none is on file, which matters
-because that recorded origin becomes the `navigate` URL of the device's next
-declarative Apple push. A recorded origin stands and a conflicting one is
-logged, an unknown id is a 404, and the body is capped at 2 KB before it is
+because the `navigate` URL of the device's next declarative Apple push is
+built on that recorded origin. A recorded origin stands and a conflicting one
+is logged, an unknown id is a 404, and the body is capped at 2 KB before it is
 read. And a token-less `GET /` is answered with the login page above rather
 than a 403, so a bare open of the dashboard can paste the token in.
 

@@ -14055,26 +14055,42 @@ if (typeof ResizeObserver === "function") {
 // and a follow-mode reader is written to the new bottom; a scrolled-up reader is untouched (their top line never
 // moved). Event-based (the observer), no timer.
 /** A box below's footprint in the column: its border box plus its vertical margins, 0 while it is not rendered. Read at the
- *  observer's pass, where layout is fresh; the difference between two passes is exactly what #content's height gave up. */
+ *  observer's pass, where layout is fresh; the difference between two passes is what #content's LAYOUT height gave up. The
+ *  clientHeight the at-bottom read uses is that layout height as an integer, so a fractional footprint leaves a residual under
+ *  one pixel in the pre-growth distance (the review of PR 1926): a reader exactly at the band's edge can read past it, and that
+ *  1 px edge stands accepted (rounding the footprint either way misreads the other rounding of the browser). */
 function boxFootprint(box: HTMLElement): number {
   const r = box.getBoundingClientRect();
   if (!(r.height > 0)) return 0;
   const cs = getComputedStyle(box);
   return r.height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
 }
+const BOXES_BELOW = ["notices", "bg-tasks", "footer"];        // the approval box is a box below too (the review of PR 1890, low a)
+const FEET: Record<string, number> = {};                      // every box below's FOOTPRINT at the last pass of ANY of them (-1 = not yet measured): one shared record, so a pass adds back the OTHER boxes' change in the same frame too (the review of PR 1926)
 if (typeof ResizeObserver === "function") {
-  for (const boxId of ["notices", "bg-tasks", "footer"]) {   // the approval box is a box below too (the review of PR 1890, low a)
+  for (const boxId of BOXES_BELOW) {
     const box = document.getElementById(boxId);
     if (!box) continue;
+    FEET[boxId] = -1;
     let lastH = -1;                                           // -1 = not yet measured (observe fires once on attach)
-    let lastFoot = -1;                                        // the box's FOOTPRINT at the last pass: its border box plus its vertical margins, what #content's height gives up to it (0 while hidden)
     const bro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect?.height ?? 0;
-      const foot = boxFootprint(box);
       const content = document.getElementById("content");
       const v = activeId ? views.get(activeId) : null;
       const dh = h - lastH;
-      const dfoot = lastFoot >= 0 ? foot - lastFoot : 0;
+      // what #content's height gave up in this frame (the growth added back below): this box's own content delta while it was
+      // already shown (its recorded footprint can be stale, since a margin-only change fires no pass), its whole footprint when it
+      // first shows (the borders and the margin it brings), and every other box's footprint change since the last pass (two boxes
+      // growing in one frame each left the other's growth unaccounted for; a shrink-first frame refreshes the record and decides nothing)
+      const now: Record<string, number> = {};
+      let dfoot = 0;
+      for (const id of BOXES_BELOW) {
+        const b = id === boxId ? box : document.getElementById(id);
+        now[id] = b ? boxFootprint(b) : 0;
+        const prev = FEET[id];
+        if (prev === undefined || prev < 0) continue;
+        dfoot += id === boxId ? (prev > 0 ? dh : now[id]) : now[id] - prev;
+      }
       // Where the reader stood BEFORE the growth, from the geometry (2026-09-19, the load flake behind main's red at bee556e8). The
       // recorded mode is the pre-growth truth only while nothing scrolled between the growth and this pass, and something can: a
       // scroll event from any other cause in that window (the append path's tail rebuild anchoring the reader, a compensation
@@ -14085,7 +14101,7 @@ if (typeof ResizeObserver === "function") {
       // added back is the box's FOOTPRINT change (border box plus margins, boxFootprint), not the content rect's: a box that first
       // shows brings its borders and its top margin too, and the content-rect delta read the reader 10.7 px above the bottom (the
       // held-mail chat lab's payload in a whole-suite run, 2026-09-20: sh 8819, scrollTop 8174, clientHeight 447, box 189.27).
-      const wasAtBottom = !!(content && lastH >= 0 && dh > 0 && atBottomBeforeGrowth(content.scrollHeight, content.scrollTop, content.clientHeight, dfoot));
+      const wasAtBottom = !!(content && lastH >= 0 && dfoot > 0 && atBottomBeforeGrowth(content.scrollHeight, content.scrollTop, content.clientHeight, dfoot));
       let repinned = false;
       if (content && !snapView && lastH >= 0 && content.clientHeight > 0 && v && v.shown && followBoxBelow(v.stick || wasAtBottom, dh)) {   // a transcript rule: it stands down while the overview owns #content (the footer's hide is not a box below the reader, T322)
         writeScroll(content, content.scrollHeight, "box-below", true);
@@ -14093,7 +14109,7 @@ if (typeof ResizeObserver === "function") {
         v.stick = true;                                       // the record agrees: a follow-mode reader, whichever truth said so
         repinned = true;
       }
-      lastH = h; lastFoot = foot;
+      lastH = h; for (const id of BOXES_BELOW) FEET[id] = now[id];
       // the pass is the EVENT a reader of the bottom holds at (the same flake: under load a lab read scrollTop after the box grew
       // and before this pass, and saw the reader a box's height above the bottom the write restores). One DOM event per pass, named
       // by the box, carrying the height this pass acted on: a reader is settled when the box's current height is the one the last

@@ -138,6 +138,8 @@ export const BOOKKEEPING: ReadonlyMap<string, (m: any) => string | null> = new M
   ["cardOpened",     ()  => "cardOpened"],                         // feed.ts: the open-metric row
   ["locateDiag",     ()  => "locateDiag"],                         // render.ts: a chat landing attempt's audit row
   ["orderAudit",     ()  => "orderAudit"],                         // render.ts auditTabOrder: a tab-order permutation's audit row
+  ["watchArtifacts", (m) => "watchArtifacts" + K + m.sid],         // artifacts.ts: the one session the pane watches on its host (an unwatch under the same key: the last word wins)
+  ["listArtifacts",  (m) => "listArtifacts" + K + m.sid],          // artifacts.ts: the listing asked before the host's relay opened rides its open (its reply carries reqId; a stale one is dropped there)
 ]);
 
 /** The key a held bookkeeping message dedupes under on the conn's queue, or null when the message is a
@@ -1071,6 +1073,9 @@ export class FederationManager {
       // panel says "loading sessions…" from the same set
       pending: () => this.pendingFor(),
       lastSeen: (h: string) => this.lastSeen[h] || 0,
+      // does this page hold a conn for the host yet (dialed or dialing)? A pane's bookkeeping sent before then has nothing to
+      // ride and is dropped (sendRemote, no-conn); the Artifacts pane defers its first ask to the relay's open instead
+      hasConn: (h: string) => this.conns.has(h),
       // is a dial attempt to this host in flight right now? The host-down notice's swirl spins on exactly
       // this (host-prefix.ts hostDialLive: the socket's CONNECTING state), and romp:hostDial below says
       // when it changes — on the dial, the open and the close, never on a timer
