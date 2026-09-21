@@ -55,7 +55,8 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
 km = load_source("romp_kernel_perf_gc", os.path.join(BIN, "romp-kernel"))
 
-GC_KEYS = {"gen", "thresholds", "counts", "frozen", "errors", "hooked"}
+GC_KEYS = {"gen", "thresholds", "counts", "frozen", "errors", "hooked", "freeze"}
+FREEZE_KEYS = {"enabled", "frozen", "loadTrees", "freezes", "reclaims", "lastReconcileMs", "lastReconcileKind", "totalReconcileMs", "errors"}
 GEN_KEYS = {"collections", "msSum", "msMax", "msLast", "collectedLast"}
 ROW_GC_KEYS = {"n0", "n1", "n2", "ms2"}
 
@@ -92,6 +93,7 @@ class Shape(unittest.TestCase):
         self.assertEqual(len(g["counts"]), 3)
         self.assertEqual(g["frozen"], gc.get_freeze_count())
         self.assertEqual(g["errors"], 0)
+        self.assertEqual(set(g["freeze"]), FREEZE_KEYS, "the #1735 freeze sub-block carries its state and reconcile counters")
         self.assertFalse(g["hooked"], "a collector's hook is installed only when asked")
         json.dumps(g)
 
