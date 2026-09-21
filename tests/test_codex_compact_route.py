@@ -570,6 +570,117 @@ class EndHandbackTargets(_Base):
         self.assertIn("(session api)", frames[1]["text"], "the card reply's refusal names it too")
         self.assertEqual((frames[1]["op"], frames[1]["itemId"]), ("askFollowUp", "g1"))
 
+    def _card_reply_parked_behind_a_compaction(self, msg):
+        """A follow-up through the live askFollowUp door while a compaction stands, so it parks in the kernel's queue as
+        the body the door composed (the goal quote when one is given, the romp-note and romp-goal-id comments; the canned
+        words with their marker for a Continue press, which with no card id are the whole body). Returns the one parked
+        op. The reopen the door attempts finds no goal under this module's private sid and writes nothing; the cue
+        frames land on the stubbed feed broadcast."""
+        self._restore_undelivered()
+        with mock.patch.object(km, "_compacting_now", lambda sid, **k: True):
+            self.assertTrue(km._drive(dict(msg, type="askFollowUp", qid=QID), self.client))
+        ops = km._pending_ops.get(SID) or []
+        self.assertEqual([op[0] for op in ops], ["send"], ops)
+        self.assertTrue(km._op_user(ops[0]), "the door parks a follow-up as the user's")
+        return ops[0]
+
+    def _undelivered_rows(self):
+        path = km.jd.STATE / "undelivered.jsonl"
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()] if path.exists() else []
+        return [(r["op"], r["itemId"], r["text"]) for r in rows if r.get("sid") == SID]
+
+    def test_end_hands_a_parked_card_reply_back_as_the_typed_words_not_the_composed_body(self):
+        # The hand-back passed the parked op's body to the not-delivered path, and for a card reply that is the wrapper
+        # the askFollowUp door composed around the typed words: the goal quote, the romp-note and romp-goal-id comments.
+        # The copy slot, undelivered.jsonl and the log carried romp's quote and markers as the user's words, where the
+        # queued bubble and the live refusal of the same follow-up carry the typed words alone (the post-merge review of
+        # the hand-back, 2026-09-21). The words come back through the bubble's own split, under the reply verb and the
+        # card's id, the frame the live refusal sends and the feed re-arms its latched button on.
+        import contextlib, io
+        iid, words, summary = SID + ":g1", "the typed reply, nothing else", "the card's distilled summary"
+        op = self._card_reply_parked_behind_a_compaction({"itemId": iid, "title": summary, "text": words})
+        self.assertTrue(op[1].startswith("> " + summary), "the door parks the composed body: the quote first")
+        self.assertIn("<!-- romp-goal-id: %s -->" % iid, op[1])
+        self.assertEqual(km._parked_md(op), words, "the queued bubble shows the typed words alone")
+        chat = {"app": "chat", "send": lambda t: self.sent.append(json.loads(t))}
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            self.assertEqual(km._drop_parked_on_end(SID, chat), 1)
+        errs = [f for f in self.sent if f.get("type") == "err"]
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual(errs[0]["copy"], words, "the copy slot holds what was typed, not the quote and the markers")
+        self.assertEqual((errs[0]["op"], errs[0]["itemId"], errs[0]["sid"]), ("askFollowUp", iid, SID),
+                         "the live refusal's frame: the reply verb and the card it answers")
+        self.assertIn("reply", errs[0]["title"])
+        self.assertEqual(self._undelivered_rows(), [("askFollowUp", iid, words)], "kept verbatim as typed, once")
+        self.assertIn(repr(words), log.getvalue())
+        for leaked in ("romp-goal-id", "romp-note", summary):
+            self.assertNotIn(leaked, log.getvalue(), "the log carries the typed words, never the wrapper")
+        self.assertNotIn(SID, km._pending_ops)
+
+    def test_end_hands_a_parked_continue_press_back_as_the_live_refusal_does_empty_text_under_the_reply_verb(self):
+        # A Continue press parks the canned words with their marker inside the same wrapper, and the base handed the
+        # canned prose back as the user's typed words. The press typed nothing: it comes back as the live refusal of a
+        # Continue sends it, empty text under the reply verb with the card's id, so the dialog and the undelivered row
+        # name the reply and the card the way the live refusal does. Not dropped with the machine sends: the press was
+        # the user's gesture, and the dialog is how they learn it went nowhere. The marker is read on the body before
+        # the split strips every comment, which would leave the canned prose.
+        import contextlib, io
+        iid = SID + ":g2"
+        op = self._card_reply_parked_behind_a_compaction({"itemId": iid, "cont": True})
+        self.assertTrue(op[1].startswith(km.CONTINUE_TEXT), "the door parks the canned body")
+        self.assertIn("<!-- romp-canned: continue -->", op[1])
+        chat = {"app": "chat", "send": lambda t: self.sent.append(json.loads(t))}
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            self.assertEqual(km._drop_parked_on_end(SID, chat), 1, "handed back, not dropped")
+        errs = [f for f in self.sent if f.get("type") == "err"]
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual(errs[0]["copy"], "", "nothing was typed, so nothing is offered to copy")
+        self.assertEqual((errs[0]["op"], errs[0]["itemId"], errs[0]["sid"]), ("askFollowUp", iid, SID))
+        self.assertEqual(self._undelivered_rows(), [("askFollowUp", iid, "")])
+        self.assertIn("undeliverable askFollowUp", log.getvalue())
+        for leaked in (km.CONTINUE_TEXT[:24], "romp-canned", "romp-goal-id"):
+            self.assertNotIn(leaked, log.getvalue(), "the canned words are romp's, never logged as the user's")
+        self.assertNotIn(SID, km._pending_ops)
+
+    def test_a_continue_press_parked_with_no_card_id_comes_back_empty_under_the_reply_verb_too(self):
+        # The door takes a Continue addressed by session id alone (no itemId), and then composes no wrapper: the parked
+        # body is the canned words and their marker, with no goal marker for the follow-up split to find. Read after
+        # that split, the marker was gone and the body fell to the plain-send branch: the canned prose plus its marker
+        # came back under the message verb, the defect this change fixes (review find, 2026-09-21). The marker is read
+        # on the body before the follow-up test, so the press comes back empty under the reply verb with no card named.
+        import contextlib, io
+        op = self._card_reply_parked_behind_a_compaction({"id": SID, "cont": True})
+        self.assertEqual(op[1], km.CONTINUE_TEXT + "\n\n<!-- romp-canned: continue -->", "no wrapper: no card to quote")
+        self.assertNotIn("romp-goal-id", op[1])
+        chat = {"app": "chat", "send": lambda t: self.sent.append(json.loads(t))}
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            self.assertEqual(km._drop_parked_on_end(SID, chat), 1)
+        errs = [f for f in self.sent if f.get("type") == "err"]
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual((errs[0]["copy"], errs[0]["op"], errs[0]["itemId"], errs[0]["sid"]), ("", "askFollowUp", "", SID))
+        self.assertEqual(self._undelivered_rows(), [("askFollowUp", "", "")])
+        self.assertNotIn(km.CONTINUE_TEXT[:24], log.getvalue(), "the canned words are romp's, never logged as the user's")
+        self.assertNotIn(SID, km._pending_ops)
+
+    def test_a_typed_command_parked_behind_a_compaction_comes_back_as_typed_under_the_command_verb(self):
+        # The helper's command arm: a typed slash command parks as a ("command",) op whose body IS the bubble, and comes
+        # back as typed under the command verb, as before this change (the arm was pinned by nothing, review find,
+        # 2026-09-21).
+        self._restore_undelivered()
+        km._park_op(SID, ("command", "/autocompact auto", None, QID, True))
+        chat = {"app": "chat", "send": lambda t: self.sent.append(json.loads(t))}
+        self.assertEqual(km._drop_parked_on_end(SID, chat), 1)
+        errs = [f for f in self.sent if f.get("type") == "err"]
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual((errs[0]["copy"], errs[0]["op"], errs[0]["itemId"], errs[0]["sid"]),
+                         ("/autocompact auto", "sendCommand", "", SID))
+        self.assertIn("command", errs[0]["title"])
+        self.assertEqual(self._undelivered_rows(), [("sendCommand", "", "/autocompact auto")])
+        self.assertNotIn(SID, km._pending_ops)
+
     def test_the_in_flight_op_is_kept_by_slot_so_a_second_compact_press_behind_it_is_dropped(self):
         # _compact_or_park parks the literal ("compact",), one interned tuple, so a second press `is` the first; an
         # identity filter kept both behind the in-flight one (review find, 2026-09-21). The slot the drain holds is the
