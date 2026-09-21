@@ -75,6 +75,17 @@ hidden), the panes present are placed from the snapshot and the missing ones dro
 default docks. The layout store's `v: 1` shape takes an optional field (a remembered tree beside `parked`)
 that an older bundle ignores, so no migration.
 
+Sharpened by the code (2026-09-21, the feature PR): the memory is not restored whole and then patched; a returning
+pane is INSERTED beside the nearest remembered neighbour the tree still shows, on the side it had, with the share it
+had (a sibling when that neighbour's parent is the remembered split itself, else the two wrapped in a split of the
+remembered direction, so a group the memory kept apart comes back as a group). When nothing moved since the hide the
+insertions rebuild the remembered tree exactly, shares included; when something did, it stands: a move puts the
+pane beside its neighbour where the neighbour is now, a resize keeps its ratios (the memory compares shapes, never
+ratios). The memory is taken at every park, stands while it still describes the shown tree (so earlier parked panes
+keep their places), is reduced to the panes the layout still knows (a column closed while hidden leaves no record),
+and is dropped once nothing is parked. The band keeps its own road (the root's bottom, fixed); a tab drop's hint
+wins over the memory for its column; the phone is untouched, since the kit stays off there.
+
 ## 3. The options
 
 **A. One chat button toggles every chat column as one group; hide remembers the tree, show restores it.**
