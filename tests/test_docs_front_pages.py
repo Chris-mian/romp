@@ -202,14 +202,20 @@ class ParagraphHelper(unittest.TestCase):
         self.assertEqual(len(_paragraphs('<video src="a.mp4"></video>\n')), 0,
                          "a page of nothing but a block tag has no prose paragraph")
 
-    # the three shapes the trailing-link rule turns on, each its own page
+    # the four shapes the trailing-link rule turns on, each its own page. NAV_TIGHT has NO blank
+    # line between the heading and the link, the case that separates reading the paragraph's own
+    # line from reading one line further up: with a blank line, the heading is the nearest prose
+    # line above BOTH the link and the blank, so either reading exempts it.
     NAV_UNDER_HEADING = "## License\n\n[Apache-2.0](LICENSE).\n"
+    NAV_TIGHT = "## License\n[Apache-2.0](LICENSE).\n"
     NAV_UNDER_PROSE = "# Title\n\nA paragraph of prose that says something.\n\n[Apache-2.0](LICENSE).\n"
     PARAGRAPH_ON_A_LINK = "# Title\n\nThe mechanics are in\n[How it works](architecture.md).\n"
 
     def test_a_link_only_paragraph_is_exempt_only_directly_under_a_heading(self):
         self.assertEqual(_trailing_link_violations(self.NAV_UNDER_HEADING), [],
                          "a line that is only a link, under its heading, is a navigation line")
+        self.assertEqual(_trailing_link_violations(self.NAV_TIGHT), [],
+                         "the same line on the line directly after its heading, no blank between")
         self.assertEqual(_trailing_link_violations(self.NAV_UNDER_PROSE),
                          [(5, "[Apache-2.0](LICENSE).")],
                          "the same line under prose is the shape the rule forbids, at its file line")
@@ -303,6 +309,21 @@ class FrontPagesStayShort(unittest.TestCase):
         md = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
         self.assertIn("The documentation front pages", md,
                       "CLAUDE.md is where the rule lives; this test only enforces it")
+
+
+class DocsChipClassesHaveRules(unittest.TestCase):
+    """Every `romp-chip-<name>` class a docs page draws has a rule in docs/stylesheets/extra.css (the site does not load the
+    app's sheets, so a class without a rule is an unstyled word: the Needs you chip glyph, `romp-chip-needs`, renamed off
+    the retired `romp-chip-blocked` in plans/needs-you.md's phase two)."""
+
+    def test_every_chip_class_in_the_docs_has_a_rule(self):
+        used = set()
+        for page in DOCS.glob("*.md"):
+            used |= set(re.findall(r"romp-chip-([a-z]+)", page.read_text(encoding="utf-8")))
+        ruled = set(re.findall(r"\.romp-chip-([a-z]+)\b", (DOCS / "stylesheets" / "extra.css").read_text(encoding="utf-8")))
+        self.assertTrue(used, "the docs draw at least one chip")
+        self.assertEqual(sorted(used - ruled), [], "a chip class the docs draw with no rule in extra.css")
+        self.assertNotIn("blocked", used, "the retired chip glyph: the category reads Needs you (plans/needs-you.md)")
 
 
 if __name__ == "__main__":

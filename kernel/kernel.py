@@ -419,7 +419,13 @@ class _PerfStats:
                                    label plus cold and nosig: per component, the background rebuilds
                                    it caused (one count per differing component, so the sum can
                                    exceed bg_built; cold = no cached build, nosig = no signature could
-                                   be taken); see build_chat
+                                   be taken); see build_chat. chat also carries coldSkipped (the
+                                   cold-tab gate's skips, build_chat_cold_skip), baselineRaced and
+                                   baselineRepaired (the delta baseline's detector pops and the cycle
+                                   writes that took a mark off, build_chat_baseline_raced and
+                                   _repaired; 2026-09-21): on the snapshot and glossed in the
+                                   reference, none of the three printed by `romp perf`, whose
+                                   documented contract prints the split, the causes and the moved count
       sends                        full / delta / deduped -> {slot: {count, bytes}} per dedup-slot
                                    name (chat, feed, bars, taborder, ...; at most SLOTS names, the rest
                                    under "other"). A deduped frame was built and compared, not sent
@@ -473,7 +479,7 @@ class _PerfStats:
     # below the table itself). test_perf_stats pins it at 1.5x the literal count.
     HTTP_PATHS = 256
     SLOTS = 32
-    JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
+    JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "artifactsSignal", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
             "autoNudge", "interruptBlock", "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "retryUpgrade", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
             "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes", "heldWorking")   # the tick jobs, each a `jobs.<job>` stage (T398)
@@ -1443,7 +1449,7 @@ def _open_turn_progress(turns):
     (the user 2026-08-13: "always some detail about why they're working" — a tool count that climbs
     and a timer that runs make a silently-stuck session visible at a glance, because a frozen count
     under a climbing timer LOOKS wrong). None when the last turn ended: the other spin states
-    (Analyzing…, Awaiting…, the stall chip, the Blocked floors) own every idle beat, so this covers
+    (Analyzing…, Awaiting…, the stall chip, the Needs you floors) own every idle beat, so this covers
     exactly the case that used to be mute — an ordinary working card with its turn open. Derived from
     the same cached parse as the working dot; a tool use is an assistant record's tool_use block."""
     em.hydrate(turns[-1].get("atoms") or []) if turns else None   # the last turn (T323 stage 4a)
@@ -12579,7 +12585,7 @@ def _persist_checkpoints(now):
 def _interrupt_block_tick(now, live_map):
     """Interrupt → Blocked, INDEPENDENT of the auto-nudge switch (the user 2026-07-14). A session the
     user genuinely STOPPED mid-turn is waiting on their next instruction: its focus goal needs THEM, so
-    it belongs in the Blocked (needs-you) column — never sitting quietly in Working. This flip used to
+    it belongs in the Needs you column, never sitting quietly in Working. This flip used to
     live inside _auto_nudge_tick, so it only happened with auto-nudge ON; it is a needs-you rule, not a
     nudge feature, so it runs every push regardless of the toggle. A MACHINE cut (kernel restart /
     process death) is NOT a user stop — _interrupt_marks already excludes it — so those are continued,
@@ -19323,6 +19329,7 @@ def _commands_for_cwd(cwd):
 _CODEX_COMMANDS = (
     {"name": "clear", "description": "Start a fresh conversation for this session (its name, mail, tags and settings stay)"},
     {"name": "new", "description": "Same as /clear (Codex's own word for it)"},
+    {"name": "compact", "description": "Compact this conversation in place (Codex's own compaction; it takes no instructions)"},
     {"name": "model", "description": "Switch this session's model (applies at its next turn)", "argumentHint": "<gpt-…>"},
     {"name": "effort", "description": "Set this session's reasoning effort (applies at its next turn)", "argumentHint": "<level>"},
     {"name": "mcp", "description": "Show this session's MCP servers"},
@@ -19331,8 +19338,8 @@ _CODEX_COMMANDS = (
 
 def _commands_for_sid(sid):
     """(commands, warming) for the composer's "/" palette on `sid`: a Codex session gets the fixed list of commands
-    the kernel takes for it (never the Claude CLI's per-cwd probe, which advertised /clear and /compact the route
-    now refuses, 2026-09-19); every other sid keeps _commands_for_cwd. _session_backend with no live row reads the
+    the kernel takes for it (never the Claude CLI's per-cwd probe, which advertised Claude's skills and commands a
+    Codex session cannot take, 2026-09-19); every other sid keeps _commands_for_cwd. _session_backend with no live row reads the
     durable records, so a dead Codex lane's composer is answered the same way."""
     if sid and _session_backend(sid, None) == "codex":
         return [dict(c) for c in _CODEX_COMMANDS], False
@@ -19432,6 +19439,17 @@ def _note_retry_sent(sid, manual=False):
 
 def _clear_retry_backoff(sid):
     _auto_retry_state.pop(sid, None)   # recovered: the next outage starts at the bottom rung again
+
+
+def _backend_compacting(be, sid):
+    """The backend's own 'a compaction is in progress' verdict (SessionBackend.compacting), True by IDENTITY only
+    (2026-09-21): the interrupt arms read it ahead of busy(), because a compaction reads busy (it is a turn in flight
+    on the server) and interrupt() refuses it (no turn id to stop), so Esc, Stop, POST /interrupt and `romp interrupt`
+    answered "still working" under a chip reading Compacting. Identity, not truth: a double without the verb (a
+    SimpleNamespace, the tmux-era fakes) has no such attribute, and a bare Mock's call answers a truthy Mock; neither
+    is a compaction. Backend-neutral: the SDK backend publishes the same bracket for its /compact."""
+    fn = getattr(be, "compacting", None)
+    return callable(fn) and fn(sid) is True
 
 
 def _fire_api_retry(sid, be, manual=False):
@@ -19836,6 +19854,12 @@ def _drive(msg, client):
         # is an unknown sid): a backend with no verdict keeps the optimistic chip.
         if be.interrupt(sid) is not False:                # Esc/stop AND settle idle (in the backend)
             _interrupt_clicked[str(sid)] = time.time()    # chip → "interrupting" NOW (event-cleared on settle)
+        elif _backend_compacting(be, sid):
+            # A refusal UNDER A COMPACTION is neither idle nor a dropped stop (review find, 2026-09-21): the backend's
+            # compaction is a turn in flight the server itself refuses to steer or stop, so busy() reads True and the
+            # arm below said "still working" under a chip reading Compacting. Worded for the state, backend-neutral.
+            client["send"](json.dumps({"type": "warn", "text": "the stop was not delivered: the session is compacting its "
+                                                                "conversation, and a compaction runs to its end"}))
         elif be.busy(sid):
             # A refusal WITH work in flight is a stop that did NOT land, not a stop with nothing to stop
             # (review find, 2026-09-11): the Codex backend also answers False while a turn's start is still
@@ -25495,6 +25519,8 @@ def _deliver_text(sid, text, plain=False):
             return False, str(meta["refused_effort"]), False   # the route's own words for a level the backend refused (the review of #1814)
         if meta.get("refused_clear"):
             return False, str(meta["refused_clear"]), False    # the backend's own words for a clear it could not run (2026-09-19)
+        if meta.get("refused_compact"):
+            return False, str(meta["refused_compact"]), False  # a compaction it could not run, or typed instructions Codex takes none of (2026-09-19)
         if meta.get("refused"):
             if be is _UNOWNED:
                 return False, "no running backend owns %s — the command was not delivered" % sid, False
@@ -33548,11 +33574,14 @@ _chat_baseline_lock = threading.Lock()           # held for the seed's read-back
 #                                                  get and set were two steps, so two whole-frame senders that both read the map
 #                                                  absent both wrote, the last writer won, the detector never fired, and a client
 #                                                  holding the first writer's list was stranded (the review's two-thread probe)
-_chat_baseline_raced = {}                        # sid -> the popped list's length, for every sid whose baseline the detector POPPED
-#                                                  and no every-client sender has written since (2026-09-19; a dict since
-#                                                  2026-09-21, so the empty-build guard can name the count at the pop, raised
-#                                                  by every whole frame handed under the mark: _chat_prior_n). A pop leaves
-#                                                  clients holding bases with NO
+_chat_baseline_raced = {}                        # sid -> the length of the longest list some client was handed whole under the
+#                                                  mark (the longer of the two lists at the pop, then raised by every whole frame
+#                                                  a sender hands while the mark stands: _chat_prior_n), for every sid whose
+#                                                  baseline the detector POPPED and no every-client sender has written since
+#                                                  (2026-09-19; a dict since 2026-09-21, for the empty-build note, which reads the
+#                                                  count as a minimum, not as what every holder has: the raise follows a connect
+#                                                  push's full to one client, and the pop's max can name a count no holder has).
+#                                                  A pop leaves clients holding bases with NO
 #                                                  baseline, the state a never-seeded sid is in too, and a seed that could not tell them apart
 #                                                  re-seeded from the next single-client connect push (a needFull, an idle-prefetch
 #                                                  release: one per released tab at a boot, while a cold cycle takes 30-84 s), so
@@ -33568,9 +33597,13 @@ _chat_baseline_raced = {}                        # sid -> the popped list's leng
 #                                                  present, the sender's older list went out against it as tails, and
 #                                                  its own seed declined, a strand with no mark (test 28). The mark also
 #                                                  stands with NO stale holder: a sender whose list was the NEWER one,
-#                                                  the cycle's write landing inside its build, pops and marks alike
-#                                                  (test 28c), two change-0 fulls per client where tails went, the
-#                                                  accepted cost until a stamp of the build's start tells the two apart.
+#                                                  with any whole-frame writer landing inside its build (the cycle's
+#                                                  write, test 28c; an older sender's seed, test 41), pops and marks
+#                                                  alike, one change-0 full per client where a tail went, and the next
+#                                                  cycle's full once more only when the frame moved or the repost
+#                                                  window passed since (else it dedups on the client's slot, no row);
+#                                                  the accepted cost until a stamp of the build's start tells the two
+#                                                  apart. The faces are partitioned in _seed_chat_baseline's docstring.
 # ── the chat-payload FOLD (issue 903, 2026-09-03) ──────────────────────────────────────────────────
 # build_session reshaped a working session's WHOLE event list on every push (0.3-1 ms/event; 26k
 # events = 26 s per cycle, 60-75 s push cadence on an 11-session install). The reshape of an ENDED
@@ -33908,35 +33941,50 @@ def _empty_build_regresses(m, prev_events, marked=False):
     while the previous push's build for the sid did, or while the sid is `marked` (2026-09-21): the detector popped its
     baseline (_seed_chat_baseline, _chat_baseline_raced) after whole-frame senders handed every base holder content, so
     an absent baseline under the mark is not a never-seeded sid. Read as one before, the empty frame went to every base
-    holder, counted `empty` with a chatFull row each and no stderr line, and the cycle's write put [] over the pop, where
-    the seeded case took the stand-in road (tests 35 and 36 of the skeleton-reconnect module)."""
+    holder, counted `empty` with a chatFull row each and no stderr line, and the cycle's write put [] over the pop. Both
+    callers send nothing for a marked sid, a cached build or not (2026-09-21): a cached stand-in under the mark, where
+    the baseline is absent, always left as a full and rewound every holder ahead of it (a targeted push's longer list,
+    or the filled card the cache's older list lacks), so the mark and the absent baseline stand and the next content
+    cycle's full repairs every base holder; the cached build still rides the feed frame's ledgers list, so the Outline
+    row stays (tests 35 to 37, 44 to 46 and 50 to 52 of the skeleton-reconnect module pin the marked case). The seeded
+    case, a baseline present, takes the stand-in road as before (test 22 of the same module)."""
     return not (m.get("events") or []) and (bool(prev_events) or marked)
 
 
 def _chat_prior_n(sid):
-    """How many events the clients holding `sid` with content hold, for the empty-build note: the baseline's length, or,
-    for a sid the detector marked (its baseline popped), the count at the pop, raised by every whole frame handed under
-    the mark (2026-09-21; the seed's declining arm does the raising). Read outside _chat_baseline_lock, like the guard's
-    own reads beside it."""
+    """The event count the empty-build note names for `sid`: the baseline's length when one stands (what every holder
+    with content has), or, for a sid the detector marked (its baseline popped), the length of the longest list some
+    client was handed whole under the mark: the longer of the two lists at the pop, raised by the seed's declining arm
+    for every whole frame a sender hands while the mark stands (2026-09-21). Under the mark the count is a minimum for
+    the note, not what every holder has: the raise follows a connect push's full to ONE client, the pop's max can name a
+    count no holder has, and a cycle that sent tails under the mark handed nothing whole, so its longer list never
+    raised it (test 50 of the skeleton-reconnect module reads the pop's 5 while every client holds 6). Read outside
+    _chat_baseline_lock, like the guard's own reads beside it."""
     prev = _prev_chat_events.get(sid)
     if prev:
         return len(prev)
     return int(_chat_baseline_raced.get(sid) or 0)
 
 
-def _note_empty_build(sid, path, n_prev):
-    """One stderr line per episode naming the sid, what the previous build held and whether the transcript path is
-    even there; a romp-perf `chatempty` line every time, for the harness/perf log."""
+def _note_empty_build(sid, path, n_prev, marked=False):
+    """One stderr line per episode naming the sid, the count the clients hold and whether the transcript path is even
+    there; a romp-perf `chatempty` line every time, for the harness/perf log. The sentence follows the count's source
+    (2026-09-21): with a baseline, `n_prev` is its length and the previous build is kept as the stand-in; under the
+    detector's mark (`marked`), `n_prev` is the longest list some client was handed whole, a minimum for what the
+    clients hold, and nothing is kept or sent for the sid until content returns (_chat_prior_n)."""
     sid = str(sid or "")
     _perf("chatempty", sid=sid[:8], prev=int(n_prev or 0))
     if sid in _EMPTY_BUILD_NOTED:
         return
     _EMPTY_BUILD_NOTED.add(sid)
     exists = bool(path) and os.path.exists(str(path))
-    sys.stderr.write("romp-kernel: the chat build for %s came back EMPTY while its previous build had %d events "
-                     "(transcript %s) — keeping the previous build until content returns; an empty frame would blank "
-                     "the pane and re-land the reader\n"
-                     % (sid[:8], int(n_prev or 0), "present" if exists else "missing at %s" % path))
+    if marked:
+        held, road = "its clients hold at least %d events" % int(n_prev or 0), "sending nothing for it until content returns"
+    else:
+        held, road = "its baseline held %d events" % int(n_prev or 0), "keeping the previous build until content returns"
+    sys.stderr.write("romp-kernel: the chat build for %s came back EMPTY while %s (transcript %s): %s; an empty frame "
+                     "would blank the pane and re-land the reader\n"
+                     % (sid[:8], held, "present" if exists else "missing at %s" % path, road))
 
 
 def _clear_empty_build_note(sid):
@@ -34023,14 +34071,28 @@ def _seed_chat_baseline(sid, m, seen):
     (read before the build since 2026-09-21: read after it, a seed that landed during the build read as a present
     baseline the sender's older list was then sent against, one this seed declines to touch, so the map held the newer
     list, some client the older card, and the next cycle diffed equal lists, with no row and no mark; test 28 of the
-    skeleton-reconnect module). That read has a false positive this seed cannot see (2026-09-21): the pop below fires
-    alike for a racing seed that landed mid-build, the sender's list the older one, and for the cycle's every-client
-    write landing mid-build with the sender's list the NEWER one, where no client is stale; the map's content carries no
-    order (a filled card has the length of its unfilled twin) and a written-by-the-cycle flag would re-open the strand
-    (a connect seed, then the cycle's tails and write, then an older targeted push's fulls), so the pop stands: a mark
-    with no stale holder and two change-0 fulls per client, a row each, where the kernel before sent a tail per client,
-    at the boot's cold cycle beside the attach handshake of the same tab. A stamp of the build's start kept beside the
-    baseline, its own item, is the discriminator (test 28c). The baseline had one
+    skeleton-reconnect module). That read has a false positive this seed cannot see (2026-09-21). The partition of a
+    whole-frame writer landing inside a sender's build, stated here once and pointed to from both read sites and the
+    reason's docstring, the boot's ordinary interleaving in either order (the cycle's cold build of the watched tab
+    beside the attach handshake's targeted push, the transcript moving between the two reads): the sender's list the
+    OLDER one is the strand face, whichever writer landed inside, a racing seed (tests 28 and 28b) or the non-connect
+    cycle's every-client write (test 40), and the pop below is its repair (the sender's older fulls put the older card on
+    every base holder over the writer's newer one, the pop and the mark follow, the next cycle's fulls repair; the kernel
+    before the read moved left every client on the older card for good, with no mark and no row). The sender's list the
+    NEWER one is the pure-cost face, again whichever writer landed inside, the cycle's write (test 28c) or an older
+    sender's seed (a second targeted push on the same sid, test 41): no client is stale, yet the pop fires alike, since
+    the map's content carries no order (a filled card has the length of its unfilled twin) and a written-by-the-cycle
+    flag would re-open the strand (a connect seed, then the cycle's tails and write, then an older targeted push's
+    fulls), so the pop stands: a mark with no stale holder and one change-0 full per client, a row each, where the
+    kernel before sent a tail per client, and the next cycle's full once more only when the frame moved or the repost
+    window (_DEDUP_REPOST_S) passed since the sender's, else that full dedups on the client's slot and files no row. A
+    stamp of the build's start kept beside the baseline, its own item, is the discriminator. The cycle itself as the
+    sender that read the baseline absent, with a whole-frame seed (targeted or connect) landing inside its build, is
+    outside both, a race the detector does not mark (nothing marked, no strand): the cycle has no seed step, so every
+    base holder gets a change-0 full of the cycle's older list with a changeAt0 row where the kernel before sent that
+    list by a tail, the cycle's write puts its older list over the seed (correctly: that list is what every client then
+    holds), and the next cycle repairs by tails with no new row; cost, and a changeAt0 reading on pusher.chatFullWhy
+    with no strand behind it (test 42). The baseline had one
     writer, the pusher's non-connect cycle, so a sid whose first whole frame since the boot came from the connect push
     (the redial's watched tab, then every tab the page's idle prefetch releases) or from the targeted push (a create's,
     then its handshake's; a Codex session's first stream events) left every client holding a base and the kernel holding
@@ -34073,7 +34135,12 @@ def _seed_chat_baseline(sid, m, seen):
     declines while the mark stands all the same: a single-client sender that read the map absent may still be
     mid-flight, its older full landing on some client after the targeted push's and its own seed already declined, so
     only the write of a cycle whose loop read the baseline absent re-establishes the baseline (the residual that write
-    carries today, not widened). The lock is what makes the read-back a guard (test 26): unlocked, two seeds that both read the map
+    carries today, not widened). The residual's third strand face, pre-existing (open before the read moved and open
+    now; named 2026-09-21): a sender whose seed lands BEFORE the cycle's write, the map absent then, so it writes, while
+    its older full lands AFTER the cycle's on some client, leaves that client on the older card with no mark, the
+    cycle's write then putting its newer list over the seed, and no next-cycle repair (equal lists); closing it, by a
+    stamp of the build's start or a cycle write that declines to overwrite a seed it did not read, is its own change.
+    The lock is what makes the read-back a guard (test 26): unlocked, two seeds that both read the map
     absent both wrote, the last writer won, and the detector never fired. Nothing else is held inside it; the cycle's
     write and the strip-exit eviction take the same lock."""
     evs = m.get("events") or []
@@ -34084,9 +34151,10 @@ def _seed_chat_baseline(sid, m, seen):
         if sid in _chat_baseline_raced:
             # popped by the detector: no seed writes until a cycle's full to every base holder clears the mark. The stash
             # under the mark is raised to this list's length (2026-09-21): the seed runs after the sends, for a list some
-            # client took whole, so under a standing mark the base holders were handed at least this many events, and a
-            # stash left at the pop's count named the shorter list once a whole-frame sender had handed a longer one
-            # (test 36 of the skeleton-reconnect module).
+            # client took whole, so under a standing mark the stash is the longest list SOME client was handed whole (a
+            # minimum for the empty-build note, not what every holder has: a connect push hands its full to one client),
+            # and a stash left at the pop's count named the shorter list once a whole-frame sender had handed a longer
+            # one (test 36 of the skeleton-reconnect module).
             _chat_baseline_raced[sid] = max(_chat_baseline_raced[sid], len(evs))
             return
         cur = _prev_chat_events.get(sid)
@@ -36688,23 +36756,44 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False, paths=None):
     return False
 
 
-def _compact_or_park(be, sid, state=None):
-    """The ONE compaction entry — the chat's compact button (WS "compact") and POST /compact both land
-    here, so there is never a second compaction path. Not quiet (open turn / compacting / queue ahead /
-    account hold) → park as a ("compact",) op, which fires ALONE at turn end; quiet → /compact NOW with
-    the instant 'compacting' cue. Returns True when parked (queued), False when fired now — the route
-    tells its caller which ("compacting now" vs "queued").
+def _native_compact(be):
+    """Whether `be` compacts its own conversation (SessionBackend.compact) rather than taking the literal "/compact"
+    as text (2026-09-19): a backend that DEFINES the verb — CodexBackend since this change; SdkBackend and every
+    send-only stand-in define none, so every SDK path stays byte-identical — and not the unowned route, which
+    inherits the ABC's default and keeps its own stderr refusal."""
+    return be is not None and be is not _UNOWNED and callable(getattr(be, "compact", None))
 
-    A Codex session is refused before any park or stamp (2026-09-19): it has no /compact text to execute,
-    and the old path sent the word to the model and stamped a compacting cue for a compaction that never
-    started. `state` receives {"refused": words} for POST /compact; the chat hears it as a broadcast warn
-    (no socket reaches here) and the bell keeps it. Returns None, the existing 'neither parked nor fired'
-    value. The native compaction replaces this arm."""
-    if be is not None and be is _codex():
-        _refuse_codex_slash(be, sid, "/compact", state=state)
-        return None
+
+def _compact_or_park(be, sid, state=None, client=None, qid=None):
+    """The ONE compaction entry — the chat's compact button (WS "compact"), the timeline's battery, POST /compact and
+    a typed /compact on a backend that compacts natively (_codex_compact_command) all land here, so there is never a
+    second compaction path. Not quiet (open turn / compacting / queue ahead / account hold) → park as a ("compact",)
+    op, which fires ALONE at turn end; quiet → compact NOW. Returns True when parked (queued), False when fired now —
+    the route tells its caller which ("compacting now" vs "queued") — and None when the backend refused: neither
+    parked nor fired, and no cue.
+
+    Two kinds of fire (2026-09-19). A backend that compacts natively (_native_compact: Codex, whose app-server has
+    no slash parser — the old path sent the word to the model and stamped a cue for a compaction that never started)
+    takes its own verb, SessionBackend.compact: "" — the backend's compacting() bracket is up and is the authority
+    the kernel reads first (_compacting), so NO optimistic stamp (the stamp would only arm the 180 s
+    _compacting_optimistic read per build for a signal the backend already publishes); "busy" — a turn or a
+    compaction already in flight: parked as the same ("compact",) op the drain retries at the turn's end, never
+    shown; any other answer — the reason, said (_say_compact_refusal, on `client` with `qid` when the typed route
+    carried them, else a broadcast to the chat panes), filed as state["refused"] so POST /compact answers ok:false
+    with it. Every other backend keeps the literal "/compact" send as the user's gesture and the instant cue."""
     if _gate_or_park(sid, ("compact",)):
         return True
+    if _native_compact(be):
+        why = be.compact(sid)
+        if why == "busy":
+            _park_op(sid, ("compact",))
+            return True
+        if why:
+            if state is not None:
+                state["refused"] = why
+            _say_compact_refusal(sid, why, client=client, qid=qid)
+            return None
+        return False
     if _user_send(be, sid, "/compact") is False:        # the click is the user's (T315); a refusal shows no cue
         return None
     _mark_compacting(sid)
@@ -36743,7 +36832,7 @@ def _compact_request(who):
     meta = {}
     queued = _compact_or_park(Sessions.backend_for(sid), sid, state=meta)
     if meta.get("refused"):
-        return {"ok": False, "error": meta["refused"]}   # a Codex session: the route's own words (2026-09-19)
+        return {"ok": False, "error": meta["refused"]}   # the backend's own refusal words (2026-09-19)
     return {"ok": True, "queued": queued}
 
 
@@ -36965,7 +37054,7 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None, 
     """The one route every typed or sent slash command takes (the composer's sendMessage arm, the lane menu's
     sendCommand arm, POST /send and `romp send` through _deliver_text), in front of the setter body it used to
     BE (_route_setter_command: its arms and docstring are unchanged). A Codex session takes only what romp
-    itself performs: /model X and /effort X through the setter arms, and a native /clear or /new through the
+    itself performs: /model X and /effort X through the setter arms, and a native /clear, /new or /compact through the
     handler table (_CODEX_SLASH_HANDLERS, consulted first). The slash commands the kernel KNOWS a
     Codex session cannot take (_CODEX_REFUSED_HEADS: /clear, /compact, /new and the rest of that set) and a
     setter head in the wrong shape (a bare /model) are refused here, ABOVE the setter body's one-token guard
@@ -36976,11 +37065,11 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None, 
     road every other backend takes (the setter body answers False for it; the caller sends it idle, parks it
     as a ("command",) op busy, and the drain hands it to the model). _codex_refuses is the one predicate this
     arm and the drain read, so the live road and the parked road refuse the same texts by construction.
-    _CODEX_SLASH_HANDLERS is the seam a native /clear or /compact plugs into: a head registered there takes the
-    text instead of the refusal, when the command is the WHOLE message (_slash_alone; a message that merely opens
+    _CODEX_SLASH_HANDLERS is the seam the native /clear, /new and /compact plugged into: a head registered there takes
+    the text instead of the refusal, when the command is the WHOLE message (_slash_alone; a message that merely opens
     with the head is refused in words). A registered head stays in the known set, so that shape and a parked copy
     of it still meet the refusal by the one predicate, while a whole-message copy parked by a road that skips the
-    route runs as the clear at the drain (_parked_clear_op). `qid` is the press-minted copy id (the sendMessage
+    route runs as the clear at the drain (_parked_clear_op), and a parked compact runs natively (the drain's compact arm). `qid` is the press-minted copy id (the sendMessage
     arm's _wire_qid), carried on the refusal frame so the chat retires the bubble it drew. The
     Claude Code and unowned routes are unchanged and take the setter body directly: a dead Codex session routes
     to _UNOWNED (CodexBackend.owns is False once dead) and keeps the unowned refusal, so the identity test is
@@ -37080,9 +37169,73 @@ def _codex_clear_command(be, sid, text, client=None, state=None, qid=None):
     return True
 
 
+_CODEX_COMPACT_NO_WORDS = "Codex compacts without instructions — send a bare /compact; nothing was sent."
+
+
+def _say_compact_refusal(sid, why, client=None, qid=None):
+    """A compaction the backend could not run, said the way _codex_clear_command says a clear's refusal (2026-09-19):
+    one warn frame naming the session — and the press, when a copy id rode, so the chat retires the bubble it drew and
+    puts the words back in an empty composer — on the delivering socket, or a broadcast to the chat panes when no socket
+    carried the op (a battery click, POST /compact, the pusher's drain), with the timeline panes told on their own
+    settingRefused frame (review find, 2026-09-21; that page drops a warn, and its battery's click stamp ends on the
+    frame); a row on the bell's ring under the refused kind; one stderr line. No cue is stamped for a compaction that
+    never started."""
+    frame = {"type": "warn", "text": why, "sid": str(sid)}
+    if qid:
+        frame["qid"] = qid
+    if client:
+        client["send"](json.dumps(frame))
+    else:
+        _send_to_app("chat", dict(frame, id=str(sid)))
+        # the timeline lane that took the battery click hears it too (review find, 2026-09-21): that page's boot drops
+        # a warn, and its click stamp cleared only on a settingRefused frame or its 6 s expiry, so the lane read
+        # compacting for six seconds with no words. The frame the page renders (gesture command, no flag: the shape
+        # the HTTP road builds for a refused compact), sent to every timeline pane the way the model frame is
+        # (_send_to_app), never as the refusal's `client`, which would replace the chat broadcast. `filed`: the ring
+        # row below is the bell's record, so the page posts no second one.
+        _send_to_app("timeline", {"type": "settingRefused", "gesture": "command", "sid": str(sid), "flag": "",
+                                  "text": why, "filed": True})
+    _sync_notice("%s: %s" % (_name_of(sid) or str(sid)[:8], why), ok=False, kind="refused")
+    sys.stderr.write("compact for %s refused: %s\n" % (sid, why))
+
+
+def _codex_compact_command(be, sid, text, client=None, state=None, qid=None):
+    """The Codex arm for a typed or sent /compact (2026-09-19; registered in _CODEX_SLASH_HANDLERS beside the clear heads,
+    so the guard's refusal stops for it): the compaction entry every other door takes (_compact_or_park — ONE _ops_gate
+    evaluation through _gate_or_park, the /effort arm's cost; parked as the same visible "/compact" chip the battery
+    parks when not quiet, "busy" parked the same way and never shown, the backend's compacting bracket as the cue when it
+    ran, so no echo and no stamp). Words after the head ("/compact focus on the tests") are refused loudly: Codex takes
+    no compaction instructions, and compacting anyway would drop the words silently. The head is read with split(None,
+    1), so a newline or a tab after it counts as words too (a partition on one space would let "/compact\nfoo" through as
+    a bare compact). A refusal is filed as state["refused_compact"] (its own key, as the clear's: _deliver_text rewords
+    "refused" for the unowned route) so POST /send and `romp send` answer ok:false with it, and said with the session
+    and the press named. Named residual: on SUCCESS the composer's optimistic bubble stands until its cross — a native
+    compaction mints no echo and writes no record (the same as a typed /model or /effort on Codex today); the cue the
+    user gets is the chip flipping to compacting and the chat's compacting element. Returns True: the command was
+    taken."""
+    words = (text or "").strip().split(None, 1)
+    if len(words) > 1:
+        why = _CODEX_COMPACT_NO_WORDS
+        if state is not None:
+            state["refused_compact"] = why
+            state["queued"] = False
+        _say_compact_refusal(sid, why, client=client, qid=qid)
+        return True
+    if not _native_compact(be):                          # a Codex identity without the verb: the guard's refusal, never the word as text
+        return _refuse_codex_slash(be, sid, text, client=client, state=state, qid=qid)
+    st = {}
+    parked = _compact_or_park(be, sid, state=st, client=client, qid=qid)
+    if state is not None:
+        if parked is None:
+            state["refused_compact"] = st.get("refused") or "Couldn't compact this conversation"
+        state["queued"] = bool(parked)
+    return True
+
+
 # head -> handler(be, sid, text, client, state, qid) -> bool. A head registered here takes the text instead of the
-# guard's refusal: /clear and /new are the native clear (2026-09-19); a native /compact registers next.
-_CODEX_SLASH_HANDLERS = {"/clear": _codex_clear_command, "/new": _codex_clear_command}
+# guard's refusal: /clear and /new are the native clear, /compact the native compaction (2026-09-19).
+_CODEX_SLASH_HANDLERS = {"/clear": _codex_clear_command, "/new": _codex_clear_command,
+                         "/compact": _codex_compact_command}
 _CODEX_CLEAR_HEADS = ("/clear", "/new")   # the heads _parked_clear_op reads a ("command", …) op by
 _CODEX_VALUE_EXAMPLE = {"/model": "/model gpt-5", "/effort": "/effort high"}
 
@@ -37230,6 +37383,12 @@ def _apply_pending_ops(now=None):
     tearing the mirror through one shared temp (_save_pending_ops). Only this one thread ever walks the
     queue (the pusher); the handlers and the move thread are the other writers.
 
+    A NATIVE COMPACTION (2026-09-19): a backend that compacts natively (_native_compact: Codex) takes its verb for a
+    parked ("compact",) op and for a ("command", "/compact") op a Codex session parked before the native head existed
+    (the disk mirror survives an upgrade), never the word as text; the bracket it latches is the cue, so no stamp;
+    "busy" leaves the head as the clear arm does; words after a typed head are refused with the reason and popped; and
+    the pass ends as on any turn-opening op.
+
     THE HEAD STAYS VISIBLE WHILE THE BACKEND HAS IT (2026-09-05, second review): every gate a handler
     decides on keys on queue presence (_ops_gate, _send_or_park's first gate, _park_behind_queue) and
     otherwise on busy() — which flips only once the backend has REGISTERED the op (SdkBackend.send runs
@@ -37348,6 +37507,12 @@ def _apply_pending_ops(now=None):
                     # missed the command op, so that op's queued chip drew beside the live "Clearing conversation…" element
                     is_clear = _parked_clear_op(op, be)
                     clear_why = ""
+                    # a parked native compaction (2026-09-19): the ("compact",) op every door parks, or a ("command", "/compact …")
+                    # op a Codex session parked before this head registered (the same disk mirror) — the backend's verb
+                    # (_native_compact), never the word as text; words after the head are refused, never dropped into it
+                    cmd_words = str(op[1]).strip().split(None, 1) if op[0] == "command" else []
+                    is_compact = bool(_native_compact(be) and (op[0] == "compact" or (cmd_words and cmd_words[0] == "/compact")))
+                    compact_why = ""
                     if op[0] == "send":
                         changed = True
                         _deliver_send_batch(be, sid, run)
@@ -37369,8 +37534,9 @@ def _apply_pending_ops(now=None):
                         # the cwd arm's rule, so the chip's ✕ still cancels it) and the pass ends with NO clock hold — the
                         # backend's turn-end poke follows its lock's release (CodexBackend._run_turn), so the cycle that
                         # poke brings finds the lock free, and a cycle that delivers nothing re-wakes nothing, so the
-                        # backstop retries by itself; the move's hold spaces COUNTED retries against a CLI window that
-                        # emits no event, which a clear has not got
+                        # backstop retries by itself; a clear parked behind a compaction bracket gets the bracket's
+                        # end poke, clean or loud (2026-09-21); the move's hold spaces COUNTED retries against a CLI
+                        # window that emits no event, which a clear has not got
                         # the words the op was parked with ride to the verb and its chip (_parked_md: a ("clear", text) op's
                         # text, a pre-upgrade ("command", "/new") op's, the default for a one-slot op from an older mirror),
                         # else a parked /new landed as a "/clear" chip the composer's bubble never matched (2026-09-19)
@@ -37379,6 +37545,27 @@ def _apply_pending_ops(now=None):
                             with _pending_ops_lock:
                                 _inflight_ops.pop(sid, None)
                             break
+                    elif is_compact:
+                        # SessionBackend.compact: "" the bracket is up (the backend's compacting() is the cue: no stamp), "busy"
+                        # a turn or a compaction already in flight, else the reason. On "busy" the head STAYS with nothing
+                        # recorded in flight and no clock, the clear arm's rule: the backend's turn-end poke or the
+                        # compaction bracket's end poke (every end pokes, the clean one through its boundary write and the
+                        # loud ones directly since the review of 2026-09-21; before it a failed compaction only pushed and
+                        # kicked, leaving the head to the pusher's half-second backstop) brings the cycle that retries.
+                        # Words after a typed head are refused with the reason (Codex takes no compaction instructions)
+                        # and popped; a reason rides the parked copy's id.
+                        if len(cmd_words) > 1:
+                            compact_why = _CODEX_COMPACT_NO_WORDS
+                        else:
+                            compact_why = be.compact(sid)
+                            if compact_why == "busy":
+                                with _pending_ops_lock:
+                                    _inflight_ops.pop(sid, None)
+                                break
+                        if compact_why:
+                            _say_compact_refusal(sid, compact_why, qid=_op_qid(op))
+                            refused = True
+                            said = True
                     elif op[0] == "command":
                         # a typed slash command fires ALONE as its own fresh top-level prompt — folded into a
                         # send batch (or forwarded mid-turn) it reaches the model as text instead of executing
@@ -37396,12 +37583,8 @@ def _apply_pending_ops(now=None):
                         else:
                             refused = _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op)) is False
                     elif op[0] == "compact":
-                        if be is not None and be is _codex():
-                            _refuse_codex_slash(be, sid, "/compact")   # a parked battery click on a Codex lane: the same refusal (2026-09-19)
-                            refused = True
-                            said = True
-                        else:
-                            refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315)
+                        refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315); a
+                        #                                                      backend with the verb took the native arm above (2026-09-19)
                     elif op[0] == "model":
                         be.set_model(sid, op[1])
                     elif op[0] == "effort":
@@ -37460,8 +37643,9 @@ def _apply_pending_ops(now=None):
                         # the backend HAS a turn-opening op: its cue, the hold and the end of this pass follow
                         # regardless of `took` (which is always True here — a ✕ on an in-flight op is refused and
                         # these kinds are never replaced in place)
-                        if op[0] == "compact" or op[1].strip().split()[0] == "/compact":
-                            _mark_compacting(sid)         # a TYPED /compact gets the same instant cue as the button's op
+                        if not is_compact and (op[0] == "compact" or op[1].strip().split()[0] == "/compact"):
+                            _mark_compacting(sid)         # a TYPED /compact gets the same instant cue as the button's op; a native
+                                                          # compaction's cue is its backend's bracket, which compacting() publishes (2026-09-19)
                         _after_turn_opening(be, sid, _pending_ops.get(sid) or [])
                         break                             # its turn / compaction must end before anything behind it fires
                     if op[0] in ("effort", "fast") and refused:
@@ -40135,6 +40319,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # 2026-06-24). Mirrors the feed, which gates the same _api_error on `not who_working` and treats awaiting
     # as a working flavor (build_feed).
     aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
+    _launch_no_retry = False   # the launch-error card below is one nothing retries (a failed compaction); status apiNoRetry
     if aerr:
         # While the session is still blocked on THIS error, the live card below carries the same record
         # with the buttons and countdown — drop the durable note so the error doesn't show twice. The
@@ -40163,6 +40348,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
             events.append({"kind": "apiError",
                            "text": _lerr["text"] if _lerr.get("dep") or _codex_lane else
                            "This session's claude process could not start — %s" % _lerr["text"]})
+            # a notice nothing retries (SessionBackend.launch_error's noRetry: the Codex compaction bracket's end
+            # notices, 2026-09-21): the card wears the API-error dress, whose Retry press sent the literal word into
+            # the thread as a turn and compacted nothing, so the status says to draw it with no Retry and no countdown
+            _launch_no_retry = bool(_lerr.get("noRetry"))
     # TOC ledger: archiver headline (the tab tooltip's Summary; the bullets list retired 2026-07-07 —
     # its in-chat readers were deleted with the ledger box, and the tooltip reads recent/tree instead)
     arch = jd.load_archive(sid) or {}
@@ -40229,7 +40418,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     if _session_flag(sid, "hideFromFeed"):       # muted → out of task tracking: the ledger shows no goal tree / current task
         tree, current, recent_tops = [], None, []
     # the FEED's per-session needs-you verdict, read ONCE for this build: the ledger (needsInput, the section
-    # rows' word) and the status (needsYou, the tab's ask ring) both carry it, and two reads could straddle a
+    # rows' word) and the status (needsYou, the tab's Needs you ring) both carry it, and two reads could straddle a
     # concurrent pusher's swap of the set (a connect-thread build races the cycle) — a row saying "needs you"
     # beside a tab with no ring, in the same frame (review find, 2026-09-13)
     needs_you = _feed_needs_input_of(sid)
@@ -40240,7 +40429,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
               # line. Kept for a muted session: it is the session's own statement, not a goal the judges track.
               "workingNote": Sessions.working_note(sid),
               # the FEED's per-session needs-you verdict: True when the last feed build filed a card of this
-              # session under needs_input (the column the feed's Blocked list is: a judge-filed block, a live
+              # session under needs_input (the feed's Needs you column: a judge-filed block, a live
               # prompt, an on-you API error), False when none, None before the first feed build since start.
               # The section view's row reads it for its "needs you" word, so the two panes agree; the tab's own
               # chip rule misses the common case (a session that asked and went idle). Read from the feed build
@@ -40340,14 +40529,18 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # tab), and never auto-retried: a refusal is deterministic on the same input, so a
                   # retry re-sends the same prompt and manufactures the same refusal (12/12 in the
                   # audited storm) — rewrite the ask or drop the thread (the user 2026-08-15)
+                  # the blocking notice is one nothing retries (a compaction that failed on the backend's side, the
+                  # launch error's noRetry): renderApiError draws no Retry, no Stop-all and no retrying-soon meta for
+                  # it, the apiRefusal precedent read off the live status (review find, 2026-09-21)
+                  "apiNoRetry": _launch_no_retry,
                   "apiRefusal": bool(aerr and aerr.get("refusal")),
                   # the FEED's per-session needs-you verdict, on the STATUS so the tab strip's rule reads it
                   # (tab-state.ts RING_TEST, the Waiting-on-you ring widget): True when the last feed build filed a card of this session
                   # under needs_input — a judge-filed block (the session asked something, a decision is
                   # pending), a stalled card, a held peer message, a live prompt — False when none, None
-                  # before the first feed build since start. The tab wears a dashed yellow ring for it in
-                  # every live state, working included (the ask ring, 2026-09-13: a session with something
-                  # waiting on you should grab attention without a click, even while it goes on working
+                  # before the first feed build since start. The tab wears a dashed magenta ring for it in
+                  # every live state, working included (the Needs you ring, the ask ring of 2026-09-13: a session with a card that
+                  # needs you should grab attention without a click, even while it goes on working
                   # in the background; the red ring stays the live prompt's and outranks it; since
                   # 2026-09-14 each ring is a widget with its own switch in the settings). The same
                   # set the ledger's needsInput reads, so the strip, the section rows and the feed agree;
@@ -41473,7 +41666,7 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
     planner has minted ANY goal — e.g. an SDK session that fired an AskUserQuestion on its very first turn
     (the user 2026-06-27). The hard-block floor (build_feed) can only floor an EXISTING focus card under
     BLOCKED; with zero goals there is no node to floor (store['lastNode'] is None), so the blocked session
-    would be INVISIBLE in the feed — exactly the bug where a hard block never reached the Blocked column and
+    would be INVISIBLE in the feed: exactly the bug where a hard block never reached the Needs you column and
     the planner looked like it never ran (it can't: there's no settled work to plan until the ask is answered).
 
     This synthesizes an ephemeral needs-input card from the LIVE prompt, mirroring _provisional_card's
@@ -42348,7 +42541,7 @@ def _feed_nudge_key(ctx, entry):
 
 
 def _feed_stalls_key(ctx, entry):
-    """Only the deferral records this entry read (the Stalled section, the Analyzing swirl, the Blocked
+    """Only the deferral records this entry read (the Stalled section, the Analyzing swirl, the Needs you
     filing), from the build's own _stalled_goals() snapshot in ctx, keyed by the exact node ids in the
     entry's `reads`. The body reads a record by exact node id, a foreign-owned id included, so a slice on
     the session's own id prefix missed those; the board-wide nudge identity covered them until the nudge
@@ -42495,7 +42688,7 @@ def _feed_session_key(s, tm, ctx, prev_entry):
       stalls: the deferral records of _stalled_goals() as (gid, why, since), sorted, for the exact node ids the
         previous entry read (a foreign-owned id included: the body reads a record by exact node id, so a slice on
         the session's own id prefix missed a foreign-id node's hold). The stalled section, the in-flight swirl and
-        the Blocked filing. A deps component, re-evaluated over the new entry.
+        the Needs you filing. A deps component, re-evaluated over the new entry.
       nudge: count, failed/failedAt and the last eight displayed history timestamps for the exact node ids
         the previous entry read. The pre-build snapshot also feeds the body; unrelated ledger writes and
         other sessions' history do not invalidate this entry. A deps component, populated on a cold build.
@@ -42611,9 +42804,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
                 # (jd._judge_candidates), which the store treats as immutable after the fork (jd._note_leaf retires the
                 # old leaf as discover hands out the new one); were that contract to break, add the anchor's identity
                 # to the `transcript` component (same label, no census change).
-                # ONLY FOR A LEAF THE KERNEL CAN STAT (2026-09-21). A transcript gone from disk under a warm entry has
-                # no slot in the shared store: jd.parse_cached returns None because the file-set key's stat raises,
-                # and jd.parsed_session parses the missing leaf under a None key and stores nothing, so the next
+                # ONLY FOR A LEAF THE KERNEL CAN STAT (2026-09-21). A transcript gone from disk under a warm entry
+                # cannot be keyed live: jd.parse_cached returns None because the file-set key's stat raises, so no
+                # slot the store keeps from before the removal matches, and jd.parsed_session parses the missing leaf
+                # under a None key and stores nothing, so the next
                 # build's cache-only read missed again and the re-read ran again, forever: parses.kernel and coldFlip
                 # (the regression watch for this very block) moved every build, and the empty parse it produced
                 # painted the card's sessState quiet, a settled state for a transcript the kernel cannot read, where
@@ -50163,7 +50357,7 @@ def _light_status(sid, path, tm, now):
     stops = cm.stops_for(_colormap())
     return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "provisional": True,
             "faded": _idle_faded(chip, since, now),      # the built status's own fact (T155), so the chip reads it the same
-            "needsYou": _feed_needs_input_of(sid),       # the yellow ask ring's one input (round four): the feed's verdict, a membership read
+            "needsYou": _feed_needs_input_of(sid),       # the magenta Needs you ring's one input (round four): the feed's verdict, a membership read
             # the painter's context gauge and tints (round three): the row carries the context, the colours are the built
             # status's own derivations over it (cm.ramp on the global colormap, cm.context_rgb), so a cold tab's gauge and
             # its model and effort tints paint as built for as long as the tab stays unbuilt
@@ -51539,14 +51733,19 @@ def _chat_full_reason(pc, pf, pl, change_from, total):
     first-event change, a floor advance that moved the list's first event reading here too, or a change of 0 against a
     held base, which since 2026-09-19 only a sender that read the shared baseline absent produces (a sid's first whole
     frame to reach a client seeds it, whichever sender sent it, so its later senders diff against it: _seed_chat_baseline and the
-    _push_session_now docstring), in two faces: the cycle's repair after two whole-frame senders raced on a baseline-less
-    sid, whose seed popped the baseline and marked the sid so that every base holder is served the full until the next
-    cycle's write, and, since 2026-09-21 with the baseline read before the build, the detector's accepted false positive,
-    a sender whose build the cycle's every-client write landed inside, its list the NEWER one, which sends every base
-    holder this full, pops the cycle's baseline and marks the sid with no client stale, so the next cycle sends every
-    base holder this full once more: two rows per client where a tail went before, the boot's attach handshake beside
-    the cycle's cold build of the same tab, removed by a stamp of the build's start kept beside the baseline, its own
-    item (test 28c of the skeleton-reconnect module); in the chatFull row every change-0 face has `changeFrom` 0 with
+    _push_session_now docstring), in three faces, partitioned in _seed_chat_baseline's docstring and named here, the
+    boot's ordinary interleaving in either order (the cycle's cold build of the watched tab beside the attach handshake's
+    targeted push): a strand's repair, the sender's list the OLDER one whichever whole-frame writer landed inside its
+    build, a racing seed or the non-connect cycle's every-client write, whose seed popped the baseline and marked the sid
+    so that every base holder is served the full until the write of the next cycle whose loop read the baseline absent,
+    a cycle that sent tails leaving the mark standing (tests 27, 28, 28b and 40 of the
+    skeleton-reconnect module); since 2026-09-21 with the baseline read before the build, the detector's accepted false
+    positive, the sender's list the NEWER one whichever writer landed inside, which marks the sid with no client stale, a
+    row per client where a tail went before, and the next cycle's full once more only when the frame moved or the repost
+    window (_DEDUP_REPOST_S) passed since, else that full dedups on the client's slot and files no row (tests 28c and
+    41); and the cycle itself as the sender that read the baseline absent with a whole-frame seed landing inside its
+    build, a race the detector does not mark (nothing marked, no strand), a row per base holder where a tail went before
+    and tails with no new row at the next cycle (test 42); in the chatFull row every change-0 face has `changeFrom` 0 with
     both edges held, the floor's `firstHeld` false), `changeBelowFirst` (a change at or before the held first edge), `other` (no known shape reaches the full frame past these: counted, never raised; the collector
     folds the overflow past SLOTS labels under the same name). `pf` and `pl` are the edges' indexes as the delta branch read
     them (a first edge before the floor'd list is 0)."""
@@ -54881,25 +55080,42 @@ def _push(targets, connect=False, live_map=None):
                 # card the other sender had just filled, and its seed declined, since a present baseline is never touched;
                 # the map held the newer list, the client the older card, and the next cycle diffed equal lists, no row, no
                 # mark. Read here, the same seed reads as absent-then-different at the seed step, the detector's road (a pop
-                # and a mark; the next cycle's full repairs every base holder). The cost, and where it lands: a sender that
-                # read the baseline absent and had ANY whole-frame writer land during its build, a racing seed or the
-                # non-connect cycle's write, sends change-0 fulls where it sent tails, then its seed pops and marks, and the
-                # next cycle sends every base holder a change-0 full again, a changeAt0 row each. In the strand face those
-                # fulls replace a silent stale card. In the other face they are pure cost: the detector cannot tell a seed
-                # that landed mid-build (the sender's list the OLDER one) from the cycle's write landing mid-build with the
-                # sender's list the NEWER one, since the map's content carries no order (a filled card has the length of
-                # its unfilled twin) and a written-by-the-cycle flag is not sound (a connect seed, then the cycle's tails and
-                # write, then an older targeted push's fulls: declining the pop there re-opens the strand), so a targeted
-                # push that read the baseline absent and had the cycle build, send and write inside its build pops the
-                # cycle's baseline and marks the sid with every client already holding its newer list: two change-0 fulls
-                # per client and two rows where a tail per client went before, the mark standing with no stale holder. The
-                # boot's ordinary interleaving (the cycle's cold build of the watched tab beside the attach handshake's
-                # targeted push, the transcript moving between the two reads), bounded by the number of senders building
-                # the sid at once; an equal-list race dedups on the client's slot and costs nothing on the wire. A stamp of
-                # the build's start kept beside the baseline, deferred to its own item, is the discriminator that removes
-                # it. The non-connect cycle's write below is unconditional when the sid is not marked, as before; a served
-                # cache hit and a built list both diff against the baseline as it stood before this iteration read
-                # anything. Tests 28, 28b and 28c of the skeleton-reconnect module pin the two faces.
+                # and a mark; a cycle that sent tails leaves the mark, and the next cycle whose loop reads the baseline
+                # absent sends every base holder the full and clears it with its write). The cost, and where it lands: a
+                # sender that read the baseline absent and had ANY whole-frame writer land during its build, a racing seed
+                # or the non-connect cycle's write, sends change-0 fulls where it sent tails, then its seed pops and marks,
+                # and the next cycle whose loop reads the baseline absent sends every base holder a change-0 full again, a
+                # changeAt0 row each, when the frame moved or the repost window (_DEDUP_REPOST_S) passed since the sender's
+                # full; unchanged within the window, that second full dedups on the client's slot and files no row. The
+                # faces, partitioned in _seed_chat_baseline's docstring and named here, the boot's ordinary interleaving in
+                # either order (the cycle's cold build of the
+                # watched tab beside the attach handshake's targeted push, the transcript moving between the two reads):
+                # the sender's list the OLDER one is the strand face, whichever writer landed inside, a racing seed (tests
+                # 28 and 28b) or this cycle's write (test 40), and the fulls replace a silent stale card; the sender's list
+                # the NEWER one is the pure-cost face, again whichever writer, this cycle's write (test 28c) or an older
+                # sender's seed (test 41), a mark with no stale holder; and this cycle itself as the sender that read the
+                # baseline absent with a seed landing inside its build is a race the detector does not mark (nothing marked,
+                # no strand; a row per base holder where a tail went before, test 42). Bounded by the number of senders
+                # building the sid at once. An equal-list race dedups on the client's slot and costs nothing on the wire,
+                # except for a client the racing writer served a TAIL during this sender's build (a seed landing between
+                # this read and the writer's read): that client gets a change-0 full and a changeAt0 row where the kernel
+                # before sent an empty-suffix tail, with no pop and no mark. Two things this placement
+                # does not close. With the baseline PRESENT here, a detector pop landing during this cycle's build is
+                # repaired one cycle later than before the read moved: this cycle diffs against the list it read and sends
+                # tails, so the mark stands (the write below declines) and the next cycle's fulls repair. It bites only
+                # when the targeted push's SEND phase, not its build, spanned the seed and this read: had the build itself
+                # overlapped them, the kernel before stranded the client for good, so the bound is one cycle where there
+                # was a strand. Only an ABSENT post-build re-read could switch this cycle to fulls (a present-but-different
+                # list cannot be diffed against); whether to is the author's call. And a third strand face, pre-existing:
+                # a sender whose seed lands BEFORE this cycle's write while its older full lands AFTER this cycle's on some
+                # client (the residual in _seed_chat_baseline's docstring, and the write site below); its close is its own
+                # change. The non-connect cycle's write below is unconditional when the sid is not marked, as before; a
+                # served cache hit and a built list both diff against the baseline as it stood before this iteration read
+                # anything, and the read sits before the single-flight wait too, so a connect push that seeds while this
+                # iteration waits on another builder reads as absent here (test 43: the waited-for list repairs a
+                # mid-flight sender's stale holder by a change-0 full now, and reaches the seeding client as the full its
+                # slot already holds, which dedups, not as an empty tail after its full). Tests 28, 28b, 28c and 40 to 43
+                # of the skeleton-reconnect module pin the faces and the placement.
                 _seen = _prev_chat_events.get(s["sid"])
                 hit = _built_chat.get(s["sid"])
                 _claimed = False
@@ -54983,22 +55199,43 @@ def _push(targets, connect=False, live_map=None):
                     if _claimed:
                         _chat_inflight_done(s["sid"])
                     continue
-                if _empty_build_regresses(m, _prev_chat_events.get(m["id"]), marked=m["id"] in _chat_baseline_raced):
-                    # a failed read, not a conversation that emptied (see _empty_build_regresses): the last cached
-                    # build stands in — same events, so the diff below finds nothing to send — or, with nothing
-                    # cached, this cycle sends nothing for the sid; the file's return busts the stat key and rebuilds.
-                    # A sid the detector MARKED (its baseline popped, every base holder holding content) is one whose
-                    # clients hold content too (2026-09-21): with nothing cached the `continue` skips the write block
-                    # below, so the mark stands and the baseline stays absent for the next cycle's repair, where the
-                    # empty frame used to reach every base holder, counted `empty` with a row each, and the write put []
-                    # over the pop; with a cached hit the stand-in goes to every base holder as a change-0 full (`_seen`
-                    # read absent above) and the write below takes the mark off, a consistent repair from an older
-                    # list, the road the seeded case takes (test 22, test 37 for this road). The note names the count at
-                    # the pop, raised by every whole frame handed under the mark.
-                    _note_empty_build(s["sid"], s.get("path"), _chat_prior_n(m["id"]))
-                    if hit is None:
+                marked = m["id"] in _chat_baseline_raced    # read once: the guard and the road under it see one value (2026-09-21)
+                if _empty_build_regresses(m, _prev_chat_events.get(m["id"]), marked=marked):
+                    # a failed read, not a conversation that emptied (see _empty_build_regresses): with a baseline present,
+                    # the last cached build stands in (the baseline's own events, so the diff below finds nothing to send)
+                    # or, with nothing cached, this cycle sends nothing for the sid; the file's return busts the stat key
+                    # and rebuilds. A sid the detector MARKED (its baseline popped, every base holder holding content) is
+                    # one whose clients hold content too (2026-09-21): the empty frame used to reach every base holder,
+                    # counted `empty` with a row each, and the write put [] over the pop. Under the mark this cycle sends
+                    # nothing for the sid, a cached build or not, and the `continue` skips the write block below, so the
+                    # mark and the absent baseline stand for the next content cycle, whose full repairs every base holder
+                    # (deduping on the slot of a client already showing that list). The cached build is no stand-in under
+                    # the mark (2026-09-21): with the baseline absent it always left as a full to every base holder and
+                    # the write took the mark off, so it REWOUND every holder ahead of it, the shorter face (a targeted
+                    # push under the mark handed every holder a longer list and cached nothing, so the two newest cards
+                    # left every pane until the next content cycle's tail, test 44 of the skeleton-reconnect module) and
+                    # the same-length face (the cache kept an older list with a card unfilled while a client showed it
+                    # filled, test 45); a compare against the mark's count sees length, not content, and closes neither.
+                    # The connect push runs this guard too, a third road under the mark (2026-09-21): a connect target for
+                    # a marked sid whose read came back empty gets no frame for it before the next content cycle, nothing
+                    # cached or a cached build alike, where the kernel before the mark sent it an empty noBase full at
+                    # once and the stand-in road handed it the cached list (test 46). The seeded case's road is not this
+                    # one and stands as it was: a present baseline takes the stand-in (test 22), and a targeted push's
+                    # tail that left both clients ahead of a seeded baseline sends the stand-in as a lastGone full at both
+                    # heads, pre-existing and outside this change. The note names the longest list some client was
+                    # handed whole under the mark (_chat_prior_n), a minimum, not what every holder has. Under the mark
+                    # with a cached build, that build still rides `chat_sessions` (2026-09-21): the list is the one
+                    # source of the feed frame's `ledgers`, which the Outline pane replaces wholesale on every feed
+                    # frame, so a `continue` that skipped the append made the session's Outline row vanish for the
+                    # empty cycle and return with the next content cycle, a payload change driven by a failed read
+                    # (test 51). No frame goes and the write block is still skipped; the no-cache arm has no build to
+                    # append, as before.
+                    _note_empty_build(s["sid"], s.get("path"), _chat_prior_n(m["id"]), marked=marked)
+                    if hit is None or marked:
+                        if hit is not None:
+                            chat_sessions.append(hit[1])     # the Outline row, from the cached build's ledger
                         if _claimed:
-                            _chat_inflight_done(s["sid"])
+                            _chat_inflight_done(s["sid"])    # the claim is released here: the loop's tail is skipped (test 52)
                         continue
                     m, ms, _rec = hit[1], hit[2], hit[3]   # the stand-in payload keeps its own dependency record
                 else:
@@ -55046,6 +55283,14 @@ def _push(targets, connect=False, live_map=None):
                 # repair, so the write and the clear are both skipped: the next cycle reads the baseline absent, sends every
                 # base holder the full, writes and clears then. Cleared here unconditionally, the mark was lost and the
                 # stale holder kept its older card until a reconnect, with no row.
+                # What the full-to-every-base-holder reasoning does not cover (2026-09-21): a sender whose seed landed BEFORE
+                # this write (the map absent then, so it wrote) while its older full landed AFTER this loop's on some client.
+                # This write puts the newer list over that seed, the client holds the older card, nothing is marked and the
+                # next cycle diffs equal lists: the pre-existing third strand face, named at the read above and in the seed's
+                # docstring; closing it (a stamp of the build's start, or a write here that declines to overwrite a seed this
+                # cycle did not read) is its own change. And with `_seen` ABSENT and a whole-frame seed landed inside this
+                # build, the write puts this cycle's OLDER list over that seed, correctly: the loop above handed that list to
+                # every base holder as a change-0 full, so it is what every client holds (test 42).
                 _repaired = False                        # a standing mark this write takes off: decided under the lock, counted after it (2026-09-21)
                 if not connect:
                     with _chat_baseline_lock:
@@ -55063,7 +55308,9 @@ def _push(targets, connect=False, live_map=None):
                     # change 0 against a held base and re-sent the whole session: 42 such fulls in the three minutes after
                     # a restart with 22 sessions, none after. The seed reads the map back against `_seen`, so a racing
                     # whole-frame sender's list is popped, not kept, and the sid marked: no seed, this road's least of all (a
-                    # needFull, an idle-prefetch release), re-seeds it before the next cycle's full has repaired every client.
+                    # needFull, an idle-prefetch release), re-seeds it before the repair: the full to every base holder from
+                    # the next cycle whose loop reads the baseline absent, whose write clears the mark (a cycle that sent
+                    # tails leaves it standing, test 27 of the skeleton-reconnect module).
                     # A build handed to no client, every target a skeleton holder (a status frame each) or withheld, seeds
                     # nothing (2026-09-21): a list no client holds is no lower bound on any base holder. Delivery is read
                     # off the loop's own ledger, written where each client's echat entry is, not off the clients' bases
@@ -55528,10 +55775,13 @@ def _push_session_now(sid):
     push read it, BEFORE its build (2026-09-21; read after the build, a seed that landed mid-build read as present,
     this push's older list went out against it as tails and its seed declined, a strand with no mark, test 28 of the
     skeleton-reconnect module), and a DIFFERENT non-empty list now means another whole-frame sender (a connect push, a
-    second targeted push on the same sid) wrote while this one was building or sending, and with per-client delivery
-    in lock order some client may hold the older build, so the seed pops the entry and marks the sid
-    (_chat_baseline_raced). While the
-    mark stands no seed writes, this push's included, and every base holder is served the full, as before the seed,
+    second targeted push on the same sid, or the non-connect cycle's every-client write) wrote while this one was
+    building or sending, and with per-client delivery in lock order some client may hold the older build, so the seed
+    pops the entry and marks the sid (_chat_baseline_raced); when this push's list was the newer one and the cycle's
+    write landed inside its build, no client does, and the mark stands with no stale holder, the detector's false
+    positive stated at the read below (test 28c). While the
+    mark stands no seed writes, this push's included, and every base holder is served the full, as before the seed (one
+    a client's slot already holds within the repost window dedups there and files no row),
     until a cycle whose loop read the baseline absent sends every base holder the full and takes the mark off with its
     write (a cycle that sent tails leaves it for the next one, test 27 of the skeleton-reconnect module); a
     single-client connect push
@@ -55618,13 +55868,21 @@ def _push_session_now(sid):
         # a PRESENT baseline, so this push diffed its older list against the newer one, sent the difference as tails that
         # regressed the card the other sender had just filled, and its seed declined; the map held the newer list, some
         # client the older card, and the next cycle diffed equal lists, no row, no mark. Read here, that seed reads as
-        # absent-then-different at the seed step, the detector's road: a pop, a mark, and the next cycle's full to every
-        # base holder. The cost, and its false positive, are stated at the pusher's read: the fulls land wherever a sender
-        # that read the baseline absent had ANY whole-frame writer land during its build, a racing seed or the cycle's
-        # write; this push as the NEWER builder, the cycle's build, sends and write landing inside its build, pops the
-        # cycle's baseline and marks the sid with no client stale, two change-0 fulls per client and two rows where a tail
-        # per client went before (the boot's attach handshake beside the cycle's cold build of the same tab). Tests 28 and
-        # 28c of the skeleton-reconnect module pin the two faces.
+        # absent-then-different at the seed step, the detector's road: a pop, a mark, and the full to every base holder
+        # from the next cycle whose loop reads the baseline absent, which clears the mark with its write (a cycle that
+        # sent tails leaves it standing, test 27). The cost, and its false positive, are stated at the pusher's read and
+        # partitioned in the seed's
+        # docstring: the fulls land wherever a sender that read the baseline absent had ANY whole-frame writer land during
+        # its build, a racing seed or the cycle's write, and the face follows the sender's list's order (the boot's
+        # ordinary interleaving, in either order: the cycle's cold build of the watched tab beside this push from the
+        # attach handshake). This push as the OLDER builder with the cycle's write inside its build is a strand face the
+        # pop repairs (its older fulls land over the cycle's newer ones on every base holder; test 40). This push as the
+        # NEWER builder, the cycle's build, sends and write landing inside its build (test 28c), or a second targeted push
+        # on the same sid seeding inside this one's build (test 41; nothing serializes two of these on one sid), pops the
+        # baseline and marks the sid with no client stale: one change-0 full per client and a row where a tail per client
+        # went before, and the next cycle's full once more only when the frame moved or the repost window passed since,
+        # else it dedups on the client's slot with no row. Tests 28, 28c, 40 and 41 of the skeleton-reconnect module pin
+        # this road's faces.
         _seen = _prev_chat_events.get(sid)
         _t0 = time.monotonic()
         try:
@@ -55649,11 +55907,13 @@ def _push_session_now(sid):
         #   the first is the cold build; a boot where a history ask came first would read a warm first (round four, 2026-09-15)
         if not m:
             return
-        if _empty_build_regresses(m, _prev_chat_events.get(sid), marked=sid in _chat_baseline_raced):
+        marked = sid in _chat_baseline_raced
+        if _empty_build_regresses(m, _prev_chat_events.get(sid), marked=marked):
             # a marked sid's clients hold content though its baseline is popped (2026-09-21): no empty frame to any base
-            # holder, the mark and the absent baseline stand for the cycle's repair; the note names the count at the pop,
-            # raised by every whole frame handed under the mark
-            _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None), _chat_prior_n(sid))
+            # holder, the mark and the absent baseline stand for the cycle's repair; the note names the longest list
+            # some client was handed whole under the mark, a minimum for what the clients hold (_chat_prior_n)
+            _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None), _chat_prior_n(sid),
+                              marked=marked)
             return                                   # the periodic pusher owns the sid until content returns
         change_from = _chat_diff(_seen, m.get("events") or [])   # against the baseline read before the build (above)
         led_changed = m.get("ledger") != _prev_chat_ledger.get(sid)
@@ -55883,7 +56143,7 @@ def _needs_input_sids(feed):
     """The sids with a card that needs the user: _card_needs_you, the one board-aware rule the badge reads too (the 1861
     read: this read of `column` and the badge's read of `category` disagreed the moment a notice card's two fields could
     differ, so the ring stayed off for a card in Blocked and lit for one the pane showed under Working). Placeholders
-    count too: the Blocked list shows them."""
+    count too: the Needs you column shows them."""
     return frozenset(str(a.get("sid")) for a in (feed.get("asks") or [])
                      if _card_needs_you(a) and a.get("sid"))
 
@@ -56106,7 +56366,7 @@ def _build_feed_locked(now, live_map, sig):
     _needs_now = _needs_input_sids(feed)                  # the per-session needs-you the session ledgers read
     if _needs_now != _feed_needs_input[0]:
         # A push builds the chat sessions BEFORE the feed, so the ledger's needsInput and the status's needsYou
-        # (the tab's ask ring) shipped this cycle carry the PREVIOUS build's set; the change lands on the next
+        # (the tab's Needs you ring) shipped this cycle carry the PREVIOUS build's set; the change lands on the next
         # cycle, whose chat signatures (`needs`) rebuild the sessions whose verdict moved. Make that cycle now —
         # the _mark_views_dirty pattern — so the ring and the section row trail the card by one build, not by
         # up to a backstop tick (review find, 2026-09-13: a ring a full tick late is a ring that can be stale
@@ -56262,7 +56522,7 @@ _CODE_BOARDS = {
     "feed": {
         "id": "feed", "title": "Feed",
         "categories": [{"id": "working", "title": "Working", "chip": "working"},
-                       {"id": "needs_input", "title": "Blocked", "chip": "blocked"},
+                       {"id": "needs_input", "title": "Needs you", "chip": "blocked"},   # the category everything you can act on files under (plans/needs-you.md); the chip class name is a schema value and stays
                        {"id": "completed", "title": "Completed", "chip": "completed"}],
         "defaultCategory": "working",
         "rules": [],                                   # the feed's category rule is code: the expression in _feed_session_entry
@@ -56917,10 +57177,10 @@ def _board_needs_you(board):
 
 def _card_needs_you(a):
     """THE one rule for "this card needs the user" (the 1861 read, medium): the card sits in its OWN board's needs-you category,
-    read from `category` (an older kernel's frame: `column`). The badge (_needs_you_count), the yellow ask ring
+    read from `category` (an older kernel's frame: `column`). The badge (_needs_you_count), the magenta Needs you ring
     (_needs_input_sids, and through it build_session's needsYou) and the pane's lens (feed.ts isNeedsYou(boardOf(card), ...))
     all read this; a board that names no needs-you category has no card that needs the user. A provisional placeholder is
-    a caller's concern (the badge skips it, the ring counts it: the Blocked list shows it)."""
+    a caller's concern (the badge skips it, the ring counts it: the Needs you column shows it)."""
     nb = _board_needs_you(a.get("board"))
     return nb is not None and a.get("category", a.get("column")) == nb
 
@@ -57558,6 +57818,15 @@ def _forget_active_chat_if_last(client):
         _ACTIVE_CHAT_NONCE_BY_WID.pop(wid, None)
 
 
+def _active_chat_audience(c):
+    """Which clients of a window hear the chat's active tab: its feed and Artifacts panes, and never a RELAY-kind client (a hub
+    dashboard's socket spliced to this kernel, kernel.py the /remote/<host>/ws relay): under federation a switch would otherwise
+    reach the pane from three speakers, the shell, the local kernel and the tab's host kernel, and the late one decided (the
+    reviewers of PR 1925, 2026-09-21). The record and the nonce are still written for every client, so the reaffirm answer to a
+    jump into a closed remote session keeps its road."""
+    return c.get("alive", True) and c.get("app") in ("feed", "artifacts") and c.get("kind") != "relay"
+
+
 def _relay_active_chat(client, sid, nonce=None):
     """A chat client's activeTab: record the session under its window's wid (None for no tab) and send the window's
     live feed clients the frame (T347: the feed's focused-session section is a view of the chat pane's active tab,
@@ -57570,7 +57839,7 @@ def _relay_active_chat(client, sid, nonce=None):
     # echo of its own switch and never on a stranger's; a chat that sends none keeps the plain frame and its dedup
     _ACTIVE_CHAT_NONCE_BY_WID[wid] = nonce if isinstance(nonce, int) and not isinstance(nonce, bool) else None
     with _clients_lock:
-        feeds = [c for c in _clients if c.get("alive") and c.get("app") in ("feed", "artifacts") and _active_chat_wid(c) == wid]   # …and the Artifacts pane, which follows the active tab when unlocked (plans/artifacts-pane.md 9.5)
+        feeds = [c for c in _clients if _active_chat_audience(c) and _active_chat_wid(c) == wid]   # the feed and the Artifacts pane of the window (plans/artifacts-pane.md 9.5), never a relay-kind client
     for c in feeds:
         _send_active_chat(c)
 
@@ -59507,7 +59776,7 @@ def _pusher_cycle_jobs(now, live_map, any_client):
             _t_push = time.monotonic() - _t_push
             _PERF_STATS.stage("push", _t_push)
         try:
-            _artifacts_signal(now)        # the Artifacts pane's growth signal (plans/artifacts-pane.md 9.4): one stat per watching client; its own try, after the push's finally, so the push stage times the push alone (round two, low b)
+            _job_stage('artifactsSignal', lambda: _artifacts_signal(now))   # the Artifacts pane's growth signal (plans/artifacts-pane.md 9.4): one stat per watched session, on this event-woken cycle; its own stage after the push's finally
         except Exception:
             sys.stderr.write("artifacts signal: %s\n" % traceback.format_exc())
     try:                                  # the turn-finished push (bell popover): AFTER the feed build above,
@@ -60491,10 +60760,10 @@ _CHAT_MOBILE_CSS = (
     "#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     "#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}"   # green when idle-waiting-on-bg-work
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
-    # something of the current session's is waiting on you (the desktop tab's dashed yellow ring, the class ring-waiting-on-you):
-    # the chip's border takes the ring — dashed, in the ask yellow — over the identity color (declared after
+    # a card of the current session's needs you (the desktop tab's dashed magenta ring, the class ring-waiting-on-you):
+    # the chip's border takes the ring, dashed, in the Needs you magenta, over the identity color (declared after
     # #mcur.colored so it wins at equal specificity)
-    "#mcur.ask{border-color:var(--st-ask-bg,#f5d33f);border-style:dashed}"
+    "#mcur.ask{border-color:var(--st-needs-bg,#d946ef);border-style:dashed}"
     "#mtag-slot{flex:0 0 auto;display:flex;align-items:center;gap:5px}"   # T161: the tag control's slot, sized by the shared button's own inline metrics
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
     "background:var(--btn-bg,#2a2a2a);color:#bbbbbb;border:1px solid var(--hairline,#3a3a3a);border-radius:6px;font-size:16px;line-height:1}"
@@ -60528,9 +60797,9 @@ _CHAT_MOBILE_CSS = (
     ".mrow .mclose{flex:0 0 auto;margin-left:8px;padding:0 6px;color:#8a8a8a;font-size:20px;line-height:1}"
     ".mrow .mclose:active{color:#e5484d}"
     ".mrow.active{background:#0d3a5c}"
-    # a row whose session has something waiting on you: a yellow bar at its left edge — the desktop tab's
-    # dashed ring (ring-waiting-on-you), in the one ask token, on a list row where a ring would fight the hairlines
-    ".mrow.ask{border-left:3px solid var(--st-ask-bg,#f5d33f);padding-left:9px}"
+    # a row whose session has a card that needs you: a magenta bar at its left edge, the desktop tab's
+    # dashed ring (ring-waiting-on-you), in the one Needs you token, on a list row where a ring would fight the hairlines
+    ".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}"
     # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
     # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
     # (cloned) and the count; no caret and no pointer, since the phone folds nothing
@@ -60613,7 +60882,7 @@ function rowUpdate(row,s){row.classList.toggle('active',!!s.active);
 // who tapped a remote session on the phone and nothing happened)
 row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
 row.classList.toggle('pending',pendingId===s.id);
-row.classList.toggle('ask',!!s.ask);   // the desktop tab's yellow ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): something of this session's is waiting on you
+row.classList.toggle('ask',!!s.ask);   // the desktop tab's magenta ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): a card of this session's needs you
 var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
 wd.classList.toggle('await',!s.working&&!!s.awaitbg);}
@@ -60645,7 +60914,7 @@ if(!act)act=first;   // the first SESSION row, never a heading
 var nm=cur.querySelector('.nm');
 var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg))?'':'none';   // gold working / green awaiting dot, matching desktop
 wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working));
-cur.classList.toggle('ask',!!(act&&act.ask));   // the current chip wears the yellow ring too
+cur.classList.toggle('ask',!!(act&&act.ask));   // the current chip wears the magenta ring too
 if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}
@@ -60937,23 +61206,27 @@ def _artifacts_page():
                 "background:#1e1e1e;padding:12px'>romp's Artifacts pane needs the ui/ modules "
                 "(webview/artifacts-pane.css).</body></html>")
     v = _dist_ver()
-    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
+    head = ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp · artifacts</title>"
             # the chat's stylesheet provides the lightbox and the link dress; artifacts-pane.css owns the page layout
             "<link href=/dist/styles.css?v=%d rel=stylesheet>"
             "<style>%s\n%s</style></head><body class=artifacts-pane>"
-            "<div id=artifacts-root></div>"
-            "<script>%s</script><script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim
-            "<script src=/dist/artifacts.js?v=%d></script></body></html>"
-            % (v, THEME_CSS, css, _shim("artifacts", v, no_stale=True), v, v))
+            "<div id=artifacts-root></div><div id=art-spin-anchor hidden></div>" % (v, THEME_CSS, css))
+    # the romp loader (ui/CLAUDE.md: the first thing up while something loads), the same overlay the chat, feed and outline
+    # pages carry (_pane_spin): its content observer watches an anchor that never gets a child, so the PANE shows and hides
+    # it (artifacts.ts spin): up while a session's first listing is outstanding, down when it or an error lands; the
+    # overlay's own reconnect reshow and failsafe stand (the reviewers of PR 1925, 2026-09-21)
+    tail = ("<script>%s</script><script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim
+            "<script src=/dist/artifacts.js?v=%d></script></body></html>" % (_shim("artifacts", v, no_stale=True), v, v))
+    return head + _pane_spin("art-spin-anchor") + tail
 
 
 ARTIFACTS_MAX = 500                                   # the newest entries a listing carries; the page says when it bound
 _ARTIFACT_EDIT_VIA = {"Write": "write", "Edit": "edit", "MultiEdit": "multiedit", "NotebookEdit": "notebook"}   # rule 1's tools (the _EDIT_TOOLS set) and their words
 
 
-def _artifacts_walk(turns, sid, link_cache=None):
+def _artifacts_walk(turns, sid, link_cache=None, candidates=None):
     """Every (path, t, via) the three rules of plans/artifacts-pane.md name over a parsed session's turns, in transcript
     order, each path absolute (a relative one resolved against the session's cwd the way a click resolves it; a file://
     URI unwrapped). Rule 1: an assistant tool_use of an edit tool, its file_path or notebook_path. Rule 2: a path-shaped
@@ -60961,7 +61234,10 @@ def _artifacts_walk(turns, sid, link_cache=None):
     kernel verified for that message (the path-links cache), one that exists now, or an image path by extension (the
     figure rule renders it at its mention); a bare word that is no file is not an artifact. Rule 3: a path under the
     state directory's drops/ in the PERSON's own user turn, as an image block's source path or as text (the shape
-    _user_images reads). Bash commands are not read (the design's road not taken). Best-effort per atom."""
+    _user_images reads). Bash commands are not read (the design's road not taken). Best-effort per atom. `candidates`, when a
+    dict is given, collects rule 2's UNADMITTED tokens (path-shaped, neither verified nor on disk nor an image) as
+    absolute path -> (t, token, atom uuid), so the memo can re-run the admission on every answer: a file mentioned before it
+    existed and created afterwards out of band lists once it does (the reviewers of PR 1925, 2026-09-21)."""
     out = []
     cwd = (_cwd_of(sid) or "") if sid else ""
     drops = str(jd.STATE / "drops") + os.sep
@@ -61001,6 +61277,10 @@ def _artifacts_walk(turns, sid, link_cache=None):
                             continue
                         if tok in verified or os.path.isfile(ap) or _PREVIEW_IMG_RE.search(" " + ap):
                             out.append((ap, t, "rendered"))
+                        elif candidates is not None:
+                            cur = candidates.get(ap)
+                            if cur is None or (t or 0) >= cur[0]:
+                                candidates[ap] = (int(t or 0), tok, a.get("uuid"))
                 elif a.get("type") == "user" and a.get("author") in (None, "human"):
                     for b in blocks:
                         if isinstance(b, dict) and b.get("type") == "image":
@@ -61067,6 +61347,23 @@ def _artifacts_items(mentions, sid):
 _ARTIFACTS_MEMO = {}                                  # sid -> {"idx", "tid", "mentions": {path: (t, via)}, "t"}: the walk's memo (section 9.4), memory only
 _ARTIFACTS_MEMO_LOCK = threading.Lock()
 _ARTIFACTS_MEMO_CAP = 64                              # the least recently listed session leaves past it
+_ARTIFACTS_CANDS_CAP = 64                             # rule 2's unadmitted prose candidates kept per session, the newest mentions first: a long
+#                                                       session naming many never-created paths pays at most this many stats per answer (round two of PR 1951)
+
+
+def _artifacts_admit(sid, candidates, link_cache=None):
+    """Rule 2's admission re-run over the memo's unadmitted candidates (absolute path -> (t, token, uuid)): a token the chat
+    verified for its message since (the path-links cache), a file that exists now, or an image by extension is admitted as a
+    (path, t, "rendered") mention and leaves the map. Returns the admitted mentions."""
+    link_cache = _PATH_LINK_CACHE if link_cache is None else link_cache
+    out = []
+    for ap, (t, tok, uuid) in list(candidates.items()):
+        hit = link_cache.get((sid, uuid)) if uuid else None
+        verified = set((hit[0] if hit else {}).keys())
+        if tok in verified or os.path.isfile(ap) or _PREVIEW_IMG_RE.search(" " + ap):
+            out.append((ap, t, "rendered"))
+            candidates.pop(ap, None)
+    return out
 
 
 def _artifacts_mentions(sid, turns, link_cache=None):
@@ -61079,20 +61376,36 @@ def _artifacts_mentions(sid, turns, link_cache=None):
     after it are walked, and hydrated, and their mentions merged (a re-walked mention is the same mention: the merge keeps
     the latest by time); otherwise (a full re-assembly, a turn without an id) the whole session is walked and the memo
     replaced. Returns (path, t, via) triples for _artifacts_items, which stats and judges every entry on every answer.
-    Nothing is written."""
+    The memo also keeps the last turn's atom count and its last atom's uuid: a rewind inside an open turn keeps the turn's id
+    while atoms vanish, so the resume holds only while both still stand (else the whole session is walked and a vanished
+    mention leaves); and rule 2's unadmitted candidates (_artifacts_walk's `candidates`), re-judged on every answer
+    (_artifacts_admit), so a file mentioned before it existed lists once it does. Nothing is written."""
     turns = list(turns or [])
     with _ARTIFACTS_MEMO_LOCK:
         memo = _ARTIFACTS_MEMO.get(sid)
-    start, latest = 0, {}
+    start, latest, cands = 0, {}, {}
     if memo is not None and memo["tid"] is not None and memo["idx"] < len(turns) and (turns[memo["idx"]] or {}).get("id") == memo["tid"]:
-        start = memo["idx"]                            # inclusive: the last walked turn may have grown (round two, the high)
-        latest = dict(memo["mentions"])
-    for ap, t, via in _artifacts_walk(turns[start:], sid, link_cache=link_cache):
+        atoms = (turns[memo["idx"]] or {}).get("atoms") or []
+        n = memo.get("n") or 0
+        same_prefix = len(atoms) >= n and (n == 0 or ((atoms[n - 1] or {}).get("uuid") == memo.get("uuidN")))
+        if same_prefix:
+            start = memo["idx"]                        # inclusive: the last walked turn may have grown (round two, the high)
+            latest = dict(memo["mentions"])
+            cands = dict(memo.get("cands") or {})
+    for ap, t, via in _artifacts_walk(turns[start:], sid, link_cache=link_cache, candidates=cands):
         cur = latest.get(ap)
         if cur is None or (t or 0) >= cur[0]:
             latest[ap] = (int(t or 0), via)
+    for ap, t, via in _artifacts_admit(sid, cands, link_cache=link_cache):   # the candidates of earlier answers, re-judged now
+        cur = latest.get(ap)
+        if cur is None or (t or 0) >= cur[0]:
+            latest[ap] = (int(t or 0), via)
+    if len(cands) > _ARTIFACTS_CANDS_CAP:               # bounded per session, the newest mentions kept; an evicted candidate is not re-judged
+        cands = dict(sorted(cands.items(), key=lambda kv: kv[1][0], reverse=True)[:_ARTIFACTS_CANDS_CAP])
     if turns:
-        entry = {"idx": len(turns) - 1, "tid": (turns[-1] or {}).get("id"), "mentions": latest, "t": time.time()}
+        last_atoms = (turns[-1] or {}).get("atoms") or []
+        entry = {"idx": len(turns) - 1, "tid": (turns[-1] or {}).get("id"), "n": len(last_atoms),
+                 "uuidN": (last_atoms[-1] or {}).get("uuid") if last_atoms else None, "mentions": latest, "cands": cands, "t": time.time()}
         with _ARTIFACTS_MEMO_LOCK:
             _ARTIFACTS_MEMO.pop(sid, None)
             _ARTIFACTS_MEMO[sid] = entry                 # re-inserted last: the dict's order is the recency order
@@ -61115,19 +61428,28 @@ def _artifacts_version(sid, now):
 
 
 def _artifacts_signal(now):
-    """The pusher cycle's one duty for the Artifacts pane (section 9.4): for every live artifacts client watching a session,
-    read that session's transcript version and, when it moved since the last signal to that client, send ONE frame
-    artifactsChanged {sid, version}; the pane re-asks for the listing. One stat per cycle per watching client; a client
-    watching nothing costs nothing; the listing itself is never pushed. Returns how many frames went."""
+    """The pusher cycle's one duty for the Artifacts pane (section 9.4): the watched sessions' transcript versions, read ONCE
+    per watched session per cycle (a dict from sid to version, the clients' sids snapshotted under _clients_lock), and for
+    every live artifacts client whose watched session's version moved since the last signal to that client, ONE frame
+    artifactsChanged {sid, version}; the pane re-asks for the listing. The compare and the stamp run under the client's own
+    lock (the watch arm writes both under it too), the stat outside. This rides the event-woken pusher cycle (a push wake, or
+    the 0.5 s backstop the cycle already keeps): no timer of its own, and a client watching nothing costs nothing; the listing
+    itself is never pushed. Returns how many frames went."""
     with _clients_lock:
-        targets = [c for c in _clients if c.get("alive") and c.get("app") == "artifacts" and c.get("artifacts")]
+        targets = [(c, c.get("artifacts")) for c in _clients if c.get("alive") and c.get("app") == "artifacts" and c.get("artifacts")]
+    versions = {}
+    for _c, sid in targets:
+        if sid not in versions:
+            versions[sid] = _artifacts_version(sid, now)
     sent = 0
-    for c in targets:
-        sid = c.get("artifacts")
-        ver = _artifacts_version(sid, now)
-        if ver is None or ver == c.get("artifactsVer"):
+    for c, sid in targets:
+        ver = versions.get(sid)
+        if ver is None:
             continue
-        c["artifactsVer"] = ver
+        with _client_lock(c):
+            if c.get("artifacts") != sid or ver == c.get("artifactsVer"):   # the watch moved, or the same bytes
+                continue
+            c["artifactsVer"] = ver
         _reply(c, {"type": "artifactsChanged", "sid": sid, "version": ver})
         sent += 1
     return sent
@@ -61324,15 +61646,19 @@ if(tlUser)applyUser();
 function autosize(){if(!document.body.classList.contains('po-timeline'))return;if(tlUser){applyUser();return;}var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
 var ghh=document.getElementById('gh');
 if(ghh)ghh.addEventListener('mousedown',function(e){e.preventDefault();document.body.classList.add('drag','dragh');
+var tl0=col.style.getPropertyValue('--tl'),user0=tlUser,want=null,raf=0;   // live already; since section 12 one write per animation frame, and Escape restores the grab-time height (and the remembered one)
+function apply(){raf=0;if(want===null)return;col.style.setProperty('--tl',want+'px');}
 // max = the viewport share, NEVER the iframe document's scrollHeight: the timeline document fills whatever
 // height the band has, so 'content height' always equals the CURRENT height, and clamping the drag to it made
 // every drag shrink-only, a downward ratchet (2026-09-01)
 function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;
-var v=tlClamp(px);tlUser=v;col.style.setProperty('--tl',v+'px');}
-function up(){document.body.classList.remove('drag','dragh');
-try{if(tlUser)localStorage.setItem(TLK,String(tlUser));}catch(e){}
-window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);}
-window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});
+want=tlClamp(px);tlUser=want;if(!raf)raf=frameOnce(apply);}
+var keysOff=null;
+function end(){document.body.classList.remove('drag','dragh');if(raf)cancelFrame(raf);raf=0;
+window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
+function up(){end();apply();try{if(tlUser)localStorage.setItem(TLK,String(tlUser));}catch(e){}}   // end() first: the armed frame is cancelled on this path too, then the last recorded position lands itself and is remembered
+function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=null;tlUser=user0;end();if(tl0)col.style.setProperty('--tl',tl0);else col.style.removeProperty('--tl');}
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});
 // ── pane gutters (chat|outline|feed|files, fixed order) sized by flex-grow. gv-a is always chat|outline; gv-b's
 // left neighbour is the outline when shown else chat (so it's the chat|feed gutter when the outline is off);
 // gv-c's is the rightmost of feed, outline, chat that is shown. On grab we normalise every visible pane's grow
@@ -61391,13 +61717,24 @@ var px={};PANES.forEach(function(id){if(shown(id))px[id]=document.getElementById
 Object.keys(px).forEach(function(id){setGrow(key(id),px[id]);});
 setGrow(key(leftId),px[leftId]+px[goneId]+7);
 try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}return true;};
-// A drag moves a LANDING LINE and the panes take their widths ONCE, at release. A grow write re-lays out the row
-// and with it every same-origin pane document in that frame, so writing the pair on every mousemove cost one
-// relayout of every pane per pointer step, a cost that grows with what the panes hold (seconds a step once a pane
-// holds a large document). So mousemove only positions #gv-ghost, a fixed line over the row where the divider will
-// land, and mouseup writes the two grows and persists them. The pair is resolved before the drag classes go on, so
-// a grab with no pair leaves no col-resize cursor behind.
-var ghost=document.getElementById('gv-ghost');
+// A drag resizes the pair LIVE, one layout per animation frame (plans/pane-docking.md section 12, the user 2026-09-20: what
+// they see while dragging is what they get, no landing line). A grow write re-lays out the row and with it every same-origin
+// pane document in that frame, which is why the 2026-09-08 drag deferred to a line: writing the pair on every mousemove cost
+// one relayout per pointer step. Coalescing the moves to the frame bounds that cost to one relayout per frame, the pane
+// documents re-lay through their own resize observers, and the store is written once at release. The pair is resolved
+// before the drag classes go on, so a grab with no pair leaves no col-resize cursor behind.
+// one layout per animation frame for the divider drags below (section 12): frameOnce arms a callback for the next frame and
+// returns its handle (a page without requestAnimationFrame runs it at once and returns 0); cancelFrame drops an armed one
+function frameOnce(f){if(window.requestAnimationFrame)return window.requestAnimationFrame(f)||1;f();return 0;}
+function cancelFrame(h){if(window.cancelAnimationFrame)window.cancelAnimationFrame(h);}
+window.__rompFrameOnce=frameOnce;window.__rompCancelFrame=cancelFrame;   // the split script's gutterV reads them (it parses after this one)
+// Escape ends a divider drag wherever the keyboard sits: the gutter press prevents the default, so a focused pane keeps the
+// keyboard and its document, not the shell's window, sees the key. dragKeys(esc) hears keydown on the window AND on every
+// same-origin pane document for the drag's duration, and returns the undo.
+function dragKeys(esc){var docs=[],fs=document.querySelectorAll?document.querySelectorAll('iframe'):[];Array.prototype.forEach.call(fs,function(f){try{var d=f.contentDocument;if(d&&d.addEventListener){d.addEventListener('keydown',esc,true);docs.push(d);}}catch(e){}});   // a document without querySelectorAll (a test's stub) has no panes to hear
+window.addEventListener('keydown',esc,true);
+return function(){docs.forEach(function(d){try{d.removeEventListener('keydown',esc,true);}catch(e){}});window.removeEventListener('keydown',esc,true);};}
+window.__rompDragKeys=dragKeys;
 function gutter(gid,leftPick,rightId){var h=document.getElementById(gid);if(!h)return;
 h.addEventListener('mousedown',function(e){e.preventDefault();
 var L=document.getElementById(leftPick()),R=document.getElementById(rightId);if(!L||!R)return;
@@ -61407,13 +61744,19 @@ document.body.classList.add('drag','dragv');
 // fresh browser ballooned the first column (served-test find, 2026-09-08; the split's fresh columns hit it every time)
 var px={};PANES.forEach(function(id){if(shown(id))px[id]=document.getElementById(id).offsetWidth;});
 Object.keys(px).forEach(function(id){setGrow(key(id),px[id]);});
-var wL=L.offsetWidth,wR=R.offsetWidth,sum=wL+wR,sx=e.clientX,mn=Math.min(120,sum*0.25),nL=wL,lx=L.getBoundingClientRect().left,rr=row.getBoundingClientRect();
-function show(){if(!ghost)return;ghost.style.top=rr.top+'px';ghost.style.height=rr.height+'px';ghost.style.left=(lx+nL)+'px';ghost.style.display='block';}
-function mv(ev){nL=Math.max(mn,Math.min(sum-mn,wL+(ev.clientX-sx)));show();}
-function up(){document.body.classList.remove('drag','dragv');if(ghost)ghost.style.display='none';
-setGrow(key(L.id),nL);setGrow(key(R.id),sum-nL);try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}
-window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);}
-show();window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
+var wL=L.offsetWidth,wR=R.offsetWidth,sum=wL+wR,sx=e.clientX,mn=Math.min(120,sum*0.25),nL=wL,want=wL,raf=0;
+// LIVE (plans/pane-docking.md section 12, the user 2026-09-20): the pair takes its new widths as the pointer moves, ONE layout per
+// animation frame (a move records the pointer and arms a frame; the frame applies the latest position: a burst of moves costs one
+// relayout of the row, a frame without a move nothing); body.drag keeps the iframes pointer-transparent for the drag; the store is
+// written once, at release; Escape restores the grab-time widths live and writes nothing. No landing line.
+function apply(){raf=0;if(want===nL)return;nL=want;setGrow(key(L.id),nL);setGrow(key(R.id),sum-nL);}
+function mv(ev){want=Math.max(mn,Math.min(sum-mn,wL+(ev.clientX-sx)));if(!raf)raf=frameOnce(apply);}
+var keysOff=null;
+function end(){document.body.classList.remove('drag','dragv');if(raf)cancelFrame(raf);raf=0;
+window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
+function up(){end();apply();try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}}   // end() first (the armed frame cancelled, the listeners off), then apply() lands the last recorded position itself: a release in the same frame as the last move lands what was under the pointer, and no frame runs after
+function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=wL;end();nL=wL;setGrow(key(L.id),wL);setGrow(key(R.id),wR);}
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});}
 window.__rompGutter=gutter;   // the split's chat|chat gutters are wired through the same code
 gutter('gv-a',function(){return lastChat();},'fleet-pane');
 gutter('gv-b',function(){return document.body.classList.contains('po-fleet')?'fleet-pane':lastChat();},'feed-pane');
@@ -61645,7 +61988,7 @@ sdk:"romp's SDK backend, the machinery that actually runs your sessions, hit an 
 sync:"romp moved commits between your machines by itself: a push to a remote, a pull from one, or an ask that a peer fast-forward itself. Successes are logged as well as failures, so this is the record of what romp did to your machines; the network panel shows a sync while it is still running",
 locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
 cleared:"a /clear in a session dropped still-open cards at the boundary; Undo on the feed restores them",
-refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults. Or a slash command sent to a session that has no such command (a Codex session has no /compact): nothing was sent, and the entry names it. Or a /clear a Codex session could not run (the fresh conversation could not be started): the entry carries the reason",
+refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults. Or a slash command sent to a session that has no such command (a Codex session has no /fast): nothing was sent, and the entry names it. Or a /clear or /compact a Codex session could not run (the fresh conversation or the compaction could not be started): the entry carries the reason",
 undelivered:"something you sent never reached a session: the kernel it was addressed to has no session by that id, which on a board showing more than one machine means the pane addressed the wrong one. Nothing was delivered. Your text is kept verbatim in undelivered.jsonl under ~/.local/state/romp"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
 // STABLE container; only classes flip on click, so the buttons stay click-safe.
@@ -62734,7 +63077,7 @@ manual:'Auto-retry and the judges are paused: you stopped them.'};
 var RESUME='Resume all auto-retries',STOP='Stop all auto-retries';   // the chat card's own words
 var NOTSENT='Not sent: the dashboard is disconnected. Try again.';
 var LOST='Connection lost before the answer arrived. When it is back, the button shows the current state.';
-// a waiting row's class words (T340, the user 2026-09-11): the status code itself wears its class ink, the 5xx magenta for a
+// a waiting row's class words (T340, the user 2026-09-11): the status code itself wears its class ink, the 5xx purple for a
 // 529 or any other 5xx, the 429 red for a 429, so the number says what it is; the words beside it stay plain
 function clsWords(r){var st=r.status?esc(r.status):'';
 if(r.cls==='429')return '<span class=ah-c-r429>429</span> rate limited';if(r.cls==='529')return '<span class=ah-c-r5xx>529</span> overloaded';
@@ -62795,7 +63138,7 @@ return dup?fam+' · '+(b.label||b.auth||key.split('|')[0]):fam;}
 // window counts every attempt once and says how many of them had no status, with the shares' base named beside them:
 // '15 attempts, 7 of them without a status · 25% 429 · 0% 5xx of the other 8'.
 // the histogram (T316, the user's design): one bar per bin, STACKED bottom-up, successes in the accent, 429 attempts in
-// the blocked red, 5xx (529 included) in the 5xx magenta, and the other band (no connection, another status) in a hue of
+// the blocked red, 5xx (529 included) in the 5xx purple, and the other band (no connection, another status) in a hue of
 // its own only when the range holds any; one ceiling label, no peak text; the timeline's clocks along the bottom. The
 // hover draws the day as 96 quarter-hour bars; the detail draws the chosen range, larger. Colours through the tokens
 // (fallbacks for a var-less harness). EVERY attribute quoted: this goes through innerHTML (the spend chart's lesson).
@@ -64643,6 +64986,11 @@ _LANDING_COLLAPSE_JS = """
     var src=null;Array.prototype.forEach.call(document.querySelectorAll('iframe'),function(f){if(f.contentWindow===e.source)src=f.id;});if(!src||!(src==='f-chat'||src.indexOf('f-chat-')===0))return;   // a chat frame's post alone (a column or a bottom chat pane): another protocol pane's frame carries no tabs
     TABSETS[src]=m.tabs.map(function(t){return t&&t.id?{id:String(t.id),name:String(t.name||t.id),color:(t.color&&typeof t.color==='object'&&t.color.bg)?{bg:String(t.color.bg),fg:String(t.color.fg||'')}:null}:null;}).filter(function(t){return !!t;});
     tellAll(chatTabsMsg());});
+  // a chat column that emptied and closed: the split script removes its frame and then says so (romp-chat-cols, open false), and the
+  // empty chatTabs the column posted on its way out matched no frame; the union is re-told here without it, every set whose frame
+  // left the document pruned (the detail names the column, not the frame; the reviewers of PR 1925, 2026-09-21)
+  window.addEventListener('romp-chat-cols',function(e){var d=e&&e.detail;if(!d||d.open!==false)return;
+    Object.keys(TABSETS).forEach(function(id){if(!document.getElementById(id))delete TABSETS[id];});tellAll(chatTabsMsg());});
   // The OPTIONAL panes (the user 2026-09-10): the gear's Panes section (romp:settings.panes, per browser,
   // settings.ts paneSet: only an explicit false hides) says whether Sessions (timeline), the Outline (fleet)
   // and the Feed are in this dashboard AT ALL, a different thing from the rail toggle, which hides a loaded
@@ -64816,11 +65164,18 @@ var deferred={};   // column numbers a peer dashboard's write dropped while thei
 // like any column, seeded on its session; to the kernel it is one more col client.
 function gutterV(gid,topId,botId,colN){var h=document.getElementById(gid);if(!h)return;
 h.addEventListener('mousedown',function(e){e.preventDefault();var T=document.getElementById(topId),B=document.getElementById(botId);if(!T||!B)return;
-document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT;
-function mv(ev){nT=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}   // live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter
-function up(){document.body.classList.remove('drag','dragh');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);
-var ce=entry(colN);if(ce){ce.ratio=nT/sum;save();}}   // persist the ON-SCREEN top ratio: mv() already pixel-clamps nT to [mn,sum-mn], so nT/sum is the exact on-screen fraction and a reload restores it with no divider jump (a fixed 0.05/0.95 fraction clamp drifted from the pixel minimum above a 1600px pane)
-window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
+document.body.classList.add('drag','dragh');var hT=T.offsetHeight,hB=B.offsetHeight,sum=hT+hB,sy=e.clientY,mn=Math.min(80,sum*0.2),nT=hT,want=hT,raf=0,fT=T.style.flex,fB=B.style.flex;
+var frameOnce=window.__rompFrameOnce||function(f){f();return 0;},cancelFrame=window.__rompCancelFrame||function(){},keysOff=null;
+var dragKeys=window.__rompDragKeys||function(esc){window.addEventListener('keydown',esc,true);return function(){window.removeEventListener('keydown',esc,true);};};
+// live: two iframes only, and body.drag makes them pointer-transparent so the mouse stays with the gutter; since plans/pane-docking.md
+// section 12 one write per animation frame, and Escape restores the grab-time heights and writes nothing
+function apply(){raf=0;if(want===nT)return;nT=want;T.style.flex=nT+' 1 0';B.style.flex=(sum-nT)+' 1 0';}
+function mv(ev){want=Math.max(mn,Math.min(sum-mn,hT+(ev.clientY-sy)));if(!raf)raf=frameOnce(apply);}
+function end(){document.body.classList.remove('drag','dragh');if(raf)cancelFrame(raf);raf=0;window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
+function up(){end();apply();
+var ce=entry(colN);if(ce){ce.ratio=nT/sum;save();}}   // persist the ON-SCREEN top ratio once: apply() pixel-clamps nT to [mn,sum-mn], so nT/sum is the exact on-screen fraction and a reload restores it with no divider jump (a fixed 0.05/0.95 fraction clamp drifted from the pixel minimum above a 1600px pane)
+function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=hT;end();nT=hT;T.style.flex=fT;B.style.flex=fB;}
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});}
 function makeBelow(ce,sid,state){var ex=document.getElementById(frameId(ce.n));if(ex)return ex;
 var pid=ce.parent===1?'chat-pane':paneId(ce.parent),topId=ce.parent===1?'f-chat':frameId(ce.parent);
 var pp=document.getElementById(pid),topf=document.getElementById(topId);if(!pp||!topf)return null;   // parent not up yet: the restore orders columns before their bottom panes
@@ -65419,6 +65774,7 @@ def _landing():
             "<meta name=theme-color id=meta-theme content='#1e1e1e'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
             ":root{--accent:#9cd2ff;--accent-fg:#0c1a2e}"
+            ":root{--st-5xx-bg:#cb94d1;--st-5xx-ink:#8a8aff}"   # the 5xx tokens the API-health cell paints, declared where they resolve (plans/needs-you.md; mirrors styles.css); a rule of their own (PR 1935 round four, 2026-09-21: declared inside the accent rule they broke its byte pins in two unrelated modules), so the accent line's byte pins keep meaning what they say
             # The menu vocabulary's tokens (CLAUDE.md "Menus and dropdowns wear ONE vocabulary"), defined
             # HERE because the shell loads no sheet: the bell popover reads them, with the same dark
             # literals as var() fallbacks in its rules. Byte-equal to styles.css's :root values.
@@ -65811,18 +66167,18 @@ def _landing():
             ".ah-foot{margin-top:7px;padding-top:5px;border-top:1px solid rgba(255,255,255,0.08);gap:12px}"
             ".ah-link{cursor:pointer;color:var(--accent)}"
             # T316: a machine line's pieces in their class colours (successes the accent, 429 the blocked red, 5xx the 5xx
-            # magenta, no connection and other statuses the other band's hue), the vertical legend with the class tokens in
+            # purple, no connection and other statuses the other band's hue), the vertical legend with the class tokens in
             # those inks (T340: no swatches), the stacked bars (the hover's small, the detail's large), the detail's range
             # chips and width. The other band (T340, the user 2026-09-11): the label gray sat on the accent in the dark; the
             # band is a pale lime in the dark (#d9f99d) and an indigo in the light (#4f46e5), each at least 8 OKLab CVD units
-            # and 15 normal-vision units from the accent, the 429 red and its ink, the 5xx magenta and its ink, the retrying
+            # and 15 normal-vision units from the accent, the 429 red and its ink, the 5xx purple and its ink, the retrying
             # amber and the working yellow of its theme (the dataviz validator, all pairs; no one hue clears both themes:
-            # blues and violets fold into the magenta or its pink ink under red-green CVD in the dark, greens fold into the
+            # blues and violets fold into the 5xx purple or its ink under red-green CVD in the dark, greens fold into the
             # clay accent, the red and the amber in the light, warm neutrals sit within 15 of the pale accent in the dark)
             # the counts' TEXT inks per theme (review find: the chip colours as text sit under 4.5:1 on the tip; the
-            # failure line's precedent is #ef6b6f dark / #B02A1C light): 429 the error-text red, 5xx a lighter magenta in
-            # the dark, a deeper one in the light; the swatches and the bars keep the chip colours
-            ".ah-c-ok{color:var(--accent,#9cd2ff)}.ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:#e879f9}"
+            # failure line's precedent is #ef6b6f dark / #B02A1C light): 429 the error-text red, 5xx a violet ink in
+            # the dark (a lilac fill), a deep violet in the light; the swatches and the bars keep the chip colours
+            ".ah-c-ok{color:var(--accent,#9cd2ff)}.ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:var(--st-5xx-ink,#8a8aff)}"
             ".ah-c-none{color:#d9f99d}.ah-mline .ah-desc{opacity:1}.ah-mline .ah-c-plain{color:#a9b1ba}"
             ".ah-win,.ah-ago{margin-left:auto}"
             # the legend carries no group opacity (T340 review: a descendant cannot exceed its group's, so a faded legend put every
@@ -65831,7 +66187,7 @@ def _landing():
             ".ah-lrow{display:flex;align-items:center;gap:6px}.ah-lt{font-weight:600}.ah-lrow > span:last-child{opacity:.75}"
             # the bars' fills, one class per stack segment; the other band's hue written out per theme (no token: a class of
             # this popup alone, not a status the rest of the dashboard names)
-            ".ah-seg-ok{fill:var(--accent,#9cd2ff)}.ah-seg-rateLimited{fill:var(--st-blocked-bg,#e5484d)}.ah-seg-serverErrors{fill:var(--st-5xx-bg,#c026d3)}"
+            ".ah-seg-ok{fill:var(--accent,#9cd2ff)}.ah-seg-rateLimited{fill:var(--st-blocked-bg,#e5484d)}.ah-seg-serverErrors{fill:var(--st-5xx-bg,#cb94d1)}"
             ".ah-seg-noStatus,.ah-seg-other{fill:#d9f99d}"
             # the gridlines as classes too (T338): the ceiling's and the ticks', a hairline the light card can see
             ".ah-gridy{stroke:rgba(255,255,255,0.10)}.ah-gridx{stroke:rgba(255,255,255,0.06)}"
@@ -66025,17 +66381,12 @@ def _landing():
             ".gh:hover{background:linear-gradient(180deg,transparent 3px,#3a4a58 3px,#3a4a58 4px,transparent 4px)}"
             ".gv:hover::after{background:var(--accent,#9cd2ff);height:52px}.gh:hover::after{background:var(--accent,#9cd2ff);width:52px}"
             "body.drag iframe{pointer-events:none}body.dragv{cursor:col-resize}body.dragh{cursor:row-resize}"
-            # the divider drag's landing line: a strip the gutter's width carrying a 1 px accent line, shown by gutter()
-            # in _LANDING_JS while a drag is held. Fixed, so its left is the viewport coordinate the script computes;
-            # never a hit target, so it takes no hover or click of its own and the gutter under it keeps its :hover
-            # at the grab; above the focus ring (.pane-focused::after, z-index 6) so a focused pane does not cover it.
-            "#gv-ghost{display:none;position:fixed;width:7px;pointer-events:none;z-index:40;"
-            "background:linear-gradient(90deg,transparent 3px,var(--accent,#9cd2ff) 3px,var(--accent,#9cd2ff) 4px,transparent 4px)}"
+            # (a divider drag draws no line since plans/pane-docking.md section 12: the panes themselves re-lay every frame)
             ".pane{position:relative;min-width:0;min-height:0;overflow:hidden}"
             # a TAB DRAG's zones and rectangle (the chat split, 2026-09-11; _LANDING_SPLIT_JS mounts them for the gesture's
             # length). A column zone covers its whole pane above the iframe and the cross (z 8); the edge zone at the rightmost
             # pane's right sits above that pane's column zone (z 9), its width and top set inline. #col-ghost is the provisional
-            # rectangle: fixed, never a hit target, above the focus ring like #gv-ghost; the accent wash (the value --accent-wash
+            # rectangle: fixed, never a hit target, at z-index 40 above the focus ring's 6 (.pane-focused::after); the accent wash (the value --accent-wash
             # resolves to in styles.css — the landing sheet defines no such token) inside a 2 px accent ring, one centred line in
             # the rail's label dress: the dragged session's name, no verb, no icon. A column zone under the pointer wears the same
             # dress on itself (.over: no pseudo-element, so it never competes with .pane-focused::after for one property; distinct
@@ -66235,6 +66586,7 @@ def _landing():
             # so the dark rendering is byte-identical. Accent goes clay (#C2410C) via the same --accent var
             # every accent consumer already reads.
             "body.theme-light{--accent:#C2410C;--accent-fg:#FFF8F2;background:#F1EAE2}"
+            "body.theme-light{--st-5xx-bg:#4c1b7e;--st-5xx-ink:#4c1b7e}"
             # the light theme's menu tokens — the values styles.css's body.theme-light block resolves
             # them to, so the bell popover is the same cream card every other menu is
             "body.theme-light{--menu-bg:#FBF6EF;--menu-fg:#1F1E1D;--menu-border:rgba(0,0,0,0.12);--menu-hover:rgba(0,0,0,0.06);"
@@ -66329,10 +66681,10 @@ def _landing():
             # the failure line in the light theme's error-text red (styles.css --err #B02A1C, about 6.6:1 on white;
             # the dark line's #ef6b6f is 3.0:1 there)
             "body.theme-light .ah-err{color:#B02A1C}"
-            # T316, the light tip is white: the counts' inks (the clay accent, the light error red, a deep magenta 6.5:1, the
+            # T316, the light tip is white: the counts' inks (the clay accent, the light error red, a deep violet 11.90:1, the
             # other band's indigo 6.3:1) and the bars' fills in the light palette's chip colours (T340: no swatches)
-            "body.theme-light .ah-c-ok{color:#C2410C}body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:#86198F}body.theme-light .ah-c-none{color:#4f46e5}"
-            "body.theme-light .ah-seg-ok{fill:#C2410C}body.theme-light .ah-seg-serverErrors{fill:#A21CAF}body.theme-light .ah-seg-noStatus,body.theme-light .ah-seg-other{fill:#4f46e5}"
+            "body.theme-light .ah-c-ok{color:#C2410C}body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}body.theme-light .ah-c-none{color:#4f46e5}"
+            "body.theme-light .ah-seg-ok{fill:#C2410C}body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1b7e)}body.theme-light .ah-seg-noStatus,body.theme-light .ah-seg-other{fill:#4f46e5}"
             "body.theme-light .ah-gridy{stroke:rgba(0,0,0,0.14)}body.theme-light .ah-gridx{stroke:rgba(0,0,0,0.08)}"
             "body.theme-light .ah-word{color:#1F1E1D}"
             "body.theme-light .ah-btn{background:#F1EAE2;border-color:rgba(0,0,0,0.12);color:#1F1E1D}"
@@ -66409,7 +66761,6 @@ def _landing():
             "<div class=pane id=files-pane><iframe id=f-files src=/files></iframe></div>"
             + _data_pane_markup(panes) +   # the GENERIC panes, after Files: the Artifacts record and the data panes (plans/panes-as-data.md)
             "</div>"
-            "<div id=gv-ghost></div>"   # the divider drag's landing line (position:fixed; gutter() in _LANDING_JS moves it)
             "<div id=col-ghost></div>"   # a tab drag's provisional rectangle: the right half of the rightmost chat column (position:fixed; _LANDING_SPLIT_JS places it)
             # the timeline BOTTOM BAND: full-width below the pane row, with a row-resize gutter above it. Both
             # are hidden (CSS) unless po-timeline (the rail's Timeline toggle).
@@ -68378,6 +68729,12 @@ class Handler(BaseHTTPRequestHandler):
                     # the WS op's gate: a stop the backend refused (nothing in flight) paints nothing
                     if be.interrupt(sid) is not False:          # Esc/stop AND settle idle (in the backend)
                         _interrupt_clicked[str(sid)] = time.time()  # chip → "interrupting" NOW, same as the WS op
+                    elif _backend_compacting(be, sid):
+                        # …a refusal under a compaction is the WS arm's compacting toast (review find, 2026-09-21):
+                        # said in the state's words, never answered ok, so `romp interrupt` prints it and exits non-zero
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            "the stop was not delivered: %s is compacting its conversation, and a compaction runs to its end"
+                            % who}), "application/json")
                     elif be.busy(sid):
                         # …and a refusal WITH work in flight is a stop that did not land (the WS arm's toast):
                         # said, never answered ok, so `romp interrupt` prints this and exits non-zero — the
@@ -69609,8 +69966,8 @@ class Handler(BaseHTTPRequestHandler):
             # ready is posted once per renderer life, so this cannot loop.
             _client_reset_chat_base(client)   # …and, for a skeleton client (a later chat column), re-arms `reconnect` under
             #                                   its lock, so the connect push below serves the view its handshake declared
-            if client.get("app") in ("feed", "artifacts"):
-                _send_active_chat(client)      # T347: the window's focus, ahead of the first paint (the Artifacts pane too, 9.5)
+            if _active_chat_audience(client):
+                _send_active_chat(client)      # T347: the window's focus, ahead of the first paint (the Artifacts pane too, 9.5; never a relay-kind client)
             # Capture the seq of the views blob the pushes below serve — from the frames THIS thread
             # enqueues, so a pusher-thread frame landing meanwhile is not mistaken for the connect push's
             # (the caps frame's viewsSeq, see KERNEL_WS_CAPS)
@@ -70485,12 +70842,14 @@ class Handler(BaseHTTPRequestHandler):
             # its sid to the kernel that holds it). The version at watch time is stamped so the listing the pane asks for beside
             # the watch is not answered by a signal for the same bytes. Nothing else is ever pushed to this pane.
             _wsid = str(msg.get("sid") or "")
-            if msg.get("unwatch") or not _wsid:
-                client["artifacts"] = None
-                client["artifactsVer"] = None
-            else:
-                client["artifacts"] = _wsid
-                client["artifactsVer"] = _artifacts_version(_wsid, int(time.time()))
+            _wver = None if (msg.get("unwatch") or not _wsid) else _artifacts_version(_wsid, int(time.time()))   # the stat outside the lock
+            with _client_lock(client):                    # the cycle compares and stamps under the same lock (the reviewers of PR 1925)
+                if msg.get("unwatch") or not _wsid:
+                    client["artifacts"] = None
+                    client["artifactsVer"] = None
+                else:
+                    client["artifacts"] = _wsid
+                    client["artifactsVer"] = _wver
         elif msg and msg.get("type") == "listDir":
             # The dashboard's file browser. Answered by the kernel that OWNS the sid's session —
             # federation routes by the sid field, so browsing a remote session lists THAT machine's

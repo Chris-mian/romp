@@ -35,7 +35,7 @@ const P = (p: Partial<TabWidgetPrefs> = {}): TabWidgetPrefs => ({ on: {}, order:
 test("the six built-in widgets register in order: the dot before the name, the context bar and the hot key after it, then the three rings in precedence order; all on by default", () => {
   assert.deepEqual(W.tabWidgets().map((w) => [w.id, w.slot, w.defaultOn]),
     [["dot", "before", true], ["ctx", "after", true], ["hotkey", "after", true], ["ring-needs-you", "ring", true], ["ring-waiting-on-you", "ring", true], ["ring-retrying", "ring", true]]);
-  assert.deepEqual(W.tabWidgets().map((w) => w.label), ["Status dot", "Context bar", "Hot key", "Needs you", "Waiting on you", "Retrying"]);
+  assert.deepEqual(W.tabWidgets().map((w) => w.label), ["Status dot", "Context bar", "Hot key", "Blocked", "Needs you", "Retrying"]);
   assert.ok(W.tabWidgets().every((w) => w.description.length > 0 && !/\bfleet\b/i.test(w.description)));
   assert.deepEqual(W.titleWidgets().map((w) => w.id), ["dot", "ctx", "hotkey"], "the settings' Tab widgets rows: the widgets that render into the title");
   assert.deepEqual(W.ringWidgets().map((w) => [w.id, w.ring]), [["ring-needs-you", "ring-needs-you"], ["ring-waiting-on-you", "ring-waiting-on-you"], ["ring-retrying", "ring-retrying"]], "each ring's class is its id");
@@ -266,7 +266,7 @@ test("ring: composeTabRing paints ONE class, the first switched-on ring whose pr
   assert.deepEqual(classes(tab), ["tab", "stale-other", "r-ry"]);
   assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", status, PR({ on: { rr: false, ry: false } })), null, "…and with that off too, nothing (the amber's predicate is false here)");
   assert.deepEqual(classes(tab), ["tab", "stale-other"]);
-  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "retrying", needsYou: true }, PR()), "r-ry", "yellow over amber: registration order is the precedence");
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "retrying", needsYou: true }, PR()), "r-ry", "magenta over amber: registration order is the precedence");
   assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "retrying" }, PR()), "r-ra");
   assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "closed", needsYou: true }, PR()), null, "a closed tab with a stale card wears nothing");
   assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "working", needsYou: false }, PR()), null);
@@ -304,7 +304,7 @@ test("ring: ringDemoClass lights on the ring's own demo status and is null when 
 });
 
 // THE BUILT-IN RINGS (2026-09-14): registered after the hot key in PRECEDENCE order (tab-state.ts RING_ORDER: red over
-// yellow over amber), each rendering nothing and naming its class; over every synthetic status times every switch set,
+// magenta over amber), each rendering nothing and naming its class; over every synthetic status times every switch set,
 // the registry's composition (composeTabRing) equals the pure twin the folded header's pip reads (tabRingId under
 // ringSwitch), so the strip and the pip cannot drift. Runs after the synthetic rings above left the ring list.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -340,7 +340,7 @@ test("the built-in rings: registration order IS RING_ORDER; a ring renders no no
     }
   }
   assert.ok(painted > 40, "the grid exercised rings, not only nothings: " + painted);
-  assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "needsInput", needsYou: true }, P()), "ring-needs-you", "red over yellow");
-  assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "retrying", needsYou: true }, P()), "ring-waiting-on-you", "yellow over amber");
-  assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "needsInput", needsYou: true }, P({ on: { "ring-needs-you": false } })), "ring-waiting-on-you", "the red switched off hands the tab to the yellow");
+  assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "needsInput", needsYou: true }, P()), "ring-needs-you", "red over magenta");
+  assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "retrying", needsYou: true }, P()), "ring-waiting-on-you", "magenta over amber");
+  assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "needsInput", needsYou: true }, P({ on: { "ring-needs-you": false } })), "ring-waiting-on-you", "the red switched off hands the tab to the magenta");
 });

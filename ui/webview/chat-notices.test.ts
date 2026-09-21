@@ -73,12 +73,12 @@ test("the kernel's answer re-arms the row on a refusal, saying why in the row, a
   assert.match(h, /if \(m\.ok\) \{ row\.remove\(\);/);
   assert.match(h, /b\.disabled = false; b\.textContent = \(b as any\)\._idle \|\| b\.textContent;/);
   assert.match(h, /e\.textContent = "Refused: " \+ String\(m\.error \|\| "the kernel did not say why"\); e\.style\.display = "";/);
-  assert.match(RENDER, /for \(const boxId of \["notices", "bg-tasks", "footer"\]\) \{/, "the bottom-box rule covers the approval box (low a)");
+  assert.match(RENDER, /const BOXES_BELOW = \["notices", "bg-tasks", "footer"\];/); assert.match(RENDER, /for \(const boxId of BOXES_BELOW\) \{/, "the bottom-box rule covers the approval box (low a); the list is shared with the footprint record (the review of PR 1926)");
   const FED = fs.readFileSync(path.join(UI, "federation.ts"), "utf8");
   assert.match(FED, /out\.status = \{ \.\.\.out\.status, notices: out\.status\.notices\.map\(\(n: any\) => \(n && typeof n === "object" && typeof n\.itemId === "string"\) \? \{ \.\.\.n, itemId: prefixNoticeId\(host, n\.itemId\) \} : n\) \};/, "the slice's ids wear the host (medium 2)");
 });
 
-test("the box's chrome: the background box's frame with the ask ring's yellow edge, above it, dense-chrome aware", () => {
+test("the box's chrome: the background box's frame with the working gold's edge, above it, dense-chrome aware", () => {
   assert.match(CSS, /#notices \{ flex: 0 0 auto; min-height: 0; max-height: min\(40vh, 280px\); overflow: auto; box-sizing: border-box; margin: 8px 10px 0;\s*\n\s*border: 1px solid var\(--box-border\); border-left: 3px solid var\(--st-working-bg\); border-radius: 8px; background: var\(--box-bg\);/);
   assert.match(CSS, /\.ntc-body \{[^}]*-webkit-line-clamp: 4;/, "the message text clamped");
   assert.match(CSS, /\.ntc-btn\.ntc-deny \{ color: #e5484d;/); assert.match(CSS, /\.ntc-btn\.ntc-ok \{ color: var\(--accent\);/);

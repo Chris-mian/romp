@@ -24,7 +24,8 @@ There is no single "pane engine". The dashboard shell (`_landing`) carries THREE
 - **`_LANDING_JS` (`kernel.py:57578`) owns GEOMETRY.** The horizontal widths (`setGrow(k,v)` writes a
   `--g-<key>` custom property on `.row`, `:57601`), the three column gutters `gv-a`/`gv-b`/`gv-c`
   (`gutter(gid,leftPick,rightId)`, `:57649`, exported `window.__rompGutter` `:57665`), the deferred
-  resize line `#gv-ghost`, the timeline band's `--tl` height and its `#gh` row-resize gutter, and the
+  resize line `#gv-ghost` (superseded, section 12: the gutters resize live per frame and the line is
+  gone), the timeline band's `--tl` height and its `#gh` row-resize gutter, and the
   split-column width helpers (`__rompGrowFair`, `__rompSplitGrow`, `__rompSplitShrink`,
   `__rompRegisterPane`, `__rompUnregisterPane`, `:57606`). Its store is **`romp-pane-grow`** (`GK`,
   `:57599`): a flat `{chat, fleet, feed, files, chat2, chat3, ...}` of flex-grow numbers (effectively
@@ -126,7 +127,9 @@ is the literal reading of the dispatch's "render by geometry, never by re-parent
 chat columns can join: they already hand session state between frames (section 0), so a chat leaf is
 just a tab group whose rectangle the tree assigns.
 
-**Gutters and the ghost line generalise PER AXIS, not uniformly.** (Correction: the dispatch says the
+**Gutters and the ghost line generalise PER AXIS, not uniformly.** (Superseded 2026-09-20 by section 12: every
+divider resizes LIVE, one layout per animation frame, and the ghost line retires; the fork below is the history that
+section answers.) (Correction: the dispatch says the
 gutters' ghost-line pattern generalises to every split edge; the code refutes a single pattern.) An
 internal edge of the tree is the boundary between two sibling rects; dragging it re-computes the two
 ratios. But the two shipped resize mechanisms fork deliberately by cost, and the kit must keep the fork:
@@ -429,9 +432,10 @@ linked issue. The plan avoids it by keeping the old keys as the OFF-path source 
 - **The re-parenting reload trap.** Section 2's flat positioned layer is load-bearing: any code path
   that moves an iframe in the DOM reloads it and drops its socket. Every tree edit must be a geometry
   recompute, never a DOM move of an iframe.
-- **The two sizing mechanisms.** Horizontal (deferred `#gv-ghost`, flex-grow px) and vertical (live
-  ratio) resize differ by cost, not by whim; the general edge-drag must keep the per-axis fork
-  (section 2). Open question: whether the tree should store all edges as ratios (uniform) and translate
+- **The two sizing mechanisms.** (Superseded, section 12: every edge resizes live, one layout per
+  animation frame, no fork by axis and no line.) Horizontal (deferred `#gv-ghost`, flex-grow px) and
+  vertical (live ratio) resize differ by cost, not by whim; the general edge-drag must keep the
+  per-axis fork (section 2). Open question: whether the tree should store all edges as ratios (uniform) and translate
   to the flex-grow store only at the row level for the OFF path, or keep two stores. Recommendation:
   the tree stores ratios uniformly; the OFF path keeps `romp-pane-grow`.
 - **The timeline band keeps a FIXED height via a fixed-px kid (decided, phase two).** Today `#tl-pane`
@@ -471,3 +475,88 @@ introduced; a chat leaf holding sessions must never be torn down by a close (the
 state hand-off exist to prevent exactly that, and a chat leaf is emptied, never rail-closed); and
 byte-identical toggling is the safest parity promise for an opt-in switch. The parked set is bookkeeping
 in the layout store, not chrome. Everything else in this plan stands as written.
+
+## 12. Live resizing on every divider (the user, 2026-09-20)
+
+**What the user saw and asked for.** Dragging a divider between panes moves a provisional line and the panes take
+their sizes at release. They want what they see while dragging to be what they get: the components the divider
+affects render at their new sizes continuously during the drag, and no provisional line.
+
+**The dividers, as the code stands (four drags, two rules).** (1) The shipped column gutters (`_LANDING_JS`
+`gutter(gid,leftPick,rightId)`, kit off: `gv-a`, `gv-b`, `gv-c`, the generic panes' `gv-<id>`, and the chat split's
+chat|chat gutters wired through `window.__rompGutter`) DEFER: the mousemove moves `#gv-ghost`, a fixed line over the
+row, and the mouseup writes the pair's two grows once, persisting `romp-pane-grow`. (2) The docking kit's dividers
+(`.pd-div`, kit on; `panedock-main.ts` `onDivPress`/`onDivMove`/`endDiv`) fork by axis: a horizontal edge between
+columns DEFERS via `#pd-ghost` and commits one `resize` at release; a vertical edge between rows writes the tree
+LIVE on every pointermove; the band's edge writes `--tl` live. (3) The sessions band's height divider (`#gh`,
+`--tl`) writes LIVE on every mousemove and persists nothing (the band's height is content-sized by `autosize`).
+(4) The chat's vertical split divider (`_LANDING_SPLIT_JS` `gutterV`) writes both halves' flex LIVE on every
+mousemove and persists the on-screen ratio once at release. So two of the four already resize live, none is throttled
+to the frame, and none restores on Escape. The deferral was a cost decision (2026-09-08, `tests/test_pane_gutter_drag.py`'s
+head): a grow write on `.row` re-lays every same-origin pane document, and one relayout per pointer step froze the
+drag once a pane held a large document.
+
+**The one rule.** Every divider drag applies the new sizes to the panes it affects on every pointermove, COALESCED
+to one layout per animation frame: the move records the pointer, a `requestAnimationFrame` callback (armed once per
+frame) applies the latest position and clears the arm, so a burst of moves costs one relayout per frame and a frame
+with no move costs nothing. The affected iframes are pointer-transparent for the drag's duration (`body.drag
+iframe{pointer-events:none}` on the shipped paths, the kit's `pd-resize` class), so the pointer never falls into a pane
+mid-drag. The inner pages re-lay through the observers they already run: the feed's stack watch (`feed.ts`
+`stackResizeWatch`, `refreshStackForced`), the chat's tab-row fit, bottom box, jump button, reply chips, glow ruler and
+virtual-window observers (`render.ts`), the band's `autosize` observer in the shell. The chat's tail follow is the rule
+that must survive a burst of resizes, and a resize is its own case: neither `followTail` (the append rebuild's rule) nor
+`followBoxBelow` (the boxes' observer's) runs on one, and the one resize rule that did (`followTailShrink`) covers only
+a view that SHRANK, so a narrowing drag, which wraps every line longer and grows the view under a reader at the true
+bottom, left them the growth above it (the review of the first cut measured 875 px). The rule is `followReflow`
+(`scroll-keep.ts`): the view observer tracks the scroller's width beside its height, and a WIDTH change with the
+recorded follow mode on writes the reader to the new bottom on any height change; a height change with the width
+unchanged is an append's or a box's and stays theirs; a reader scrolled up is untouched: the browser's scroll anchoring
+holds their turn while the transcript above it re-wraps, and the chat's existing strip compensation (the tab strip
+wrapping to another row as the pane narrows moves the scroller down by that row, and the chat scrolls by the same
+amount) holds the line where it was on screen. The vertical split's own rule (the pixel-clamped ratio, `gutterV`) is
+unchanged. The
+result persists ONCE, at release, to the store each drag already writes (`romp-pane-grow`, `romp-layout`,
+`romp-chat-cols`; the band persists nothing, as today), never per frame. Escape during a drag restores the pre-drag
+sizes live (the grows, the tree, the ratio as they were at the press; the band's height for the band's own edge, since
+a column drag never touched it) and ends the drag without a write, except that the kit writes when the restored layout
+differs from the stored one (a reconcile under the drag, the band re-sized by the shell's `autosize`, deferred its write).
+A reconcile under a kit drag reaches the press tree the frames are built from: a change of the leaf set ends the drag at
+its last position, landed, and the reconcile writes the corrected layout once; the band's px is carried into the press
+tree, and the drag's edge is re-read from it (a divider between stacked panes under the band's split moves with the band:
+its avail, its rect and the pair's sizes; the press origin shifts by the edge's displacement, so the edge stays at the
+pointer with no move and the far drag stops at the real minimum).
+Escape is heard wherever the keyboard sits: a divider press prevents the default, so a focused pane keeps the keyboard
+and its document, not the shell's, sees the key; the drag therefore listens on the window and on every same-origin
+pane document for its duration. A URL-source pane (`data-protocol=none`, a foreign origin) cannot be listened in, so
+a keyboard focused there does not end the drag with Escape; the release still lands the sizes, and the shell's
+keyboard is a click away. The same holds for a keyboard inside a frame NESTED in a same-origin pane (the Files
+pane's PDF viewer): the drag listens on one document per shell-level frame, not on their descendants. The kit's clamp for a divider drag holds against the pair's sizes AT THE PRESS and applies
+the pointer's absolute travel to the tree as it was at the press (`edgeClamp`, `dragEdge` in `pane-dock.ts`): the
+first cut clamped each frame's travel against the tree the frame before had rewritten, so the window shrank every
+frame and the edge stopped at half its range.
+The provisional lines retire: `#gv-ghost` and its rules go from the landing, `#pd-ghost` from the kit; the kit's
+drop outline (`#pd-outline`) and the tab drag's `#col-ghost` are drop overlays, not divider lines, and stay. No divider
+keeps a line: the cost that justified one is bounded per frame now, and measured (below).
+
+**Cost, measured on the built page.** The served lab drags the chat|Outline gutter (`#gv-a`) across the row with every pane on
+(chat, Outline, feed, Files, the band, chromium, 1500 px), sampling frames per second from the shell's
+`requestAnimationFrame` timestamps during the drag and counting `long-animation-frame` entries (the browser's own
+report, the kind `perf-telemetry.ts` folds) over the drag's span; the PR body states both numbers. If a page cannot
+re-lay at frame rate, the body names it and why (the candidates: a chat pane holding a long transcript, whose
+relayout is the cost the 2026-09-08 deferral answered; the band's SVG). The rule stands regardless: one relayout per
+frame is the ceiling, and a slow page makes the drag less smooth, never a freeze per pointer step.
+
+**Tests.** The DOM-stub harnesses (`tests/test_pane_gutter_drag.py`, `tests/test_pane_gutters.py`) are re-cut: a
+move applies the pair's grows within the frame (the stub's `requestAnimationFrame` runs the callback on demand), the
+release writes the store once (a release in the same frame as the last move lands that position itself), Escape
+restores the grab-time grows and writes nothing, no ghost is touched. The kit's unit tests (`pane-dock.test.ts`,
+`panedock-main.test.ts`) pin the per-frame drag on a horizontal edge as a pure function of the press and the travel
+(the edge follows the pointer to the 120 px minimum and no further, the press tree untouched), and the engine's one
+commit and Escape restore by its source. A served lab with real pointer events, `tests/test_live_dividers_served.py`, drives all
+four dividers: mid-drag the two panes' widths (or heights) equal the pointer's split within a pixel at three sample
+points; the release writes the store once (a `Storage.prototype.setItem` count on the key); Escape restores the
+pre-drag sizes; the iframes keep their content (a probe set in each frame survives, no reload); a far drag on the
+kit's column and row dividers puts the pushed pane at 120 px with the edge stopped there; the chat's reader at the
+true bottom stays within 2 px of it at three samples through a narrowing drag and a scrolled-up reader keeps their
+anchor within a pixel; and the frame-rate measurement above. Red-first at the base: mid-drag the widths are unchanged at the base (the line moves, the panes do
+not); at the head they follow the pointer.

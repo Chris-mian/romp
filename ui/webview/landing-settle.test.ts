@@ -73,7 +73,7 @@ test("the census names every writer render.ts gives the write family, and nothin
   for (const w of c.literals) assert.ok(w in LS.WRITER_CLASS, "unclassified writer in render.ts: " + w);
   for (const w of classified) assert.ok(c.literals.includes(w), "a census entry render.ts no longer writes: " + w);
   assert.deepEqual(c.literals, classified, "the census IS the set of writers");
-  assert.equal(classified.length, 27, "the census: 27 writers (round five; gap-fill, land-guess and land-cancel joined with the history regions, T386 stage 2)");
+  assert.equal(classified.length, 28, "the census: 28 writers (round five; gap-fill, land-guess and land-cancel joined with the history regions, T386 stage 2; tail-reflow with live dividers, plans/pane-docking.md section 12)");
   assert.deepEqual(LS.WRITER_WRAPPERS, { writeScroll: 2, scrollContentBy: 2, scrollElInto: 3, land: 0, settleLand: 1 });
 });
 

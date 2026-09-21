@@ -242,7 +242,7 @@ var GEAR_HTML =
   '<div id=rs-widgets class=rs-widgets></div>' +
   // THE RINGS (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear are widgets too, each with
   // its own switch, listed as their own group under the title's rows and their preview (the preview box lands between
-  // the two hosts at build). No grip: their order is the precedence, red over yellow over amber, and is the registry's
+  // the two hosts at build). No grip: their order is the precedence, red over magenta over amber, and is the registry's
   '<div class=rs-hint>Rings around the tab. One at a time: the first that applies wins, in this order.</div>' +
   '<div id=rs-rings class=rs-widgets></div>' +
   // STATUS LINE (T409, the user 2026-09-13): the items the line above the composer carries besides its fixed parts, one
@@ -994,7 +994,7 @@ function initGear(post, opts) {
   });
   // THE RINGS (the rings-as-widgets change, 2026-09-14): the same builder over the registry's rings, the same store
   // (settings.tabWidgets, through the tab section's own save, so the tabCtx mirror and the repaint come with it) and the
-  // same switch; no divider, no grip, no drag (the order is the precedence: red over yellow over amber, the registry's).
+  // same switch; no divider, no grip, no drag (the order is the precedence: red over magenta over amber, the registry's).
   // The demo is a miniature tab wearing the ring its predicate lights on its demo status, a plain tab once switched off.
   var ringSection = widgetSection({
     host: document.getElementById('rs-rings'), list: TW.ringWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',

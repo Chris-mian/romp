@@ -49,7 +49,7 @@ class BoardTable(unittest.TestCase):
         d, err = km._board_check(_feed_def(), allow_reserved=True)
         self.assertIsNone(err)
         self.assertEqual([c["id"] for c in d["categories"]], ["working", "needs_input", "completed"])
-        self.assertEqual([(c["title"], c["chip"]) for c in d["categories"]], [("Working", "working"), ("Blocked", "blocked"), ("Completed", "completed")])
+        self.assertEqual([(c["title"], c["chip"]) for c in d["categories"]], [("Working", "working"), ("Needs you", "blocked"), ("Completed", "completed")])
         self.assertEqual((d["defaultCategory"], d["sort"], d["groupBy"], d["needsYou"]), ("working", {"key": "t", "dir": "asc"}, "session", "needs_input"))
         self.assertEqual(d["notify"], ["needs_input", "completed"])
         self.assertEqual(km._NOTIFY_COLUMNS, ("needs_input", "completed"), "the notify set the snapshot entries are checked against is the table's")

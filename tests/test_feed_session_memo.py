@@ -1526,7 +1526,7 @@ class AWarmEntryIsNeverDerivedCold(_Board):
         self.assertEqual((d["derived"], d["hit"]), (1, 2), d)     # the one cold derivation
         self.assertTrue({"transcript", "parse"} <= set(d["miss_by"]), d)
         self.assertEqual(km._PERF_STATS.parses["kernel"] - p0, 0,
-                         "a transcript that cannot be stat'ed has no store slot: nothing to re-read into")
+                         "no live key for a transcript that cannot be stat'ed: nothing to re-read into")
         c1 = km._feed_memo_report()
         self.assertEqual(c1["coldFlip"] - c0["coldFlip"], 0, "no re-read ran, so no flip is counted")
         self.assertEqual(c1["coldLive"] - c0["coldLive"], 3, "web joins api and tests as a standing cold read")
@@ -1550,7 +1550,7 @@ class AWarmEntryIsNeverDerivedCold(_Board):
         self.tpath[WEB].write_text(self._transcript_body(WEB)
                                    + json.dumps(uline(NOW - 10, "and the pagination", "u2", "a1")) + "\n"
                                    + json.dumps(aline(NOW - 5, "Done.", "a2", "u2")) + "\n")
-        self.assertIsNone(km._parse_cached(str(self.tpath[WEB])), "the rewritten leaf has no slot in the store")
+        self.assertIsNone(km._parse_cached(str(self.tpath[WEB])), "the rewritten leaf's live key matches no slot")
         p2, c2 = km._PERF_STATS.parses["kernel"], km._feed_memo_report()
         d, f = self._delta(self._build)
         self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
@@ -1598,6 +1598,9 @@ class AWarmEntryIsNeverDerivedCold(_Board):
             self.assertEqual(d["derived"], 3, d)                   # every entry memoized warm
             self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "quiet")
             self.tpath[WEB].unlink()                               # the leaf is gone from disk while the session lives
+            self.assertTrue(km._warm_wanted({"sid": WEB, "path": str(self.tpath[WEB])}, self.live[WEB]),
+                            "the gone leaf is still warm-wanted through its goal store's mtime since boot: the loop reaches the gate"
+                            "  (2026-09-21, the post-merge review of #1955: without this the test goes vacuous under a predicate change)")
             n0, p0 = len(calls), km._PERF_STATS.parses["kernel"]
             for i in range(3):
                 sentinel = {"probe": i}
@@ -1649,6 +1652,9 @@ class AWarmEntryIsNeverDerivedCold(_Board):
             self.assertEqual((d["derived"], d["hit"]), (2, 1), d)  # web and tests flip warm; api stays a cold read
             self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "quiet")
         self.tpath[WEB].unlink()                                   # the leaf is gone from disk while the session lives
+        self.assertTrue(km._warm_wanted({"sid": WEB, "path": str(self.tpath[WEB])}, self.live[WEB]),
+                        "the gone leaf is still warm-wanted through its goal store's mtime since boot: the loop reaches the gate"
+                        "  (2026-09-21, the post-merge review of #1955: without this the test goes vacuous under a predicate change)")
         with mock.patch.object(km, "_live_map", lambda: self.live), \
                 mock.patch.object(km, "_warm_fleet_bg", recording_warm), \
                 mock.patch.object(km, "_parse", recording_parse):

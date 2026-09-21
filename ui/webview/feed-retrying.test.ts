@@ -33,8 +33,9 @@ test("the tooltip says the session is in motion, not stalled", () => {
   assert.match(FEED, /still in motion, not stalled; it resumes on its own when the API recovers/);
 });
 
-test("it wears the red api-trouble family, faded because the session is still in motion", () => {
-  assert.match(CSS, /\.fask-retrying \{[^}]*color: #e5484d/);
+test("it wears the retrying amber its ring, chip and lane badge wear (plans/needs-you.md: red is the hard stop's), faded because the session is still in motion", () => {
+  assert.match(CSS, /\.fask-retrying \{[^}]*color: var\(--st-retrying-bg\); border: 1px solid var\(--st-retrying-bg\)/);
+  assert.doesNotMatch(CSS, /\.fask-retrying \{[^}]*#e5484d/, "the alarm red is the hard stop's alone");
   assert.match(CSS, /\.fask-retrying \{[^}]*font-size: 0\.7em/, "same size as .fask-apierror — same information type");
   assert.match(CSS, /\.fask-retrying \{[^}]*opacity: 0\.85/, "faded — in motion, unlike the stopped-on-error badge");
 });

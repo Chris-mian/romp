@@ -316,6 +316,8 @@ OFF_FEED = (
     "_turn_opener",                # the post-loop notify pass: lastTurnOpener
     "jd._judge_auth",              # the judge's billing pick: auth, authLogin
     "jd._reg_spawned_at",          # the judge tiers' plan and close signatures: spawnedAt
+    "jd._sdk_transcript_path",     # discovery's transcript resolve for a relocated worktree session (_discover_impl and the
+    #                                fingerprint, run before the per-session derivation): transcriptPath
 )
 
 

@@ -1,4 +1,4 @@
-// The feed's three column-header chips ("Working" / "Blocked" / "Completed") read as sentence case,
+// The feed's three column-header chips ("Working" / "Needs you" / "Completed") read as sentence case,
 // matching the chat + timeline status chips (the user 2026-07-03). The labels were always cased in
 // feed.ts; the ALL-CAPS look came from a text-transform:uppercase on .feed-col-head — dropped here.
 import { test } from "node:test";
@@ -14,7 +14,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("the column labels are sentence-case: the feed board's definition, which ensureCols iterates (plans/card-boards.md, phase one)", () => {
   // the literal table this pinned in feed.ts moved into board-def.ts's FEED_BOARD; the triples are today's, byte for byte
   assert.deepEqual(columnTable(FEED_BOARD).map((t) => [...t]),
-    [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]]);
+    [["asks", "Working", "working"], ["needsInput", "Needs you", "blocked"], ["completed", "Completed", "completed"]]);
   assert.equal((FEED.match(/for \(const \[key, label, chip\] of columnTable\(activeBoard\(\)\)\)/g) || []).length, 2, "the board and the focused section read the same table");
 });
 

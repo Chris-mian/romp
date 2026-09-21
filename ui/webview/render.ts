@@ -94,7 +94,7 @@ import { focusAfterDismiss, emptyStateParts } from "./pane-focus";   // where fo
 import { MENTION_MAX_ROWS, mentionQuery, rankMentions, mentionMoreNote, mentionToken, insertMention, mentionKeyAction, mentionSegments } from "./composer-mention";   // the @-mention card's rules, pure; the DOM is setupComposer's mention block and markMentions
 import type { MentionCandidate, MentionQuery } from "./composer-mention";
 import { defaultCommentName, defaultBreakoutName, defaultForkName, nameToSend } from "./comment-name";
-import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, reshowStick, atBottomBeforeGrowth } from "./scroll-keep";
+import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, followReflow, reshowStick, atBottomBeforeGrowth } from "./scroll-keep";
 import { phParts } from "./composer-placeholder";   // the resting placeholder names the session (2026-09-09)
 import { retainLiveOmitted } from "./tab-order";
 import { localStrip, stripHost, readCloseAckMs } from "./tab-order";
@@ -111,7 +111,7 @@ import { apiErrorReason } from "./api-error-reason";
 import { chatMdExtensions, userMdHtml } from "./chat-md";
 import { setTip, pruneTip } from "./tip";
 import { MetaKind, MetaHooks, metaButton as buildMetaButton, syncMetaControls as syncMetaControlsWith, ctxBar as buildCtxBar, setCtxBar as setCtxBarWith,
-  metaColor, modeIconSvg, riskyMode, prettyMode, prettyFast, fastAvailable, metaCurrent, metaDots, rampOn } from "./status-controls";   // the status line's controls, one renderer for the chat's line, the popovers and the settings card's preview (T415 part two)
+  endCtxBarClick, metaColor, modeIconSvg, riskyMode, prettyMode, prettyFast, fastAvailable, metaCurrent, metaDots, rampOn } from "./status-controls";   // the status line's controls, one renderer for the chat's line, the popovers and the settings card's preview (T415 part two)
 import { agentCount, replyOwed, threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, newCommentCreate, commentCreateFrame,
          pickMarkToOpen, type CommentThread, type CommentCreate, markSkipsParent } from "./comments";
 import { isReplyReady, placeMark, placeWindowed, readyChips, replyLine, chipLabel, chipTip, chipAria, type Dir, type ReadyMark, type ReadyChip } from "./reply-ready";
@@ -336,7 +336,7 @@ interface ModelFallback { pick: string; pickValue: string; live: string; cause: 
 // (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19); the actions are of a KIND the kernel defines.
 interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment?: NoticeAttachment | null;
                        actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[] }
-interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; apiNoRetry?: boolean; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you: the red tab) rather than a transient API error (amber, retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); apiNoRetry = the blocking notice is one nothing retries (a compaction that failed on the backend's side, the launch error's noRetry): the card draws no Retry, no Stop-all and no retrying-soon meta (2026-09-21); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Needs you ring widget wears a dashed magenta ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring of 2026-09-13, renamed and recoloured 2026-09-21); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -5149,6 +5149,17 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   // names the real fix (rewrite the ask, or drop this thread).
   const refusal = !!st?.apiRefusal;
   const spendCap = !!st?.apiSpendLimit || !!st?.apiModelLimit || !!st?.apiAuthErr || refusal;
+  const body = el("div", "notice-md");
+  body.textContent = ev.text || "The session stopped on an API error.";
+  const gist = ev.status ? `error ${ev.status}` : "error";
+  // A notice NOTHING retries (2026-09-21): a compaction that failed on the backend's side rides this card as a
+  // launch error, and its Retry press sent the literal word "retry" into the thread as a turn, cleared the card and
+  // compacted nothing; no auto-retry ever fires for a launch error either, so the retrying-soon meta was false and
+  // Stop-all stopped nothing. The kernel says so on the live status (apiNoRetry, from the launch error's noRetry),
+  // read off the status, not the event, as every flag above is: the same card, the words alone, no meta, no actions.
+  if (st?.apiNoRetry) {
+    return notice({ src: "API", glyph: "api", sev: "err", gist, body, open: true, key: "apierr:" + (ev.uuid || (activeId || "")), cls: "turn-apierror" });
+  }
   const acts: HTMLElement[] = [];
   // every action is a data-act word button on the button vocabulary; the document.body delegate acts
   // (apiRetryNow / stopAllRetries) and acknowledges at once — the tail rebuilds on every
@@ -5169,11 +5180,9 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
     paused ? "resume auto-retrying globally" : "stop the auto-retry loop for all errors globally");
   stop.classList.add("api-stopall");
   acts.push(stop);
-  const body = el("div", "notice-md");
-  body.textContent = ev.text || "The session stopped on an API error.";
   // OPEN by default: the session is BLOCKED and the actions must show (the human is the bottleneck); the
   // error severity is the rail + red dot + 6% wash — the words stay --fg (red text sat at 3.08:1 on cream)
-  return notice({ src: "API", glyph: "api", sev: "err", gist: ev.status ? `error ${ev.status}` : "error", meta: countdown, acts, body,
+  return notice({ src: "API", glyph: "api", sev: "err", gist, meta: countdown, acts, body,
                   open: true, key: "apierr:" + (ev.uuid || (activeId || "")), cls: "turn-apierror" });
 }
 
@@ -6048,7 +6057,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   if (s.status.ctx) {
     const cr = el("div", "tab-tip-row tab-tip-ctx");          // extra vertical room — the battery bar is tall
     const ck = el("span", "tab-tip-k"); ck.textContent = "Context"; cr.appendChild(ck);
-    const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver, s.status);
+    const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
     cr.appendChild(bar); tip.appendChild(cr);
   }
   // ledger rows, LABELLED + aligned with the rows above (the user 2026-06-23 v3): the summary, then Recent.
@@ -6218,7 +6227,7 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); }
   });
   // The header's order mirrors the feed's grouped headers (T284, the user 2026-09-09: the caret sat
-  // beside the chip at the left; the feed's Working / Blocked / Completed headers and its session
+  // beside the chip at the left; the feed's Working / Needs you / Completed headers and its session
   // headers put the name at the left and the caret with its count together at the RIGHT): the tag's
   // chip first, then the caret and the count right after it, then (folded) the gist's pip last — so
   // the folded and the open row share one shape and the caret is always the chip's neighbour. The
@@ -6241,8 +6250,8 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
   head.appendChild(n);
   if (collapsed) {
     // the folded gist, MEMBER-derived: one pip by the TAB's own ring rule (tab-state.ts) — red for a
-    // hidden member blocked on you or waiting for you, yellow for one with something waiting on you (the
-    // ask ring, 2026-09-13 — a fold must not hide it), gold for working, amber for an API error
+    // hidden member stopped on you, magenta for one with a card that needs you (the Needs you ring,
+    // the ask ring of 2026-09-13; a fold must not hide it), gold for working, amber for an API error
     // retrying on its own (the tab renders that amber too; a red pip there was a false interrupt).
     // After the count and small, so the header still reads as a label; the tooltip names the sessions.
     // Over the HIDDEN members only: a pinned member's own tab shows its state. Not the header's own
@@ -6336,10 +6345,10 @@ function applyTabStatus(tab: HTMLElement, s: { id?: string; status: Partial<Stat
   if (stateCls) tab.classList.add(stateCls);
   // …and the RING beside it (the rings-as-widgets change, 2026-09-14): the dashed outline is a WIDGET of the
   // registry now, one of three with a switch each in the settings (red for a live prompt or an API stop only
-  // you can clear, yellow for a card of the session's under needs-you, in every live state the ask ring of
+  // you can clear, magenta for a card of the session's under needs-you, in every live state the ask ring of
   // 2026-09-13 rides working included, amber for an API retry on its own), and the tab wears ONE at a time:
   // composeTabRing takes every ring class off, then puts on the first switched-on ring whose predicate
-  // holds, red over yellow over amber. The predicates are tab-state.ts's (RING_TEST), shared with the
+  // holds, red over magenta over amber. The predicates are tab-state.ts's (RING_TEST), shared with the
   // folded header's pip; the strip's signature reads the inputs (the state, the flags, needsYou) and
   // settings.tabWidgets, so a card entering or leaving the column, and a switch flipped, always repaint.
   composeTabRing(tab, s.id || "", s.status, settings.tabWidgets);
@@ -6755,12 +6764,12 @@ function renderTabs() {
       if (renderKind(skeletonTabs, id, !!s) === "skeleton") {                                              // makeSkeletonTab's reads:
         const m = tabMeta.get(id), kst = skeletonTabs.status.get(id) as Status | undefined;               // the kernel's list + its
         return ["k", m?.name || s?.name, (m?.color || s?.color)?.bg, (m?.color || s?.color)?.fg, id === peekId,   // status frames, never the
-                kst?.state, kst && tabStateClass(kst), kst?.needsYou === true, !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379); + the feed's needs-you verdict, the yellow ring's input (2026-09-13)
+                kst?.state, kst && tabStateClass(kst), kst?.needsYou === true, !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379); + the feed's needs-you verdict, the magenta ring's input (2026-09-13)
       }
       if (!s) { const m = tabMeta.get(id); return ["p", m?.name, m?.color?.bg, m?.color?.fg, down, note]; }   // makePlaceholderTab's reads
       const st = s.status;
       return [s.name, s.color?.bg, s.color?.fg, st.state, tabStateClass(st), st.needsYou === true, !!st.faded,
-              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints; + the feed's needs-you verdict (2026-09-13): a card entering or leaving needs-you repaints the yellow ring (the state class already carries the red and amber rings' inputs; settings.tabWidgets below carries the switches)
+              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints; + the feed's needs-you verdict (2026-09-13): a card entering or leaving needs-you repaints the magenta ring (the state class already carries the red and amber rings' inputs; settings.tabWidgets below carries the switches)
     }),
   ]);
   const mslotEl = document.getElementById("mtag-slot");
@@ -12008,11 +12017,12 @@ function ensureView(id: string): View {
     // writer with a pre-change origin claimed it, as the append path does); what this write keeps is the view's saved
     // position and the latch's record for the next frame. A scrolled-up reader is untouched.
     if (typeof ResizeObserver === "function") {
-      let lastH = -1;                                        // -1 = not yet measured (observe fires once on attach)
+      let lastH = -1, lastW = -1;                            // -1 = not yet measured (observe fires once on attach); lastW: the view's width, a reflow's tell
       const view = v;                                        // the closure's own binding (the outer `v` is a let)
       v.ro = new ResizeObserver((entries) => {
         scheduleRailSticky();
         const h = entries[0]?.contentRect?.height ?? 0;
+        const w = entries[0]?.contentRect?.width ?? 0;
         const content = document.getElementById("content");
         // the tail's height change, named (T262f): which element grew or shrank under the reader — Chrome moves a
         // bottom reader for both without a pane write, so the scroll rows alone cannot say which element flapped
@@ -12022,7 +12032,13 @@ function ensureView(id: string): View {
           writeScroll(content, content.scrollHeight, "tail-shrink", true);
           view.scrollTop = content.scrollTop;
         }
-        lastH = h;
+        // a RE-FLOW (the pane's width changed: a divider drag narrowing or widening the column, plans/pane-docking.md section 12)
+        // under a follow-mode reader: the view's height moved with the wrapping, and a reader at the true bottom stays there
+        else if (content && lastH >= 0 && lastW >= 0 && activeId === id && view.shown && content.clientHeight > 0 && followReflow(view.stick, w !== lastW, h - lastH)) {
+          writeScroll(content, content.scrollHeight, "tail-reflow", true);
+          view.scrollTop = content.scrollTop;
+        }
+        lastH = h; lastW = w;
       });
       v.ro.observe(elv);
       // …and a MutationObserver (T262j): a tail node removed and re-appended within one task is invisible to the
@@ -13098,7 +13114,7 @@ function fillSnapshotRow(btn: HTMLElement, r: SnapRow, now: number): void {
   if (r.color) name.style.color = r.color.bg;
   btn.appendChild(name);
   // the state in words, when the row says one: the SHARED status chip (status-chip.ts), the same words and dress the
-  // bar under the transcript wears for the session you are reading — Blocked (API error when that is the state) on
+  // bar under the transcript wears for the session you are reading: Needs you (API error when that is the state) on
   // you, "Awaiting 3 agents" / "Awaiting watch" / the peer's name for background work (T322b, the user 2026-09-10:
   // a grey outlined pill of the row's own reading "waiting" was not it). The model picks the chip (tab-snapshot.ts
   // snapshotRow); the pip stays beside it: the strip's colour language says the state, the chip says what.
@@ -14052,26 +14068,42 @@ if (typeof ResizeObserver === "function") {
 // and a follow-mode reader is written to the new bottom; a scrolled-up reader is untouched (their top line never
 // moved). Event-based (the observer), no timer.
 /** A box below's footprint in the column: its border box plus its vertical margins, 0 while it is not rendered. Read at the
- *  observer's pass, where layout is fresh; the difference between two passes is exactly what #content's height gave up. */
+ *  observer's pass, where layout is fresh; the difference between two passes is what #content's LAYOUT height gave up. The
+ *  clientHeight the at-bottom read uses is that layout height as an integer, so a fractional footprint leaves a residual under
+ *  one pixel in the pre-growth distance (the review of PR 1926): a reader exactly at the band's edge can read past it, and that
+ *  1 px edge stands accepted (rounding the footprint either way misreads the other rounding of the browser). */
 function boxFootprint(box: HTMLElement): number {
   const r = box.getBoundingClientRect();
   if (!(r.height > 0)) return 0;
   const cs = getComputedStyle(box);
   return r.height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
 }
+const BOXES_BELOW = ["notices", "bg-tasks", "footer"];        // the approval box is a box below too (the review of PR 1890, low a)
+const FEET: Record<string, number> = {};                      // every box below's FOOTPRINT at the last pass of ANY of them (-1 = not yet measured): one shared record, so a pass adds back the OTHER boxes' change in the same frame too (the review of PR 1926)
 if (typeof ResizeObserver === "function") {
-  for (const boxId of ["notices", "bg-tasks", "footer"]) {   // the approval box is a box below too (the review of PR 1890, low a)
+  for (const boxId of BOXES_BELOW) {
     const box = document.getElementById(boxId);
     if (!box) continue;
+    FEET[boxId] = -1;
     let lastH = -1;                                           // -1 = not yet measured (observe fires once on attach)
-    let lastFoot = -1;                                        // the box's FOOTPRINT at the last pass: its border box plus its vertical margins, what #content's height gives up to it (0 while hidden)
     const bro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect?.height ?? 0;
-      const foot = boxFootprint(box);
       const content = document.getElementById("content");
       const v = activeId ? views.get(activeId) : null;
       const dh = h - lastH;
-      const dfoot = lastFoot >= 0 ? foot - lastFoot : 0;
+      // what #content's height gave up in this frame (the growth added back below): this box's own content delta while it was
+      // already shown (its recorded footprint can be stale, since a margin-only change fires no pass), its whole footprint when it
+      // first shows (the borders and the margin it brings), and every other box's footprint change since the last pass (two boxes
+      // growing in one frame each left the other's growth unaccounted for; a shrink-first frame refreshes the record and decides nothing)
+      const now: Record<string, number> = {};
+      let dfoot = 0;
+      for (const id of BOXES_BELOW) {
+        const b = id === boxId ? box : document.getElementById(id);
+        now[id] = b ? boxFootprint(b) : 0;
+        const prev = FEET[id];
+        if (prev === undefined || prev < 0) continue;
+        dfoot += id === boxId ? (prev > 0 ? dh : now[id]) : now[id] - prev;
+      }
       // Where the reader stood BEFORE the growth, from the geometry (2026-09-19, the load flake behind main's red at bee556e8). The
       // recorded mode is the pre-growth truth only while nothing scrolled between the growth and this pass, and something can: a
       // scroll event from any other cause in that window (the append path's tail rebuild anchoring the reader, a compensation
@@ -14082,7 +14114,7 @@ if (typeof ResizeObserver === "function") {
       // added back is the box's FOOTPRINT change (border box plus margins, boxFootprint), not the content rect's: a box that first
       // shows brings its borders and its top margin too, and the content-rect delta read the reader 10.7 px above the bottom (the
       // held-mail chat lab's payload in a whole-suite run, 2026-09-20: sh 8819, scrollTop 8174, clientHeight 447, box 189.27).
-      const wasAtBottom = !!(content && lastH >= 0 && dh > 0 && atBottomBeforeGrowth(content.scrollHeight, content.scrollTop, content.clientHeight, dfoot));
+      const wasAtBottom = !!(content && lastH >= 0 && dfoot > 0 && atBottomBeforeGrowth(content.scrollHeight, content.scrollTop, content.clientHeight, dfoot));
       let repinned = false;
       if (content && !snapView && lastH >= 0 && content.clientHeight > 0 && v && v.shown && followBoxBelow(v.stick || wasAtBottom, dh)) {   // a transcript rule: it stands down while the overview owns #content (the footer's hide is not a box below the reader, T322)
         writeScroll(content, content.scrollHeight, "box-below", true);
@@ -14090,7 +14122,7 @@ if (typeof ResizeObserver === "function") {
         v.stick = true;                                       // the record agrees: a follow-mode reader, whichever truth said so
         repinned = true;
       }
-      lastH = h; lastFoot = foot;
+      lastH = h; for (const id of BOXES_BELOW) FEET[id] = now[id];
       // the pass is the EVENT a reader of the bottom holds at (the same flake: under load a lab read scrollTop after the box grew
       // and before this pass, and saw the reader a box's height above the bottom the write restores). One DOM event per pass, named
       // by the box, carrying the height this pass acted on: a reader is settled when the box's current height is the one the last
@@ -14768,7 +14800,7 @@ function renderSubHead(): void {
 // sits nearest the composer. Today that is a message a DIRECTED peer sent this session, held by the postal bus: Approve
 // delivers and Deny drops, both actions of the quarantine kind the kernel runs through the bus's act road (the same
 // noticeAction wire the feed card posts; the kernel answers noticeActionDone by the row's id). The rows are status.notices,
-// so the box vanishes on the decision with the frame that drops the row, and the tab's ask ring (status.needsYou) goes with
+// so the box vanishes on the decision with the frame that drops the row, and the tab's Needs you ring (status.needsYou) goes with
 // it. Rendered on every status change like renderBgTasks (awaitKey carries the rows), but RECONCILED IN PLACE, keyed by the
 // notice id (the review of PR 1890, medium 1): a rebuild that replaced every row destroyed a pressed button before its mouseup
 // (a second hold landing mid-press: no click, nothing posted, nothing latched) and wiped a row's refusal line at the next
@@ -15869,19 +15901,10 @@ function metaButton(kind: MetaKind, text: string, forSid?: string | null): HTMLE
 function syncMetaControls(meta: HTMLElement, st: Status, forSid?: string | null): void { syncMetaControlsWith(meta, st, forSid, META_HOOKS); }
 // Context "battery": a small bar that FILLS with the context-used %, recolors as it fills, with the % written inside (the shared
 // renderer draws it); CLICK → /compact the session, same as the timeline's battery click. The chat's bar keeps its id: the lighter
-// in-place refresh finds it by id.
-// A Codex session has no /compact (2026-09-19): its battery is the same bar (the click stays attached; compactActiveSession
-// declines it), marked inert with the reason setCtxBar puts in the tooltip. The mark is applied where the status FILLS the bar,
-// not at construction, so the one live #ctx-bar the light in-place refresh reuses follows a tab switch either way: a Codex
-// status marks it, any other status lifts the mark again.
-const CODEX_NO_COMPACT = "this session runs in Codex, which has no /compact";
-function markCtxBarFor(bar: HTMLElement, st: Status): void {
-  if (st.backend === "codex") { delete bar.dataset.compacts; bar.dataset.inertWhy = CODEX_NO_COMPACT; }
-  else if (bar.dataset.inertWhy) { delete bar.dataset.inertWhy; bar.dataset.compacts = "1"; }
-}
+// in-place refresh finds it by id. A Codex session's battery compacts too (the kernel runs Codex's own compaction on the
+// click, 2026-09-19): the same bar, the same post, no mark.
 function ctxBar(): HTMLElement { const bar = buildCtxBar(compactActiveSession); bar.id = "ctx-bar"; return bar; }
-function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false, st?: Status): void {
-  if (st) markCtxBarFor(bar, st);
+function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[], ctxOver = false): void {
   setCtxBarWith(bar, ctxStr, compacting, ctxColor, ctxOver, (scan, fresh) => applyCompactSweep(scan, 3200, fresh));
 }
 function compactActiveSession(bar: HTMLElement): void {
@@ -15889,7 +15912,6 @@ function compactActiveSession(bar: HTMLElement): void {
   if (!s || !vscodeApi) return;
   // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
   if (s.status.state === "needsInput" || s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
-  if (s.status.backend === "codex") return;   // a bar built for another session and reused across a tab switch: the kernel refuses anyway; no click cue for a click that cannot compact (2026-09-19)
   vscodeApi.postMessage({ type: "compactSession", id: activeId });
   bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
 }
@@ -16327,7 +16349,7 @@ function updateStatusline() {
   syncMetaControls(meta, s.status);
   right.appendChild(meta);
   const bar = ctxBar();
-  setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver, s.status);
+  setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
   right.appendChild(bar);
   sl.appendChild(right);
   // stop/interrupt button: beside the state chip, after its timer, inside the left unit (the user
@@ -19097,8 +19119,11 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     // whatever is in flight. When it also names the press (qid) no echo will ever land for that copy, so the
     // optimistic bubble ends on THIS event, the kernel's verdict, and the words go back into an EMPTY composer (the
     // hostIsDown refusal's idiom: a draft is never overwritten); a refusal that names no press (a battery click, a POST
-    // route, the pusher's drain of a compact op) only toasts.
+    // route, the pusher's drain of a compact op) only toasts. Either way it ends the active session's battery pulse
+    // (2026-09-21): compactActiveSession added ctx-clicked as the press's cue and only a compacting status removed it,
+    // so a refused compaction pulsed until the next status change or a tab switch.
     if (typeof m.sid === "string" && m.sid) {
+      if (m.sid === activeId) endCtxBarClick(document.getElementById("ctx-bar"));
       let back: string | null = null;
       if (typeof m.qid === "string" && m.qid) {
         const list = pendingSent.get(m.sid) || [];
@@ -19529,7 +19554,7 @@ setInterval(() => {
   const meta = document.getElementById("spinner-meta");
   if (meta) syncMetaControls(meta, s.status);
   const bar = document.getElementById("ctx-bar");
-  if (bar) setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver, s.status);
+  if (bar) setCtxBar(bar, s.status.ctx, s.status.state === "compacting", pickTone(s.status.ctxColor, s.status.ctxTone), s.status.ctxOver);
 }, 1000);
 
 // the last message we delivered per session — so a Ctrl+C interrupt can put it back

@@ -54,7 +54,7 @@ Cards sit in three columns:
 
 - <span class="romp-chip romp-chip-working">Working</span>: the session is
   actively working on the task.
-- <span class="romp-chip romp-chip-blocked">Blocked</span>: it needs your
+- <span class="romp-chip romp-chip-needs">Needs you</span>: it needs your
   input to move on.
 - <span class="romp-chip romp-chip-completed">Completed</span>: done, ready
   for you to review and clear.
@@ -92,7 +92,7 @@ go away, and Romp is a chat tool.
 
 The Sessions pane holds the timeline, one row per session. A bar is a stretch
 where the session was working, and a circle is a message you sent. A striped
-stretch means the session is blocked, waiting on your input.
+stretch means the session had stopped and needed you.
 
 ![A timeline lane per session, with status and context at the left](assets/guide/timeline-annotated.png){ width="100%" }
 
@@ -140,7 +140,7 @@ Romp asks the agent, item by item, where each open piece stands: continue what
 it can, and say what blocks the rest.
 
 - If the agent can keep going, it does, and you were never interrupted.
-- If something needs you, the card flips to <span class="romp-chip romp-chip-blocked">Blocked</span> and names exactly what
+- If something needs you, the card flips to <span class="romp-chip romp-chip-needs">Needs you</span> and names exactly what
   it needs.
 
 Nudging engages only when you are not actively messaging the session, so it

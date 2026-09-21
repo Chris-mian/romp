@@ -349,9 +349,9 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("if(!wd){wd=document.createElement('span');wd.className='workdot';", js)   # in-place form: one dot node, created once, classes toggled (2026-08-19)  # gold dot when working
         # awaitingBg is read off the desktop tab's own green dot (no tab-working class on an awaiting tab)
         self.assertIn("awaitbg:!!t.querySelector('.tab-dot.await')", js)
-        # the ASK RING (2026-09-13; a widget with a switch since 2026-09-14): the desktop tab's ring-waiting-on-you class
+        # the NEEDS YOU RING (the ask ring of 2026-09-13; a widget with a switch since 2026-09-14): the desktop tab's ring-waiting-on-you class
         # (something of the session's is waiting on you) is scraped beside the dots, and the picker paints it on the row (a
-        # yellow bar at the left edge) and the current chip (its border goes dashed yellow), off the same status token the
+        # magenta bar at the left edge) and the current chip (its border goes dashed magenta), off the same status token the
         # desktop ring wears — so the phone's list says which sessions need you without a tap through each, and a ring
         # switched off in the settings (no class on the tab) leaves the phone plain too
         self.assertIn("ask:t.classList.contains('ring-waiting-on-you'),", js)
@@ -364,8 +364,8 @@ class ChatSessionPicker(unittest.TestCase):
         # the dots are the SAME status colors desktop uses (styles.css --st-working-bg gold, --st-awaitbg-bg green)
         self.assertIn(".mrow .workdot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}", css)
         self.assertIn(".mrow .workdot.await{background:var(--st-awaitbg-bg,#54B204)}", css)
-        self.assertIn(".mrow.ask{border-left:3px solid var(--st-ask-bg,#f5d33f);padding-left:9px}", css)   # the ask ring's mark on a row (2026-09-13)
-        self.assertIn("#mcur.ask{border-color:var(--st-ask-bg,#f5d33f);border-style:dashed}", css)
+        self.assertIn(".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}", css)   # the Needs you ring's mark on a row (plans/needs-you.md)
+        self.assertIn("#mcur.ask{border-color:var(--st-needs-bg,#d946ef);border-style:dashed}", css)
         self.assertLess(css.index("#mcur.colored{"), css.index("#mcur.ask{"), "the ring's border wins over the identity colour: declared after")
         self.assertNotIn("'• ')+s.name", js)              # the '• ' text-bullet prefix on rows is gone
         # the current-session header uses the same gold/green status dot, not the text bullet either

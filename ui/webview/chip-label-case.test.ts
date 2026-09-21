@@ -1,5 +1,5 @@
 // Status chips read as sentence case, not ALL CAPS (the user 2026-07-03): "Working", "Ready",
-// "Blocked", "Compacting", … — first letter capitalized, the rest lowercase (acronyms like "API"
+// "Needs you", "Compacting", …: first letter capitalized, the rest lowercase (acronyms like "API"
 // stay). Pins the CHIP_LABEL map + its fallback, which live in status-chip.ts since T322b (the bar under the
 // transcript and the tag overview's rows import the one map), and that render.ts keeps no map of its own.
 import { test } from "node:test";
@@ -17,7 +17,7 @@ test("CHIP_LABEL uses sentence case, never ALL-CAPS status words", () => {
   const map = m![0];
   assert.match(map, /working: "Working"/);
   assert.match(map, /ready: "Ready"/);
-  assert.match(map, /awaiting: "Blocked"/);
+  assert.match(map, /awaiting: "Needs you"/);
   assert.match(map, /compacting: "Compacting"/);
   assert.match(map, /idle: "Idle"/);
   assert.match(map, /closed: "Closed"/);

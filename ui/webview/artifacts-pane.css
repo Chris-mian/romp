@@ -19,6 +19,11 @@ font-size:13px;display:flex;flex-direction:column;overflow:hidden}
 .art-picker .ctx-item{position:relative;padding-right:26px}
 .art-picker .ctx-item.current::after{content:"\2713";position:absolute;right:6px;top:50%;transform:translateY(-50%);background:var(--check-bg,#1EA1EB);color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1}
 .art-picker .ctx-item.art-none{opacity:.55;cursor:default}
+/* the rows' hover and focus wash: THE faint accent wash (styles.css --accent-wash, the one alpha behind every hovered accent chrome),
+   in place of the selection fill styles.css .ctx-item:hover would paint (the reviewers of PR 1925; the 9.3 precedent) */
+.art-picker .ctx-item:hover,.art-picker .ctx-item:focus-visible{background:var(--accent-wash,rgba(156,210,255,.12));color:inherit}
+.art-picker .ctx-item:focus-visible{outline:1px solid var(--accent,#9cd2ff);outline-offset:-1px}
+.art-picker .ctx-item.art-none:hover{background:transparent}
 /* the lock: the Sessions pane's padlock (romp-timeline-view.js _drawLockToggle's glyph), accent when locked, faint when unlocked */
 .art-lock{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:26px;height:26px;padding:0;border:1px solid var(--box-border,#333);border-radius:6px;background:transparent;cursor:pointer;color:var(--vscode-foreground,#cccccc);opacity:.55}
 .art-lock:hover{border-color:var(--accent,#9cd2ff)}

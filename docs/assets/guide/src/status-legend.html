@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>status legend</title>
+<!--
+  The guide's status legend (docs/guide.md, "The timeline"): every chip a session's state can wear, on the
+  live chip classes of ui/webview/styles.css (linked, not copied, so the figure follows the sheet), with a
+  plain line beside each. Needs you is the one category for everything you can act on (plans/needs-you.md);
+  red stays the hard stop's (API error). Compacting has no chip of its own in the live UI (the state shows as
+  the teal compaction bar before the tab's name), so its row wears the compacting tokens by hand. Synthetic:
+  no session content. Render from this directory with:
+    chrome --headless=new --screenshot=../status-legend.png --window-size=772,341 \
+           --force-device-scale-factor=2 --hide-scrollbars file://.../status-legend.html
+-->
+<link rel="stylesheet" href="../../../../ui/webview/styles.css">
+<style>
+  html, body { margin: 0; background: #0f1218; }
+  body { font: 20px/1.35 "Liberation Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #d6d9de; }
+  #fig { width: 772px; height: 341px; box-sizing: border-box; padding: 20px 26px 16px; display: grid;
+         grid-template-columns: 236px 1fr; row-gap: 9px; align-items: center; }
+  #fig .chip { font-size: 15px; padding: 4px 12px; border-radius: 13px; justify-self: start; white-space: nowrap; letter-spacing: 0.02em; }
+  #fig .d { font-size: 15px; color: #d6d9de; white-space: nowrap; }
+</style>
+<div id="fig">
+  <span class="chip chip-ready">Ready</span><span class="d">idle, with nothing waiting on you</span>
+  <span class="chip chip-working">Working</span><span class="d">actively working</span>
+  <span class="chip chip-working">Working · 2 subagents</span><span class="d">working through subagents in parallel; the count is live</span>
+  <span class="chip chip-needsInput">Needs you</span><span class="d">a question, a decision or an approval only you can give</span>
+  <span class="chip chip-retrying">Retrying</span><span class="d">hit a rate limit or overload; retrying on its own</span>
+  <span class="chip chip-interrupting">Interrupting</span><span class="d">you hit stop; it is wrapping up the current turn</span>
+  <span class="chip" style="background: var(--st-compacting-bg); color: var(--st-compacting-fg)">Compacting</span><span class="d">condensing the context window</span>
+  <span class="chip chip-awaitingBg">Awaiting</span><span class="d">waiting on a background task or a peer, not on you</span>
+  <span class="chip chip-blocked">API error</span><span class="d">stopped mid-turn on a provider error only you can clear</span>
+</div>

@@ -59,7 +59,7 @@ export const FEED_BOARD: Board = {
   title: "Feed",
   categories: [
     { id: "working", title: "Working", chip: "working" },          // the user's rename, 2026-06-11: every card is an ask being worked
-    { id: "needs_input", title: "Blocked", chip: "blocked" },      // needs the user's input to move on
+    { id: "needs_input", title: "Needs you", chip: "blocked" },    // everything the user can act on (plans/needs-you.md); the chip class name is a schema value and stays
     { id: "completed", title: "Completed", chip: "completed" },    // done, ready for review and clear
   ],
   defaultCategory: "working",

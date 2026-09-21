@@ -59,7 +59,14 @@ await page.addInitScript(() => { const W = window.WebSocket; const made = []; wi
 const findFrame = async (test) => { for (let i = 0; i < 150; i++) { const f = page.frames().find((fr) => test(fr.url())); if (f) return f; await page.waitForTimeout(200); } return null; };
 const isChat = (u) => /\/chat(\?|$)/.test(u), colOf = (u) => { const m = /[?&]col=(\d+)/.exec(u); return m ? Number(m[1]) : 1; };
 const boot = async () => {
-  await page.goto(cfg.landing);
+  // every frame records its outbound frames by type and sid (installed before any navigation: the reload's boot is read whole)
+await page.addInitScript(() => { window.__sends = []; const orig = WebSocket.prototype.send;
+  // the pane's accepted listings, per session (artifacts.ts: one romp:artifacts-listing event per accepted answer): a read of the rows
+  // after a selection change holds on the followed session's NEXT answer, the page's own event (the flake of 2026-09-21 on main read the
+  // rows once the bar wore the name, before the answer had landed: [] where the file was expected, on a loaded runner)
+  window.__labListings = {}; window.addEventListener("romp:artifacts-listing", (e) => { const d = e.detail || {}; window.__labListings[d.sid] = ((window.__labListings[d.sid] || 0) + 1); });
+  WebSocket.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type) window.__sends.push({ type: m.type, sid: m.sid || null }); } catch (e) {} return orig.call(this, d); }; });
+await page.goto(cfg.landing);
   await page.waitForSelector("#f-chat", { timeout: 30000 });
   const c1 = await findFrame((u) => isChat(u) && colOf(u) === 1), c2 = await findFrame((u) => isChat(u) && colOf(u) === 2);
   if (c1) await c1.waitForSelector('#tabs .tab[data-id="' + cfg.web + '"]', { timeout: 60000 }).catch(() => {});
@@ -76,6 +83,11 @@ const shown = () => fr.evaluate(() => { const b = document.getElementById("art-p
   return { name: n ? n.textContent : null, notOpen: !!(b && b.querySelector(".art-not-open")), lock: l ? l.getAttribute("aria-pressed") : null, sid: localStorage.getItem("romp:artifacts:sid"), stored: localStorage.getItem("romp:artifacts:lock"),
     chip: n ? n.style.getPropertyValue("--chip-bg") : null, weight: n ? getComputedStyle(n).fontWeight : null, rows: Array.from(document.querySelectorAll(".art-row .art-name")).map((x) => x.textContent) }; });
 const waitShown = (name) => fr.waitForFunction((nm) => { const b = document.getElementById("art-pick"); const n = b && b.querySelector(".session-name"); return !!n && n.textContent === nm; }, name, { timeout: 30000 }).then(() => true).catch(() => false);
+// the listing answers a session has received so far, and the hold for its next one: the rows are read only after it
+const listings = (sid) => fr.evaluate((s) => (window.__labListings || {})[s] || 0, sid);
+const waitListing = (sid, n0) => fr.waitForFunction((a) => ((window.__labListings || {})[a.sid] || 0) > a.n0, { sid, n0 }, { timeout: 30000 }).then(() => true).catch(() => false);
+// a selection change driven from outside the pane, then the read: the bar's name (the selection) AND the followed session's answer (the rows)
+const followed = async (sid, drive) => { const n0 = await listings(sid); await drive(); const ok = await waitShown(cfg.names[sid]); const answered = await waitListing(sid, n0); return { want: cfg.names[sid], ok, answered, ...(await shown()) }; };
 const openCard = async () => { await fr.click("#art-pick", { timeout: 15000 }).catch(() => {}); await fr.waitForSelector("#art-picker", { timeout: 15000 }).catch(() => {});
   const card = await fr.evaluate(() => { const card = document.getElementById("art-picker"); if (!card) return null;
     const probe = document.createElement("div"); probe.style.background = "var(--menu-bg)"; probe.style.position = "absolute"; document.body.appendChild(probe); const menuBg = getComputedStyle(probe).backgroundColor; probe.remove();
@@ -99,11 +111,17 @@ if (fr) {
   out.initial = await shown();
   // (2) follow, unlocked: a switch in the first column moves the pane; a pick shows its session until a switch in the OTHER column replaces it
   const a1 = await activeOf(c1); const f1 = otherIn(a1, [cfg.web, cfg.tests]);
-  await switchTo(c1, f1); out.follow = { want: cfg.names[f1], ok: await waitShown(cfg.names[f1]), ...(await shown()) };
-  await switchTo(c1, a1); out.followBack = { want: cfg.names[a1], ok: await waitShown(cfg.names[a1]), ...(await shown()) };
-  await pick(f1); out.pickUnlocked = { want: cfg.names[f1], ok: await waitShown(cfg.names[f1]), ...(await shown()) };
+  out.follow = await followed(f1, () => switchTo(c1, f1));
+  out.followBack = await followed(a1, () => switchTo(c1, a1));
+  // (2b) the bar's buttons are built once: a repaint keeps the focused button and its identity (the reviewers of PR 1925). The repaint
+  // is an active-chat relay for the shown session posted to the pane's own window (a click in another frame would take the focus
+  // itself, so it cannot be the repaint's cause here); the pane repaints its bar on it, and the button under the focus is the same node
+  await fr.evaluate(() => { const b = document.getElementById("art-pick"); b.__labMark = 1; b.focus(); window.postMessage({ romp: "activeChat", id: localStorage.getItem("romp:artifacts:sid") }, "*"); });
+  await page.waitForTimeout(400);
+  out.focusKeep = await fr.evaluate(() => ({ active: document.activeElement ? document.activeElement.id : null, sameNode: document.getElementById("art-pick").__labMark === 1 }));
+  out.pickUnlocked = await followed(f1, () => pick(f1));
   const a2 = await activeOf(c2); const s2 = otherIn(a2, [cfg.api, cfg.docs]);
-  await switchTo(c2, s2); out.replaced = { want: cfg.names[s2], ok: await waitShown(cfg.names[s2]), ...(await shown()) };
+  out.replaced = await followed(s2, () => switchTo(c2, s2));
   // (3) the lock: a switch leaves the pane; a pick replaces the locked session and the lock stays on
   await fr.click("#art-lock", { timeout: 15000 }).catch(() => {});
   await fr.waitForFunction(() => { const l = document.getElementById("art-lock"); return !!l && l.getAttribute("aria-pressed") === "true"; }, null, { timeout: 10000 }).catch(() => {});
@@ -111,6 +129,15 @@ if (fr) {
   await page.waitForTimeout(800);   // a relay that will not come cannot be awaited: the chat's switch is confirmed above, and the pane is read after it
   out.lockedStay = { want: cfg.names[s2], ...(await shown()) };
   await pick(cfg.web); out.lockedPick = { ok: await waitShown("web"), ...(await shown()) };
+  // (3b) unlocking: the shown session stays until the next switch, which the pane follows again
+  await fr.click("#art-lock", { timeout: 15000 }).catch(() => {});
+  await fr.waitForFunction(() => { const l = document.getElementById("art-lock"); return !!l && l.getAttribute("aria-pressed") === "false"; }, null, { timeout: 10000 }).catch(() => {});
+  out.unlocked = await shown();
+  const a3 = await activeOf(c2); const s3 = otherIn(a3, [cfg.api, cfg.docs]);
+  await switchTo(c2, s3); out.unlockedFollows = { want: cfg.names[s3], ok: await waitShown(cfg.names[s3]), ...(await shown()) };
+  await fr.click("#art-lock", { timeout: 15000 }).catch(() => {});
+  await fr.waitForFunction(() => { const l = document.getElementById("art-lock"); return !!l && l.getAttribute("aria-pressed") === "true"; }, null, { timeout: 10000 }).catch(() => {});
+  await pick(cfg.web); await waitShown("web");
   // (4) the scope follows the strip: closing the tests tab (End session, confirmed) drops it from the picker
   await c1.click('#tabs .tab[data-id="' + cfg.tests + '"] .tab-close');
   await c1.waitForSelector("#confirm", { timeout: 10000 }).catch(() => {});
@@ -129,22 +156,39 @@ if (fr) {
     + JSON.stringify({ type: "assistant", uuid: "a9", parentUuid: "u9", timestamp: iso(t + 1), sessionId: cfg.web, message: { role: "assistant", model: "claude-fable-5-1", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu9", name: "Write", input: { file_path: cfg.webCwd + "/notes/new-file.md", content: "# new" } }] } }) + "\n");
   const grew = await fr.waitForFunction(() => Array.from(document.querySelectorAll(".art-row .art-name")).some((n) => n.textContent === "new-file.md"), null, { timeout: 60000 }).then(() => true).catch(() => false);
   out.growth = { grew, ...(await shown()), refresh: await fr.evaluate(() => !!document.getElementById("art-refresh") || /Refresh/.test(document.body.textContent || "")) };
+  // (5a) a transcript move that changes no artifact: the signal re-asks, the answer's rows read the same, and the body's node, its rows
+  // and the reader's place are untouched (the reviewers of PR 1925, D); the root counts accepted answers for this read
+  const answers0 = await fr.evaluate(() => { const b = document.querySelector(".art-body"); b.__labMark = 1; b.scrollTop = 0; return Number(document.getElementById("artifacts-root").dataset.answers || 0); });
+  const tq = Math.floor(Date.now() / 1000) + 2;
+  fs.appendFileSync(cfg.webTranscript, JSON.stringify({ type: "user", uuid: "u9b", parentUuid: "a9", timestamp: iso(tq), sessionId: cfg.web, message: { role: "user", content: "and how does it read?" } }) + "\n"
+    + JSON.stringify({ type: "assistant", uuid: "a9b", parentUuid: "u9b", timestamp: iso(tq + 1), sessionId: cfg.web, message: { role: "assistant", model: "claude-fable-5-1", stop_reason: "end_turn", content: [{ type: "text", text: "It reads well." }] } }) + "\n");
+  const reanswered = await fr.waitForFunction((n) => Number(document.getElementById("artifacts-root").dataset.answers || 0) > n, answers0, { timeout: 60000 }).then(() => true).catch(() => false);
+  out.sameSig = { reanswered, ...(await fr.evaluate(() => ({ sameBody: (document.querySelector(".art-body") || {}).__labMark === 1, rows: Array.from(document.querySelectorAll(".art-row .art-name")).map((n) => n.textContent) }))) };
   // (5b) the watch survives a socket drop and redial (round two, the medium): the pane's socket is closed, the shim redials it (a fresh
   // client on the kernel, no watch), the pane re-arms on the reopen, and the next Write appended lists with no click
   const sockets0 = await fr.evaluate(() => (window.__sockets || []).length);
   await fr.evaluate(() => { window.__wsups = 0; window.addEventListener("romp:wsup", () => { window.__wsups++; }); });
   await fr.evaluate(() => { for (const s of (window.__sockets || [])) { if (s.readyState === 1) s.close(); } });
-  const redialed = await fr.waitForFunction((n) => (window.__sockets || []).some((s, i) => i >= n && s.readyState === 1) && window.__wsups > 0, sockets0, { timeout: 60000 }).then(() => true).catch(() => false);
+  // the Write lands DURING the outage (before the redial): no signal can reach the dead socket, so only the re-ask on the reopen lists it
   fs.writeFileSync(cfg.webCwd + "/notes/after-redial.md", "# after\n");
   const t2 = Math.floor(Date.now() / 1000) + 5;
-  fs.appendFileSync(cfg.webTranscript, JSON.stringify({ type: "user", uuid: "u10", parentUuid: "a9", timestamp: iso(t2), sessionId: cfg.web, message: { role: "user", content: "one more after the redial" } }) + "\n"
+  fs.appendFileSync(cfg.webTranscript, JSON.stringify({ type: "user", uuid: "u10", parentUuid: "a9b", timestamp: iso(t2), sessionId: cfg.web, message: { role: "user", content: "one more during the outage" } }) + "\n"
     + JSON.stringify({ type: "assistant", uuid: "a10", parentUuid: "u10", timestamp: iso(t2 + 1), sessionId: cfg.web, message: { role: "assistant", model: "claude-fable-5-1", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu10", name: "Write", input: { file_path: cfg.webCwd + "/notes/after-redial.md", content: "# after" } }] } }) + "\n");
+  const redialed = await fr.waitForFunction((n) => (window.__sockets || []).some((s, i) => i >= n && s.readyState === 1) && window.__wsups > 0, sockets0, { timeout: 60000 }).then(() => true).catch(() => false);
   const grewAfter = await fr.waitForFunction(() => Array.from(document.querySelectorAll(".art-row .art-name")).some((n) => n.textContent === "after-redial.md"), null, { timeout: 60000 }).then(() => true).catch(() => false);
   out.reconnect = { sockets0, redialed, grewAfter, ...(await shown()) };
   // (6) a reload keeps the lock and the shown session
   await page.reload(); await page.waitForSelector("#f-chat", { timeout: 30000 });
   fr = await findFrame((u) => /\/artifacts(\?|$)/.test(u));
-  if (fr) { await fr.waitForFunction(() => { const b = document.getElementById("art-pick"); return !!(b && b.querySelector(".session-name")); }, null, { timeout: 30000 }).catch(() => {}); out.reloaded = await shown(); }
+  if (fr) {
+    await fr.waitForFunction(() => { const b = document.getElementById("art-pick"); return !!(b && b.querySelector(".session-name")); }, null, { timeout: 30000 }).catch(() => {});
+    await fr.waitForFunction(() => document.querySelectorAll(".art-row").length >= 1, null, { timeout: 60000 }).catch(() => {});
+    // (6b) the boot asks ONCE (the reviewers of PR 1925, J): the shim flushes the queued watch and listing on the socket's open and fires
+    // romp:wsup; when the bundle evaluated before that open the re-arm hears it and re-sends the watch alone (the base asked twice); when
+    // the socket opened first nothing hears it and the boot's pair stands alone. Either way ONE listing
+    await page.waitForTimeout(1500);   // a second ask that will not come cannot be awaited: the frames are read after the listing landed and a pause
+    out.reloaded = { ...(await shown()), frames: await fr.evaluate((w) => window.__sends.filter((x) => (x.type === "watchArtifacts" || x.type === "listArtifacts") && x.sid === w).map((x) => x.type), cfg.web) };
+  }
 }
 process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
@@ -276,12 +320,33 @@ class ArtifactsFollowServed(unittest.TestCase):
         self.assertTrue(r["followBack"]["ok"], "and back: %r" % r["followBack"])
         self.assertEqual((r["pickUnlocked"]["ok"], r["pickUnlocked"]["lock"]), (True, "false"), "a pick shows its session and does NOT lock: %r" % r["pickUnlocked"])
         self.assertTrue(r["replaced"]["ok"], "a switch in the OTHER column replaced the pick (the follow continues): %r" % r["replaced"])
+        self.assertTrue(r["replaced"]["answered"], "the followed session's listing answer arrived (the page's own event) before the rows were read: %r" % r["replaced"])
         self.assertEqual(r["replaced"]["rows"], [r["replaced"]["want"] + "-notes.md"], "the listing followed the session")
+
+    def test_the_bars_buttons_are_built_once_so_a_repaint_keeps_the_focused_button_and_its_identity(self):
+        # in place of the artifacts.test.ts text pin on the refocus (the reviewers of PR 1925): the picker button focused, a switch repaints, the same node still has the focus
+        r = self._result()
+        self.assertEqual(r["focusKeep"], {"active": "art-pick", "sameNode": True}, "the focused picker button survives the repaint as the same node: %r" % r["focusKeep"])
+
+    def test_a_same_signature_answer_after_a_transcript_move_touches_neither_the_body_nor_its_rows(self):
+        # the reviewers of PR 1925 (D): every growth signal rebuilt the pane; a move that changes no artifact re-asks and the answer is a no-op
+        r = self._result(); x = r["sameSig"]
+        self.assertTrue(x["reanswered"], "the transcript move was signalled and answered (data-answers moved): %r" % x)
+        self.assertTrue(x["sameBody"], "the body's node is the one from before the answer: %r" % x)
+        self.assertEqual(x["rows"][:1], ["new-file.md"], "the rows read the same, newest first: %r" % x)
+
+    def test_unlocking_keeps_the_shown_session_until_the_next_switch_which_the_pane_follows_again(self):
+        r = self._result()
+        self.assertEqual((r["unlocked"]["lock"], r["unlocked"]["name"]), ("false", "web"), "unlocked: nothing new yet, the shown session stays: %r" % r["unlocked"])
+        self.assertEqual((r["unlockedFollows"]["ok"], r["unlockedFollows"]["name"]), (True, r["unlockedFollows"]["want"]), "the next switch moves the pane again: %r" % r["unlockedFollows"])
 
     def test_locked_a_switch_leaves_the_pane_and_a_pick_holds_with_the_lock_on_and_a_reload_keeps_both(self):
         r = self._result()
         self.assertEqual((r["lockedStay"]["lock"], r["lockedStay"]["name"]), ("true", r["lockedStay"]["want"]), "locked: a switch in the first column left the pane where it was: %r" % r["lockedStay"])
         self.assertEqual((r["lockedPick"]["ok"], r["lockedPick"]["lock"], r["lockedPick"]["name"]), (True, "true", "web"), "locked: a pick replaces the session, the lock stays on: %r" % r["lockedPick"])
+        fr = r["reloaded"]["frames"]
+        self.assertEqual(fr.count("listArtifacts"), 1, "the reloaded pane asks ONCE: the boot's listing, and the first open's re-arm re-sends the watch alone (the reviewers of PR 1925, J): %r" % r["reloaded"])
+        self.assertIn(fr, (["watchArtifacts", "listArtifacts"], ["watchArtifacts", "listArtifacts", "watchArtifacts"]), "the boot's pair, then the re-arm's watch when the bundle heard the open: %r" % r["reloaded"])
         self.assertEqual((r["reloaded"]["lock"], r["reloaded"]["name"], r["reloaded"]["stored"]), ("true", "web", "1"), "a reload keeps the lock and the shown session: %r" % r["reloaded"])
 
     def test_the_watch_survives_a_socket_drop_and_redial_so_growth_still_lists(self):

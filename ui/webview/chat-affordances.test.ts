@@ -48,7 +48,7 @@ test("a hard-blocked (API-error) tab carries a translucent red fill atop its das
   // the fill rides the red RING class the strip composes (the rings are widgets since 2026-09-14, each with a switch): a
   // stopped session with the ring switched off is a plain tab
   assert.match(CSS, /\.tab\.tab-blocked\.ring-needs-you \{[^}]*background: rgba\(229, 72, 77, 0\.30\)/);
-  assert.match(CSS, /\.tab\.ring-needs-you, \.tab\.ring-retrying \{[^}]*outline: 2px dashed/);   // the dashed ring stays (the red and the amber; the yellow has its own rule)
+  assert.match(CSS, /\.tab\.ring-needs-you, \.tab\.ring-retrying \{[^}]*outline: 2px dashed/);   // the dashed ring stays (the red and the amber; the magenta has its own rule)
   // the red must beat .tab.active (white, equal specificity but later in source) + :hover, else a FOCUSED
   // blocked tab showed white instead of red (the user 2026-06-18)
   assert.match(CSS, /\.tab\.tab-blocked\.ring-needs-you:hover \{[^}]*background: rgba\(229, 72, 77, 0\.38\)/);

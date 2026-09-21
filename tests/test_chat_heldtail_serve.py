@@ -135,13 +135,44 @@ class HeldTailServe(unittest.TestCase):
         """The frame's tail run first key = its firstUuid (the page's resident tail run older edge)."""
         return fr.get("firstUuid")
 
-    def _repair_full(self, c, held_first, with_key=True):
-        """Send a needFull (carrying heldTailFirst unless with_key is False), return the repair full frame."""
+    def _repair_full(self, c, held_first, with_key=True, want=None):
+        """Send a needFull (carrying heldTailFirst unless with_key is False) and return ITS repair full.
+
+        The connect path races this read. The pusher fires from the moment the WS opens AND `ready` pushes again
+        (the shell re-sends ready on every open, kernel.py's ready arm), so one or more PLAIN connect fulls -- tailLo
+        at the current WIRE_TAIL cut, no held-base serve, no rebased -- can sit queued ahead of the needFull's own
+        (synchronous _push_one) repair. The old read took the NEXT session frame, so on a loaded lane it returned that
+        stray: K2 read a plain frame (rebased absent, tailLo 125), K3 read a re-cut (tailLo 675) instead of the served
+        475 (main, 2026-09-21). The kernel served correctly; the test read the wrong frame.
+
+        So the read holds on the kernel's DECISION for this needFull via `want(fr)` -- served from the held key
+        (firstUuid == it) or rebased -- and skips any stray plain re-push. To make the race deterministic instead of
+        lane-timing, a `want` leg first sends a second `ready`: a real shell re-open emits one, and the ws arm
+        processes it before the needFull, so a plain connect full is ALWAYS queued ahead of the repair for `want` to
+        step over. A leg whose repair is itself plain (a kept non-uuid key, a no-key ask) passes want=None: it reads
+        the next frame, injects no stray, and a plain frame is the very answer it checks (no held-base serve, no
+        rebased), so a stray would read the same.
+        """
+        if want is not None:
+            c.send({"type": "ready", "proto": 2})     # a stray plain connect full, queued ahead of the repair (deterministic race)
         msg = {"type": "needFull", "id": SID, "why": "gap"}
         if with_key and held_first:
             msg["heldTailFirst"] = held_first
         c.send(msg)
-        return self._first_full(c)
+        for fr in c.frames(45):
+            if fr.get("type") == "session" and fr.get("id") == SID and (want is None or want(fr)):
+                return fr
+        raise AssertionError("no repair full reflecting the needFull in 45 s (want given=%s)" % (want is not None))
+
+    @staticmethod
+    def _served_from(key):
+        """The needFull's DECISION when the held key maps: the repair's tail run begins at that key."""
+        return lambda fr: fr.get("firstUuid") == key
+
+    @staticmethod
+    def _rebased(fr):
+        """The needFull's DECISION when the held key is gone: the repair carries rebased so the page sets it aside."""
+        return fr.get("rebased") is True
 
     # ── K1: served from the held base when the key maps BELOW the cut (grow), tailLo == the held run's lo ──
     def test_k1_served_from_held_base_when_the_key_maps_below_the_cut(self):
@@ -152,7 +183,7 @@ class HeldTailServe(unittest.TestCase):
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
         self._first_full(c)
-        full = self._repair_full(c, U(475))
+        full = self._repair_full(c, U(475), want=self._served_from(U(475)))
         self.assertEqual((full.get("tailLo"), full.get("firstUuid")), (475, U(475)),
                          "served from the held base at 475 (below the ~675 cut), not re-cut: tailLo=%r firstUuid=%r" % (full.get("tailLo"), full.get("firstUuid")))
         self.assertGreater(len(full.get("events") or []), 251, "a superset: it carries the held run and the growth, more than one WIRE_TAIL: n=%d" % len(full.get("events") or []))
@@ -167,7 +198,7 @@ class HeldTailServe(unittest.TestCase):
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
         self._first_full(c)
-        full = self._repair_full(c, U(475))
+        full = self._repair_full(c, U(475), want=self._rebased)
         self.assertTrue(full.get("rebased") is True,
                         "the held key is not in the current transcript: rebased, so the page sets the stale run aside: %r"
                         % {k: full.get(k) for k in ("tailLo", "rebased", "firstUuid")})
@@ -182,7 +213,7 @@ class HeldTailServe(unittest.TestCase):
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
         self._first_full(c)                                       # the connect full (tailLo ~675)
-        full = self._repair_full(c, U(475))                      # a needFull naming the held base at 475
+        full = self._repair_full(c, U(475), want=self._served_from(U(475)))   # a needFull naming the held base at 475
         self.assertEqual(full.get("tailLo"), 475,
                          "the needFull named a held base at 475: the repair full is served from there (a superset), NOT re-cut at ~675: tailLo=%r firstUuid=%r"
                          % (full.get("tailLo"), full.get("firstUuid")))
@@ -197,7 +228,7 @@ class HeldTailServe(unittest.TestCase):
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
         self._first_full(c)
-        full = self._repair_full(c, U(475))
+        full = self._repair_full(c, U(475), want=self._served_from(U(475)))
         self.assertNotIn("rebased", full, "a compaction is not a shorter tail: the held key is present, never rebased: %r" % {k: full.get(k) for k in ("tailLo", "rebased")})
         self.assertIsNotNone(full.get("tailLo"), "a compaction keeps a numeric tailLo (a head floor, not a renumber): %r" % full.get("tailLo"))
 
@@ -244,7 +275,7 @@ class HeldTailServe(unittest.TestCase):
         c = ChatClient(port, tok, SID)
         c.send({"type": "ready", "proto": 2})
         self._first_full(c)
-        r1 = self._repair_full(c, U(5000))                       # a keyed needFull naming a base GONE from this 600-turn session
+        r1 = self._repair_full(c, U(5000), want=self._rebased)   # a keyed needFull naming a base GONE from this 600-turn session
         self.assertTrue(r1.get("rebased") is True, "premise: the keyed needFull for a gone base rebased: %r" % {k: r1.get(k) for k in ("tailLo", "rebased")})
         r2 = self._repair_full(c, None, with_key=False)          # a NO-key needFull (a click, the prefetch)
         self.assertNotIn("rebased", r2, "a no-key needFull after a keyed one gets today's plain frame, not the remembered key's rebased (M3): %r" % {k: r2.get(k) for k in ("tailLo", "rebased")})
