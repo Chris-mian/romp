@@ -1,6 +1,6 @@
 // Where a clicked path points, on the machine the extension host runs on — the kernel's rule
 // (kernel.py _resolve_open_path), pure, so open-path.test.ts executes it. The webview posts a path AS
-// WRITTEN in the transcript: `~/specs/x.md`, `design/foo.md`, `/abs/x.md`, or a file:// caption link. The
+// WRITTEN in the transcript: `~/notes-api/x.md`, `design/foo.md`, `/abs/x.md`, or a file:// caption link. The
 // kernel's own openFile handler expands `~` and resolves a relative path against the session's cwd
 // before opening; the extension's opener handed the raw string to vscode.Uri.file, so a `~/` link
 // (clickable since T351 stage 2, 2026-09-12) failed with the unexpanded path in the warning (the user
