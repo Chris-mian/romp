@@ -1,7 +1,7 @@
 # The rail's chat button when the chat is many columns (options for the user)
 
-Status: DESIGN NOTE, options with a recommendation; the user decides before any code. Tier: `docs` for this
-note; the chosen option would ship as a `feature` inside the docking kit.
+Status: DECIDED 2026-09-21 (section 6): option A as recommended, as a rule for every rail button; the code
+follows as a `feature` PR inside the docking kit. Tier: `docs` for this note.
 
 The user's report (2026-09-21, paraphrased): they dragged one chat tab out of the strip into its own column,
 pressed the bottom-left chat button to hide the chats, pressed it again to show them, and the panes did not
@@ -126,3 +126,18 @@ it, and the drag that carried the tab ends with the column (PR 1978).
 2. Whether the remembered tree is a rule for every rail button (the recommendation) or for the chat button
    alone.
 3. Nothing changes on the phone under any option; say so if that is wrong.
+
+## 6. Decision
+
+The user decided (2026-09-21, about 2:20 PM PT, relayed by the manager): **option A as recommended.** One chat
+button for the whole chat group; a hide remembers the arrangement and a show restores it, as a rule for EVERY
+rail button, so the feed and the outline stop rearranging too. Nothing changes on the phone. No count on the
+button and no per-column menu now; the count stays an optional later addition.
+
+What follows from it, for the code (a `feature` PR, unarmed, red-first): the remembered tree sits beside
+`parked` in the layout store's `v: 1` shape (an optional field an older bundle ignores) and is restored at a
+show when the same set of panes returns; when the set changed meanwhile (a column closed while hidden, a pane
+toggled while hidden), the panes present are placed from the memory and the rest at their default docks. The
+re-join rule stands: a dragged-out tab returning to a strip empties its column, the column closes, and every
+record of it goes, the remembered place included. Section 2 is the design line; sharpened there if the code
+needs it.
