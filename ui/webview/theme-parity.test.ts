@@ -287,6 +287,14 @@ test("the 5xx marks of the API-health cell clear the validator's two floors agai
     const tip = hex(tipRule![1]);
     assert.ok(contrast(hex(fill), tip) >= 3, `${name}: the 5xx fill on the tip's ground ${tipRule![1]} = ${contrast(hex(fill), tip).toFixed(2)} < 3`);
     assert.ok(contrast(hex(ink), tip) >= 4.5, `${name}: the 5xx ink on the tip's ground ${tipRule![1]} = ${contrast(hex(ink), tip).toFixed(2)} < 4.5`);
+    // ...and the BARS sit on the graph's wash inside the tip (the landing's .ru-tip-graph svg{background:rgba(255,255,255,0.04)}, no
+    // light override), so the fill is measured there too, the wash parsed from the rule and composited over the tip's ground (1935's
+    // sixth review, 2026-09-21: a fill reading 3.02:1 on the bare tip and 2.71:1 on the wash passed here; 6.19:1 dark, 11.90:1 light today)
+    const graphRule = KERNEL.match(/"\.ru-tip-graph svg\{[^"]*?background:(rgba\([^)]*\))/);
+    assert.ok(graphRule, `${name}: the landing paints the graph's wash`);
+    const graph = rgbOf(graphRule![1], tip);
+    assert.ok(graph, `${name}: the graph wash ${graphRule![1]} parses`);
+    assert.ok(contrast(hex(fill), graph!) >= 3, `${name}: the 5xx fill on the graph's wash ${graphRule![1]} over ${tipRule![1]} = ${contrast(hex(fill), graph!).toFixed(2)} < 3`);
     // ...and on the detail's row hover wash, where a waiting row's 5xx code sits in the same ink (the fourth review, 2026-09-21: the violet
     // before this read 3.93:1 there). The wash is PARSED from the landing's .ah-row:hover rule per theme (6% white dark, 5% black
     // light today) and composited over the tip's ground, so a changed wash moves the measurement rather than a text pin (the fifth review)
