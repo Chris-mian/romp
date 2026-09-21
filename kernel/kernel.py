@@ -34059,14 +34059,16 @@ def _empty_build_regresses(m, prev_events, marked=False):
     baseline (_seed_chat_baseline, _chat_baseline_raced) after whole-frame senders handed every base holder content, so
     an absent baseline under the mark is not a never-seeded sid. Read as one before, the empty frame went to every base
     holder, counted `empty` with a chatFull row each and no stderr line, and the cycle's write put [] over the pop. Both
-    callers send nothing for a marked sid, a cached build or not (2026-09-21): a cached stand-in under the mark, where
-    the baseline is absent, always left as a full and rewound every holder ahead of it (a targeted push's longer list,
-    or the filled card the cache's older list lacks), so the mark and the absent baseline stand and the next content
-    cycle's full repairs every base holder; the cached build still rides the feed frame's ledgers list, so the Outline
-    row stays (tests 35 to 37, 44 to 46 and 50 to 52 of the skeleton-reconnect module pin the marked case). The seeded
-    case, a baseline present, takes the stand-in road as before (test 22 of the same module). `prev_events` and `marked`
-    are the caller's read of the baseline and the mark as ONE step under _chat_baseline_lock (2026-09-21): this function
-    reads no map itself, so the pair it rules on is one instant's (tests 53 and 54 of the same module)."""
+    callers hand no base holder a frame for a marked sid, a cached build or not (2026-09-21): a cached stand-in under
+    the mark, where the baseline is absent, always left as a full and rewound every holder ahead of it (a targeted
+    push's longer list, or the filled card the cache's older list lacks), so the mark and the absent baseline stand and
+    the next content cycle's full repairs every base holder; the cached build still rides the feed frame's ledgers
+    list, so the Outline row stays, and the pusher hands a skeleton holder of the tab whose chip has no word yet its
+    status frame, the served hit's own (tests 35 to 37, 44 to 46, 50 to 52, 55 and 56 of the skeleton-reconnect module
+    pin the marked case). The seeded case, a baseline present, takes the stand-in road as before (test 22 of the same
+    module). `prev_events` and `marked` are the caller's read of the baseline and the mark as ONE step under
+    _chat_baseline_lock (2026-09-21): this function reads no map itself, so the pair it rules on is one instant's
+    (tests 53 and 54 of the same module)."""
     return not (m.get("events") or []) and (bool(prev_events) or marked)
 
 
@@ -50586,14 +50588,22 @@ def _light_status(sid, path, tm, now):
             "mode": tm.get("mode", "")}
 
 
-def _send_light_status(c, sid, light):
+def _send_light_status(c, sid, light, wordless_only=False):
     """The gate's status frame to one client, membership re-checked UNDER the client's lock right before the send (round
     three, low b): a click between the gate's decision and this send drops the tab from the set and the full goes out on
     the same slot; a provisional status landing after it would replace the just-built status of the now-active tab. Only a
     tab the client still holds as a skeleton gets the provisional word; the built full is the answer for the rest. Returns
-    whether it was sent."""
+    whether it was sent. `wordless_only` (2026-09-21): send only to a holder whose chip has NO word yet, a client with no
+    ("status", sid) slot, read under the same lock. The empty-build guard's cached arm under the detector's mark sends
+    the cached build's status, and that word can be OLDER than the one a holder carries: a targeted push under the mark
+    hands a skeleton holder the freshly built status and caches nothing, so the next empty read's cached word would
+    rewind the chip it just flipped, and the following content cycle flip it back, three words from one failed read
+    where the kernel before moved nothing (test 56 of the skeleton-reconnect module). A holder that already carries a
+    word, newer or equal, is left alone; a release pops the slot with the tab, so a tab held again reads wordless."""
     with _client_lock(c):
         if sid not in (c.get("skeleton") or ()):
+            return False
+        if wordless_only and ("status", sid) in (c.get("sent") or {}):
             return False
         _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": light})
         return True
@@ -55449,12 +55459,31 @@ def _push(targets, connect=False, live_map=None):
                     # source of the feed frame's `ledgers`, which the Outline pane replaces wholesale on every feed
                     # frame, so a `continue` that skipped the append made the session's Outline row vanish for the
                     # empty cycle and return with the next content cycle, a payload change driven by a failed read
-                    # (test 51). No frame goes and the write block is still skipped; the no-cache arm has no build to
-                    # append, as before.
+                    # (test 51). No session frame goes and the write block is still skipped. A skeleton holder of the
+                    # marked tab with NO word yet still gets its status frame from the cached build (2026-09-21): the
+                    # stand-in road had handed every skeleton holder one through the per-client loop, and the `continue`
+                    # alone left a holder whose chip had no word without one for the empty cycle, a one-cycle lag until
+                    # the next content cycle. The send is the served hit's own, the cached build's status on the client's
+                    # status slot, membership re-checked under the client's lock so no base holder gets a frame, and only
+                    # to a holder with no ("status", sid) slot (_send_light_status, wordless_only): the cached word can be
+                    # older than the one a holder carries, since a targeted push under the mark hands a skeleton holder
+                    # the freshly built status and caches nothing, and sent to every holder the cached word rewound the
+                    # chip that push had just flipped until the next content cycle flipped it back (test 56); a holder
+                    # that carries a word, newer or equal, is left alone. The cached build's status, not the live row's
+                    # word, which is None with no live row (test 55). The connect push runs this loop too, so its target
+                    # holding the tab as a skeleton gets the same frame; the targeted push is left as it was, since the
+                    # review asked for this arm (the live row's word is the status that road could hand a skeleton holder
+                    # under the mark, not taken here). The no-cache arms keep the row's gap, with no build fit to append:
+                    # the one build in hand is `m`, the empty one, and appending it keeps the row but builds it from the
+                    # empty parse, so _session_chip blanks a working session's pip and the recency stamp goes null, the
+                    # class of failed-read change test 51 closes (tried, and the row read so); for the same reason no
+                    # status frame goes from it.
                     _note_empty_build(s["sid"], s.get("path"), _chat_prior_n(m["id"]), marked=marked)
                     if hit is None or marked:
                         if hit is not None:
                             chat_sessions.append(hit[1])     # the Outline row, from the cached build's ledger
+                            for c in chat_clients:           # ...and a status frame to a skeleton holder with no word yet, the served hit's own (2026-09-21)
+                                _send_light_status(c, s["sid"], hit[1].get("status"), wordless_only=True)
                         if _claimed:
                             _chat_inflight_done(s["sid"])    # the claim is released here: the loop's tail is skipped (test 52)
                         continue
