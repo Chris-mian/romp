@@ -202,12 +202,13 @@ chat and leaves the timeline, feed and judges, as it does after a Claude `/clear
 that card, the bell notice and the settling of the old conversation's open cards
 land on the FIRST prompt into the fresh conversation, not at the `/clear` itself
 (the boundary is the new conversation's first record), so open cards stay open
-until then. Typed mid-turn it queues and runs at the turn's end. The command must
-be the whole message: a `/clear` with more lines under it is refused with a
+until then. Typed mid-turn it queues and runs at the turn's end. `/compact` runs
+Codex's own compaction (the next paragraph). Each command must be the whole
+message: a `/clear` or `/compact` with more lines under it is refused with a
 notice, since the rest would reach no one. The slash commands romp knows a Codex
-session cannot take, `/compact`, `/fast`, `/autocompact`, `/help` and `/mcp` (a
-bare `/mcp` typed into the composer opens the MCP panel instead of reaching
-romp), are refused with a notice and never sent to the model as text, whether
+session cannot take, `/fast`, `/autocompact`, `/help` and `/mcp` (a bare `/mcp`
+typed into the composer opens the MCP panel instead of reaching romp), are
+refused with a notice and never sent to the model as text, whether
 typed into the composer, sent from the timeline's lane menu, sent with `romp
 send`, or already queued behind an open turn. Any other message that begins with
 a slash (a path such as `/tmp`, a word such as `/s`, a skill's name, a Claude
@@ -216,8 +217,34 @@ the commands it knows and does not judge a message by its first character.
 The composer's `/` list shows only what a Codex session takes. One path still
 reaches the model as text: a follow-up typed from a card whose whole body is a
 slash command, sent while the session is idle (a busy session queues it, and
-when its turn comes a queued clear runs and a refused command is refused).
-Compacting a Codex conversation natively is coming (`plans/codex-backend.md`).
+when its turn comes a queued clear or compaction runs and a refused command is
+refused).
+
+Compaction is native on Codex sessions: the context battery (in the chat and on
+the timeline), `POST /compact` and `romp compact`, and a typed bare `/compact`
+all start Codex's own compaction of the thread. The session reads "compacting"
+until Codex reports the thread idle again; a message typed meanwhile waits and
+goes in after; a "Context compacted" divider marks the spot, with no summary
+text because Codex exposes none. Codex takes no compaction instructions, so
+`/compact <words>` is refused with a notice rather than compacting with the
+words dropped. Esc does not stop a running compaction, and ending the session
+leaves it to finish on Codex's side. A compaction that fails on Codex's side
+(checked live by giving the thread a model the account cannot use) ends with a
+notice that Codex could not compact the conversation, no divider, and the
+conversation continues as it was; the notice offers no Retry, since nothing
+retries a compaction, and the next message you send clears it. One limit of the
+signal romp has, because Codex sends no notification for a compaction it was
+asked for and romp keys on the thread's status: a compaction Codex acknowledges
+but never runs leaves the session reading "compacting", and no message typed
+into the session probes that (each one waits behind the cue, as it would behind
+a real compaction). The way out is a kernel restart, which delivers the waiting
+message (the queue it waits in is kept on disk; the cue is not), or End then
+Revive, which keeps the thread and its history but not the queue: a message you
+typed that is still waiting behind the cue is handed back when the session
+ends, as a not-delivered notice with the text to copy, and is never sent;
+anything else queued behind the cue (a compaction, a setting pick, a message a
+script or romp itself sent) is dropped with the session and noted in the kernel
+log.
 
 The chat and timeline effort menus use the selected model's supported levels
 from the Codex app-server's model catalog. Romp also validates effort changes

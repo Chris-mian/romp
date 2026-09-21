@@ -419,7 +419,13 @@ class _PerfStats:
                                    label plus cold and nosig: per component, the background rebuilds
                                    it caused (one count per differing component, so the sum can
                                    exceed bg_built; cold = no cached build, nosig = no signature could
-                                   be taken); see build_chat
+                                   be taken); see build_chat. chat also carries coldSkipped (the
+                                   cold-tab gate's skips, build_chat_cold_skip), baselineRaced and
+                                   baselineRepaired (the delta baseline's detector pops and the cycle
+                                   writes that took a mark off, build_chat_baseline_raced and
+                                   _repaired; 2026-09-21): on the snapshot and glossed in the
+                                   reference, none of the three printed by `romp perf`, whose
+                                   documented contract prints the split, the causes and the moved count
       sends                        full / delta / deduped -> {slot: {count, bytes}} per dedup-slot
                                    name (chat, feed, bars, taborder, ...; at most SLOTS names, the rest
                                    under "other"). A deduped frame was built and compared, not sent
@@ -14715,8 +14721,9 @@ def _awaiting_wake_outcomes(now, walked=None):
 
 
 def _launch_error(sid):
-    """Why this session's CLI could not start, or None — {text, at, limit}, straight from the backend that
-    tried to start it (SessionBackend.launch_error). Guarded the same way as _backend_queued: a backend
+    """Why this session's CLI could not start, or None: {text, at, limit, and an optional noRetry for a notice
+    nothing retries (SessionBackend.launch_error, 2026-09-21)}, straight from the backend that
+    tried to start it. Guarded the same way as _backend_queued: a backend
     hiccup reads as 'no known failure' rather than crashing the chat build."""
     try:
         be = Sessions.backend_for(str(sid))
@@ -19323,6 +19330,7 @@ def _commands_for_cwd(cwd):
 _CODEX_COMMANDS = (
     {"name": "clear", "description": "Start a fresh conversation for this session (its name, mail, tags and settings stay)"},
     {"name": "new", "description": "Same as /clear (Codex's own word for it)"},
+    {"name": "compact", "description": "Compact this conversation in place (Codex's own compaction; it takes no instructions)"},
     {"name": "model", "description": "Switch this session's model (applies at its next turn)", "argumentHint": "<gpt-…>"},
     {"name": "effort", "description": "Set this session's reasoning effort (applies at its next turn)", "argumentHint": "<level>"},
     {"name": "mcp", "description": "Show this session's MCP servers"},
@@ -19331,8 +19339,8 @@ _CODEX_COMMANDS = (
 
 def _commands_for_sid(sid):
     """(commands, warming) for the composer's "/" palette on `sid`: a Codex session gets the fixed list of commands
-    the kernel takes for it (never the Claude CLI's per-cwd probe, which advertised /clear and /compact the route
-    now refuses, 2026-09-19); every other sid keeps _commands_for_cwd. _session_backend with no live row reads the
+    the kernel takes for it (never the Claude CLI's per-cwd probe, which advertised Claude's skills and commands a
+    Codex session cannot take, 2026-09-19); every other sid keeps _commands_for_cwd. _session_backend with no live row reads the
     durable records, so a dead Codex lane's composer is answered the same way."""
     if sid and _session_backend(sid, None) == "codex":
         return [dict(c) for c in _CODEX_COMMANDS], False
@@ -19432,6 +19440,17 @@ def _note_retry_sent(sid, manual=False):
 
 def _clear_retry_backoff(sid):
     _auto_retry_state.pop(sid, None)   # recovered: the next outage starts at the bottom rung again
+
+
+def _backend_compacting(be, sid):
+    """The backend's own 'a compaction is in progress' verdict (SessionBackend.compacting), True by IDENTITY only
+    (2026-09-21): the interrupt arms read it ahead of busy(), because a compaction reads busy (it is a turn in flight
+    on the server) and interrupt() refuses it (no turn id to stop), so Esc, Stop, POST /interrupt and `romp interrupt`
+    answered "still working" under a chip reading Compacting. Identity, not truth: a double without the verb (a
+    SimpleNamespace, the tmux-era fakes) has no such attribute, and a bare Mock's call answers a truthy Mock; neither
+    is a compaction. Backend-neutral: the SDK backend publishes the same bracket for its /compact."""
+    fn = getattr(be, "compacting", None)
+    return callable(fn) and fn(sid) is True
 
 
 def _fire_api_retry(sid, be, manual=False):
@@ -19843,6 +19862,12 @@ def _drive(msg, client):
         # is an unknown sid): a backend with no verdict keeps the optimistic chip.
         if be.interrupt(sid) is not False:                # Esc/stop AND settle idle (in the backend)
             _interrupt_clicked[str(sid)] = time.time()    # chip → "interrupting" NOW (event-cleared on settle)
+        elif _backend_compacting(be, sid):
+            # A refusal UNDER A COMPACTION is neither idle nor a dropped stop (review find, 2026-09-21): the backend's
+            # compaction is a turn in flight the server itself refuses to steer or stop, so busy() reads True and the
+            # arm below said "still working" under a chip reading Compacting. Worded for the state, backend-neutral.
+            client["send"](json.dumps({"type": "warn", "text": "the stop was not delivered: the session is compacting its "
+                                                                "conversation, and a compaction runs to its end"}))
         elif be.busy(sid):
             # A refusal WITH work in flight is a stop that did NOT land, not a stop with nothing to stop
             # (review find, 2026-09-11): the Codex backend also answers False while a turn's start is still
@@ -20269,6 +20294,7 @@ def _drive(msg, client):
             sys.stderr.write("comment promote refused (%s, name %r): %s\n" % (sid[:8], str(msg["name"])[:80], err))   # T289
     elif t == "endSession":
         sys.stderr.write("kill: %s via endSession WS op\n" % sid)   # kill attribution (the user 2026-07-16)
+        _drop_parked_on_end(sid, client)   # a parked send is handed back to this pane, not dropped by the drain in this wake (2026-09-21)
         be.kill(sid); _record_death(sid, int(time.time()), "kill")   # the one SDK event with no designed reviver
         _comment_kill_all(sid, be)   # its comment threads must not outlive it as unreachable running CLIs
         _send_to_app("chat", {"type": "closed", "id": sid})
@@ -25550,6 +25576,8 @@ def _deliver_text(sid, text, plain=False):
             return False, str(meta["refused_effort"]), False   # the route's own words for a level the backend refused (the review of #1814)
         if meta.get("refused_clear"):
             return False, str(meta["refused_clear"]), False    # the backend's own words for a clear it could not run (2026-09-19)
+        if meta.get("refused_compact"):
+            return False, str(meta["refused_compact"]), False  # a compaction it could not run, or typed instructions Codex takes none of (2026-09-19)
         if meta.get("refused"):
             if be is _UNOWNED:
                 return False, "no running backend owns %s — the command was not delivered" % sid, False
@@ -28748,6 +28776,7 @@ def _end_on_idle_sweep(now, live_map):
             continue
         sys.stderr.write("kill: %s via end-on-idle (self-close)\n" % sid)
         be = Sessions.backend_for(sid)
+        _drop_parked_on_end(sid)                         # the End doors' cancel of the parked queue (2026-09-21)
         be.kill(sid)
         _record_death(sid, int(now), "kill")
         _comment_kill_all(sid, be)
@@ -33603,11 +33632,14 @@ _chat_baseline_lock = threading.Lock()           # held for the seed's read-back
 #                                                  get and set were two steps, so two whole-frame senders that both read the map
 #                                                  absent both wrote, the last writer won, the detector never fired, and a client
 #                                                  holding the first writer's list was stranded (the review's two-thread probe)
-_chat_baseline_raced = {}                        # sid -> the popped list's length, for every sid whose baseline the detector POPPED
-#                                                  and no every-client sender has written since (2026-09-19; a dict since
-#                                                  2026-09-21, so the empty-build guard can name the count at the pop, raised
-#                                                  by every whole frame handed under the mark: _chat_prior_n). A pop leaves
-#                                                  clients holding bases with NO
+_chat_baseline_raced = {}                        # sid -> the length of the longest list some client was handed whole under the
+#                                                  mark (the longer of the two lists at the pop, then raised by every whole frame
+#                                                  a sender hands while the mark stands: _chat_prior_n), for every sid whose
+#                                                  baseline the detector POPPED and no every-client sender has written since
+#                                                  (2026-09-19; a dict since 2026-09-21, for the empty-build note, which reads the
+#                                                  count as a minimum, not as what every holder has: the raise follows a connect
+#                                                  push's full to one client, and the pop's max can name a count no holder has).
+#                                                  A pop leaves clients holding bases with NO
 #                                                  baseline, the state a never-seeded sid is in too, and a seed that could not tell them apart
 #                                                  re-seeded from the next single-client connect push (a needFull, an idle-prefetch
 #                                                  release: one per released tab at a boot, while a cold cycle takes 30-84 s), so
@@ -33967,35 +33999,50 @@ def _empty_build_regresses(m, prev_events, marked=False):
     while the previous push's build for the sid did, or while the sid is `marked` (2026-09-21): the detector popped its
     baseline (_seed_chat_baseline, _chat_baseline_raced) after whole-frame senders handed every base holder content, so
     an absent baseline under the mark is not a never-seeded sid. Read as one before, the empty frame went to every base
-    holder, counted `empty` with a chatFull row each and no stderr line, and the cycle's write put [] over the pop, where
-    the seeded case took the stand-in road (tests 35 and 36 of the skeleton-reconnect module)."""
+    holder, counted `empty` with a chatFull row each and no stderr line, and the cycle's write put [] over the pop. Both
+    callers send nothing for a marked sid, a cached build or not (2026-09-21): a cached stand-in under the mark, where
+    the baseline is absent, always left as a full and rewound every holder ahead of it (a targeted push's longer list,
+    or the filled card the cache's older list lacks), so the mark and the absent baseline stand and the next content
+    cycle's full repairs every base holder; the cached build still rides the feed frame's ledgers list, so the Outline
+    row stays (tests 35 to 37, 44 to 46 and 50 to 52 of the skeleton-reconnect module pin the marked case). The seeded
+    case, a baseline present, takes the stand-in road as before (test 22 of the same module)."""
     return not (m.get("events") or []) and (bool(prev_events) or marked)
 
 
 def _chat_prior_n(sid):
-    """How many events the clients holding `sid` with content hold, for the empty-build note: the baseline's length, or,
-    for a sid the detector marked (its baseline popped), the count at the pop, raised by every whole frame handed under
-    the mark (2026-09-21; the seed's declining arm does the raising). Read outside _chat_baseline_lock, like the guard's
-    own reads beside it."""
+    """The event count the empty-build note names for `sid`: the baseline's length when one stands (what every holder
+    with content has), or, for a sid the detector marked (its baseline popped), the length of the longest list some
+    client was handed whole under the mark: the longer of the two lists at the pop, raised by the seed's declining arm
+    for every whole frame a sender hands while the mark stands (2026-09-21). Under the mark the count is a minimum for
+    the note, not what every holder has: the raise follows a connect push's full to ONE client, the pop's max can name a
+    count no holder has, and a cycle that sent tails under the mark handed nothing whole, so its longer list never
+    raised it (test 50 of the skeleton-reconnect module reads the pop's 5 while every client holds 6). Read outside
+    _chat_baseline_lock, like the guard's own reads beside it."""
     prev = _prev_chat_events.get(sid)
     if prev:
         return len(prev)
     return int(_chat_baseline_raced.get(sid) or 0)
 
 
-def _note_empty_build(sid, path, n_prev):
-    """One stderr line per episode naming the sid, what the previous build held and whether the transcript path is
-    even there; a romp-perf `chatempty` line every time, for the harness/perf log."""
+def _note_empty_build(sid, path, n_prev, marked=False):
+    """One stderr line per episode naming the sid, the count the clients hold and whether the transcript path is even
+    there; a romp-perf `chatempty` line every time, for the harness/perf log. The sentence follows the count's source
+    (2026-09-21): with a baseline, `n_prev` is its length and the previous build is kept as the stand-in; under the
+    detector's mark (`marked`), `n_prev` is the longest list some client was handed whole, a minimum for what the
+    clients hold, and nothing is kept or sent for the sid until content returns (_chat_prior_n)."""
     sid = str(sid or "")
     _perf("chatempty", sid=sid[:8], prev=int(n_prev or 0))
     if sid in _EMPTY_BUILD_NOTED:
         return
     _EMPTY_BUILD_NOTED.add(sid)
     exists = bool(path) and os.path.exists(str(path))
-    sys.stderr.write("romp-kernel: the chat build for %s came back EMPTY while its previous build had %d events "
-                     "(transcript %s) — keeping the previous build until content returns; an empty frame would blank "
-                     "the pane and re-land the reader\n"
-                     % (sid[:8], int(n_prev or 0), "present" if exists else "missing at %s" % path))
+    if marked:
+        held, road = "its clients hold at least %d events" % int(n_prev or 0), "sending nothing for it until content returns"
+    else:
+        held, road = "its baseline held %d events" % int(n_prev or 0), "keeping the previous build until content returns"
+    sys.stderr.write("romp-kernel: the chat build for %s came back EMPTY while %s (transcript %s): %s; an empty frame "
+                     "would blank the pane and re-land the reader\n"
+                     % (sid[:8], held, "present" if exists else "missing at %s" % path, road))
 
 
 def _clear_empty_build_note(sid):
@@ -34162,9 +34209,10 @@ def _seed_chat_baseline(sid, m, seen):
         if sid in _chat_baseline_raced:
             # popped by the detector: no seed writes until a cycle's full to every base holder clears the mark. The stash
             # under the mark is raised to this list's length (2026-09-21): the seed runs after the sends, for a list some
-            # client took whole, so under a standing mark the base holders were handed at least this many events, and a
-            # stash left at the pop's count named the shorter list once a whole-frame sender had handed a longer one
-            # (test 36 of the skeleton-reconnect module).
+            # client took whole, so under a standing mark the stash is the longest list SOME client was handed whole (a
+            # minimum for the empty-build note, not what every holder has: a connect push hands its full to one client),
+            # and a stash left at the pop's count named the shorter list once a whole-frame sender had handed a longer
+            # one (test 36 of the skeleton-reconnect module).
             _chat_baseline_raced[sid] = max(_chat_baseline_raced[sid], len(evs))
             return
         cur = _prev_chat_events.get(sid)
@@ -36436,6 +36484,89 @@ def _cancel_parked(sid, park, md, qid=None):
     return None
 
 
+def _drop_parked_on_end(sid, client=None):
+    """A session is being ENDED: cancel its parked ops, and hand back the text of every parked send or command the
+    user typed as not delivered (2026-09-21, the second review of the native compaction, whose probe lost a message
+    this way). The End doors left the queue where it was and finished with a push-soon, so the drain ran in the same
+    wake: it popped the send, handed it to a row that by then read as unowned (owns() is live-only), and ignored that
+    route's refusal, so the chat heard nothing; Revive drains only the backend's own queue, which never had the
+    message. A message typed behind a compaction the server acked and never ran (or any op parked behind a turn, a
+    queue ahead or an account hold) vanished with the End, while the doc said End then Revive delivered it. Now the
+    ending session's parked sends take the existing not-delivered path (_refuse_drive: a modal in the asking pane
+    with the text in its copy slot, undelivered.jsonl verbatim, one stderr line), aimed at `client` when the End came
+    over a socket, else at every chat pane (romp end, the self-close sweep).
+
+    Only the USER's words are handed back: a parked send or command wearing the user flag (_op_user) or a
+    press-minted copy id (_op_qid). A machine's send parks through the same road (a watch notice, the spend-ceiling
+    body, a tagged `romp send`), and a modal offering to copy words the user never typed, filed in undelivered.jsonl
+    as theirs, is a false interrupt (review find, 2026-09-21); those are dropped with the log line below, which names
+    the kind and never the body, as are the ops that carry no typed text (a compact or clear, a settings pick, a
+    move): a dead session's queue is never retried (the drain's own contract), and keeping it for a later Revive
+    would strand queued bubbles on a session never revived. Runs BEFORE the kill: the live row's gates hold the drain
+    off, so nothing pops the queue between this cancel and the kill. An op the drain is handing over right now
+    (_inflight_ops: still the head) is left to it, popped by identity there. Returns how many texts were handed
+    back.
+
+    WHERE the modal lands (review find, 2026-09-21): on `client` only when its pane renders an err frame (the chat
+    and the feed, _ERR_FRAME_APPS); an End pressed in the Sessions pane arrives on that pane's socket, whose bundle
+    has no err arm, so handed there the frame showed nothing and reached no chat pane either. Every other case (a
+    pane that cannot show it, no socket at all) goes to ONE chat pane (_send_to_one_chat): the broadcast put a modal
+    and a bell entry in every chat column for one message. The op the drain is handing over right now is found by
+    SLOT (_inflight_slot), as _cancel_parked finds it, not by identity: two parked compact presses are one interned
+    tuple, and an identity filter kept the second behind the in-flight first."""
+    sid = str(sid)
+    with _pending_ops_lock:
+        ops = _pending_ops.get(sid) or []
+        j = _inflight_slot(sid, ops)
+        gone = [op for k, op in enumerate(ops) if k != j]
+        if not gone:
+            return 0
+        kept = [ops[j]] if j >= 0 else []
+        if kept:
+            _pending_ops[sid] = kept
+        else:
+            _pending_ops.pop(sid, None)
+            _drain_hold.pop(sid, None)
+            _held_working.pop(sid, None)
+        _save_pending_ops()
+    if client is not None and (client.get("app") or "") in _ERR_FRAME_APPS:
+        target = client
+    else:
+        target = {"send": lambda t: _send_to_one_chat(json.loads(t), sid)}
+    handed = 0
+    for op in gone:
+        typed = (op[0] in ("send", "command") and isinstance(op[1], str) and op[1].strip()
+                 and (_op_user(op) or _op_qid(op)))
+        if typed:
+            _refuse_drive(target, "sendMessage" if op[0] == "send" else "sendCommand", sid, {"text": op[1]},
+                          why="The session ended before romp could hand this over")
+            handed += 1
+        else:
+            sys.stderr.write("parked %s op dropped with the ending session %s\n" % (op[0], sid))
+    _mark_views_dirty()
+    return handed
+
+
+_ERR_FRAME_APPS = ("chat", "feed")   # the panes whose bundles render an err frame (the modal, the bell entry); the
+                                     # Sessions pane, the timeline, files and artifacts drop it (2026-09-21)
+
+
+def _send_to_one_chat(msg, sid=""):
+    """One chat pane hears `msg` (2026-09-21): the live chat client watching `sid` when one does (its `active` is the
+    tab it shows), else the first live chat client. The not-delivered frame's modal and its bell entry are one notice,
+    and the broadcast drew them once per chat column. With no chat pane connected the frame goes through the chat
+    broadcast, which reaches nobody either; the undelivered file and the log are the record then. Returns whether a
+    pane took it."""
+    s = json.dumps(msg)
+    with _clients_lock:
+        live = [c for c in _clients if c["app"] == "chat" and c.get("alive", True)]
+    pick = next((c for c in live if sid and c.get("active") == sid), None) or (live[0] if live else None)
+    if pick is None:
+        _send_to_app("chat", msg)
+        return False
+    return _client_send(pick, s)
+
+
 def _cancel_backend_queued(be, sid, idx, md, qid=None):
     """unqueue with the same DRIFT GUARD as _cancel_parked: the click carries the bubble's body; if the
     backend queue moved between the push and the click (the input generator consumed the head), the raw
@@ -36766,23 +36897,44 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False, paths=None):
     return False
 
 
-def _compact_or_park(be, sid, state=None):
-    """The ONE compaction entry — the chat's compact button (WS "compact") and POST /compact both land
-    here, so there is never a second compaction path. Not quiet (open turn / compacting / queue ahead /
-    account hold) → park as a ("compact",) op, which fires ALONE at turn end; quiet → /compact NOW with
-    the instant 'compacting' cue. Returns True when parked (queued), False when fired now — the route
-    tells its caller which ("compacting now" vs "queued").
+def _native_compact(be):
+    """Whether `be` compacts its own conversation (SessionBackend.compact) rather than taking the literal "/compact"
+    as text (2026-09-19): a backend that DEFINES the verb — CodexBackend since this change; SdkBackend and every
+    send-only stand-in define none, so every SDK path stays byte-identical — and not the unowned route, which
+    inherits the ABC's default and keeps its own stderr refusal."""
+    return be is not None and be is not _UNOWNED and callable(getattr(be, "compact", None))
 
-    A Codex session is refused before any park or stamp (2026-09-19): it has no /compact text to execute,
-    and the old path sent the word to the model and stamped a compacting cue for a compaction that never
-    started. `state` receives {"refused": words} for POST /compact; the chat hears it as a broadcast warn
-    (no socket reaches here) and the bell keeps it. Returns None, the existing 'neither parked nor fired'
-    value. The native compaction replaces this arm."""
-    if be is not None and be is _codex():
-        _refuse_codex_slash(be, sid, "/compact", state=state)
-        return None
+
+def _compact_or_park(be, sid, state=None, client=None, qid=None):
+    """The ONE compaction entry — the chat's compact button (WS "compact"), the timeline's battery, POST /compact and
+    a typed /compact on a backend that compacts natively (_codex_compact_command) all land here, so there is never a
+    second compaction path. Not quiet (open turn / compacting / queue ahead / account hold) → park as a ("compact",)
+    op, which fires ALONE at turn end; quiet → compact NOW. Returns True when parked (queued), False when fired now —
+    the route tells its caller which ("compacting now" vs "queued") — and None when the backend refused: neither
+    parked nor fired, and no cue.
+
+    Two kinds of fire (2026-09-19). A backend that compacts natively (_native_compact: Codex, whose app-server has
+    no slash parser — the old path sent the word to the model and stamped a cue for a compaction that never started)
+    takes its own verb, SessionBackend.compact: "" — the backend's compacting() bracket is up and is the authority
+    the kernel reads first (_compacting), so NO optimistic stamp (the stamp would only arm the 180 s
+    _compacting_optimistic read per build for a signal the backend already publishes); "busy" — a turn or a
+    compaction already in flight: parked as the same ("compact",) op the drain retries at the turn's end, never
+    shown; any other answer — the reason, said (_say_compact_refusal, on `client` with `qid` when the typed route
+    carried them, else a broadcast to the chat panes), filed as state["refused"] so POST /compact answers ok:false
+    with it. Every other backend keeps the literal "/compact" send as the user's gesture and the instant cue."""
     if _gate_or_park(sid, ("compact",)):
         return True
+    if _native_compact(be):
+        why = be.compact(sid)
+        if why == "busy":
+            _park_op(sid, ("compact",))
+            return True
+        if why:
+            if state is not None:
+                state["refused"] = why
+            _say_compact_refusal(sid, why, client=client, qid=qid)
+            return None
+        return False
     if _user_send(be, sid, "/compact") is False:        # the click is the user's (T315); a refusal shows no cue
         return None
     _mark_compacting(sid)
@@ -36821,7 +36973,7 @@ def _compact_request(who):
     meta = {}
     queued = _compact_or_park(Sessions.backend_for(sid), sid, state=meta)
     if meta.get("refused"):
-        return {"ok": False, "error": meta["refused"]}   # a Codex session: the route's own words (2026-09-19)
+        return {"ok": False, "error": meta["refused"]}   # the backend's own refusal words (2026-09-19)
     return {"ok": True, "queued": queued}
 
 
@@ -37043,7 +37195,7 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None, 
     """The one route every typed or sent slash command takes (the composer's sendMessage arm, the lane menu's
     sendCommand arm, POST /send and `romp send` through _deliver_text), in front of the setter body it used to
     BE (_route_setter_command: its arms and docstring are unchanged). A Codex session takes only what romp
-    itself performs: /model X and /effort X through the setter arms, and a native /clear or /new through the
+    itself performs: /model X and /effort X through the setter arms, and a native /clear, /new or /compact through the
     handler table (_CODEX_SLASH_HANDLERS, consulted first). The slash commands the kernel KNOWS a
     Codex session cannot take (_CODEX_REFUSED_HEADS: /clear, /compact, /new and the rest of that set) and a
     setter head in the wrong shape (a bare /model) are refused here, ABOVE the setter body's one-token guard
@@ -37054,11 +37206,11 @@ def _route_meta_command(be, sid, text, client=None, floating=False, state=None, 
     road every other backend takes (the setter body answers False for it; the caller sends it idle, parks it
     as a ("command",) op busy, and the drain hands it to the model). _codex_refuses is the one predicate this
     arm and the drain read, so the live road and the parked road refuse the same texts by construction.
-    _CODEX_SLASH_HANDLERS is the seam a native /clear or /compact plugs into: a head registered there takes the
-    text instead of the refusal, when the command is the WHOLE message (_slash_alone; a message that merely opens
+    _CODEX_SLASH_HANDLERS is the seam the native /clear, /new and /compact plugged into: a head registered there takes
+    the text instead of the refusal, when the command is the WHOLE message (_slash_alone; a message that merely opens
     with the head is refused in words). A registered head stays in the known set, so that shape and a parked copy
     of it still meet the refusal by the one predicate, while a whole-message copy parked by a road that skips the
-    route runs as the clear at the drain (_parked_clear_op). `qid` is the press-minted copy id (the sendMessage
+    route runs as the clear at the drain (_parked_clear_op), and a parked compact runs natively (the drain's compact arm). `qid` is the press-minted copy id (the sendMessage
     arm's _wire_qid), carried on the refusal frame so the chat retires the bubble it drew. The
     Claude Code and unowned routes are unchanged and take the setter body directly: a dead Codex session routes
     to _UNOWNED (CodexBackend.owns is False once dead) and keeps the unowned refusal, so the identity test is
@@ -37158,9 +37310,73 @@ def _codex_clear_command(be, sid, text, client=None, state=None, qid=None):
     return True
 
 
+_CODEX_COMPACT_NO_WORDS = "Codex compacts without instructions — send a bare /compact; nothing was sent."
+
+
+def _say_compact_refusal(sid, why, client=None, qid=None):
+    """A compaction the backend could not run, said the way _codex_clear_command says a clear's refusal (2026-09-19):
+    one warn frame naming the session — and the press, when a copy id rode, so the chat retires the bubble it drew and
+    puts the words back in an empty composer — on the delivering socket, or a broadcast to the chat panes when no socket
+    carried the op (a battery click, POST /compact, the pusher's drain), with the timeline panes told on their own
+    settingRefused frame (review find, 2026-09-21; that page drops a warn, and its battery's click stamp ends on the
+    frame); a row on the bell's ring under the refused kind; one stderr line. No cue is stamped for a compaction that
+    never started."""
+    frame = {"type": "warn", "text": why, "sid": str(sid)}
+    if qid:
+        frame["qid"] = qid
+    if client:
+        client["send"](json.dumps(frame))
+    else:
+        _send_to_app("chat", dict(frame, id=str(sid)))
+        # the timeline lane that took the battery click hears it too (review find, 2026-09-21): that page's boot drops
+        # a warn, and its click stamp cleared only on a settingRefused frame or its 6 s expiry, so the lane read
+        # compacting for six seconds with no words. The frame the page renders (gesture command, no flag: the shape
+        # the HTTP road builds for a refused compact), sent to every timeline pane the way the model frame is
+        # (_send_to_app), never as the refusal's `client`, which would replace the chat broadcast. `filed`: the ring
+        # row below is the bell's record, so the page posts no second one.
+        _send_to_app("timeline", {"type": "settingRefused", "gesture": "command", "sid": str(sid), "flag": "",
+                                  "text": why, "filed": True})
+    _sync_notice("%s: %s" % (_name_of(sid) or str(sid)[:8], why), ok=False, kind="refused")
+    sys.stderr.write("compact for %s refused: %s\n" % (sid, why))
+
+
+def _codex_compact_command(be, sid, text, client=None, state=None, qid=None):
+    """The Codex arm for a typed or sent /compact (2026-09-19; registered in _CODEX_SLASH_HANDLERS beside the clear heads,
+    so the guard's refusal stops for it): the compaction entry every other door takes (_compact_or_park — ONE _ops_gate
+    evaluation through _gate_or_park, the /effort arm's cost; parked as the same visible "/compact" chip the battery
+    parks when not quiet, "busy" parked the same way and never shown, the backend's compacting bracket as the cue when it
+    ran, so no echo and no stamp). Words after the head ("/compact focus on the tests") are refused loudly: Codex takes
+    no compaction instructions, and compacting anyway would drop the words silently. The head is read with split(None,
+    1), so a newline or a tab after it counts as words too (a partition on one space would let "/compact\nfoo" through as
+    a bare compact). A refusal is filed as state["refused_compact"] (its own key, as the clear's: _deliver_text rewords
+    "refused" for the unowned route) so POST /send and `romp send` answer ok:false with it, and said with the session
+    and the press named. Named residual: on SUCCESS the composer's optimistic bubble stands until its cross — a native
+    compaction mints no echo and writes no record (the same as a typed /model or /effort on Codex today); the cue the
+    user gets is the chip flipping to compacting and the chat's compacting element. Returns True: the command was
+    taken."""
+    words = (text or "").strip().split(None, 1)
+    if len(words) > 1:
+        why = _CODEX_COMPACT_NO_WORDS
+        if state is not None:
+            state["refused_compact"] = why
+            state["queued"] = False
+        _say_compact_refusal(sid, why, client=client, qid=qid)
+        return True
+    if not _native_compact(be):                          # a Codex identity without the verb: the guard's refusal, never the word as text
+        return _refuse_codex_slash(be, sid, text, client=client, state=state, qid=qid)
+    st = {}
+    parked = _compact_or_park(be, sid, state=st, client=client, qid=qid)
+    if state is not None:
+        if parked is None:
+            state["refused_compact"] = st.get("refused") or "Couldn't compact this conversation"
+        state["queued"] = bool(parked)
+    return True
+
+
 # head -> handler(be, sid, text, client, state, qid) -> bool. A head registered here takes the text instead of the
-# guard's refusal: /clear and /new are the native clear (2026-09-19); a native /compact registers next.
-_CODEX_SLASH_HANDLERS = {"/clear": _codex_clear_command, "/new": _codex_clear_command}
+# guard's refusal: /clear and /new are the native clear, /compact the native compaction (2026-09-19).
+_CODEX_SLASH_HANDLERS = {"/clear": _codex_clear_command, "/new": _codex_clear_command,
+                         "/compact": _codex_compact_command}
 _CODEX_CLEAR_HEADS = ("/clear", "/new")   # the heads _parked_clear_op reads a ("command", …) op by
 _CODEX_VALUE_EXAMPLE = {"/model": "/model gpt-5", "/effort": "/effort high"}
 
@@ -37288,7 +37504,10 @@ def _apply_pending_ops(now=None):
     + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes, plus
     _limit_hold's account gate — a queue held by a usage limit drains on the cycle after the API's own
     reset stamp passes, so the whole sequence goes in at the reset in the order it was typed); a dead
-    session's queue is dropped (fails once, logged), never retried. An effort level or fast toggle the
+    session's queue is dropped (fails once, logged), never retried, and since 2026-09-21 the End doors cancel the
+    ending session's queue themselves before the kill (_drop_parked_on_end), handing a parked send the user typed
+    back as not delivered: left to this walk, the send was popped in End's own wake, handed to a row that read as
+    unowned, and its refusal ignored. An effort level or fast toggle the
     backend refuses when it fires here is reported (the walk's stderr line, a settingRefused frame to the
     chat), not popped silently.
 
@@ -37307,6 +37526,12 @@ def _apply_pending_ops(now=None):
     pop landed on a list this walk had shifted (the op BEHIND the clicked one vanished); (2) two writers
     tearing the mirror through one shared temp (_save_pending_ops). Only this one thread ever walks the
     queue (the pusher); the handlers and the move thread are the other writers.
+
+    A NATIVE COMPACTION (2026-09-19): a backend that compacts natively (_native_compact: Codex) takes its verb for a
+    parked ("compact",) op and for a ("command", "/compact") op a Codex session parked before the native head existed
+    (the disk mirror survives an upgrade), never the word as text; the bracket it latches is the cue, so no stamp;
+    "busy" leaves the head as the clear arm does; words after a typed head are refused with the reason and popped; and
+    the pass ends as on any turn-opening op.
 
     THE HEAD STAYS VISIBLE WHILE THE BACKEND HAS IT (2026-09-05, second review): every gate a handler
     decides on keys on queue presence (_ops_gate, _send_or_park's first gate, _park_behind_queue) and
@@ -37426,6 +37651,12 @@ def _apply_pending_ops(now=None):
                     # missed the command op, so that op's queued chip drew beside the live "Clearing conversation…" element
                     is_clear = _parked_clear_op(op, be)
                     clear_why = ""
+                    # a parked native compaction (2026-09-19): the ("compact",) op every door parks, or a ("command", "/compact …")
+                    # op a Codex session parked before this head registered (the same disk mirror) — the backend's verb
+                    # (_native_compact), never the word as text; words after the head are refused, never dropped into it
+                    cmd_words = str(op[1]).strip().split(None, 1) if op[0] == "command" else []
+                    is_compact = bool(_native_compact(be) and (op[0] == "compact" or (cmd_words and cmd_words[0] == "/compact")))
+                    compact_why = ""
                     if op[0] == "send":
                         changed = True
                         _deliver_send_batch(be, sid, run)
@@ -37447,8 +37678,9 @@ def _apply_pending_ops(now=None):
                         # the cwd arm's rule, so the chip's ✕ still cancels it) and the pass ends with NO clock hold — the
                         # backend's turn-end poke follows its lock's release (CodexBackend._run_turn), so the cycle that
                         # poke brings finds the lock free, and a cycle that delivers nothing re-wakes nothing, so the
-                        # backstop retries by itself; the move's hold spaces COUNTED retries against a CLI window that
-                        # emits no event, which a clear has not got
+                        # backstop retries by itself; a clear parked behind a compaction bracket gets the bracket's
+                        # end poke, clean or loud (2026-09-21); the move's hold spaces COUNTED retries against a CLI
+                        # window that emits no event, which a clear has not got
                         # the words the op was parked with ride to the verb and its chip (_parked_md: a ("clear", text) op's
                         # text, a pre-upgrade ("command", "/new") op's, the default for a one-slot op from an older mirror),
                         # else a parked /new landed as a "/clear" chip the composer's bubble never matched (2026-09-19)
@@ -37457,6 +37689,27 @@ def _apply_pending_ops(now=None):
                             with _pending_ops_lock:
                                 _inflight_ops.pop(sid, None)
                             break
+                    elif is_compact:
+                        # SessionBackend.compact: "" the bracket is up (the backend's compacting() is the cue: no stamp), "busy"
+                        # a turn or a compaction already in flight, else the reason. On "busy" the head STAYS with nothing
+                        # recorded in flight and no clock, the clear arm's rule: the backend's turn-end poke or the
+                        # compaction bracket's end poke (every end pokes, the clean one through its boundary write and the
+                        # loud ones directly since the review of 2026-09-21; before it a failed compaction only pushed and
+                        # kicked, leaving the head to the pusher's half-second backstop) brings the cycle that retries.
+                        # Words after a typed head are refused with the reason (Codex takes no compaction instructions)
+                        # and popped; a reason rides the parked copy's id.
+                        if len(cmd_words) > 1:
+                            compact_why = _CODEX_COMPACT_NO_WORDS
+                        else:
+                            compact_why = be.compact(sid)
+                            if compact_why == "busy":
+                                with _pending_ops_lock:
+                                    _inflight_ops.pop(sid, None)
+                                break
+                        if compact_why:
+                            _say_compact_refusal(sid, compact_why, qid=_op_qid(op))
+                            refused = True
+                            said = True
                     elif op[0] == "command":
                         # a typed slash command fires ALONE as its own fresh top-level prompt — folded into a
                         # send batch (or forwarded mid-turn) it reaches the model as text instead of executing
@@ -37474,12 +37727,8 @@ def _apply_pending_ops(now=None):
                         else:
                             refused = _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op)) is False
                     elif op[0] == "compact":
-                        if be is not None and be is _codex():
-                            _refuse_codex_slash(be, sid, "/compact")   # a parked battery click on a Codex lane: the same refusal (2026-09-19)
-                            refused = True
-                            said = True
-                        else:
-                            refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315)
+                        refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315); a
+                        #                                                      backend with the verb took the native arm above (2026-09-19)
                     elif op[0] == "model":
                         be.set_model(sid, op[1])
                     elif op[0] == "effort":
@@ -37538,8 +37787,9 @@ def _apply_pending_ops(now=None):
                         # the backend HAS a turn-opening op: its cue, the hold and the end of this pass follow
                         # regardless of `took` (which is always True here — a ✕ on an in-flight op is refused and
                         # these kinds are never replaced in place)
-                        if op[0] == "compact" or op[1].strip().split()[0] == "/compact":
-                            _mark_compacting(sid)         # a TYPED /compact gets the same instant cue as the button's op
+                        if not is_compact and (op[0] == "compact" or op[1].strip().split()[0] == "/compact"):
+                            _mark_compacting(sid)         # a TYPED /compact gets the same instant cue as the button's op; a native
+                                                          # compaction's cue is its backend's bracket, which compacting() publishes (2026-09-19)
                         _after_turn_opening(be, sid, _pending_ops.get(sid) or [])
                         break                             # its turn / compaction must end before anything behind it fires
                     if op[0] in ("effort", "fast") and refused:
@@ -40213,6 +40463,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # 2026-06-24). Mirrors the feed, which gates the same _api_error on `not who_working` and treats awaiting
     # as a working flavor (build_feed).
     aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
+    _launch_no_retry = False   # the launch-error card below is one nothing retries (a failed compaction); status apiNoRetry
     if aerr:
         # While the session is still blocked on THIS error, the live card below carries the same record
         # with the buttons and countdown — drop the durable note so the error doesn't show twice. The
@@ -40241,6 +40492,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
             events.append({"kind": "apiError",
                            "text": _lerr["text"] if _lerr.get("dep") or _codex_lane else
                            "This session's claude process could not start — %s" % _lerr["text"]})
+            # a notice nothing retries (SessionBackend.launch_error's noRetry: the Codex compaction bracket's end
+            # notices, 2026-09-21): the card wears the API-error dress, whose Retry press sent the literal word into
+            # the thread as a turn and compacted nothing, so the status says to draw it with no Retry and no countdown
+            _launch_no_retry = bool(_lerr.get("noRetry"))
     # TOC ledger: archiver headline (the tab tooltip's Summary; the bullets list retired 2026-07-07 —
     # its in-chat readers were deleted with the ledger box, and the tooltip reads recent/tree instead)
     arch = jd.load_archive(sid) or {}
@@ -40418,6 +40673,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # tab), and never auto-retried: a refusal is deterministic on the same input, so a
                   # retry re-sends the same prompt and manufactures the same refusal (12/12 in the
                   # audited storm) — rewrite the ask or drop the thread (the user 2026-08-15)
+                  # the blocking notice is one nothing retries (a compaction that failed on the backend's side, the
+                  # launch error's noRetry): renderApiError draws no Retry, no Stop-all and no retrying-soon meta for
+                  # it, the apiRefusal precedent read off the live status (review find, 2026-09-21)
+                  "apiNoRetry": _launch_no_retry,
                   "apiRefusal": bool(aerr and aerr.get("refusal")),
                   # the FEED's per-session needs-you verdict, on the STATUS so the tab strip's rule reads it
                   # (tab-state.ts RING_TEST, the Waiting-on-you ring widget): True when the last feed build filed a card of this session
@@ -51697,7 +51956,8 @@ def _chat_full_reason(pc, pf, pl, change_from, total):
     boot's ordinary interleaving in either order (the cycle's cold build of the watched tab beside the attach handshake's
     targeted push): a strand's repair, the sender's list the OLDER one whichever whole-frame writer landed inside its
     build, a racing seed or the non-connect cycle's every-client write, whose seed popped the baseline and marked the sid
-    so that every base holder is served the full until the next cycle's write (tests 28, 28b and 40 of the
+    so that every base holder is served the full until the write of the next cycle whose loop read the baseline absent,
+    a cycle that sent tails leaving the mark standing (tests 27, 28, 28b and 40 of the
     skeleton-reconnect module); since 2026-09-21 with the baseline read before the build, the detector's accepted false
     positive, the sender's list the NEWER one whichever writer landed inside, which marks the sid with no client stale, a
     row per client where a tail went before, and the next cycle's full once more only when the frame moved or the repost
@@ -55039,13 +55299,15 @@ def _push(targets, connect=False, live_map=None):
                 # card the other sender had just filled, and its seed declined, since a present baseline is never touched;
                 # the map held the newer list, the client the older card, and the next cycle diffed equal lists, no row, no
                 # mark. Read here, the same seed reads as absent-then-different at the seed step, the detector's road (a pop
-                # and a mark; the next cycle's full repairs every base holder). The cost, and where it lands: a sender that
-                # read the baseline absent and had ANY whole-frame writer land during its build, a racing seed or the
-                # non-connect cycle's write, sends change-0 fulls where it sent tails, then its seed pops and marks, and the
-                # next cycle sends every base holder a change-0 full again, a changeAt0 row each, when the frame moved or
-                # the repost window (_DEDUP_REPOST_S) passed since the sender's full; unchanged within the window, that
-                # second full dedups on the client's slot and files no row. The faces, partitioned in _seed_chat_baseline's
-                # docstring and named here, the boot's ordinary interleaving in either order (the cycle's cold build of the
+                # and a mark; a cycle that sent tails leaves the mark, and the next cycle whose loop reads the baseline
+                # absent sends every base holder the full and clears it with its write). The cost, and where it lands: a
+                # sender that read the baseline absent and had ANY whole-frame writer land during its build, a racing seed
+                # or the non-connect cycle's write, sends change-0 fulls where it sent tails, then its seed pops and marks,
+                # and the next cycle whose loop reads the baseline absent sends every base holder a change-0 full again, a
+                # changeAt0 row each, when the frame moved or the repost window (_DEDUP_REPOST_S) passed since the sender's
+                # full; unchanged within the window, that second full dedups on the client's slot and files no row. The
+                # faces, partitioned in _seed_chat_baseline's docstring and named here, the boot's ordinary interleaving in
+                # either order (the cycle's cold build of the
                 # watched tab beside the attach handshake's targeted push, the transcript moving between the two reads):
                 # the sender's list the OLDER one is the strand face, whichever writer landed inside, a racing seed (tests
                 # 28 and 28b) or this cycle's write (test 40), and the fulls replace a silent stale card; the sender's list
@@ -55156,22 +55418,43 @@ def _push(targets, connect=False, live_map=None):
                     if _claimed:
                         _chat_inflight_done(s["sid"])
                     continue
-                if _empty_build_regresses(m, _prev_chat_events.get(m["id"]), marked=m["id"] in _chat_baseline_raced):
-                    # a failed read, not a conversation that emptied (see _empty_build_regresses): the last cached
-                    # build stands in — same events, so the diff below finds nothing to send — or, with nothing
-                    # cached, this cycle sends nothing for the sid; the file's return busts the stat key and rebuilds.
-                    # A sid the detector MARKED (its baseline popped, every base holder holding content) is one whose
-                    # clients hold content too (2026-09-21): with nothing cached the `continue` skips the write block
-                    # below, so the mark stands and the baseline stays absent for the next cycle's repair, where the
-                    # empty frame used to reach every base holder, counted `empty` with a row each, and the write put []
-                    # over the pop; with a cached hit the stand-in goes to every base holder as a change-0 full (`_seen`
-                    # read absent above) and the write below takes the mark off, a consistent repair from an older
-                    # list, the road the seeded case takes (test 22, test 37 for this road). The note names the count at
-                    # the pop, raised by every whole frame handed under the mark.
-                    _note_empty_build(s["sid"], s.get("path"), _chat_prior_n(m["id"]))
-                    if hit is None:
+                marked = m["id"] in _chat_baseline_raced    # read once: the guard and the road under it see one value (2026-09-21)
+                if _empty_build_regresses(m, _prev_chat_events.get(m["id"]), marked=marked):
+                    # a failed read, not a conversation that emptied (see _empty_build_regresses): with a baseline present,
+                    # the last cached build stands in (the baseline's own events, so the diff below finds nothing to send)
+                    # or, with nothing cached, this cycle sends nothing for the sid; the file's return busts the stat key
+                    # and rebuilds. A sid the detector MARKED (its baseline popped, every base holder holding content) is
+                    # one whose clients hold content too (2026-09-21): the empty frame used to reach every base holder,
+                    # counted `empty` with a row each, and the write put [] over the pop. Under the mark this cycle sends
+                    # nothing for the sid, a cached build or not, and the `continue` skips the write block below, so the
+                    # mark and the absent baseline stand for the next content cycle, whose full repairs every base holder
+                    # (deduping on the slot of a client already showing that list). The cached build is no stand-in under
+                    # the mark (2026-09-21): with the baseline absent it always left as a full to every base holder and
+                    # the write took the mark off, so it REWOUND every holder ahead of it, the shorter face (a targeted
+                    # push under the mark handed every holder a longer list and cached nothing, so the two newest cards
+                    # left every pane until the next content cycle's tail, test 44 of the skeleton-reconnect module) and
+                    # the same-length face (the cache kept an older list with a card unfilled while a client showed it
+                    # filled, test 45); a compare against the mark's count sees length, not content, and closes neither.
+                    # The connect push runs this guard too, a third road under the mark (2026-09-21): a connect target for
+                    # a marked sid whose read came back empty gets no frame for it before the next content cycle, nothing
+                    # cached or a cached build alike, where the kernel before the mark sent it an empty noBase full at
+                    # once and the stand-in road handed it the cached list (test 46). The seeded case's road is not this
+                    # one and stands as it was: a present baseline takes the stand-in (test 22), and a targeted push's
+                    # tail that left both clients ahead of a seeded baseline sends the stand-in as a lastGone full at both
+                    # heads, pre-existing and outside this change. The note names the longest list some client was
+                    # handed whole under the mark (_chat_prior_n), a minimum, not what every holder has. Under the mark
+                    # with a cached build, that build still rides `chat_sessions` (2026-09-21): the list is the one
+                    # source of the feed frame's `ledgers`, which the Outline pane replaces wholesale on every feed
+                    # frame, so a `continue` that skipped the append made the session's Outline row vanish for the
+                    # empty cycle and return with the next content cycle, a payload change driven by a failed read
+                    # (test 51). No frame goes and the write block is still skipped; the no-cache arm has no build to
+                    # append, as before.
+                    _note_empty_build(s["sid"], s.get("path"), _chat_prior_n(m["id"]), marked=marked)
+                    if hit is None or marked:
+                        if hit is not None:
+                            chat_sessions.append(hit[1])     # the Outline row, from the cached build's ledger
                         if _claimed:
-                            _chat_inflight_done(s["sid"])
+                            _chat_inflight_done(s["sid"])    # the claim is released here: the loop's tail is skipped (test 52)
                         continue
                     m, ms, _rec = hit[1], hit[2], hit[3]   # the stand-in payload keeps its own dependency record
                 else:
@@ -55244,7 +55527,9 @@ def _push(targets, connect=False, live_map=None):
                     # change 0 against a held base and re-sent the whole session: 42 such fulls in the three minutes after
                     # a restart with 22 sessions, none after. The seed reads the map back against `_seen`, so a racing
                     # whole-frame sender's list is popped, not kept, and the sid marked: no seed, this road's least of all (a
-                    # needFull, an idle-prefetch release), re-seeds it before the next cycle's full has repaired every client.
+                    # needFull, an idle-prefetch release), re-seeds it before the repair: the full to every base holder from
+                    # the next cycle whose loop reads the baseline absent, whose write clears the mark (a cycle that sent
+                    # tails leaves it standing, test 27 of the skeleton-reconnect module).
                     # A build handed to no client, every target a skeleton holder (a status frame each) or withheld, seeds
                     # nothing (2026-09-21): a list no client holds is no lower bound on any base holder. Delivery is read
                     # off the loop's own ledger, written where each client's echat entry is, not off the clients' bases
@@ -55802,8 +56087,10 @@ def _push_session_now(sid):
         # a PRESENT baseline, so this push diffed its older list against the newer one, sent the difference as tails that
         # regressed the card the other sender had just filled, and its seed declined; the map held the newer list, some
         # client the older card, and the next cycle diffed equal lists, no row, no mark. Read here, that seed reads as
-        # absent-then-different at the seed step, the detector's road: a pop, a mark, and the next cycle's full to every
-        # base holder. The cost, and its false positive, are stated at the pusher's read and partitioned in the seed's
+        # absent-then-different at the seed step, the detector's road: a pop, a mark, and the full to every base holder
+        # from the next cycle whose loop reads the baseline absent, which clears the mark with its write (a cycle that
+        # sent tails leaves it standing, test 27). The cost, and its false positive, are stated at the pusher's read and
+        # partitioned in the seed's
         # docstring: the fulls land wherever a sender that read the baseline absent had ANY whole-frame writer land during
         # its build, a racing seed or the cycle's write, and the face follows the sender's list's order (the boot's
         # ordinary interleaving, in either order: the cycle's cold build of the watched tab beside this push from the
@@ -55839,11 +56126,13 @@ def _push_session_now(sid):
         #   the first is the cold build; a boot where a history ask came first would read a warm first (round four, 2026-09-15)
         if not m:
             return
-        if _empty_build_regresses(m, _prev_chat_events.get(sid), marked=sid in _chat_baseline_raced):
+        marked = sid in _chat_baseline_raced
+        if _empty_build_regresses(m, _prev_chat_events.get(sid), marked=marked):
             # a marked sid's clients hold content though its baseline is popped (2026-09-21): no empty frame to any base
-            # holder, the mark and the absent baseline stand for the cycle's repair; the note names the count at the pop,
-            # raised by every whole frame handed under the mark
-            _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None), _chat_prior_n(sid))
+            # holder, the mark and the absent baseline stand for the cycle's repair; the note names the longest list
+            # some client was handed whole under the mark, a minimum for what the clients hold (_chat_prior_n)
+            _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None), _chat_prior_n(sid),
+                              marked=marked)
             return                                   # the periodic pusher owns the sid until content returns
         change_from = _chat_diff(_seen, m.get("events") or [])   # against the baseline read before the build (above)
         led_changed = m.get("ledger") != _prev_chat_ledger.get(sid)
@@ -61950,7 +62239,7 @@ sdk:"romp's SDK backend, the machinery that actually runs your sessions, hit an 
 sync:"romp moved commits between your machines by itself: a push to a remote, a pull from one, or an ask that a peer fast-forward itself. Successes are logged as well as failures, so this is the record of what romp did to your machines; the network panel shows a sync while it is still running",
 locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
 cleared:"a /clear in a session dropped still-open cards at the boundary; Undo on the feed restores them",
-refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults. Or a slash command sent to a session that has no such command (a Codex session has no /compact): nothing was sent, and the entry names it. Or a /clear a Codex session could not run (the fresh conversation could not be started): the entry carries the reason",
+refused:"a setting that could not be saved, or a state file that could not be read. A change you made (a lane or tab setting, a card bell, a lane order) was not saved because romp could not read or write the file that holds it; nothing changed, the entry carries the reason, and the same change can be tried again. Or one of those files could not be read (the last values are shown until it can), or held bytes romp could not parse and was moved aside, so what it held starts over as defaults. Or a slash command sent to a session that has no such command (a Codex session has no /fast): nothing was sent, and the entry names it. Or a /clear or /compact a Codex session could not run (the fresh conversation or the compaction could not be started): the entry carries the reason",
 undelivered:"something you sent never reached a session: the kernel it was addressed to has no session by that id, which on a board showing more than one machine means the pane addressed the wrong one. Nothing was delivered. Your text is kept verbatim in undelivered.jsonl under ~/.local/state/romp"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
 // STABLE container; only classes flip on click, so the buttons stay click-safe.
@@ -68691,6 +68980,12 @@ class Handler(BaseHTTPRequestHandler):
                     # the WS op's gate: a stop the backend refused (nothing in flight) paints nothing
                     if be.interrupt(sid) is not False:          # Esc/stop AND settle idle (in the backend)
                         _interrupt_clicked[str(sid)] = time.time()  # chip → "interrupting" NOW, same as the WS op
+                    elif _backend_compacting(be, sid):
+                        # …a refusal under a compaction is the WS arm's compacting toast (review find, 2026-09-21):
+                        # said in the state's words, never answered ok, so `romp interrupt` prints it and exits non-zero
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            "the stop was not delivered: %s is compacting its conversation, and a compaction runs to its end"
+                            % who}), "application/json")
                     elif be.busy(sid):
                         # …and a refusal WITH work in flight is a stop that did not land (the WS arm's toast):
                         # said, never answered ok, so `romp interrupt` prints this and exits non-zero — the
@@ -68708,6 +69003,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True, "deferred": True}), "application/json")
                 else:
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
+                    _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue, told to the chat panes (2026-09-21)
                     be.kill(sid)
                     _record_death(sid, int(time.time()), "kill")
                     _comment_kill_all(sid, be)   # its comment threads must not outlive it (the WS endSession twin)

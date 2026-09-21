@@ -161,11 +161,12 @@ class CodexClearRoute(_Base):
             self.assertEqual(self.gate_calls, [SID], "ONE drive-op gate read, the /effort arm's cost")
             self.assertNotIn(SID, km._pending_ops)
         self.be.calls.clear()
-        # not this head: "/compact" is a slash command the guard refuses (the known set); "/clearx" is slash-shaped but
-        # outside it, so it is prose to a Codex session like "please /clear": the route says nothing and the caller sends it
+        # not this head: "/fast" is a slash command the guard refuses (the known set; /compact left it for the native
+        # compaction, tests/test_codex_compact_route.py); "/clearx" is slash-shaped but outside the set, so it is prose to a
+        # Codex session like "please /clear": the route says nothing and the caller sends it
         state = {}
-        self.assertTrue(km._route_meta_command(self.be, SID, "/compact", self.client, state=state))
-        self.assertIn("has no /compact", state["refused"])
+        self.assertTrue(km._route_meta_command(self.be, SID, "/fast", self.client, state=state))
+        self.assertIn("has no /fast", state["refused"])
         for text in ("/clearx", "please /clear"):
             state = {}
             self.assertFalse(km._route_meta_command(self.be, SID, text, self.client, state=state), text)
@@ -256,7 +257,7 @@ class CodexClearRoute(_Base):
     def test_the_palette_lists_the_two_heads(self):
         names = [c["name"] for c in km._CODEX_COMMANDS]
         self.assertEqual(names[:2], ["clear", "new"], "the composer's '/' list offers what the route now takes")
-        self.assertEqual(set(km._CODEX_SLASH_HANDLERS), {"/clear", "/new"})
+        self.assertEqual(set(km._CODEX_SLASH_HANDLERS), {"/clear", "/new", "/compact"}, "the native compaction registered the third head (2026-09-19)")
         self.assertIs(km._CODEX_SLASH_HANDLERS["/clear"], km._CODEX_SLASH_HANDLERS["/new"], "one operation, two words")
 
 
