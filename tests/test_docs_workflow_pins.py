@@ -31,17 +31,24 @@ class DocsBuildOnPullRequests(unittest.TestCase):
         self.assertTrue(push)
         self.assertEqual(sorted(paths), sorted(ln.strip()[2:] for ln in push.group(1).splitlines()), "the two triggers name one input set")
 
+    @staticmethod
+    def _expr(capture):
+        """The condition alone: a trailing comment on the `if:` line is not the condition (a guard moved into the comment
+        kept these pins green, the contributor's post-merge find of 2026-09-21)."""
+        return re.sub(r"\s+#.*$", "", capture).strip()
+
     def test_a_pull_request_run_stops_after_the_build(self):
         up = re.search(r"^      - uses: actions/upload-pages-artifact@v\d+\n        if: (.*)\n", self.src, re.M)
-        self.assertTrue(up, "the artifact upload carries no condition: a pull request would upload the site")
-        self.assertIn("github.event_name != 'pull_request'", up.group(1))
+        self.assertTrue(up, "the upload step followed by its condition was not found: a pull request would upload the site, or the step moved")
+        self.assertIn("github.event_name != 'pull_request'", self._expr(up.group(1)), "the upload's CONDITION stands a pull request down (a comment does not)")
         dep = re.search(r"^  deploy:\n    needs: build\n(?:    #.*\n)*    if: (.*)\n", self.src, re.M)
-        self.assertTrue(dep, "the deploy job's condition moved: re-anchor this pin")
-        self.assertIn("github.event_name != 'pull_request'", dep.group(1), "a pull request never publishes")
+        self.assertTrue(dep, "the deploy job followed by its condition was not found: re-anchor this pin")
+        self.assertIn("github.event_name != 'pull_request'", self._expr(dep.group(1)), "a pull request never publishes (the condition, not a comment)")
 
     def test_a_pull_requests_run_keys_on_its_own_ref_and_a_push_keeps_the_pages_group(self):
-        self.assertIn("group: ${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.ref) || 'pages' }}", self.src)
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", self.src)
+        # anchored at the line's start and end: the expression in a comment above a shared group is not the setting
+        self.assertRegex(self.src, r"(?m)^  group: " + re.escape("${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.ref) || 'pages' }}") + r"$")
+        self.assertRegex(self.src, r"(?m)^  cancel-in-progress: " + re.escape("${{ github.event_name == 'pull_request' }}") + r"$")
 
 
 class OrphanPagesFailTheStrictBuild(unittest.TestCase):
