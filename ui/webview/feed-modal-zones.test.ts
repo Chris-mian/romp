@@ -88,7 +88,7 @@ test("an OPEN node no longer shows a creation 'why' line (removed 2026-06-27 —
   assert.doesNotMatch(CSS, /\.ftree-why/);
 });
 
-test("modal NEEDS YOU node: a 'Needs you' chip and a '?' in a ring, both in the category's colour; tooltip says 'marked blocked' (the user 2026-06-17; the colour the category's since 2026-09-20)", () => {
+test("modal NEEDS YOU node: a 'Needs you' chip and a '?' in a ring, both in the category's colour; tooltip says 'filed under Needs you' (the user 2026-06-17; the colour the category's since 2026-09-20)", () => {
   // rolled-up ancestors (qderived) say "Needs you inside"; the actual ask says "Needs you" (the user 2026-07-11; the word the category's since 2026-09-20)
   assert.match(FEED, /meta\.textContent = node\.status === "question" \? \(node\.qderived \? "Needs you inside" : "Needs you"\)/);
   assert.doesNotMatch(FEED, /"needs you" :/);                                  // the old amber label is gone
@@ -99,6 +99,6 @@ test("modal NEEDS YOU node: a 'Needs you' chip and a '?' in a ring, both in the 
   assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*border: 1\.5px solid var\(--st-needs-bg\)/);
   assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*color: var\(--st-needs-bg\)/);
   assert.doesNotMatch(CSS, /\.st-question \.ftree-mark \{[^}]*var\(--err\)/, "no red on a question mark");
-  // the mark/time tooltip on a node blocked in its OWN right says "marked blocked", not "checked off"
-  assert.match(FEED, /node\.status === "question" && !node\.qderived \? "jump to where this got marked blocked"/);
+  // the mark/time tooltip on a node that needs you in its OWN right says "filed under Needs you", not "checked off"
+  assert.match(FEED, /node\.status === "question" && !node\.qderived \? "jump to where this was filed under Needs you"/);
 });

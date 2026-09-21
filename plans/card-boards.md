@@ -36,7 +36,7 @@ generic model has to reach:
   Working, never a column (`col = "awaiting"` at `:41662`, folded into `had_awaiting`). The renderer's
   `AskItem.column` is typed to the same three strings (`ui/webview/feed.ts:102`), `askColumn()`
   (`:485`) maps them to the local keys `asks`, `needsInput`, `completed`, and `ensureCols` builds the
-  columns from the literal table `["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"],
+  columns from the literal table `["asks", "Working", "working"], ["needsInput", "Needs you", "blocked"],
   ["completed", "Completed", "completed"]` (`:4782`; a second copy for the focused-session section at
   `:5020`). The user docs say the same three (`docs/guide.md:319`).
 - **Every kernel-made card family sets its column by hand.** The provisional placeholder

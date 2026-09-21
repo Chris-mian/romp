@@ -27,7 +27,7 @@ test("kernel flatten rolls a blocked descendant up to every non-done ancestor an
 });
 
 test("the card checklist ⏸ tooltip points down the tree on a rolled-up ancestor", () => {
-  assert.match(FEED, /if \(s\.status === "question"\) mark\.title = s\.qderived \? "a sub-goal inside is blocked — expand to find it" : "blocked — needs you";/);
+  assert.match(FEED, /if \(s\.status === "question"\) mark\.title = s\.qderived \? "a sub-goal inside needs you: expand to find it" : "needs you";/);
 });
 
 test("the modal keeps Done/Follow-up OFF rolled-up ancestors and labels them Needs you inside", () => {
@@ -35,8 +35,8 @@ test("the modal keeps Done/Follow-up OFF rolled-up ancestors and labels them Nee
   // resolve the whole subtree; Follow up would file the answer off-target) — widened to open subs 2026-07-20
   assert.match(FEED, /if \(!repeat && node\.status !== "done" && !node\.cleared && !node\.qderived && node\.kind !== "handoff"\) \{/);
   assert.match(FEED, /node\.qderived \? "Needs you inside" : "Needs you"/);
-  assert.match(FEED, /node\.qderived \? "a sub-goal inside is blocked — the ⏸ below is the ask" : "blocked — needs you"/);
+  assert.match(FEED, /node\.qderived \? "a sub-goal inside needs you: the ⏸ below is the ask" : "needs you"/);
   // nav semantics: a rolled-up ancestor is NOT "resolved" (its anchor is its mint, not a block op)
   assert.match(FEED, /const resolved = \(node\.status === "done" \|\| \(node\.status === "question" && !node\.qderived\)\) && node\.auth !== "open";/);
-  assert.match(FEED, /node\.status === "question" && !node\.qderived \? "jump to where this got marked blocked"/);
+  assert.match(FEED, /node\.status === "question" && !node\.qderived \? "jump to where this was filed under Needs you"/);
 });

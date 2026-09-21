@@ -22,6 +22,7 @@ const FEED_CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webvie
 // the tab strip's own detail moved to the reference (CLAUDE.md "The documentation front pages")
 const REF = fs.readFileSync(path.resolve(process.cwd(), "..", "docs", "reference.md"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+const OUTLINE_CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "fleet-pane.css"), "utf8");
 const RINGS = ["ring-needs-you", "ring-waiting-on-you", "ring-retrying"];
 
 test("the tab wears its ring through the registry's composition, right after the state class, in the one chip helper both tab kinds share", () => {
@@ -119,6 +120,9 @@ test("the reference says what the Needs you ring means, when it shows (idle, wai
   assert.match(REF, prose("A ring switched off leaves the tab with its dot; the small dot on a folded group's header and the phone's picker follow the same switches."));
   assert.match(REF, prose("the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name"), "the strip paragraph's Tab widgets sentence");
   assert.match(REF, prose("One colour, the Needs you colour, marks the category everywhere"), "the one-colour sentence");
+  // the tag overview's paragraph (moved into the reference by the docs restoration) names the chip Needs you, so a later move cannot drop the word again (PR 1935 round two, M1)
+  assert.match(REF, prose("with the same words and colours: **Needs you** when the feed shows one of the session's cards under Needs you or the session is stopped on a prompt"));
+  assert.match(REF, prose("the **Needs you** chip follows the feed, one refresh behind it at most"));
 });
 
 test("the phone's session picker scrapes the Needs you ring's class off the desktop strip and paints it on the row and the current-session chip, so it follows the ring's switch for free", () => {
@@ -129,4 +133,10 @@ test("the phone's session picker scrapes the Needs you ring's class off the desk
   assert.match(KERNEL, /"\.mrow\.ask\{border-left:3px solid var\(--st-needs-bg,#d946ef\);padding-left:9px\}"/, "a magenta bar at the row's left edge, in the one Needs you token");
   assert.match(KERNEL, /"#mcur\.ask\{border-color:var\(--st-needs-bg,#d946ef\);border-style:dashed\}"/, "the chip's border takes the dashed magenta ring");
   assert.ok(KERNEL.indexOf('"#mcur.colored{') < KERNEL.indexOf('"#mcur.ask{'), "after #mcur.colored, so the ring wins the border over the identity colour at equal specificity");
+});
+
+test("the outline pane's Needs you mark wears the category's colour: the tree row's ⏸ and the hover card's sub-list mark, never the error red (PR 1935 round two)", () => {
+  assert.match(CSS, /\.ledger-tnode\.blocked \.ledger-tmark \{ border-color: var\(--st-needs-bg\); color: var\(--st-needs-bg\); \}/);
+  assert.doesNotMatch(CSS, /\.ledger-tnode\.blocked \.ledger-tmark \{[^}]*--err/, "the error red is the hard stop's");
+  assert.match(OUTLINE_CSS, /\.fl-hover-sub\.blocked \.m\{color:var\(--st-needs-bg,#d946ef\)\}/);
 });

@@ -38,7 +38,7 @@ const EXACT: Record<string, number> = {
   // 12 since 2026-09-19: the section heads' hard-coded #333 top rule left with the titled-divider dress (the segments wear var(--hairline))
   "gear.css": 12,
   "strip.css": 8,
-  "fleet-pane.css": 9,
+  "fleet-pane.css": 8,   // 9 until 2026-09-21: the hover card's Needs you mark resolved its red through --st-needs-bg (plans/needs-you.md), the literal now its var() fallback
   "timeline-pane.css": 10,
 };
 

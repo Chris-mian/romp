@@ -1999,7 +1999,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
       // 2026-07-11): an ancestor of a blocked sub wears the ⏸ too, so the block is visible even while the
       // branch is collapsed — its tooltip points DOWN to the real ask.
       mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "";
-      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside is blocked — expand to find it" : "blocked — needs you";
+      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside needs you: expand to find it" : "needs you";
       const txt = el("span", "fcheck-text"); txt.textContent = s.text; linkifyPrRefs(txt, prRepoOf(it.sid));
       row.append(tri, mark, txt);
       if (s.cleared) row.appendChild(clearedTag());   // the strike alone doesn't say WHY — see CLEARED_TIP
@@ -3252,7 +3252,7 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   // "jump to where this got checked off" on an item the agent hasn't crossed off (the user 2026-07-01).
   // Defense-in-depth for the kernel's _agent_open_set fix: correct even if a stale build serves status:"done".
   // ...and a rolled-UP question ancestor (qderived) is not itself resolved: the block landed on a
-  // descendant, so its own anchor is its mint, and the hover must not claim "marked blocked" here.
+  // descendant, so its own anchor is its mint, and the hover must not claim "filed under Needs you" here.
   const resolved = (node.status === "done" || (node.status === "question" && !node.qderived)) && node.auth !== "open";
   // time-nav fallback for the work jump: where it resolved (mt) for resolved nodes, the newest
   // activity (last) for open ones — matching the newest-seg work anchor (the user 2026-07-20)
@@ -3269,8 +3269,8 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
     ev.stopPropagation(); focusEcho(navSid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: node.promptAnchorUuid ?? null });
   };
   if (!wire) return goWork;
-  // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
-  const workTitle = node.status === "question" && !node.qderived ? "jump to where this got marked blocked"
+  // tooltip names the destination by status: a node that needs you was "filed under Needs you", a done node "checked off"
+  const workTitle = node.status === "question" && !node.qderived ? "jump to where this was filed under Needs you"
                   : resolved ? "jump to where this got checked off" : "jump to the latest work on this";
   const linkHover = (group: HTMLElement[]) => {
     const on = () => group.forEach((g) => g.classList.add("lz-hl"));
@@ -3327,7 +3327,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   line.appendChild(tri);
   const mark = el("span", "ftree-mark"); mark.textContent = nodeMark(node); line.appendChild(mark);
   // blocked rolls UP (kernel flatten, the user 2026-07-11): a rolled-up ancestor's ⏸ says the block is below
-  if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside is blocked — the ⏸ below is the ask" : "blocked — needs you";
+  if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside needs you: the ⏸ below is the ask" : "needs you";
   const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; linkifyPrRefs(txt, prRepoOf(it.sid)); line.appendChild(txt);
   if (node.cleared) line.appendChild(clearedTag());   // same one-word story as the card checklist
   if (node.parked && node.parked.n && !node.cleared) line.appendChild(parkedTag(node.parked.n));   // and the parked hint

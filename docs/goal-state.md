@@ -80,7 +80,7 @@ Sort events by evidence time (`ev_t`; arrival `at` breaks ties) and replay:
 - **Agent override**: an open item on the agent's own to-do list pins the
   card in Working over any judge done; releases the instant it's checked
   off.
-- **Column ladder**: Cleared > Blocked > reply-in-flight (Working) >
+- **Column ladder**: Cleared > Needs you > reply-in-flight (Working) >
   Completed-and-settled > Working. **Settled** means the ruled-done goal
   is no longer the session's focus (or the session closed). **Sticky**
   means once shown Completed, a mere re-touch cannot flap it back; only a
