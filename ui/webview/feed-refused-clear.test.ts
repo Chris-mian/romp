@@ -27,5 +27,5 @@ test("client: the err handler releases the ids a refused clear names and repaint
 
 test("kernel: the clears-log refusal names the request the way _refuse_drive's frame does", () => {
   assert.match(KERNEL, /"type": "err", "sid": "", "title": title, "text": text, "op": op or "",\s+"itemId": _ids\[0\] if _ids else "", "itemIds": _ids\}/);
-  assert.ok(KERNEL.includes('_gesture_store_refusal(client, "undo", _undo_clear(), op="undoClear")'), "an undo names its op and no ids");
+  assert.ok(KERNEL.includes('_gesture_store_refusal(client, "undo", _undo_clear(), op=str(msg.get("type") or ""))'), "an undo names its op (the request's type) and no ids");
 });

@@ -75,7 +75,7 @@ test("one click, one Undo batch on the client AND on the kernel, through the gro
 test("the kernel takes the batch as one cleared.jsonl stamp and drops every member's citations", () => {
   const op = KERNEL.slice(KERNEL.indexOf('msg.get("type") == "askClearMany"'), KERNEL.indexOf('msg.get("type") == "noticeAction"'));   // the next op in the chain (the quarantine op left 2026-09-19)
   assert.match(op, /_ids = \[str\(i\) for i in msg\["itemIds"\] if i\]/);
-  assert.match(op, /_skipped = _clear_all\(_ids\)\s+_gesture_store_refusal\(client, "clear", _skipped, ids=_ids, op="askClearMany"\)/, "one _clear_all call = one batch stamp, its verdict bound (the second review of PR 1967: the refusal names the batch)");
+  assert.match(op, /_skipped = _clear_all\(_ids\)\s+_gesture_store_refusal\(client, "clear", _skipped, ids=_ids, op=str\(msg\.get\("type"\) or ""\)\)/, "one _clear_all call = one batch stamp, its verdict bound (the second review of PR 1967: the refusal names the batch)");
   assert.match(op, /_subtree_item_ids\(_i\)/, "the citation drop covers every member's subtree");
   assert.match(op, /_send_to_app\("chat", \{"type": "dropCitation", "itemId": _ids\[0\], "itemIds": _gone\}\)/);
   assert.match(op, /_mark_views_dirty\(\)/);

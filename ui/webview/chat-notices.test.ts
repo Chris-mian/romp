@@ -104,9 +104,10 @@ test("a refused act re-arms the row the kernel's reply names, with the reason in
   const KERNEL = fs.readFileSync(path.join(UI, "..", "..", "kernel", "kernel.py"), "utf8");
   assert.match(KERNEL, /def _gesture_store_refusal\(client, gesture, skipped, ids=None, op=""\):/);
   assert.match(KERNEL, /"itemId": _ids\[0\] if _ids else "", "itemIds": _ids\}\)\)/);
-  for (const arm of ['_gesture_store_refusal(client, "clear", _skipped, ids=[str(msg["itemId"])], op="askClear")',
-                     '_gesture_store_refusal(client, "clear", _skipped, ids=_ids, op="askClearMany")',
-                     '_gesture_store_refusal(client, "drop", _skipped, ids=[str(msg["nodeId"])], op="nodeOverride")']) assert.ok(KERNEL.includes(arm), arm);
+  // the op is the request's own type (a pin elsewhere splits the dispatcher's source on the quoted op name, so no arm repeats its literal)
+  for (const arm of ['_gesture_store_refusal(client, "clear", _skipped, ids=[str(msg["itemId"])], op=str(msg.get("type") or ""))',
+                     '_gesture_store_refusal(client, "clear", _skipped, ids=_ids, op=str(msg.get("type") or ""))',
+                     '_gesture_store_refusal(client, "drop", _skipped, ids=[str(msg["nodeId"])], op=str(msg.get("type") or ""))']) assert.ok(KERNEL.includes(arm), arm);
   assert.equal((KERNEL.match(/if LEDGER_KEY not in _skipped/g) || []).length, 2, "askClear and nodeOverride keep the citation on a refusal...");
   assert.ok(KERNEL.includes("if _ids and LEDGER_KEY not in _skipped:"), "...and so does the batch clear");
 });

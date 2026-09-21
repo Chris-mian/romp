@@ -41282,7 +41282,7 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
         if key == LEDGER_KEY:
             # the clears log itself refused the write (the second executed review of PR 1935, 2026-09-21): no session to name, and an account per gesture, since in every
             # shape nothing at all changed on disk (a clear's rows never landed, so no node was flagged either). The frame names the REQUEST
-            # (`op`, the batch's `itemIds`, the first as `itemId`; the second review of PR 1967, 2026-09-21): the feed releases the click's suppression of those cards
+            # (`op`, the request's own type, so no arm repeats its literal; the batch's `itemIds`, the first as `itemId`; the second review of PR 1967, 2026-09-21): the feed releases the click's suppression of those cards
             # and repaints them, the chat re-arms the row's buttons, the way _refuse_drive's frame names the post it answers.
             if gesture == "undo":
                 title = "That undo did not land"
@@ -70576,7 +70576,7 @@ class Handler(BaseHTTPRequestHandler):
             # the clear archives it out of the live store, and drop a chip citing ANY of those nodes.
             _gone = _subtree_item_ids(str(msg["itemId"]))
             _skipped = _clear_ask(msg["itemId"])
-            _gesture_store_refusal(client, "clear", _skipped, ids=[str(msg["itemId"])], op="askClear")
+            _gesture_store_refusal(client, "clear", _skipped, ids=[str(msg["itemId"])], op=str(msg.get("type") or ""))
             if LEDGER_KEY not in _skipped:     # a clear the log refused changed nothing, so the composer's citation stays too (the second review of PR 1967, 2026-09-21)
                 _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})
             _mark_views_dirty()                # cleared.jsonl is invisible to the fleet sig → dirty-rebuild now
@@ -70591,7 +70591,7 @@ class Handler(BaseHTTPRequestHandler):
             for _i in _ids:
                 _gone.extend(x for x in _subtree_item_ids(_i) if x not in _gone)
             _skipped = _clear_all(_ids)
-            _gesture_store_refusal(client, "clear", _skipped, ids=_ids, op="askClearMany")
+            _gesture_store_refusal(client, "clear", _skipped, ids=_ids, op=str(msg.get("type") or ""))
             if _ids and LEDGER_KEY not in _skipped:   # (as askClear: a refused batch cleared nothing)
                 _send_to_app("chat", {"type": "dropCitation", "itemId": _ids[0], "itemIds": _gone})
             _mark_views_dirty()
@@ -70642,7 +70642,7 @@ class Handler(BaseHTTPRequestHandler):
             elif msg.get("op") == "clear":
                 _gone = _subtree_item_ids(str(msg["nodeId"]))
                 _skipped = _clear_all([str(msg["nodeId"])])
-                _gesture_store_refusal(client, "drop", _skipped, ids=[str(msg["nodeId"])], op="nodeOverride")   # a SUB-goal: its own account
+                _gesture_store_refusal(client, "drop", _skipped, ids=[str(msg["nodeId"])], op=str(msg.get("type") or ""))   # a SUB-goal: its own account
                 if LEDGER_KEY not in _skipped:   # (as askClear: a refused drop changed nothing)
                     _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["nodeId"]), "itemIds": _gone})
                 _mark_views_dirty()
@@ -70689,7 +70689,7 @@ class Handler(BaseHTTPRequestHandler):
             _send_to_app("chat", {"type": "dropCitationsAll"})   # every card cleared → drop every composer chip
             _mark_views_dirty()
         elif msg and msg.get("type") == "undoClear":
-            _gesture_store_refusal(client, "undo", _undo_clear(), op="undoClear")
+            _gesture_store_refusal(client, "undo", _undo_clear(), op=str(msg.get("type") or ""))
             _mark_views_dirty()
         elif msg and msg.get("type") == "dismissLane" and msg.get("id"):
             # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). DURABLE since 2026-08-14
