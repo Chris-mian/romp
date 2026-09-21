@@ -53,3 +53,32 @@ The user chose the road on 2026-09-21 (paraphrased): try whatever we judge most 
 - **Road C, the split, stays the long road already planned** (see plans/process-split.md); its gc-specific numbers are read as those stages land.
 
 No collector change ships before the measurement is in and the user has heard the numbers. The measurement never touches the live kernel's settings: it runs a hermetic kernel over a synthetic warmed workload of realistic size (recorded shapes with synthetic content, never real transcripts), capped, with the `/perf` gc block as the instrument, one boot per arm (base, freeze, threshold, both), cold and warm distinguished. Beside it, the lifecycle validation the issue names, as tests that fail before the fix: a frozen decoded record still reclaimed after its owner drops it and the freeze lifts (a weakref probe), correct eviction, clear and replacement of sessions and caches under the freeze, no whole-transcript reread churn, and the gc hook still counting. The fix ships only once the measurement shows the pause moving; if the freeze does not move it, that is reported with the numbers and the road turns to the split.
+
+## The evidence (2026-09-21)
+
+Measured with a hermetic use of the kernel's own event model: a synthetic corpus of 80 sessions (506 MiB, invented content, placeholder uuids, hostname TESTHOST, never a real transcript, in a scratch root, not the repository, not the live state) parsed through `parse_session`, one fresh process per arm, capped, the collector itself the instrument (`time.perf_counter` around `gc.collect` and `gc.get_stats`, the same per-generation timing the gc hook records). The parse builds 5.6 million tracked objects at 3.1 GiB resident, and a base full collection of 2.85 seconds, matched to the live kernel's 2.6 seconds at about 4 GiB.
+
+Warm full-collection pause per arm:
+
+| arm | cold full collection | warm full collection | resident |
+| --- | --- | --- | --- |
+| base | 2857 ms | 2833 ms | 3.16 GiB |
+| threshold (generation two raised to 100000) | 2857 ms | 2801 ms | 3.16 GiB |
+| freeze after load | 2789 ms | 0.1 ms | 3.12 GiB |
+| both | 2845 ms | 0.1 ms | 3.16 GiB |
+
+The threshold leaves the per-collection pause unchanged: raising it changes how often a full collection fires, not what one costs, and each one still pauses about 2.8 seconds, so it cannot fix the interrupt alone. The freeze moves all 5.6 million loaded objects out of the collector's walk, so a warm full collection walks only what was allocated since and costs 0.1 ms, independent of the frozen heap's size. `gc.freeze()` itself cost 0.0 ms (a generation-list pointer move); the only cost at load is the full collection the boot already pays, so the freeze adds no cold-start cost. Resident size is unchanged, because a freeze excludes objects from the cycle walk rather than freeing them. Cold, the load's own first full collection, is about 2.8 seconds for every arm, since the freeze happens after it.
+
+The lifecycle semantics, confirmed with a weakref probe on weakref-able cyclic and acyclic objects: an acyclic object frozen and then dropped by its owner is reclaimed at once by reference counting, freeze or no freeze; a cyclic object frozen while owned and then dropped survives a full collection (frozen objects are not walked) and is reclaimed only after an unfreeze and a collection. This is the reason for the reclamation mechanism below.
+
+## The design: reclamation under the freeze
+
+A whole-heap freeze keeps frozen objects out of every collection, so a cyclic structure that becomes garbage AFTER the freeze (an evicted session's decoded tree, a cleared cache entry, a replaced document) is never reclaimed until an unfreeze and a full collection lift it back into the collector's reach; acyclic garbage still dies by reference counting and needs no unfreeze. The record cache is acyclic today, but the materialized-atom structures beside it are not guaranteed to be, so the freeze cannot assume its released objects are all acyclic.
+
+The mechanism is an unfreeze, a full collection and a re-freeze, keyed on the EVENTS that release frozen objects: an eviction from the record cache, a clear of a session's cards or caches, or a replacement of a loaded document. It runs at the pusher's idle boundary right after such an event, never on a timer (the repository's rule is to key on the event, not approximate it with a period). The re-freeze's own pause is a full collection and is bounded by the live heap; it is therefore paid when no browser is waiting (the idle boundary), and it is measured like the others.
+
+A boot's freeze covers everything loaded before the first serve: the freeze-after-load runs once the initial parse of the alive sessions has settled. Sessions parsed later (a lazy warm parse on a client connect, a resumed fork) are not yet frozen; they join the frozen set at the next re-freeze the release events trigger, so the frozen population tracks the loaded population without a timer.
+
+Visibility: the gc hook keeps counting and timing every collection that does run (the young generations, and any full collection during a re-freeze), and the `/perf` gc block already reports the frozen count from `gc.get_freeze_count()`, so the freeze state is visible beside the collections it removes.
+
+Rollout: default on, with an environment switch to turn the freeze off for a measurement, documented in the reference's state and environment section (not a front page).
