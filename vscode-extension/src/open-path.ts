@@ -9,8 +9,9 @@
 // /sessions list — never the extension host's own cwd, which says nothing about the session.
 import * as path from "path";
 
-/** The path to open. `~` and `~/…` expand against `home` (`~user/…` does not: another user's home, which the
- *  kernel does not expand either); a file:// URI with an empty or localhost authority is its own decoded path;
+/** The path to open. `~` and `~/…` expand against `home` (`~user/…` is left as written: the kernel's
+ *  os.path.expanduser expands a known account's home, but node has no password-database lookup, so the
+ *  extension does not); a file:// URI with an empty or localhost authority is its own decoded path;
  *  an absolute path is normalised; a relative path resolves against `cwd` when one is given, else is returned
  *  as written for the caller to look the session's dir up (needsSessionDir). */
 export function resolveOpenPath(p: string, home: string, cwd?: string | null): string {

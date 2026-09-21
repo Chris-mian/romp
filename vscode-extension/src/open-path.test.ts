@@ -1,5 +1,5 @@
-// A clicked path opens in the editor the way it opens on the web dashboard (the user 2026-09-21: "romp:
-// couldn't open ~/specs/…/postmortem.md"). The webview posts the path AS WRITTEN in the transcript; the
+// A clicked path opens in the editor the way it opens on the web dashboard (the user 2026-09-21, whose `~/`
+// link failed to open in VS Code while the web dashboard opened it). The webview posts the path AS WRITTEN in the transcript; the
 // kernel's own handler expands `~` and resolves a relative path against the session's cwd
 // (kernel.py _resolve_open_path), while the extension's opener handed the raw string to vscode.Uri.file —
 // so a `~/` link (clickable since T351 stage 2, 2026-09-12) and any relative link failed in VS Code with
@@ -15,11 +15,11 @@ const SRC = fs.readFileSync(path.join(process.cwd(), "src", "extension.ts"), "ut
 const HOME = "/home/TESTUSER";
 
 test("~ expands against the REMOTE home; an absolute path passes through", () => {
-  assert.equal(resolveOpenPath("~/specs/TESTSLUG/postmortem.md", HOME), "/home/TESTUSER/specs/TESTSLUG/postmortem.md");
+  assert.equal(resolveOpenPath("~/notes-api/docs/guide.md", HOME), "/home/TESTUSER/notes-api/docs/guide.md");
   assert.equal(resolveOpenPath("~", HOME), "/home/TESTUSER");
   assert.equal(resolveOpenPath("/tmp/TESTHOST/notes.md", HOME), "/tmp/TESTHOST/notes.md");
   assert.equal(resolveOpenPath("/tmp/TESTHOST/a/../notes.md", HOME), "/tmp/TESTHOST/notes.md", "normalised, as path.resolve does");
-  assert.equal(resolveOpenPath("~user/x.md", HOME), "~user/x.md", "another user's home is not expanded (the kernel's rule for `~user`)");
+  assert.equal(resolveOpenPath("~user/x.md", HOME), "~user/x.md", "another user's home is left as written here (the kernel's os.path.expanduser expands a known account's home; node has no password-database lookup, so the extension does not)");
 });
 
 test("a file:// caption link opens its own path, percent-decoded", () => {
