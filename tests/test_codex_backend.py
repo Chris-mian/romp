@@ -3901,8 +3901,8 @@ class NativeCompact(unittest.TestCase):
     bracket standing (no launch_error, no backoff), latching only while the bracket-end counter is unchanged since its
     request went out; busy() reads True under the bracket, so the kernel parks behind it as behind an open turn."""
 
-    def _turned(self):
-        be, fake, tmp = build()
+    def _turned(self, **kw):
+        be, fake, tmp = build(**kw)                      # kw: log= (the death test's recorder, 2026-09-21)
         sid = be.spawn("web", "/TESTDIR")
         self.assertTrue(be.send(sid, "first synthetic turn"))
         self.assertTrue(_lock_free(be, sid))
@@ -4069,10 +4069,12 @@ class NativeCompact(unittest.TestCase):
         self.assertEqual(fake.called("thread_compact"), [("thread_compact", "T-2")])
 
     def test_the_clients_death_ends_the_bracket_loudly(self):
-        be, fake, tmp, sid = self._turned()
+        logs = []
+        be, fake, tmp, sid = self._turned(log=logs.append)
         self.assertEqual(be.compact(sid), "")
         _status(fake, "T-1", "active")
         self.assertTrue(until(lambda: self._active_seen(be, sid)))
+        n = len(logs)
         fake.close()                              # the pump's read raises: the app-server is gone
         self.assertTrue(until(lambda: be.compacting(sid) is False))
         err = be.launch_error(sid)
@@ -4083,6 +4085,12 @@ class NativeCompact(unittest.TestCase):
         self.assertEqual(_boundaries(_records(tmp)), [], "no divider for a compaction whose end was never seen")
         self.assertEqual(be.live_sessions()[sid]["state"], "waiting")
         self.assertIs(be.busy(sid), False)
+        # the log names the session, in the systemError end's shape: after the app-server died mid-compaction the
+        # backend logged only "global pump stopped" and "client unavailable" (review find, 2026-09-21)
+        self.assertTrue(until(lambda: any(l.startswith("compaction of web ended") for l in logs[n:])), logs[n:])
+        ended = [l for l in logs[n:] if l.startswith("compaction of web ended")]
+        self.assertEqual(len(ended), 1, ended)
+        self.assertEqual(ended[0], "compaction of web ended: %s" % err["text"])
 
     def test_a_failed_compaction_ends_the_bracket_loudly_with_no_divider(self):
         # The failed compaction's shape as the live leg of 2026-09-19 recorded it (a model the account cannot use,
