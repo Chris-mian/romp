@@ -237,8 +237,14 @@ signal romp has, because Codex sends no notification for a compaction it was
 asked for and romp keys on the thread's status: a compaction Codex acknowledges
 but never runs leaves the session reading "compacting", and no message typed
 into the session probes that (each one waits behind the cue, as it would behind
-a real compaction). The way out is End then Revive, which keeps the thread and
-its history and delivers the waiting message, or a kernel restart.
+a real compaction). The way out is a kernel restart, which delivers the waiting
+message (the queue it waits in is kept on disk; the cue is not), or End then
+Revive, which keeps the thread and its history but not the queue: a message you
+typed that is still waiting behind the cue is handed back when the session
+ends, as a not-delivered notice with the text to copy, and is never sent;
+anything else queued behind the cue (a compaction, a setting pick, a message a
+script or romp itself sent) is dropped with the session and noted in the kernel
+log.
 
 The chat and timeline effort menus use the selected model's supported levels
 from the Codex app-server's model catalog. Romp also validates effort changes

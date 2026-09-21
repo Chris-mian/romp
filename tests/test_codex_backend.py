@@ -4489,7 +4489,10 @@ class NativeCompact(unittest.TestCase):
         armed[0].join(5)
         self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)), "the turn after it ran")
         self.assertIsNone(be.launch_error(sid), "the accepted turn cleared the notice")
-        self.assertTrue(any(w and "systemError" in w["text"] for w in writes), "the loud record was committed")
+        # waited for, not read once: with the save after the release the loud write lands late (never lost), and a
+        # read the moment the turn is no longer busy raced it, so the pre-fix run went red here instead of on the
+        # ordering below (ten of ten runs; review find, 2026-09-21)
+        self.assertTrue(until(lambda: any(w and "systemError" in w["text"] for w in writes)), "the loud record was committed")
         self.assertIsNone(writes[-1], "and the accepted turn's None committed LAST: the loud record never landed over it")
         self.assertIsNone(json.loads(be._reg_path().read_text())[sid]["launchError"])
 

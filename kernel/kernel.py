@@ -14721,8 +14721,9 @@ def _awaiting_wake_outcomes(now, walked=None):
 
 
 def _launch_error(sid):
-    """Why this session's CLI could not start, or None — {text, at, limit}, straight from the backend that
-    tried to start it (SessionBackend.launch_error). Guarded the same way as _backend_queued: a backend
+    """Why this session's CLI could not start, or None: {text, at, limit, and an optional noRetry for a notice
+    nothing retries (SessionBackend.launch_error, 2026-09-21)}, straight from the backend that
+    tried to start it. Guarded the same way as _backend_queued: a backend
     hiccup reads as 'no known failure' rather than crashing the chat build."""
     try:
         be = Sessions.backend_for(str(sid))
@@ -20258,6 +20259,7 @@ def _drive(msg, client):
             sys.stderr.write("comment promote refused (%s, name %r): %s\n" % (sid[:8], str(msg["name"])[:80], err))   # T289
     elif t == "endSession":
         sys.stderr.write("kill: %s via endSession WS op\n" % sid)   # kill attribution (the user 2026-07-16)
+        _drop_parked_on_end(sid, client)   # a parked send is handed back to this pane, not dropped by the drain in this wake (2026-09-21)
         be.kill(sid); _record_death(sid, int(time.time()), "kill")   # the one SDK event with no designed reviver
         _comment_kill_all(sid, be)   # its comment threads must not outlive it as unreachable running CLIs
         _send_to_app("chat", {"type": "closed", "id": sid})
@@ -28719,6 +28721,7 @@ def _end_on_idle_sweep(now, live_map):
             continue
         sys.stderr.write("kill: %s via end-on-idle (self-close)\n" % sid)
         be = Sessions.backend_for(sid)
+        _drop_parked_on_end(sid)                         # the End doors' cancel of the parked queue (2026-09-21)
         be.kill(sid)
         _record_death(sid, int(now), "kill")
         _comment_kill_all(sid, be)
@@ -36426,6 +36429,89 @@ def _cancel_parked(sid, park, md, qid=None):
     return None
 
 
+def _drop_parked_on_end(sid, client=None):
+    """A session is being ENDED: cancel its parked ops, and hand back the text of every parked send or command the
+    user typed as not delivered (2026-09-21, the second review of the native compaction, whose probe lost a message
+    this way). The End doors left the queue where it was and finished with a push-soon, so the drain ran in the same
+    wake: it popped the send, handed it to a row that by then read as unowned (owns() is live-only), and ignored that
+    route's refusal, so the chat heard nothing; Revive drains only the backend's own queue, which never had the
+    message. A message typed behind a compaction the server acked and never ran (or any op parked behind a turn, a
+    queue ahead or an account hold) vanished with the End, while the doc said End then Revive delivered it. Now the
+    ending session's parked sends take the existing not-delivered path (_refuse_drive: a modal in the asking pane
+    with the text in its copy slot, undelivered.jsonl verbatim, one stderr line), aimed at `client` when the End came
+    over a socket, else at every chat pane (romp end, the self-close sweep).
+
+    Only the USER's words are handed back: a parked send or command wearing the user flag (_op_user) or a
+    press-minted copy id (_op_qid). A machine's send parks through the same road (a watch notice, the spend-ceiling
+    body, a tagged `romp send`), and a modal offering to copy words the user never typed, filed in undelivered.jsonl
+    as theirs, is a false interrupt (review find, 2026-09-21); those are dropped with the log line below, which names
+    the kind and never the body, as are the ops that carry no typed text (a compact or clear, a settings pick, a
+    move): a dead session's queue is never retried (the drain's own contract), and keeping it for a later Revive
+    would strand queued bubbles on a session never revived. Runs BEFORE the kill: the live row's gates hold the drain
+    off, so nothing pops the queue between this cancel and the kill. An op the drain is handing over right now
+    (_inflight_ops: still the head) is left to it, popped by identity there. Returns how many texts were handed
+    back.
+
+    WHERE the modal lands (review find, 2026-09-21): on `client` only when its pane renders an err frame (the chat
+    and the feed, _ERR_FRAME_APPS); an End pressed in the Sessions pane arrives on that pane's socket, whose bundle
+    has no err arm, so handed there the frame showed nothing and reached no chat pane either. Every other case (a
+    pane that cannot show it, no socket at all) goes to ONE chat pane (_send_to_one_chat): the broadcast put a modal
+    and a bell entry in every chat column for one message. The op the drain is handing over right now is found by
+    SLOT (_inflight_slot), as _cancel_parked finds it, not by identity: two parked compact presses are one interned
+    tuple, and an identity filter kept the second behind the in-flight first."""
+    sid = str(sid)
+    with _pending_ops_lock:
+        ops = _pending_ops.get(sid) or []
+        j = _inflight_slot(sid, ops)
+        gone = [op for k, op in enumerate(ops) if k != j]
+        if not gone:
+            return 0
+        kept = [ops[j]] if j >= 0 else []
+        if kept:
+            _pending_ops[sid] = kept
+        else:
+            _pending_ops.pop(sid, None)
+            _drain_hold.pop(sid, None)
+            _held_working.pop(sid, None)
+        _save_pending_ops()
+    if client is not None and (client.get("app") or "") in _ERR_FRAME_APPS:
+        target = client
+    else:
+        target = {"send": lambda t: _send_to_one_chat(json.loads(t), sid)}
+    handed = 0
+    for op in gone:
+        typed = (op[0] in ("send", "command") and isinstance(op[1], str) and op[1].strip()
+                 and (_op_user(op) or _op_qid(op)))
+        if typed:
+            _refuse_drive(target, "sendMessage" if op[0] == "send" else "sendCommand", sid, {"text": op[1]},
+                          why="The session ended before romp could hand this over")
+            handed += 1
+        else:
+            sys.stderr.write("parked %s op dropped with the ending session %s\n" % (op[0], sid))
+    _mark_views_dirty()
+    return handed
+
+
+_ERR_FRAME_APPS = ("chat", "feed")   # the panes whose bundles render an err frame (the modal, the bell entry); the
+                                     # Sessions pane, the timeline, files and artifacts drop it (2026-09-21)
+
+
+def _send_to_one_chat(msg, sid=""):
+    """One chat pane hears `msg` (2026-09-21): the live chat client watching `sid` when one does (its `active` is the
+    tab it shows), else the first live chat client. The not-delivered frame's modal and its bell entry are one notice,
+    and the broadcast drew them once per chat column. With no chat pane connected the frame goes through the chat
+    broadcast, which reaches nobody either; the undelivered file and the log are the record then. Returns whether a
+    pane took it."""
+    s = json.dumps(msg)
+    with _clients_lock:
+        live = [c for c in _clients if c["app"] == "chat" and c.get("alive", True)]
+    pick = next((c for c in live if sid and c.get("active") == sid), None) or (live[0] if live else None)
+    if pick is None:
+        _send_to_app("chat", msg)
+        return False
+    return _client_send(pick, s)
+
+
 def _cancel_backend_queued(be, sid, idx, md, qid=None):
     """unqueue with the same DRIFT GUARD as _cancel_parked: the click carries the bubble's body; if the
     backend queue moved between the push and the click (the input generator consumed the head), the raw
@@ -37363,7 +37449,10 @@ def _apply_pending_ops(now=None):
     + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes, plus
     _limit_hold's account gate — a queue held by a usage limit drains on the cycle after the API's own
     reset stamp passes, so the whole sequence goes in at the reset in the order it was typed); a dead
-    session's queue is dropped (fails once, logged), never retried. An effort level or fast toggle the
+    session's queue is dropped (fails once, logged), never retried, and since 2026-09-21 the End doors cancel the
+    ending session's queue themselves before the kill (_drop_parked_on_end), handing a parked send the user typed
+    back as not delivered: left to this walk, the send was popped in End's own wake, handed to a row that read as
+    unowned, and its refusal ignored. An effort level or fast toggle the
     backend refuses when it fires here is reported (the walk's stderr line, a settingRefused frame to the
     chat), not popped silently.
 
@@ -68734,6 +68823,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True, "deferred": True}), "application/json")
                 else:
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
+                    _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue, told to the chat panes (2026-09-21)
                     be.kill(sid)
                     _record_death(sid, int(time.time()), "kill")
                     _comment_kill_all(sid, be)   # its comment threads must not outlive it (the WS endSession twin)
