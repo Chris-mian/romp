@@ -35217,8 +35217,10 @@ def _warm_fleet_bg(now):
     that an untouched session's card would not change; those now fill the cache on demand. A no-op when nobody's
     connected, or when a chat/timeline client IS (it warms the cache itself); and it bails mid-sweep the instant
     one connects, so it never competes. build_feed does not ask for a session whose transcript cannot be stat'ed
-    (2026-09-21, _feed_session_entry's leaf_ok gate): a parse of a missing leaf stores nothing, and a warm that runs
-    it every build drops the feed cache and wakes the pusher for nothing."""
+    (2026-09-21, _feed_session_entry's leaf_ok gate), and go() below skips such a row itself (the post-merge review
+    of that gate, 2026-09-21): a parse of a missing leaf stores nothing, so a warm another cold session kicked would
+    otherwise parse the gone leaf once per kick, and a warm that ran it every build would drop the feed cache and
+    wake the pusher for nothing."""
     with _clients_lock:
         if not _clients:
             return
@@ -35240,6 +35242,22 @@ def _warm_fleet_bg(now):
                 # appended) or is working right now is worth a cold parse here; the rest cost O(file bytes)
                 # each for working dots nobody's card will show differently, and the cache fills on demand
                 if not _warm_wanted(s, live_map.get(s["sid"])):
+                    continue
+                # A LEAF THIS THREAD CANNOT STAT IS SKIPPED HERE TOO (2026-09-21, the post-merge review of the leaf_ok
+                # gate). build_feed's cold road no longer asks for such a session, but _warm_wanted stays true for a
+                # gone leaf through its goal store's or states log's mtime since boot, so once any OTHER cold session
+                # kicked this warm, the loop parsed the missing path once per kick: jd.parse_cached cannot compute a
+                # live key for it (the leaf's stat fails), so any slot the store still holds from before the removal
+                # never matches; jd.parsed_session parses under a None key and stores nothing, one kernel parse is
+                # counted and nothing reaches stderr. The predicate is the one the feed key reads for its `transcript`
+                # identity, paid once per warm-wanted session per kick on this thread and never on the feed path (the
+                # inputs census sees no new read), and it sits ahead of parsed_any, so a warm that skipped everything
+                # drops nothing and wakes nobody (tests/test_boot_parse_gating.py pins the order). It also skips the
+                # transcript-less rows the live-session list adds (the live stub, a just-created SDK row), whose parse
+                # stored the same nothing while the row was working; discover hands the file over once it exists. Not
+                # inside _warm_wanted: the body's ask already sits behind the leaf bit, and the (0.0, 0) the files
+                # stat returns for a missing file is a sentinel, not the stat's outcome.
+                if _chat_ident(s["path"]) is None:
                     continue
                 _parse(s["path"], s["sid"], now)          # warm the kernel parse cache
                 parsed_any = True
@@ -42347,8 +42365,8 @@ def _feed_session_key(s, tm, ctx, prev_entry):
     an old key with new content, which the next build's stat sees and re-derives; the other order could pair a new
     key with old content and never heal). The clock is not a component; the two booleans it decides are. The
     per-session facts the body needs and this function already computed are handed over in `ctx` (`ps`,
-    `who_working`, `interrupting`, `store`, `closer`, `hide`), so a build reads each once, hit or miss, and their
-    side effects (the live merge's prune/settle, the interrupt stamp's pop, the snapshot punch) run every build as
+    `who_working`, `interrupting`, `store`, `closer`, `hide`, `leaf_ok`), so a build reads each once, hit or miss, and
+    their side effects (the live merge's prune/settle, the interrupt stamp's pop, the snapshot punch) run every build as
     they did before the memo. `prev_entry` is the session's previous decoded entry (None when cold): its `peers` and
     `reads` records drive the dependency components (_FEED_MEMO_DEPS), which _feed_key_with_deps re-evaluates over the NEW entry
     after a derivation (the chat build's deps idiom), so a cold entry hits on the next unchanged build. `ctx["prev_key"]`
@@ -42559,17 +42577,24 @@ def _feed_session_key(s, tm, ctx, prev_entry):
                 # build's cache-only read missed again and the re-read ran again, forever: parses.kernel and coldFlip
                 # (the regression watch for this very block) moved every build, and the empty parse it produced
                 # painted the card's sessState quiet, a settled state for a transcript the kernel cannot read, where
-                # the cache-only road below reports unknown (the authoritative-source rule; the tab-list path says the
-                # transcript could not be resolved on the same build). The gate reads the identity the key already
-                # took at its top (`transcript[0]` is None exactly when that stat failed), so it adds no read the
-                # inputs census would see and no second syscall; coldFlip stays inside, so it counts only a re-read
-                # that ran. Gated, the entry derives cold once and hits from then on, exactly as an entry nothing
-                # ever parsed does; a chmod 0 leaf stats and re-reads as before, a renamed one resolves through
-                # discover. The same bit rides ctx as `leaf_ok` to _feed_session_entry, whose cold road asks the
-                # background warmer for nothing when it is off (the warmer would parse the same missing leaf every
-                # build, drop the feed cache and wake the pusher). The store's other stat-able inputs (an anchor
-                # candidate, a states file) can miss the same way and are not gated here: rarer, and a wider gate
-                # would cost a stat pass per re-read.
+                # the cache-only road below reports unknown (the authoritative-source rule). Of the two tab-list roads
+                # that keep such a session listed, only the names stub for a live sid no backend owns notes on stderr
+                # that the transcript could not be resolved, once per episode; the SDK-owned road never notes, so for
+                # that session this block leaves no other trace (the post-merge review, 2026-09-21). The gate reads
+                # the identity the key already took at its top (`transcript[0]` is None exactly when that stat
+                # failed), so it adds no read the inputs census would see and no second syscall; coldFlip stays
+                # inside, so it counts only a re-read that ran. Gated, the entry derives cold once and hits from then
+                # on, exactly as an entry nothing ever parsed does; a renamed one resolves through discover. A chmod 0
+                # leaf stats and re-reads as before, and the surface of that is worth naming (the post-merge review,
+                # 2026-09-21): the read fails, the re-read stores an EMPTY parse under the transcript's (mtime, size),
+                # and the card paints quiet from it on every later build; the slot outlives the permission repair (a
+                # chmod moves ctime alone) until the mtime or size moves. The close is a read-failure signal out of
+                # parse_session (the file adapter passes no failure callback), its own change. The same bit rides ctx
+                # as `leaf_ok` to _feed_session_entry, whose cold road asks the background warmer for nothing when it
+                # is off (the warmer would parse the same missing leaf every build, drop the feed cache and wake the
+                # pusher), and the warmer's own loop skips such a leaf too (go() in _warm_fleet_bg, the review's
+                # remaining item). The store's other stat-able inputs (an anchor candidate, a states file) can miss
+                # the same way and are not gated here: rarer, and a wider gate would cost a stat pass per re-read.
                 ps = _parse(path, fsid, now)
                 _feed_memo_count("coldFlip")
         if ps is not None:
@@ -42704,9 +42729,10 @@ def _feed_session_entry(s, ctx):
     # transcript's stat failed (its `transcript` identity None; the re-read comment there), which leaves ps None here,
     # and this road then asked the background warmer for the session whenever _warm_wanted held (its store or states
     # log moved since boot, or a working row). Under a feed-only client, the warmer's reason to exist, _warm_fleet_bg
-    # parsed the missing leaf every build (jd.parse_cached has no slot for it, jd.parsed_session parses under a None
-    # key and stores nothing), counted a kernel parse, dropped the pusher's cached feed and woke the pusher: build,
-    # warm, parse, drop, wake, at build speed for as long as the transcript was gone. The gate reads the bit the key
+    # parsed the missing leaf every build (jd.parse_cached cannot compute a live key for it, the leaf's stat fails, so
+    # any slot the store still holds from before the removal never matches; jd.parsed_session parses under a None key
+    # and stores nothing), counted a kernel parse, dropped the pusher's cached feed and woke the pusher: build, warm,
+    # parse, drop, wake, at build speed for as long as the transcript was gone. The gate reads the bit the key
     # already took from its one stat, so it adds no read and no census change; the session stays a standing cold read
     # (coldLive) with its card on the unknown road until the leaf is back on disk and something parses it.
     if ps is None and ctx["leaf_ok"]:
