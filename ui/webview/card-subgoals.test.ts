@@ -58,7 +58,7 @@ test("the not-done OPEN mark is a 13px hollow ring the same size as the done ✓
   assert.match(CSS, /\.fcheck\.open \.fcheck-mark \{[^}]*border-radius: 50%; border: 1\.5px solid var\(--dim\)/);
 });
 
-test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT struck; question = red ⏸)", () => {
+test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT struck; question = ⏸ in the Needs you colour)", () => {
   assert.match(CSS, /\.fask-checklist \{/);
   // done mark = the chat view's blue ✓ disc (--check-bg + round), matching .todo-completed .todo-mark
   assert.match(CSS, /\.fcheck\.done \.fcheck-mark \{[^}]*var\(--check-bg\)/);

@@ -184,7 +184,7 @@ out.afterGrey = { panel: await readPanel(), strip: await readStrip() };
 await flip("hotkey");
 out.afterKeyOff = { strip: await readStrip() };
 await flip("hotkey");
-// a RING's switch (2026-09-14): the Waiting-on-you ring off writes the same tabWidgets prefs, its demo goes plain, the title rows stand
+// a RING's switch (2026-09-14): the Needs you ring off writes the same tabWidgets prefs, its demo goes plain, the title rows stand
 const flipRing = async (id) => { await setF.click('#rs-rings .rs-widget[data-widget="' + id + '"] .rs-switch'); await setF.waitForTimeout(400); };
 await flipRing("ring-waiting-on-you");
 out.afterNeedsRingOff = { rings: await readRings(), store: (await readStrip()).store, panel: await readPanel() };
@@ -644,7 +644,7 @@ class ServedTabWidgets(unittest.TestCase):
         a = r["afterNeedsRingOff"]
         table = "\n  " + json.dumps(a)[:2500]
         row = next(x for x in a["rings"]["rows"] if x["id"] == "ring-waiting-on-you")
-        self.assertEqual((row["sw"]["checked"], row["sw"]["on"], row["off"]), ("false", False, True), "the Waiting-on-you switch is off" + table)
+        self.assertEqual((row["sw"]["checked"], row["sw"]["on"], row["off"]), ("false", False, True), "the Needs you ring's switch is off" + table)
         self.assertEqual(row["demo"]["outlineStyle"], "none", "switched off: a plain demo tab" + table)
         self.assertNotIn("ring-waiting-on-you", row["demo"]["cls"].split(), table)
         for x in a["rings"]["rows"]:

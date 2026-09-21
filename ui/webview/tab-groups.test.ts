@@ -1843,7 +1843,7 @@ test("assistive tech hears a label: decoration is aria-hidden, the header's name
   assert.match(MAKE_HEAD, /let spoken = words\.label;/, "the label starts as headWords' (name and count, in words — executed above)");
   assert.match(MAKE_HEAD, /head\.setAttribute\("aria-label", spoken\);\s*\n\s*head\.draggable = !settings\.tabsLocked;/, "set once, after the pip; an aria-label outranks name-from-content, so the header says what was appended and nothing that leaked in");
   assert.equal(headWords("archived", 2, 2, true, false).label + "; " + sectionPipTitle("blocked", ["api", "tests"]),
-    "archived, 2 sessions folded; 2 sessions in this group are blocked or waiting on you: api, tests",
+    "archived, 2 sessions folded; 2 sessions in this group are stopped on you: api, tests",
     "the spoken label of a folded header wearing the pip");
   assert.ok(!MAKE_HEAD.includes('label.setAttribute("aria-hidden"'), "the name is the name: not hidden");
   // the header holding the tab being read is the same button as the rest (it folds; the section at a glance is the
@@ -1970,10 +1970,10 @@ test("the guide states the every-tag rule (T264b)", () => {
   assert.doesNotMatch(DOCS, /sits under the first of them in your tag order/, "the retired home-tag sentence is gone");
 });
 
-test("the guide's small-dot sentence says the dot shows only in the pip's four states and names them in the rule's order (tab-state.ts sectionPip): red for blocked or waiting on you, else yellow for something waiting on you, else gold for working, else amber for an API retry", () => {
+test("the reference's small-dot sentence says the dot shows only in the pip's four states and names them in the rule's order (tab-state.ts sectionPip): red for a session stopped on you, else magenta for a card that needs you, else gold for working, else amber for an API retry", () => {
   const prose = (t: string) => new RegExp(t.replace(/[.()]/g, "\\$&").split(" ").join("\\s+"));   // the guide wraps its lines
-  assert.match(REF, prose("a small dot after it shows when one of them is busy or needs you: red when one is blocked or waiting on you, otherwise yellow when one has something waiting on you, otherwise gold when one is working, otherwise amber when one hit an API error and is retrying on its own (hover it for their names)."));
-  assert.doesNotMatch(DOCS, prose("red when one is blocked or waiting on you, otherwise gold when one is working"), "the three-state sentence is gone: the ask yellow sits between red and gold");
+  assert.match(REF, prose("a small dot after it shows when one of them is busy or needs you: red when one is stopped on you (a prompt, or an API error only you can clear), otherwise magenta when one has a card that needs you, otherwise gold when one is working, otherwise amber when one hit an API error and is retrying on its own (hover it for their names)."));
+  assert.doesNotMatch(DOCS, prose("red when one is blocked or waiting on you, otherwise gold when one is working"), "the three-state sentence is gone: the Needs you magenta sits between red and gold");
   assert.doesNotMatch(DOCS, prose("a small dot after it says when one of them is working or waiting on you"), "the two-state sentence is gone");
 });
 

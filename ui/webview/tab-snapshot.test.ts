@@ -84,7 +84,7 @@ test("executed: the on-you chip's words: Needs you for the feed's column and a l
   assert.deepEqual(chipOf({ state: "needsInput" }), { state: "needsInput", text: "Needs you", peer: null }, "a live prompt");
   assert.deepEqual(chipOf({ state: "blocked", apiTooLong: true }), { state: "blocked", text: "API error", peer: null }, "an API error only you can clear: the flags say so");
   assert.deepEqual(chipOf({ state: "blocked", apiSpendLimit: true }, { needsInput: true }), { state: "blocked", text: "API error", peer: null });
-  assert.deepEqual(chipOf({ state: "blocked" }, { needsInput: true }), { state: "needsInput", text: "Needs you", peer: null }, "a flagless API error is the kernel's transient, auto-retried one: with a feed-filed block the row reads the category's word, Blocked like any other on-you row");
+  assert.deepEqual(chipOf({ state: "blocked" }, { needsInput: true }), { state: "needsInput", text: "Needs you", peer: null }, "a flagless API error is the kernel's transient, auto-retried one: with a feed-filed block the row reads the category's word, Needs you like any other on-you row");
   assert.deepEqual(chipOf({ state: "retrying" }, { needsInput: true }), { state: "needsInput", text: "Needs you", peer: null }, "…the same as its retrying twin");
   assert.equal(chipOf({ state: "blocked" }), null, "a flagless API error with no feed verdict is not on you: the amber pip alone");
 });

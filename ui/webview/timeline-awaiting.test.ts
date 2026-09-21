@@ -35,7 +35,7 @@ test("precedence: blocked-on-you beats awaiting, awaiting beats Ready", () => {
   assert.ok(awaiting < ready, "awaiting is checked before the plain Ready fallback");
 });
 
-test("needsInput maps to Blocked, and the legacy 'awaiting' name (an older remote kernel) still does too", () => {
+test("needsInput maps to Needs you, and the legacy 'awaiting' name (an older remote kernel) still does too", () => {
   assert.match(TL, /s\.state === 'permission' \|\| s\.state === 'needsInput' \|\| s\.state === 'awaiting'\) m = \{ label: 'Needs you', kind: 'needs' \}/);   // the Needs you chip on the lane (plans/needs-you.md)
   assert.match(TL, /needs: \{ bg: '#d946ef', fg: '#2a0a2a' \}/, "the lane chip's colour is the category's token value (the file loads standalone)");
 });

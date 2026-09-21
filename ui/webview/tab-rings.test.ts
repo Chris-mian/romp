@@ -1,13 +1,13 @@
 // THE RINGS AS WIDGETS (2026-09-14; the ask ring itself from the review of 2026-09-13): a session with something
 // waiting on you should grab attention in the tab strip without a click — the way a live prompt rings the tab red — and
 // it should do so whether the session went idle after asking or is still working in the background. The red ring is
-// the LIVE state's (a permission or picker prompt, or an API stop only you can clear); the yellow ring is the FEED's
+// the LIVE state's (a permission or picker prompt, or an API stop only you can clear); the magenta ring is the FEED's
 // verdict: a card of the session's under needs-you; the amber ring is an API retry on its own. The kernel puts the
 // feed's verdict on the session STATUS (build_session's needsYou, the same set the ledger's needsInput and the
 // section-at-a-glance rows read); the three rings are WIDGETS of the tab-widget registry (tab-widgets.ts, slot "ring",
 // a switch each in the settings), composed onto every tab — a loaded one and a skeleton alike — one class at a time,
-// red over yellow over amber (tab-state.ts RING_TEST is the pure twin, executed in tab-state.test.ts and pinned equal to
-// the composition in tab-widgets.test.ts); render.ts reads the yellow's input in the strip's signature so a card
+// red over magenta over amber (tab-state.ts RING_TEST is the pure twin, executed in tab-state.test.ts and pinned equal to
+// the composition in tab-widgets.test.ts); render.ts reads the magenta's input in the strip's signature so a card
 // entering or leaving the column always repaints. No jsdom harness executes render.ts, so the wiring and the sheets are
 // pinned at the source (the tab-strip-skip idiom); the paint itself runs in tab-strip-skip-exec.test.ts.
 import { test } from "node:test";
@@ -31,7 +31,7 @@ test("the tab wears its ring through the registry's composition, right after the
   assert.match(chip, /if \(stateCls\) tab\.classList\.add\(stateCls\);\s*\n(?:\s*\/\/[^\n]*\n)*\s*composeTabRing\(tab, s\.id \|\| "", s\.status, settings\.tabWidgets\);/, "then the ring: the registry's composition over the same status and the widget switches");
   assert.equal(RENDER.split("composeTabRing(").length - 1, 1, "one paint site: applyTabStatus (the skeleton tab and the loaded tab both call it)");
   for (const c of [...RINGS, "tab-ask"]) assert.equal(RENDER.split('"' + c + '"').length - 1, 0, "no hand-rolled ring class in render.ts (" + c + "): the classes live in the registry");
-  assert.doesNotMatch(RENDER, /tabAskClass/, "the branch's one-off ask class is gone: the yellow ring is a widget like the others");
+  assert.doesNotMatch(RENDER, /tabAskClass/, "the branch's one-off ask class is gone: the magenta ring is a widget like the others");
   assert.match(RENDER, /^import \{ tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle \} from "\.\/tab-state";/m);
   assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m);   // miniChord joined the import with the per-tab hot keys (merged 2026-09-14)
   // the folded header's pip and its tooltip read the same switches, so a fold never shows a colour no unfolded tab would
@@ -40,7 +40,7 @@ test("the tab wears its ring through the registry's composition, right after the
   assert.match(head, /sectionPipMembers\(kind, hidden\.map\(\(id\) => sessions\.get\(id\)\), ringSwitch\(settings\.tabWidgets\)\)/);
 });
 
-test("the strip's signature reads the yellow ring's input for a loaded tab AND a skeleton, so a card entering or leaving needs-you repaints (the switches ride settings.tabWidgets, already in it)", () => {
+test("the strip's signature reads the magenta ring's input for a loaded tab AND a skeleton, so a card entering or leaving needs-you repaints (the switches ride settings.tabWidgets, already in it)", () => {
   const fn = RENDER.slice(RENDER.indexOf("function renderTabs() {"), RENDER.indexOf("function stripAftermath("));
   const sig = fn.slice(fn.indexOf("const stripSig = JSON.stringify(["), fn.indexOf("const mslotEl = "));
   assert.match(sig, /st\.state, tabStateClass\(st\), st\.needsYou === true, !!st\.faded,/, "the loaded tab's row");
@@ -75,8 +75,8 @@ test("THE SHEET: the dashed outlines key on the RING classes the strip composes 
   assert.equal(CSS.split(".tab.tab-ask").length - 1, 0, "the branch's :not-chained ask rule is gone");
   assert.equal(GEAR_CSS.split("tab-ask").length - 1, 0);
   // the CASCADE: the peek ring (structure, not status) is declared before the ring rules so a real ring wins at equal specificity
-  const peekAt = CSS.indexOf(".tab.tab-peek { outline:"), ringAt = CSS.indexOf(".tab.ring-needs-you, .tab.ring-retrying { outline:"), yellowAt = CSS.indexOf(".tab.ring-waiting-on-you { outline:");
-  assert.ok(peekAt > 0 && peekAt < ringAt && ringAt < yellowAt, "peek, then the rings");
+  const peekAt = CSS.indexOf(".tab.tab-peek { outline:"), ringAt = CSS.indexOf(".tab.ring-needs-you, .tab.ring-retrying { outline:"), magentaAt = CSS.indexOf(".tab.ring-waiting-on-you { outline:");
+  assert.ok(peekAt > 0 && peekAt < ringAt && ringAt < magentaAt, "peek, then the rings");
   // the ring rules are two class-level parts each: one class at a time on the tab, so no rule needs to out-specify another
   const classParts = (s: string) => (s.match(/\.[a-z-]+/g) || []).length;
   for (const sel of [".tab.ring-needs-you", ".tab.ring-retrying", ".tab.ring-waiting-on-you"]) assert.equal(classParts(sel), 2);
@@ -90,7 +90,7 @@ test("THE SHEET: the dashed outlines key on the RING classes the strip composes 
   assert.match(CSS, /\.tab\.tab-blocked\.ring-needs-you:hover \{ background: rgba\(229, 72, 77, 0\.38\); \}/);
   assert.match(CSS, /\.tab\.tab-blocked\.ring-needs-you\.active \{\s*\n\s*background: linear-gradient/);
   assert.doesNotMatch(CSS, /\.tab\.tab-blocked \{[^}]*background/, "no fill off the state alone");
-  // the tokens, in both themes; the folded header's pip wears the same yellow (tab-groups.test.ts pins the pip's other colours)
+  // the tokens, in both themes; the folded header's pip wears the same magenta (tab-groups.test.ts pins the pip's other colours)
   assert.match(CSS, /--st-needs-bg: #d946ef; --st-needs-fg: #2a0a2a;/, "the dark Needs you magenta, apart from both reds, the amber and the gold (theme-parity pins the pairs)");
   assert.match(CSS, /\.tab-group-pip\.ask \{ background: var\(--st-needs-bg\); \}/);
 });

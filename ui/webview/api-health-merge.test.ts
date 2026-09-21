@@ -208,14 +208,16 @@ test("the shell loads the merge module before its API-health script and the bund
   assert.match(read("ui", "webview", "api-health-global.ts"), /__rompApiHealthMerge = \{\s*mergeFrames, readHistory, mergeHistories, documentSeries, documentLedger, rebin, frameDot, machineText, machineLine, countsParts, agoWords, windowWords,/);
 });
 
-test("the 5xx magenta is a token in both theme blocks of both sheets (theme parity), and the popup paints through it", () => {
+test("the 5xx purple is a token in both theme blocks of both sheets (theme parity), the inks ride their own token, and the popup paints through them", () => {
+  // purple, not magenta, since 2026-09-21 (plans/needs-you.md): the API-health cell sits on the landing page beside every session's
+  // state, and the Needs you category took the magenta; theme-parity.test.ts pins the distances
   const STYLES = read("ui", "webview", "styles.css"), FEED = read("ui", "webview", "feed.css"), KERNEL = read("kernel", "kernel.py");
   const root = STYLES.slice(STYLES.indexOf(":root"), STYLES.indexOf("body.theme-light")), light = STYLES.slice(STYLES.indexOf("body.theme-light"));
-  assert.match(root, /--st-5xx-bg: #c026d3; --st-5xx-fg: #ffffff;/);
-  assert.match(light, /--st-5xx-bg: #A21CAF; --st-5xx-fg: #ffffff;/);
-  assert.match(FEED, /--st-5xx-bg: #A21CAF; --st-5xx-fg: #ffffff;/, "mirrored where the feed mirrors the blocked red");
+  assert.match(root, /--st-5xx-bg: #7e22ce; --st-5xx-fg: #ffffff; --st-5xx-ink: #c4b5fd;/);
+  assert.match(light, /--st-5xx-bg: #4c1d95; --st-5xx-fg: #ffffff; --st-5xx-ink: #4c1d95;/);
+  assert.match(FEED, /--st-5xx-bg: #4c1d95; --st-5xx-fg: #ffffff;/, "mirrored where the feed mirrors the blocked red");
   assert.ok(!KERNEL.includes(".ah-sw-r5xx") && !KERNEL.includes(".ah-lsw"), "no legend swatches (T340): the class tokens wear the inks pinned below");
-  assert.ok(KERNEL.includes(".ah-c-r5xx{color:#e879f9}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:#86198F}"), "a 5xx count's text is inked for each theme's tip (the chip colour as text sits under 4.5:1)");
-  assert.ok(KERNEL.includes(".ah-seg-serverErrors{fill:var(--st-5xx-bg,#c026d3)}"), "and so does the 5xx band of the bars (a class per segment, so the light theme can re-ink it)");
-  assert.ok(KERNEL.includes("body.theme-light .ah-seg-serverErrors{fill:#A21CAF}"), "the light palette's magenta on the bars");
+  assert.ok(KERNEL.includes(".ah-c-r5xx{color:var(--st-5xx-ink,#c4b5fd)}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1d95)}"), "a 5xx count's text is inked through the token for each theme's tip, the literal its standalone fallback");
+  assert.ok(KERNEL.includes(".ah-seg-serverErrors{fill:var(--st-5xx-bg,#7e22ce)}"), "and so does the 5xx band of the bars (a class per segment, so the light theme can re-ink it)");
+  assert.ok(KERNEL.includes("body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1d95)}"), "the light palette's purple on the bars, through the token");
 });

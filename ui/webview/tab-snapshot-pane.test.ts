@@ -660,7 +660,7 @@ test("pinned: the sheet: the shown header's wash and the stand-in's mark on the 
   assert.equal(stripped.match(/#[0-9a-fA-F]{3,8}\b/g), null, "no raw color: the light theme needs no override");
 });
 
-test("executed: the row's state words are the SHARED status chip (T322b): the awaiting row wears chip-awaitingBg with 'Awaiting <word>' from the status's kind and count, the needs-you row the bar's Blocked; the pip stays; a count change re-texts the chip", () => {
+test("executed: the row's state words are the SHARED status chip (T322b): the awaiting row wears chip-awaitingBg with 'Awaiting <word>' from the status's kind and count, the needs-you row the bar's Needs you; the pip stays; a count change re-texts the chip", () => {
   const { api, content, sessions } = world();
   sessions.set("tests", { name: "tests", color: null, status: { state: "awaitingBg", sinceEpoch: (T0 - 900) * 1000, awaitingKind: "agents", awaitingCount: 3, awaitingItems: [] }, events: [] });
   api.set({ lastStripItems: [{ head: { name: "infra", localId: "g2", color: "#4EC9B0", ids: ["web", "api", "tests"] }, folded: false, active: true, hidden: [] }, { id: "web" }, { id: "api" }, { id: "tests" }], snapView: "infra" });

@@ -208,7 +208,7 @@ function deltaE(a: [number, number, number], b: [number, number, number], kind?:
 }
 const cvdWorst = (a: [number, number, number], b: [number, number, number]) => Math.min(deltaE(a, b, "protan"), deltaE(a, b, "deutan"));
 
-test("the ring hues stay apart in BOTH themes, every pair: rings against rings for full-colour readers and under red-green deficiencies, the Needs you ring against the dots under the deficiencies; the yellow reads on every tab ground", () => {
+test("the ring hues stay apart in BOTH themes, every pair: rings against rings for full-colour readers and under red-green deficiencies, the Needs you ring against the dots under the deficiencies; the magenta reads on every tab ground", () => {
   const css = read("styles.css");
   for (const [name, theme] of [["dark", props(block(css, ":root {"))], ["light", props(block(css, "body.theme-light {"))]] as const) {
     const page = rgbOf(theme.get("--bg")!, [30, 30, 30])!;
@@ -238,18 +238,18 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
   assert.match(block(css, "body.theme-light {"), /--st-needs-bg: #a21caf; --st-needs-fg: #ffffff;/);
 });
 
-test("the 5xx magenta of the API-health histogram is deliberately near the Needs you magenta: another page, no session state; the pair stays pinned so a shift is a decision", () => {
-  // plans/needs-you.md left phase two the choice of shifting the 5xx dark hue or pinning the pair as near by design. Pinned: the
-  // histogram segment (`--st-5xx-bg`, T316) shows only on the /perf page, which shows no session state, so nobody reads it as a
-  // needs-you mark beside a ring or a chip; the light values are byte-identical and the dark ones one step apart on purpose. The
-  // distance sits under the categorical floor the ring pairs must clear, which is the point: these two never share a surface.
+test("the 5xx marks of the API-health cell stay apart from the Needs you magenta in both themes: the fill and the ink at least 15 from the token by the ring pairs' own floor", () => {
+  // plans/needs-you.md: the cell sits on the landing page beside every session's state, so a 5xx mark must never read as a
+  // needs-you mark; the fill is --st-5xx-bg (the .ah-seg-serverErrors band), the ink --st-5xx-ink (the .ah-c-r5xx digits)
   const css = read("styles.css");
   for (const theme of [":root {", "body.theme-light {"]) {
     const b = block(css, theme);
-    const needs = b.match(/--st-needs-bg: (#[0-9a-fA-F]{6});/)![1], five = b.match(/--st-5xx-bg: (#[0-9a-fA-F]{6});/)![1];
-    const d = deltaE(rgbOf(needs, [0, 0, 0])!, rgbOf(five, [0, 0, 0])!);
-    assert.ok(d < 15, theme + ": the two magentas are near by design (" + needs + " against " + five + ", " + d.toFixed(1) + ")");
+    const needs = b.match(/--st-needs-bg: (#[0-9a-fA-F]{6});/)![1], fill = b.match(/--st-5xx-bg: (#[0-9a-fA-F]{6});/)![1], ink = b.match(/--st-5xx-ink: (#[0-9a-fA-F]{6});/)![1];
+    for (const [what, v] of [["fill", fill], ["ink", ink]] as const) {
+      const d = deltaE(rgbOf(needs, [0, 0, 0])!, rgbOf(v, [0, 0, 0])!);
+      assert.ok(d >= 15, theme + ": the 5xx " + what + " " + v + " sits " + d.toFixed(1) + " from the Needs you " + needs + " (floor 15)");
+    }
   }
-  const light = block(css, "body.theme-light {");
-  assert.equal(light.match(/--st-5xx-bg: (#[0-9a-fA-F]{6});/)![1].toLowerCase(), light.match(/--st-needs-bg: (#[0-9a-fA-F]{6});/)![1].toLowerCase(), "light: byte-identical");
+  const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.ok(KERNEL.includes(".ah-c-r5xx{color:var(--st-5xx-ink,#c4b5fd)}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1d95)}"), "the landing's inks ride the token");
 });

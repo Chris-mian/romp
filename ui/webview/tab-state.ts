@@ -35,9 +35,9 @@ export function tabStateClass(s: TabStateLike | null | undefined): string {
 
 /** THE RINGS a tab can wear, in PRECEDENCE order (the rings-as-widgets change, 2026-09-14): each is a widget of the
  *  tab-widget registry (tab-widgets.ts, slot "ring") with its own switch in the settings' Tab widgets section, and a
- *  tab wears ONE at a time, the first in this order whose switch is on and whose test holds. Red over yellow over
- *  amber: a live prompt or an API stop only you can clear says "needs you now"; a card of the session's under
- *  needs-you says something is waiting on you, whatever else the session is doing; a transient API retry needs no
+ *  tab wears ONE at a time, the first in this order whose switch is on and whose test holds. Red over magenta over
+ *  amber: a live prompt or an API stop only you can clear says "stopped on you"; a card of the session's under
+ *  Needs you says something needs you, whatever else the session is doing; a transient API retry needs no
  *  attention at all. This is the pure, DOM-free twin of the registry's composition (composeTabRing), read by the
  *  folded header's pip below, so the strip and the pip cannot disagree; tab-widgets.test.ts pins the two equal over
  *  every synthetic status and every switch set. */
@@ -55,7 +55,7 @@ export const RING_TEST: Record<RingId, (s: TabStateLike | null | undefined) => b
   // waiting on you should grab attention without a click, even while it goes on working. Only TRUE is a verdict: null
   // (no feed build yet) and false are the same nothing, as is an older kernel's absent field. The test itself no
   // longer stands down under the red states; the composition's first-on-ring rule does, so with the red ring switched
-  // off a stopped session with a card wears the yellow, which is true of that tab.
+  // off a stopped session with a card wears the magenta, which is true of that tab.
   "ring-waiting-on-you": (s) => s?.needsYou === true && tabStateClass(s) !== "tab-closed",
   // the AMBER ring: the state retrying, or blocked with none of the on-you flags (the API is backing off and retrying
   // on its own)
@@ -72,8 +72,8 @@ export type SectionPip = "blocked" | "ask" | "retrying" | "working";
 
 /** A folded header's ONE pip for its members' states, in the tab's own colours and by the tab's own rule, under the
  *  same ring switches (`on`) the members' tabs wear, so a fold never shows a colour no unfolded tab would: red when a
- *  member wears the red ring (blocked on you or waiting for you); else magenta when one wears the magenta ring (something
- *  waiting on you, whatever else it is doing); else gold when one is working; else amber when one wears the amber ring
+ *  member wears the red ring (stopped on you); else magenta when one wears the magenta ring (a card that needs you,
+ *  whatever else it is doing); else gold when one is working; else amber when one wears the amber ring
  *  (stalled on an API error that is auto-retrying: shown only when nothing in the group is making progress, since it
  *  is not on you); null when nothing is happening. */
 export function sectionPip(states: ReadonlyArray<TabStateLike | null | undefined>, on: (id: RingId) => boolean = () => true): SectionPip | null {
@@ -87,8 +87,8 @@ export function sectionPip(states: ReadonlyArray<TabStateLike | null | undefined
 
 /** The pip's phrase for ONE session (and the bare phrase when no name is known). */
 export const SECTION_PIP_TITLE: Record<SectionPip, string> = {
-  blocked: "a session in this group is blocked or waiting on you",
-  ask: "a session in this group has something waiting on you",
+  blocked: "a session in this group is stopped on you",
+  ask: "a session in this group has a card that needs you",
   working: "a session in this group is working",
   retrying: "a session in this group hit an API error and is retrying on its own",
 };
@@ -96,8 +96,8 @@ export const SECTION_PIP_TITLE: Record<SectionPip, string> = {
 /** The same four for SEVERAL sessions, counted: a singular phrase before a list of names read as one
  *  session, then two. */
 export const SECTION_PIP_TITLE_MANY: Record<SectionPip, (n: number) => string> = {
-  blocked: (n) => `${n} sessions in this group are blocked or waiting on you`,
-  ask: (n) => `${n} sessions in this group have something waiting on you`,
+  blocked: (n) => `${n} sessions in this group are stopped on you`,
+  ask: (n) => `${n} sessions in this group have a card that needs you`,
   working: (n) => `${n} sessions in this group are working`,
   retrying: (n) => `${n} sessions in this group hit an API error and are retrying on their own`,
 };
