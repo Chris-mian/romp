@@ -265,9 +265,8 @@ elsewhere, so these pages buy a first reader's understanding and spend nothing e
   `docs/reference.md` under a heading that matches the feature's name. The guide points
   at the reference once, in its opening line; a paragraph never ends by sending the
   reader somewhere else, a link to a section of the same page included, except a
-  navigation line whose link carries its reason in the same clause (README's Docs
-  section) or stands alone under a heading that names it (its License line); and no
-  page tells a reader that the details are elsewhere or that an agent can find them.
+  paragraph that is only a link, directly under a heading (README's License line); and
+  no page tells a reader that the details are elsewhere or that an agent can find them.
   Moving text OFF these pages is always welcome; adding to them is what needs a reason.
 - **State what a thing does; do not sell it.** No benefit claims the reader can judge
   for themselves, no "more than a text box", no "opens where you are reading": name the

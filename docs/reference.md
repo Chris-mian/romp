@@ -5303,6 +5303,16 @@ omitted, so a gate there would refuse them at the moment an install consults
 them. `/busy`'s count is exempt as a probe; its drain hold is a write and takes
 the token like any other.
 
+Two routes answer outside that shape. `POST /push/ack`, which the push worker
+uses to report that a notification was shown or tapped, is served ahead of the
+token check and authenticated by the per-push id instead: the id is 128 random
+bits the kernel minted for one notification and handed only to the device that
+notification went to, it stamps two timestamps on that one ledger row and buys
+nothing else, an unknown id is a 404, and the body is capped at 2 KB before a
+byte of it is read. A token-less `GET /` is not refused either: the gate runs
+and fails, and the answer is the page that asks for the token rather than a
+403, so a bare open of the dashboard has somewhere to paste it.
+
 ## Switches
 
 Effective immediately, no restart.

@@ -45,10 +45,14 @@ PAGES = tuple(WORD_CAP)
 GOVERNED = ("docs/index.md", "docs/install.md", "docs/guide.md", "README.md")
 # A paragraph that ends on a link sends the reader off the page instead of saying the thing:
 # the link belongs inside a clause that carries the reason for it, with the sentence going on
-# past it. Target-blind on purpose, so a link to a section of the SAME page counts too.
+# past it. Target-blind on purpose, so a link to a section of the SAME page counts too. The
+# match is SHAPE-SPECIFIC: a link inside a closing parenthetical ("(source in [docs/](docs/)).")
+# and a link followed by anything but a period both pass, so a reviewer reads the pages too.
 _ENDS_ON_LINK = re.compile(r"\[[^\]]+\]\([^)]+\)\.?$")
-# A line that is ONLY a link is a navigation line, not a paragraph closing on one: the heading
-# above it carries the reason a reader wants it (README's License section is the whole class).
+# A paragraph that is ONLY a link, DIRECTLY under a heading, is a navigation line rather than a
+# paragraph closing on one: the heading is what the link belongs to (README's License line is the
+# class). Structural, not a judgement about the heading's words, and the position is load-bearing:
+# the same line further down a page, under prose, is the shape the rule forbids.
 _LINK_ONLY = re.compile(r"^\[[^\]]+\]\([^)]+\)\.?$")
 _LIST_ITEM = re.compile(r"^\s{0,3}(?:[-*+]\s+|\d+[.)]\s+)")
 _NOT_PROSE = ("#", "|", "!!!", "![", "```", ":::")
@@ -123,6 +127,18 @@ def _units(text):
     return [(line, len(joined.split()), joined[:60]) for line, joined in _paragraphs(text)]
 
 
+def _prose_line_above(text):
+    """file line -> the nearest non-blank prose line above it. Read from _prose_lines, which has
+    already dropped fenced code and HTML comments, so a comment sitting between a heading and the
+    line under it does not hide the heading."""
+    above, prev = {}, ""
+    for n, line in _prose_lines(text):
+        above[n] = prev
+        if line.strip():
+            prev = line.strip()
+    return above
+
+
 class FrontPagesStayShort(unittest.TestCase):
     def test_word_cap_per_page(self):
         for page in PAGES:
@@ -183,9 +199,10 @@ class FrontPagesStayShort(unittest.TestCase):
     def test_no_paragraph_ends_on_a_link(self):
         for page in GOVERNED:
             text = (REPO / page).read_text(encoding="utf-8")
+            above = _prose_line_above(text)
             for line, joined in _paragraphs(text):
-                if _LINK_ONLY.match(joined):
-                    continue
+                if _LINK_ONLY.match(joined) and above.get(line, "").startswith("#"):
+                    continue            # a navigation line under its heading
                 with self.subTest(page=page, line=line):
                     self.assertIsNone(
                         _ENDS_ON_LINK.search(joined),
@@ -198,6 +215,56 @@ class FrontPagesStayShort(unittest.TestCase):
         md = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
         self.assertIn("The documentation front pages", md,
                       "CLAUDE.md is where the rule lives; this test only enforces it")
+
+
+class ParagraphHelper(unittest.TestCase):
+    """The helper the page tests read, over a synthetic snippet: every failure message's line number
+    and every word count comes out of it, and no page paragraph sits on either boundary today, so a
+    regression here would surface as a wrong line in some future failure rather than as a red."""
+
+    SNIPPET = "\n".join([
+        "<!-- a comment, dropped -->",         # 1
+        "# A heading",                         # 2
+        "",                                    # 3
+        "First paragraph, one line.",          # 4
+        "",                                    # 5
+        "A wrapped paragraph whose second",    # 6
+        '<span class="romp-chip">Chip</span> line opens with an inline tag.',   # 7
+        "",                                    # 8
+        "<video src=\"a.mp4\"></video>",       # 9
+        "",                                    # 10
+        "```",                                 # 11
+        "code, dropped",                       # 12
+        "```",                                 # 13
+        "- a list item",                       # 14
+    ]) + "\n"
+
+    def test_each_paragraph_comes_back_at_its_file_line_with_its_text(self):
+        got = _paragraphs(self.SNIPPET)
+        self.assertEqual(
+            got,
+            [(4, "First paragraph, one line."),
+             (6, 'A wrapped paragraph whose second <span class="romp-chip">Chip</span> line opens '
+                 "with an inline tag."),
+             (14, "- a list item")],
+            "each paragraph and list item once, at the line it starts on in the FILE (the comment "
+            "and the fenced block are dropped without shifting the numbers), text joined")
+
+    def test_an_inline_tag_does_not_split_a_paragraph_and_a_block_tag_yields_none(self):
+        starts = [line for line, _joined in _paragraphs(self.SNIPPET)]
+        self.assertNotIn(7, starts, "a line opening with an inline tag continues its paragraph")
+        self.assertNotIn(9, starts, "a lone video tag is block HTML: no paragraph of its own")
+        self.assertEqual(len(_paragraphs('<video src="a.mp4"></video>\n')), 0,
+                         "a page of nothing but a block tag has no prose paragraph")
+
+    def test_the_nearest_prose_line_above_sees_through_a_comment(self):
+        above = _prose_line_above(self.SNIPPET)
+        self.assertEqual(above[4], "# A heading", "the heading, not the blank line between")
+        self.assertEqual(above[2], "", "the dropped comment is not the line above the heading")
+        # the shape the link-only exemption turns on: a comment between the heading and the line
+        # under it is dropped before this reads, so it cannot hide the heading
+        commented = "## License\n\n<!-- kept short on purpose -->\n\n[Apache-2.0](LICENSE).\n"
+        self.assertEqual(_prose_line_above(commented)[5], "## License")
 
 
 if __name__ == "__main__":

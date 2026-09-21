@@ -487,7 +487,8 @@ machine are separated by policy rather than by this boundary.
 The lines Romp can actually enforce are per-user (the token file) and
 per-machine (the trust level);
 [SECURITY.md](https://github.com/romp-on/romp/blob/main/SECURITY.md) states the
-trust model in full and gives the address for reporting a vulnerability.
+trust model in full and names the private channel for reporting a
+vulnerability.
 
 ## How many tokens does Romp use?
 
