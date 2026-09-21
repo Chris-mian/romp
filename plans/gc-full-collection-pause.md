@@ -1,6 +1,6 @@
 # The full garbage collection still pauses the kernel for seconds; the roads to shorten it
 
-**Status:** design line, 2026-09-21. Issue #1735 (lczh, 2026-09-15) reported a 9.2 second full collection on the pusher thread at `eb18195e`. Since then main gained the `/perf` gc and heap blocks, per-split gc deltas, the line-by-line record reader, the weak atom LRU, the judging band memo and three cached-build changes, none of which touched the collector itself. This note measures the collector on the running kernel today and lays out the candidate roads with the measurement each needs before it is chosen. Nothing here is built; the point is the user's read on which road before code, as the issue's own caution about `gc.freeze` asks.
+**Status:** design line, 2026-09-21. Issue #1735 (a contributor's report of 2026-09-15) reported a 9.2 second full collection on the pusher thread at `eb18195e`. Since then main gained the `/perf` gc and heap blocks, per-split gc deltas, the line-by-line record reader, the weak atom LRU, the judging band memo and three cached-build changes, none of which touched the collector itself. This note measures the collector on the running kernel today and lays out the candidate roads with the measurement each needs before it is chosen. Nothing here is built; the point is the user's read on which road before code, as the issue's own caution about `gc.freeze` asks.
 
 ## What the running kernel shows now (read-only from `/perf`, one boot)
 
