@@ -49,7 +49,7 @@ export type SelectionEvent =
   | { type: "pick"; id: string }                  // a pick from the picker's list
   | { type: "toggleLock" }                        // the lock button
   | { type: "tabsChanged"; tabs: TabRow[] };      // the shell's union changed (a tab opened or closed)
-/** The selection machine (section 9.5, the user's words through the manager, 2026-09-20): unlocked, the pane shows whatever came
+/** The selection machine (section 9.5; the manager's paraphrase of the user, 2026-09-20): unlocked, the pane shows whatever came
  *  last, a pick or the chat's most recently selected tab; locked, it stays on the pick and ignores the chat; ONLY the lock
  *  button changes the lock, a pick never does (unlocked, a pick shows that session until the next tab switch replaces it;
  *  locked, a pick replaces the locked session and the lock stays on). A null active tab (no tab shown) selects nothing new.
@@ -74,3 +74,24 @@ export function shownRow(tabs: TabRow[], sid: string | null, known?: Map<string,
   return { row: { id: sid, name: (i > 0 ? sid.slice(0, i + 1) : "") + sid.slice(i + 1, i + 9), color: null }, open: false };
 }
 
+
+/** The listing's SIGNATURE: what the pane paints per row (path, t, via, exists, refused, name), in order. A growth signal re-asks
+ *  the listing on every transcript move, and most moves change no artifact; an answer whose signature equals the shown one leaves
+ *  the body's nodes and the scroll position untouched (the reviewers of PR 1925, 2026-09-21). Size and mtime are not painted. */
+export function listingSig(items: ArtifactItem[]): string {
+  return JSON.stringify(items.map((it) => [it.path, it.t, it.via, it.exists, it.refused, it.name]));
+}
+
+/** The last active-tab relay the shell handed this pane: the tab's id and the chat frame's nonce for that switch. */
+export interface RelayMark { sid: string | null; nonce: number | null }
+
+/** Whether the KERNEL's activeChat frame (the relay of the same switch over the sockets, or the ready answer) may be applied: before
+ *  any shell relay arrived (a reloaded pane's ready answer), or when its id is the last relay's and its nonce is not below it. The
+ *  nonce is per chat frame (each column counts its own switches), so one global watermark is unsound: the id is matched first. An
+ *  echo of an earlier switch (relays A, B, C, then B's echo) is dropped; it moved the pane backward (the reviewers of PR 1925). */
+export function echoAccepted(mark: RelayMark | null, id: string | null, nonce: unknown): boolean {
+  if (!mark) return true;
+  if (mark.sid !== id) return false;
+  if (mark.nonce === null || typeof nonce !== "number") return true;
+  return nonce >= mark.nonce;
+}

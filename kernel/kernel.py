@@ -473,7 +473,7 @@ class _PerfStats:
     # below the table itself). test_perf_stats pins it at 1.5x the literal count.
     HTTP_PATHS = 256
     SLOTS = 32
-    JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
+    JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "artifactsSignal", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
             "autoNudge", "interruptBlock", "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "retryUpgrade", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
             "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes", "heldWorking")   # the tick jobs, each a `jobs.<job>` stage (T398)
@@ -57558,6 +57558,15 @@ def _forget_active_chat_if_last(client):
         _ACTIVE_CHAT_NONCE_BY_WID.pop(wid, None)
 
 
+def _active_chat_audience(c):
+    """Which clients of a window hear the chat's active tab: its feed and Artifacts panes, and never a RELAY-kind client (a hub
+    dashboard's socket spliced to this kernel, kernel.py the /remote/<host>/ws relay): under federation a switch would otherwise
+    reach the pane from three speakers, the shell, the local kernel and the tab's host kernel, and the late one decided (the
+    reviewers of PR 1925, 2026-09-21). The record and the nonce are still written for every client, so the reaffirm answer to a
+    jump into a closed remote session keeps its road."""
+    return c.get("alive", True) and c.get("app") in ("feed", "artifacts") and c.get("kind") != "relay"
+
+
 def _relay_active_chat(client, sid, nonce=None):
     """A chat client's activeTab: record the session under its window's wid (None for no tab) and send the window's
     live feed clients the frame (T347: the feed's focused-session section is a view of the chat pane's active tab,
@@ -57570,7 +57579,7 @@ def _relay_active_chat(client, sid, nonce=None):
     # echo of its own switch and never on a stranger's; a chat that sends none keeps the plain frame and its dedup
     _ACTIVE_CHAT_NONCE_BY_WID[wid] = nonce if isinstance(nonce, int) and not isinstance(nonce, bool) else None
     with _clients_lock:
-        feeds = [c for c in _clients if c.get("alive") and c.get("app") in ("feed", "artifacts") and _active_chat_wid(c) == wid]   # …and the Artifacts pane, which follows the active tab when unlocked (plans/artifacts-pane.md 9.5)
+        feeds = [c for c in _clients if _active_chat_audience(c) and _active_chat_wid(c) == wid]   # the feed and the Artifacts pane of the window (plans/artifacts-pane.md 9.5), never a relay-kind client
     for c in feeds:
         _send_active_chat(c)
 
@@ -59507,7 +59516,7 @@ def _pusher_cycle_jobs(now, live_map, any_client):
             _t_push = time.monotonic() - _t_push
             _PERF_STATS.stage("push", _t_push)
         try:
-            _artifacts_signal(now)        # the Artifacts pane's growth signal (plans/artifacts-pane.md 9.4): one stat per watching client; its own try, after the push's finally, so the push stage times the push alone (round two, low b)
+            _job_stage('artifactsSignal', lambda: _artifacts_signal(now))   # the Artifacts pane's growth signal (plans/artifacts-pane.md 9.4): one stat per watched session, on this event-woken cycle; its own stage after the push's finally
         except Exception:
             sys.stderr.write("artifacts signal: %s\n" % traceback.format_exc())
     try:                                  # the turn-finished push (bell popover): AFTER the feed build above,
@@ -60937,23 +60946,27 @@ def _artifacts_page():
                 "background:#1e1e1e;padding:12px'>romp's Artifacts pane needs the ui/ modules "
                 "(webview/artifacts-pane.css).</body></html>")
     v = _dist_ver()
-    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
+    head = ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp · artifacts</title>"
             # the chat's stylesheet provides the lightbox and the link dress; artifacts-pane.css owns the page layout
             "<link href=/dist/styles.css?v=%d rel=stylesheet>"
             "<style>%s\n%s</style></head><body class=artifacts-pane>"
-            "<div id=artifacts-root></div>"
-            "<script>%s</script><script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim
-            "<script src=/dist/artifacts.js?v=%d></script></body></html>"
-            % (v, THEME_CSS, css, _shim("artifacts", v, no_stale=True), v, v))
+            "<div id=artifacts-root></div><div id=art-spin-anchor hidden></div>" % (v, THEME_CSS, css))
+    # the romp loader (ui/CLAUDE.md: the first thing up while something loads), the same overlay the chat, feed and outline
+    # pages carry (_pane_spin): its content observer watches an anchor that never gets a child, so the PANE shows and hides
+    # it (artifacts.ts spin): up while a session's first listing is outstanding, down when it or an error lands; the
+    # overlay's own reconnect reshow and failsafe stand (the reviewers of PR 1925, 2026-09-21)
+    tail = ("<script>%s</script><script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim
+            "<script src=/dist/artifacts.js?v=%d></script></body></html>" % (_shim("artifacts", v, no_stale=True), v, v))
+    return head + _pane_spin("art-spin-anchor") + tail
 
 
 ARTIFACTS_MAX = 500                                   # the newest entries a listing carries; the page says when it bound
 _ARTIFACT_EDIT_VIA = {"Write": "write", "Edit": "edit", "MultiEdit": "multiedit", "NotebookEdit": "notebook"}   # rule 1's tools (the _EDIT_TOOLS set) and their words
 
 
-def _artifacts_walk(turns, sid, link_cache=None):
+def _artifacts_walk(turns, sid, link_cache=None, candidates=None):
     """Every (path, t, via) the three rules of plans/artifacts-pane.md name over a parsed session's turns, in transcript
     order, each path absolute (a relative one resolved against the session's cwd the way a click resolves it; a file://
     URI unwrapped). Rule 1: an assistant tool_use of an edit tool, its file_path or notebook_path. Rule 2: a path-shaped
@@ -60961,7 +60974,10 @@ def _artifacts_walk(turns, sid, link_cache=None):
     kernel verified for that message (the path-links cache), one that exists now, or an image path by extension (the
     figure rule renders it at its mention); a bare word that is no file is not an artifact. Rule 3: a path under the
     state directory's drops/ in the PERSON's own user turn, as an image block's source path or as text (the shape
-    _user_images reads). Bash commands are not read (the design's road not taken). Best-effort per atom."""
+    _user_images reads). Bash commands are not read (the design's road not taken). Best-effort per atom. `candidates`, when a
+    dict is given, collects rule 2's UNADMITTED tokens (path-shaped, neither verified nor on disk nor an image) as
+    absolute path -> (t, token, atom uuid), so the memo can re-run the admission on every answer: a file mentioned before it
+    existed and created afterwards out of band lists once it does (the reviewers of PR 1925, 2026-09-21)."""
     out = []
     cwd = (_cwd_of(sid) or "") if sid else ""
     drops = str(jd.STATE / "drops") + os.sep
@@ -61001,6 +61017,10 @@ def _artifacts_walk(turns, sid, link_cache=None):
                             continue
                         if tok in verified or os.path.isfile(ap) or _PREVIEW_IMG_RE.search(" " + ap):
                             out.append((ap, t, "rendered"))
+                        elif candidates is not None:
+                            cur = candidates.get(ap)
+                            if cur is None or (t or 0) >= cur[0]:
+                                candidates[ap] = (int(t or 0), tok, a.get("uuid"))
                 elif a.get("type") == "user" and a.get("author") in (None, "human"):
                     for b in blocks:
                         if isinstance(b, dict) and b.get("type") == "image":
@@ -61067,6 +61087,23 @@ def _artifacts_items(mentions, sid):
 _ARTIFACTS_MEMO = {}                                  # sid -> {"idx", "tid", "mentions": {path: (t, via)}, "t"}: the walk's memo (section 9.4), memory only
 _ARTIFACTS_MEMO_LOCK = threading.Lock()
 _ARTIFACTS_MEMO_CAP = 64                              # the least recently listed session leaves past it
+_ARTIFACTS_CANDS_CAP = 64                             # rule 2's unadmitted prose candidates kept per session, the newest mentions first: a long
+#                                                       session naming many never-created paths pays at most this many stats per answer (round two of PR 1951)
+
+
+def _artifacts_admit(sid, candidates, link_cache=None):
+    """Rule 2's admission re-run over the memo's unadmitted candidates (absolute path -> (t, token, uuid)): a token the chat
+    verified for its message since (the path-links cache), a file that exists now, or an image by extension is admitted as a
+    (path, t, "rendered") mention and leaves the map. Returns the admitted mentions."""
+    link_cache = _PATH_LINK_CACHE if link_cache is None else link_cache
+    out = []
+    for ap, (t, tok, uuid) in list(candidates.items()):
+        hit = link_cache.get((sid, uuid)) if uuid else None
+        verified = set((hit[0] if hit else {}).keys())
+        if tok in verified or os.path.isfile(ap) or _PREVIEW_IMG_RE.search(" " + ap):
+            out.append((ap, t, "rendered"))
+            candidates.pop(ap, None)
+    return out
 
 
 def _artifacts_mentions(sid, turns, link_cache=None):
@@ -61079,20 +61116,36 @@ def _artifacts_mentions(sid, turns, link_cache=None):
     after it are walked, and hydrated, and their mentions merged (a re-walked mention is the same mention: the merge keeps
     the latest by time); otherwise (a full re-assembly, a turn without an id) the whole session is walked and the memo
     replaced. Returns (path, t, via) triples for _artifacts_items, which stats and judges every entry on every answer.
-    Nothing is written."""
+    The memo also keeps the last turn's atom count and its last atom's uuid: a rewind inside an open turn keeps the turn's id
+    while atoms vanish, so the resume holds only while both still stand (else the whole session is walked and a vanished
+    mention leaves); and rule 2's unadmitted candidates (_artifacts_walk's `candidates`), re-judged on every answer
+    (_artifacts_admit), so a file mentioned before it existed lists once it does. Nothing is written."""
     turns = list(turns or [])
     with _ARTIFACTS_MEMO_LOCK:
         memo = _ARTIFACTS_MEMO.get(sid)
-    start, latest = 0, {}
+    start, latest, cands = 0, {}, {}
     if memo is not None and memo["tid"] is not None and memo["idx"] < len(turns) and (turns[memo["idx"]] or {}).get("id") == memo["tid"]:
-        start = memo["idx"]                            # inclusive: the last walked turn may have grown (round two, the high)
-        latest = dict(memo["mentions"])
-    for ap, t, via in _artifacts_walk(turns[start:], sid, link_cache=link_cache):
+        atoms = (turns[memo["idx"]] or {}).get("atoms") or []
+        n = memo.get("n") or 0
+        same_prefix = len(atoms) >= n and (n == 0 or ((atoms[n - 1] or {}).get("uuid") == memo.get("uuidN")))
+        if same_prefix:
+            start = memo["idx"]                        # inclusive: the last walked turn may have grown (round two, the high)
+            latest = dict(memo["mentions"])
+            cands = dict(memo.get("cands") or {})
+    for ap, t, via in _artifacts_walk(turns[start:], sid, link_cache=link_cache, candidates=cands):
         cur = latest.get(ap)
         if cur is None or (t or 0) >= cur[0]:
             latest[ap] = (int(t or 0), via)
+    for ap, t, via in _artifacts_admit(sid, cands, link_cache=link_cache):   # the candidates of earlier answers, re-judged now
+        cur = latest.get(ap)
+        if cur is None or (t or 0) >= cur[0]:
+            latest[ap] = (int(t or 0), via)
+    if len(cands) > _ARTIFACTS_CANDS_CAP:               # bounded per session, the newest mentions kept; an evicted candidate is not re-judged
+        cands = dict(sorted(cands.items(), key=lambda kv: kv[1][0], reverse=True)[:_ARTIFACTS_CANDS_CAP])
     if turns:
-        entry = {"idx": len(turns) - 1, "tid": (turns[-1] or {}).get("id"), "mentions": latest, "t": time.time()}
+        last_atoms = (turns[-1] or {}).get("atoms") or []
+        entry = {"idx": len(turns) - 1, "tid": (turns[-1] or {}).get("id"), "n": len(last_atoms),
+                 "uuidN": (last_atoms[-1] or {}).get("uuid") if last_atoms else None, "mentions": latest, "cands": cands, "t": time.time()}
         with _ARTIFACTS_MEMO_LOCK:
             _ARTIFACTS_MEMO.pop(sid, None)
             _ARTIFACTS_MEMO[sid] = entry                 # re-inserted last: the dict's order is the recency order
@@ -61115,19 +61168,28 @@ def _artifacts_version(sid, now):
 
 
 def _artifacts_signal(now):
-    """The pusher cycle's one duty for the Artifacts pane (section 9.4): for every live artifacts client watching a session,
-    read that session's transcript version and, when it moved since the last signal to that client, send ONE frame
-    artifactsChanged {sid, version}; the pane re-asks for the listing. One stat per cycle per watching client; a client
-    watching nothing costs nothing; the listing itself is never pushed. Returns how many frames went."""
+    """The pusher cycle's one duty for the Artifacts pane (section 9.4): the watched sessions' transcript versions, read ONCE
+    per watched session per cycle (a dict from sid to version, the clients' sids snapshotted under _clients_lock), and for
+    every live artifacts client whose watched session's version moved since the last signal to that client, ONE frame
+    artifactsChanged {sid, version}; the pane re-asks for the listing. The compare and the stamp run under the client's own
+    lock (the watch arm writes both under it too), the stat outside. This rides the event-woken pusher cycle (a push wake, or
+    the 0.5 s backstop the cycle already keeps): no timer of its own, and a client watching nothing costs nothing; the listing
+    itself is never pushed. Returns how many frames went."""
     with _clients_lock:
-        targets = [c for c in _clients if c.get("alive") and c.get("app") == "artifacts" and c.get("artifacts")]
+        targets = [(c, c.get("artifacts")) for c in _clients if c.get("alive") and c.get("app") == "artifacts" and c.get("artifacts")]
+    versions = {}
+    for _c, sid in targets:
+        if sid not in versions:
+            versions[sid] = _artifacts_version(sid, now)
     sent = 0
-    for c in targets:
-        sid = c.get("artifacts")
-        ver = _artifacts_version(sid, now)
-        if ver is None or ver == c.get("artifactsVer"):
+    for c, sid in targets:
+        ver = versions.get(sid)
+        if ver is None:
             continue
-        c["artifactsVer"] = ver
+        with _client_lock(c):
+            if c.get("artifacts") != sid or ver == c.get("artifactsVer"):   # the watch moved, or the same bytes
+                continue
+            c["artifactsVer"] = ver
         _reply(c, {"type": "artifactsChanged", "sid": sid, "version": ver})
         sent += 1
     return sent
@@ -64624,6 +64686,11 @@ _LANDING_COLLAPSE_JS = """
     var src=null;Array.prototype.forEach.call(document.querySelectorAll('iframe'),function(f){if(f.contentWindow===e.source)src=f.id;});if(!src||!(src==='f-chat'||src.indexOf('f-chat-')===0))return;   // a chat frame's post alone (a column or a bottom chat pane): another protocol pane's frame carries no tabs
     TABSETS[src]=m.tabs.map(function(t){return t&&t.id?{id:String(t.id),name:String(t.name||t.id),color:(t.color&&typeof t.color==='object'&&t.color.bg)?{bg:String(t.color.bg),fg:String(t.color.fg||'')}:null}:null;}).filter(function(t){return !!t;});
     tellAll(chatTabsMsg());});
+  // a chat column that emptied and closed: the split script removes its frame and then says so (romp-chat-cols, open false), and the
+  // empty chatTabs the column posted on its way out matched no frame; the union is re-told here without it, every set whose frame
+  // left the document pruned (the detail names the column, not the frame; the reviewers of PR 1925, 2026-09-21)
+  window.addEventListener('romp-chat-cols',function(e){var d=e&&e.detail;if(!d||d.open!==false)return;
+    Object.keys(TABSETS).forEach(function(id){if(!document.getElementById(id))delete TABSETS[id];});tellAll(chatTabsMsg());});
   // The OPTIONAL panes (the user 2026-09-10): the gear's Panes section (romp:settings.panes, per browser,
   // settings.ts paneSet: only an explicit false hides) says whether Sessions (timeline), the Outline (fleet)
   // and the Feed are in this dashboard AT ALL, a different thing from the rail toggle, which hides a loaded
@@ -69590,8 +69657,8 @@ class Handler(BaseHTTPRequestHandler):
             # ready is posted once per renderer life, so this cannot loop.
             _client_reset_chat_base(client)   # …and, for a skeleton client (a later chat column), re-arms `reconnect` under
             #                                   its lock, so the connect push below serves the view its handshake declared
-            if client.get("app") in ("feed", "artifacts"):
-                _send_active_chat(client)      # T347: the window's focus, ahead of the first paint (the Artifacts pane too, 9.5)
+            if _active_chat_audience(client):
+                _send_active_chat(client)      # T347: the window's focus, ahead of the first paint (the Artifacts pane too, 9.5; never a relay-kind client)
             # Capture the seq of the views blob the pushes below serve — from the frames THIS thread
             # enqueues, so a pusher-thread frame landing meanwhile is not mistaken for the connect push's
             # (the caps frame's viewsSeq, see KERNEL_WS_CAPS)
@@ -70466,12 +70533,14 @@ class Handler(BaseHTTPRequestHandler):
             # its sid to the kernel that holds it). The version at watch time is stamped so the listing the pane asks for beside
             # the watch is not answered by a signal for the same bytes. Nothing else is ever pushed to this pane.
             _wsid = str(msg.get("sid") or "")
-            if msg.get("unwatch") or not _wsid:
-                client["artifacts"] = None
-                client["artifactsVer"] = None
-            else:
-                client["artifacts"] = _wsid
-                client["artifactsVer"] = _artifacts_version(_wsid, int(time.time()))
+            _wver = None if (msg.get("unwatch") or not _wsid) else _artifacts_version(_wsid, int(time.time()))   # the stat outside the lock
+            with _client_lock(client):                    # the cycle compares and stamps under the same lock (the reviewers of PR 1925)
+                if msg.get("unwatch") or not _wsid:
+                    client["artifacts"] = None
+                    client["artifactsVer"] = None
+                else:
+                    client["artifacts"] = _wsid
+                    client["artifactsVer"] = _wver
         elif msg and msg.get("type") == "listDir":
             # The dashboard's file browser. Answered by the kernel that OWNS the sid's session —
             # federation routes by the sid field, so browsing a remote session lists THAT machine's

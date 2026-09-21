@@ -22,7 +22,7 @@ from test_asm_checkpoint import kernel_module   # noqa: E402
 
 JOB_NAME_RE = r"_job_stage\(['\"](\w+)['\"]"
 
-PUSHER_JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "turnNotify", "persistCheckpoints", "convergeCheckpoints",
+PUSHER_JOBS = ("beginCheckpointCycle", "sessionsListing", "applyPendingOps", "artifactsSignal", "turnNotify", "persistCheckpoints", "convergeCheckpoints",
                "bootRowBackstop", "kernelSample", "apiHealth")
 HOUSEKEEPING = ("liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep", "autoNudge", "interruptBlock",
                 "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "autoPauseOnLimit", "usagePoll", "retryUpgrade", "autoPauseOnSpend",
@@ -32,7 +32,7 @@ QUIET = ("_lift_spent_awaiting", "_death_sweep_tick", "_end_on_idle_sweep", "_de
          "_persist_tick_seen", "_persist_intr_marks", "_persist_spend_trees", "_auto_pause_on_limit", "_usage_poll_tick",
          "_auto_pause_on_spend_limit", "_spend_guard_tick", "_auto_resume_retry", "_auto_resume_session_retry",
          "_auto_retry_tick", "_idle_queue_drive_tick", "_clear_done_working_notes", "_held_working_pass", "_turn_notify_tick", "_apply_pending_ops",
-         "_persist_checkpoints", "_converge_checkpoints", "_kernel_sample_tick", "_api_health_push")
+         "_persist_checkpoints", "_converge_checkpoints", "_kernel_sample_tick", "_api_health_push", "_artifacts_signal")
 
 
 class Partition(unittest.TestCase):
@@ -128,7 +128,11 @@ class TheBrowserNeverWaitsOnTheHousekeeping(_LabCycles):
         self.addCleanup(setattr, km, "_auto_nudge_tick", self.saved_jobs.get("_auto_nudge_tick", km._auto_nudge_tick))
         t0 = time.monotonic(); km._pusher_cycle(); cycle = time.monotonic() - t0
         self.assertEqual(calls, [], "the pusher's cycle ran no walk")
-        self.assertLess(cycle, 0.3, "and did not carry its sleep: %.3f s" % cycle)
+        # a wall-clock bound: when it reds, the message names the stages that carried the time (the cycle's own split), so a
+        # loaded runner's red says WHAT waited rather than only that something did (round three of PR 1951, 2026-09-21)
+        stages = km._PERF_STATS.snapshot()["stages_ms"]
+        carried = sorted(((ms, name) for name, ms in stages.items() if ms), reverse=True)[:6]
+        self.assertLess(cycle, 0.3, "and did not carry its sleep: %.3f s; the stages that carried the time (ms): %r" % (cycle, carried))
         t0 = time.monotonic(); km._jobs_cycle(); pas = time.monotonic() - t0
         self.assertEqual(calls, [1], "the jobs pass ran it once")
         self.assertGreaterEqual(pas, 0.4)
