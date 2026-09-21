@@ -56,7 +56,7 @@ test("what it clears: the session's CLEARABLE cards in the current view — neve
 
 test("one click, one Undo batch on the client AND on the kernel, through the group-clear path", () => {
   const fn = FEED.slice(FEED.indexOf("function clearSessionCards(sid: string): void {"), FEED.indexOf("function reconcileCol("));
-  assert.match(fn, /clearedStack\.push\(members\.slice\(\)\);/, "ONE client batch: one Undo restores the whole session");
+  assert.match(fn, /pushClearedEntry\(members\.slice\(\)\);/, "ONE client batch: one Undo restores the whole session (through the stack's one writer since round eight of PR 1967)");
   assert.match(fn, /for \(const m of members\) pendingCleared\.add\(m\.itemId\);/, "suppressed from incoming pushes until the kernel confirms");
   assert.match(fn, /vscodeApi\?\.postMessage\(\{ type: "askClearMany", itemIds: ids, sid \}\);/,
     "ONE kernel batch: N askClear posts stamped N batches and the kernel's Undo restored only the last");

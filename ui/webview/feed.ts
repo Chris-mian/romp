@@ -248,6 +248,65 @@ const clearedStack: AskItem[][] = [];
 // kernel push actually carries them again — otherwise the very next push (before the kernel un-archived) would
 // replace `asks` and drop the just-restored card, a flicker. Dropped once the kernel lists the id.
 const pendingRestored = new Map<string, AskItem>();
+
+// The Undo stack's writers (round eight of PR 1967). The kernel's own stack is the ids an earlier undo left owed (its next Undo writes
+// their rows first, so they are the newest batch) over the clears log's batches by stamp; this page's stack must read the same, press
+// after press, for the optimistic Undo to restore what the kernel restores. Two rules keep it so, proven by enumeration in
+// feed-render-incremental.test.ts over tests/fixtures/undo-stack-transitions.json: a batch this page makes goes UNDER the owed entries
+// (pushClearedEntry), and every gesture account the kernel sends carries its stack (`batches`, `owedBatch`), which this page takes as its
+// own (reconcileClearedStack): a refusal leaves the kernel's stack as it was, so the entry the click popped comes back; ids that came back
+// leave; ids this page never held stand in an entry of their own (empty, so the Undo on it is the round trip).
+function pushClearedEntry(entry: AskItem[]): void {
+  let i = clearedStack.length;
+  const owedIds = new Set<string>();
+  while (i > 0 && (clearedStack[i - 1] as any)._owed) { i--; for (const it of clearedStack[i]) owedIds.add(it.itemId); for (const id of ((clearedStack[i] as any)._ids as string[] | undefined) ?? []) owedIds.add(id); }
+  // the owed entries stay on top: the kernel's next Undo is theirs. An id they hold counts once, as owed (a card cleared again while owed: the
+  // kernel's re-journal-first row supersedes its log row and one Undo restores it whole), so it does not enter the new entry
+  const rest = entry.filter((it) => !owedIds.has(it.itemId));
+  if (rest.length) clearedStack.splice(i, 0, rest);
+}
+
+function reconcileClearedStack(batches: string[][], owedBatch: string[]): void {
+  const known = new Map<string, AskItem>();
+  for (const e of clearedStack) for (const it of e) known.set(it.itemId, it);
+  for (const it of pendingRestored.values()) known.set(it.itemId, it);
+  for (const a of asks) known.set(a.itemId, a);
+  const owed = new Set(owedBatch);
+  const cleared = new Set<string>();
+  for (const b of batches) for (const id of b) cleared.add(id);
+  // the kernel's next payload is the truth for every card its stack names: no optimistic stickiness past a gesture account. A log batch's
+  // cards are off the board (an optimistic restore the kernel did not make, or a clear that landed): gone now, suppressed until a payload
+  // omits them. An OWED id is a promise about the next Undo, not a word on its card: the card may well show (a clear whose flag step
+  // refused left no flag, and the undo's flag step refused too), so the payload says whether it stays
+  const hidden = new Set<string>();
+  for (const id of cleared) if (!owed.has(id)) hidden.add(id);
+  for (const id of cleared) { pendingRestored.delete(id); if (hidden.has(id)) pendingCleared.add(id); }
+  asks = asks.filter((a) => !hidden.has(a.itemId));
+  // what this page suppressed and no log batch hides (a refused clear, an owed card that shows) comes back where it was, its collapse undone
+  for (const id of Array.from(pendingCleared)) {
+    if (hidden.has(id)) continue;
+    pendingCleared.delete(id);
+    const it = known.get(id);
+    if (!it) continue;
+    for (const c of cardTwins(id)) c.classList.remove("dismissing");
+    if (!asks.some((a) => a.itemId === id)) asks.push(it);
+  }
+  clearedStack.length = 0;
+  for (const ids of batches.slice().reverse()) {          // oldest first, so the newest batch ends on top
+    const e: AskItem[] = [];
+    for (const id of ids) { const it = known.get(id); if (it) e.push(it); }
+    (e as any)._ids = ids.slice();                         // the batch's ids, whether or not this page holds their items
+    if (ids.length && ids.every((id) => owed.has(id))) (e as any)._owed = true;
+    clearedStack.push(e);
+  }
+  render();
+}
+
+// test hooks (the enumeration in feed-render-incremental.test.ts): the stack's ids top first, and a reset between sequences
+export function _clearedStackIdsForTests(): string[][] {
+  return clearedStack.map((e) => ((e as any)._ids as string[] | undefined) ?? e.map((it) => it.itemId)).reverse();
+}
+export function _resetClearGestureStateForTests(): void { clearedStack.length = 0; pendingCleared.clear(); pendingRestored.clear(); }
 // Finish an optimistic dismiss: the 180ms fade just removed the card element, so drop the item(s) from the
 // LOCAL model and re-render NOW — in grouped mode a run whose last card left takes its session-name header
 // with it, and the column count follows, instead of both lingering until the next kernel push (the user
@@ -1406,7 +1465,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     card.dispatchEvent(new MouseEvent("mouseleave"));
     dressHeaderIfLast(askEls.get(it.itemId) ?? card, it.sid);   // the run's last card takes its header with it — one motion (2026-08-24); the BOARD's element when Clear came from the section's copy (T347)
     pendingCleared.add(it.itemId);   // suppress from incoming pushes until the kernel confirms the clear
-    clearedStack.push([(card as any)._it ?? it]);   // cache the FRESHEST payload copy for an instant optimistic Undo (the closure's `it` is the card's creation-time object)
+    pushClearedEntry([(card as any)._it ?? it]);   // cache the FRESHEST payload copy for an instant optimistic Undo (the closure's `it` is the card's creation-time object)
     // BY ITEM, not by this element (T347): the focused-session section holds a second element for the same
     // card, and Clear on either copy clears the card, so both wear .dismissing now and both leave together.
     // The stale-timeout guard is per element: a render inside the window that revived the card (its update
@@ -2913,7 +2972,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     const cur = (card as any)._g as AskGroup;
     dressHeaderIfLast(groupEls.get(cur.turnId) ?? card, cur.sid);   // a group is one session's turn — same one-motion rule (2026-08-24); the board's element from a copy (T347)
     for (const c of groupTwins(cur.turnId)) c.classList.add("dismissing");   // both copies of the group (T347), see the ask card's Clear
-    clearedStack.push(cur.members.slice());   // cache the whole batch for an instant optimistic Undo
+    pushClearedEntry(cur.members.slice());   // cache the whole batch for an instant optimistic Undo
     for (const m of cur.members) pendingCleared.add(m.itemId);
     // ONE kernel batch for every member (askClearMany): the kernel's Undo restores a batch by its one
     // stamp, so per-member posts left N-1 members archived after an Undo the client had shown whole
@@ -4084,7 +4143,15 @@ function makeClearAllBtn(): HTMLElement {
   b.id = "feed-clearall";
   b.textContent = "Clear all";
   b.title = "clear every open card (inbox-zero) — Undo restores them";
-  b.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "clearAll" }); };
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    // the batch this gesture makes goes on the Undo stack as the session's Clear all does (round eight of PR 1967): Undo after it restores
+    // optimistically, and the page holds every batch it made, which keeps its stack equal to the kernel's (a refusal's frame reconciles it);
+    // the cards leave with the kernel's payload, as before
+    const members = asks.filter((a) => !pendingCleared.has(a.itemId));
+    if (members.length) pushClearedEntry(members.slice());
+    vscodeApi?.postMessage({ type: "clearAll" });
+  };
   return b;
 }
 
@@ -4977,7 +5044,7 @@ function clearSessionCards(sid: string): void {
   // comes from the click and the kernel's confirmation of the clear applies at once instead of queueing behind
   // the hold. freezeLeave ignores a key it does not hold, so the session's headers in the other columns are safe.
   for (const [key, head] of Array.from(sessHeadEls)) if (head.getAttribute("data-fsid") === sid) { head.dispatchEvent(new MouseEvent("mouseleave")); startSessHeadExit(key, head); }
-  clearedStack.push(members.slice());   // one batch: one Undo brings the whole session back
+  pushClearedEntry(members.slice());   // one batch: one Undo brings the whole session back
   for (const m of members) pendingCleared.add(m.itemId);
   vscodeApi?.postMessage({ type: "askClearMany", itemIds: ids, sid });   // ONE kernel batch (see above)
   setTimeout(() => {
@@ -6656,7 +6723,14 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // (the click's suppression, released before only when a payload omitted the card, which a refused clear never does) and the cached
     // Undo entry, and the board repaints them where they were, as the dialog says nothing changed
     const refusedIds = Array.isArray(m.itemIds) ? m.itemIds.map(String) : (op === "askClear" && itemId ? [itemId] : []);
-    if ((op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll") && refusedIds.length) {
+    const storeOp = op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll" || op === "undoClear";
+    if (storeOp && Array.isArray(m.batches)) {
+      // the kernel's stack rides every gesture account (round eight of PR 1967): this page takes it as its own, which covers a refused clear (its
+      // ids are not in the batches: back where they were), a refused undo (the batch the click popped is still the newest: back on top), a
+      // reorder (the owed batch restored, the last clear's entry back on top) and ids this page never held (an entry standing for them). The
+      // branches below are the road for an older kernel's frame, which carries no stack
+      reconcileClearedStack(m.batches.map((b: any) => (Array.isArray(b) ? b.map(String) : [])), Array.isArray(m.owedBatch) ? m.owedBatch.map(String) : []);
+    } else if ((op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll") && refusedIds.length) {
       for (const id of refusedIds) pendingCleared.delete(id);
       // the card comes back NOW, in either window (the third review of PR 1967): inside the 180 ms collapse the per-card identity gate
       // would keep `.dismissing` and the timer would remove the element, and after it dropDismissed has pruned the item from `asks`, so a

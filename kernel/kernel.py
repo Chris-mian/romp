@@ -41280,7 +41280,7 @@ LEDGER_REJOURNAL_KEY = "ledger:rejournal"   # an undo whose undo rows landed and
 LEDGER_REJOURNAL_AGAIN_KEY = "ledger:rejournal-again"   # a later undo whose re-journal-FIRST write refused again: nothing changed this press (the manager's read of round three, 2026-09-21)
 LEDGER_REORDER_KEY = "ledger:reorder"       # an undo that re-journaled owed cards first and restored THEM, not the batch the feed restored on the click (the third executed review of PR 1967, 2026-09-21)
 LEDGER_OWED_READ_KEY = "ledger:owed-read"   # the note of owed cards beside the log could not be read (a present, unreadable file; a missing one is nothing owed)
-LEDGER_OWED_WRITE_KEY = "ledger:owed-write" # the note could not be rewritten after its cards came back: a later Undo may bring them back first again, said
+LEDGER_OWED_WRITE_KEY = "ledger:owed-write" # the note beside the log could not be rewritten when the re-journal landed (before the flag step, so the account claims nothing about the restore): until it can, a restart may bring those cards back first once more
 # An account's value in the skipped map is the fault's copy (a string), or {"fault": copy, "ids": [...]} when the account names ids of its
 # own (the third executed review of PR 1967, 2026-09-21: the whole batch rode every account's frame, and the feed reverted cards whose act had landed)
 _rejournal_owed = {}           # {item id: None}: the clear rows a past undo could not re-journal; the next undo writes them FIRST (the second review of PR 1967, 2026-09-21)
@@ -41355,6 +41355,23 @@ def _owed_note():
 _owed_mem_only = [False]         # the last persist refused: the owing is in memory alone (the dialog says so)
 
 
+def _ledger_batches():
+    """The kernel's Undo stack as the feed holds its own: the ids an earlier undo left owed (the next Undo writes their rows first, so they
+    are the newest batch though the log has no row for them yet), then the clears log's batches by stamp, newest first, each a sorted id
+    list; and the owed ids on their own. Every gesture account carries both (`batches`, `owedBatch`) and the feed takes them as its stack,
+    which keeps the two equal press after press (round eight of PR 1967: proven by enumeration in tests/test_goal_store_fault_boundary.py,
+    whose table ui/webview/feed-render-incremental.test.ts replays against the built feed)."""
+    cur = _cleared_ids()
+    by = {}
+    for iid, ct in cur.items():
+        if iid in _rejournal_owed:
+            continue                                  # an owed id counts once, as owed: its re-journal-first row supersedes any log row it holds (a card re-cleared while owed), and one Undo restores it whole
+        by.setdefault(ct, []).append(iid)
+    out = [sorted(by[t]) for t in sorted(by, reverse=True)]
+    owed = sorted(_rejournal_owed)
+    return ([owed] if owed else []) + out, owed
+
+
 def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
     """A user gesture (a clear, a sub-goal drop, an undo) that a session's UNREADABLE goal store made us
     skip must say so on the socket that made it (the standing rule: a refusal of a user gesture reaches
@@ -41374,6 +41391,7 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
     the user's copy (the save shape added on a review find, 2026-09-08: left to raise, it dropped the
     dashboard's socket without a word)."""
     _batch = [str(i) for i in (ids or []) if i]         # the batch the gesture named: the LEDGER account's ids (nothing of it landed)
+    _lb = [None]                                        # the kernel's stack after the gesture (_ledger_batches), read once, on every frame
     for key, value in (skipped or {}).items():
         # each account names ONLY its own ids (the third executed review of PR 1967, 2026-09-21: the whole batch rode every frame, and the
         # feed reverted cards whose act had landed): the ledger's refusal the whole batch; a re-journal account the ids it carries beside
@@ -41387,7 +41405,10 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
             if ok:
                 frame["ok"] = True                    # information, not a refusal: the feed shows the dialog and files no bell entry (the round-four verifier)
             if owed:
-                frame["owedIds"] = [str(i) for i in owed]   # the owed ids the NEXT Undo is for: the feed holds an entry above the last clear's for them (the sixth executed review)
+                frame["owedIds"] = [str(i) for i in owed]   # the owed ids that did NOT come back this press (the sixth and seventh executed reviews)
+            if _lb[0] is None:
+                _lb[0] = _ledger_batches()
+            frame["batches"], frame["owedBatch"] = _lb[0]    # the kernel's stack, which the feed takes as its own (round eight)
             try:
                 client["send"](json.dumps(frame))
             except Exception:
@@ -41422,10 +41443,12 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                 # ids' re-journal was the newest batch, so the next Undo was theirs again, quietly, and the last clear came the press after; on the
                 # feed the reverted entry sat on top and that click restored it optimistically while the kernel restored the owed card). The frame
                 # names the owed ids too, so the feed keeps the last clear's entry BELOW an entry standing for them and its next pop matches
+                _n = value.get("stamps", 1) if isinstance(value, dict) else 1
                 _send("Undo went to earlier cards first",
                       "Some cards were still owed from an earlier undo, so Undo went to them first, and that did not fully land (the other "
-                      "message says which). They still need one more Undo; the last clear comes back on the press after that.", "", own or [],
-                      ok=True, owed=value.get("owed") if isinstance(value, dict) else None)
+                      "message says which). " + ("They still need one more Undo; the last clear comes back on the press after that." if _n <= 1 else
+                                                 "They were left at different points, so they take more than one Undo; the last clear comes back after them."),
+                      "", own or [], ok=True, owed=value.get("owed") if isinstance(value, dict) else None)
             continue
         if key == LEDGER_OWED_READ_KEY:
             _send("romp could not read its note of earlier owed cards",
@@ -41591,16 +41614,16 @@ def _undo_clear(batch_out=None):
             popped = [i for i in popped if i not in owed_ids]   # an owed id in the newest batch too (a stale note across a restart, the card re-cleared) is
             #                                                     restored THIS press: naming it as not restored parked a live card (the fourth review)
 
-    def _reorder(landed):
+    def _reorder(landed, not_back=(), stamps=1):
         # the undo goes on to restore the OWED batch (newest now), not the one the feed restored on the click: the frame names that one as not
         # restored this press, so the feed puts it back as it was (the third review, the manager's read). Filed AFTER the flag step, its words
         # saying whether the owed cards came back (the fourth review: filed when the re-journal landed, it said "brought back" while the owed
         # store was refusing, and both frames read cleared)
         if popped:
-            skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped, "landed": bool(landed), "owed": [] if landed else list(owed_ids)}
+            skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped, "landed": bool(landed), "owed": [] if landed else list(not_back), "stamps": int(stamps)}
     cur = _cleared_ids()
     if not cur:
-        _reorder(False)
+        _reorder(False, owed_ids, 1)
         return skipped
     newest = max(cur.values())
     restored = [i for i, ct in cur.items() if ct == newest]
@@ -41620,7 +41643,7 @@ def _undo_clear(batch_out=None):
         # newest and the next Undo retries exactly it (the tops the archive restore pulled back a moment ago sit flag-cleared
         # in the live store, hidden as before, and the retry's restore passes them over as not archived); said on the socket
         skipped[LEDGER_KEY] = _store_fault_copy(e)
-        _reorder(False)                               # the owed batch did not come back either: the reorder frame says so
+        _reorder(False, owed_ids, 1)                  # the owed batch did not come back either (one stamp, the re-journal-first's): the reorder frame says so
         return skipped
     _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     late = _mark_nodes_cleared(restored, False) if restored else {}   # so this finds the nodes → un-set the durable flag → real status
@@ -41651,7 +41674,13 @@ def _undo_clear(batch_out=None):
                 _owed_mem_only[0] = bool(_owed_persist(_rj))   # beside the log (a restart keeps it); refused too: memory alone, said (the third review of PR 1967, 2026-09-21)
             skipped[LEDGER_REJOURNAL_KEY] = {"fault": _store_fault_copy(e), "ids": list(_rj)}   # the account names the ids it owes, not the batch
         skipped.update(late); skipped.update({"notice:" + s: f for s, f in nlate.items()})   # keyed apart: the refusal is worded per store
-    _reorder(set(owed_ids) <= (set(restored + notices) - set(_rj)))   # the owed cards came back only if every one's undo row landed and its flag step ran
+    _undone = set(restored + notices) - set(_rj)      # the ids whose undo row landed and whose flag step ran
+    _not_back = [i for i in owed_ids if i not in _undone]
+    _cur2 = _cleared_ids() if _not_back else {}
+    # the owed cards came back only if every one did; the frame names the ones that did not (the seventh executed review: it named ids that
+    # came back), and how many batches they sit in now (a session skipped at the archive read keeps the re-journal-first stamp, one whose flag
+    # step refused is re-journaled at a fresh one: two presses, so the words carry a count only when they hold one stamp)
+    _reorder(not _not_back, _not_back, len({_cur2.get(i) for i in _not_back}) or 1)
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
 

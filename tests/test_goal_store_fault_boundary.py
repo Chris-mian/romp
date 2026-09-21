@@ -1253,6 +1253,73 @@ class ActsUnderAFailedWrite(_World):
         self.assertIn("could not rewrite the note", errs[0]["text"])
         self.assertTrue(self._flag(B, B + ":g1"), "B still flag-cleared, as the other two frames say")
 
+    def _two_card_store_for_a(self):
+        """A's store with a second goal (A:g2): a card to clear last while A:g1 and B:g1 are owed."""
+        st = _store(A, "the faulting session's goal"); g2 = A + ":g2"
+        st["nodes"][g2] = dict(st["nodes"][A + ":g1"], id=g2, text="the faulting session's second goal"); st["status"][g2] = "working"
+        st["seq"] = 2; st["lastNode"] = g2
+        self._write(A, st)
+
+    def _both_owed(self):
+        """A:g1 and B:g1 cleared in one batch, then Undo with both stores refusing their flag step and the log refusing the re-journal: both owed."""
+        self._dispatch({"type": "askClearMany", "itemIds": [A + ":g1", B + ":g1"]})
+        orig = km._mark_nodes_cleared
+
+        def both_stores_fault(ids, value, **kw):
+            with _fault_on(self.a_file), _fault_on(self.b_file):
+                return orig(ids, value, **kw)
+        with mock.patch.object(km, "_mark_nodes_cleared", both_stores_fault), _nth_append_faults(jd.STATE / "cleared.jsonl", 2):
+            self._dispatch({"type": "undoClear"})
+        self.assertEqual(set(km._rejournal_owed), {A + ":g1", B + ":g1"})
+        return orig
+
+    def test_the_reorder_names_both_owed_cards_left_in_two_batches_and_counts_no_presses(self):
+        """The seventh executed review's first low: "one more Undo" assumed the owed ids that did not come back hold one stamp. Two owed
+        sessions faulting differently (A skipped at the archive read keeps the re-journal-first stamp; B's flag step re-journals at a fresh
+        one) sit in two batches: the frame names both as not back and says they take more than one Undo, and its stack reads B, A, then the
+        last clear."""
+        self._two_card_store_for_a()
+        orig = self._both_owed()
+        self._dispatch({"type": "askClear", "itemId": A + ":g2"})   # the last clear
+        km._compact_goal_store(A)                          # the sweep archived A's cleared tops, so the archive restore reads A's store (and faults)
+        orig_ra = km._restore_goal_archive
+
+        def archive_read_faults_for_a(ids):
+            with _fault_on(self.a_file):
+                return orig_ra(ids)
+
+        def b_flag_step_faults(ids, value, **kw):
+            with _fault_on(self.b_file):
+                return orig(ids, value, **kw)
+        with mock.patch.object(km, "_restore_goal_archive", archive_read_faults_for_a), mock.patch.object(km, "_mark_nodes_cleared", b_flag_step_faults):
+            sent = self._dispatch({"type": "undoClear"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        ro = next(m for m in errs if m["title"] == "Undo went to earlier cards first")
+        self.assertEqual(sorted(ro["owedIds"]), sorted([A + ":g1", B + ":g1"]), "both did not come back: %r" % errs)
+        self.assertIn("more than one Undo", ro["text"]); self.assertNotIn("one more Undo", ro["text"])
+        self.assertEqual(ro["itemIds"], [A + ":g2"])
+        self.assertEqual(ro["batches"], [[B + ":g1"], [A + ":g1"], [A + ":g2"]], "the kernel's stack rides the frame: B at a fresh stamp, A at the re-journal-first's, the last clear")
+        self.assertEqual(ro["owedBatch"], [], "nothing owed in memory once the re-journal landed")
+
+    def test_the_reorder_names_only_the_owed_card_that_did_not_come_back(self):
+        """The seventh executed review's first low, the other half: the frame named owed ids that came back this press. With A back and B's
+        flag step refusing, it names B alone, and counts the one press."""
+        self._two_card_store_for_a()
+        orig = self._both_owed()
+        self._dispatch({"type": "askClear", "itemId": A + ":g2"})
+
+        def b_flag_step_faults(ids, value, **kw):
+            with _fault_on(self.b_file):
+                return orig(ids, value, **kw)
+        with mock.patch.object(km, "_mark_nodes_cleared", b_flag_step_faults):
+            sent = self._dispatch({"type": "undoClear"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        ro = next(m for m in errs if m["title"] == "Undo went to earlier cards first")
+        self.assertEqual(ro["owedIds"], [B + ":g1"], "A came back: not named: %r" % errs)
+        self.assertIn("one more Undo", ro["text"])
+        self.assertFalse(self._flag(A, A + ":g1"), "A is back"); self.assertTrue(self._flag(B, B + ":g1"), "B is not")
+        self.assertEqual(ro["batches"], [[B + ":g1"], [A + ":g2"]])
+
     def test_a_stale_note_across_a_restart_does_not_name_a_card_this_press_restores(self):
         """The fourth review's second low: the note's rewrite refused (its stale row stays), a restart, the card re-cleared, Undo: the
         re-journal-first step named the newest batch as not restored, and that batch IS the owed card, which this press restores, so the
@@ -1462,6 +1529,131 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual(refused[0]["sid"], A)
         self.assertIn("could not write its state", refused[0]["text"])
         self.assertNotIn(str(jd.STATE), refused[0]["text"])
+
+
+class UndoStackSequences(_World):
+    """Round eight of PR 1967: the feed's Undo stack and the kernel's batches, equal by ENUMERATION rather than by the case a reviewer
+    happens to try (rounds four to seven each found one stack residue). Two cards (A's and B's), the presses a page can make (Clear on a
+    card, Clear all, Undo), and at each press the owed store (B's) landing or refusing at the flag step and the clears log landing,
+    refusing every append, or refusing from the second append on (the shape that first leaves a card owed). Every kernel state reachable
+    within DEPTH presses is expanded once; each transition records the frames the socket heard (the fields the feed reads), the cards
+    visible after, and the kernel's stack after (_ledger_batches: the owed ids first, then the log's batches by stamp, newest first).
+    tests/fixtures/undo-stack-transitions.json holds the table, and ui/webview/feed-render-incremental.test.ts replays every transition
+    against the built feed, asserting after every press that the feed's stack (top first) equals the kernel's and that the board shows
+    exactly the visible cards. This test regenerates the table and fails when the committed one differs (ROMP_WRITE_FIXTURES=1 rewrites
+    it), so a kernel change that moves a frame or a batch is seen on both sides. Synthetic throughout: the placeholder sids, no paths."""
+    DEPTH = 5
+    ACTIONS = ("clearA", "clearB", "clearAll", "undo")
+    STORE = ("lands", "refuses")
+    LOG = ("lands", "refuses", "refuses2")
+    FRAME_KEYS = ("type", "op", "ok", "sid", "itemId", "itemIds", "owedIds", "batches", "owedBatch", "title")
+
+    def setUp(self):                                      # the acts class's world (its sessions, live map and app sink), without its tests
+        super().setUp()
+        sessions = [{"sid": A, "name": "web", "path": "/nonexistent/%s.jsonl" % A, "anchor": 0, "mtime": 0},
+                    {"sid": B, "name": "api", "path": "/nonexistent/%s.jsonl" % B, "anchor": 0, "mtime": 0}]
+        self.live = {A: _TM(), B: _TM()}
+        self.app = []
+        for p in (mock.patch.object(km, "_alive_sessions", lambda now, live_map: list(sessions)),
+                  mock.patch.object(km, "_warm_fleet_bg", lambda now: None),
+                  mock.patch.object(km, "_live_map", lambda: dict(self.live)),
+                  mock.patch.object(km, "_send_to_app", lambda app, m: self.app.append((app, m))),
+                  mock.patch.object(km, "_name_of", lambda sid: {A: "web", B: "api"}.get(sid)),
+                  mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: mock.MagicMock()))):
+            p.start()
+            self.addCleanup(p.stop)
+        km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_mem_only[0] = False
+
+    _dispatch = ActsUnderAFailedWrite._dispatch
+    _flag = ActsUnderAFailedWrite._flag
+
+    def _fresh(self):
+        _World.tearDown(self); _World.setUp(self)           # a new state root with the two stores; the class's patches stay
+        km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_mem_only[0] = False
+
+    def _visible(self):
+        cur = km._cleared_ids()
+        return [i for i in (A + ":g1", B + ":g1") if i not in cur and not self._flag(i.rsplit(":", 1)[0], i)]
+
+    def _state_key(self):
+        batches, owed = km._ledger_batches()
+        p = jd.STATE / km.OWED_FILE
+        note = [json.loads(l)["id"] for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+        return json.dumps({"batches": batches, "owed": owed, "flags": [i for i in (A + ":g1", B + ":g1") if self._flag(i.rsplit(":", 1)[0], i)],
+                           "settled": sorted(km._owed_settled), "note": note, "memOnly": km._owed_mem_only[0]}, sort_keys=True)
+
+    def _allowed(self, action, visible):
+        return {"clearA": A + ":g1" in visible, "clearB": B + ":g1" in visible, "clearAll": bool(visible), "undo": True}[action]
+
+    def _press(self, action, store, log):
+        msg = {"clearA": {"type": "askClear", "itemId": A + ":g1"}, "clearB": {"type": "askClear", "itemId": B + ":g1"},
+               "clearAll": {"type": "clearAll"}, "undo": {"type": "undoClear"}}[action]
+        orig = km._mark_nodes_cleared
+
+        def flag_step_under_fault(ids, value, **kw):
+            with _fault_on(self.b_file):
+                return orig(ids, value, **kw)
+        with contextlib.ExitStack() as st:
+            if store == "refuses":
+                st.enter_context(mock.patch.object(km, "_mark_nodes_cleared", flag_step_under_fault))
+            if log == "refuses":
+                st.enter_context(_append_faults(jd.STATE / "cleared.jsonl"))
+            elif log == "refuses2":
+                st.enter_context(_nth_append_faults(jd.STATE / "cleared.jsonl", 2))
+            sent = self._dispatch(msg)
+        frames = []
+        for m in sent:
+            if m.get("type") != "err":
+                continue
+            f = {k: m[k] for k in self.FRAME_KEYS if k in m}
+            f["text"] = "(the account's words: not part of the table)"   # the feed's err road needs a text; the words carry a fault copy
+            frames.append(f)
+        return frames
+
+    def test_the_feeds_stack_equals_the_kernels_batches_after_every_press_by_enumeration(self):
+        start = self._state_key()
+        states = {start: {"witness": [], "batches": km._ledger_batches()[0], "visible": self._visible()}}
+        transitions, frontier = [], [start]
+        for _depth in range(self.DEPTH):
+            grown = []
+            for key in frontier:
+                witness, visible = states[key]["witness"], states[key]["visible"]
+                for action in self.ACTIONS:
+                    if not self._allowed(action, visible):
+                        continue
+                    for store in self.STORE:
+                        for log in self.LOG:
+                            self._fresh()
+                            for a, s, l in witness:
+                                self._press(a, s, l)
+                            self.assertEqual(self._state_key(), key, "the witness reaches its state again: presses are deterministic")
+                            frames = self._press(action, store, log)
+                            after = self._state_key()
+                            t = {"from": key, "input": [action, store, log], "frames": frames, "after": km._ledger_batches()[0],
+                                 "visible": self._visible(), "to": after}
+                            transitions.append(t)
+                            if after not in states:
+                                states[after] = {"witness": witness + [[action, store, log]], "batches": t["after"], "visible": t["visible"]}
+                                grown.append(after)
+            frontier = grown
+        self.assertGreater(len(states), 10, "an enumeration over more than a handful of states")
+        table = {"cards": {"A": A + ":g1", "B": B + ":g1"}, "sids": {"A": A, "B": B}, "depth": self.DEPTH, "start": start,
+                 "states": states, "transitions": transitions}
+        lines = ["{", '"cards": %s,' % json.dumps(table["cards"]), '"sids": %s,' % json.dumps(table["sids"]), '"depth": %d,' % self.DEPTH,
+                 '"start": %s,' % json.dumps(start), '"states": {']
+        keys = list(states)
+        for i, k in enumerate(keys):
+            lines.append("%s: %s%s" % (json.dumps(k), json.dumps(states[k], sort_keys=True), "," if i < len(keys) - 1 else ""))
+        lines += ["},", '"transitions": [']
+        for i, t in enumerate(transitions):
+            lines.append(json.dumps(t, sort_keys=True) + ("," if i < len(transitions) - 1 else ""))
+        lines += ["]", "}"]
+        text = "\n".join(lines) + "\n"
+        path = Path(__file__).resolve().parent / "fixtures" / "undo-stack-transitions.json"
+        if os.environ.get("ROMP_WRITE_FIXTURES") == "1":
+            path.write_text(text)
+        self.assertTrue(path.exists(), "the table is committed beside the tests (ROMP_WRITE_FIXTURES=1 writes it)")
+        self.assertEqual(json.loads(path.read_text()), json.loads(text), "the committed table is what the kernel does now (ROMP_WRITE_FIXTURES=1 rewrites it)")
 
 
 if __name__ == "__main__":

@@ -43,12 +43,22 @@ test("kernel: the clears-log refusal names the request the way _refuse_drive's f
   // the double-fault window's other side (round four): the re-journal-first refusal fills the batch too, so the feed's revert has ids
   assert.match(KERNEL, /named = popped \+ \[i for i in owed_ids if i not in popped\][^\n]*\n\s+if batch_out is not None:\s+batch_out\.extend\(named\)\s+skipped\[LEDGER_REJOURNAL_AGAIN_KEY\] = \{"fault": _store_fault_copy\(e\), "ids": named\}\s+return skipped/);
   // the landed reorder tells the feed the popped batch was not restored this press (the third review's medium): an err frame, op undoClear, the popped ids
-  assert.match(KERNEL, /skipped\[LEDGER_REORDER_KEY\] = \{"fault": "", "ids": popped, "landed": bool\(landed\), "owed": \[\] if landed else list\(owed_ids\)\}/, "filed by _reorder after the flag step, worded for what happened (the fourth review)");
-  assert.match(KERNEL, /_reorder\(set\(owed_ids\) <= \(set\(restored \+ notices\) - set\(_rj\)\)\)/, "the owed cards came back only if every undo row landed and its flag step ran");
+  assert.match(KERNEL, /skipped\[LEDGER_REORDER_KEY\] = \{"fault": "", "ids": popped, "landed": bool\(landed\), "owed": \[\] if landed else list\(not_back\), "stamps": int\(stamps\)\}/, "filed by _reorder after the flag step, worded for what happened (the fourth review)");
+  assert.match(KERNEL, /_reorder\(not _not_back, _not_back, len\(\{_cur2\.get\(i\) for i in _not_back\}\) or 1\)/, "the owed cards came back only if every one did; the frame names the ones that did not and how many batches they sit in");
   assert.match(KERNEL, /_send\("Undo brought back earlier cards first",[\s\S]{0,400}ok=True\)/);
   assert.match(KERNEL, /_send\("Undo went to earlier cards first",[\s\S]{0,600}ok=True, owed=value\.get\("owed"\)/, "the words for an owed store still refusing, naming the owed ids");
   assert.match(KERNEL, /They still need one more Undo; the last clear comes back on the press after that\./, "the words name the press (the sixth executed review)");
-  assert.match(KERNEL, /"owed": \[\] if landed else list\(owed_ids\)/);
+  assert.match(KERNEL, /"owed": \[\] if landed else list\(not_back\), "stamps": int\(stamps\)/, "the ids that did NOT come back, and how many batches they sit in (the seventh executed review)");
+  assert.match(KERNEL, /They were left at different points, so they take more than one Undo; the last clear comes back after them\./, "no press count when they hold more than one stamp");
+  // round eight: the kernel's stack rides every account and the page takes it as its own; a batch this page makes goes under the owed entries
+  assert.match(KERNEL, /def _ledger_batches\(\):/);
+  assert.match(KERNEL, /frame\["batches"\], frame\["owedBatch"\] = _lb\[0\]/, "every account carries the kernel's stack");
+  assert.match(FEED, /if \(storeOp && Array\.isArray\(m\.batches\)\) \{/, "a frame with the stack reconciles; the branches below are an old kernel's road");
+  assert.match(FEED, /reconcileClearedStack\(m\.batches\.map/);
+  assert.match(FEED, /function pushClearedEntry\(entry: AskItem\[\]\): void \{\n  let i = clearedStack\.length;\n  const owedIds = new Set<string>\(\);\n  while \(i > 0 && \(clearedStack\[i - 1\] as any\)\._owed\) \{/, "a batch this page makes goes under the owed entries, and an id they hold counts once");
+  assert.match(FEED, /const rest = entry\.filter\(\(it\) => !owedIds\.has\(it\.itemId\)\);\n  if \(rest\.length\) clearedStack\.splice\(i, 0, rest\);/);
+  assert.match(FEED, /function reconcileClearedStack\(batches: string\[\]\[\], owedBatch: string\[\]\): void \{/);
+  assert.equal((FEED.match(/pushClearedEntry\(/g) || []).length, 5, "the four writers (a card's Clear, a group's, a session's Clear all, the board's Clear all) and the definition");
   assert.match(KERNEL, /frame\["owedIds"\] = \[str\(i\) for i in owed\]/);
   assert.doesNotMatch(KERNEL, /The owed cards came back, but romp could not clear the note/, "the owed-write account, filed before the flag step, claims nothing about the restore");
   // the owed note (lows 3 and 4 of the fourth review, the round-four verifier's medium): one lock across the section, the rewrite with what is still owed, none after an unreadable note

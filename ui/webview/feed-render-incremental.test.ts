@@ -21,6 +21,8 @@
 // settings modal never mounts. Synthetic only: the notes-api demo world, placeholder sids, hostname TESTHOST.
 import { test, mock, after } from "node:test";
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { prefixInbound } from "./federation";   // the inbound transform a remote host's frames and replies pass through (no DOM needed)
 
 // ── a DOM stand-in ─────────────────────────────────────────────────────────────────────────────────
@@ -1551,4 +1553,50 @@ test("a notice card on a data-defined board is not on the feed: its own board's 
   assert.equal(colOf("notice:" + WEB + ":lost:1"), "col-asks-list", "an unknown board's card files under the feed's default column");
   assert.equal(card("notice:" + WEB + ":lost:1")._nProd.textContent, "via figure · on an unknown board (gone)", "and says so beside the producer, never a silent drop");
   await dispatch(frame([g1, g2, g3]));
+});
+
+test("the feed's Undo stack equals the kernel's batches after every press, by enumeration over tests/fixtures/undo-stack-transitions.json (the boundary harness writes it; round eight of PR 1967)", async () => {
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });   // the test before this one reset them
+  const hooks = (await import("./feed")) as any;
+  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const reset = hooks._resetClearGestureStateForTests as () => void;
+  const T = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "..", "tests", "fixtures", "undo-stack-transitions.json"), "utf8"));
+  const sent0 = posted.length;
+  const g2it = card("g2")._it;                                              // the board as the tests around this one hold it, restored at the end
+  const cards: Record<string, any> = {
+    [T.cards.A]: cardOf(T.cards.A, T.sids.A, "web", "#3366cc", "wire the notes-api health route", "needs_input", { live: true, tree: [] }),
+    [T.cards.B]: cardOf(T.cards.B, T.sids.B, "api", "#cc6633", "decide the migration order for the notes table", "needs_input", { live: true, tree: [] }),
+  };
+  const byKey = new Map<string, any>();
+  for (const t of T.transitions) byKey.set(t.from + "|" + t.input.join(","), t);
+  const settle = () => { mock.timers.tick(700); for (const d of body.querySelectorAll("#err-dialog")) d.remove(); };
+  const press = async (t: any) => {
+    const action = t.input[0];
+    if (action === "clearA") card(T.cards.A)._clr.onclick(ev);
+    else if (action === "clearB") card(T.cards.B)._clr.onclick(ev);
+    else if (action === "clearAll") body.byId("feed-clearall")!.onclick!(ev);
+    else body.byId("feed-undoclear")!.onclick!(ev);
+    for (const f of t.frames) await dispatch(f);                              // the kernel's real frames for this press
+    await dispatch(frame(t.visible.map((id: string) => card(id)?._it ?? cards[id])));   // the payload after it
+    settle(); mock.timers.tick(7000);
+    const where = "after " + t.input.join("/") + " from " + t.from;
+    assert.deepEqual(stackIds(), t.after, where + ": the feed's stack, top first, is the kernel's batches");
+    for (const id of [T.cards.A, T.cards.B]) assert.equal(!!card(id), t.visible.includes(id), where + ": " + id + " is on the board iff the kernel shows it");
+  };
+  let n = 0;
+  for (const t of T.transitions) {
+    reset();
+    await dispatch(frame([cards[T.cards.A], cards[T.cards.B]])); settle();
+    let key = T.start;
+    for (const step of T.states[t.from].witness) {
+      const st = byKey.get(key + "|" + step.join(","));
+      assert.ok(st, "a witness step is a recorded transition");
+      await press(st); key = st.to;
+    }
+    await press(t); n++;
+  }
+  assert.ok(n >= 100, "an enumeration, not a handful: " + n + " transitions");
+  reset(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); settle();
+  mock.timers.reset();
 });
