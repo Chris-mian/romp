@@ -356,6 +356,11 @@ How a page looks is kept in the browser you are using. What the kernel acts on,
 Auto Nudge or Task tracking for instance, is sent to every machine you are
 connected to.
 
+A few settings describe one machine and stay on it. **Extra models from your
+API gateway**, under General, This machine, offers the models that machine's
+own gateway serves in every model picker, once `ROMP_ROUTER_MODELS` in its
+`service.env` names them.
+
 A machine that was set differently while you were apart asks rather than
 changes: a line under the row, and a card on the feed, each offering **Apply**
 or **Keep mine**. A picker above the settings tabs says which machine you are

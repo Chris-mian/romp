@@ -631,13 +631,38 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultracode")   # ultra
 SDK_MAX_BUFFER = 100 * 1024 * 1024
 
 
+def _parse_router_models(raw):
+    """ROMP_ROUTER_MODELS -> the declared gateway ids: comma-separated, order kept, whitespace stripped, duplicates
+    and empties dropped. kernel._parse_router_models is the byte-for-byte twin; tests/test_router_models.py pins
+    them equal (the kernel must run without this module, so neither imports the other's)."""
+    out, seen = [], set()
+    for part in str(raw or "").split(","):
+        p = part.strip()
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def _router_declared():
+    """The gateway ids the operator declared for this service (the environment the manager handed the process; a
+    short split per call, no memo, so a test's env change is seen). The BADGE's use: a declared id is a real model id
+    the CLI may report and is shown verbatim — the Extra models switch's state plays no part, because a session still
+    running a removed id keeps its badge."""
+    return frozenset(_parse_router_models(os.environ.get("ROMP_ROUTER_MODELS")))
+
+
 def pretty_model(raw: str) -> str:
     """A raw SDK model id → the short badge the tmux statusline shows, so SDK and tmux sessions read the
     same and the model picker's 'current' highlight (which matches on the leading word) lights up.
     'claude-opus-4-8' → 'Opus 4.8', 'claude-haiku-4-5-20251001' → 'Haiku 4.5', 'claude-fable-5' → 'Fable 5'.
-    Unrecognised ids pass through verbatim."""
+    A declared gateway id (ROMP_ROUTER_MODELS) shows VERBATIM: the picker's current-model tick is a startsWith
+    on the id and the colour helpers match the id's words, so the badge must carry the id itself (the picker
+    row wears the human label the kernel derives). Unrecognised ids pass through verbatim."""
     if not raw:
         return ""
+    if raw in _router_declared():
+        return raw
     m = re.match(r"claude-([a-z]+)-(\d+)(?:[-.](\d+))?", raw)
     if not m:
         return raw
@@ -656,7 +681,7 @@ def model_label(live: str, chosen: str) -> str:
         return live
     if not chosen or chosen == "default":
         return ""
-    return pretty_model(chosen) if chosen.startswith("claude-") else chosen.capitalize()
+    return pretty_model(chosen) if (chosen.startswith("claude-") or chosen in _router_declared()) else chosen.capitalize()
 
 
 def _alias_label(alias: str) -> str:
@@ -665,7 +690,7 @@ def _alias_label(alias: str) -> str:
     if not alias or alias == "default":
         return ""
     alias = re.sub(r"\[[^\]]*\]$", "", alias)   # fable[1m] → Fable: the context tag is not part of the name
-    return pretty_model(alias) if alias.startswith("claude-") else alias.capitalize()
+    return pretty_model(alias) if (alias.startswith("claude-") or alias in _router_declared()) else alias.capitalize()
 
 
 def _is_compact_cmd(text: str) -> bool:
@@ -8669,9 +8694,10 @@ class SdkSession:
                 m = None
             # Only adopt a REAL model id. Injected / synthetic assistant turns carry model="<synthetic>" (and
             # the CLI writes it to the transcript too); pretty_model passes unrecognised ids through verbatim,
-            # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id always contains
-            # "claude" (claude-opus-4-8, us.anthropic.claude-…); keep the last good one otherwise.
-            if m and "claude" in m.lower():
+            # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id contains
+            # "claude" (claude-opus-4-8, us.anthropic.claude-…) or is a gateway id the operator DECLARED
+            # (ROMP_ROUTER_MODELS, the Extra models switch); keep the last good one otherwise.
+            if m and ("claude" in m.lower() or m in _router_declared()):
                 self._learn_model(pretty_model(m), raw=str(m), served=True)
         elif isinstance(msg, ResultMessage) and self._consume_move_settle(msg):
             pass   # the accepted move's turn-less result — nothing ended, so nothing settles (see the def)

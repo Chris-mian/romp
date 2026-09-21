@@ -2268,6 +2268,8 @@ def _version_info(authed=False):
             # in the "settings" sub-dict below, whose mixed marks promise a cross-machine write this never makes
             "thinkingSummaries": _thinking_summaries_on(),
             "wholeChatFrames": _whole_chat_frames_on(),   # the Whole chat frames switch (2026-09-15): per-install, the gear's row reads it
+            "routerModels": _router_models_on(),   # the Extra models switch: per-install, the gear's row reads it; the declared list
+            #                                        and the gateway bit ride the AUTHED /models `router` section, never this route
             "taskTracking": _mv["taskTracking"],   # the master switch (T404): the gear's row and the shell's rail read it; one snapshot with its stamp
             "updateMode": _update_mode(),    # ask|auto|off (the boot release check) → the gear dropdown
             "updateAvail": _UPDATE_AVAIL[0],   # newer release the boot check found ("" = none/unknown)
@@ -3109,6 +3111,246 @@ def _note_unknown_model(mid):
     if started:
         _catalog_asked.add(mid)
     return started
+
+
+# ── extra model families from the operator's API gateway: an OPT-IN switch ────────────────────────────
+# A loopback gateway set as Claude Code's ANTHROPIC_BASE_URL (a model-router) forwards a first-party pick to
+# Anthropic byte-exact and re-routes any other id it knows to that id's provider, so a Claude Code session
+# can pick one of the gateway's families exactly as it picks a first-party one, effort riding the same axis.
+# OFF by default: stock romp offers the first-party families alone. While the Extra models switch is on,
+# the families the OPERATOR DECLARED (ROMP_ROUTER_MODELS in service.env — a service knob, never a key; read
+# when the service starts, so a change needs a service restart while the switch itself applies live;
+# optionally ROMP_ROUTER_MODELS_URL for a gateway that lists models) install as TOP-LEVEL MODEL_CHOICES:
+# their own picker rows, not versions of a first-party family (the version catalog above is first-party by
+# grammar, _MODEL_ID_RE), a gateway id IS its choice value. Nothing here keys on a vendor prefix: membership
+# in the declared set is the test everywhere. Add-only and exactly reversible: _ROUTER_INSTALLED records what
+# the switch added, so turning it off removes that and nothing else. No sdk_backend _MODEL_TIERS entry and no
+# colour rank: a first-party<->gateway swap is a cross-provider change on an explicit pick, never a capacity
+# fallback, and a gateway row wears no capability tint. A gateway's presence is an ADVISORY (the authed
+# /models `router` section, one stderr line when the switch is on without one), never a gate: the switch is
+# the operator's explicit intent, and a silent gate is the detect-and-override this design replaces.
+ROUTER_MODELS_FILE = "router-models.json"    # the Extra models switch: {"enabled": bool, "gt": epoch-ms}; per-install
+_ROUTER_INSTALLED = set()                    # the ids THIS switch added to MODEL_CHOICES — the exact undo set
+_router_status_note = [None]                 # the standing advisory (no gateway / nothing declared / N live on a removed id)
+
+
+def _parse_router_models(raw):
+    """ROMP_ROUTER_MODELS -> the declared ids: comma-separated, order kept, whitespace stripped, duplicates and
+    empties dropped. sdk_backend._parse_router_models is the byte-for-byte twin (the badge reads the same variable
+    in-process, and the kernel must run without the SDK module); tests/test_router_models.py pins them equal."""
+    out, seen = [], set()
+    for part in str(raw or "").split(","):
+        p = part.strip()
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def _router_declared_families():
+    """The ids the operator declared for THIS service: ROMP_ROUTER_MODELS from the environment the manager handed
+    the kernel at start (systemd's EnvironmentFile), so a change needs a service restart; the switch applies live."""
+    return _parse_router_models(os.environ.get("ROMP_ROUTER_MODELS"))
+
+
+def _router_label(mid):
+    """A gateway id's PICKER label. An id shaped vendor-version-codename ('gpt-6-astra') reads 'GPT-6 Astra' (the
+    vendor upper, the version verbatim, the codename capitalised); any other shape shows verbatim, never mangled.
+    The BADGE shows the raw id (sdk_backend.pretty_model), so the picker's current-model tick (a startsWith on the
+    id) and the colour helpers keep matching; only the picker row wears this label."""
+    m = re.match(r"^([a-z]+)-([0-9][0-9.]*)-([a-z]+)$", str(mid or ""))
+    return "%s-%s %s" % (m.group(1).upper(), m.group(2), m.group(3).capitalize()) if m else str(mid or "")
+
+
+def _router_gateway_configured():
+    """(configured, error): whether the operator's Claude Code settings point ANTHROPIC_BASE_URL somewhere other
+    than Anthropic, the sign a gateway is in place. Read through the credentials module the kernel already holds
+    (managed settings first, then the user's, under CLAUDE_CONFIG_DIR: Claude Code's own precedence and the floor
+    the test suite sets), never a hand-rolled home-directory read. A read fault is reported in the advisory."""
+    try:
+        for path in jd._cred.settings_files(None, operator_only=True):
+            d = jd._cred._read_settings(path)
+            env = d.get("env") if isinstance(d, dict) else None
+            base = str((env or {}).get("ANTHROPIC_BASE_URL") or "").strip() if isinstance(env, dict) else ""
+            if base:
+                host = (urlparse(base).hostname or "").lower()
+                return (bool(host) and not host.endswith("anthropic.com"), None)
+        return (False, None)
+    except jd._cred.CredentialError as e:
+        return (False, str(e))
+    except Exception as e:
+        return (False, "%s: %s" % (type(e).__name__, e))
+
+
+def _fetch_router_models(url, timeout=4):
+    """The ids a model-listing endpoint serves ({data:[{id}]}), for a gateway that lists models (most loopback
+    gateways forward /v1/messages only, which is why this rides ROMP_ROUTER_MODELS_URL alone). An id the
+    first-party grammar recognises is skipped: a gateway mirroring Anthropic's own list must not install
+    duplicate first-party rows. Raises on any failure; the caller owns the loudness."""
+    import urllib.request
+    with urllib.request.urlopen(urllib.request.Request(url), timeout=timeout) as r:
+        d = json.loads(r.read().decode("utf-8", "replace"))
+    data = d.get("data") if isinstance(d, dict) else d
+    out = []
+    for m in (data or []):
+        mid = str(m.get("id") or "") if isinstance(m, dict) else ""
+        if mid and not _catalog_family(mid) and not _MODEL_ID_RE.match(mid) and mid not in out:
+            out.append(mid)
+    return out
+
+
+def _apply_router_families(ids):
+    """Install gateway ids as top-level picker choices, ADD-ONLY, after the first-party families. Mutates
+    MODEL_CHOICES in place and updates the pick vouch's _MODEL_VALUES and the judge's allowed set, so every
+    picker, _vouched_model and the judge follow with no re-import; records what it added in _ROUTER_INSTALLED.
+    No colour rank. Returns the ids newly added. The caller sends the models frame OUTSIDE _catalog_lock."""
+    with _catalog_lock:
+        have = {m["value"] for m in MODEL_CHOICES}
+        added = [g for g in ids if g and g not in have]
+        if not added:
+            return []
+        MODEL_CHOICES.extend({"value": g, "label": _router_label(g)} for g in added)
+        for name in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES"):
+            st = globals().get(name)
+            if isinstance(st, set):
+                st.update(added)
+        _ROUTER_INSTALLED.update(added)
+    return added
+
+
+def _remove_router_families():
+    """The exact reverse of every apply: only the ids THIS switch installed leave MODEL_CHOICES and both value sets,
+    never anything the first-party catalog holds. A session already running a removed id keeps running it (the
+    pick just stops being offered; a later pick of it is refused by _vouched_model). Returns the ids removed; the
+    caller sends the models frame OUTSIDE _catalog_lock."""
+    with _catalog_lock:
+        gone = sorted(_ROUTER_INSTALLED)
+        if not gone:
+            return []
+        gs = set(gone)
+        MODEL_CHOICES[:] = [m for m in MODEL_CHOICES if m["value"] not in gs]
+        for name in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES"):
+            st = globals().get(name)
+            if isinstance(st, set):
+                st.difference_update(gs)
+        _ROUTER_INSTALLED.clear()
+    return gone
+
+
+def _router_live_on(ids):
+    """How many live sessions run one of `ids` right now (the switch-off advisory), read off the liveness snapshot
+    the kernel already holds — never a registry file of its own. Best-effort: 0 on any failure."""
+    try:
+        rows = _live_map() or {}
+        return sum(1 for r in rows.values()
+                   if isinstance(r, dict) and str(r.get("model") or r.get("liveModel") or "") in ids)
+    except Exception:
+        return 0
+
+
+def _router_models_on():
+    """The Extra models switch: OFF unless this install's file says yes — absent, unreadable or malformed all read
+    False, never raise, never create the file (the Whole chat frames shape). Per-install on purpose: the gateway
+    is a property of this machine (its Claude Code settings, its service.env), so the switch never follows to a
+    peer that may have no gateway to route a pick through."""
+    try:
+        d = json.loads((jd.STATE / ROUTER_MODELS_FILE).read_text())
+    except Exception:
+        return False
+    return isinstance(d, dict) and d.get("enabled") is True
+
+
+def _router_models_gt():
+    """The switch's last applied gesture stamp; 0 for an absent, unreadable or garbled store."""
+    try:
+        d = json.loads((jd.STATE / ROUTER_MODELS_FILE).read_text())
+    except Exception:
+        return 0
+    return _gt_int(d.get("gt")) if isinstance(d, dict) else 0
+
+
+def _router_apply_declared(reason):
+    """Install the declared list now (synchronous and network-free), and when ROMP_ROUTER_MODELS_URL names a
+    gateway that lists models, fetch that list on a thread and union it in — never on the caller's thread (the
+    WS reader, the boot path). Refreshes the advisory. Returns the ids the declared list added."""
+    declared = _router_declared_families()
+    gw, gerr = _router_gateway_configured()
+    if not declared:
+        _router_status_note[0] = "the switch is on but ROMP_ROUTER_MODELS declares nothing"
+        sys.stderr.write("extra models (%s): %s; nothing to offer\n" % (reason, _router_status_note[0]))
+    elif not gw:
+        _router_status_note[0] = gerr or ("no gateway is configured (ANTHROPIC_BASE_URL is Anthropic's or unset), "
+                                          "so the API would refuse a pick")
+        sys.stderr.write("extra models (%s): %s\n" % (reason, _router_status_note[0]))
+    else:
+        _router_status_note[0] = None
+    added = _apply_router_families(declared)
+    if added:
+        sys.stderr.write("extra models (%s): %d joined the pickers: %s\n" % (reason, len(added), ", ".join(added)))
+    url = (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()
+    if url:
+        def go():
+            try:
+                more = _apply_router_families(_fetch_router_models(url))
+                if more:
+                    sys.stderr.write("extra models (%s): %d more from the gateway's list: %s\n"
+                                     % (reason, len(more), ", ".join(more)))
+                    _models_changed()
+            except Exception as e:
+                sys.stderr.write("extra models (%s): the gateway's model list failed (%s: %s) — serving the "
+                                 "declared list\n" % (reason, type(e).__name__, str(e)[:160]))
+        threading.Thread(target=go, name="router-models", daemon=True).start()
+    return added
+
+
+def _set_router_models(enabled, gt=None):
+    """Returns the applied gesture stamp (epoch ms), or None when the gesture was its own echo, a stale `gt` stood
+    down, or the store write failed (OSError: loud on stderr, nothing applied). Read-check-write under
+    _SETTINGS_LOCK like its siblings; the live apply or remove and the models frame run OUTSIDE the lock."""
+    with _SETTINGS_LOCK:
+        try:
+            prev = json.loads((jd.STATE / ROUTER_MODELS_FILE).read_text())
+        except Exception:
+            prev = None
+        prev_gt = _gt_int(prev.get("gt")) if isinstance(prev, dict) else 0
+        if _gesture_echo(gt, prev_gt, isinstance(prev, dict) and bool(prev.get("enabled")) == bool(enabled)):
+            return None
+        if _setting_stale("router-models", gt, prev_gt):
+            return None
+        stamp = gt if gt is not None else int(time.time() * 1000)
+        try:
+            _atomic_write(jd.STATE / ROUTER_MODELS_FILE, json.dumps({"enabled": bool(enabled), "gt": stamp}))
+        except OSError as e:
+            sys.stderr.write("romp-kernel: the extra models switch could not be written (%s); nothing applied\n" % e)
+            return None
+    if enabled:
+        _router_apply_declared("switch on")
+    else:
+        gone = _remove_router_families()
+        live = _router_live_on(set(gone)) if gone else 0
+        _router_status_note[0] = ("%d live session(s) still run a removed model; a later pick of one is refused" % live
+                                  if live else None)
+        if gone:
+            sys.stderr.write("extra models (switch off): %d left the pickers: %s%s\n"
+                             % (len(gone), ", ".join(gone), " — %d live session(s) keep running one" % live if live else ""))
+    _models_changed()
+    return stamp
+
+
+def _router_status():
+    """The authed /models payload's `router` section, what the gear's status line reads: the switch, the ids THIS
+    kernel parsed at start, whether a gateway is configured, and the standing advisory (or null)."""
+    gw, gerr = _router_gateway_configured()
+    return {"enabled": _router_models_on(), "declared": _router_declared_families(), "gateway": bool(gw),
+            "error": _router_status_note[0] or gerr}
+
+
+def _router_models_boot():
+    """The switch at kernel boot: install the declared families when it is on. Suppressed under
+    ROMP_MODEL_CATALOG=off (a hermetic lab serves the shipped list alone). Returns the ids installed."""
+    if (os.environ.get("ROMP_MODEL_CATALOG") or "").strip().lower() == "off" or not _router_models_on():
+        return []
+    return _router_apply_declared("boot")
 
 
 def _catalog_public_status():
@@ -18884,6 +19126,12 @@ def _sdk_locked():
                 _model_catalog_boot()
             except Exception:
                 sys.stderr.write("model catalog boot: %s\n" % traceback.format_exc())
+            try:
+                # the Extra models switch: the operator's declared gateway families join the pickers here
+                # when the switch is on — off-network on the boot path (see _router_models_boot)
+                _router_models_boot()
+            except Exception:
+                sys.stderr.write("extra models boot: %s\n" % traceback.format_exc())
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,
                 poke=_wake_kernel, push=_pusher_wake.set,   # poke = the turn END: judges AND parked-op delivery
@@ -53971,6 +54219,8 @@ def _setting_kept_value(name):
         return _thinking_summaries_on()
     if name == "whole-chat-frames":
         return _whole_chat_frames_on()
+    if name == "router-models":
+        return _router_models_on()
     if name == "task-tracking":
         return _task_tracking_on()
     return jd._state_str(name, "")   # the judge-tier stores are bare value files
@@ -54136,7 +54386,7 @@ def _apply_mesh_settings(body):
 
 # Every gt-gated store, by the name _setting_stale is called with — the vocabulary the settingStale
 # frame and the gear's STALE_LABELS already share, so /version's settingsGt speaks the same one.
-_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "whole-chat-frames", "task-tracking",
+_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "whole-chat-frames", "router-models", "task-tracking",
               "judge-model", "index-model", "judge-effort", "index-effort", "judge-concurrency",
               "distill-model", "distill-effort", "comment-model", "comment-effort", "comment-fast",
               "judge-fast", "distill-fast", "index-fast",
@@ -54594,6 +54844,8 @@ def _setting_stored_gt(name):
         return _gt_int(_auto_nudge_data().get("compactSuggestGt"))
     if name == "update-mode":
         return _update_mode_gt()
+    if name == "router-models":
+        return _router_models_gt()
     if name in ("file-editing", "thinking-summaries", "whole-chat-frames"):
         try:
             d = json.loads((jd.STATE / (THINKING_SUMMARIES_FILE if name == "thinking-summaries"
@@ -69549,7 +69801,7 @@ class Handler(BaseHTTPRequestHandler):
                                 for c in MODEL_CHOICES],
                      "efforts": [dict(c, color=_effort_color(c["value"], _stops), tone=_effort_tone(c["value"]))
                                  for c in EFFORT_CHOICES],
-                     "codex": {"models": cx_models, "error": cx_err,
+                     "router": _router_status(), "codex": {"models": cx_models, "error": cx_err,
                                "efforts": list(cx_efforts.values())},
                      # the create dialog's pre-read (the user 2026-08-29): what a new comment thread
                      # gets when the dialog is left untouched — RAW ("session" = same as the session),
@@ -72030,6 +72282,15 @@ class Handler(BaseHTTPRequestHandler):
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
             if _set_whole_chat_frames(enabled, gt=_gesture_ms(msg)) is None:
+                _tell_stale_gesture(client, msg)
+        elif msg and msg.get("type") == "setRouterModels" and msg.get("enabled") is not None:
+            # The gear's Extra models switch: kernel-side, PER-INSTALL like setWholeChatFrames (the gateway is this
+            # machine's), gt-gated all the same; the setter applies or removes the families and sends the models frame
+            enabled, ferr = _as_bool(msg.get("enabled"), "enabled")
+            if ferr:
+                _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
+                return
+            if _set_router_models(enabled, gt=_gesture_ms(msg)) is None:
                 _tell_stale_gesture(client, msg)
         elif msg and msg.get("type") == "setSettingPin" and msg.get("store"):
             # The per-machine PIN (plans/settings-across-machines.md, one A): this dashboard's own kernel keeps the store's value
