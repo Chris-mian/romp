@@ -314,8 +314,8 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   does), so a reloaded pane knows the focused session before any switch. The id arrives host-prefixed for a remote tab (federation's fan-out, `federation.ts:435`),
   which is the id the listing needs.
 - **Locked, the pane stays on the picked session; only the lock button changes the lock** (the manager's correction
-  of 2026-09-20, the user's words: unlocked, the pane mirrors whatever session was picked OR most recently selected in a
-  chat pane, whichever came last; locked, it stays on the picked one). So a pick never flips the lock: unlocked, a pick
+  of 2026-09-20, paraphrasing the user, who wanted an unlocked pane to mirror whichever came last, a pick or a chat tab
+  switch, and a locked pane to stay on its pick). So a pick never flips the lock: unlocked, a pick
   shows that session until the next tab switch replaces it (the follow continues); locked, a pick replaces the locked
   session and the lock stays on. The lock button beside the picker wears the Sessions pane's padlock (the glyph
   `_drawLockToggle` draws, `ui/romp-timeline-view.js:7100`: the body and the two shackle paths, seated when locked and

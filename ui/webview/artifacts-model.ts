@@ -49,7 +49,7 @@ export type SelectionEvent =
   | { type: "pick"; id: string }                  // a pick from the picker's list
   | { type: "toggleLock" }                        // the lock button
   | { type: "tabsChanged"; tabs: TabRow[] };      // the shell's union changed (a tab opened or closed)
-/** The selection machine (section 9.5, the user's words through the manager, 2026-09-20): unlocked, the pane shows whatever came
+/** The selection machine (section 9.5; the manager's paraphrase of the user, 2026-09-20): unlocked, the pane shows whatever came
  *  last, a pick or the chat's most recently selected tab; locked, it stays on the pick and ignores the chat; ONLY the lock
  *  button changes the lock, a pick never does (unlocked, a pick shows that session until the next tab switch replaces it;
  *  locked, a pick replaces the locked session and the lock stays on). A null active tab (no tab shown) selects nothing new.
