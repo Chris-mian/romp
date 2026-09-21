@@ -64,8 +64,15 @@ plugins:
 # people sending pull requests, not for people using Romp, and the repo's own
 # CLAUDE.md and the tier check reach it by path. It still builds, and still
 # answers at /pr-tiers/.
+# a page in neither nav nor not_in_nav is an ORPHAN and the strict build fails on it (2026-09-21): MkDocs reports one at
+# info by default, which strict mode does not promote, so the level is raised here; a page meant to stay out of the nav is
+# listed below
+validation:
+  nav:
+    omitted_files: warn
 not_in_nav: |
   pr-tiers.md
+  codex.md
 
 nav:
   - Overview: index.md

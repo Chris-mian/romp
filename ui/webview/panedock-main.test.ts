@@ -133,3 +133,15 @@ test("the engine's reconcile under a drag: a leaf-set change commits the drag, t
   const alt = ENGINE.indexOf("${ALT_CLASS} iframe{cursor:grab}"), cur = ENGINE.indexOf("${RESIZE_X_CLASS} .pane");
   assert.ok(alt > 0 && cur > alt, "the cursor rules come after the pane and Option rules, so they win");
 });
+
+// A CHAT COLUMN's frame is classified by the exact id shape the split script mints, never by the `f-chat-` prefix (the 1920 read: a
+// registry pane `chat-notes` renders as `f-chat-notes` and was sorted into the chat: no grab detector, the chat's strip style).
+test("isChatFrame: f-chat and f-chat-<n> are chat columns; a registry pane whose id begins chat- is not", () => {
+  const isChatFrame = (PDM as unknown as Record<string, (id: string) => boolean>).isChatFrame;
+  assert.equal(typeof isChatFrame, "function", "the engine exports its one chat-frame read");
+  assert.equal(isChatFrame("f-chat"), true); assert.equal(isChatFrame("f-chat-2"), true); assert.equal(isChatFrame("f-chat-14"), true);
+  assert.equal(isChatFrame("f-chat-notes"), false, "a registry pane's frame"); assert.equal(isChatFrame("f-chat-"), false); assert.equal(isChatFrame("f-chatter"), false);
+  assert.equal(isChatFrame("f-files"), false); assert.equal(isChatFrame("f-notes"), false);
+  assert.equal((ENGINE.match(/isChatFrame\(f\.id\)/g) || []).length, 2, "both sites read it: the strip style's injection and the grab detector's exclusion");
+  assert.doesNotMatch(ENGINE, /f\.id\.indexOf\("f-chat-"\) === 0/, "no prefix test remains");
+});

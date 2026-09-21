@@ -446,7 +446,7 @@ const PANES = {};
 const TAPS = {}, BUTTONS = {};
 const button = (key) => BUTTONS[key] || (BUTTONS[key] = { hidden: false, getAttribute: (a) => (a === 'data-pane' ? key : null), classList: { toggle() {} },
   addEventListener: (ev, f) => { if (ev === 'click') TAPS[key] = f; } });
-const BAR = { offsetHeight: 44, querySelectorAll: (sel) => (sel === 'button[data-pane]' ? [button('chat'), button('feed'), button('files')] : []) };
+const BAR = { offsetHeight: 44, querySelectorAll: (sel) => (sel === 'button[data-pane]' ? [button('chat'), button('timeline'), button('fleet'), button('feed'), button('files')] : []) };   // the bar as _mtab_buttons_html renders it: every non-experimental pane (a pane with NO button falls to the chat since the registry fix PR)
 global.document = {
   visibilityState: 'visible',
   addEventListener: () => {},

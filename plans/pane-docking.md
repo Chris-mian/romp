@@ -461,9 +461,10 @@ linked issue. The plan avoids it by keeping the old keys as the OFF-path source 
 positions whatever panes the shell lists; today that list is five constants echoed by hand across the shell.
 That design makes a pane a record (id, title, source, on, experimental, protocol) with the board registry's
 door (`define`, `list`, `show`, `remove`; `STATE/panes/<id>.json`), has the shell render its rail, tabs,
-markup, CSS and broadcast from the list, and has this kit's `ROW_ORDER`, `growKey`, `defaultDock` and
-`paneTitle` read the same list (its phase two), so a registry pane is a leaf like any other. Nothing in this
-plan changes for it; the two fixed lists named above are the seam it replaces.
+markup, CSS and broadcast from the list, and has this kit's `growKey`, `defaultDock` and `paneTitle` read the
+same list and its row order read off the DOM in document order (its phase two; the fixed `ROW_ORDER` list was
+retired by the registry fix PR, 2026-09-21), so a registry pane is a leaf like any other. Nothing in this plan
+changes for it; the two fixed lists named above are the seam it replaces.
 
 **Resolved (2026-09-18): a close PARKS the iframe, it does not unmount** (section 5). The open question
 this doc first carried, unmount a closed pane versus keep it mounted-but-hidden, is decided for parking:

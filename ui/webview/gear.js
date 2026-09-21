@@ -134,6 +134,11 @@ var GEAR_HTML =
   '<span><b>Files</b>' +   // the row's name follows Sessions, Outline and Feed above it (T407, the user 2026-09-13); the id, the key and the default stand
   '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links then open over the pane you clicked.</span>' +
   '</span></label>' +
+  // the REGISTRY panes (plans/panes-as-data.md): one Panes row per pane the shell's pane list carries beyond the hand rows (the
+  // Artifacts record, the data panes), rendered at open from the dashboard's own body attribute (read across the same-origin
+  // frame boundary), so a pane defined at the kernel shows up here without a gear release; an experimental pane wears the word
+  // and is off until its row is checked. Right after the Files row, so the pane rows stay one group above the docking switch
+  '<div id=rs-panes-data></div>' +
   // the pane docking kit (plans/pane-docking.md; the user 2026-09-18, who wants panes moved by their empty space, not a
   // title bar, and asked for it DEFAULT OFF): the shell's panedock-main.ts bundle reads paneDocking and, on, positions the
   // panes from a layout tree, arms a move from a pane's ring, its top row's empty run or Option-drag, and shows the
@@ -142,10 +147,6 @@ var GEAR_HTML =
   '<span><b>Pane docking</b>' +
   '<span class=rs-sub>Move panes by grabbing their empty space: the frame around a pane, the gap in its top row, or Option-drag (Alt) anywhere over it. A blue outline shows where the pane will land; drop it on another pane\'s left, right, top or bottom half. Off (the default) keeps the fixed layout.</span>' +
   '</span></label>' +
-  // the REGISTRY panes (plans/panes-as-data.md): one Panes row per data pane, rendered at open from the dashboard's own
-  // pane list (the shell's body attribute, read across the same-origin frame boundary), so a pane defined at the kernel
-  // shows up here without a gear release; an experimental pane wears the word and is off until its row is checked
-  '<div id=rs-panes-data></div>' +
   // APPEARANCE, a section of General since T404 (the user 2026-09-13; a tab of its own before, renamed from Colors 2026-08-28): the
   // theme, the colormap and the session palette; an older ask or remembered tab named appearance lands here (TAB_ALIASES)
   "<div class='rs-sec' data-section=appearance>Appearance</div>" +
@@ -428,7 +429,7 @@ function initGear(post, opts) {
   // Context bar read as on at 50 percent whatever the user had chosen, and a save of ANY setting wrote the empty prefs and
   // rewrote the mirror. A store with no tabWidgets derives the prefs from tabCtx at read time (widgetPrefs, the same
   // derivation settings.ts makes), and only a widget change writes the key (saveWidgets).
-  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; delete o.fileLinkPane; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
+  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; delete o.fileLinkPane; delete o.showArtifactsControl; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
   function tabCtxMode(v) { return (v === 'always' || v === 'never') ? v : (v === false ? 'never' : 'over50'); }
@@ -458,12 +459,18 @@ function initGear(post, opts) {
   if (dn) dn.addEventListener('change', function () { var s = load(); s.denseChrome = dn.checked; save(s); });
   if (fsc) fsc.addEventListener('change', function () { var s = load(); s.showFilesControl = fsc.checked; save(s); });
   if (pdk) pdk.addEventListener('change', function () { var s = load(); s.paneDocking = pdk.checked; save(s); });   // the shell's engine hears the save (romp:settings in this document, the storage event from another) and starts or stops   // the shell hears the store change (its storage listener) and hides or shows the control (T317)
-  // the optional panes: the whole set is rewritten from the three boxes on every change (a missing key reads
-  // as shown everywhere, settings.ts paneSet), and the shell hears the save as a storage event
-  function panesOf(s) { var p = (s && s.panes && typeof s.panes === 'object') ? s.panes : {}; return { timeline: p.timeline !== false, fleet: p.fleet !== false, feed: p.feed !== false }; }
+  // the optional panes: the set is rewritten from the three boxes AND the store's other boolean members on every change
+  // (panesOf below; a missing key reads as shown everywhere, settings.ts paneSet), and the shell hears the save as a storage event
+  // the whole stored set: the three hand rows' keys as booleans (a missing key reads as shown, settings.ts paneSet) AND every
+  // other boolean member the store holds, the registry panes' keys among them (the 1919 read, still standing at 1922: the
+  // handler below rewrote the set from the three keys alone, so a flip of Sessions, the Outline or the Feed dropped every
+  // registry key: the Artifacts control hid and its column closed while its row read checked, and a data pane's stored
+  // false came back on). The filter is paneSet's: booleans only, so a stray stored value never rides along.
+  function panesOf(s) { var p = (s && s.panes && typeof s.panes === 'object') ? s.panes : {}; var out = { timeline: p.timeline !== false, fleet: p.fleet !== false, feed: p.feed !== false };
+    Object.keys(p).forEach(function (k) { if (!(k in out) && typeof p[k] === 'boolean') out[k] = p[k]; }); return out; }
   Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].addEventListener('change', function () { var s = load(); var p = panesOf(s); p[k] = pn[k].checked; s.panes = p; save(s); }); });
-  // the registry panes' rows (plans/panes-as-data.md): the dashboard emits its data panes as a body attribute when the
-  // registry holds any; the gear reads it from the shell (the settings page is a same-origin frame of it, and on VS Code's
+  // the registry panes' rows (plans/panes-as-data.md): the dashboard emits its pane list as a body attribute (the shipped
+  // Artifacts record rides it on every kernel, the data panes beside it); the gear reads it from the shell (the settings page is a same-origin frame of it, and on VS Code's
   // panel there is no dashboard and no list). A row's box writes settings.panes[id]; the shell's reconcile reads it (absent
   // means on for a normal pane, off for an experimental one).
   // what a SHIPPED record beyond the hand-written five shows, for its generic Panes row (the registry's rows carry no description;
