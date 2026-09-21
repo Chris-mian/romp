@@ -373,9 +373,14 @@ async function bandGrowMidDrag({ escape = false, dir = "row", far = false } = {}
   await mv(-60); await frame(pb); await frame(pb);
   const mid = { rects: await rectsOf(), tl: await tlOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 60 };
   await tlFrB.evaluate(() => { const g = document.createElement("div"); g.id = "lab-grow"; g.style.height = "150px"; document.body.appendChild(g); });
+  // the edge on EVERY animation frame from the growth to the sample below (the fifth review: a frame armed by the reconcile landed one
+  // paint late, so the pre-growth ratios painted for one frame): the pair's edge from the DOM, the height variable beside it
+  const trace = await pb.evaluate(({ L, isRow, n }) => new Promise((res) => { const out = []; let k = 0;
+    const step = () => { const el = document.getElementById(L); const r = el.getBoundingClientRect(); out.push({ edge: isRow ? r.right : r.bottom, tl: document.querySelector(".col").style.getPropertyValue("--tl") }); if (++k < n) requestAnimationFrame(step); else res(out); };
+    requestAnimationFrame(step); }), { L: p.L, isRow: dir === "row", n: 10 });
   await pb.waitForFunction((t) => document.querySelector(".col").style.getPropertyValue("--tl") !== t, tl0, { timeout: 5000 }).catch(() => {});
   await frame(pb); await frame(pb);
-  const grown = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 60, writes: await kitWrites(w0) };   // no move since the growth: the edge re-applied against the re-read geometry
+  const grown = { trace, tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 60, writes: await kitWrites(w0) };   // no move since the growth: the edge re-applied against the re-read geometry
   await mv(-100); await frame(pb); await frame(pb);   // another frame of the drag
   const later = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 100, writes: await kitWrites(w0) };
   let farPoint = null;
@@ -815,6 +820,10 @@ class ServedLiveDividers(unittest.TestCase):
         self.assertNotEqual(b["grown"]["tl"], b["tl0"], "the band grew under the drag: %r" % b["grown"]["tl"])
         self._within(b["mid"]["edge"] + 3.5, b["mid"]["pointer"], 1.5, "before the growth the edge sits at the pointer")
         self._within(b["grown"]["edge"] + 3.5, b["grown"]["pointer"], 1.5, "after the growth, with NO move, the edge is back at the pointer (the re-read geometry re-applied): %r" % {k: b["grown"][k] for k in ("edge", "pointer", "tl")})
+        self.assertGreaterEqual(len(b["grown"]["trace"]), 10, "the edge traced on every animation frame from the growth")
+        self.assertTrue(any(t["tl"] != b["tl0"] for t in b["grown"]["trace"]), "the trace spans the band's growth: %r" % b["grown"]["trace"])
+        for k, t in enumerate(b["grown"]["trace"]):
+            self._within(t["edge"] + 3.5, b["grown"]["pointer"], 1.5, "frame %d of the trace: the edge never leaves the pointer, not for one painted frame (the fifth review: 64 px off for a frame): %r" % (k, b["grown"]["trace"]))
         self._within(b["later"]["edge"] + 3.5, b["later"]["pointer"], 1.5, "and follows the next move: %r" % {k: b["later"][k] for k in ("edge", "pointer")})
         fp = b["after"]["farPoint"]
         self.assertIsNotNone(fp)

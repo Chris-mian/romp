@@ -118,7 +118,8 @@ test("the engine's reconcile under a drag: a leaf-set change commits the drag, t
   assert.match(rec, /const e2 = box \? edgeAt\(d\.start\.tree, box, GUTTER, d\.edge\.path, d\.edge\.i\) : null;/, "the edge re-read at its path");
   assert.match(rec, /d\.x0 \+= e2\.rect\.x - d\.edge\.rect\.x; d\.y0 \+= e2\.rect\.y - d\.edge\.rect\.y;/, "the press origin shifted by the edge's displacement");
   assert.match(rec, /const g = pressGeometry\(d\.start\.tree, e2\);\n\s*d\.edge = e2; d\.a0 = g\.a0; d\.b0 = g\.b0;/, "the avail and the pair's sizes re-derived");
-  assert.match(rec, /d\.want = edgeClamp\(d\.a0, d\.b0, raw, this\.minFrac\(e2\) \* e2\.avail\);\n\s*if \(!d\.raf\) d\.raf = frameOnce\(\(\) => this\.applyDiv\(\)\);/, "the last pointer place re-clamped and a frame re-applies it");
+  assert.match(rec, /d\.want = edgeClamp\(d\.a0, d\.b0, raw, this\.minFrac\(e2\) \* e2\.avail\);\n\s*if \(d\.raf\) \{ cancelFrame\(d\.raf\); d\.raf = 0; \}\n\s*this\.applyDiv\(\);/, "the last pointer place re-clamped and applied NOW, synchronously, so the reconcile's own render is the corrected frame (the fifth review: an armed frame landed one paint late)");
+  assert.doesNotMatch(rec, /frameOnce\(/, "no frame armed by a reconcile: its render must be the corrected one");
   assert.match(ENGINE, /d\.px = e\.clientX; d\.py = e\.clientY;/, "the move records the pointer's last place");
   assert.doesNotMatch(ENGINE, /private splitAt\(/, "the engine's own ratio walk is gone: pane-dock's pressGeometry is the one read");
   assert.match(rec, /if \(changed && !this\.div\) this\.persist\(\);\n\s*if \(changed \|\| !this\.div\) this\.render\(\);/, "no store write and no second render from a reconcile while a drag is on");

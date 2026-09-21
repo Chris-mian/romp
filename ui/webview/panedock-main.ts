@@ -348,7 +348,10 @@ class Engine {
         // stacked panes has its avail, its rect and the pair's sizes move with the band, so the press values would clamp, resize
         // and persist against a geometry that is gone (the edge 87 px behind the pointer with no move; the pushed pane persisted
         // under the minimum). The press origin shifts by the edge's displacement, so the pointer's travel stays relative to the
-        // edge; the last pointer place is re-clamped and a frame re-applies it, so the edge is at the pointer with no move.
+        // edge; the last pointer place is re-clamped and applied NOW, synchronously (the fifth review: a frame armed here landed
+        // one paint late, since the shell's autosize fires from a ResizeObserver after the frame's animation callbacks, and the
+        // reconcile's own render below painted the pre-growth ratios for one frame), so the reconcile below sees the corrected
+        // layout as this.lay, finds nothing changed, and renders and persists nothing of its own.
         const box = this.box();
         const e2 = box ? edgeAt(d.start.tree, box, GUTTER, d.edge.path, d.edge.i) : null;
         if (e2) {
@@ -358,7 +361,8 @@ class Engine {
           if (d.want !== null && !e2.fixed) {
             const raw = e2.dir === "row" ? d.px - d.x0 : d.py - d.y0;
             d.want = edgeClamp(d.a0, d.b0, raw, this.minFrac(e2) * e2.avail);
-            if (!d.raf) d.raf = frameOnce(() => this.applyDiv());
+            if (d.raf) { cancelFrame(d.raf); d.raf = 0; }
+            this.applyDiv();
           }
         }
       }
