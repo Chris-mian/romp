@@ -684,11 +684,14 @@ test("executed: the row's state words are the SHARED status chip (T322b): the aw
 });
 
 test("executed: the guide describes the fold rule and the view", () => {
-  const GUIDE = fs.readFileSync(path.resolve(process.cwd(), "..", "docs", "guide.md"), "utf8");
-  const prose = (t: string) => new RegExp(t.replace(/[.()*]/g, "\\$&").split(" ").join("\\s+"));   // the guide wraps its lines
-  assert.match(GUIDE, prose("The section of the tab you are reading folds like any other; its header marks that it holds the tab (the tag's name is underlined), and folded, the header stands in for the tab: focus lands on it, and the left and right arrows step from there."));
-  assert.doesNotMatch(GUIDE, prose("never folds (its header says so, and a click there changes nothing)"), "the old rule is gone");
-  assert.match(GUIDE, prose("**A section at a glance.** Clicking a header also shows the section in the transcript's place"));
-  assert.match(GUIDE, prose("The transcript comes back when you pick a session, press Escape, or click that header again while its section is open and holds the tab you are reading."));
-  assert.match(GUIDE, prose("a session that has published a note of what it is working on shows the note as a quieter second line."));
+  // the strip's own detail moved to the reference (CLAUDE.md "The documentation front pages"):
+  // the fold rule and the view are sections there, and the pins follow them
+  const REF = fs.readFileSync(path.resolve(process.cwd(), "..", "docs", "reference.md"), "utf8");
+  const prose = (t: string) => new RegExp(t.replace(/[.()*]/g, "\\$&").split(" ").join("\\s+"));   // the document wraps its lines
+  assert.match(REF, prose("The section of the tab you are reading folds like any other; its header marks that it holds the tab (the tag's name is underlined), and folded, the header stands in for the tab: focus lands on it, and the left and right arrows step from there."));
+  assert.doesNotMatch(REF, prose("never folds (its header says so, and a click there changes nothing)"), "the old rule is gone");
+  assert.match(REF, prose("### A tag section at a glance"), "the view has a section of its own");
+  assert.match(REF, prose("Clicking a tag section's header also shows the section in the transcript's place"));
+  assert.match(REF, prose("The transcript comes back when you pick a session, press Escape, or click that header again while its section is open and holds the tab you are reading."));
+  assert.match(REF, prose("a session that has published a note of what it is working on shows the note as a quieter second line."));
 });

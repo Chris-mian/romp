@@ -15,9 +15,13 @@ the chat transcript lists the session's Needs you cards, one line per card with 
 category's colour, behind a settings row that is on by default. Completed must be safe to clear unread: nothing left
 undone, offered as a next step or asked about may land there.
 
-This note is phase one. Phase two is the renames and the colour; phase three is the box, on the user's word (they
-may build it themselves); the judges' change that makes Completed safe to clear is the judges' owner's note,
-`plans/judge-prompt-experiments.md`, linked below.
+This note is phase one. Phase two is the renames, the chip on every surface and the colour; phase three is the box; the
+judges' change that makes Completed safe to clear is the judges' owner's note, `plans/judge-prompt-experiments.md`, linked
+below. The user signed the design off on 2026-09-20 with three amendments, paraphrased and folded in below: the box wears
+the awaiting box's dress in the category's colour and holds the session's Needs you items that are not hard blocks; the
+Blocked chip becomes the Needs you chip on every surface that shows it, the sessions pane's lanes and chips, the outline's
+rows, the feed's column chip and header, the chat's status chip, the tag overview, the settings' demos and the guide; the
+rest stands as written.
 
 ## The premises, checked in the code
 
@@ -149,31 +153,33 @@ Red stays on: the Blocked ring and its translucent fill, the hard-stop marks on 
 ⚠ API-error badge), the chat chip's **API error**, the unread passage's dashed box (a different meaning, the same
 family, left alone by this note).
 
-### The chat's status chip
+### The status chip: Needs you on every surface
 
-The chip under the transcript and the overview rows say **Needs you** where they say **Blocked** for a feed-filed
-card today, and **Blocked** for a live prompt (the `needsInput` state, a hard stop), so the chip's words match the
-rings': Blocked is the hard stop, Needs you the category. **API error** stays. `CHIP_LABEL.needsInput` becomes
-"Blocked" (unchanged), and the overview's feed-filed word (T322b) becomes "Needs you"; the chip's colours follow the
-same split (red for the two hard-stop states, the magenta for the feed-filed word).
+The chip that reads **Blocked** today becomes the **Needs you** chip, and the rename feeds out to every surface that shows
+it (the user's second amendment): the chat's status chip under the transcript, the tag overview's rows, the sessions pane's
+lanes and their chips, the outline pane's rows, the feed's column chip and header, the settings' demos and the guide. One
+vocabulary (`status-chip.ts`, `CHIP_LABEL`) says the word once for the `needsInput` state and its legacy `awaiting`
+spelling; the chip wears the category's colour (`.chip-needsInput` on the Needs you token), since the chip names the
+category, and the hard stop is the ring and the card's red marks, never the chip's word. **API error** stays, red. Phase two
+sweeps every surface for the word and the chip class, in the code and in the inline copies the kernel serves (the phone
+page, the sessions pane), and the lab reads the word on each.
 
-### The Needs you box at the bottom of the chat (phase three, on the user's word)
+### The Needs you box at the bottom of the chat (phase three)
 
-The approval box already is the shape: one row per standing needs-you NOTICE card with actions, above the background
-box, reconciled in place, its rows a per-session slice on the session frame. The Needs you box generalises it to
-EVERY card of the session's in the column: the slice `status.notices` becomes `status.needsYou.cards` (or the notices
-slice gains the goal cards; the phase decides, keeping the approval rows' shape) with one row per card: the card's
-title as a link that opens the card's modal in the feed (or the session's turn for a goal card), the hard-stop mark
-where the card wears one, and a way to act: the notice card's own actions (Approve, Deny, a producer's buttons), a
-goal card's **Reply** (the composer, targeted at the card as Follow up does), **Continue** where the card offers it,
-and **Clear**. The box is outlined in the category's colour (`--st-needs-bg`, 1 px, the approval box's own border
-takes the token) and titled **Needs you** with the count; it shows when the session has a card in the column and
-hides otherwise, and it vanishes on the decision with the frame that drops the row, as the approval box does. A
-settings row under Chat, **Needs you box**, on by default, hides it (the first switch either bottom box has); with
-the box off the tab ring and the feed still say it.
-
-The requests pull request that was closed (its rows: one line per request, Reply and Dismiss, at the bottom of the
-transcript) had this shape; the box takes the shape and not the request store.
+The box wears the awaiting box's dress in the category's colour (the user's first amendment): the same appearance as the
+background-tasks box `#bg-tasks` today, a thin line around the edge, the same shape and the same placement between the
+transcript and the composer, the line in the Needs you token instead of the await-green; and its rows are the shape the
+closed requests pull request drew, one line per item with a way to act. It holds the session's Needs you items that are NOT
+hard blocks: the permission and approval prompts the chat already shows inline stay out, and the box lists the judge's
+questions (the card's title, its decision brief as the line), the offers a session made, the blocking requests under the
+idle hold, and the held peer messages with their actions. The approval box (`#notices`, plans/notice-cards.md) already is a
+row-per-notice box above `#bg-tasks` with a per-session slice on the session frame; phase three widens its slice to every
+Needs you card of the session's that is not a hard block, with the kind on each row (a notice with its stored actions; a
+goal card with **Reply**, which targets the composer at the card as Follow up does, **Continue** where the card offers it,
+and **Clear**), keeps its in-place reconcile and its one delegate, and dresses the box as the awaiting box in the token,
+titled **Needs you** with the count. It shows when the session has such an item and hides otherwise; an item leaves with the
+frame that drops it (the answer, the judge's re-file, the clear). A settings row under Chat, **Needs you box**, on by default,
+hides it; with the box off the tab ring and the feed still say it.
 
 ### Completed is safe to clear unread
 
@@ -186,17 +192,19 @@ relies on: a card in Completed asks nothing of the user, so a Clear all over Com
 ## Phases
 
 1. **This note** (docs).
-2. **The renames and the colour**, one PR (feature): `RING_ROWS` labels and descriptions; the token in the three
-   sheets; the column title in both tables; the chip class's colour; the tree and modal question marks; the group
-   pip; the phone picker's two rules; the chip's words in `status-chip.ts` and the overview; the guide's ring, chip
-   and overview paragraphs and the two chip glyphs; the reference's restart card line; the settings' demo. A served
-   lab reads the COMPUTED colours on every surface in both themes: the column chip and header, a card's question mark,
-   the modal's node label, the tab ring and the group pip, the phone picker's chip border and row bar, the settings'
-   demo tab; and the words: the two ring rows, the column header, the chat chip for a feed-filed card and for a live
-   prompt. Every pin on the old title and the old ring names moves in the same commit (twenty-six test files name
-   "Blocked", "Waiting on you" or the yellow ring's class today, in three test trees).
-3. **The box**, on the user's word: the slice, the rows, the switch, the lab (a card entering the column shows a
-   row; a Reply, a Continue and a Clear each remove it; the switch hides the box and leaves the ring).
+2. **The renames, the chip on every surface and the colour**, one PR (feature): `RING_ROWS` labels and descriptions;
+   the token in the three sheets; the column title in both tables; the chip class's colour; the tree and modal question
+   marks; the group pip; the phone picker's two rules; the chip's word in `status-chip.ts` and its colour, and every
+   surface that shows the chip swept for the word and the class (the sessions pane's lanes and chips, the outline's rows,
+   the settings' demos, the kernel's inline copies); the guide's ring, chip and overview paragraphs and the two chip glyphs;
+   the reference's restart card line; the settings' demo. A served lab reads the COMPUTED colours on every surface in both
+   themes (the column chip and header, a card's question mark, the modal's node label, the tab ring and the group pip, the
+   phone picker's chip border and row bar, the settings' demo tab) and the WORDS on every surface that shows the chip (the
+   two ring rows, the column header, the chat chip, the overview row, the sessions pane's lane chip, the outline's row).
+   Every pin on the old title and the old ring names moves in the same commit.
+3. **The box** (feature): the widened slice, the rows by kind, the awaiting dress in the token, the switch, and a chat
+   lab: a card entering the column shows a row; Reply, Continue and Clear each remove it; a hard block shows no row; the
+   switch hides the box and leaves the ring.
 
 ## Tests
 
@@ -208,7 +216,8 @@ relies on: a card in Completed asks nothing of the user, so a Clear all over Com
 - `status-chip.test.ts`, `chip-label-case.test.ts`, `tab-snapshot.test.ts`: the chip's two words.
 - The served labs: the colour lab above; `test_tab_widgets_browser.py`, `test_feed_focus_served.py`,
   `test_held_mail_chat_served.py`, `test_kernel_mobile.py` re-pointed to the words and the token.
-- Phase three: a chat lab for the box.
+- Phase three: a chat lab for the box (a row per item that is not a hard block; Reply, Continue and Clear each
+  remove theirs; the switch hides the box and leaves the ring).
 
 ## Privacy
 
