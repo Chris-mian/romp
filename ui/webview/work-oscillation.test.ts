@@ -45,20 +45,65 @@ test("timeline working chip breathes on the SAME 1.5s clock — a persistent CSS
   assert.doesNotMatch(TIMELINE, /attributeName: 'fill'/, "no per-draw-recreated SMIL breathe");
 });
 
-test("no infinite animation in the chat styles or the timeline animates `color` (compositor-only breathing)", () => {
-  // every keyframe an `infinite` animation names must touch only compositor properties, except the two
-  // comment busy-pulses, which tint an inline <mark> that spans line fragments (no clean overlay) and run
-  // only while a reply is generating
-  const allowed = new Set(["cmt-busy-pulse", "cmt-busy-pulse-code"]);
-  for (const [src, label] of [[CSS, "styles.css"], [TIMELINE, "romp-timeline-view.js"]] as const) {
-    const names = new Set([...src.matchAll(/animation:\s*([\w-]+)[^;}]*infinite/g)].map((m) => m[1]));
-    for (const n of names) {
-      if (allowed.has(n)) continue;
-      const kf = src.match(new RegExp(`@keyframes ${n}\\s*\\{((?:[^{}]*\\{[^{}]*\\})*)\\s*\\}`));
-      if (!kf) continue;   // keyframes defined in another file (feed.css, fleet-pane.css)
-      assert.doesNotMatch(kf[1], /(^|[\s;{])color\s*:/, `${label}: @keyframes ${n} animates color`);
+// Every `infinite` animation in the chat styles and the timeline breathes on the COMPOSITOR: its keyframes
+// touch only opacity, transform and filter, so the loop repaints nothing for however long it runs. The
+// exceptions below are named, each with why it stays; anything else that animates a paint property
+// (color, background, width…) reds this pin. A named animation whose keyframes cannot be found in the
+// same file FAILS too — a parse miss must never read as a pass (the 2026-09-21 review of PR 1984 found
+// the first cut skipping blocks with a trailing comment and matching only a literal `color:`).
+const COMPOSITOR_PROPS = new Set(["opacity", "transform", "filter"]);
+const PAINT_EXCEPTIONS: Record<string, string> = {
+  // tint an inline <mark> that spans line fragments (no clean overlay); run only while a reply is generating
+  "cmt-busy-pulse": "styles.css", "cmt-busy-pulse-code": "styles.css",
+  // the compaction sweep's colour ramp through the colormap stops (tab strip, statusline ctx bar, timeline
+  // lane); runs only while a /compact is in flight (seconds), and the ramp IS the information
+  "tab-compact": "styles.css", "ctx-compress": "styles.css", "romp-tl-compact": "romp-timeline-view.js",
+};
+// the keyframes block for `name`: the inner `pct { decls }` rules, with comments stripped first so a
+// trailing `/* … */` after the last rule cannot defeat the match; null when the file has none
+function keyframeProps(src: string, name: string): string[] | null {
+  const bare = src.replace(/\/\*[\s\S]*?\*\//g, "");
+  const m = bare.match(new RegExp(`@keyframes\\s+${name}\\s*\\{((?:[^{}]|\\{[^{}]*\\})*)\\}`));
+  if (!m) return null;
+  const props: string[] = [];
+  for (const rule of m[1].matchAll(/\{([^{}]*)\}/g)) {
+    for (const decl of rule[1].split(";")) {
+      const prop = decl.split(":")[0].trim();
+      if (prop) props.push(prop);
     }
   }
+  return props;
+}
+
+test("every infinite animation in the chat styles and the timeline breathes on the compositor (opacity/transform/filter only)", () => {
+  const seen = new Set<string>();
+  for (const [src, label] of [[CSS, "styles.css"], [TIMELINE, "romp-timeline-view.js"]] as const) {
+    const names = new Set([...src.matchAll(/animation:\s*([\w-]+)[^;}]*infinite/g)].map((m) => m[1]));
+    assert.ok(names.size >= 5, `${label}: the infinite-animation scan found ${names.size} names — the pattern is broken`);
+    for (const n of names) {
+      const props = keyframeProps(src, n);
+      assert.ok(props !== null, `${label}: @keyframes ${n} not found in the file that names it`);
+      assert.ok(props.length > 0, `${label}: @keyframes ${n} parsed to no properties`);
+      seen.add(n);
+      const paint = props.filter((p) => !COMPOSITOR_PROPS.has(p));
+      if (PAINT_EXCEPTIONS[n] === label) continue;   // a named, explained exception
+      assert.deepEqual(paint, [], `${label}: @keyframes ${n} animates paint properties ${JSON.stringify(paint)}`);
+    }
+  }
+  // the two chips this file is about are among the checked, and no exception is stale
+  for (const n of ["chip-pulse", "romp-tl-workpulse"]) assert.ok(seen.has(n), `${n} was not scanned`);
+  for (const n of Object.keys(PAINT_EXCEPTIONS)) assert.ok(seen.has(n), `exception ${n} names no infinite animation any more — drop it`);
+});
+
+test("the compositor pin has teeth: a colour step in a checked keyframes fails it", () => {
+  const doctored = CSS.replace(/@keyframes chip-pulse \{/, "@keyframes chip-pulse {\n  25% { color: red; }");
+  const props = keyframeProps(doctored, "chip-pulse");
+  assert.ok(props && props.includes("color"), "the doctored step is parsed");
+  assert.notDeepEqual(props!.filter((p) => !COMPOSITOR_PROPS.has(p)), []);
+  // and a trailing comment after the last rule does not hide the block
+  const commented = "@keyframes x { 0% { opacity: 0; }   /* a */\n 50% { color: red; }   /* b */\n}";
+  assert.deepEqual(keyframeProps(commented, "x"), ["opacity", "color"]);
+  assert.equal(keyframeProps("nothing here", "x"), null);
 });
 
 test("working DOTS are SOLID — no animation (oscillation was distracting)", () => {
