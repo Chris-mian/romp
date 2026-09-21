@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -42,9 +43,12 @@ COLUMN_OF = {"blocked": "needs_input", "completed": "completed", "cleared": "cle
 SETTLE_S = 120                # a top-level done filed this soon after an ending's cut still belongs to the ending (the closer files at the turn's end)
 FALLBACK_TURN_S = 900         # an ending whose turn start the transcript does not show: the window reaches this far back
 AGREEMENT_GATE_PCT = 90.0     # the labeller's agreement with the user's recorded actions must reach this before its labels count
-FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",   # judge-errors rows that mean
-                 "history-unreadable", "store-quarantined")   # the ending was not judged (a timeout files under `call`; the two pause kinds,
-#                                                               `auth` and `rate-limited`, and the call-level stand-downs count too)
+FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",
+                 "unregistered-caller", "history-unreadable", "store-quarantined")   # judge-errors rows that mean the ending was not judged:
+#   a rejected reply, a crashed or refused call, the two pause kinds (`auth`, `rate-limited`), the call-level stand-downs (`fast-refused`,
+#   `scratch`, `unregistered-caller`). A `timeout` files under `call`, so it is not named. The `*-unreadable` family and the store-fault pair
+#   (`history-unreadable` aside) cannot fire on the arm's road (it hands the judges a store it just wrote and read), and are named only so a
+#   future road that can reach them counts them.
 ID_EPOCH_RE = re.compile(r"^[0-9a-f-]{36}:(\d{9,11})(?::|$)")   # a turn id or segment id carries its epoch second after the fsid
 
 
@@ -130,94 +134,83 @@ def _ts(rec):
         return None
 
 
-# The event model's authorship and opener rules (kernel/event_model.py: author_of, _is_opener, the atom filter), copied here
-# so the builder loads no romp module against the live roots; tests/test_judge_experiment.py pins parity over one record
-# per author kind, so drift goes red. The regexes are the event model's own.
-SYSTEM_WRAPPER_RE = re.compile(r"^\s*(?:\[SYSTEM NOTIFICATION - NOT USER INPUT\]|<(?:task-notification|system-reminder)\b)")
-TEAMMATE_MSG_RE = re.compile(r"^\s*(?:<\w+>\s*)?(?:(?:Another Claude session|A peer session) sent a message"
-                             r"(?: while you were working)?:|<cross-session-message\b)", re.I)
-SCHEDULED_PREAMBLE_RE = re.compile(r"^\s*\[SCHEDULED TASK - AUTOMATED FIRING OF A CONFIGURED PROMPT\]")
-ROMP_INJECT_RE = re.compile(r"<!--\s*romp-injected\s*-->")
-POSTAL_RE = re.compile(r"<!--\s*romp-msg-id:\s*(\S+?)\s*-->")
-IMG_ECHO_RE = re.compile(r"^\[Image:[^\]]*\]$")
+# Turn boundaries come from the event model ITSELF (kernel/event_model.py), loaded hermetically against a scratch state root
+# (never the live one): `parse_session` folds a transcript into the same turns the judges segment, so the builder's endings are
+# theirs by construction. A copy of the opener rule drifted (round three of the review: it reproduced three of the fold's
+# refusals and none of the command-twin, local-command, skill-content or restore-replay handling), so the copy is gone.
+_EM = [None]
 
 
-def _blocks(rec):
-    c = (rec.get("message") or {}).get("content")
-    if isinstance(c, str):
-        return [{"type": "text", "text": c}]
-    return [b for b in (c or []) if isinstance(b, dict)]
+def _event_model():
+    """kernel/event_model.py, loaded once against a throwaway state root so `parse_session` reads no live state (it parses the
+    explicit transcript path either way; its bound roots only reach postal-log and states annotations the boundaries do not use)."""
+    if _EM[0] is None:
+        saved = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "ROMP_STATE_DIR", "ROMP_POSTAL_CLIENT_ONLY")}
+        scratch = tempfile.mkdtemp(prefix="je-em-")
+        os.makedirs(os.path.join(scratch, "romp"), exist_ok=True)
+        with open(os.path.join(scratch, "romp", "session-hosts"), "w") as f:
+            f.write("off")
+        os.environ["XDG_STATE_HOME"] = scratch
+        os.environ.pop("ROMP_STATE_DIR", None)
+        os.environ["ROMP_POSTAL_CLIENT_ONLY"] = "1"
+        sys.path.insert(0, str(ROOT / "tests"))
+        from romp_load import load_source
+        try:
+            _EM[0] = load_source("romp_event_model_ends", str(BIN / "romp-event-model"))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    return _EM[0]
 
 
-def author_of_record(rec):
-    """The event model's author_of over a user record's own fields (an empty postal index; the corpus's sessions are SDK-driven, so
-    an unstamped `sdk` prompt is the human's): human | sdk | romp | system | teammate | a peer dict | None."""
-    blocks = _blocks(rec)
-    origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else {}
-    okind, osub = origin.get("kind"), origin.get("subkind")
-    peer_stamp = okind == "peer" or (okind == "task-notification" and osub == "peer-send-message")
-    if okind == "task-notification" and not peer_stamp:
-        return "sdk" if osub == "scheduled-trigger" else "system"
-    text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-    if text:
-        if SYSTEM_WRAPPER_RE.match(text) and not peer_stamp:
-            return "system"
-        if SCHEDULED_PREAMBLE_RE.match(text) and not peer_stamp:
-            return "sdk"
-        if TEAMMATE_MSG_RE.match(text):
-            return "teammate"
-        m = POSTAL_RE.search(text)
-        if m:
-            return {"peer": None, "mid": m.group(1), "kind": ""}
-        if ROMP_INJECT_RE.search(text):
-            return "romp"
-    if okind and okind != "human":
-        return "teammate" if peer_stamp else "sdk"
-    ps = rec.get("promptSource")
-    if ps == "sdk":
-        return "human"
-    if ps == "system":
-        return "system"
-    if ps in ("typed", "queued"):
-        return "human"
-    return "human" if text else None
-
-
-def user_opens_turn(rec):
-    """Whether a transcript record opens a turn, as the event model decides it: a `user` record the atom filter admits (a meta
-    record only when it is a postal delivery; never a compaction summary or an image echo) whose author is human, sdk, romp or a
-    peer; `system` (a task notification, a system-reminder wrapper), `teammate` and tool-result-only records fold in."""
-    if rec.get("type") != "user":
-        return False
-    text = _text_of(rec)
-    if rec.get("isMeta") is True and not POSTAL_RE.search(text):
-        return False
-    if rec.get("isCompactSummary") is True or IMG_ECHO_RE.match(text.strip()):
-        return False
-    a = author_of_record(rec)
-    return a in ("human", "sdk", "romp") or isinstance(a, dict)
+def session_endings(path, fsid):
+    """(records, [(end_index, start_t)]): one entry per ENDED turn of the transcript, from the event model's own segmentation.
+    `end_index` is the record index of the turn's last atom (the truncation point); `start_t` is the turn's own start."""
+    records = _records(path)
+    uuid_idx = {r.get("uuid"): i for i, r in enumerate(records) if r.get("uuid")}
+    try:
+        sess = _event_model().parse_session(str(path), rompuuid=fsid)
+    except Exception:
+        return records, []
+    out = []
+    for turn in sess.get("turns") or []:
+        if not turn.get("ended"):
+            continue
+        idxs = [uuid_idx[a.get("uuid")] for a in (turn.get("atoms") or []) if a.get("uuid") in uuid_idx]
+        if idxs:
+            out.append((max(idxs), float(turn.get("t") or 0)))
+    out.sort()
+    return records, out
 
 
 def turn_ends(records):
-    """Indexes of the assistant records that end a turn: an assistant record followed by a user record that opens a turn
-    (or the end of the file), skipping tool results and progress rows."""
-    ends = []
-    for i, r in enumerate(records):
-        if r.get("type") != "assistant":
-            continue
-        nxt = next((x for x in records[i + 1:] if x.get("type") == "assistant" or user_opens_turn(x)), None)
-        if nxt is None or nxt.get("type") == "user":
-            ends.append(i)
-    return ends
+    """The record indices that end a turn, via the event model (a temp file, since `parse_session` reads a path). For the
+    tests and any caller holding records rather than a path; the builder calls `session_endings` on the transcript directly."""
+    fd, p = tempfile.mkstemp(suffix=".jsonl")
+    try:
+        with os.fdopen(fd, "w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+        fsid = next((r.get("sessionId") for r in records if r.get("sessionId")), "s")
+        return [i for i, _ in session_endings(p, fsid)[1]]
+    finally:
+        os.unlink(p)
 
 
 def turn_start(records, end_index):
-    """The time of the user record that opened the turn ending at `end_index` (the turn's own span is the window a verdict
-    on it falls in), or None when the transcript shows none before it."""
-    for r in reversed(records[:end_index]):
-        if user_opens_turn(r):
-            return _ts(r)
-    return None
+    """The start time of the turn ending at `end_index`, or None when that index is not a turn end."""
+    fd, p = tempfile.mkstemp(suffix=".jsonl")
+    try:
+        with os.fdopen(fd, "w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+        fsid = next((r.get("sessionId") for r in records if r.get("sessionId")), "s")
+        return next((t for i, t in session_endings(p, fsid)[1] if i == end_index), None)
+    finally:
+        os.unlink(p)
 
 
 def custom_title(path):
@@ -239,9 +232,13 @@ def custom_title(path):
     return None
 
 
+_TITLE_MEMO = {}
+
+
 def fork_lanes(project_dir, name, exclude):
     """The same-customTitle fork transcripts in the session's project directory (the judge's discovery lists each as its own
-    lane): every other transcript there whose head carries the session's name as its custom title."""
+    lane): every other transcript there whose head carries the session's name as its custom title. The head read is memoized
+    across sessions (the judge's `title_memo`), so a project directory shared by many sessions is read once per transcript."""
     out = []
     try:
         entries = sorted(os.listdir(project_dir))
@@ -251,7 +248,10 @@ def fork_lanes(project_dir, name, exclude):
         stem = fn[:-6] if fn.endswith(".jsonl") else None
         if not stem or stem in exclude:
             continue
-        if name and custom_title(os.path.join(project_dir, fn)) == name:
+        path = os.path.join(project_dir, fn)
+        if path not in _TITLE_MEMO:
+            _TITLE_MEMO[path] = custom_title(path)
+        if name and _TITLE_MEMO[path] == name:
             out.append(stem)
     return out
 
@@ -429,14 +429,12 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
             if not transcript.is_file():
                 continue
             found = True
-            records = _records(transcript)
-            ends = turn_ends(records)
-            if len(ends) < min_turns:
+            records, endings = session_endings(transcript, fsid)
+            if len(endings) < min_turns:
                 skipped["few-turns"] += 1
                 continue
-            for k, i in enumerate(ends):
+            for k, (i, start_t) in enumerate(endings):
                 cut_t = _ts(records[i]) or 0
-                start_t = turn_start(records, i)
                 cls = classify_ending(_text_of(records[i]))
                 eligible = any(in_turn_window(t, start_t, cut_t) for t in dones)   # a top-level done in the turn's window: tier one can label it
                 candidates.append((sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid))

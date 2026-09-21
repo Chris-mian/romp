@@ -578,59 +578,56 @@ class Harness(unittest.TestCase):
         self.assertFalse(Path(run_root, "fig2.png").exists())
 
     # ── round two of the fold ──
-    def test_the_opener_rule_matches_the_event_models_over_every_author_kind(self):
-        """Round two: the harness paraphrased the opener rule and ended a turn at every non-meta user record with text, so a
-        system-reminder wrapper, a task-notification wrapper and a teammate delivery each ended a turn the event model folds in,
-        and the turn start moved to the wrapper's time (the store cut then landed mid-turn). The rule is copied faithfully; this
-        pin holds it to the event model's own verdict over one record per author kind, so drift goes red."""
+    def test_turn_boundaries_are_the_event_models_over_every_record_kind(self):
+        """Round three: the copied opener rule reproduced three of the fold's refusals and none of the command-twin,
+        local-command, skill-content or restore-replay handling, so an SDK corpus split turns the event model folds. The
+        builder now takes its boundaries from `em.parse_session` itself; this pin drives a transcript carrying a wrapper of
+        every kind between the assistant answers and asserts the builder's ends and starts equal the event model's own ended
+        turns (mapped atoms to record indices the same way), and that a mid-turn wrapper leaves one turn with its start at the
+        prompt."""
         sid = SIDS[0]
-        mk = lambda content, **f: dict({"type": "user", "timestamp": iso(T0), "uuid": "x", "sessionId": sid, "cwd": "/TESTDIR",
-                                        "message": {"role": "user", "content": content}}, **f)
-        cases = {
-            "typed": mk("please fix it", promptSource="typed"),
-            "composer blocks": mk([{"type": "text", "text": "please fix it"}], promptSource="sdk"),
-            "no source": mk("please fix it"),
-            "system reminder wrapper": mk("<system-reminder>\nthe hook says something\n</system-reminder>", promptSource="typed"),
-            "notification preamble": mk("[SYSTEM NOTIFICATION - NOT USER INPUT]\nsomething finished", promptSource="sdk"),
-            "task notification origin": mk("a background task finished", promptSource="sdk", origin={"kind": "task-notification"}),
-            "scheduled trigger": mk("run the nightly check", promptSource="sdk", origin={"kind": "task-notification", "subkind": "scheduled-trigger"}),
-            "teammate delivery": mk("Another Claude session sent a message: hello", promptSource="sdk"),
-            "cross-session block": mk("<cross-session-message from=\"x\">hi</cross-session-message>", promptSource="sdk"),
-            "postal delivery, meta": mk("please review\n<!-- romp-msg-id: 1.2_abc.host -->", isMeta=True, promptSource="sdk"),
-            "command echo, meta": mk("<command-name>/clear</command-name>", isMeta=True, promptSource="typed"),
-            "romp injected": mk("status?\n<!-- romp-injected -->", promptSource="sdk"),
-            "peer origin": mk("from a peer", promptSource="sdk", origin={"kind": "peer"}),
-            "coordinator origin": mk("carry on", promptSource="sdk", origin={"kind": "coordinator"}),
-            "system source": mk("harness text", promptSource="system"),
-            "tool result only": mk([{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]),
-            "compact summary": mk("summary of the conversation so far", isCompactSummary=True),
-            "image echo": mk("[Image: a screenshot]", isMeta=True),
-        }
-        self.assertTrue(hasattr(self.je, "author_of_record") and hasattr(self.je, "_blocks"),
-                        "the opener rule is copied from the event model (author_of_record over _blocks), not paraphrased")
-        for name, rec in cases.items():
-            blocks = self.je._blocks(rec)
-            text = self.je._text_of(rec)
-            admitted = not (rec.get("isMeta") is True and not em.POSTAL_RE.search(text)) and not rec.get("isCompactSummary") \
-                and not em.IMG_ECHO_RE.match(text.strip())
-            author = em.author_of(blocks, rec.get("promptSource"), {}, sdk_human=True, origin=rec.get("origin"))
-            expected = admitted and em._is_opener({"type": "user", "author": author})
-            self.assertEqual(self.je.user_opens_turn(rec), expected, "%s: author %r" % (name, author))
-        opens = [n for n, r in cases.items() if self.je.user_opens_turn(r)]
-        self.assertEqual(opens, ["typed", "composer blocks", "no source", "scheduled trigger", "postal delivery, meta", "romp injected", "coordinator origin"])
-        # and over a transcript: wrappers between the answers end nothing
-        recs = [uline(sid, T0, "first ask", "u1"), aline(sid, T0 + 30, "First answer.", "a1", "u1"),
-                mk("<system-reminder>\nnoise\n</system-reminder>", promptSource="typed", uuid="w1", timestamp=iso(T0 + 40)),
-                aline(sid, T0 + 50, "Continued.", "a2", "w1"),
-                mk("[SYSTEM NOTIFICATION - NOT USER INPUT]\na task finished", promptSource="sdk", uuid="w2", timestamp=iso(T0 + 60)),
-                aline(sid, T0 + 70, "Noted the task.", "a3", "w2"),
-                mk("Another Claude session sent a message: ping", promptSource="sdk", uuid="w3", timestamp=iso(T0 + 80)),
-                aline(sid, T0 + 90, "Pong to the peer.", "a4", "w3"),
-                uline(sid, T0 + 600, "second ask", "u2", "a4"), aline(sid, T0 + 630, "Second answer.", "a5", "u2")]
-        ends = self.je.turn_ends(recs)
-        self.assertEqual([recs[i]["uuid"] for i in ends], ["a4", "a5"], "two turns, as the event model reads it; the wrappers end nothing")
-        self.assertEqual(self.je.turn_start(recs, ends[0]), T0, "the first turn starts at its own prompt, not at a wrapper")
-        self.assertEqual(self.je.turn_start(recs, ends[1]), T0 + 600)
+        # one turn's worth per opener kind, each followed by an assistant answer, all chained; wrappers between are non-openers
+        recs = []
+        t = [T0]
+        prev = [None]
+        def add(rec):
+            rec = dict(rec); rec["parentUuid"] = prev[0]; recs.append(rec); prev[0] = rec["uuid"]; t[0] += 60
+        def usr(text, uid, **f):
+            add(dict({"type": "user", "timestamp": iso(t[0]), "uuid": uid, "sessionId": sid, "cwd": "/TESTDIR",
+                      "promptSource": "typed", "message": {"role": "user", "content": text}}, **f))
+        def asst(text, uid):
+            add({"type": "assistant", "timestamp": iso(t[0]), "uuid": uid, "sessionId": sid, "cwd": "/TESTDIR",
+                 "message": {"role": "assistant", "content": [{"type": "text", "text": text}], "stop_reason": "end_turn"}})
+        # a real opener, then wrappers that must NOT open, interleaved with answers
+        usr("first ask", "u1", promptSource="typed"); asst("first answer", "a1")
+        usr("<system-reminder>\nnoise\n</system-reminder>", "w1", promptSource="typed"); asst("noted", "a2")
+        usr("[SYSTEM NOTIFICATION - NOT USER INPUT]\na task finished", "w2", promptSource="sdk", origin={"kind": "task-notification"}); asst("saw it", "a3")
+        usr("Another Claude session sent a message: ping", "w3", promptSource="sdk"); asst("pong", "a4")
+        usr("<command-name>/usage</command-name>", "w4", isMeta=True, promptSource="typed"); asst("usage shown", "a5")
+        usr("[Image: a screenshot]", "w5", isMeta=True); asst("looked", "a6")
+        usr("second ask", "u2", promptSource="sdk"); asst("second answer", "a7")   # a composer (text-string) opener
+        pth = os.path.join(self.td, "parity.jsonl"); open(pth, "w").write("".join(json.dumps(r) + "\n" for r in recs))
+        _recs, endings = self.je.session_endings(pth, sid)
+        # the event model's own ended turns, mapped the same way
+        sess = em.parse_session(pth, rompuuid=sid)
+        uuid_idx = {r.get("uuid"): i for i, r in enumerate(recs)}
+        want = sorted((max(uuid_idx[a["uuid"]] for a in tn["atoms"] if a.get("uuid") in uuid_idx), float(tn["t"]))
+                      for tn in sess["turns"] if tn.get("ended") and any(a.get("uuid") in uuid_idx for a in tn["atoms"]))
+        self.assertEqual(endings, want, "the builder's boundaries are the event model's own, over every record kind")
+        self.assertTrue(endings, "the transcript has ended turns")
+        # a wrapper mid-turn: one prompt, a non-final assistant, a system-reminder, the final assistant → ONE ended turn at the prompt
+        mid = [{"type": "user", "timestamp": iso(T0), "uuid": "p1", "parentUuid": None, "sessionId": sid, "cwd": "/TESTDIR",
+                "promptSource": "typed", "message": {"role": "user", "content": "do the thing"}},
+               {"type": "assistant", "timestamp": iso(T0 + 30), "uuid": "m1", "parentUuid": "p1", "sessionId": sid, "cwd": "/TESTDIR",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "working"}], "stop_reason": "tool_use"}},
+               {"type": "user", "timestamp": iso(T0 + 40), "uuid": "sr", "parentUuid": "m1", "sessionId": sid, "cwd": "/TESTDIR",
+                "promptSource": "typed", "message": {"role": "user", "content": "<system-reminder>\nnoise\n</system-reminder>"}},
+               {"type": "assistant", "timestamp": iso(T0 + 50), "uuid": "m2", "parentUuid": "sr", "sessionId": sid, "cwd": "/TESTDIR",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}], "stop_reason": "end_turn"}}]
+        pth2 = os.path.join(self.td, "midturn.jsonl"); open(pth2, "w").write("".join(json.dumps(r) + "\n" for r in mid))
+        _r2, e2 = self.je.session_endings(pth2, sid)
+        self.assertEqual(len(e2), 1, "the mid-turn system-reminder does not split the turn: %r" % e2)
+        self.assertEqual((mid[e2[0][0]]["uuid"], e2[0][1]), ("m2", float(T0)), "one ending at the final assistant, its start at the prompt")
 
     def test_eligible_endings_are_picked_oldest_first(self):
         """Round two: the branches were swapped, so the eligible endings came newest first, the ones the user had had the least
@@ -713,7 +710,7 @@ class Harness(unittest.TestCase):
         ledger = os.path.join(self.td, "judge-errors.jsonl")
         Path(ledger).write_text("".join(json.dumps({"err": k}) + "\n" for k in ("parse", "auth", "rate-limited", "fast-refused", "scratch", "stale-close", "workless-done", "timeout")))
         self.assertEqual(counter(ledger), 5, "the pause kinds and the call-level stand-downs count; anomaly notes do not; timeout is no kind the judges write")
-        for k in ("auth", "rate-limited", "fast-refused", "scratch", "call", "parse", "give-up", "pass-crash"):
+        for k in ("auth", "rate-limited", "fast-refused", "scratch", "call", "parse", "give-up", "pass-crash", "unregistered-caller"):
             self.assertIn(k, self.je.FAILURE_KINDS)
         self.assertNotIn("timeout", self.je.FAILURE_KINDS)
         # a rejected closer reply files its own row: it is counted once, not once as a row and once as a None
@@ -725,7 +722,9 @@ class Harness(unittest.TestCase):
         res = self.je.run_arm(dest, "prose", cand, run_root, None, self.fake, now=T0 + 10**6)
         os.environ.pop("JE_TEST_PROSE", None)
         self.assertGreaterEqual(res["closerNone"], 1, "the closer was reached and its prose rejected")
-        self.assertEqual(res["failures"], res["closerNone"], "a rejected reply is one failure, not two (the row and the None both counted): %r" % {k: res[k] for k in ("failures", "closerNone")})
+        arm_ledger = os.path.join(run_root, "prose", "state", "romp", "judge-errors.jsonl")
+        self.assertEqual(res["failures"], self.je.count_failure_rows(arm_ledger),
+                         "failures is the ledger's own count, never the rows plus the Nones (a planner parse row would break an equality with closerNone): %r" % res["failures"])
 
     def test_the_turns_own_live_and_extra_target_placements_are_the_arms_to_make(self):
         sid = SIDS[0]
