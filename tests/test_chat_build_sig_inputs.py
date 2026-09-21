@@ -1057,9 +1057,16 @@ class Differential(_World):
         # _NEEDS_ROW_UNKEYED by value, as _CHAT_ROW_UNKEYED is; and every field a goal row carries but the unkeyed one is in the
         # signature's tuple, so a field added to _needs_you_rows without a place in the key fails here (the third review of PR 1967)
         self.assertEqual(km._NEEDS_ROW_UNKEYED, {"t"})
-        src = inspect.getsource(km._needs_you_rows)
-        fields = set(re.findall(r'"(itemId|kind|title|body|cont|fix|t)":', src))
-        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"}, "the rows' keyed fields")
+        # the row literals' keys from the AST of _needs_you_rows (the third executed review: a closed list of names let a field under a
+        # new name pass), so a field added under any name fails the equality below until the key reads it or the set declares it
+        tree = ast.parse(inspect.getsource(km._needs_you_rows).lstrip())
+        fields = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict) and node.keys and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in node.keys):
+                keys = {k.value for k in node.keys}
+                if "itemId" in keys:
+                    fields |= keys
+        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"}, "every field the row literals carry is keyed or declared unkeyed")
         tup = inspect.getsource(km._chat_build_sig)
         for f in sorted(fields - km._NEEDS_ROW_UNKEYED):
             self.assertIn(('n["%s"]' % f) if f == "itemId" else ('n.get("%s")' % f), tup, "the key reads the row's %s" % f)

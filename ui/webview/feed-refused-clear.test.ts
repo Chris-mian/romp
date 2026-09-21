@@ -33,10 +33,15 @@ test("client: the err handler releases the ids a refused clear names and repaint
 });
 
 test("kernel: the clears-log refusal names the request the way _refuse_drive's frame does", () => {
-  assert.match(KERNEL, /"type": "err", "sid": "", "title": title, "text": text, "op": op or "",\s+"itemId": _ids\[0\] if _ids else "", "itemIds": _ids\}/);
+  assert.match(KERNEL, /client\["send"\]\(json\.dumps\(\{"type": "err", "sid": sid_, "title": title, "text": text, "op": op or "",\s+"itemId": acct_ids\[0\] if acct_ids else "", "itemIds": list\(acct_ids\)\}\)\)/, "one frame shape for every account, each with its own ids");
   assert.ok(KERNEL.includes('_gesture_store_refusal(client, "undo", _undo_clear(batch_out=_ub), ids=_ub, op=str(msg.get("type") or ""))'), "an undo names its op (the request's type) and the batch it reached for (the verifier's medium A)");
   // the double-fault window's other side (round four): the re-journal-first refusal fills the batch too, so the feed's revert has ids
-  assert.match(KERNEL, /batch_out\.extend\(_newest \+ \[i for i in _rejournal_owed if i not in _newest\]\)\s+return \{LEDGER_REJOURNAL_AGAIN_KEY: _store_fault_copy\(e\)\}/);
+  assert.match(KERNEL, /named = popped \+ \[i for i in owed_ids if i not in popped\][^\n]*\n\s+if batch_out is not None:\s+batch_out\.extend\(named\)\s+skipped\[LEDGER_REJOURNAL_AGAIN_KEY\] = \{"fault": _store_fault_copy\(e\), "ids": named\}\s+return skipped/);
+  // the landed reorder tells the feed the popped batch was not restored this press (the third review's medium): an err frame, op undoClear, the popped ids
+  assert.match(KERNEL, /skipped\[LEDGER_REORDER_KEY\] = \{"fault": "", "ids": popped\}/);
+  assert.match(KERNEL, /_send\("Undo brought back earlier cards first",/);
+  // each account names only its own ids (the third review's high): a skipped session's frame carries its own out of the batch
+  assert.match(KERNEL, /_ids = \[i for i in _batch if \(i\.startswith\("notice:%s:" % sid\) if notices else \(not i\.startswith\("notice:"\) and i\.rsplit\(":", 1\)\[0\] == sid\)\)\]/, "a skipped session's own ids out of the batch");
   // the dialogs attach their box (the verifier's medium B, pre-existing on main): the behaviour rides the feed lab; this pins both functions carry the append
   assert.equal((FEED.match(/overlay\.appendChild\(box\);/g) || []).length, 3, "the quarantine dialog's, and now showErrDialog's and showPickerDialog's");
 });
