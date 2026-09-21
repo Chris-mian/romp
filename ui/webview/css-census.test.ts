@@ -38,7 +38,11 @@ const EXACT: Record<string, number> = {
   // 12 since 2026-09-19: the section heads' hard-coded #333 top rule left with the titled-divider dress (the segments wear var(--hairline))
   "gear.css": 12,
   "strip.css": 8,
-  "fleet-pane.css": 8,   // 9 until 2026-09-21: the hover card's Needs you mark resolved its red through --st-needs-bg (plans/needs-you.md), the literal now its var() fallback
+  // 8 until the per-goal PR chip: +11 for the PR-state palette (open / merged / closed, checks pass / fail / running),
+  // which no sheet defines as tokens; the chip's own accent and its live wash resolve through var(--accent) and
+  // var(--accent-wash). 9 until 2026-09-21: the hover card's Needs you mark resolved its red through --st-needs-bg
+  // (plans/needs-you.md), the literal now its var() fallback
+  "fleet-pane.css": 19,
   "timeline-pane.css": 10,
 };
 

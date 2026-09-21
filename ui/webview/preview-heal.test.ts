@@ -45,7 +45,11 @@ test("an UNVERIFIED failure never self-removes — it hides, registers, and unhi
   // box.remove() erased the figure's spot permanently: no failedPreviews registration, nothing for
   // the push-heal to retry. Every file:// mention and every no-pathLinks payload is unverified, so
   // ONE transient failure in a kernel-restart window meant a blank figure until the next send.
-  assert.doesNotMatch(PREVIEW, /box\.remove\(\)/, "the self-remove is gone from every failure path");
+  // Scoped to the MANAGED machinery (previewFull and below). previewThumb came back with the feed's
+  // artifact strips, and a thumb is not healable — a missing file costs its strip slot nothing, so it
+  // still self-removes on error. The ban is about figures that must survive a transient failure.
+  assert.doesNotMatch(PREVIEW.slice(PREVIEW.indexOf("export function previewFull")), /box\.remove\(\)/,
+    "the self-remove is gone from every healable failure path");
   // the happy-path onerror and the managed catch both hide instead (same retry machinery as verified)
   assert.match(PREVIEW, /if \(!verified\) box\.style\.display = "none";\s*\n\s*failAfterBeat\(0\);/);
   assert.match(PREVIEW, /if \(!verified\) box\.style\.display = "none";\s*\/\/ hidden while failed, healable — never removed\s*\n\s*failAfterBeat\(started\);/);
