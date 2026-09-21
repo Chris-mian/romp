@@ -153,9 +153,9 @@ test("the awaiting tooltip reads 'now' for an open span (a marked or null end) a
   const stripes = collect(panel.svg, hatch("url(#vault-await-hatch)"));
   assert.equal(stripes.length, 3);
   const [open, closed, openNull] = stripes.map((st) => tipOf(panel, st));
-  assert.match(open, /blocked on your input · \d\d:\d\d(:\d\d)?–now</, "open: to now");
-  assert.match(openNull, /blocked on your input · \d\d:\d\d(:\d\d)?–now</, "a null end: to now");
-  assert.match(closed, /blocked on your input · \d\d:\d\d(:\d\d)?–\d\d:\d\d/, "closed: to its end");
+  assert.match(open, /needed you · \d\d:\d\d(:\d\d)?–now</, "open: to now");
+  assert.match(openNull, /needed you · \d\d:\d\d(:\d\d)?–now</, "a null end: to now");
+  assert.match(closed, /needed you · \d\d:\d\d(:\d\d)?–\d\d:\d\d/, "closed: to its end");
   assert.doesNotMatch(closed, /–now</);
 });
 

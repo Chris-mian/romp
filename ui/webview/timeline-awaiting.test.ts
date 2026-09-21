@@ -8,6 +8,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 
 import { kindWord, KIND_WORD } from "./spin-caption";
 
@@ -38,6 +39,12 @@ test("precedence: blocked-on-you beats awaiting, awaiting beats Ready", () => {
 test("needsInput maps to Needs you, and the legacy 'awaiting' name (an older remote kernel) still does too", () => {
   assert.match(TL, /s\.state === 'permission' \|\| s\.state === 'needsInput' \|\| s\.state === 'awaiting'\) m = \{ label: 'Needs you', kind: 'needs' \}/);   // the Needs you chip on the lane (plans/needs-you.md)
   assert.match(TL, /needs: \{ bg: '#d946ef', fg: '#2a0a2a' \}/, "the lane chip's colour is the category's token value (the file loads standalone)");
+  // executed: the exported chooser, so a mutant the regexes miss (a swapped kind, a renamed label) reddens here
+  const { badgeFor } = createRequire(__filename)(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"));
+  // the chooser resolves the kind into the BADGE pair the canvas paints: the label with the Needs you colours
+  for (const state of ["permission", "needsInput", "awaiting"]) assert.deepEqual(badgeFor({ state, live: true }), { label: "Needs you", bg: "#d946ef", fg: "#2a0a2a" }, state);   // a live lane: a dead one wears no badge
+  assert.deepEqual(badgeFor({ state: "blocked", live: true }), { label: "API error", bg: "#C0392B", fg: "#ffffff" }, "the hard stop keeps the red");
+  assert.equal(badgeFor({ state: "needsInput" }), null, "a lane that is not live wears no badge");
 });
 
 test("an idle awaitingBg lane draws a full-thickness FADED stretch (0.4 alpha), not a thin dash (the user 2026-07-13)", () => {

@@ -71,6 +71,9 @@ test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT str
   assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*var\(--st-needs-bg\)/);
   assert.doesNotMatch(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*#d8a657/);
   assert.doesNotMatch(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*var\(--err\)/, "no red on a question mark: red is the hard stop's");
+  // the group card's member dot for a question (the same mark, one level up): the token, never the red
+  assert.match(CSS, /\.fgroup-member\.st-question \.fgroup-dot \{ color: var\(--st-needs-bg\); \}/);
+  assert.doesNotMatch(CSS, /\.fgroup-member\.st-question \.fgroup-dot \{[^}]*(var\(--err\)|#e5484d|#c0392b)/, "no red on the group dot either");
   // ...AND a RING around it in the same colour (the user 2026-06-25): the same 13px hollow circle as the done ✓ disc and
   // the modal's .st-question ⏸-ring, so the card's mark isn't a bare glyph missing its ring.
   assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*border: 1\.5px solid var\(--st-needs-bg\)/);

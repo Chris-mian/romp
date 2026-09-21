@@ -107,6 +107,7 @@ test("pinned: the bar and the tag overview's rows both build from this module; n
   assert.equal((CSS.match(/^\.chip \{/gm) || []).length, 1);
   assert.match(CSS, /\.chip-awaitingBg \{ background: var\(--st-awaitbg-bg\); color: var\(--st-awaitbg-fg\); \}/);
   assert.match(CSS, /\.chip-needsInput \{ background: var\(--st-needs-bg\); color: var\(--st-needs-fg\); \}/, "the Needs you chip in the category's colour (plans/needs-you.md)");
+  assert.match(CSS, /\.chip-awaiting \{ background: var\(--st-needs-bg\); color: var\(--st-needs-fg\); \}/, "an older remote kernel's chip name wears the same pair");
   assert.match(CSS, /\.chip-blocked \{ background: var\(--st-blocked-bg\); color: var\(--st-blocked-fg\); \}/);
   assert.doesNotMatch(CSS, /\.snap-row \.chip|\.snap-item \.chip|#tab-snapshot \.chip/, "the overview adds no rule of its own for the chip");
 });

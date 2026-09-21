@@ -6218,7 +6218,7 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); }
   });
   // The header's order mirrors the feed's grouped headers (T284, the user 2026-09-09: the caret sat
-  // beside the chip at the left; the feed's Working / Blocked / Completed headers and its session
+  // beside the chip at the left; the feed's Working / Needs you / Completed headers and its session
   // headers put the name at the left and the caret with its count together at the RIGHT): the tag's
   // chip first, then the caret and the count right after it, then (folded) the gist's pip last — so
   // the folded and the open row share one shape and the caret is always the chip's neighbour. The
@@ -13098,7 +13098,7 @@ function fillSnapshotRow(btn: HTMLElement, r: SnapRow, now: number): void {
   if (r.color) name.style.color = r.color.bg;
   btn.appendChild(name);
   // the state in words, when the row says one: the SHARED status chip (status-chip.ts), the same words and dress the
-  // bar under the transcript wears for the session you are reading — Blocked (API error when that is the state) on
+  // bar under the transcript wears for the session you are reading: Needs you (API error when that is the state) on
   // you, "Awaiting 3 agents" / "Awaiting watch" / the peer's name for background work (T322b, the user 2026-09-10:
   // a grey outlined pill of the row's own reading "waiting" was not it). The model picks the chip (tab-snapshot.ts
   // snapshotRow); the pip stays beside it: the strip's colour language says the state, the chip says what.

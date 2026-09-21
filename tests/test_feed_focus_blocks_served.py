@@ -11,7 +11,7 @@ control; the name inside it keeps its own click (open the session) and hover tit
 reads the state; folded, the focused session's card total follows the name.
 
 The served lab drives the real /feed page from a hermetic kernel with a SYNTHETIC payload (the notes-api demo world:
-`web` with two Working, one Blocked and two Completed cards; `api` with one Working card; `tests` with none), through
+`web` with two Working, one Needs you and two Completed cards; `api` with one Working card; `tests` with none), through
 the page's own frame path, with page.mouse for every drag, and walks these roads in one browser run:
   (f) a store from BEFORE the change (the T347 fields only: focused true, order [], cols []) seeded before the page's
       script hydrates: the section renders in the board's order with equal widths, nothing folded, the label unfolded;
@@ -25,9 +25,9 @@ the page's own frame path, with page.mouse for every drag, and walks these roads
   (d) the Completed block's caret folds the block (col-collapsed, its list hidden, its chip and count shown); an
       activeChat frame for `api` keeps Completed folded (focusCols is per column key, not per session); a reload keeps
       it; the caret again unfolds it;
-  (c) a gutter drag widens Working against Blocked: the blob's focusW carries both weights summing to the previous sum
+  (c) a gutter drag widens Working against Needs you: the blob's focusW carries both weights summing to the previous sum
       (within 0.001) and the pixels move with the weights; later, a drag far past the neighbour stops at the 0.35 floor;
-  (a) a chip drag of Blocked to the first slot reorders the section's blocks (visual order by getBoundingClientRect
+  (a) a chip drag of Needs you to the first slot reorders the section's blocks (visual order by getBoundingClientRect
       left) while the board's columns keep their order; the blob carries focusOrder;
   (b) a board chip drag (Completed to the first slot) moves the board and, the section now having its own order,
       leaves the section as it was; in a FRESH state (focusOrder empty) the same board drag moves the section too;
@@ -37,11 +37,11 @@ the page's own frame path, with page.mouse for every drag, and walks these roads
   (i) a focused session with NO cards (tests): the label stands, no quiet line, the three blocks with their heads and
       empty lists (nothing said under a head, the user 2026-09-14);
   (j) the single-column layout (a 520 px viewport stacks the columns): a focused block whose category has no cards hides
-      whole, chip and all (api has one Working card: Blocked and Completed vanish), and a card arriving for Blocked
+      whole, chip and all (api has one Working card: Needs you and Completed vanish), and a card arriving for Needs you
       brings the block back; the row layout keeps every head;
   (k) (l) (m) the slot math over HIDDEN blocks (review round two): a jiggle on the one visible chip (Completed, first in the
       stacked order, the hidden blocks after it) stores nothing; a one-slot
-      drag of Completed past Blocked with Working hidden lands right behind Blocked, Working keeping its place; ArrowDown
+      drag of Completed past Needs you with Working hidden lands right behind Needs you, Working keeping its place; ArrowDown
       on the last visible block (Completed, the hidden Working below it) and ArrowUp on the first move nothing;
   (n) the label's clamp, MEASURED at 520 and 420 px with an 80-character session name: the caret on the name's line to its
       right, the name cut inside the head, the head one line;
@@ -149,7 +149,7 @@ const ready = async () => {
   await page.waitForFunction(() => document.readyState === "complete" && typeof window.acquireVsCodeApi === "function", null, { timeout: 20000 });
   await page.waitForTimeout(600);
 };
-// the synthetic world: web with two Working, one Blocked, two Completed; api with one Working (its column is the
+// the synthetic world: web with two Working, one Needs you, two Completed; api with one Working (its column is the
 // payload's parameter: road (g) moves it); tests listed with no cards
 const now = Math.floor(Date.now() / 1000);
 const ask = (itemId, sid, name, column, text, t) => ({ itemId, sid, name, color: cfg.colors[name], text, t, live: true,
@@ -347,11 +347,11 @@ out.completedFoldedReloaded = await survey();
 await page.click("#feed-focus .col-completed .fcol-fold");
 await frame(); await park();
 out.completedOpen = await survey();
-// (c) the gutter between Working and Blocked, 180 px right
+// (c) the gutter between Working and Needs you, 180 px right
 await dragGutter("asks", 180);
 out.widened = await survey();
 await shotBoth("4-working-widened");
-// (a) the Blocked chip to the first slot: past the Working block's midpoint, leftwards
+// (a) the Needs you chip to the first slot: past the Working block's midpoint, leftwards
 const work = await page.locator("#feed-focus .col-asks").boundingBox();
 await dragBlockChip("needsInput", work.x + 30);
 out.reordered = await survey();
@@ -385,8 +385,8 @@ await deliver({ type: "activeChat", id: cfg.tests });
 await frame(); await park();
 out.emptyRow = await survey();
 await shotBoth("7-empty-row");
-// (j) SINGLE COLUMN (a narrow viewport stacks the columns): api has one Working card, so Blocked and Completed hide
-// whole, chip and all; a Blocked card arriving for api brings that block back; then the row layout again
+// (j) SINGLE COLUMN (a narrow viewport stacks the columns): api has one Working card, so Needs you and Completed hide
+// whole, chip and all; a Needs you card arriving for api brings that block back; then the row layout again
 await page.setViewportSize({ width: 520, height: 760 });
 await deliver({ type: "activeChat", id: cfg.api });
 await frame(); await park();
@@ -414,8 +414,8 @@ await page.waitForTimeout(150);
 await page.mouse.up();
 await page.waitForTimeout(300); await park();
 out.stackedJiggle = await survey();
-// (l) stacked, api with a Blocked and a Completed card and NO Working card (Working hidden): a one-slot drag of Completed
-// down past Blocked must land it right behind Blocked, the hidden Working keeping its place last
+// (l) stacked, api with a Needs you and a Completed card and NO Working card (Working hidden): a one-slot drag of Completed
+// down past Needs you must land it right behind Needs you, the hidden Working keeping its place last
 const twoBlocks = payloadOf("completed");
 twoBlocks.asks.push(ask(cfg.ids.apiBlocked, cfg.api, "api", "needs_input", "notes-api: choose the tag limit", now - 30));
 await deliver(twoBlocks);
@@ -431,7 +431,7 @@ await page.mouse.up();
 await page.waitForTimeout(300); await park();
 out.stackedOneSlot = await survey();
 // (m) the arrow keys skip a hidden neighbour: after (l) Completed is the last VISIBLE block (the hidden Working below
-// it), so ArrowDown on its chip moves nothing, and ArrowUp on Blocked (the first) moves nothing either
+// it), so ArrowDown on its chip moves nothing, and ArrowUp on Needs you (the first) moves nothing either
 await page.focus("#feed-focus .col-completed .feed-col-head .fcol-chip");
 await page.keyboard.press("ArrowDown");
 await frame(); await park();
@@ -521,7 +521,7 @@ await frame(); await park();
 // board drag leaves the pinned section alone
 await boot(T347_BLOB);
 const w3 = await page.locator("#feed-focus .col-asks").boundingBox();
-await dragBlockChip("needsInput", w3.x + 30);   // Blocked first: focusOrder [needsInput, asks, completed], pinned by drag
+await dragBlockChip("needsInput", w3.x + 30);   // Needs you first: focusOrder [needsInput, asks, completed], pinned by drag
 out.pinnedByDrag = await survey();
 await page.focus("#feed-focus .col-needsInput .feed-col-head .fcol-chip");
 await page.keyboard.press("ArrowRight");      // back to the board's arrangement: stays STORED (a drag pinned it)
@@ -551,7 +551,7 @@ const cbl = await page.locator("#feed-focus .col-needsInput").boundingBox();
 const ccc = await page.locator("#feed-focus .col-completed .feed-col-head .fcol-chip").boundingBox();
 await page.mouse.move(ccc.x + ccc.width / 2, ccc.y + ccc.height / 2);
 await page.mouse.down();
-await page.mouse.move(ccc.x + ccc.width / 2, cbl.y + cbl.height * 0.75, { steps: 16 });   // Completed down past Blocked
+await page.mouse.move(ccc.x + ccc.width / 2, cbl.y + cbl.height * 0.75, { steps: 16 });   // Completed down past Needs you
 await page.waitForTimeout(200);
 await page.mouse.up();
 await page.waitForTimeout(300); await park();
@@ -559,7 +559,7 @@ out.stackedPinned = await survey();            // [needsInput, completed, asks],
 await page.setViewportSize({ width: 1100, height: 760 });
 await frame(); await park();
 await page.focus("#feed-focus .col-needsInput .feed-col-head .fcol-chip");
-await page.keyboard.press("ArrowRight");       // [completed, needsInput, asks]? no: Blocked one slot right = [completed, needsInput, asks]
+await page.keyboard.press("ArrowRight");       // [completed, needsInput, asks]? no: Needs you one slot right = [completed, needsInput, asks]
 await frame(); await park();
 out.rowKeyAfterStackedPin = await survey();
 // (x) key out, a plain CLICK on a chip, key back: the click must not drop the keys' provenance (round three, medium 1)
@@ -773,7 +773,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         self.assertEqual(r["completedFoldedReloaded"]["collapsed"], ["completed"], "a reload keeps it: %r" % r["completedFoldedReloaded"]["collapsed"])
         self.assertEqual(r["completedOpen"]["collapsed"], [], "the caret again unfolds it")
 
-        # ── (c) the gutter widens Working against Blocked; the weights keep their sum ──
+        # ── (c) the gutter widens Working against Needs you; the weights keep their sum ──
         before, wd = r["completedOpen"], r["widened"]
         self.assertEqual(wd["secOrder"], ROW_DEFAULT, "the gutter moved no block")
         w = wd["stored"].get("focusW") or {}
@@ -782,12 +782,12 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         self.assertGreater(w["asks"], 1.2, "Working took the width: %r" % w)
         dw = wd["rects"]["asks"]["width"] - before["rects"]["asks"]["width"]
         self.assertAlmostEqual(dw, 180, delta=6, msg="Working grew by the drag's 180 px: %r" % dw)
-        self.assertAlmostEqual(wd["rects"]["needsInput"]["width"] - before["rects"]["needsInput"]["width"], -180, delta=6, msg="…and Blocked gave it: %r" % wd["rects"])
+        self.assertAlmostEqual(wd["rects"]["needsInput"]["width"] - before["rects"]["needsInput"]["width"], -180, delta=6, msg="…and Needs you gave it: %r" % wd["rects"])
         self.assertAlmostEqual(wd["rects"]["completed"]["width"], before["rects"]["completed"]["width"], delta=2, msg="Completed untouched: %r" % wd["rects"])
 
-        # ── (a) the Blocked chip dragged to the first slot: the section reorders, the board keeps its order ──
+        # ── (a) the Needs you chip dragged to the first slot: the section reorders, the board keeps its order ──
         ro = r["reordered"]
-        self.assertEqual(ro["secOrder"], ["needsInput", "asks", "completed"], "Blocked first in the section: %r" % ro["secOrder"])
+        self.assertEqual(ro["secOrder"], ["needsInput", "asks", "completed"], "Needs you first in the section: %r" % ro["secOrder"])
         self.assertEqual(ro["boardOrder"], ROW_DEFAULT, "the board's columns keep their order: %r" % ro["boardOrder"])
         self.assertEqual(ro["stored"].get("focusOrder"), ["needsInput", "asks", "completed"], "the blob carries the section's own order: %r" % ro["stored"])
         self.assertEqual(ro["stored"].get("order"), [], "…and not the board's: %r" % ro["stored"])
@@ -826,10 +826,10 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         se = r["stackedEmpty"]
         self.assertEqual((se["name"], se["headShown"], se["colsShown"]), ("api", True, True), "api focused in the single-column layout: %r" % se)
         self.assertEqual({k: v["shown"] for k, v in se["chips"].items()}, {"asks": True, "needsInput": False, "completed": False},
-                         "api has one Working card: Blocked and Completed hide whole, head and all (the user 2026-09-14): %r" % se["chips"])
+                         "api has one Working card: Needs you and Completed hide whole, head and all (the user 2026-09-14): %r" % se["chips"])
         sa = r["stackedArrived"]
         self.assertEqual({k: v["shown"] for k, v in sa["chips"].items()}, {"asks": True, "needsInput": True, "completed": False},
-                         "a Blocked card arrived for api: its block is back; Completed still hidden: %r" % sa["chips"])
+                         "a Needs you card arrived for api: its block is back; Completed still hidden: %r" % sa["chips"])
         self.assertEqual(self._col_of(sa["secCards"], "f:a:" + IDS["apiBlocked"]), "needsInput", "the arrived card sits in the returned block: %r" % sa["secCards"])
         ra = r["rowAgain"]
         self.assertEqual({k: v["shown"] for k, v in ra["chips"].items()}, {"asks": True, "needsInput": True, "completed": True}, "side by side again: every head stands: %r" % ra["chips"])
@@ -837,18 +837,18 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         sj = r["stackedJiggle"]
         self.assertEqual(sj["stored"]["focusOrder"], [], "a 14 px jiggle on the one visible chip stores no order (the hidden blocks are no slots): %r" % sj["stored"])
         self.assertEqual({k: v["shown"] for k, v in sj["chips"].items()}, {"asks": False, "needsInput": False, "completed": True}, "Completed the only visible block: %r" % sj["chips"])
-        # ── (l) stacked, Working hidden: a one-slot drag of Completed past Blocked lands right behind Blocked ──
+        # ── (l) stacked, Working hidden: a one-slot drag of Completed past Needs you lands right behind Needs you ──
         st2 = r["stackedTwo"]
-        self.assertEqual({k: v["shown"] for k, v in st2["chips"].items()}, {"asks": False, "needsInput": True, "completed": True}, "Working hidden, Blocked and Completed shown: %r" % st2["chips"])
+        self.assertEqual({k: v["shown"] for k, v in st2["chips"].items()}, {"asks": False, "needsInput": True, "completed": True}, "Working hidden, Needs you and Completed shown: %r" % st2["chips"])
         so = r["stackedOneSlot"]
         self.assertEqual(so["stored"]["focusOrder"], ["needsInput", "completed", "asks"],
-                         "Completed one slot down, behind Blocked; the hidden Working keeps its place last (the base stored it behind Working): stored %r, on screen %r, rects %r, two-block state %r"
+                         "Completed one slot down, behind Needs you; the hidden Working keeps its place last (the base stored it behind Working): stored %r, on screen %r, rects %r, two-block state %r"
                          % (so["stored"], so["secOrder"], so["rects"], {k: (v["shown"], v["cursor"]) for k, v in st2["chips"].items()}))
         # ── (m) the arrow keys skip a hidden neighbour ──
         sk = r["stackedKeyDown"]
         self.assertEqual(sk["stored"]["focusOrder"], ["needsInput", "completed", "asks"], "ArrowDown on the last visible block (Completed) moves nothing past the hidden Working: %r" % sk["stored"])
-        self.assertEqual(sk["secOrderY"], ["needsInput", "completed"], "on screen, Blocked then Completed, unchanged: %r" % sk["secOrderY"])
-        self.assertEqual(so["secOrderY"], ["needsInput", "completed"], "after the one-slot drag, Blocked then Completed on screen: %r" % so["secOrderY"])
+        self.assertEqual(sk["secOrderY"], ["needsInput", "completed"], "on screen, Needs you then Completed, unchanged: %r" % sk["secOrderY"])
+        self.assertEqual(so["secOrderY"], ["needsInput", "completed"], "after the one-slot drag, Needs you then Completed on screen: %r" % so["secOrderY"])
         self.assertEqual(r["stackedKeyUp"]["stored"]["focusOrder"], ["needsInput", "completed", "asks"], "ArrowUp on the first block moves nothing: %r" % r["stackedKeyUp"]["stored"])
         # ── (n) the label's clamp, measured (review round two, medium 2): one line, the caret to the right of the name ──
         for w, g in (("520", r["long520"]), ("420", r["long420"])):
@@ -864,7 +864,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         self.assertEqual(r["keyBack"]["secOrder"], ["asks", "needsInput", "completed"], "…and on screen the board's arrangement: %r" % r["keyBack"]["secOrder"])
         # ── (p) a click on the chip focuses it; the arrow keys then work without a Tab (review, low 2) ──
         self.assertEqual(r["clickFocused"], "feed-col-name fcol-chip|Needs you", "the clicked chip holds focus: %r" % r["clickFocused"])
-        self.assertEqual(r["clickArrow"]["stored"]["focusOrder"], ["asks", "completed", "needsInput"], "ArrowRight right after the click moves Blocked one slot on: %r" % r["clickArrow"]["stored"])
+        self.assertEqual(r["clickArrow"]["stored"]["focusOrder"], ["asks", "completed", "needsInput"], "ArrowRight right after the click moves Needs you one slot on: %r" % r["clickArrow"]["stored"])
         # ── (x) (y) (z) round three: a click and a there-and-back drag keep a key-minted order walkable; a slip is a click ──
         self.assertEqual(r["keyClickKey"]["stored"]["focusOrder"], [], "key out, click, key back: the section FOLLOWS again, nothing stored (a click changed no order, so the keys' provenance stands): %r" % r["keyClickKey"]["stored"])
         self.assertEqual(r["slipFocus"]["active"], "feed-col-name fcol-chip|Working", "a one-pixel slip is a click: the chip keeps its focus: %r" % r["slipFocus"])
@@ -888,7 +888,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         sp = r["stackedPinned"]
         self.assertEqual(sp["stored"]["focusOrder"], ["needsInput", "completed", "asks"], "a single-column drag pins: %r" % sp["stored"])
         rk = r["rowKeyAfterStackedPin"]
-        self.assertEqual(rk["stored"]["focusOrder"], ["completed", "needsInput", "asks"], "row layout: ArrowRight on Blocked moves it one slot; the pin stands as an explicit order: %r" % rk["stored"])
+        self.assertEqual(rk["stored"]["focusOrder"], ["completed", "needsInput", "asks"], "row layout: ArrowRight on Needs you moves it one slot; the pin stands as an explicit order: %r" % rk["stored"])
         # ── (q) (r) (s) (t) native focus (review round two, mediums 2 and 3) ──
         self.assertEqual((r["clickRing"]["active"], r["clickRing"]["visible"], r["clickRing"]["outline"]), ("feed-col-name fcol-chip|Needs you", False, "none"),
                          "a mouse click focuses the chip without the keyboard ring: %r" % r["clickRing"])

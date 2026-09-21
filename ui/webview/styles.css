@@ -87,7 +87,7 @@ body.scheme-solarized-dark {
   /* the feed's button hairline, MIRRORED byte-equal from feed.css --card-border (T141: the chat's
      button family wears the feed's exact rest treatment; the chat page cannot import feed.css) */
   --card-border: rgba(255, 255, 255, 0.10);
-  --err: #c0392b;   /* unified with the awaiting/blocked red (the user 2026-06-24): one "needs you" red. API-error (--st-blocked-bg #e5484d) stays distinct. */
+  --err: #c0392b;   /* the hard stop's red (the ⏸ live-block badge, the modal's hard-stop chip; unified with the awaiting red, the user 2026-06-24). Since 2026-09-21 the Needs you category paints in --st-needs-bg, never this red (plans/needs-you.md). API-error (--st-blocked-bg #e5484d) stays distinct. */
   --warn: #d7a23a;  /* the heads-up amber — "attention, not an error". Was referenced with fallbacks but never
                        defined (a phantom token) until 2026-08-26; mirrored in feed.css (own :root). */
   /* the three mail KINDS (Delegation / Coordination / Question) as coloured TEXT on the card head (T302; T371, the user
@@ -1037,8 +1037,9 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    tells with its "cleared" chip (the user 2026-07-25/26). */
 .ledger-tnode.cleared { opacity: 0.75; }
 .ledger-tnode.cleared .ledger-ttext { text-decoration: line-through; text-decoration-color: var(--dim); }
-/* blocked = a red ⏸ ring (only when not done; render gates the .blocked class the same way). The current
-   node is NO LONGER excluded — its checkbox matches every other blocked item (the user 2026-06-17). */
+/* needs you = a ⏸ ring in the Needs you colour (only when not done; render gates the .blocked class the same way; the
+   class name is the store's flag). The current node is NO LONGER excluded: its checkbox matches every other such item
+   (the user 2026-06-17). */
 .ledger-tnode.blocked .ledger-tmark { border-color: var(--st-needs-bg); color: var(--st-needs-bg); }   /* the outline's Needs you mark in the category's colour (plans/needs-you.md); red stays the hard stop's */
 .ledger-ttext { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 /* (the ⊕ distiller-summary expander + its .ledger-tsum panel were removed 2026-06-27 — the Fleet tree shows

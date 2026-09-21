@@ -25,8 +25,8 @@
   --fg: var(--vscode-foreground, #cccccc);
   --dim: var(--vscode-descriptionForeground, #9a9a9a);
   --green: #74c991;
-  --err: #c0392b;   /* the block-red — mirrors styles.css; feed.css has its OWN :root, so the ⏸ block marks
-                       (and the modal's red ⏸-ring) need it defined HERE or var(--err) falls back to gray */
+  --err: #c0392b;   /* the hard stop's red (the ⏸ live-block badge; mirrors styles.css). feed.css has its OWN :root, so a token
+                       a rule reads must be defined HERE or var() falls back to gray; the Needs you marks read --st-needs-bg below */
   --warn: #d7a23a;  /* the heads-up amber — mirrors styles.css; ONE amber for "attention, not an error":
                        the toast's left rule, the judge-warnings head (two near-twin hexes before 2026-08-26) */
   --box-border: rgba(255, 255, 255, 0.12);  /* mirrors styles.css — same trap as --err: an undefined var()
@@ -1061,7 +1061,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 
 /* ⏸ live block badge on an ask card: the owning session is stopped mid-turn on a
    permission prompt / picker for THIS card's work; click opens the session.
-   Same red as the BLOCKED column header. */
+   The hard stop's red (plans/needs-you.md); the column header is the Needs you magenta. */
 .fask-blocked {
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em;
   color: #c0392b; cursor: pointer; white-space: nowrap;
@@ -1079,19 +1079,20 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
   color: #e5484d; border: 1px solid #e5484d; border-radius: 5px; padding: 1px 6px;
 }
-/* ⚠ retrying since HH:MM — the open turn is inside an api-retry storm (kernel `retrying`): the same red
-   api-trouble family as .fask-apierror (same size — same information type), but FADED like the working
-   treatments: the session is still in motion, not stopped, and no Retry button — auto-retry is already
-   doing that (the user 2026-07-09). */
+/* ⚠ retrying since HH:MM: the open turn is inside an api-retry storm (kernel `retrying`), the same size as
+   .fask-apierror (same information type) but in the RETRYING AMBER its ring, chip and lane badge wear (plans/needs-you.md,
+   2026-09-21: red is the hard stop's, and a retry is not one), and FADED like the working treatments: the session is
+   still in motion, not stopped, and no Retry button, since auto-retry is already doing that (the user 2026-07-09). */
 .fask-retrying {
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
-  color: #e5484d; border: 1px solid rgba(229, 72, 77, 0.6); border-radius: 5px; padding: 1px 6px;
+  color: var(--st-retrying-bg); border: 1px solid var(--st-retrying-bg); border-radius: 5px; padding: 1px 6px;
   opacity: 0.85;
 }
 /* ⚠ Can't analyze · API key / login — judge-auth-down (the user 2026-08-12): romp's OWN analysis of
-   this session is refused on its credential, so nothing here can move without the user. FILLED red —
-   a deliberately new chip, same size as its api-trouble siblings (same information type) but
-   inverted: the outlined chips say "the session hit trouble", this one says "romp can't even look". */
+   this session is refused on its credential, so nothing here can move without the user. FILLED in the Needs you
+   pair (plans/needs-you.md: not a hard stop, the session runs), a deliberately distinct chip, same size as its
+   api-trouble siblings (same information type) but inverted: the outlined chips say "the session hit trouble", this
+   one says "romp can't even look". */
 .fask-jauth {
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
   color: var(--st-needs-fg); background: var(--st-needs-bg); border: 1px solid var(--st-needs-bg); border-radius: 5px; padding: 1px 6px;   /* the Needs you token (plans/needs-you.md): the session runs, romp's analysis is down, the fix is yours; not a hard stop, so not red */
@@ -1316,9 +1317,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 }
 .fcheck.done .fcheck-text { color: var(--dim); }
 /* needs you = a ⏸ inside a ring in the category's colour: the SAME 13px circle as the done ✓ disc above and the modal tree's
-   .st-question ⏸-ring, so a blocked sub-goal on a CARD reads with the same weight as everywhere else (the
-   user 2026-06-25: the card mark was getting only the red glyph, missing the ring). Hollow (transparent bg),
-   recoloured-red mirror of the not-done hollow ring. */
+   .st-question ⏸-ring, so a sub-goal that needs you on a CARD reads with the same weight as everywhere else (the
+   user 2026-06-25: the card mark was getting only the glyph, missing the ring). Hollow (transparent bg), a mirror of
+   the not-done hollow ring in the category's colour. */
 .fcheck.question .fcheck-mark {
   width: 13px; height: 13px; min-width: 13px; box-sizing: border-box;
   border-radius: 50%; border: 1.5px solid var(--st-needs-bg); background: transparent;

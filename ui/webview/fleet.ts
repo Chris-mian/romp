@@ -1007,7 +1007,7 @@ function markReason(n: LedgerNode, byId: Map<string, LedgerNode>): string {
   // actually finished before the dismissal — no more guessing from summary-presence.
   if (!n.done) {
     if (n.cleared) return n.blocked ? "blocked, then cleared — dismissed unfinished" : "cleared — dismissed as no longer needed, never done";
-    return n.blocked ? "blocked — needs you" : "not yet done";
+    return n.blocked ? "needs you" : "not yet done";
   }
   if (n.cleared) return "completed, then cleared off the board";
   if (!n.derived) return "done — explicitly checked off";
