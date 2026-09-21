@@ -1029,10 +1029,11 @@ class ServedChatSplit(unittest.TestCase):
         self.assertLessEqual(abs(e["rtop"] - strip_bottom), 2, "the source pane's edge starts under its strip (stripH from the page): %r vs %r" % (e["rtop"], strip_bottom))
         self.assertTrue(e["top"].endswith("px"), "the top is set inline, in px: %r" % e["top"])
         self.assertLessEqual(abs(float(e["top"][:-2]) - (strip_bottom - p1["top"])), 2, "…to the strip's bottom in the pane's own pixels: %r" % e["top"])
-        # the rectangle over the edge: the pane's right half at the row's height, B's name as its line, the accent dress
+        # the rectangle over the edge: the pane's right half at the row's height, no text in it (the user 2026-09-21: the square says
+        # where by its place alone), the accent dress
         g = s["ghost"]
         self.assertEqual(g["cls"], "on"); self.assertEqual(g["display"], "flex")
-        self.assertEqual(g["text"], "api", "the dragged session's name, no verb")
+        self.assertEqual(g["text"], "", "no text in the square (the dragged session's name left it, the user 2026-09-21)")
         self.assertLessEqual(abs(g["left"] - (p1["left"] + p1["width"] / 2)), 1, "left = the pane's middle: %r vs %r" % (g, p1))
         self.assertLessEqual(abs(g["width"] - p1["width"] / 2), 1, "width = half the pane: %r vs %r" % (g, p1))
         self.assertLessEqual(abs(g["top"] - row["top"]), 1); self.assertLessEqual(abs(g["height"] - row["height"]), 1)
