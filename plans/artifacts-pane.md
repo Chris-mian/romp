@@ -109,8 +109,8 @@ for host routing, and one bundle `ui/webview/artifacts.ts`.
 - The kernel reads the session's parse through the existing store: `_parse_cached(path)` first (the cached parse under
   the live key, never a parse); when that misses (a cold kernel, a session no chat has opened), `jd.parsed_session(sid,
   [path], now)` once, into the same shared cache every other reader uses, so the next request and the chat's own build
-  find it warm. The transcript path is the session's row (`_sessions`, the same enumeration the picker uses), forks
-  included as the chat includes them.
+  find it warm. The transcript path is the session's row (`_session_row`, the resolution the chat's own build uses; the
+  picker itself enumerates nothing, it lists the chat columns' open tabs), forks included as the chat includes them.
 - The walk is one pass over `turns[].atoms[]`: assistant blocks for rules 1 and 2, user blocks and text for rule 3; then
   the de-duplication, the stat, the route's verdict, the sort and the cap. Since pass two the walk is INCREMENTAL per
   session (section 9.4): an in-memory memo per sid keeps the mentions map and the identity of the last turn walked
@@ -200,22 +200,23 @@ minted under its own temp root; no real transcript or path is copied anywhere.
 ## 9. Pass two (2026-09-20): remote sessions, the open-tabs scope, the picker's dress, growth, the lock
 
 The user tried the pane and asked for five things (paraphrased by the manager, 2026-09-20). Every premise below was
-checked in the code it names (the anchors are symbols; the line numbers were main's at 10f33abb, before the pass landed). The
+checked in the code it names, and each anchor below names the symbol (the line numbers of main at 10f33abb were dropped when the
+pass landed; a symbol survives an edit, a line does not). The
 invariants of sections 1, 2 and 7 hold:
 deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 
 ### 9.1 Remote sessions: the transport already works, only the selector never offered one
 
 - The listing op is routed by federation to the kernel that owns the sid, client-side: `SCALAR_ID = ["id", "sid"]`
-  (`ui/webview/federation.ts:62`), `hostOf(msg.sid)` picks the host and the prefix is stripped before the send
-  (`federation.ts:442`), the remote host's own socket carries it (`sendTo`, `federation.ts:1528`, spliced by the hub at
-  `GET /remote/<host>/ws`, `kernel.py:70184`), and the answer's `sid` comes back host-prefixed (`prefixInbound`,
-  `federation.ts:153`), so the pane's "is this answer for my selection" check holds for a remote sid. Thumbnails and the
-  large view already go through `fileUrl` (`ui/webview/preview.ts:135`), which rewrites the base to
-  `/remote/<host>/file` with the bare sid, answered by `_remote_file` (`kernel.py:70430`) over the tunnel.
-- The one gap: the selector asked `requestSessions` with no `host` (`artifacts.ts:44`), which federation routes to the
-  LOCAL kernel only (`federation.ts:475`), and the local `_session_list` has no remote arm (`kernel.py:16381`), so a
-  remote session could never be picked. The chat's own picker asks per host (`render.ts:8542`).
+  (`SCALAR_ID`, `ui/webview/federation.ts`), `hostOf(msg.sid)` picks the host and the prefix is stripped before the send
+  (`sendRemote`'s prefix strip, `federation.ts`), the remote host's own socket carries it (`sendTo`, `federation.ts`, spliced by the hub at
+  `GET /remote/<host>/ws`, the hub's relay route in `kernel.py`), and the answer's `sid` comes back host-prefixed (`prefixInbound`,
+  `federation.ts`), so the pane's "is this answer for my selection" check holds for a remote sid. Thumbnails and the
+  large view already go through `fileUrl` (`ui/webview/preview.ts`), which rewrites the base to
+  `/remote/<host>/file` with the bare sid, answered by `_remote_file` (`kernel.py`) over the tunnel.
+- The one gap: the selector asked `requestSessions` with no `host` (`requestSessions`, `artifacts.ts`), which federation routes to the
+  LOCAL kernel only (`routeOutbound`, `federation.ts`), and the local `_session_list` has no remote arm (`kernel.py`), so a
+  remote session could never be picked. The chat's own picker asks per host (`requestSessions` per host, `render.ts`).
 - The fix falls out of 9.2: the picker lists the OPEN tabs of the chat panes, and the chat strip already merges every
   attached host's tabs with their `host:` ids and prefixed names, so a remote session is listed, routed and served with
   no per-host request. `_artifacts_list` on the owning kernel is unchanged: it receives the bare sid it owns.
@@ -226,10 +227,10 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 ### 9.2 Scope: the sessions open in the chat panes, not the picker's thirty days
 
 - Nothing in the shell carries the set of open tabs today (the map found none: column membership lives in
-  `localStorage` `romp-chat-cols`, `kernel.py:64146`, and the shell scrapes a column's DOM for its active tab,
-  `kernel.py:64172`); the chat posts one signal about its tabs, `{romp:'activeTab', id, nonce, gesture}` on every
-  switch (`render.ts:12711`), which the shell forwards to the feed alone (`kernel.py:60911`).
-- **The chat column posts its tab set.** `renderTabs` (`render.ts:6636`) posts `{romp:'chatTabs', tabs}` to the shell,
+  `localStorage` `romp-chat-cols`, the split script in `kernel.py`, and the shell scrapes a column's DOM for its active tab,
+  the same script); the chat posts one signal about its tabs, `{romp:'activeTab', id, nonce, gesture}` on every
+  switch (`notifyActive`, `render.ts`), which the shell forwarded to the feed alone (`_LANDING_FOCUS_JS`, `kernel.py`).
+- **The chat column posts its tab set.** `renderTabs` (`render.ts`) posts `{romp:'chatTabs', tabs}` to the shell,
   `tabs` the strip's MEMBERSHIP in strip order (`stripLists`: the kernel's order plus a just-arrived tab, less a closing
   one; never the display-narrowed subset, so the demo filter and a folded section do not scope another pane) narrowed
   to the tabs THIS column holds (`heldHere`, the chat split's partition, which the strip applies as a display rule; the
@@ -239,8 +240,8 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   compare, the way `activeTab` is deduped). The union over the columns is what the user sees open.
 - **The shell unions and broadcasts.** The landing keeps one map, column id to its last posted set, unions the sets in
   column order and posts `{romp:'chatTabs', tabs}` to every pane iframe whose `data-protocol` is `romp` (the same
-  `tell` that carries the pane-set broadcast, `kernel.py:64048`), on every change and on each pane iframe's load (the
-  boot-order race the pane-set broadcast already covers, `kernel.py:64118`). A column that closes drops its set. The
+  `tell` that carries the pane-set broadcast, `_LANDING_COLLAPSE_JS`), on every change and on each pane iframe's load (the
+  boot-order race the pane-set broadcast already covers, the load re-tell in `_LANDING_COLLAPSE_JS`). A column that closes drops its set. The
   broadcast joins the pane protocol's inbound set (`plans/panes-as-data.md`, section on the protocol), which the
   timeline owner has read.
 - The pane's list is that union, verbatim: a session the picker knows but no chat pane shows is not offered; a stored
@@ -252,19 +253,19 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 ### 9.3 The picker's dress: the strip's session row, the menu vocabulary
 
 - One shared renderer for a session's label already exists and is what the strip uses: `hostNameNodes(name, id)`
-  (`ui/webview/host-prefix.ts:47`, exported, side-effect free, imported by `files.ts` and `file-view.ts`); the strip paints
-  the name bold in the identity colour through `--chip-bg` and `.colored` (`render.ts:6836`, `styles.css:744`) and the
-  host prefix quiet, italic, `0.86em`, weight 400 (`styles.css:3686`). The @-mention pop is the precedent for a session
+  (`ui/webview/host-prefix.ts`, exported, side-effect free, imported by `files.ts` and `file-view.ts`); the strip paints
+  the name bold in the identity colour through `--chip-bg` and `.colored` (the strip's label in `renderTabs`, `render.ts`; `.tab.colored .tab-label`, `styles.css`) and the
+  host prefix quiet, italic, `0.86em`, weight 400 (`.host-prefix`, `styles.css`). The @-mention pop is the precedent for a session
   list in the menu dress: a `.ctx-menu` card, `.ctx-item` rows, the name through `hostNameNodes`, the highlighted row
-  wearing `--menu-hover` so coloured names stay readable (`render.ts:20236`, `styles.css:1419`).
+  wearing `--menu-hover` so coloured names stay readable (the mention pop in `render.ts`, its rows' rule in `styles.css`).
 - **A shared label helper.** `sessionLabelNodes(name, id, color)` joins `host-prefix.ts` beside `hostNameNodes`: the
   quiet prefix plus a `.session-name` span carrying the name, bold in the identity colour (a `--chip-bg` custom property
   and the `.colored` class, the strip's own tokens). The picker's button and rows use it; the strip, the mention pop and
-  the Outline's private `nameInto` (`fleet.ts:314`) may adopt it later (the cards owner's call, asked 2026-09-20).
-- **The card** is built with `ctx-menu.ts` (`menuCard`, `showMenuCard`, `ctx-menu.ts:55`): the menu tokens, placement
+  the Outline's private `nameInto` (`fleet.ts`) may adopt it later (the cards owner's call, asked 2026-09-20).
+- **The card** is built with `ctx-menu.ts` (`menuCard`, `showMenuCard`, `ctx-menu.ts`): the menu tokens, placement
   under the button, dismissal, keyboard (arrows, Home, End, Enter, Escape) and focus return all shared, no hex outside a
   `var()` fallback (`ui/CLAUDE.md`, the menu rule). The current session's row wears the `--check-bg` mark. The page
-  already loads `styles.css` (`kernel.py:60466`), so the dress needs no new stylesheet beyond the button's own rule.
+  already loads `styles.css` (`_artifacts_page`, `kernel.py`), so the dress needs no new stylesheet beyond the button's own rule.
 - The button reads as the strip's tab would, its name lifted to the T390 lightness floor (`--peer-ink-l`, the oklch line of
   `.session-name.colored`) so a dark identity colour stays legible on both themes where the strip's tab has its own fade
   rules: the dress above, a chevron, and the lock beside it; the identity dot of the
@@ -272,13 +273,13 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 
 ### 9.4 Growth: a signal from the kernel, an incremental walk, no polling
 
-- Today growth reaches nothing but the chat: the pusher wakes on the backend's push (`kernel.py:18772`), `_push` builds
-  per app audience (`kernel.py:54393`) and no audience names `artifacts`; the page's shim is `no_stale` (no pushed view,
-  `kernel.py:60471`); the pane's only growth road was the Refresh button (`artifacts.ts:68`).
+- Today growth reaches nothing but the chat: the pusher wakes on the backend's push (`_push_soon`, `kernel.py`), `_push_all` builds
+  per app audience (`kernel.py`) and no audience names `artifacts`; the page's shim is `no_stale` (no pushed view,
+  `_shim("artifacts", v, no_stale=True)` in `_artifacts_page`); the pane's only growth road was the Refresh button (`artifacts.ts`, gone since).
 - **The watch.** The pane sends `watchArtifacts {sid}` when its shown session changes (and `{sid, unwatch: true}` for the
   previous session, on its own kernel, when it shows
   none); federation routes it by the sid to the owning kernel like `listArtifacts`. The kernel records the one watched
-  bare sid on the client (`client["artifacts"]`). In the pusher cycle (`_pusher_cycle`, `kernel.py:58907`), for each live
+  bare sid on the client (`client["artifacts"]`). In the pusher cycle (`_pusher_cycle_jobs`, the stage `artifactsSignal`, `kernel.py`), for each live
   `artifacts` client with a watched sid, the kernel reads that session's transcript version, the `(mtime, size)` of its
   file (the first component of `_chat_build_sig`, through `_session_row`), one stat per cycle per WATCHED SESSION (a dict
   from sid to version, built once per cycle), and when it differs from the last version sent to a watching client (the
@@ -298,10 +299,11 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 - **The incremental walk** (section 4, amended): `_ARTIFACTS_MEMO[sid] = {idx, tid, n, uuidN, mentions, cands, t}`, in
   memory, guarded by `_ARTIFACTS_MEMO_LOCK` (the op runs on the socket thread). `cands` holds rule 2's unadmitted prose
   candidates by absolute path, re-judged on every answer (`_artifacts_admit`), so a file named before it existed lists once
-  it does. On a request
+  it does; the map is bounded per session (`_ARTIFACTS_CANDS_CAP`, 64, the newest mentions kept), so a long session naming
+  many never-created paths pays at most that many stats per answer, and a candidate past the cap is not re-judged. On a request
   the kernel reads the parse as today; if the memo's turn id is still the id of the turn at the memo's index (turn ids
-  are fork-stable, `event_model.py:4144`; a serve or a fold leaves every previously emitted atom in place,
-  `event_model.py:7203`), it walks `turns[index:]`, the last walked turn INCLUDED (a turn keeps its id while it gains
+  are fork-stable, `_turn_id` in `event_model.py`; a serve or a fold leaves every previously emitted atom in place,
+  the fold and serve paths of `event_model.py`), it walks `turns[index:]`, the last walked turn INCLUDED (a turn keeps its id while it gains
   atoms, so a file written later in the same turn lives in a turn already walked: the verifier's probe of round two, one
   turn with two Writes listing the first alone), hydrating only those turns (`em.hydrate` takes the subset), and merges
   their mentions into the map (the latest mention wins; a re-walked mention is the same mention); otherwise it walks
@@ -310,24 +312,40 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
 - The design rule this follows: an exact event (the transcript's version moved) over a time heuristic, read on the
   pusher's event-woken cycle; the pane never polls and the kernel re-walks only the last walked turn and what came after it.
 
+- **Refusals** (asked for by the reviews of pass two). Nothing degrades silently; every road that cannot list says so:
+  - A sid this kernel has no transcript for (`_artifacts_list` through `_session_row`) answers the error string "no session
+    with that id has a transcript here"; a transcript that cannot be read answers "the session's transcript could not be
+    read (…)" with the cause. The pane shows the string in place of the list (`.art-err`), the count blank.
+  - Per row, `_artifacts_items` applies the file route's own confinement (`_slice_allowed`): a secrets-shaped name, a path
+    outside the session's folder and the home, and any path under the Claude configuration directory (a thread's own
+    transcripts and task stores are not its artifacts) mark the row `refused` with the reason; a refused row is listed
+    dimmed with the reason in its title, has no thumbnail, and a click on it does nothing. A kind the preview does not show
+    is an ordinary row (`other`), listed plain; a click says the viewer cannot show it (the note beside the count).
+  - A session whose host is in federation's down set (the kernel's tunnel health) gets `hostDownNote` in place of the wait,
+    repainted on the down set's own event (`romp-hosts`); its return re-asks (`rearm`).
+  - A pane frame for a host federation holds no conn for yet is dropped there (`sendRemote`, no-conn); the pane defers its
+    first ask to the relay's open instead of asking into the drop, and federation holds `watchArtifacts` and
+    `listArtifacts` for the open once a conn exists (BOOKKEEPING).
+  - A listing answer for an earlier selection (its `reqId` or `sid` not the current one) is dropped, never rendered.
+
 ### 9.5 The lock and the follow
 
 - **Unlocked, the pane follows the most recently selected chat tab.** The seam exists for the feed (T410, T416): the chat
-  posts `{romp:'activeTab', id, nonce, gesture}` to the shell on every switch (`render.ts:12711`) and on its kernel
-  socket, the shell forwards it to the feed as `{romp:'activeChat', ...}` (`kernel.py:60911`), the kernel records one
-  active sid per window (`_ACTIVE_CHAT_BY_WID`, `kernel.py:2573`; with two columns the later report stands,
-  `kernel.py:57100`) and mirrors it to the window's feed clients and on a feed's `ready` (`_send_active_chat`,
-  `kernel.py:57043`). Pass two widens both roads to the Artifacts pane: the shell relays `activeChat` to every pane
+  posts `{romp:'activeTab', id, nonce, gesture}` to the shell on every switch (`notifyActive`, `render.ts`) and on its kernel
+  socket, the shell forwards it to the feed as `{romp:'activeChat', ...}` (`_LANDING_FOCUS_JS`, `kernel.py`), the kernel records one
+  active sid per window (`_ACTIVE_CHAT_BY_WID`; with two columns the later report stands,
+  `_relay_active_chat`) and mirrors it to the window's feed clients and on a feed's `ready` (`_send_active_chat`,
+  `kernel.py`). Pass two widens both roads to the Artifacts pane: the shell relays `activeChat` to every pane
   iframe with `data-protocol` `romp` (the feed included, as today), and the kernel sends its `activeChat` frame to the
   window's `artifacts` clients too (the relay's fan-out and the `ready` arm, the pane posting `ready` as the Files pane
-  does), so a reloaded pane knows the focused session before any switch. The id arrives host-prefixed for a remote tab (federation's fan-out, `federation.ts:435`),
+  does), so a reloaded pane knows the focused session before any switch. The id arrives host-prefixed for a remote tab (federation's fan-out, `prefixInbound`),
   which is the id the listing needs.
 - **Locked, the pane stays on the picked session; only the lock button changes the lock** (the manager's correction
   of 2026-09-20, paraphrasing the user, who wanted an unlocked pane to mirror whichever came last, a pick or a chat tab
   switch, and a locked pane to stay on its pick). So a pick never flips the lock: unlocked, a pick
   shows that session until the next tab switch replaces it (the follow continues); locked, a pick replaces the locked
   session and the lock stays on. The lock button beside the picker wears the Sessions pane's padlock (the glyph
-  `_drawLockToggle` draws, `ui/romp-timeline-view.js:7100`: the body and the two shackle paths, seated when locked and
+  `_drawLockToggle` draws, `ui/romp-timeline-view.js`: the body and the two shackle paths, seated when locked and
   swung out when unlocked), accent when locked and faint when unlocked, with the same two-state tip; unlocking keeps the
   shown session until the next tab switch (no jump: nothing new was selected). The lock and the shown sid persist per
   browser (`romp:artifacts:lock`, `romp:artifacts:sid`); a fresh browser starts unlocked and following.
@@ -341,6 +359,8 @@ deterministic rules, nothing injected, lazy, nothing written, the refused marks.
   walk (a memo whose turn id, atom count and last atom still stand walks from that turn on, hydrates only those, and merges with the latest
   mention winning; a prefix that changed walks whole); the active-chat frame reaching an `artifacts` client on its
   `ready` and on the chat's switch.
+- Refusals: `tests/test_artifacts_list.py` Listing (a refused name and path, the Claude directory, kind other; the unknown sid's
+  error string); `tests/test_artifacts_remote_served.py` (the down host's note, the deferred first ask's frame order).
 - Pane: `ui/webview/artifacts.test.ts`: the selection machine (follow, a pick never changes the lock, toggle, unlock keeps the
   shown session, a closed tab); the listing signature; the echo watermark (relays A, B, C, then B's echo dropped);
   the picker's row model over a `chatTabs` union (order kept, duplicates across columns collapsed, a stored selection

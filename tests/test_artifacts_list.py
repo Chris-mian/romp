@@ -365,9 +365,11 @@ class Growth(ViaOp):
 
 
 class Memo(ViaOp):
-    """Pass two, section 9.4: the walk is incremental per session. The memo keeps the last walked turn's position and fork-stable id;
-    a listing after growth walks only the turns after it (the walk is wrapped here to record what it was handed) and merges, the
-    latest mention still winning; a prefix that changed (another id at the memo's position) walks the whole session again."""
+    """Pass two, section 9.4: the walk is incremental per session. The memo keeps the last walked turn's position, its fork-stable
+    id, its atom count and its last atom's uuid; a listing after growth re-walks that turn and those after it, once per ask (the
+    walk is wrapped here to record what it was handed) and merges, the latest mention still winning; a prefix that changed (another
+    id at the memo's position, or a rewind inside the open turn) walks the whole session again. Rule 2's unadmitted prose
+    candidates ride the memo, capped newest-first, and are re-judged on every answer."""
 
     def setUp(self):
         super().setUp()
@@ -431,6 +433,22 @@ class Memo(ViaOp):
         Path(later).write_text("# now\n")
         self.assertEqual([it["name"] for it in self.listing([t1, t2])["items"]], ["other.md", "later.md"], "created afterwards out of band: the candidate is re-judged on every answer and lists")
         self.assertEqual(self.walked[-1], ["T2"], "with the memo standing: the last walked turn alone was walked")
+
+    def test_the_candidate_map_is_bounded_newest_first_so_a_long_session_naming_many_missing_paths_pays_a_bounded_stat(self):
+        # round two of PR 1951: the re-judged candidates were unbounded and re-stat'ed whole on every answer; the cap keeps the newest
+        cap = getattr(km, "_ARTIFACTS_CANDS_CAP", 64)   # absent before the cap landed: the red is then the behaviour (every token kept), never this name
+        w = self.w
+        n = cap + 6
+        atoms = [_atom("assistant", 100 + i, text="see %s" % str(w.cwd / ("never-%03d.md" % i)), uuid="c%d" % i) for i in range(n)]
+        other = str(w.cwd / "other.md"); Path(other).write_text("o")
+        t1, t2 = self.turn("T1", 100, atoms), self.turn("T2", 500, [_write(500, other)])   # the mentions in a CLOSED turn: the memo re-walks the last turn alone, so only the map re-judges them
+        self.assertEqual([it["name"] for it in self.listing([t1, t2])["items"]], ["other.md"], "none of the mentioned files exists yet: nothing of theirs lists")
+        with km._ARTIFACTS_MEMO_LOCK:
+            cands = dict(km._ARTIFACTS_MEMO[SID]["cands"])
+        self.assertEqual(len(cands), cap, "the map holds the cap, not every token")
+        self.assertNotIn(str(w.cwd / "never-000.md"), cands, "the oldest left"); self.assertIn(str(w.cwd / ("never-%03d.md" % (n - 1))), cands, "the newest stayed")
+        Path(w.cwd / "never-000.md").write_text("late"); Path(w.cwd / ("never-%03d.md" % (n - 1))).write_text("late")
+        self.assertEqual([it["name"] for it in self.listing([t1, t2])["items"]], ["other.md", "never-%03d.md" % (n - 1)], "an evicted candidate is not re-judged; a kept one lists once created")
 
     def test_a_rewind_inside_the_open_turn_walks_the_session_whole_and_the_vanished_mention_leaves(self):
         # the reviewers of PR 1925 (K): a rewind keeps the turn's id while atoms vanish; the memo holds the atom count and the last atom's uuid

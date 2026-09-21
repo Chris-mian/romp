@@ -60776,6 +60776,8 @@ def _artifacts_items(mentions, sid):
 _ARTIFACTS_MEMO = {}                                  # sid -> {"idx", "tid", "mentions": {path: (t, via)}, "t"}: the walk's memo (section 9.4), memory only
 _ARTIFACTS_MEMO_LOCK = threading.Lock()
 _ARTIFACTS_MEMO_CAP = 64                              # the least recently listed session leaves past it
+_ARTIFACTS_CANDS_CAP = 64                             # rule 2's unadmitted prose candidates kept per session, the newest mentions first: a long
+#                                                       session naming many never-created paths pays at most this many stats per answer (round two of PR 1951)
 
 
 def _artifacts_admit(sid, candidates, link_cache=None):
@@ -60827,6 +60829,8 @@ def _artifacts_mentions(sid, turns, link_cache=None):
         cur = latest.get(ap)
         if cur is None or (t or 0) >= cur[0]:
             latest[ap] = (int(t or 0), via)
+    if len(cands) > _ARTIFACTS_CANDS_CAP:               # bounded per session, the newest mentions kept; an evicted candidate is not re-judged
+        cands = dict(sorted(cands.items(), key=lambda kv: kv[1][0], reverse=True)[:_ARTIFACTS_CANDS_CAP])
     if turns:
         last_atoms = (turns[-1] or {}).get("atoms") or []
         entry = {"idx": len(turns) - 1, "tid": (turns[-1] or {}).get("id"), "n": len(last_atoms),
