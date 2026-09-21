@@ -5321,13 +5321,22 @@ the token like any other.
 
 Two routes answer outside that shape. `POST /push/ack`, which the push worker
 uses to report that a notification was shown or tapped, is served ahead of the
-token check and authenticated by the per-push id instead: the id is 128 random
-bits the kernel minted for one notification and handed only to the device that
-notification went to, it stamps two timestamps on that one ledger row and buys
-nothing else, an unknown id is a 404, and the body is capped at 2 KB before a
-byte of it is read. A token-less `GET /` is not refused either: the gate runs
-and fails, and the answer is the page that asks for the token rather than a
-403, so a bare open of the dashboard has somewhere to paste it.
+token check and authenticated by the per-push id instead: 128 random bits the
+kernel minted for one notification and handed only to the device that
+notification went to. A report on a valid id stamps that row's shown or tapped
+time, where the first stamp stands so a repeated report changes nothing, and
+records the worker's build string, which every report rewrites. A shown report
+also marks the older unsettled, untapped pushes for the same session on that
+device superseded, since the show replaced their notifications. And the
+request's origin, read from its `Origin` header, else its `Referer`, else the
+forwarded headers or `Host`, is recorded on that device's subscription when
+none is on file; a recorded origin stands, and a different one is logged as a
+conflict. An unknown id is a 404, and the body is capped at 2 KB before a byte
+of it is read.
+
+A token-less `GET /` is not refused either: the gate runs and fails, and the
+answer is the page that asks for the token rather than a 403, so a bare open of
+the dashboard has somewhere to paste it.
 
 ## Switches
 
