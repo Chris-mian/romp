@@ -254,3 +254,17 @@ test("parse normalises a stored ratio that sums under 1 so layout fills the box 
   const w = widthsOf(p!.tree, 1000, 100, 0);
   assert.ok(near(w.a + w.b, 1000, 1e-6), "the two panes fill the 1000px box exactly: " + JSON.stringify(w));
 });
+
+test("closePane and openPane carry the layout's remembered tree across a park and an open (plans/pane-buttons-with-many-chats.md section 6)", () => {
+  const tree: Node = { dir: "row", kids: [{ pane: "chat" }, { pane: "feed" }, { pane: "files" }], ratios: [0.5, 0.25, 0.25] };
+  const mem = (l: Layout) => (l as unknown as { remembered?: Node }).remembered;
+  const cur = { v: 1, tree, parked: [], remembered: tree } as unknown as Layout;
+  const closed = closePane(cur, "feed");
+  assert.ok(closed.ok);
+  assert.deepEqual(mem(closed.layout), tree, "the memory rides the park");
+  assert.deepEqual(closed.layout.parked, ["feed"]);
+  const opened = openPane(closed.layout, "feed", "chat", "right");
+  assert.ok(opened.ok);
+  assert.deepEqual(mem(opened.layout), tree, "and the open");
+  assert.deepEqual(opened.layout.parked, []);
+});

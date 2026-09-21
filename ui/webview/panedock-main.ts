@@ -680,7 +680,7 @@ class Engine {
     let tree;
     try { tree = move(this.lay.tree, pane, target, edge); }
     catch (err) { this.notify(String((err as Error).message || err)); return; }
-    this.lay = { v: 1, tree, parked: this.lay.parked };
+    this.lay = { ...this.lay, tree };   // parked and the remembered tree ride along
     this.persist();
     this.render();
   }
@@ -760,7 +760,7 @@ class Engine {
     const pane: PaneId = plan.pane;   // moveColumn: the lone column's own pane goes to the drop edge
     this.reconcile();
     if (!this.lay || !has(this.lay.tree, pane) || zone.strip || pane === zone.target) return;
-    try { this.lay = { v: 1, tree: move(this.lay.tree, pane, zone.target, zone.edge as Edge), parked: this.lay.parked }; }
+    try { this.lay = { ...this.lay, tree: move(this.lay.tree, pane, zone.target, zone.edge as Edge) }; }
     catch (err) { this.notify(String((err as Error).message || err)); return; }
     this.persist(); this.render();
   }
