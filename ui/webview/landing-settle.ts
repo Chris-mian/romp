@@ -58,7 +58,7 @@ export function scrollerGrab(targetIsScroller: boolean, offsetX: number, offsetY
 export const WRITER_CLASS: Readonly<Record<string, "reader" | "page">> = {
   "key-nav": "reader", "wheel-scale": "reader", "jump-button": "reader", "nav-history": "reader", "section-link": "reader", "focus-live": "reader",
   "land-on": "page", "land-realign": "page", "land-bottom": "page", "land-saved": "page", "keep-offset": "page", "anchor-restore": "page",
-  "reload-restore": "page", "append-stick": "page", "append-raw": "page", "tail-shrink": "page", "rewindow": "page", "box-resize": "page",
+  "reload-restore": "page", "append-stick": "page", "append-raw": "page", "tail-shrink": "page", "tail-reflow": "page", "rewindow": "page", "box-resize": "page",
   "box-below": "page", "tabbar-drag": "page", "toolgroup-toggle": "page", "liveask-reveal": "page", "optimistic-send": "page", "queued-x": "page",
   "gap-fill": "page",   // a gap's page appearing in place (T386 stage 2): the reader's row written back to its offset
   "land-guess": "page",   // the jump into the gap where a landing's target will be, before its window arrives (T386 stage 2)

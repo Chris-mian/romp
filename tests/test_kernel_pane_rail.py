@@ -131,18 +131,13 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn("document.body.classList.contains('po-fleet')?'fleet-pane':lastChat()", self.html)
         self.assertIn("gutter('gv-a',function(){return lastChat();},'fleet-pane')", self.html)
 
-    def test_the_shell_serves_the_landing_line_of_a_divider_drag(self):
-        # a divider drag moves a line over the row and the panes take their widths once, at release (the drag
-        # itself runs in tests/test_pane_gutter_drag.py); the served shell carries the line's element and its
-        # rule: hidden until a drag shows it, fixed so its left is a viewport coordinate, the gutter's width,
-        # never a hit target (so the gutter under it keeps its :hover at the grab), and above the focus ring
-        # (.pane-focused::after is z-index 6) so a focused pane does not cover it
-        self.assertIn("<div id=gv-ghost></div>", self.html)
-        self.assertIn("#gv-ghost{display:none;position:fixed;width:7px;pointer-events:none;z-index:40;", self.html)
-        # a child of .col right after the row closes (the files pane's close, then the row's) and before the
-        # timeline's gutter: fixed, so a flex item of neither
-        self.assertIn('<iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div></div><div id=gv-ghost></div>', self.html)   # the generic build's markup for the Artifacts record, last in the row
-        self.assertLess(self.html.index("<div id=gv-ghost></div>"), self.html.index("<div class=gh id=gh></div>"))
+    def test_the_tab_drags_rectangle_follows_the_pane_row_and_precedes_the_bands_gutter(self):
+        # the tab drag's provisional rectangle (#col-ghost, _LANDING_SPLIT_JS) is a child of .col right after the row
+        # closes (the Artifacts frame's close, the last pane's div, then the row's) and before the band's gutter: fixed, so
+        # a flex item of neither. A divider drag draws no line of its own (plans/pane-docking.md section 12; the drag itself
+        # runs in tests/test_pane_gutter_drag.py)
+        self.assertIn('<iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div></div><div id=col-ghost></div>', self.html)   # the generic build's markup for the Artifacts record, last in the row
+        self.assertLess(self.html.index("<div id=col-ghost></div>"), self.html.index("<div class=gh id=gh></div>"))
 
     def test_timeline_is_the_rail_toggled_bottom_band(self):
         # the timeline is a full-width BAND below the pane row (the user 2026-06-25), toggled by the rail's

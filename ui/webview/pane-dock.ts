@@ -7,8 +7,7 @@
 // now (a pane turned off parks, a pane turned on opens at its default dock). Like pane-tree.ts: no window, no
 // document; the engine hands it rects, ids and points. Node-tested in pane-dock.test.ts.
 import {
-  type Edge, type Layout, type Node, type PaneId, type Rect,
-  closePane, dockRoot, has, leaves, openPane, seedRowOverFixedBand, setFixed,
+  type Edge, type Layout, type Node, type PaneId, type Rect, closePane, dockRoot, has, leaves, openPane, resize, seedRowOverFixedBand, setFixed, edges, isLeaf, type EdgeRect,
 } from "./pane-tree";
 
 /** The gap between sibling panes, the shipped gutter's 7 px. */
@@ -255,6 +254,41 @@ export function planTabDrop(zone: Zone, sid: string, sets: Record<string, string
     return { kind: "moveColumn", pane };
   }
   return { kind: "newColumn" };
+}
+
+/** A DIVIDER drag's clamp, against the pair's sizes AT THE PRESS (plans/pane-docking.md section 12, the 1927 read): the pointer's
+ *  travel `px` along the axis is held so neither side of the edge drops under `minPx` (the engine's minimum for the edge, the
+ *  same one `resize` holds as a fraction, so the two clamps agree and the edge sits at the pointer up to the minimum and no
+ *  further). Clamping against the CURRENT tree, which the live drag rewrites every frame, shrank the window as the drag
+ *  proceeded and the edge converged on half its range; the press geometry is the fixed frame of reference. A pair that cannot
+ *  seat two minimums does not move. */
+export function edgeClamp(a0: number, b0: number, px: number, minPx: number): number {
+  const lo = minPx - a0, hi = b0 - minPx;
+  if (lo > hi) return 0;
+  return px < lo ? lo : px > hi ? hi : px;
+}
+
+/** The edge at `path`/`i` as the tree lays it out in `box` now (edges): the divider's rect and the ratio kids' px along its axis
+ *  (`avail`). A drag re-reads its edge here when the press tree changes under it (the band re-sized by the shell's autosize:
+ *  the 1927 read, round four: a divider between stacked panes under the band kept its press avail, origin and pair sizes, so
+ *  the edge left the pointer and the pushed pane persisted under the minimum). Null when the path no longer names a split edge. */
+export function edgeAt(tree: Node, box: Rect, gutter: number, path: number[], i: number): EdgeRect | null {
+  return edges(tree, box, gutter).find((e) => e.i === i && e.path.length === path.length && e.path.every((p, k) => p === path[k])) || null;
+}
+
+/** The pair's sizes in px on either side of `edge` in `tree` (its split's ratios times the edge's avail): the drag's frame of
+ *  reference at the press, and again after a rebase. Zero for a path that names no split. */
+export function pressGeometry(tree: Node, edge: EdgeRect): { a0: number; b0: number } {
+  let n: Node = tree;
+  for (const k of edge.path) { if (isLeaf(n) || !n.kids[k]) return { a0: 0, b0: 0 }; n = n.kids[k]; }
+  if (isLeaf(n) || edge.i + 1 >= n.ratios.length) return { a0: 0, b0: 0 };
+  return { a0: edge.avail * n.ratios[edge.i], b0: edge.avail * n.ratios[edge.i + 1] };
+}
+
+/** The tree for a divider drag's frame: the edge moved by the pointer's ABSOLUTE travel from the press, applied to the tree
+ *  as it was at the press (never incrementally to the frame before, which would compound the clamp's rounding). Pure. */
+export function dragEdge(start: Node, path: number[], i: number, travelPx: number, avail: number, minFrac: number): Node {
+  return resize(start, path, i, avail > 0 ? travelPx / avail : 0, minFrac);
 }
 
 /** The `--tl` band height in px from the shell's `.col` style value (`"312px"`), else the default. */

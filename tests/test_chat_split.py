@@ -162,8 +162,8 @@ class SplitSourcePins(unittest.TestCase):
                        "ghost.textContent=refused?'Four panes at most':drag.name;"]:
             self.assertIn(needle, split, needle)
         self.assertNotIn("setTimeout", split, "nothing is timed")
-        # the rectangle's element beside the divider drag's landing line: a child of .col, never a flex item of the row
-        self.assertIn("<div id=gv-ghost></div><div id=col-ghost></div>", self.html)
+        # the rectangle's element: a child of .col after the pane row, never a flex item of the row (a divider drag draws no line, plans/pane-docking.md section 12)
+        self.assertIn('<iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div></div><div id=col-ghost></div>', self.html)   # the tab drag's overlay follows the pane row, whose last pane is the Artifacts record (the divider landing line retired, plans/pane-docking.md section 12)
         # the zones ride the panes (position:relative) above the iframe and the cross (z 7); the edge above the column zone
         self.assertIn(".col-drop{position:absolute;inset:0;z-index:8}", self.html)
         self.assertIn(".col-drop.col-drop-edge{left:auto;z-index:10}", self.html)   # round two LOW c: above the bottom band (z 9) so the edge owns the bottom-right corner
@@ -813,6 +813,30 @@ document.getElementById('gh-chat-3').fire('mousedown', { clientY: 1000, preventD
 window.dispatchEvent({ type: 'mousemove', clientY: 0 });   // drag the gutter fully up: mv() clamps the top to mn=80px
 window.dispatchEvent({ type: 'mouseup' });
 out.ratioDrift = { ratio: (cols().cols.find((c) => c.place === 'below') || {}).ratio, topFlex: document.getElementById('f-chat-2').style.flex };
+// U) live per animation frame (plans/pane-docking.md section 12): the split gutter reads the shell's frame helpers at the GRAB, so
+//    the two stubs are queued before the mousedown (without them the gutter applies synchronously, as the steps above do); a move
+//    arms one frame and writes nothing; a release with the frame still armed cancels it and lands the last position itself,
+//    persisting the ratio once; Escape with a frame armed cancels it, restores both halves' flex and persists nothing
+const FR = []; let FRID = 0;
+window.__rompFrameOnce = (f) => { FR.push({ id: ++FRID, cb: f }); return FRID; };
+window.__rompCancelFrame = (id) => { const i = FR.findIndex((x) => x.id === id); if (i >= 0) FR.splice(i, 1); };
+function frame() { const fs = FR.splice(0); fs.forEach((f) => f.cb()); return fs.length; }
+boot({ 'romp-chat-cols': JSON.stringify({ v: 2, cols: [{ n: 2, ids: [WEB] }, { n: 3, ids: [API], place: 'below', parent: 2, ratio: 0.5 }] }) }, false);
+document.getElementById('f-chat-2')._rect.height = 1000; document.getElementById('chat-sub-3')._rect.height = 1000;   // sum = 2000
+const flexes = () => ({ T: document.getElementById('f-chat-2').style.flex, B: document.getElementById('chat-sub-3').style.flex });
+const ratioBelow = () => (cols().cols.find((c) => c.place === 'below') || {}).ratio;
+const bootFlex = flexes();   // the restore laid both halves out from the stored ratio
+document.getElementById('gh-chat-3').fire('mousedown', { clientY: 1000, preventDefault() {} });
+window.dispatchEvent({ type: 'mousemove', clientY: 900 });
+out.splitMoved = { armed: FR.length, flex: flexes(), bootFlex, ratio: ratioBelow() };
+window.dispatchEvent({ type: 'mouseup' });   // no frame between: the release lands the position itself
+out.splitFrameless = { armed: FR.length, flex: flexes(), ratio: ratioBelow(), laterFrame: frame() };
+document.getElementById('gh-chat-3').fire('mousedown', { clientY: 900, preventDefault() {} });
+const grabFlex = flexes();
+window.dispatchEvent({ type: 'mousemove', clientY: 700 });
+out.splitMoved2 = { armed: FR.length, flex: flexes() };
+window.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {}, stopPropagation() {} });
+out.splitEscaped = { armed: FR.length, flex: flexes(), grabFlex, ratio: ratioBelow(), laterFrame: frame(), flexAfterFrame: flexes() };
 console.log(JSON.stringify(out));
 """
 
@@ -1154,6 +1178,27 @@ class SplitExecutes(unittest.TestCase):
         o = self.out["orphanKept"]
         self.assertEqual(o["lastPane"], "chat-pane-2", "the orphan is dropped, so the last SIDE column is the real column 2: %r" % o)
         self.assertTrue(o["lastPaneExists"], "lastPane() names a .pane that exists (a degraded orphan would name a missing chat-pane-3): %r" % o)
+
+    def test_the_split_gutter_is_live_per_frame_and_a_frameless_release_lands_the_last_position_once(self):
+        # plans/pane-docking.md section 12: a move arms one frame and writes nothing itself; a release before the frame runs
+        # cancels it and lands the last position itself (the 1927 read: applying before ending left the frame queued and a
+        # release in the same frame as the move one step short), persisting the on-screen ratio once
+        m, r = self.out["splitMoved"], self.out["splitFrameless"]
+        self.assertEqual(m["armed"], 1, "the move armed one frame")
+        self.assertEqual(m["flex"], m["bootFlex"], "and wrote nothing itself (both halves as the restore laid them): %r" % m)
+        self.assertEqual(m["ratio"], 0.5, "the store untouched mid-drag")
+        self.assertEqual(r["flex"], {"T": "900 1 0", "B": "1100 1 0"}, "the release landed the position under the pointer: %r" % r)
+        self.assertEqual(r["armed"], 0, "the armed frame was cancelled at the release")
+        self.assertEqual(r["laterFrame"], 0, "nothing left to run")
+        self.assertAlmostEqual(r["ratio"], 0.45, delta=0.0005, msg="the on-screen ratio persisted once: %r" % r)
+
+    def test_escape_with_a_frame_armed_cancels_it_restores_both_halves_and_persists_nothing(self):
+        m, e = self.out["splitMoved2"], self.out["splitEscaped"]
+        self.assertEqual(m["armed"], 1, "a frame armed by the move")
+        self.assertEqual(e["armed"], 0, "Escape cancelled it")
+        self.assertEqual(e["flex"], e["grabFlex"], "both halves' flex back to the grab's: %r" % e)
+        self.assertEqual(e["laterFrame"], 0, "no frame left to run"); self.assertEqual(e["flexAfterFrame"], e["grabFlex"])
+        self.assertAlmostEqual(e["ratio"], 0.45, delta=0.0005, msg="the store keeps the last RELEASE's ratio; Escape wrote nothing: %r" % e)
 
     def test_the_persisted_gutter_ratio_is_the_on_screen_fraction_even_on_a_tall_pane(self):
         # round four LOW 2: mv() already pixel-clamps the top to mn (80px at sum=2000), so nT/sum is the exact on-screen
