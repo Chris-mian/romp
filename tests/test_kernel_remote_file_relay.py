@@ -20,7 +20,7 @@ import unittest
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -32,15 +32,18 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 REMOTE_TOKEN = "remote-token-DO-NOT-USE"
 PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+PDF_BYTES = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"   # a minimal synthetic PDF
 PY_BYTES = b"print('hello from the remote box')\n"
+SVG_BYTES = (b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">'
+             b'<script>document.title = "ran at the local origin"</script></svg>')   # synthetic
 # the download fixture: NUL-ridden, off every view allowlist, and BIGGER than one relay stream chunk,
 # so the pass-through provably crosses a chunk boundary intact
 BIN_BYTES = bytes(range(256)) * ((km._DOWNLOAD_CHUNK // 256) + 60)
@@ -72,6 +75,21 @@ class _FakeRemoteFileHandler(BaseHTTPRequestHandler):
                 else:
                     self.wfile.write(BIN_BYTES)
             return
+        if "chart.svg" in self.path:
+            # the remote's own .svg: whole, or the tail a suffix Range asks for (its _file_preview's 206 shape).
+            # The remote CLAIMS image/svg+xml here; the relay derives its own type and policy regardless.
+            rng = self.headers.get("Range") or ""
+            start = int(rng[len("bytes="):-1]) if rng.startswith("bytes=") and rng.endswith("-") else 0
+            body = SVG_BYTES[start:]
+            self.send_response(206 if start else 200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", str(len(body)))
+            if start:
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, len(SVG_BYTES) - 1, len(SVG_BYTES)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(body)
+            return
         if "app.py" in self.path:
             self.send_response(200)
             self.send_header("Content-Type", _FakeRemoteFileHandler.ctype)
@@ -79,6 +97,27 @@ class _FakeRemoteFileHandler(BaseHTTPRequestHandler):
             self.end_headers()
             if not head:
                 self.wfile.write(PY_BYTES)
+            return
+        if "big.pdf" in self.path:
+            # the remote's own size cap: its _file_preview's prose verdict, text/plain, no disposition
+            body = b"too large to show: /tmp/big.pdf (95.4 MB, limit 47.7 MB)"
+            self.send_response(413)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(body)
+            return
+        if "paper.pdf" in self.path:
+            # a (hostile) remote's own disposition — an instruction to this browser, which the relay must
+            # never echo: ours is derived from the requested name
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition", 'attachment; filename="evil.pdf"')
+            self.send_header("Content-Length", str(len(PDF_BYTES)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(PDF_BYTES)
             return
         if "plot.png" not in self.path:
             body = b"not found: /tmp/gone" if "download=1" in self.path else b""
@@ -190,6 +229,60 @@ class RemoteFileRelay(unittest.TestCase):
         self.assertNotIn(km.TOKEN, req)
         self.assertIn("path=%2Ftmp%2Fplot.png", req)
         self.assertIn("sid=11111111-2222-3333-4444-555555555555", req)
+
+    def test_a_remote_pdf_is_served_inline_with_its_own_name_derived_here_never_the_remotes(self):
+        # a remote session's PDF opens in its own browser tab too (2026-09-06): the tab's title and a Save's
+        # name ride Content-Disposition, which the local route sends — so the relay must as well, from the
+        # REQUESTED basename, on GET and on the HEAD probe. The remote's header is discarded like its
+        # Content-Type: an instruction to this browser, not a fact about its disk.
+        self._register("gpu1", self.fake.server_address[1])
+        for method in ("GET", "HEAD"):
+            status, body, headers = self._get("/remote/gpu1/file?path=%2Ftmp%2Fpaper.pdf", method=method)
+            self.assertEqual(status, 200, method)
+            self.assertEqual(headers.get("Content-Type"), "application/pdf")
+            self.assertEqual(headers.get("Content-Disposition"), 'inline; filename="paper.pdf"', method)
+            self.assertNotIn("evil", headers.get("Content-Disposition") or "")
+            self.assertEqual(body, PDF_BYTES if method == "GET" else b"")
+        # a remote 404 for a .pdf name carries no disposition — there is no file to name
+        status, _, headers = self._get("/remote/gpu1/file?path=%2Ftmp%2Fgone.pdf")
+        self.assertEqual(status, 404)
+        self.assertIsNone(headers.get("Content-Disposition"))
+        # …and an image never gets one, exactly as locally
+        status, _, headers = self._get("/remote/gpu1/file?path=%2Ftmp%2Fplot.png")
+        self.assertEqual(status, 200)
+        self.assertIsNone(headers.get("Content-Disposition"))
+
+    def test_a_remote_error_verdict_is_prose_and_an_oversize_pdf_tab_gets_the_relays_own_way_out(self):
+        # a PDF opens in its own TAB now (2026-09-06): the remote's 413/404 prose used to come back labelled
+        # with OUR media mime, which an <img> merely failed on but a tab shows as a corrupt-PDF error
+        # (skeptic find). Every non-success verdict is text/plain; a navigation to an oversize PDF gets the
+        # same way-out page the local route serves, linking THIS relay's download half.
+        self._register("gpu1", self.fake.server_address[1])
+        sid = "11111111-2222-3333-4444-555555555555"
+        qp = "/remote/gpu1/file?path=%2Ftmp%2Fbig.pdf&sid=" + sid
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, qp),
+                                     headers={"X-Romp-Token": km.TOKEN, "Sec-Fetch-Dest": "document"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                status, body, headers = r.status, r.read(), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            status, body, headers = e.code, e.read(), dict(e.headers)
+        self.assertEqual(status, 413)
+        self.assertTrue(headers.get("Content-Type", "").startswith("text/html"), headers.get("Content-Type"))
+        page = body.decode("utf-8")
+        self.assertIn("too large to show: /tmp/big.pdf", page)
+        dq = urllib.parse.urlencode({"path": "/tmp/big.pdf", "download": "1", "sid": sid})
+        self.assertIn('href="' + km._html_esc("/remote/gpu1/file?" + dq) + '"', page, "the relay's download half")
+        # the same without the navigation marker: the remote's prose, labelled as prose
+        status, body, headers = self._get(qp)
+        self.assertEqual(status, 413)
+        self.assertEqual(headers.get("Content-Type"), "text/plain")
+        self.assertTrue(body.startswith(b"too large to show:"), body[:40])
+        status, body, headers = self._get(qp, method="HEAD")
+        self.assertEqual((status, body, headers.get("Content-Type")), (413, b"", "text/plain"))
+        # a remote 404 for a .pdf name: prose too, never application/pdf
+        status, body, headers = self._get("/remote/gpu1/file?path=%2Ftmp%2Fgone.pdf")
+        self.assertEqual((status, headers.get("Content-Type")), (404, "text/plain"))
 
     def test_head_relays_the_verdict_without_a_body(self):
         # the PDF chip's existence probe: headers only, the remote's real length
@@ -327,6 +420,37 @@ class RemoteFileRelay(unittest.TestCase):
         self._register("gpu1", dead_port)
         status, _, _ = self._get("/remote/gpu1/file?path=%2Ftmp%2Fplot.png")
         self.assertEqual(status, 502)
+
+    def _get_msg(self, path, method="GET", headers=None):
+        # the raw header MESSAGE: a dict keeps one value per name, and the SVG sandbox policy rides beside
+        # _send's frame-ancestors one under the same header name
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), method=method,
+                                     headers=headers or {})
+        req.add_header("X-Romp-Token", km.TOKEN)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read(), r.headers
+        except urllib.error.HTTPError as e:
+            return e.code, e.read(), e.headers
+
+    def test_a_remote_svg_is_a_sandboxed_document_by_the_relays_own_policy(self):
+        # The relay derives every header that tells THIS browser how to interpret the bytes (the type, the
+        # disposition) from the requested extension and discards the remote's, so the local route's SVG
+        # defence (tests/test_kernel_preview.py SvgSandboxPolicy: a tab navigated to an SVG runs its inline
+        # script at the serving origin) has to be restated here, from OUR mime — a remote session's .svg
+        # opened in its own tab is a document at this kernel's origin, cookie and all (the 1204 review,
+        # 2026-09-10). All three success shapes; a remote PNG carries none.
+        self._register("gpu1", self.fake.server_address[1])
+        csp = lambda msg: "; ".join(msg.get_all("Content-Security-Policy") or [])
+        for method, headers, want in (("GET", None, 200), ("HEAD", None, 200), ("GET", {"Range": "bytes=1-"}, 206)):
+            status, body, msg = self._get_msg("/remote/gpu1/file?path=%2Ftmp%2Fchart.svg", method=method, headers=headers)
+            self.assertEqual(status, want, (method, headers))
+            self.assertEqual(msg.get("Content-Type"), "image/svg+xml", (method, headers))
+            self.assertIn("sandbox", msg.get_all("Content-Security-Policy") or [], (method, headers, csp(msg)))   # exact value: a weakened `sandbox allow-scripts` must fail
+            self.assertEqual(body, b"" if method == "HEAD" else SVG_BYTES[1 if headers else 0:], (method, headers))
+        status, _, msg = self._get_msg("/remote/gpu1/file?path=%2Ftmp%2Fplot.png")
+        self.assertEqual(status, 200)
+        self.assertNotIn("sandbox", csp(msg), csp(msg))
 
 
 if __name__ == "__main__":

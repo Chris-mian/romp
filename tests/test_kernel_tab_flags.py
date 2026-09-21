@@ -5,7 +5,7 @@ fallback included), and the kernel handles a chat-side setSessionFlag the same w
 import inspect
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -17,20 +17,26 @@ KPATH = os.path.join(BIN, "romp-kernel")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", KPATH).load_module()
+km = load_source("romp_kernel", KPATH)
 
 
 class TabFlags(unittest.TestCase):
     def test_build_session_carries_the_feed_and_postal_flags(self):
         src = inspect.getsource(km.build_session)
         self.assertIn('"hideFromFeed": _session_flag(sid, "hideFromFeed")', src)
-        self.assertIn('"postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")', src,
-                      "canonical postalServiceOff with the legacy postalOff fallback, like build_timeline")
+        self.assertIn('**_mail_off_fields(sid)', src,
+                      "the EFFECTIVE state and its reason from one derivation (_mail_off_fields: canonical postalServiceOff with the legacy "
+                      "postalOff fallback, and a comment thread's mail-off default, T356), like build_timeline's lane row")
+        self.assertIn('_session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")', inspect.getsource(km._mail_off_why_k),
+                      "the legacy fallback lives in the one reader")
 
     def test_kernel_handles_a_chat_side_setSessionFlag(self):
         text = open(KPATH).read()
         self.assertIn('msg.get("type") == "setSessionFlag"', text)
-        self.assertIn("_set_session_flag(str(msg[\"id\"]), str(msg[\"flag\"]), bool(msg.get(\"value\")))", text)
+        # the value is a checked boolean, never a bool() coercion: bool("false") is True (the string a
+        # third-party client sent used to flip the flag ON)
+        self.assertIn('value, ferr = _as_bool(msg.get("value"), "value")', text)
+        self.assertIn("_set_session_flag(str(msg[\"id\"]), str(msg[\"flag\"]), value)", text)
 
     def test_set_session_flag_round_trips(self):
         sid = "11111111-2222-3333-4444-555555555555"

@@ -21,7 +21,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -30,7 +30,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_senderless_deleg", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge_senderless_deleg", os.path.join(BIN, "romp-judge"))
 
 NOW = 1781200000
 SID = "11111111-2222-3333-4444-777777777777"
@@ -81,7 +81,7 @@ class SenderlessDelegation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             tpath = Path(td) / (SID + ".jsonl")
             tpath.write_text("\n".join(json.dumps(r) for r in RECORDS) + "\n")
-            jd._PARSE_CACHE.clear()
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
             phases = [ph for _sg, ph in self._units(str(tpath))]
             self.assertNotIn("delegation", phases,
                              "no sender resolved → the courier can never place a '#d'; none may be yielded")
@@ -96,13 +96,13 @@ class SenderlessDelegation(unittest.TestCase):
             jd.MESSAGES.write_text(json.dumps(
                 {"t": T0 - 1, "ev": "sent", "id": MID, "from_id": SENDER, "to_id": SID}) + "\n")
             try:
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 phases = [ph for _sg, ph in self._units(str(tpath))]
                 self.assertIn("delegation", phases, "a resolvable sender keeps the courier's '#d' work-run")
                 self.assertNotIn("work", phases, "and the planner does not double-place it")
             finally:
                 jd.MESSAGES = saved
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
 
     def test_one_planner_pass_opens_the_nudge_gate(self):
         """The systemic claim: with the sender-less segment owned by the planner, one ordinary pass
@@ -116,7 +116,7 @@ class SenderlessDelegation(unittest.TestCase):
             jd.plan_llm = jd.opener_llm = lambda *a, **k: MINT
             jd._group_store = lambda *a, **k: None
             try:
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 store = jd.load_goals(SID)
                 self.assertFalse(self._gate_is_open(store, str(tpath)),
                                  "precondition: the fresh unit starts unplaced (gate closed)")

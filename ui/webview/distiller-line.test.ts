@@ -119,3 +119,21 @@ test("a BLOCKED card is distill-PENDING while its blockSummary is null — but N
 test("an open/working card (neither completed nor blocked) is never distill-pending", () => {
   assert.equal(distillPending(false, false, null, null), false);
 });
+
+// The states the kernel's _landing_inputs mirrors term for term (T388), one producible pair added: the SAME rows sit in
+// tests/test_card_summary_anchor.py LINE_RULE_TABLE, and the Python test pins that this file carries them.
+const LINE_RULE_TABLE: Array<[string, "completed" | "blocked" | null, string, boolean, boolean]> = [
+  ["stall floor", null, "needs_input", false, true],
+  ["permission floor", "blocked", "needs_input", false, true],
+  ["real block in recheck", "blocked", "working", false, false],
+  ["done confirming", null, "working", false, false],
+  ["completed", "completed", "completed", true, false],
+  ["plain working", null, "working", false, false],
+  ["completed under a needs-input column", "completed", "needs_input", true, false],   // the producible pair the six left out
+];
+
+test("distillInputs over the states the kernel's landing rule mirrors", () => {
+  for (const [name, state, column, completed, blocked] of LINE_RULE_TABLE) {
+    assert.deepEqual(distillInputs(state, column), { completed, blocked }, name);
+  }
+});

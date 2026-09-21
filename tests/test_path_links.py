@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Chat file links are filesystem-VERIFIED, and shortened mentions are FIXED.
 
-The client linkifies path-shaped tokens by shape alone (render.ts CLICKABLE_PATH_RE), so a bare
+The client linkifies path-shaped tokens by shape alone (path-links.ts CLICKABLE_PATH_RE), so a bare
 `render.js` in a reply became a blue link that 404'd on click — the token resolved against the
 session's cwd, where no such file lives. The kernel is the machine with the filesystem, so at
 message-build time it resolves every shape-matched token in three tiers (exact stat; unique
@@ -21,7 +21,7 @@ import os
 import subprocess
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -30,10 +30,10 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-km = SourceFileLoader("romp_kernel_pathlinks", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_pathlinks", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -178,6 +178,37 @@ class RepoListEdges(_Repo):
         self.assertEqual(sorted(idx["dup.py"]), ["a/dup.py", "b/dup.py"])
         self.assertEqual(idx["render.js"], ["ui/render.js"])
 
+    def test_a_stand_down_is_said_once_per_cwd_on_stderr(self):
+        # T364: the index returned None silently on any git failure or a runaway listing, so a bare filename that stayed
+        # plain text left no trace in the kernel log; one stderr line per cwd names the reason
+        import contextlib
+        import io
+        km._REPO_INDEX_STOOD_DOWN.clear()
+        saved = km._REPO_LIST_MAX
+        err = io.StringIO()
+        try:
+            km._REPO_LIST_MAX = 1
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(km._repo_file_index(str(self.cwd)))
+                self.assertIsNone(km._repo_file_index(str(self.cwd)))
+        finally:
+            km._REPO_LIST_MAX = saved
+        lines = [l for l in err.getvalue().splitlines() if "stood down" in l]
+        self.assertEqual(len(lines), 1, "said once per cwd and reason: %r" % err.getvalue())
+        self.assertIn("past the 1-file ceiling", lines[0]); self.assertIn("bare filenames in this session's messages stay plain text", lines[0])
+        # a CHANGED reason for the same cwd is a new line (the ceiling moved: the same cwd stands down for another reason)
+        try:
+            km._REPO_LIST_MAX = 2
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(km._repo_file_index(str(self.cwd)))
+        finally:
+            km._REPO_LIST_MAX = saved
+        lines = [l for l in err.getvalue().splitlines() if "stood down" in l]
+        self.assertEqual(len(lines), 2, "a changed reason is said: %r" % err.getvalue()); self.assertIn("past the 2-file ceiling", lines[1])
+        with tempfile.TemporaryDirectory() as plain, contextlib.redirect_stderr(err):
+            self.assertIsNone(km._repo_file_index(plain))
+        self.assertIn("git ls-files exited", err.getvalue(), "a cwd that is no repo says git's own exit: %r" % err.getvalue())
+
     def test_the_index_is_built_at_most_once_per_build_pass(self):
         calls = []
         saved = km._repo_file_index
@@ -192,7 +223,7 @@ class RepoListEdges(_Repo):
 
 
 class TokenizerParity(unittest.TestCase):
-    """The Python port and render.ts CLICKABLE_PATH_RE must agree on what a token IS — the map's keys
+    """The Python port and path-links.ts CLICKABLE_PATH_RE must agree on what a token IS — the map's keys
     are what the client looks up, so a tokenizer drift silently unlinks. The client side of the same
     fixture runs in chat-path-links.test.ts."""
 

@@ -11,7 +11,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -22,8 +22,8 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_tlaw", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_tlaw", os.path.join(BIN, "romp-kernel")).load_module()
+jd = load_source("romp_judge_tlaw", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_tlaw", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 NOW = 1781100000
@@ -54,18 +54,18 @@ class TimelineAwaiting(unittest.TestCase):
         os.utime(self.tpath, (NOW - 30, NOW - 30))       # recently-touched → discovered as a lane
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
-        self.saved = (km.jd.NAMES, km.jd.PROJECTS, km.jd.GOALDIR, km.jd.STATE, km.NAMES, km._tmux_sessions)
+        self.saved = (km.jd.NAMES, km.jd.PROJECTS, km.jd.GOALDIR, km.jd.STATE, km.NAMES, km._live_map)
         km.jd.NAMES, km.jd.PROJECTS, km.jd.GOALDIR = names, proj, td / "goals"
         km.jd.STATE = td                                 # sandbox states/ + usage/ + session-flags reads
         km.NAMES = names
-        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "", "effort": "",
+        km._live_map = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "", "effort": "",
                                            "context": None, "compactPct": None, "color": None, "mode": ""}}
         (td / "states").mkdir()
         self.states = td / "states" / (SID + ".jsonl")
         km._parse_cache.pop(str(self.tpath), None)
 
     def tearDown(self):
-        (km.jd.NAMES, km.jd.PROJECTS, km.jd.GOALDIR, km.jd.STATE, km.NAMES, km._tmux_sessions) = self.saved
+        (km.jd.NAMES, km.jd.PROJECTS, km.jd.GOALDIR, km.jd.STATE, km.NAMES, km._live_map) = self.saved
         self.td.cleanup()
 
     def _lane(self, with_bars=True):
@@ -90,7 +90,7 @@ class TimelineAwaiting(unittest.TestCase):
         self.assertEqual(self._lane(with_bars=False)["awaitingBg"], "bg agents")
 
     def test_dead_lane_never_awaits(self):
-        km._tmux_sessions = lambda: {}                   # session process gone → window-dead lane
+        km._live_map = lambda: {}                   # session process gone → window-dead lane
         self.states.write_text(json.dumps({"t": T0 + 21, "awaiting": True, "why": "bg"}) + "\n")
         lane = self._lane()
         self.assertFalse(lane["live"])
@@ -99,12 +99,33 @@ class TimelineAwaiting(unittest.TestCase):
     def test_bg_task_wait_carries_the_task_descriptions(self):
         # the dashed idle-but-waiting stretch (the user 2026-07-13): the lane carries the live bg-task
         # descriptions beside the why, so the stretch's hover lists exactly what's pending
-        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "", "effort": "",
+        km._live_map = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "", "effort": "",
                                            "context": None, "compactPct": None, "color": None, "mode": "",
                                            "bgTasks": [{"task_id": "t1", "desc": "Watch for round3 copy"}]}}
         lane = self._lane()
-        self.assertEqual(lane["awaitingBg"], "waiting on a background task: Watch for round3 copy")
+        self.assertEqual(lane["awaitingBg"], "waiting on a background command: Watch for round3 copy")   # "command" since slice 2 (2026-09-05)
         self.assertEqual(lane["awaitingTasks"], ["Watch for round3 copy"])
+
+    def test_the_lane_ships_the_awaited_count_beside_the_kind(self):
+        # T228 (the user's one-count rule): the lane badge words its kind from the SAME count the chat chip
+        # uses — one live task/agent reads "Awaiting task"/"Awaiting agent" on the lane too. The number is
+        # the snapshot's own; a source that cannot count ships None (the view keeps its historic plural).
+        base = {"state": "waiting", "since": NOW - 100, "model": "", "effort": "", "context": None,
+                "compactPct": None, "color": None, "mode": ""}
+        km._live_map = lambda: {SID: dict(base, bgTasks=[{"task_id": "t1", "desc": "Watch for round3 copy"}])}
+        lane = self._lane()
+        self.assertEqual((lane["awaitingKind"], lane["awaitingCount"]), ("task", 1))
+        km._live_map = lambda: {SID: dict(base, bgTasks=[{"task_id": "t1", "desc": "Watch for round3 copy"},
+                                                              {"task_id": "t2", "desc": "poll the deploy"}])}
+        self.assertEqual(self._lane()["awaitingCount"], 2)
+        km._live_map = lambda: {SID: dict(base, subagents=[{"type": "explore", "since": T0 + 5}])}
+        lane = self._lane()
+        self.assertEqual((lane["awaitingKind"], lane["awaitingCount"]), ("agents", 1), "one agent → the badge reads singular")
+        km._live_map = lambda: {SID: dict(base)}
+        self.states.write_text(json.dumps({"t": T0 + 21, "awaiting": True, "why": "bg agents"}) + "\n")
+        lane = self._lane()
+        self.assertEqual(lane["awaitingBg"], "bg agents")
+        self.assertIsNone(lane["awaitingCount"], "a bare overlay row names no count — never parsed from the why")
 
     def test_overlay_flavor_awaiting_carries_no_task_rows(self):
         self.states.write_text(json.dumps({"t": T0 + 21, "awaiting": True, "why": "bg agents"}) + "\n")
@@ -141,7 +162,7 @@ class TimelineLiveTail(TimelineAwaiting):
         try:
             tl = km.build_timeline(NOW, with_bars=True)
             bars = tl["turns"].get(SID) or []
-            live_bar = next((b for b in bars if b["start"] >= NOW - 21), None)
+            live_bar = km._expand_bar(next((b for b in bars if b["start"] >= NOW - 21), None))   # the wire bar, long-named (T278c)
             self.assertIsNotNone(live_bar, "the /model invocation forms a segment NOW, not after a later "
                                  "disk write: %r" % [(b["start"], b["end"]) for b in bars])
             self.assertEqual(live_bar["promptId"], "cmd:1:model", "the dot anchors on the invocation atom")
@@ -152,7 +173,7 @@ class TimelineLiveTail(TimelineAwaiting):
             km.Sessions.backend_for = saved
 
     def test_dead_lane_skips_the_live_merge(self):
-        km._tmux_sessions = lambda: {}                   # session process gone
+        km._live_map = lambda: {}                   # session process gone
         called = []
         saved = km.Sessions.backend_for
         km.Sessions.backend_for = lambda sid: (called.append(sid), self._fake_backend([]))[1]

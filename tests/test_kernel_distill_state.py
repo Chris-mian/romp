@@ -9,7 +9,7 @@ the same convention as test_kernel_apierror_working)."""
 import inspect
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -20,12 +20,12 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 class DistillState(unittest.TestCase):
     def test_distill_state_is_computed_from_the_genuine_block_not_the_column(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         # "completed" mirrors col; "blocked" fires for the SAME hard blocks that make the card genuinely
         # needs-you (api_block / the judge-auth floor / a live perm_top / a soft col=="blocked") — but
         # WITHOUT the recheck/rejudging suppression that `column` carries, so the brief survives the
@@ -36,7 +36,7 @@ class DistillState(unittest.TestCase):
         self.assertIn("else None)", src)
 
     def test_distill_state_drops_the_recheck_rejudging_suppression_that_column_keeps(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         # column suppresses needs_input during recheck/rejudging; distill_state must NOT — that suppression is
         # exactly what blanked the brief. Guard: the column line carries the suppression, the distill_state
         # line does not mention recheck/rejudging at all.
@@ -47,7 +47,7 @@ class DistillState(unittest.TestCase):
         self.assertNotIn("rejudging", ds)
 
     def test_the_ask_payload_carries_distillState(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('"distillState": distill_state,', src)
 
 

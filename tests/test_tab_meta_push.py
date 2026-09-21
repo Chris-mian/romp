@@ -15,7 +15,7 @@ import threading
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -25,11 +25,11 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-km = SourceFileLoader("romp_kernel_tmp", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_tmp", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -50,14 +50,14 @@ class TabMetaPush(unittest.TestCase):
         self.names = Path(self.tmp) / "names"
         self.names.mkdir()
         (self.names / SID).write_text("web\t/proj/TESTHOST/app\t#1EA1EB\twhite\n")
-        self._saved = (km.NAMES, km.jd.STATE, km._tmux_sessions, km._live_names,
+        self._saved = (km.NAMES, km.jd.STATE, km._live_map, km._live_names,
                        km._mark_views_dirty, km.Sessions.backend_for,
                        km._chat_tab_sessions, km._cached_feed)
         km.NAMES = self.names
         km.jd.STATE = Path(self.tmp) / "state"
         km.jd.STATE.mkdir(parents=True, exist_ok=True)
         km._pal_cache.update({"name": km.pal.DEFAULT, "mt": None})
-        km._tmux_sessions = lambda: {}
+        km._live_map = lambda: {}
         km._live_names = lambda tm: {self._name(): SID}
         self.dirty = []
         km._mark_views_dirty = lambda: self.dirty.append(1)
@@ -72,7 +72,7 @@ class TabMetaPush(unittest.TestCase):
         km.Sessions.backend_for = staticmethod(lambda sid: BE())
         # ONE shown session whose row reads the registry live — the same store the real
         # _chat_tab_sessions labels rows from — so the push assembles from current truth each cycle.
-        km._chat_tab_sessions = lambda now, tmux: [
+        km._chat_tab_sessions = lambda now, live: [
             {"sid": SID, "name": self._name(), "path": os.path.join(self.tmp, "none.jsonl"),
              "anchor": SID}]
         km._cached_feed = lambda *a, **k: None   # no feed build — this pins the tabOrder frame only
@@ -81,7 +81,7 @@ class TabMetaPush(unittest.TestCase):
                        "send": lambda s: self.frames.append(json.loads(s))}
 
     def tearDown(self):
-        (km.NAMES, km.jd.STATE, km._tmux_sessions, km._live_names,
+        (km.NAMES, km.jd.STATE, km._live_map, km._live_names,
          km._mark_views_dirty, km.Sessions.backend_for,
          km._chat_tab_sessions, km._cached_feed) = self._saved
         km._pal_cache.update({"name": km.pal.DEFAULT, "mt": None})
@@ -137,6 +137,21 @@ class TabMetaPush(unittest.TestCase):
         mine = [t for t in tags if t.get("name") == "workers"]
         self.assertTrue(mine, "the next cycle's tabOrder views blob carries the new tag")
         self.assertIn(SID, mine[0].get("members") or [], "…with the session filed under it")
+
+    def test_inherited_membership_rides_the_next_push_cycle(self):
+        # tab groups on tags (the user 2026-09-04): a child's inherited membership is a views write
+        # like any tag edit, so the very next tabOrder frame carries it to the sectioned strip
+        child = "66666666-7777-8888-9999-000000000000"
+        self._post("/tag", {"name": "workers", "add": ["web"]})
+        self._cycle()
+        self.assertTrue(self.dirty)
+        self.dirty.clear()
+        self.assertEqual(km._inherit_tag_membership(SID, child), ["workers"])
+        self.assertTrue(self.dirty, "the inheritance wakes the pusher like a tag edit does")
+        self._cycle()
+        mine = [t for t in self._tab_orders()[-1]["views"]["tags"] if t.get("name") == "workers"]
+        self.assertEqual(sorted(mine[0]["members"]), sorted([SID, child]),
+                         "the next cycle's views blob files the child beside its parent")
 
     def test_an_unchanged_cycle_is_deduped_but_never_a_changed_one(self):
         self._cycle()

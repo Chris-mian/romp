@@ -7,7 +7,7 @@ import inspect
 import os
 import pathlib
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -18,7 +18,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 class RailUsage(unittest.TestCase):
@@ -45,8 +45,11 @@ class RailUsage(unittest.TestCase):
             self.assertIn(win, self.html, "renders both rate-limit windows")
         # the used bar wears the SELECTED COLORMAP colour (server-computed in _usage, read here as seg.color)
         self.assertIn("seg.color", self.html, "the used bar is colored by the selected colormap")
-        self.assertIn("cm.ramp(pct / 100.0, stops)", inspect.getsource(km._usage),
-                      "_usage maps used-% onto the global colormap")
+        self.assertIn("seg.tone", self.html, "and the yatharth themes pick the tone shipped beside it (PR #763)")
+        self.assertIn('"color": list(cm.ramp(pct / 100.0, cm.stops_for(_colormap())))', inspect.getsource(km._usage),
+                      "classic seg.color stays the recency-colormap sample, byte-identical to main (PR #763 item 1)")
+        self.assertIn("cm.context_rgb(pct)", inspect.getsource(km._usage),
+                      "the yatharth tone (seg.tone) rides beside the classic color")
         # ONE shared hover PANEL for BOTH windows (the user 2026-06-26): it reproduces the used/elapsed bars
         # that used to sit under the timeline, with the reset countdown, and NO explanatory prose.
         self.assertIn("#ru-tip{", self.html, "a styled hover tooltip panel")
@@ -77,7 +80,9 @@ class RailUsage(unittest.TestCase):
 
     def test_the_usage_tooltip_is_one_shared_panel_reproducing_both_windows_bars(self):
         # a SINGLE tooltip on the whole rail-usage area (mouseenter on el), not a per-window panel
-        self.assertIn("el.addEventListener('mouseenter',showTip)", self.html, "one shared tooltip for the area")
+        # T301: the API-health dot sits inside this cell; the shared tip yields while the pointer is on the dot
+        self.assertIn("el.addEventListener('mouseenter',function(ev){var c=document.getElementById('rail-api');", self.html, "one shared tooltip for the area")
+        self.assertIn("if(at&&(at===c||c.contains(at)))return;}showTip(ev);});", self.html)
         self.assertIn("['fiveHour','sevenDay','fable'].filter", self.html, "the tooltip covers ALL windows at once")
         # it reproduces the used + elapsed bars (the exact set that used to sit under the timeline)
         self.assertIn("ru-tip-track", self.html, "horizontal used/elapsed bars in the tooltip")
@@ -85,6 +90,21 @@ class RailUsage(unittest.TestCase):
         self.assertIn(">elapsed<", self.html)
         # and drops the old explanatory prose ("...rate-limit window") — no extra stuff
         self.assertNotIn("rate-limit window", self.html, "no explanatory prose, just the bars + %")
+
+    def test_the_desktop_hover_says_the_click_opens_the_full_breakdown(self):
+        # T247d (the user 2026-09-08): the readout's click opens the per-session spend modal, so the
+        # hover — the compact level — must say there is more underneath (progressive disclosure: never
+        # a dead end). One footnote line in the hover's own footnote style (.ru-tip-age size and
+        # opacity, no new font size), on the DESKTOP tip only: the phone panel has its "By session" button.
+        js = self.html.split('_LANDING_USAGE_JS')[0] if False else self.html
+        self.assertIn("Click for the full breakdown by session.", js)
+        self.assertIn("tip.classList.remove('ru-modal');tip.innerHTML=h+'<div class=ru-tip-hint>Click for the full breakdown by session.</div>';", js,
+                      "the desktop tip ends in the affordance line")
+        self.assertIn("tip.innerHTML=h+'<div class=ru-tip-more><button class=rsp-btn id=ru-bysession>", js,
+                      "the phone panel keeps its button and gets no click hint (a tap there opens nothing)")
+        self.assertEqual(js.count("Click for the full breakdown by session."), 1, "one place, the desktop tip")
+        self.assertIn(".ru-tip-hint{margin-top:5px;opacity:.55;font-size:10px}", js,
+                      "the footnote style: .ru-tip-age's size and opacity, without a second rule line")
 
     def test_the_spend_section_owns_its_age_and_never_speaks_for_rate_limits(self):
         # Pins from the 2026-08-24 spend-staleness screenshot — minus the telemetry note, which the
@@ -104,6 +124,23 @@ class RailUsage(unittest.TestCase):
         ksrc = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertEqual(ksrc.count('out["spendAt"] = sa'), 2, "the key-only arm and the mixed-host arm")
 
+    def test_the_spend_hover_splits_each_windows_tokens_by_kind(self):
+        # the user 2026-09-06 read the day's token count in the API cell and could not see how a handful
+        # of turns could cost that many tokens. They can: every API call of a turn (one per tool step)
+        # re-reads the whole context from the cache, and cache reads are most of the count at a tenth of
+        # the input price. So each window's row in the spend hover now carries a sub-line splitting its
+        # count by kind — largest first — wearing the sub-annotation grammar (.ru-tip-reset's size and
+        # opacity, no new font size). A host whose kernel ships no split leaves the summed row unsplit.
+        self.assertIn("tokCacheR:seg.tokCacheR,tokCacheW:seg.tokCacheW", self.html, "spendDet carries the split through")
+        self.assertIn("if(typeof v.tokCacheR==='number'){t.tokIn+=v.tokIn||0;t.tokOut+=v.tokOut||0;t.tokCacheR+=v.tokCacheR;t.tokCacheW+=v.tokCacheW||0;}else t.split=false;",
+                      self.html, "summed across hosts; one unsplit host unsplits the row rather than half-splitting it")
+        self.assertIn("if(v.split&&(v.tokIn+v.tokOut+v.tokCacheR+v.tokCacheW)>0)row+='<div class=\"ru-tip-row ru-tip-sub\"><span class=ru-tip-k></span>'",
+                      self.html)
+        self.assertIn("fmtTok(v.tokCacheR)+' cache read · '+fmtTok(v.tokCacheW)+' cache write · '+fmtTok(v.tokIn)+' in · '+fmtTok(v.tokOut)+' out</span></div>'",
+                      self.html, "cache read first — it is the number that explains the total (the landing is a "
+                                 "cooked Python string: the source's \\u00b7 renders as the character itself)")
+        self.assertIn(".ru-tip-sub{margin-top:0}.ru-tip-sub .ru-tip-v{opacity:.6;font-size:10px}", self.html)
+
     def test_the_tooltip_shows_the_snapshots_age(self):
         # "updated ... ago" (the user 2026-07-02): the bars lagged the CLI's own /usage with no cue the reading
         # was old — usage.json refreshes only when a statusline render or a rate-limit event produces a NEW
@@ -113,7 +150,7 @@ class RailUsage(unittest.TestCase):
         self.assertIn("det._t=(typeof r.usage.t==='number')?r.usage.t:null", self.html,
                       "the renderer keeps each host's snapshot time")
         self.assertIn("ru-tip-age", self.html, "the tooltip carries an age footer")
-        self.assertIn("updated '+fmtAgo(d._t)", self.html, "formatted as 'updated ... ago'")
+        self.assertIn("updated '+fmtAgo(Math.min.apply(null,ts))", self.html, "formatted as 'updated ... ago'")
         self.assertIn("function fmtAgo(ep)", self.html)
 
     def test_the_fable_window_is_a_third_bar_everywhere(self):

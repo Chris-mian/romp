@@ -10,6 +10,7 @@ import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const STAGED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "staged-messages.ts"), "utf8");   // quoteReplyBody lives here
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const SKELETON = fs.readFileSync(path.resolve(process.cwd(), "src", "page-skeleton.ts"), "utf8");
 const FILEVIEW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "file-view.ts"), "utf8");
@@ -58,11 +59,12 @@ test("Backspace at the start of the box deletes the citation like a character", 
 
 test("sending with a GOAL citation routes as an askFollowUp (reopen) and consumes the chip", () => {
   // the three routing branches live in routeUserMessage since the staged flush (2026-08-15) — ONE
-  // owner for the live send and the staged release; deliver feeds it activeId as the sid
+  // owner for the live send and the staged release; deliver hands the typed message to flushStaged, which
+  // routes every post of the release through it with sid (the active session) as the sid
   assert.match(RENDER, /const cites = composerCitations\.get\(activeId\);/);
-  assert.match(RENDER, /routeUserMessage\(activeId, text, cites, attached\.filter\(\(p\) => previewKind\(p\) === "img"\)\);/);   // + the echo's thumbnail paths (2026-08-25)
-  assert.match(RENDER, /if \(goalCite\?\.itemId\) \{ vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: goalCite\.itemId, text, sid \}\); registerOptimistic\(sid, text, imgPaths\); \}/);
-  assert.match(RENDER, /else \{ vscodeApi\.postMessage\(\{ type: "sendMessage", id: sid, text \}\); registerOptimistic\(sid, text, imgPaths\); \}/);
+  assert.match(RENDER, /flushStaged\(sid, \{ text, cites, imgPaths: attached\.filter\(\(p\) => previewKind\(p\) === "img"\), paths: attached \}\);/);   // + the echo's thumbnail paths (2026-08-25)
+  assert.match(RENDER, /if \(goalCite\?\.itemId\) \{ vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: goalCite\.itemId, text, sid, qid, \.\.\.att \}\); registerOptimistic\(sid, text, imgPaths, qid, paths\); \}/);
+  assert.match(RENDER, /else \{ vscodeApi\.postMessage\(\{ type: "sendMessage", id: sid, text, qid, \.\.\.att \}\); registerOptimistic\(sid, text, imgPaths, qid, paths\); \}/);
   assert.match(RENDER, /if \(cites\) \{ composerCitations\.delete\(activeId\); renderComposerChips\(activeId\); \}/);
 });
 
@@ -74,8 +76,9 @@ test("a citation follow-up carries its SID, so a reply to a REMOTE card reaches 
   // sid from the itemId, owns no such session, and hands it to tmux by uuid — dropped in silence. The card
   // still flashed to Working (the kernel's cardPredict fires before any of that) and snapped back on the
   // ok:false ack, so the only visible trace was a bounce.
-  assert.match(RENDER, /if \(goalCite\?\.itemId\) \{ vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: goalCite\.itemId, text, sid \}\); registerOptimistic\(sid, text, imgPaths\); \}/);
-  assert.match(RENDER, /routeUserMessage\(activeId, text, cites, attached\.filter\(\(p\) => previewKind\(p\) === "img"\)\);/);   // deliver's sid IS the active session
+  assert.match(RENDER, /if \(goalCite\?\.itemId\) \{ vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: goalCite\.itemId, text, sid, qid, \.\.\.att \}\); registerOptimistic\(sid, text, imgPaths, qid, paths\); \}/);
+  assert.match(RENDER, /const sid = activeId;   \/\/ the session this send \(and any confirm below\) was armed for/);   // deliver's sid IS the active session
+  assert.match(RENDER, /flushStaged\(sid, \{ text, cites, imgPaths: attached\.filter\(\(p\) => previewKind\(p\) === "img"\), paths: attached \}\);/);
   // every OTHER card-addressed op already routes this way — the citation follow-up was the lone omission
   assert.match(FEED, /type: "askClear", itemId: it\.itemId, sid: it\.sid/);
   assert.match(FEED, /type: "askFollowUp", itemId: tgt \? tgt\.itemId : fbId, title: tgt \? tgt\.title : fbTitle, text: txt, sid: fbSid/);
@@ -189,31 +192,34 @@ test("Enter with a live transcript selection drops into the message box with the
   // and re-seeding at Enter makes the chip exactly what's selected at that moment
   assert.match(RENDER, /const q = transcriptSelection\(\);\s*\n\s*if \(q && activeId\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*seedTranscriptQuote\(activeId, q\.text, q\.uuid\);\s*\n\s*focusComposer\(\);\s*\n\s*return;/);
   // the bare-area fallback (Enter with no selection — the user 2026-06-26) survives untouched below it
-  assert.match(RENDER, /if \(ae && ae !== document\.body\) return;\s*\n\s*if \(focusComposerOrAsk\(\)\) e\.preventDefault\(\);/);
+  // (T236: while the hand-over note holds the box, this default stands down — see draft-teardown.test.ts)
+  assert.match(RENDER, /if \(ae && ae !== document\.body\) return;\s*\n\s*if \(composerNoteHolds\(\)\) return;[^\n]*\n\s*if \(focusComposerOrAsk\(\)\) e\.preventDefault\(\);/);
 });
 
 test("closing a session clears its composer reply context — chip, draft, and edit pill (the user 2026-08-04)", () => {
-  const body = RENDER.match(/function dismissSession\(id: string\): void \{[\s\S]*?\n\}/);
+  const body = RENDER.match(/function dismissSession\(id: string, why: DismissWhy, doomed\?: ReadonlySet<string>\): void \{[\s\S]*?\n\}/);
   assert.ok(body, "dismissSession not found");
   // the maps: the draft, the citation chip, and any pending edit mode all die with the session
   assert.match(body![0], /drafts\.delete\(id\); composerCitations\.delete\(id\); composerEdits\.delete\(id\); composerFiles\.delete\(id\); persistDrafts\(\);/);
   // …and when the CLOSED session was the active one, the shared chip strip is repainted for the newly
   // selected tab. Without this the dead session's chip lingered in the strip — and its ✕, bound to the
   // dead id whose map entry is already gone, early-returned in removeCitation, so the stale chip could
-  // not even be dismissed by hand.
-  assert.match(body![0], /renderComposerChips\(activeId\);[\s\S]*?showActive\(\);/);
+  // not even be dismissed by hand. (The repaint rides loadComposerFor since T236 — chips, thumbnails,
+  // staged stack and draft in one loader, shared with the only-tab adoption.)
+  assert.match(body![0], /loadComposerFor\(activeId\);[\s\S]*?showActive\(\);/);
 });
 
 test("quote chips send a plain message wrapped by quoteReplyBody — never askFollowUp (no goal to reopen)", () => {
-  assert.match(RENDER, /if \(goalCite\?\.itemId\) \{ vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: goalCite\.itemId, text, sid \}\); registerOptimistic\(sid, text, imgPaths\); \}/);
+  assert.match(RENDER, /if \(goalCite\?\.itemId\) \{ vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: goalCite\.itemId, text, sid, qid, \.\.\.att \}\); registerOptimistic\(sid, text, imgPaths, qid, paths\); \}/);
   // the quote branch echoes the COMPOSED body — byte-identical to what lands, so the reconcile's
   // includes() match is exact (the user 2026-08-23, whose quoted sends painted nothing until the
   // kernel round-tripped while plain sends painted instantly)
-  assert.match(RENDER, /else if \(quoteCites\.length\) \{ const body = quoteReplyBody\(quoteCites, text\); vscodeApi\.postMessage\(\{ type: "sendMessage", id: sid, text: body \}\); registerOptimistic\(sid, body, imgPaths\); \}/);
+  assert.match(RENDER, /else if \(quoteCites\.length\) \{ const body = quoteReplyBody\(quoteCites, text\); vscodeApi\.postMessage\(\{ type: "sendMessage", id: sid, text: body, qid, \.\.\.att \}\); registerOptimistic\(sid, body, imgPaths, qid, paths\); \}/);
   // the wrap: one section per stacked chip (lead-in + the highlighted text as a markdown quote block), in
   // strip order, then the typed message — a single chip composes byte-identically to the pre-stack form
-  // a context-only body (staged with an empty box) carries no dangling blank tail
-  assert.match(RENDER, /return text \? sections\.join\("\\n\\n"\) \+ "\\n\\n" \+ text : sections\.join\("\\n\\n"\);/);
+  // a context-only body (staged with an empty box) carries no dangling blank tail. The function lives in
+  // staged-messages.ts now (the staged release composes from it too) and its test executes it.
+  assert.match(STAGED, /return quoted && text \? quoted \+ "\\n\\n" \+ text : quoted \|\| text;/);
   // the chip's audit preview shows the SAME composed body — the whole outgoing message, every stacked
   // quote, whichever chip was clicked — client-side (no /followup-preview fetch)
   assert.match(RENDER, /body\.textContent = quoteReplyBody\(cites\.filter\(\(c\) => c\.quote\), draft \|\| "\(your message\)"\);/);
@@ -238,7 +244,10 @@ test("context stages ALONE, and the chips strip carries the visible Stage button
   assert.ok(loop >= 0 && btn > loop, "the Stage button is appended AFTER the context chips");
   // neutral at rest (the user 2026-08-23): an accent outline beside the accent-blue chips read as
   // already-pressed. Rest = the button family's dress; the accent appears only on hover.
-  assert.match(CSS, /\.composer-stage-btn \{ background: rgba\(255, 255, 255, 0\.06\);\n\s*border: 1px solid var\(--box-border\); color: var\(--dim\);/);
+  // T141 (the user 2026-08-28): buttons are consistent — the feed word-buttons' rest exactly:
+  // dark ground (transparent over the page), the feed's --card-border hairline (mirrored token)
+  assert.match(CSS, /\.composer-stage-btn \{ background: transparent;[^\n]*\n\s*border: 1px solid var\(--card-border\); color: var\(--dim\);/);
+  assert.match(CSS, /--card-border: rgba\(255, 255, 255, 0\.10\);/, "byte-equal mirror of feed.css --card-border");
   assert.match(CSS, /\.composer-stage-btn:hover \{ border-color: var\(--accent\); color: var\(--accent\); background: var\(--accent-wash\); \}/);   // the feed word-button hover (2026-08-25)
   assert.doesNotMatch(CSS, /\.composer-stage-btn \{ position: absolute/,
     "no absolute pin — the button flows in the strip, immediately after what it acts on");
@@ -265,7 +274,7 @@ test("a VS Code EDITOR highlight seeds the same chip, labeled + wrapped with its
   assert.match(RENDER, /const i = list\.findIndex\(\(c\) => !!c\.src\);\s*\n\s*if \(i >= 0\) list\[i\] = chip; else list\.push\(chip\);/);
   // the chip title leads with the origin; the wrap lead-in points at the code, not the conversation
   assert.match(RENDER, /const title = \(src \? src \+ " — " \+ snip : snip\)\.slice\(0, 140\);/);
-  assert.match(RENDER, /const lead = c\.src \? "Replying to this highlighted code \(" \+ c\.src \+ "\):" : "Replying to this part of the conversation:";/);
+  assert.match(STAGED, /const lead = c\.src \? "Replying to this highlighted code \(" \+ c\.src \+ "\):" : "Replying to this part of the conversation:";/);
 });
 
 test("deselecting in the editor (editorSelectionCleared) drops the editor chip, scoped + focus-safe (the user 2026-07-14)", () => {
@@ -320,7 +329,7 @@ test("a note on a file passage stages locally — no fork, so no wait and no SDK
   assert.match(FILEVIEW, /m\.type === "commentCreated" && cmtHooks && m\.id === cmtHooks\.sid && !m\.uuid/,
     "an EMPTY anchor uuid is what marks the ack as the file viewer's, not the transcript popover's");
   assert.match(FILEVIEW, /m\.type === "commentCreateFailed" && cmtHooks && m\.id === cmtHooks\.sid && !m\.uuid/);
-  assert.match(FILEVIEW, /m\.type === "warn" && \(editHooks \|\| cmtHooks\)/);
+  assert.match(FILEVIEW, /m\.type === "warn" && typeof m\.sid !== "string" && \(editHooks \|\| cmtHooks\)/);
   // a connection-loss verdict belongs ONLY to the note that needed the connection
   assert.match(FILEVIEW, /\} else if \(cmtHooks\?\.viaHost\) \{/);
   assert.match(FILEVIEW, /if \(cmtHooks\?\.viaHost\) \{\n      cmtHooks\.failed\("the connection dropped/);
@@ -373,4 +382,39 @@ test("the viewer's menu and comment box outrank the viewer they open over", () =
   }
   // the warn toast too: a refusal raised by a gesture INSIDE the viewer is the case that needs reading
   assert.ok(zIndexOf(CSS, "#warn-toasts") > zIndexOf(CSS, "#romp-fileview"));
+});
+
+// ── select → TYPE → ⌘⏎ (the user 2026-09-02): typing needs no click into the box ─────────────────
+test("an unclaimed printable keystroke drops the cursor into the composer — natively, never synthesized", () => {
+  const mark = RENDER.indexOf("// SELECT → TYPE → ⌘⏎");
+  assert.ok(mark > 0, "the type-to-focus handler exists");
+  const at = RENDER.indexOf('window.addEventListener("keydown"', mark);   // the CODE, past the design comment
+  assert.ok(at > mark, "the handler follows its design note");
+  const end = RENDER.indexOf("ta.focus({ preventScroll: true })", at);
+  assert.ok(end > at, "the redirect focuses the box without jolting the transcript");
+  const block = RENDER.slice(at, end);
+  // gates, in the order the hazards were mapped: upstream handlers, chords, IME, non-printables,
+  // Space (ask-card toggle / scroll) — the KEY-specific ones stay in the handler…
+  assert.match(block, /if \(e\.defaultPrevented \|\| e\.altKey \|\| e\.ctrlKey \|\| e\.metaKey\) return;/);
+  assert.match(block, /if \(e\.isComposing \|\| e\.keyCode === 229\) return;/);
+  assert.match(block, /if \(e\.key\.length !== 1 \|\| e\.key === " "\) return;/);
+  // …and the rest — a missing or read-only box, key repeat, typing targets, the live-ask card's
+  // number keys, open menus/dialogs, the full-pane surfaces — live in typeFromAnywhereTarget, the
+  // ONE gate list this handler shares with paste-to-focus (2026-09-05; composer-paste-focus.test.ts)
+  assert.match(block, /const ta = typeFromAnywhereTarget\(e\);\s*\n\s*if \(!ta\) return;/);
+  const gates = RENDER.split("function typeFromAnywhereTarget(")[1].split("\n}")[0];
+  assert.match(gates, /if \(!ta \|\| ta\.disabled \|\| document\.activeElement === ta\) return null;/);
+  assert.match(gates, /if \(isTypingTarget\(e\.target\) \|\| isTypingTarget\(document\.activeElement\)\) return null;/);
+  // the pane's own modals and meta menus own their keys, and a dropdown's type-ahead is typing: a
+  // letter typed in the settings modal must never land in the hidden draft (review 2026-09-02)
+  assert.match(gates, /document\.querySelector\("#rsettings:not\(\[hidden\]\), #ra-back:not\(\[hidden\]\), #rkeys-back, \.meta-menu"\)/);
+  assert.match(RENDER, /elm\.tagName === "SELECT"/, "SELECT is a typing target");
+  assert.match(gates, /if \(activeId && liveAsks\.has\(activeId\)\) return null;/);
+  assert.match(gates, /if \(ctxMenuEl \|\| document\.querySelector\("\.picker-overlay"\)\) return null;/);
+  assert.match(gates, /romp-fileview[\s\S]*romp-filebrowse[\s\S]*romp-lightbox/);
+  // NEVER preventDefault: the point is that the native keystroke inserts into the newly focused
+  // box, so the composer's own input bookkeeping (draft, slash menu) sees ordinary typing
+  assert.doesNotMatch(block, /preventDefault/);
+  // …and the armed quote chip survives the focus (a collapse never clears it), so ⌘⏎ stages
+  // selection+typing exactly as if the user had clicked in: the existing stage pins above cover it
 });

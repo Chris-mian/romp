@@ -40,7 +40,7 @@ test("every surface renders the prefix through the shared treatment", () => {
   // bare uuid), rendered through the same .host-prefix treatment (the user 2026-07-26)
   assert.match(FEED, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(it\.origin\.peerHost, it\.origin\.peer\)\)/);
   const HP = read("host-prefix.ts");
-  assert.match(HP, /export function hostPartsNodes\(host: string \| null \| undefined, name: string\): Node\[\]/);
+  assert.match(HP, /export function hostPartsNodes\(host: string \| null \| undefined, name: string,\s*\n\s*doc: Pick<Document, "createElement" \| "createTextNode"> = document\): Node\[\]/, "builds in the document it is handed (T322b: a fake's chip carries a fake's name node); the page's by default");
   // fleet: the prefix stays OUT of the search highlight (metadata never highlights)
   assert.match(FLEET, /function nameInto\(elm: HTMLElement, name: string, sid: string, q: string\)/);
   assert.match(FLEET, /nameInto\(tnm, s\.name, s\.sid, curSearch\)/);
@@ -48,12 +48,14 @@ test("every surface renders the prefix through the shared treatment", () => {
   // one class, both sheets (the feed page loads only feed.css — the .romp-acted precedent)
   const CSS = read("styles.css"), FCSS = read("feed.css");
   for (const sheet of [CSS, FCSS]) {
-    assert.match(sheet, /\.host-prefix \{ color: var\(--dim\); font-weight: 400; font-style: italic; font-size: 0\.88em; \}/);
+    assert.match(sheet, /\.host-prefix \{ color: var\(--dim\); font-weight: 400; font-style: italic; font-size: 0\.86em; \}/);
   }
   // the timeline lane label (one plain-JS file, SVG tspans) applies the same rule off the sid marker
   const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
   assert.match(TL, /const hci = String\(s\.id \|\| ''\)\.indexOf\(':'\)/);
-  assert.match(TL, /'font-style': 'italic', 'font-size': 10\.5/);
+  // 10.3 = the px mirror of the sheets' 0.86em at the lane label's 12px base (PR-730 review,
+  // 2026-08-27: the em homes moved to 0.86 while this mirror sat at the old 0.88 step's 10.5)
+  assert.match(TL, /'font-style': 'italic', 'font-size': 10\.3/);
 });
 
 test("the host prefix FADES in tandem with the name it precedes (the user 2026-07-22)", () => {
@@ -66,7 +68,7 @@ test("the host prefix FADES in tandem with the name it precedes (the user 2026-0
   assert.match(RENDER, /label\.classList\.add\("name-faded"\)/);
   assert.match(RENDER, /mouseenter", \(\) => \{ label\.style\.color = full; label\.classList\.remove\("name-faded"\); \}/);
   assert.match(RENDER, /mouseleave", \(\) => \{ label\.style\.color = fadedColor\(full\); label\.classList\.add\("name-faded"\); \}/);
-  assert.match(CSS, /\.tab-label\.name-faded \.host-prefix \{ opacity: 0\.5; \}/);
+  assert.match(CSS, /^\.name-faded \.host-prefix, \.name-faded \.host-prefix\.off \{ opacity: var\(--host-fade, 0\.5\); \}/m, "one rule for both carriers of the class: the tab label and the composer's name overlay (T335); the strength a variable the overlay sets to its own midpoint (T341)");
   // TIMELINE: the SVG twin — a tspan's own fill beats the parent <text>, so fade it explicitly and
   // register it for the same hover un-fade the name uses
   assert.match(TL, /hostTsp = el\('tspan', \{ fill: F\(MODEL_FG\)/);

@@ -15,7 +15,7 @@ import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -26,9 +26,17 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+# the postal trio (2026-09-10): this kernel runs IN-PROCESS, and an attach whose bus call is refused revives the bus;
+# without these it started one on the machine's fixed port while the real bus was down for a restart. Client-only, so
+# ensure starts nothing; its own port (never one inherited from a shell that names the machine's) and no peers, read at
+# load (the kernel reads them at import)
+import socket as _socket
+_s = _socket.socket(); _s.bind(("127.0.0.1", 0)); os.environ["ROMP_POSTAL_PORT"] = str(_s.getsockname()[1]); _s.close()
+os.environ["ROMP_POSTAL_PEERS"] = "0"
+os.environ["ROMP_POSTAL_CLIENT_ONLY"] = "1"
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 FAKE_TOKEN = "FAKETOKEN-123"
 MOCK_SSH = """#!/usr/bin/env bash
@@ -123,7 +131,9 @@ class TunnelConcierge(unittest.TestCase):
         self.assertTrue(body["ok"])
         t = body["tunnel"]
         self.assertEqual(t["host"], "testhost")
-        self.assertEqual(t["token"], FAKE_TOKEN, "the remote serve-token must be fetched over ssh")
+        self.assertNotIn("token", t, "the page is never handed the remote's credential (2026-09-08)")
+        self.assertIs(t["hasToken"], True, "…only the fact that one was fetched")
+        self.assertEqual(km._remotes["testhost"]["token"], FAKE_TOKEN, "the remote serve-token must be fetched over ssh")
         self.assertGreater(t["localPort"], 0, "a local -L port must be allocated for the browser")
         self.assertIn(t["status"], ("authorizing", "connecting", "starting", "up"))
         self.assertTrue(km._tunnel_proc_alive(km._remotes["testhost"]), "the ssh tunnel proc must be running")
@@ -134,7 +144,8 @@ class TunnelConcierge(unittest.TestCase):
         self.assertEqual(status, 200)
         hosts = {t["host"]: t for t in body["tunnels"]}
         self.assertIn("testhost", hosts)
-        self.assertEqual(hosts["testhost"]["token"], FAKE_TOKEN)
+        self.assertIs(hosts["testhost"]["hasToken"], True)
+        self.assertNotIn(FAKE_TOKEN, json.dumps(body), "the token string never rides /tunnels (2026-09-08)")
 
     def test_detach_kills_and_forgets(self):
         _req(self.port, "POST", "/tunnels", {"host": "testhost"})
@@ -281,14 +292,15 @@ class BootstrapRemoteKernel(unittest.TestCase):
         status, body = _req(self.port, "POST", "/tunnels", {"host": "testhost"})
         self.assertEqual(status, 200)
         self.assertTrue(os.path.exists(marker), "the bootstrap ran the remote start command")
-        self.assertEqual(body["tunnel"]["token"], FAKE_TOKEN,
-                         "the token is fetched AFTER the bootstrapped kernel comes up")
+        self.assertIs(body["tunnel"]["hasToken"], True,
+                      "the token is fetched AFTER the bootstrapped kernel comes up")
+        self.assertEqual(km._remotes["testhost"]["token"], FAKE_TOKEN)
 
     def test_attach_without_romp_reports_the_next_step(self):
         self._mock(MOCK_SSH_NOROMP)
         status, body = _req(self.port, "POST", "/tunnels", {"host": "barehost"})
         self.assertEqual(status, 200)
-        self.assertEqual(body["tunnel"]["token"], "", "no kernel to authorize against")
+        self.assertIs(body["tunnel"]["hasToken"], False, "no kernel to authorize against")
         self.assertIn("install.sh", body["tunnel"]["detail"],
                       "the popover tells the user the one command to run")
 

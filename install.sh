@@ -34,55 +34,83 @@ if [[ -z "${ROMP_SKIP_PREFLIGHT:-}" ]]; then
         echo "  macOS:  brew install node    Linux: your distro's nodejs package" >&2
         preflight_missing=1
     fi
-    if ! command -v python3 >/dev/null 2>&1; then
+    # A ROMP_PYTHON pin IS the interpreter: with one set, python3's presence on PATH says nothing, and the pin goes
+    # straight to the floor check below (round three of issue 1600; a valid pin with no python3 on PATH was refused
+    # as python3 not found).
+    if [[ -z "${ROMP_PYTHON:-}" ]] && ! command -v python3 >/dev/null 2>&1; then
         echo "install.sh: python3 not found — the kernel is a Python process." >&2
         echo "  macOS:  brew install python@3.13    or:  uv python install 3.13" >&2
         preflight_missing=1
+    # The floor (issue 1600): the kernel and the Agent SDK need 3.10 or newer. This used to sit only in
+    # romp-sdk-setup, whose failure is a banner (the install still exited 0), and ROMP_NO_SDK=1 skipped it,
+    # so a fresh install on a machine whose python3 is 3.9 finished, and the manager then crash-looped
+    # the kernel on it. The interpreter checked is the one the kernel will run (bin/romp-serve's pick:
+    # ROMP_PYTHON, then the SDK venv's, then the newest python3.X), and romp-serve says which and why.
+    else
+        # romp-serve exits 2 for the floor alone; its other refusals (the two port spellings disagreeing, a kernel
+        # binary that is not there, an unrunnable ROMP_PYTHON pin) exit 1 with their own line, and are passed
+        # through as what they are: the kernel would not start on this machine as configured, but the python is
+        # not the reason (round two of issue 1600: every non-zero exit used to be blamed on the python).
+        _py_rc=0
+        # The pick is CAPTURED, not just checked (round four of issue 1600): every python this script runs after the
+        # preflight is this interpreter, so a pinned interpreter with no python3 on PATH carries the install through,
+        # where a bare python3 in the hook block failed under set -e with the hooks half wired.
+        ROMP_INSTALL_PY="$("$ROMP_DIR/bin/romp-serve" --print-python)" || _py_rc=$?
+        if [[ "$_py_rc" -eq 2 ]]; then
+            echo "install.sh: the python romp would run is below the floor (the line above names it, its version and the install command); the kernel and the Agent SDK need 3.10 or newer." >&2
+            preflight_missing=1
+        elif [[ "$_py_rc" -ne 0 ]]; then
+            echo "install.sh: bin/romp-serve --print-python stopped (the line above says why); the kernel would not start on this machine as configured, so nothing is installed." >&2
+            preflight_missing=1
+        fi
     fi
     [[ "$preflight_missing" -eq 0 ]] || exit 1
 fi
 
-# Optional capabilities. NOT preflight failures — romp is fully usable without either,
-# so we record what's missing and say so once, at the end, next to the dashboard link
-# (a mid-install warning scrolls away under the hook/symlink chatter).
-#   tmux  — only `romp new -t` / `romp resume` need it. Plain `romp new` runs an SDK
-#           session inside the kernel, and the kernel leaves its tmux backend disabled
-#           until a tmux appears on PATH (picked up live, no restart).
-# Set by the SDK/extension steps below when they fail: ROMP_SDK_MISSING.
-# ROMP_TMUX_AVAILABLE overrides the probe ("0"/"" → treat as absent, anything else → present),
-# the same seam TmuxBackend.available() and bin/romp honour, so all three agree. Mainly for tests:
-# a suite that asserts the no-tmux path must not depend on whether the machine running it has tmux
-# installed — PATH cannot hide a /usr/bin/tmux, so the override is the only honest way to say it.
-ROMP_TMUX_MISSING=""
-case "${ROMP_TMUX_AVAILABLE-unset}" in
-    unset) command -v tmux >/dev/null 2>&1 || ROMP_TMUX_MISSING=1 ;;
-    ""|0)  ROMP_TMUX_MISSING=1 ;;
-esac
-
-# Claude Code's version, same optional-notice pattern. romp runs on any recent
-# Claude Code, but agent mail delivers instantly (through the CLI's per-session
-# inbox socket) only from 2.1.224 on — older CLIs fall back to slower pane
-# injection. The floor constant mirrors bin/romp's ROMP_CLAUDE_FLOOR; a test
-# asserts the two never drift. Missing entirely is its own notice: romp drives
-# Claude Code, so sessions need it on PATH.
-ROMP_CLAUDE_FLOOR="2.1.224"
-ROMP_CLAUDE_OLD=""
+# Optional pieces. NOT preflight failures — romp is usable without them, so we record what's
+# missing and say so once, at the end, next to the dashboard link (a mid-install warning scrolls
+# away under the hook/symlink chatter). Set by the SDK/extension steps below when they fail:
+# ROMP_SDK_MISSING, ROMP_EXT_FAILED.
+# Claude Code itself, the same optional-notice pattern: romp drives Claude Code, so sessions need it
+# on PATH. (A version floor sat here until 2026-09-11; it gated a mail-delivery path of the tmux
+# backend, which left romp that day. A session's mail rides the SDK stream on any Claude Code.)
 ROMP_CLAUDE_MISSING=""
-_claude_ver="$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-if [[ -z "$_claude_ver" ]]; then
-    command -v claude >/dev/null 2>&1 || ROMP_CLAUDE_MISSING=1
-elif [[ "$(printf '%s\n%s\n' "$ROMP_CLAUDE_FLOOR" "$_claude_ver" \
-           | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" != "$ROMP_CLAUDE_FLOOR" ]]; then
-    ROMP_CLAUDE_OLD="$_claude_ver"
-fi
+command -v claude >/dev/null 2>&1 || ROMP_CLAUDE_MISSING=1
 
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/skills"
 
-for h in romp-summarize.sh romp-postal-drain.sh romp-postal-ensure.sh \
-         romp-postal-revive.sh romp-postal-context.sh romp-wake.sh tmux-status.sh; do
+# The hooks this repo ships. None records a session's state: the kernel's SDK backend writes the
+# states/<sid>.jsonl rows for every Claude Code session itself, from the stream it drives.
+for h in romp-postal-drain.sh romp-postal-ensure.sh \
+         romp-postal-revive.sh romp-postal-context.sh romp-wake.sh; do
     ln -sf "$ROMP_DIR/hooks/$h" "$HOME/.claude/hooks/$h"
 done
 echo "  Symlinked romp hooks into ~/.claude/hooks/"
+
+# Retired hooks. hooks/romp-summarize.sh (the live tmux phrase, off by default since 2026-07-24)
+# left the repo 2026-09-11 with the tmux backend's dead leaves, and hooks/tmux-status.sh, the hook
+# that painted the tmux status bar, left the same day with the backend itself. Nothing replaces it:
+# the states rows of a Claude Code session are the SDK backend's own writes. An install from before
+# still has each symlink, now dangling, and Claude Code would shell the missing path on every prompt
+# and every turn end — the status hook on seven events per session; upgrading removes the links.
+# Only ever a SYMLINK, and only one install.sh could have written: a link into THIS checkout's
+# hooks/ (the manager-skill retirement below matches the same way), or a link of that shape into a
+# checkout that has since moved or gone, which is dangling. A link to someone's own LIVE script of
+# that name (their dotfiles) is theirs and stays.
+for h in romp-summarize.sh tmux-status.sh; do
+    if [ -L "$HOME/.claude/hooks/$h" ]; then
+        _rh_target="$(readlink "$HOME/.claude/hooks/$h")"
+        _rh_gone=""
+        case "$_rh_target" in
+            "$ROMP_DIR"/hooks/"$h") _rh_gone=1 ;;
+            */hooks/"$h") [ -e "$HOME/.claude/hooks/$h" ] || _rh_gone=1 ;;
+        esac
+        if [ -n "$_rh_gone" ]; then
+            rm -f "$HOME/.claude/hooks/$h"
+            echo "  Removed the retired $h hook link"
+        fi
+    fi
+done
 
 # Install the git pre-push identifier hook. Symlinked into the SHARED git hooks
 # dir (git rev-parse --git-common-dir), so it fires from every worktree; the hook
@@ -107,28 +135,27 @@ fi
 
 # Register the hooks in ~/.claude/settings.json so Claude Code actually fires
 # them. Idempotent merge: adds only missing romp entries, never touches any
-# other hooks you have registered.
-python3 - <<'PYEOF'
+# other hooks you have registered. Retired romp hooks (RETIRED below) are
+# de-registered on the way, so an upgrade never leaves Claude Code calling a
+# path this repo no longer ships. The interpreter is the preflight's capture; under ROMP_SKIP_PREFLIGHT there is
+# none, and the pin (ROMP_PYTHON) is carried instead of falling to a bare python3 that a pinned machine may not have
+# on PATH (round five of issue 1600).
+"${ROMP_INSTALL_PY:-${ROMP_PYTHON:-python3}}" - <<'PYEOF'
 import json, os
 
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
+# No status hook: the SDK backend records a Claude Code session's state itself. (The retired
+# tmux-status.sh sat on seven events; PostToolUse, Notification and PreCompact carried nothing else,
+# so they are not listed at all — an event listed with no entries would leave an empty group behind.)
 WANT = {  # event -> [(hook script, timeout secs, async)]
-    "SessionStart":     [("tmux-status.sh", 5, False),
-                         ("romp-postal-ensure.sh", 5, True),
+    "SessionStart":     [("romp-postal-ensure.sh", 5, True),
                          ("romp-postal-revive.sh", 8, False),
                          ("romp-postal-context.sh", 5, False)],  # romp sessions: load the romp-postal skill
-    "UserPromptSubmit": [("tmux-status.sh", 5, False),
-                         ("romp-summarize.sh", 10, True),
-                         ("romp-wake.sh", 5, True)],     # poke the kernel → judges run NOW, not on the 20s tick
-    "PostToolUse":      [("tmux-status.sh", 5, False)],
-    "Stop":             [("tmux-status.sh", 5, False),
-                         ("romp-summarize.sh", 10, True),
-                         ("romp-postal-drain.sh", 10, False),
+    "UserPromptSubmit": [("romp-wake.sh", 5, True)],     # poke the kernel → judges run NOW, not on the 20s tick
+    "Stop":             [("romp-postal-drain.sh", 10, False),
                          ("romp-wake.sh", 5, True)],     # turn ended → wake the producer immediately
-
-    "Notification":     [("tmux-status.sh", 5, False)],
-    "PreCompact":       [("tmux-status.sh", 5, False)],
-    "PostCompact":      [("tmux-status.sh", 5, False)],
+    "PostCompact":      [("romp-wake.sh", 5, True)],     # compaction ended → wake the drain; the op behind a /compact fires once
+                                                          # the compaction is corroborated in the transcript
 }
 
 try:
@@ -137,6 +164,37 @@ try:
 except FileNotFoundError:
     settings = {}
 hooks = settings.setdefault("hooks", {})
+
+# Hooks this repo no longer ships (retired 2026-09-11: the announcer with the tmux backend's dead
+# leaves, the status hook with the backend itself; no hook took its place).
+# An install from before registered them; drop those entries wherever they sit, matched on the
+# exact command string install.sh once wrote. Only a group OUR removal emptied is dropped, and only
+# an event our removal left with no groups, so no `"Stop": [{"hooks": []}]` litter is left behind
+# while a user's own empty or matcher-only group, on any event, stays exactly as found.
+RETIRED = {"romp-summarize.sh", "tmux-status.sh"}
+removed = []
+for event in list(hooks):
+    kept, touched = [], False
+    for g in (hooks.get(event) or []):
+        keep, hit = [], False
+        for h in g.get("hooks", []):
+            cmd = h.get("command", "")
+            if cmd.startswith("~/.claude/hooks/") and cmd.rsplit("/", 1)[-1] in RETIRED:
+                removed.append(event + ":" + cmd.rsplit("/", 1)[-1])
+                hit = True
+            else:
+                keep.append(h)
+        if hit:
+            touched = True
+            if not keep:
+                continue                                # a group we emptied goes
+            g["hooks"] = keep
+        kept.append(g)
+    if touched:
+        if kept:
+            hooks[event] = kept
+        else:
+            hooks.pop(event, None)                      # an event we emptied goes
 
 added = []
 for event, entries in WANT.items():
@@ -154,10 +212,13 @@ for event, entries in WANT.items():
             {"type": "command", "command": cmd, "timeout": timeout, "async": is_async})
         added.append(event + ":" + name)
 
-if added:
+if added or removed:
     with open(SETTINGS, "w") as f:
         json.dump(settings, f, indent=2)
         f.write("\n")
+if removed:
+    print("  De-registered retired hooks in ~/.claude/settings.json: " + ", ".join(removed))
+if added:
     print("  Registered in ~/.claude/settings.json: " + ", ".join(added))
 else:
     print("  Hooks already registered in ~/.claude/settings.json")
@@ -200,9 +261,9 @@ if [ -L "$HOME/.claude/skills/manager" ]; then
     esac
 fi
 
-# The Agent SDK venv — the backend plain `romp new` uses. Best-effort: a host missing python >= 3.10
-# or Debian's python3-venv still runs tmux sessions (romp-sdk-setup says exactly what to install).
-# Opt out with ROMP_NO_SDK=1. The failure is REMEMBERED, not just echoed past: this is the backend
+# The Agent SDK venv — the backend plain `romp new` uses. Best-effort here, and the banner at the end
+# is what a failure is for: a host missing python >= 3.10 or Debian's python3-venv can start no
+# session until it is fixed (romp-sdk-setup says exactly what to install). Opt out with ROMP_NO_SDK=1. The failure is REMEMBERED, not just echoed past: this is the backend
 # `romp new` defaults to, so losing it silently leaves the user with no way to start a session at all
 # (that is precisely what happened on a fresh Ubuntu box, the user 2026-07-27 — an apt python3 with no
 # ensurepip, one swallowed `|| echo`, and romp looked installed but could start nothing).
@@ -239,7 +300,16 @@ if [[ -z "${ROMP_NO_SERVICE:-}" ]]; then
             echo "  romp-manager already running — leaving it up (a webview deploy needs no restart)"
         else
             echo "  Installing the romp login service (romp-manager)..."
-            if ! "$_svc" install; then
+            _svc_rc=0
+            "$_svc" install || _svc_rc=$?
+            if [[ "$_svc_rc" -eq 3 ]]; then
+                # romp-service's own code for one state: the agent is installed but its manager exited with the refusal code
+                # because a manager already serves on the control port, most likely a hand-run romp up outside the service.
+                # romp IS serving, so the run goes on to the link and the end-of-run banner (round two of the install-wording
+                # fix: it used to exit here, before both) and exits non-zero at the end: the service is not the one running.
+                echo "install.sh: the login service is installed, but a manager already serving on the control port holds it (the line above), most likely a hand-run romp up outside the service. It retries once a minute and takes over when that manager stops; to hand over now, stop it (Ctrl+C in its terminal, or romp down then romp up) and re-run this install to verify." >&2
+                _svc_held=1
+            elif [[ "$_svc_rc" -ne 0 ]]; then
                 echo "install.sh: romp-service install FAILED — romp-manager is NOT running; the dashboard will be dead on :29855." >&2
                 echo "  Retry by hand:  $_svc install" >&2
                 exit 1
@@ -300,7 +370,7 @@ if [[ -n "$ROMP_SDK_MISSING" ]]; then
     echo "            (see its message above if it needs a package installed first)"
     echo "  ══════════════════════════════════════════════════════════════════"
 fi
-if [[ -n "$ROMP_TMUX_MISSING$ROMP_EXT_FAILED$ROMP_CLAUDE_OLD$ROMP_CLAUDE_MISSING" ]]; then
+if [[ -n "$ROMP_EXT_FAILED$ROMP_CLAUDE_MISSING" ]]; then
     echo
     echo "  Some optional pieces aren't set up:"
     if [[ -n "$ROMP_EXT_FAILED" ]]; then
@@ -310,15 +380,6 @@ if [[ -n "$ROMP_TMUX_MISSING$ROMP_EXT_FAILED$ROMP_CLAUDE_OLD$ROMP_CLAUDE_MISSING
     if [[ -n "$ROMP_CLAUDE_MISSING" ]]; then
         echo "   ! Claude Code isn't on PATH — romp drives Claude Code, so sessions need it."
         echo "     Install:  https://claude.com/claude-code   (then just run romp again)"
-    fi
-    if [[ -n "$ROMP_CLAUDE_OLD" ]]; then
-        echo "   - Claude Code $ROMP_CLAUDE_OLD is older than $ROMP_CLAUDE_FLOOR, so agent mail arrives the"
-        echo "     slow way (typed into the pane instead of instantly). Upgrade:  claude update"
-    fi
-    if [[ -n "$ROMP_TMUX_MISSING" ]]; then
-        echo "   - tmux isn't installed, so terminal sessions (\`romp new -t\`, \`romp resume\`) are off."
-        echo "     Everything else works; \`romp new\` runs sessions you drive from the dashboard."
-        echo "     Enable:  sudo apt install tmux   (macOS: brew install tmux) — no reinstall needed."
     fi
 fi
 
@@ -345,4 +406,8 @@ elif [[ -n "${ROMP_NO_SERVICE:-}" ]]; then
     echo "  then open the dashboard link:  romp url"
 else
     echo "  romp is still starting; print the dashboard link in a moment:  romp url"
+fi
+if [[ -n "${_svc_held:-}" ]]; then
+    echo "install.sh: exiting non-zero: the login service is installed but is not the manager that is serving (see the service's line above)." >&2
+    exit 1
 fi

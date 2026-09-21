@@ -24,7 +24,8 @@ test("the kernel reports OPENING while the transcript doesn't exist and the spaw
 // running): a fresh session of EITHER backend writes NO transcript until its first turn, so keying the
 // chip on the file alone held a fully-up idle session on the opening dots until the user typed.
 // SDK: the backend's live `spawning` report (session thread up, client not yet; the handshake closes
-// it). tmux: the CLI's statusline hook publishing its first @claude-state (2026-08-10). The SDK leg
+// it). The kernel's terminal leg (the statusline hook's first @claude-state) stays pinned until the backend's
+// removal lands (T331 is the UI stage). The SDK leg
 // must key on `spawning`, NOT on `connected` being falsy — a DORMANT created session (kernel restarts
 // kill idle CLIs; boot reconcile leaves them lazy) also reports no `connected`, and reading that as
 // "still opening" kept the dots up for hours on a session one message from answering (the user
@@ -35,9 +36,7 @@ test("OPENING covers exactly each backend's spawn window — a dormant created s
   assert.ok(SDK.includes('"spawning": not self.client'), "the snapshot carries the in-flight window");
   assert.ok(KERNEL.includes('"connected": bool(st.get("connected"))'), "the live merge threads connected through");
   assert.ok(KERNEL.includes('"spawning": bool(st.get("spawning"))'), "the live merge threads spawning through");
-  assert.ok(KERNEL.includes('spawn_inflight = bool(tm.get("spawning")) or \\'), "SDK: the live spawn window");
-  assert.ok(KERNEL.includes('(tm.get("backend") == "tmux" and not (tm.get("state") or "").strip())'),
-    "tmux: no @claude-state published yet");
+  assert.ok(KERNEL.includes('spawn_inflight = bool(tm.get("spawning"))'), "the live spawn window is the backend's own report");
 });
 
 // A per-session chip event must not ride the periodic full push cycle, which runs SECONDS on a busy
@@ -50,19 +49,19 @@ test("create + connect push the ONE session directly instead of waiting out a fu
   assert.ok(KERNEL.includes("def _push_session_now(sid):"), "the targeted push exists");
   assert.match(KERNEL, /_mark_views_dirty\(\)\s*\n\s*_push_session_now\(sid\)/,
     "an SDK create pushes its tab at once");
-  assert.ok(KERNEL.includes("push_session=_push_session_now,"), "the backend is wired to it");
+  assert.ok(KERNEL.includes('push_session=_stage_default("push.session")(_push_session_now),'), "the backend is wired to it, push.session as the thread's default mark at the hand-off (the SDK backend runs it on a thread of its own; the Codex backend calls it under a request's route, T401 (5a) follow-up)");
   assert.match(SDK, /self\.client = client\s*\n(\s*#[^\n]*\n)*\s*self\.backend\._push_session\(self\.sid\)/,
     "the handshake — the flip the opening chip stands down on — pushes immediately");
 });
 
 test("the statusline shows Opening + dots for BOTH the pre-payload tab and the kernel's opening state", () => {
-  assert.match(RENDER, /function openingLine\(\): HTMLElement/);
+  assert.match(RENDER, /function openingLine\(text = "Opening session"\): HTMLElement/);   // the text is a parameter since 2026-09-08: a skeleton tab (a running session whose transcript is on its way) says "Loading session"
   // pre-payload: a placeholder tab used to leave the PREVIOUS tab's statusline standing
-  assert.match(RENDER, /if \(activeId && !s\) \{[\s\S]{0,700}?sl\.replaceChildren\(openingLine\(\)\);\s*\n\s*return;/);
+  assert.match(RENDER, /if \(activeId && !s\) \{[\s\S]{0,1000}?sl\.replaceChildren\(openingLine\(isProvisionalId\(activeId\) \? "Opening session" : "Loading session"\)\);\s*\n\s*return;/);   // Opening for a provisional (a create); Loading for every other pre-payload id (2026-09-11: a new split column's session on its way is not being created)
   // kernel-reported opening rides the same line
   assert.match(RENDER, /s\.status\.state === "opening"/);
   assert.match(RENDER, /"opening"/);
-  assert.ok(RENDER.includes('opening: "Opening…",'), "the chip vocabulary knows the state");
+  assert.ok(fs.readFileSync(path.join(ROOT, "ui", "webview", "status-chip.ts"), "utf8").includes('opening: "Opening…",'), "the chip vocabulary knows the state (CHIP_LABEL lives in status-chip.ts since T322b)");
   // three staggered accent dots — the loader idiom's smallest form, no new fonts
   assert.match(CSS, /\.opening-line-dots span \{ width: 4px; height: 4px; border-radius: 50%; background: var\(--accent\);/);
   assert.match(CSS, /@keyframes opening-line-pulse/);

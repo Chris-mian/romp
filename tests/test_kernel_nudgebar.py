@@ -9,7 +9,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -19,7 +19,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_nb", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_nb", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 em = km.em
 
@@ -62,12 +62,12 @@ class NudgeBar(unittest.TestCase):
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-                      km.NAMES, km._tmux_sessions)
+                      km.NAMES, km._live_map)
         jd.NAMES, jd.PROJECTS = names, proj
         jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR = td / "captions", td / "archive", td / "goals"
         jd.STATE = td
         km.NAMES = names
-        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
+        km._live_map = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         jd.CAPDIR.mkdir(parents=True)
         jd.GOALDIR.mkdir(parents=True)
@@ -76,11 +76,11 @@ class NudgeBar(unittest.TestCase):
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-         km.NAMES, km._tmux_sessions) = self.saved
+         km.NAMES, km._live_map) = self.saved
         self.td.cleanup()
 
     def _bars(self):
-        bars = km.build_timeline(NOW)["turns"][SID]
+        bars = [km._expand_bar(b) for b in km.build_timeline(NOW)["turns"][SID]]   # the wire bars, long-named (T278c)
         return {b["id"]: b for b in bars}
 
     def test_bars_carry_only_the_auto_nudge_flag(self):

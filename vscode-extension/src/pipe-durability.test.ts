@@ -29,6 +29,15 @@ test("reconnect flushes intent ops before the webview reload instead of wiping t
   assert.ok(open.indexOf("const keep") < open.indexOf("this.queue = [];"), "keep must be captured before the wipe");
 });
 
+test("a refusal that arrives while the webview reloads is held for its ready, never posted into the reload", () => {
+  // the reconnect branch replays intent and rebuilds the html in the same tick; the kernel's refusal of a
+  // replayed op (a remote-tag ADD right after a kernel restart: the home kernel's tunnel is not up yet,
+  // and an add never queues) lands between the two, on a page that is gone (review find, 2026-09-08).
+  // Held at the pipe, so every panel gets it; delivered on the pipe's own ready edge, not in a panel's onDown.
+  assert.match(SRC, /if \(!this\.passive && !this\.hold\.offer\(m, this\._webviewReady\)\) return;\s*\n\s*this\.onDown\(m\);/);
+  assert.match(SRC, /set webviewReady\(v: boolean\) \{\s*\n\s*this\._webviewReady = v;\s*\n\s*if \(v\) for \(const m of this\.hold\.release\(\)\) this\.onDown\(m\);/);
+});
+
 test("the first-ever connect still flushes everything queued before the pipe was up", () => {
   assert.match(SRC, /this\.everConnected = true;\s*\n\s*for \(const q of this\.queue\) ws\.send\(q\.s\);/);
 });
@@ -40,7 +49,9 @@ test("chat and feed panels both post pipeState into their webviews", () => {
 
 test("both webviews render the pipe-down banner with the held count", () => {
   for (const [name, src] of [["render.ts", RENDER], ["feed.ts", FEED]] as const) {
-    assert.ok(src.includes('if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }'),
+    // the chat's handler also marks unconfirmed sends "not confirmed" on the down edge (render.ts
+    // markPendingLost); the feed has no sends, so the group is optional and the feed's bare form still matches
+    assert.match(src, /if \(m\.type === "pipeState"\) \{ (?:if \(!m\.up\) (?:markPendingLost\("connection"\);|\{ markPendingLost\("connection"\); (?:onPipeDown|onWireDown)\(\); \}) )?pipeBanner\(!!m\.up, Number\(m\.queued\) \|\| 0\); return; \}/,
       `${name} must handle pipeState`);
     assert.ok(src.includes("held, sending when it's back"), `${name} must count held messages`);
   }

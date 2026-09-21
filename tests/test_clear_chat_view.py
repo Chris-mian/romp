@@ -9,7 +9,7 @@ stretch while the CLI minted the fresh transcript had no observable state at all
     build_session's read-only path_override mode, capped with an honest truncated count, and FAILS
     LOUDLY (an error string, never a silent empty) when the old transcript is missing;
   - the SDK backend brackets the in-flight /clear (SdkSession._clearing) so the chip and the chat
-    show "clearing" while it runs (_is_clear_cmd; the tmux TUI /clear keeps its known fork-lane gap).
+    show "clearing" while it runs (_is_clear_cmd; the removed tmux backend's TUI /clear kept its known fork-lane gap).
 Synthetic data only.
 """
 import inspect
@@ -19,7 +19,7 @@ import shutil
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -30,10 +30,10 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_clearchat", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_clearchat", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
-sb = SourceFileLoader("romp_sdk_backend_clearchat",
-                      os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py")).load_module()
+sb = load_source("romp_sdk_backend_clearchat",
+                      os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 NEWFSID = "66666666-7777-8888-9999-000000000000"
@@ -65,6 +65,9 @@ def _write_jsonl(path, rows):
 
 class ClearChatViewTest(unittest.TestCase):
     def setUp(self):
+        # both restored in tearDown: the judge is one module shared by every test module in the process, and
+        # it was left aimed at this tmp after rmtree (T282)
+        self._saved_state, self._saved_projects = jd.STATE, jd.PROJECTS
         self._td = tempfile.mkdtemp()
         jd._rebind_state(Path(self._td))
         jd.PROJECTS = Path(self._td) / "projects"
@@ -100,6 +103,8 @@ class ClearChatViewTest(unittest.TestCase):
         ])
 
     def tearDown(self):
+        jd._rebind_state(self._saved_state)
+        jd.PROJECTS = self._saved_projects
         shutil.rmtree(self._td, ignore_errors=True)
 
     def _events(self):
@@ -221,3 +226,82 @@ class ClearChatViewTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreClearNotesStayInTheirEpisode(unittest.TestCase):
+    """T131 (the user 2026-08-27, screenshot): seventeen pre-clear "Recovered after N retries"
+    rows stood in a freshly /clear-ed thread. The side-store notes (recoveries, gave-ups, command
+    gestures, effort notes, orphan replies) are time-anchored against transcript atoms, and the
+    /clear re-points the transcript to a fresh file — so the first new atom's flush dumped every
+    note older than the clear into the new conversation. The floor: the live render drops notes
+    at/before the last episode boundary; the EPISODE render keeps them (they live in the boundary
+    card's fold, with the rest of the pre-clear conversation). Synthetic data only."""
+
+    def setUp(self):
+        # both restored in tearDown: the judge is one module shared by every test module in the process, and
+        # it was left aimed at this tmp after rmtree (T282)
+        self._saved_state, self._saved_projects = jd.STATE, jd.PROJECTS
+        self._td = tempfile.mkdtemp()
+        jd._rebind_state(Path(self._td))
+        jd.PROJECTS = Path(self._td) / "projects"
+        jd._discover_cache["fp"] = None
+        jd._discover_cache["result"] = None
+        self.cwd = os.path.realpath(os.path.join(self._td, "notes-api"))
+        os.makedirs(self.cwd, exist_ok=True)
+        self.proj = jd._proj_dir(self.cwd)
+        self.proj.mkdir(parents=True)
+        (jd.STATE / "names").mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "names" / SID).write_text("web\t" + self.cwd)
+        _write_jsonl(self.proj / (SID + ".jsonl"), [
+            _urec(NOW - 3600, "u1", "set up the api server"),
+            _arec(NOW - 3590, "a1", "done - the notes-api server runs on port 8080", "u1"),
+        ])
+        _write_jsonl(self.proj / (NEWFSID + ".jsonl"), [
+            _urec(NOW - 50, "n1", "hello again", fsid=NEWFSID),
+            _arec(NOW - 40, "n2", "fresh start - what next?", "n1", fsid=NEWFSID),
+        ])
+        (jd.STATE / "sdk").mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "sdk" / (SID + ".json")).write_text(json.dumps(
+            {"sid": SID, "name": "web", "alive": True, "lastSid": NEWFSID}))
+        _write_jsonl(jd.STATE / "episodes" / (SID + ".jsonl"), [
+            {"head": "u1", "fsid": SID, "t": NOW - 3600},
+            {"head": "n1", "fsid": NEWFSID, "t": CLEAR_T},
+        ])
+        # the side-store: a pre-clear recovery storm + a pre-clear /auth gesture (the filmed pair),
+        # and one POST-clear recovery that must keep rendering live
+        _write_jsonl(jd.STATE / "states" / (SID + ".jsonl"), [
+            {"t": NOW - 3000, "retriesRecovered": 1},
+            {"t": NOW - 2900, "retriesRecovered": 3},
+            {"t": NOW - 2800, "cmdGesture": "/auth login"},
+            {"t": NOW - 30, "retriesRecovered": 2},
+        ])
+
+    def tearDown(self):
+        jd._rebind_state(self._saved_state)
+        jd.PROJECTS = self._saved_projects
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def test_live_render_shows_only_the_current_episodes_notes(self):
+        events = km.build_session(SID, NOW)["events"]
+        retried = [e for e in events if e.get("kind") == "retried"]
+        self.assertEqual([e["retries"] for e in retried], [2],
+                         "pre-clear recoveries belong to the previous episode's render, not the fresh thread")
+        self.assertEqual([e for e in events if e.get("kind") == "cmdGesture"], [],
+                         "the pre-clear /auth gesture chip goes with them")
+
+    def test_the_episode_render_keeps_its_own_eras_notes(self):
+        got = km.build_episode(SID, NOW)
+        self.assertNotIn("error", got or {}, "the pre-clear transcript must resolve")
+        kinds = [(e.get("kind"), e.get("retries")) for e in got["events"] if e.get("kind") in ("retried", "cmdGesture")]
+        self.assertIn(("retried", 1), kinds, "the boundary card's fold is where the pre-clear notes live")
+        self.assertIn(("retried", 3), kinds)
+        self.assertIn(("cmdGesture", None), kinds)
+
+    def test_a_single_episode_session_keeps_every_note(self):
+        _write_jsonl(jd.STATE / "episodes" / (SID + ".jsonl"),
+                     [{"head": "u1", "fsid": SID, "t": NOW - 3600}])
+        (jd.STATE / "sdk" / (SID + ".json")).write_text(json.dumps(
+            {"sid": SID, "name": "web", "alive": True, "lastSid": SID}))
+        events = km.build_session(SID, NOW)["events"]
+        self.assertEqual([e["retries"] for e in events if e.get("kind") == "retried"], [1, 3, 2],
+                         "no boundary, no floor — the whole history is one episode")

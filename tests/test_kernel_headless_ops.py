@@ -21,7 +21,7 @@ import os
 import tempfile
 import unittest
 from unittest import mock
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -29,7 +29,7 @@ _STATE_TMP = tempfile.mkdtemp()
 os.environ["XDG_STATE_HOME"] = _STATE_TMP
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-km = SourceFileLoader("romp_kernel_headless", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_headless", os.path.join(BIN, "romp-kernel"))
 
 # The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
 # tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
@@ -37,6 +37,12 @@ km = SourceFileLoader("romp_kernel_headless", os.path.join(BIN, "romp-kernel")).
 # start parking — correctly, but for a reason none of them is about — the moment that account hit a
 # limit. Pinning it off keeps them hermetic.
 km._limit_hold = lambda sid: None
+
+# The PROMPT HOLD (_hold_drain: a turn-opening delivery whose backend did not read busy() True inside
+# send() holds the sid for a moment; built for the tmux backend, removed 2026-09-11, and kept as a defensive
+# arm; tested in tests/test_kernel_parked_ops_liveness.py) is a separate axis: off here, so back-to-back
+# _apply_pending_ops calls stand for successive cycles.
+km._PROMPT_HOLD_S = 0.0
 
 
 class PendingOpsPersistence(unittest.TestCase):
@@ -113,6 +119,55 @@ class HeadlessRoutes(unittest.TestCase):
         self.assertIn(str(sid), km._interrupt_clicked,
                       "the chat chip flips to 'interrupting' exactly like the WS op")
 
+    def test_interrupt_route_paints_nothing_when_the_backend_refuses(self):
+        # the WS op's gate, mirrored (2026-09-11): a stop the backend refused — a Codex session with no
+        # turn in flight, a dead tab — interrupted nothing, so the chip must not read Interrupting… for
+        # the 120 s cap, the only thing that could clear a stamp whose stop record never comes
+        fake = mock.Mock()
+        fake.interrupt.return_value = False
+        fake.busy.return_value = None                     # a dead tab: no backend, no in-flight signal (a bare Mock is truthy)
+        with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)):
+            code, resp = self._post("/interrupt", {"name": "web"})
+        self.assertEqual(code, 200)
+        fake.interrupt.assert_called_once()
+        sid = fake.interrupt.call_args[0][0]
+        self.assertNotIn(str(sid), km._interrupt_clicked, "a refused stop leaves no optimistic stamp")
+
+    def test_interrupt_route_says_when_the_stop_did_not_land(self):
+        # a refusal WITH work in flight (the Codex backend's False while a turn's start is still being
+        # acknowledged, with its client gone, or after a failed interrupt RPC) is a stop that did not land:
+        # the /send route's refusal shape, so `romp interrupt` exits non-zero instead of printing ok
+        fake = mock.Mock()
+        fake.interrupt.return_value = False
+        fake.busy.return_value = True
+        with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)):
+            code, resp = self._post("/interrupt", {"name": "web"})
+        self.assertEqual(code, 200)
+        self.assertIs(resp.get("ok"), False, "a dropped stop is never answered ok")
+        self.assertEqual(resp.get("error"), "the stop was not delivered: web is still working")
+        sid = fake.interrupt.call_args[0][0]
+        self.assertNotIn(str(sid), km._interrupt_clicked, "no stop landed, so nothing reads Interrupting…")
+        # (a bare Mock's compacting() answers a truthy Mock, not True: the compaction arm below keys on identity, so
+        # this fake still reads as working, 2026-09-21)
+
+    def test_interrupt_route_says_when_the_session_is_compacting(self):
+        # Esc, Stop, POST /interrupt and `romp interrupt` during a compaction answered "still working" under a chip
+        # reading Compacting (review find, 2026-09-21): busy() is True under the bracket and interrupt() is the no-turn
+        # False, so both doors fell to the busy branch. The backend's own compacting() verdict, read by identity ahead
+        # of busy, is worded for the state and names no backend.
+        fake = mock.Mock()
+        fake.interrupt.return_value = False
+        fake.compacting.return_value = True
+        fake.busy.return_value = True
+        with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)):
+            code, resp = self._post("/interrupt", {"name": "web"})
+        self.assertEqual(code, 200)
+        self.assertIs(resp.get("ok"), False, "a stop a compaction cannot take is never answered ok")
+        self.assertEqual(resp.get("error"),
+                         "the stop was not delivered: web is compacting its conversation, and a compaction runs to its end")
+        sid = fake.interrupt.call_args[0][0]
+        self.assertNotIn(str(sid), km._interrupt_clicked, "nothing reads Interrupting…")
+
     def test_end_route_kills_and_announces_close(self):
         fake = mock.Mock()
         sent = []
@@ -123,10 +178,158 @@ class HeadlessRoutes(unittest.TestCase):
         fake.kill.assert_called_once()
         self.assertIn(("chat", {"type": "closed", "id": fake.kill.call_args[0][0]}), sent)
 
+    def test_a_tagged_send_parks_as_a_machines_and_lifts_nothing(self):
+        # T315 (the commit-14 review's sixth item, driven through the route): `romp send --tag` is a machine's
+        # message: the parked op carries no fifth slot, and a delivered one hands the backend no user flag
+        fake = mock.Mock()
+        fake.busy.return_value = None
+        km._pending_ops.clear()
+        try:
+            with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)), \
+                 mock.patch.object(km, "_compacting_now", lambda sid, **k: False), \
+                 mock.patch.object(km, "_working_now", lambda sid: True):
+                code, resp = self._post("/send", {"id": "sid-q", "text": "/nightly report", "tag": "cron"})
+            self.assertEqual((code, resp), (200, {"ok": True, "queued": True}))
+            [[op]] = list(km._pending_ops.values())
+            self.assertEqual(op[:2], ("command", "/nightly report\n\n<!-- romp-tag: cron -->"))
+            self.assertFalse(km._op_user(op), "a tagged send is a machine's: no fifth slot")
+            fake.send.assert_not_called()
+            km._pending_ops.clear()
+            class Speaking:                       # a send that TAKES the keyword, so the route's decision is what is recorded
+                def __init__(self): self.calls = []
+                def busy(self, sid): return None
+                def send(self, sid, text, qid=None, user=False):
+                    self.calls.append((text, user)); return True
+            spk = Speaking()
+            with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: spk)), \
+                 mock.patch.object(km, "_compacting_now", lambda sid, **k: False), \
+                 mock.patch.object(km, "_working_now", lambda sid: False):
+                code, resp = self._post("/send", {"id": "sid-q", "text": "a scripted note", "tag": "cron"})
+                self.assertEqual(code, 200)
+                self.assertEqual(spk.calls[-1][1], False, "a tagged send is handed over as a machine's: it lifts no stand-down")
+                code, resp = self._post("/send", {"id": "sid-q", "text": "typed by hand"})
+                self.assertEqual(code, 200)
+                self.assertEqual(spk.calls[-1], ("typed by hand", True), "an untagged send is the user's")
+        finally:
+            km._pending_ops.clear()
+
+    def test_send_route_reports_queued_vs_sent(self):
+        # `queued` says which arm the send took (2026-09-03): an agent sending ITSELF a slash command from
+        # inside its own turn read 'ok' and could not know the command was parked until that turn ended
+        fake = mock.Mock()
+        fake.busy.return_value = None
+        km._pending_ops.clear()
+        try:
+            with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)), \
+                 mock.patch.object(km, "_compacting_now", lambda sid, **k: False), \
+                 mock.patch.object(km, "_working_now", lambda sid: True):
+                code, resp = self._post("/send", {"id": "sid-q", "text": "/frobnicate now"})
+            self.assertEqual((code, resp), (200, {"ok": True, "queued": True}))
+            self.assertEqual(list(km._pending_ops.values()), [[("command", "/frobnicate now", None, None, True)]],
+                             "an untagged POST /send is the user's words: the fifth slot says so (T315), no id in the fourth")
+            fake.send.assert_not_called()
+            km._pending_ops.clear()
+            with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)), \
+                 mock.patch.object(km, "_compacting_now", lambda sid, **k: False), \
+                 mock.patch.object(km, "_working_now", lambda sid: False):
+                code, resp = self._post("/send", {"id": "sid-q", "text": "/frobnicate now"})
+            self.assertEqual((code, resp), (200, {"ok": True, "queued": False}))
+            fake.send.assert_called_once()
+            self.assertEqual(fake.send.call_args[0][1], "/frobnicate now")
+        finally:
+            km._pending_ops.clear()
+
+    def test_send_route_reports_a_parked_meta_command_as_queued(self):
+        # /model, /effort and /fast take the kernel's own setters (_route_meta_command), which park under
+        # the same gate as a text send — the route must say `queued` for them too (review find, 2026-09-03)
+        fake = mock.Mock()
+        fake.busy.return_value = None
+        km._pending_ops.clear()
+        try:
+            with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)), \
+                 mock.patch.object(km, "_compacting_now", lambda sid, **k: False), \
+                 mock.patch.object(km, "_working_now", lambda sid: True):
+                code, resp = self._post("/send", {"id": "sid-m", "text": "/effort high"})
+            self.assertEqual((code, resp), (200, {"ok": True, "queued": True}))
+            self.assertEqual(list(km._pending_ops.values()), [[("effort", "high")]], "parked as the setter's op")
+            fake.set_effort.assert_not_called()
+            km._pending_ops.clear()
+            with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)), \
+                 mock.patch.object(km, "_compacting_now", lambda sid, **k: False), \
+                 mock.patch.object(km, "_working_now", lambda sid: False):
+                code, resp = self._post("/send", {"id": "sid-m", "text": "/effort high"})
+            self.assertEqual((code, resp), (200, {"ok": True, "queued": False}))
+            fake.set_effort.assert_called_once()
+        finally:
+            km._pending_ops.clear()
+
+    def test_send_route_reads_the_setters_locked_verdict_not_a_second_gate(self):
+        # #954 moved the deciding park under the queue lock (_gate_or_park); the route must report the
+        # setter's OWN verdict, not a separate unlocked _ops_gate read that can disagree (review find on
+        # #954, 2026-09-07: a parked /model answered queued:false). Force the two apart: _gate_or_park
+        # parks (True) while _ops_gate reads False.
+        fake = mock.Mock(); fake.busy.return_value = None
+        km._pending_ops.clear()
+        try:
+            with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)), \
+                 mock.patch.object(km, "_ops_gate", lambda sid: False), \
+                 mock.patch.object(km, "_gate_or_park", lambda sid, op: (km._pending_ops.setdefault(str(sid), []).append(op) or True)):
+                code, resp = self._post("/send", {"id": "sid-x", "text": "/model sonnet"})
+            self.assertEqual((code, resp), (200, {"ok": True, "queued": True}),
+                             "the route reports the setter's locked park, not the unlocked gate")
+            fake.set_model.assert_not_called()
+        finally:
+            km._pending_ops.clear()
+
+    def test_send_route_passes_a_remote_kernels_queued_through(self):
+        # a session living on another kernel: its answer's `queued` rides back to the caller; an older
+        # remote without the field reads as not queued (today's behaviour)
+        with mock.patch.object(km, "_host_for_sid", lambda sid: {"host": "TESTHOST"}), \
+             mock.patch.object(km, "_remote_forward", lambda r, path, body: {"ok": True, "queued": True}):
+            code, resp = self._post("/send", {"id": "sid-r", "text": "/frobnicate now"})
+        self.assertEqual((code, resp), (200, {"ok": True, "queued": True}))
+        with mock.patch.object(km, "_host_for_sid", lambda sid: {"host": "TESTHOST"}), \
+             mock.patch.object(km, "_remote_forward", lambda r, path, body: {"ok": True}):
+            code, resp = self._post("/send", {"id": "sid-r", "text": "hello"})
+        self.assertEqual((code, resp), (200, {"ok": True, "queued": False}))
+        # …and a far kernel's REFUSAL rides back as itself, never rewritten into an ok (review find, #904)
+        refusal = {"ok": False, "error": "isolation: the target session's mailbox is OFF"}
+        with mock.patch.object(km, "_host_for_sid", lambda sid: {"host": "TESTHOST"}), \
+             mock.patch.object(km, "_remote_forward", lambda r, path, body: dict(refusal)):
+            code, resp = self._post("/send", {"id": "sid-r", "text": "hello"})
+        self.assertEqual((code, resp), (200, refusal))
+
     def test_missing_who_is_a_400(self):
         code, resp = self._post("/interrupt", {})
         self.assertEqual(code, 400)
         self.assertFalse(resp.get("ok"))
+
+
+class CodexRuntimeSelection(unittest.TestCase):
+    # The kernel loads codex_backend.py through load_source (kernel/loadsource.py): patch that.
+    def test_path_codex_does_not_override_managed_runtime(self):
+        fake_mod = mock.Mock()
+        with mock.patch.object(km, "_codex_backend", None), \
+             mock.patch.object(km, "load_source", return_value=fake_mod), \
+             mock.patch.object(km.shutil, "which", return_value="/TESTBIN/codex"):
+            backend = km._codex()
+            self.assertIs(backend, fake_mod.CodexBackend.return_value)
+            self.assertIs(km._codex(), backend)
+        fake_mod.CodexBackend.assert_called_once()
+        self.assertIsNone(fake_mod.CodexBackend.call_args.kwargs.get("codex_bin"),
+                          "the backend must resolve its managed runtime even when codex is on PATH")
+
+    def test_romp_codex_bin_overrides_the_session_runtime(self):
+        # PATH is ignored, but the one explicit knob the judges already read (ROMP_CODEX_BIN) governs
+        # sessions too — an opt-in, not the ambient PATH accident #929 closed (review fold, 2026-09-07)
+        fake_mod = mock.Mock()
+        with mock.patch.object(km, "_codex_backend", None), \
+             mock.patch.object(km, "load_source", return_value=fake_mod), \
+             mock.patch.dict(km.os.environ, {"ROMP_CODEX_BIN": "/opt/codex/bin/codex"}), \
+             mock.patch.object(km.shutil, "which", return_value="/TESTBIN/codex"):
+            km._codex()
+        self.assertEqual(fake_mod.CodexBackend.call_args.kwargs.get("codex_bin"), "/opt/codex/bin/codex",
+                         "the explicit knob is forwarded; PATH is still not")
 
 
 class SdkSingleFlight(unittest.TestCase):
@@ -147,13 +350,11 @@ class SdkSingleFlight(unittest.TestCase):
 
         fake_mod = mock.Mock()
         fake_mod.SdkBackend = lambda *a, **k: FakeBackend()
-        fake_loader = mock.Mock()
-        fake_loader.load_module.return_value = fake_mod
         prev = km._sdk_backend
         try:
             km._sdk_backend = None
             results = [None] * 6
-            with mock.patch.object(km, "SourceFileLoader", return_value=fake_loader), \
+            with mock.patch.object(km, "load_source", return_value=fake_mod), \
                  mock.patch.object(km, "_ensure_sdk_on_path", return_value=True):
                 ts = [threading.Thread(target=lambda i=i: results.__setitem__(i, km._sdk()))
                       for i in range(6)]
@@ -186,7 +387,7 @@ class WiringPins(unittest.TestCase):
     def test_backend_constructed_eagerly_with_reconcile(self):
         self.assertIn("reconcile=True", self.src,
                       "the kernel opts into the boot reconcile (tests construct without it)")
-        self.assertIn("threading.Thread(target=_sdk, daemon=True).start()", self.src,
+        self.assertIn('threading.Thread(target=_sdk, daemon=True, name="sdk-boot").start()', self.src,   # named for the stack sample (T401)
                       "main() constructs the backend at boot so the reconcile isn't lazy")
 
     def test_graceful_term_never_constructs_the_backend(self):

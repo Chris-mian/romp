@@ -1,0 +1,26 @@
+<!-- Synthetic settings-modal fixture (notes-api demo domain, no real data): exercises the gear.css
+     chrome — backdrop dim, card, section headers, rows + hover tooltip surface, judge picker row,
+     dropdown lists, kbd chips, analytics open button. Static markup only; gear.js not loaded. -->
+<div id="rsettings">
+  <div class="rs-card">
+    <div class="rs-h">Settings</div>
+    <div id="rsver">notes-api · kernel 0.4 · 3 sessions</div>
+    <div class="rs-sec rs-sec-first">Chat</div>
+    <label class="rs-row"><input type="checkbox" checked><b>Show tool folds</b>
+      <span class="rs-mixed">(differs by machine)</span>
+      <span class="rs-sub">Collapse tool runs by default. <code>web</code> keeps them open.</span></label>
+    <div class="rs-sec">Judges</div>
+    <div class="rs-row rs-jrow"><b>Unblocker model</b>
+      <select><option>default</option><option>fast</option></select></div>
+    <div id="rs-cmap"><button id="rs-cmap-btn"></button>
+      <div id="rs-cmap-list"><div class="rs-cmap-opt sel"></div><div class="rs-cmap-opt"></div></div></div>
+    <div id="rs-pal"><button id="rs-pal-btn"><span class="rs-pal-dot" style="background:#1EA1EB"></span>
+      <span class="rs-pal-name">default</span></button></div>
+    <div class="rs-sep"></div>
+    <div class="rs-key"><span class="rs-key-combo"><kbd>Ctrl</kbd> <kbd>K</kbd></span>
+      <span class="rs-key-desc">Open the command palette</span>
+      <button id="rs-keys-btn">Customize shortcuts…</button></div>
+    <button class="ra-openbtn">Token usage…</button>
+    <div class="ra-note">Totals cover the sessions on this machine.</div>
+  </div>
+</div>

@@ -20,7 +20,9 @@ import socket
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
+
+from tests.conftest import thread_census, wait_for_census
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -32,11 +34,11 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 REMOTE_TOKEN = "remote-token-DO-NOT-USE"
 
@@ -91,14 +93,29 @@ class _FakeRemoteKernel:
             self.done.set()
 
     def close(self):
-        try:
-            self.srv.close()
-        except OSError:
-            pass
+        # End the serve thread (T282). A fake nobody dialed is parked in accept(): closing the listening socket
+        # from another thread does not wake it (on Linux shutdown() does, on macOS/BSD neither does), so a
+        # throwaway dial that ends at once wakes it portably: accept() returns, recv() sees the EOF, the thread
+        # ends. Then shut down and close the listener and wait for the thread's exit, bounded.
+        if not self.done.is_set():
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=1):
+                    pass
+            except OSError:
+                pass
+        for op in (lambda: self.srv.shutdown(socket.SHUT_RDWR), self.srv.close):
+            try:
+                op()
+            except OSError:
+                pass
+        self.done.wait(5)
 
 
 class RemoteWsProxy(unittest.TestCase):
     def setUp(self):
+        self._census0 = thread_census()
+        self.addCleanup(lambda: self.assertEqual(wait_for_census(self._census0), [],
+                                                 "no thread of this test outlives it (T282)"))   # runs LAST
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
         self.port = self.srv.server_address[1]
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -141,6 +158,7 @@ class RemoteWsProxy(unittest.TestCase):
 
     def test_splices_both_directions_and_rewrites_the_token(self):
         fake = _FakeRemoteKernel()
+        self.addCleanup(fake.close)
         self._register("gpu1", fake.port)
         try:
             s, status, head, tail, key = self._upgrade("/remote/gpu1/ws?app=chat&token=whatever-the-browser-sent")
@@ -174,6 +192,40 @@ class RemoteWsProxy(unittest.TestCase):
         finally:
             fake.close()
 
+    def _forwarded_query(self, host, browser_path):
+        """Dial the relay for `host` with `browser_path` and return the query the FAR side received, parsed."""
+        from urllib.parse import parse_qs, urlsplit
+        fake = _FakeRemoteKernel()
+        self.addCleanup(fake.close)
+        try:
+            self._register(host, fake.port, token=km._remotes[host]["token"] if host in km._remotes else REMOTE_TOKEN)
+            s, status, _, _, _ = self._upgrade(browser_path)
+            try:
+                self.assertEqual(status, 101, "the relay must splice before the query can be judged")
+                self.assertTrue(fake.done.wait(0.1) or fake.request, "the far side saw the request")
+            finally:
+                s.close()
+            req = fake.request.split(b"\r\n", 1)[0].decode("latin-1")
+            self.assertTrue(req.startswith("GET /ws?"), req)
+            return parse_qs(urlsplit(req.split(" ")[1]).query)
+        finally:
+            fake.close()
+
+    def test_a_row_without_a_stored_token_forwards_no_token_at_all(self):
+        # The pop is unconditional (2026-09-08): with no credential of its own to inject, the relay used to
+        # let whatever the browser sent ride through to the far kernel. Mutant this kills: delete the
+        # `q.pop("token", None)` and `token=evil` reaches the far side.
+        with km._remotes_lock:
+            km._remotes["gpu2"] = {"host": "gpu2", "kernel_port": 29855, "local_port": 0, "token": "", "status": "up"}
+        q = self._forwarded_query("gpu2", "/remote/gpu2/ws?app=chat&token=evil")
+        self.assertNotIn("token", q, "nothing the browser sent may stand in for a credential: %r" % q)
+        self.assertEqual(q.get("app"), ["chat"], "the rest of the query still travels")
+
+    def test_a_row_with_a_token_forwards_exactly_that_one(self):
+        q = self._forwarded_query("gpu1", "/remote/gpu1/ws?app=chat&token=evil&token=evil2")
+        self.assertEqual(q.get("token"), [REMOTE_TOKEN], "exactly the stored credential, once — never the browser's")
+        self.assertEqual(q.get("app"), ["chat"])
+
     def test_unknown_host_404s(self):
         s, status, _, _, _ = self._upgrade("/remote/nosuch/ws")
         s.close()
@@ -181,6 +233,7 @@ class RemoteWsProxy(unittest.TestCase):
 
     def test_unauthorized_403s_before_any_dial(self):
         fake = _FakeRemoteKernel()
+        self.addCleanup(fake.close)
         self._register("gpu1", fake.port)
         try:
             s, status, _, _, _ = self._upgrade("/remote/gpu1/ws", token=False)
@@ -203,6 +256,7 @@ class RemoteWsProxy(unittest.TestCase):
 
     def test_non_websocket_request_400s(self):
         fake = _FakeRemoteKernel()
+        self.addCleanup(fake.close)
         self._register("gpu1", fake.port)
         try:
             s, status, _, _, _ = self._upgrade("/remote/gpu1/ws", ws_headers=False)

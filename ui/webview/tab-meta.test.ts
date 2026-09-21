@@ -115,6 +115,8 @@ test("both optimistic paths note their expectation: the color swatch and the ren
 test("the tabOrder frame's views land before the strip repaints — a CLI tag edit re-filters the tabs on the same push", () => {
   // captureViews (adopt the pushed views/tags blob) must run BEFORE applyTabOrder (whose renderTabs
   // re-filters via tabInView) in the tabOrder handler — the (c) leg of the live-update fix
-  assert.match(RENDER, /else if \(m\.type === "tabOrder"\) \{ captureViews\(m\.views \|\| null\); applyTabOrder\(m\.order, m\.tabs\); \}/);
-  assert.match(RENDER, /const inViewIds = ids\.filter\(tabInView\);/);
+  // the frame's provenance rides along since T233 (captureViews still runs before the strip is applied; the
+  // kernel's own name, selfHost, is adopted first of all — pr-links.test.ts pins that line)
+  assert.match(RENDER, /else if \(m\.type === "tabOrder"\) \{\s*\n\s*if \(typeof m\.selfHost === "string" && m\.selfHost\) adoptSelfHost\(m\.selfHost\);[^\n]*\n\s*captureViews\(m\.views \|\| null\);\s*\n\s*applyTabOrder\(m\.order, m\.tabs, \{ reemit: m\.reemit === true, freshHost: typeof m\.freshHost === "string" \? m\.freshHost : undefined \}, m\.live\);\s*\n\s*\}/);
+  assert.match(RENDER, /const visibleIds = ids\.filter\(\(id\) => stripShows\(id, only\)\);/, "the view (tabInView, a peek counts) and the #only= filter through ONE predicate, stripShows (T357 later lows)");
 });

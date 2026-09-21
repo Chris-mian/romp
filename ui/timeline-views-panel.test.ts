@@ -48,22 +48,89 @@ test("executed: the trigger label and the N-more cue (live sessions outside the 
   assert.equal(viewMoreCount(V("untagged", ["s1"]), sessions), 1, "tagged s2 sits outside untagged; legacy-hidden s1 shows");
 });
 
-test("executed: an optimistic edit holds until the kernel echoes it — then yields to authority", () => {
+test("executed: an optimistic edit holds until the kernel echoes it exactly — and a frame that does not match never yields it", () => {
   const p: any = Object.create(TimelinePanel.prototype);
-  p._views = null; p._pendingViews = V("g1"); p._pendingViewsAge = 0;
+  p._views = null; p._pendingViews = V("g1"); p._viewsWrites = [{ id: "w1", name: "" }];
   p._reconcileViews();
   assert.ok(p._pendingViews, "no echo yet → still pending");
   // the kernel echoes the same shape with re-sorted lists → canonical comparison clears it
   p._views = { active: "g1", hidden: [], tags: [{ id: "g1", name: "pool", color: "#DD42FF", members: ["s3", "s2"] }] };
   p._reconcileViews();
   assert.equal(p._pendingViews, null, "echo match (order-insensitive) clears the pending edit");
-  // a pending edit the kernel never echoes yields after three pushes — the kernel is authoritative
-  p._pendingViews = V("g1"); p._pendingViewsAge = 0;
+  assert.deepEqual(p._viewsWrites, [], "…and nothing is in flight any more");
+  // a frame that does NOT echo the edit says nothing about it (it may predate the write, or the
+  // kernel may have refused it) — so no number of them yields the copy when the kernel STAMPS its
+  // blobs (`seq`: such a kernel acks every write, and the ack settles it — timeline-views-ack.test.ts).
+  // The three-frame yield that lived here dropped good edits and kept refused ones alike (the user
+  // 2026-09-05).
+  p._pendingViews = V("g1"); p._viewsWrites = [{ id: "w2", name: "" }];
+  p._views = { active: "all", hidden: [], tags: [], seq: 5 };
+  for (let i = 0; i < 6; i++) p._reconcileViews();
+  assert.ok(p._pendingViews, "six silent pushes → still holding the user's edit");
+  // LEGACY: a kernel that stamps no seq acks nothing either, so for its frames alone the old
+  // three-frame yield stays — with no ack ever coming, an unechoed copy would otherwise pin forever
   p._views = { active: "all", hidden: [], tags: [] };
   p._reconcileViews(); p._reconcileViews();
-  assert.ok(p._pendingViews, "two silent pushes → still holding");
+  assert.ok(p._pendingViews, "two silent legacy pushes → still holding");
   p._reconcileViews();
-  assert.equal(p._pendingViews, null, "the third silent push adopts the kernel's blob");
+  assert.equal(p._pendingViews, null, "the third legacy push yields (that kernel's only clear)");
+});
+
+test("executed: the echo key compares per-surface lenses and ignores the retired hidden set", () => {
+  // a LENS-ONLY edit (same tags, this surface's lens added): a stale views-bearing frame still
+  // carrying the PRE-EDIT blob must NOT clear the pending copy — with `actives` missing from the
+  // key the first stale frame compared equal, the optimistic filter reverted, and the tag filter
+  // visibly flapped (revert-then-jump-back) until the kernel's real echo arrived
+  const p: any = Object.create(TimelinePanel.prototype);
+  p._pendingViews = { active: "all", tags: [G], actives: { timeline: { tags: ["pool"] } } };
+  p._viewsWrites = [];
+  p._views = { active: "all", tags: [G] };   // the pre-edit blob — no lens on it yet
+  p._reconcileViews();
+  assert.ok(p._pendingViews, "a stale frame without the lens edit must not clear the pending copy");
+  // the kernel's genuine echo (lists re-sorted, the lens present) clears it
+  p._views = { active: "all", tags: [{ id: "g1", name: "pool", color: "#DD42FF", members: ["s3", "s2"] }],
+               actives: { timeline: { tags: ["pool"] } } };
+  p._reconcileViews();
+  assert.equal(p._pendingViews, null, "the echo carrying the lens clears the pending edit");
+  // …and the RETIRED hidden set (2026-08-24) is OUT of the key: the kernel drops it, so a local
+  // copy still carrying a legacy hidden entry must compare EQUAL to the echo that shed it —
+  // serializing hidden held every such edit's optimistic copy hostage instead of clearing on echo
+  p._pendingViews = { active: "all", hidden: ["s9"], tags: [] }; p._viewsWrites = [];
+  p._views = { active: "all", tags: [] };
+  p._reconcileViews();
+  assert.equal(p._pendingViews, null, "hidden is retired — it cannot hold an echo hostage");
+});
+
+test("pin: _viewsKey serializes the SAME shape as its twin, session-views.ts viewsKey", () => {
+  // the timeline cannot import TS, so _viewsKey is a hand-copy of the webview's viewsKey — this
+  // pin compares the two serializations at the source level (comments/quotes/whitespace
+  // normalized) so the copies cannot drift apart again (the 2026-08-25 lens fix landed in the
+  // twin and left the hand-copy behind)
+  const TS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "session-views.ts"), "utf8");
+  const norm = (s: string) => s.replace(/\/\/[^\n]*/g, "").replace(/'/g, '"').replace(/\s+/g, " ").trim();
+  const grab = (src: string, marker: string) => {
+    const i = src.indexOf(marker);
+    assert.ok(i >= 0, marker + " found");
+    // the slice STARTS at the null guard, not at JSON.stringify — the guard's return value is part
+    // of the key's contract too (a drifted `if (!v) return ...` sat outside the old compared slice)
+    const j = src.indexOf("if (!v)", i);
+    assert.ok(j > i, "the null guard heads " + marker);
+    const body = src.slice(j, src.indexOf("});", j) + 3);
+    return norm(body);
+  };
+  assert.equal(grab(SRC, "_viewsKey(v)"), grab(TS, "export function viewsKey("),
+    "the timeline's hand-copied echo key drifted from ui/webview/session-views.ts viewsKey");
+  // viewTags is the key's one FREE identifier, and it is ITSELF an independent hand-copy (the
+  // timeline's function viewTags vs session-views.ts's export) — identical key bodies still
+  // serialize different shapes if the two viewTags diverge, so the pin covers that twin pair too
+  const grabReturn = (src: string, marker: string) => {
+    const i = src.indexOf(marker);
+    assert.ok(i >= 0, marker + " found");
+    const j = src.indexOf("return", i);
+    return norm(src.slice(j, src.indexOf(";", j) + 1));
+  };
+  assert.equal(grabReturn(SRC, "function viewTags(views)"), grabReturn(TS, "export function viewTags("),
+    "the timeline's hand-copied viewTags drifted from ui/webview/session-views.ts viewTags");
 });
 
 test("the lane gate composes the view filter first, and the all-quiet fallback respects it", () => {
@@ -86,7 +153,7 @@ test("the trigger sits in the corner strip and opens on pointerdown, like every 
 test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separate ✕, air below (the user 2026-08-24)", () => {
   // the chip's own pointerdown clears the filter without a menu trip; stopPropagation keeps the
   // text element's menu handler out of it (both are pointerdown — the redraw-eats-click rule)
-  assert.match(SRC, /nv\.actives = Object\.assign\(\{\}, nv\.actives, \{ timeline: lensToggle\(lens, c\.pick\) \}\);/,
+  assert.match(SRC, /this\._setLens\(\{ actives: Object\.assign\(this\._lensBaseActives\(\), \{ timeline: lensToggle\(lens, c\.pick\) \}\) \}, \{ surfaces: \['timeline'\] \}\);/,
     "each chip's ✕ unselects THAT pick (per-selection chips, the user 2026-08-25)");
   // OUTLINE only on the page's own ground (the tinted fill was too much — the user 2026-08-24),
   // and the ✕ is dim and SEPARATE, the composer context chip's read — never baked into the name
@@ -156,8 +223,8 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   // the session NAME wears its identity colour directly (JLD: label directly, never a legend-like
   // proxy dot), the host: prefix is quiet lowercase italic, a dead session is struck — the same
   // read as the lanes and the feed. No model column, no instruction caption, no ellipsized names.
-  assert.match(SRC, /font-weight:650;color:' \+ \(s\.color \|\| '#cccccc'\)/);
-  assert.match(SRC, /font-style:italic;font-size:0\.88em;/);
+  assert.match(SRC, /font-weight:650;color:' \+ \(s\.color \|\| MENU_FG\)/);
+  assert.match(SRC, /font-style:italic;font-size:0\.86em;/);
   // closed sessions LEFT the membership table (the user 2026-08-25 revision) — live rows only,
   // so the strike variant is gone with them
   assert.match(SRC, /\.filter\(\(s\) => s\.live\)/, "the crossed-out ones don't show");
@@ -214,12 +281,12 @@ test("membership rows drag-reorder into the SHARED session order (the user 2026-
   assert.deepEqual(p.data.sessions.map((s: any) => s.id), ["d", "b", "a", "c"], "optimistic — no snap-back before the next poll");
   // the wiring: grab a NAME cell; the insertion cue moves WITHOUT rebuilding mid-drag (the
   // redraw-eats-pointer rule) — the rebuild and the persist happen on the drop
-  assert.match(SRC, /nameCell\.setAttribute\('style', 'white-space:nowrap;cursor:grab;'\);/);
+  assert.match(SRC, /nameCell\.setAttribute\('style', 'white-space:nowrap;cursor:' \+ \(this\._tabsLocked\(\) \? 'default' : 'grab'\) \+ ';'\);/);   // the tab lock (T395) takes the grab away
   assert.match(SRC, /nameCell\._sid = s\.id;/);
   assert.match(SRC, /cells\[toIdx\]\.style\[toIdx > fromIdx \? 'borderBottom' : 'borderTop'\] = '2px solid #9cd2ff';/,
     "the accent insertion cue rides the target cell's border — no mid-drag rebuild");
-  assert.match(SRC, /const full = this\._mergeVisibleOrder\(vis\);\s*\/\/ only the shown rows permute within the full order\n\s*this\._applyOrderToData\(full\);[\s\S]{0,200}this\._persistOrder\(full\);/,
-    "drop = merge, apply, persist — the lane-drag's exact sequence");
+  assert.match(SRC, /const full = this\._mergeVisibleOrder\(vis\);\s*\/\/ only the shown rows permute within the full order\n\s*this\._applyOrderToData\(full\);[\s\S]{0,200}this\._persistOrder\(full, prev, vis\[toIdx\], 'dialog'\);/,
+    "drop = merge, apply, persist — the lane-drag's exact sequence (the pre-drag order and the moved row ride along, for the revert a refused persist makes)");
   assert.match(SRC, /renderRows\(\);\n\s*\};\n\s*nameCell\.addEventListener\('pointermove', onMove\);/,
     "the rebuild happens on the drop, after the persist");
 });
@@ -231,16 +298,25 @@ test("the dialog sizes to the screen: 90% ceiling both axes, padded edges, wrap 
   // the card declarations come AFTER MENU_STYLE: the menu spec opens with ITS padding (4px), and
   // in one style string the later declaration wins — stated first, the dialog's padding had been
   // silently 4px all along (found by headless computed-style measurement, 2026-08-25)
-  assert.match(SRC, /MENU_STYLE \+ 'box-sizing:border-box;width:min\(1200px,90vw\);max-height:90vh;'\s*\n\s*\+ 'overflow:hidden;display:flex;flex-direction:column;padding:22px 26px;font-size:13px;'/,
+  // re-aimed 2026-09-09 (the many-tags change's review): the card scrolls as a whole, never clips,
+  // when a page is shorter than its sections' floors (a phone held sideways clipped the search box)
+  assert.match(SRC, /MENU_STYLE \+ 'box-sizing:border-box;width:min\(1200px,90vw\);max-height:90vh;'\s*\n\s*\+ 'overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;padding:22px 26px;font-size:13px;'/,
     "the card's screen-sized border-box footprint + edge padding, declared after the menu spec");
   // wrap stays GRACEFUL, not needless: the wide card lays the rows out on their lines; these
-  // containers wrap only when the window genuinely narrows
-  assert.match(SRC, /row\.setAttribute\('style', 'display:flex;align-items:center;gap:6px;margin:2px 0;flex-wrap:wrap;'\);/,
-    "the five filter rows fold only under real pressure");
+  // containers wrap only when the window genuinely narrows. Re-aimed 2026-09-09 (the many-tags
+  // change): the filter chips wrap inside their own cell, so a long row's second line starts under
+  // the first chip rather than under the pane label; the row itself no longer wraps
+  assert.match(SRC, /cell\.setAttribute\('style', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:1 1 auto;min-width:0;'\);/,
+    "the five filter rows' chips wrap within their own cell");
   assert.match(SRC, /chips\.setAttribute\('style', 'display:flex;gap:5px;flex-wrap:wrap;align-items:center;min-width:0;'\);/,
     "membership chip cells ditto");
-  assert.match(SRC, /gridBox\.setAttribute\('style', 'flex:1 1 auto;min-height:0;overflow-y:auto;'\);/,
-    "only the session rows pan when height runs out — the card itself never scrolls whole");
+  // re-aimed 2026-09-09 (the many-tags change's review): the sessions box gives way first when height
+  // runs out (the thousandfold flex-shrink) and never below its floor, min(live, 4) rows at the rendered
+  // row height (a fixed 96px left blank over one live session); past that floor the tag table and the
+  // open matrix give way, and past THEIR floors the card scrolls rather than clip (timeline-tags-scale)
+  assert.match(SRC, /const gridStyle = \(floor\) => 'flex:1 1000 auto;min-height:' \+ floor \+ 'px;overflow-y:auto;';/,
+    "the session rows pan within their box, which keeps a floor under its rows");
+  assert.match(SRC, /const k = Math\.min\(liveN, 4\);/, "…four rows at most, by the live count");
 });
 
 test("federation, NAME-KEYED (user ruling 2026-08-24): one name = one row/label/union — kernels are plumbing", () => {
@@ -277,14 +353,19 @@ test("the two display toggles write the host's own romp:settings — reachable i
   assert.match(SRC, /localStorage\.setItem\('romp:settings', JSON\.stringify\(s\)\);/);
 });
 
-test("_setViews posts through the host hook with a GUARDED, atomic Obsidian fallback", () => {
+test("_setViews posts through the host hook, or through the kernel's POST /views in Obsidian (2026-09-08)", () => {
   assert.match(SRC, /window\.__rompTimelineSetViews === 'function'/);
-  // Electron-gated (a bare-node test run must never touch the real file — the 2026-07-02 lesson),
-  // env-aware state root, tmp+rename so a reader never sees a torn blob
-  assert.match(SRC, /process\.versions && process\.versions\.electron/);
-  assert.match(SRC, /process\.env\.ROMP_STATE_DIR\n?\s*\|\| path\.join\(process\.env\.XDG_STATE_HOME \|\| path\.join\(os\.homedir\(\), '\.local', 'state'\), 'romp'\)/);
-  assert.match(SRC, /fs\.renameSync\(fp \+ '\.tmp', fp\);/);
-  assert.match(SRC, /this\._pendingViews = v; this\._pendingViewsAge = 0;/);
+  // Obsidian used to write timeline-views.json itself here — a whole-blob write the judge and the
+  // stale-writer guard never saw. Now it posts the kernel's /views (the setTimelineViews op as a route)
+  // and feeds the viewsAck document the route answers with to the door the socket's ack takes, so the
+  // copy clears or reverts on the ack in every host. Electron-gated through _kernelHost (a bare-node
+  // test run must never reach the real state — the 2026-07-02 lesson); executed in ui/timeline-kernel-post.test.ts.
+  assert.match(SRC, /const hook = typeof window !== 'undefined' && typeof window\.__rompTimelineSetViews === 'function';\s*\n\s*if \(hook \|\| this\._kernelHost\(\)\) \{/);
+  assert.match(SRC, /if \(hook\) window\.__rompTimelineSetViews\(v, writeId, ed\);\s*\n\s*else settled = this\._kernelPost\('\/views', \{ views: v, edited: ed, writeId \}\)\.then\(\(r\) => this\._kernelViewsAnswer\(r, writeId, lens, own\)\);/,
+    "…answered through _kernelViewsAnswer: a kernel's ruling feeds viewsAck; a lens no kernel took stays local and is said (ui/timeline-kernel-post.test.ts)");
+  assert.doesNotMatch(SRC, /renameSync|writeFileSync/, "no file write of its own remains");
+  assert.match(SRC, /_setViews\(v, edited, lens, own\) \{\s*\n(?:\s*\/\/[^\n]*\n){0,6}\s*this\._pendingViews = lens \? applyLensFields\(this\._writeBase\(\), lens\) : v;/,
+    "a lens or order write shows the WRITE base with its fields applied (never the shown blob, whose local lens must not ride the next write); a whole-blob write shows the blob");
   assert.match(SRC, /this\._reconcileViews\(\);\s*\/\/ \.\.\.and an optimistic view edit/);
 });
 
@@ -353,13 +434,16 @@ test("executed: tagEditFailed reverts the optimistic copy and keeps the reason f
 test("federation v1+ruling source pins: header/chips route through the UNION dispatcher, loudly on failure", () => {
   // rename/recolor/delete fan out to EVERY home; chip ✕ removes everywhere; add prefers local
   assert.match(SRC, /this\._editTagUnion\(tg, \{ rename: nv2 \}\);/);
-  assert.match(SRC, /this\._editTagUnion\(tg, \{ color: c \}\); build\(\);/);
+  // the recolor rides the colour popover since 2026-09-09 (the many-tags change), which re-resolves the
+  // tag at pick time (`now`) and repaints through the dialog's build closure; the dispatcher is the same
+  assert.match(SRC, /this\._editTagUnion\(now, \{ color: c \}\);\n\s*if \(this\._viewsDialogBuild\) this\._viewsDialogBuild\(\);/);
   assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\);/);
   assert.match(SRC, /this\._editTagUnion\(g, \{ remove: \[s\.id\] \}\); rebuild\(\);/);
   assert.match(SRC, /this\._editTagUnion\(g, \{ add: rowIds\.filter\(\(id\) => g\.members\.indexOf\(id\) < 0\) \}\); rebuild\(\);/);
   // the remote transport underneath is unchanged: no hook (the Obsidian panel) → read-only + an
   // immediate visible refusal; the error line is dismissible and names the owner
-  assert.match(SRC, /typeof window\.__rompTimelineEditTag !== 'function'/);
+  assert.match(SRC, /_remoteBridge\(\) \{\n\s*return typeof window !== 'undefined' && typeof window\.__rompTimelineEditTag === 'function';/);
+  assert.match(SRC, /if \(!this\._remoteBridge\(\)\) \{ this\._refuseUnreachable\(\[rt\.host\], rt\.name, false\); return false; \}/);
   assert.match(SRC, /er\.createSpan\(\{ text: '⚠ ' \+ \(this\._tagEditErr\.host \? this\._tagEditErr\.host \+ ': ' : ''\) \+ this\._tagEditErr\.error \}\);/);
   // a NEW tag still mints locally, posting the whole blob (zero local-path change)
   assert.match(SRC, /nv\.tags = viewTags\(nv\)\.concat/);
@@ -404,6 +488,153 @@ test("executed: the union dispatcher — add prefers local, remove reaches every
   assert.deepEqual(remote.map((r: any) => r[1].delete), [true, true], "…and every remote home");
 });
 
+test("executed: with no remote bridge, a union edit leaves the LOCAL half untouched and says why (review find, 2026-09-08)", () => {
+  // The Obsidian panel has no window.__rompTimelineEditTag, so _editRemoteTag refuses synchronously. Before
+  // 2026-09-08 _editTagUnion had already committed the local half by then — the tag renamed, its member
+  // dropped or the tag deleted in the local store alone, the remote halves untouched — under an error that
+  // named only the remote. The remote halves go first now and the local half commits only when every one
+  // of them was taken, so the error's "nothing was changed" is the truth.
+  const w = (globalThis as any).window;
+  assert.notEqual(typeof (w && w.__rompTimelineEditTag), "function", "this harness has no remote bridge (the Obsidian panel's shape)");
+  const p: any = Object.create(TimelinePanel.prototype);
+  const local: any[] = [];
+  p._setViews = (v: any) => local.push(v);   // the legacy local write _postTagEdit falls to without a targeted bridge
+  p.draw = () => {};
+  p._pendingViews = null; p._pendingTagEdits = {}; p._tagEditErr = null;
+  const rtA = { id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "team", color: "#123456", members: ["m1"] };
+  const localTag = { id: "gL", name: "team", color: "#123456", members: ["m1", "m2"] };
+  p._views = { active: "all", hidden: [], tags: [localTag], remoteTags: [rtA] };
+  const g = { name: "team", color: "#123456", members: ["m1", "m2"], ids: ["gL", rtA.id], localId: "gL",
+              homes: ["TESTHOST-A"], remotes: [rtA] };
+  const refused = (gesture: string) => {
+    assert.equal(local.length, 0, gesture + ": the remote half was refused, so the local half did not commit");
+    assert.ok(p._tagEditErr, gesture + ": the refusal shows");
+    assert.equal(p._tagEditErr.host, "TESTHOST-A", gesture + ": it names the remote");
+    assert.match(p._tagEditErr.error, /cannot reach TESTHOST-A/, gesture + ": …and why");
+    assert.match(p._tagEditErr.error, /nothing was changed/, gesture + ": …and that the edit landed nowhere");
+    assert.match(p._tagEditErr.error, /romp tag --host TESTHOST-A/, gesture + ": …and the way to make it");
+    p._tagEditErr = null;
+  };
+  p._editTagUnion(g, { rename: "crew" }); refused("rename");
+  p._editTagUnion(g, { color: "#DD42FF" }); refused("recolor");
+  p._editTagUnion(g, { delete: true }); refused("delete");
+  p._editTagUnion(g, { remove: ["m1"] }); refused("remove of a member both halves hold");
+  assert.deepEqual(p._curViews().tags[0], localTag, "the local tag reads exactly as the store has it");
+  // a REMOVE of a member only the local half holds asks nothing of the remotes: the local half commits, as before
+  p._editTagUnion(g, { remove: ["m2"] });
+  assert.equal(local.length, 1, "no remote holds m2, nothing to refuse — the local half commits");
+  assert.deepEqual(local[0].tags[0].members, ["m1"]);
+  assert.equal(p._tagEditErr, null, "…and nothing is said");
+  // the remedy covers the LOCAL half too: it was held back, so the CLI has to make that half as well
+  p._editTagUnion(g, { rename: "crew" });
+  assert.match(p._tagEditErr.error, /romp tag \(no --host\) for this kernel/, "the local half is named in the remedy");
+  p._tagEditErr = null;
+  // …but a remote-only union asks nothing of a local half, so the remedy names the remotes alone
+  p._editTagUnion({ ...g, ids: [rtA.id], localId: null, members: ["m1"] }, { rename: "crew" });
+  assert.doesNotMatch(p._tagEditErr.error, /for this kernel/);
+  p._tagEditErr = null;
+  // TWO remote homes, the REAL _editRemoteTag (review find, 2026-09-08): before, each half's refusal
+  // overwrote the last, so the notice named only TESTHOST-B and gave a remedy for it alone. One notice
+  // names every home the panel cannot reach, with a remedy that covers each of them and the local half
+  const rtB = { id: "TESTHOST-B:g7", host: "TESTHOST-B", name: "team", color: "#123456", members: ["m1"] };
+  const g2 = { ...g, ids: ["gL", rtA.id, rtB.id], homes: ["TESTHOST-A", "TESTHOST-B"], remotes: [rtA, rtB] };
+  p._views = { active: "all", hidden: [], tags: [localTag], remoteTags: [rtA, rtB] };
+  local.length = 0;   // the m2 remove above committed, rightly; the recorder starts clean here
+  for (const [gesture, edit] of [["rename", { rename: "crew" }], ["recolor", { color: "#DD42FF" }],
+                                 ["delete", { delete: true }], ["remove", { remove: ["m1"] }]] as any[]) {
+    p._editTagUnion(g2, edit);
+    assert.equal(local.length, 0, gesture + ": no local commit");
+    assert.equal(p._tagEditErr.host, "TESTHOST-A, TESTHOST-B", gesture + ": the notice is headed by every unreachable home");
+    assert.match(p._tagEditErr.error, /cannot reach TESTHOST-A or TESTHOST-B, so nothing was changed/, gesture + ": both named, and the outcome");
+    assert.match(p._tagEditErr.error, /romp tag --host TESTHOST-A, then romp tag --host TESTHOST-B, then romp tag \(no --host\) for this kernel/,
+      gesture + ": a remedy for each home and for the local half");
+    p._tagEditErr = null;
+  }
+  // a remove only ONE remote holds names that one home alone: the other was never asked
+  p._editTagUnion({ ...g2, remotes: [rtA, { ...rtB, members: ["zz"] }] }, { remove: ["m1"] });
+  assert.equal(p._tagEditErr.host, "TESTHOST-A", "the home that does not hold the member is not named");
+  assert.deepEqual(p._curViews().tags[0], localTag, "the local tag still reads exactly as the store has it");
+});
+
+test("executed: WITH a bridge the REAL _editRemoteTag posts every remote half through it, then the local half commits (review find, 2026-09-08)", () => {
+  // The dispatcher's gate is _editRemoteTag's return: `true` once the bridge took the post. Before this test the
+  // bridge branch ran only through stubs, so a `return;` there would have passed the suite while every bridged
+  // union edit silently lost its local half. Here the bridge is the web dashboard's shape: a window hook that
+  // records the frame (ui/webview/timeline-boot.ts posts it as editTag).
+  const g: any = globalThis;
+  const had = "window" in g; const prev = g.window;
+  const frames: any[] = []; const order: string[] = []; const local: any[] = [];
+  g.window = { __rompTimelineEditTag: (e: any) => { frames.push(e); order.push(e.host); } };
+  try {
+    const p: any = Object.create(TimelinePanel.prototype);
+    p._setViews = (v: any) => { order.push("local"); local.push(v); };
+    p.draw = () => {}; p._pendingViews = null; p._pendingTagEdits = {}; p._tagEditErr = null;
+    p._viewsDialog = null; p._viewsDialogBuild = null; p._laneMenu = null;
+    const rtA = { id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "team", color: "#123456", members: ["m1"] };
+    const rtB = { id: "TESTHOST-B:g7", host: "TESTHOST-B", name: "team", color: "#123456", members: ["m1"] };
+    const localTag = { id: "gL", name: "team", color: "#123456", members: ["m1", "m2"] };
+    p._views = { active: "all", hidden: [], tags: [localTag], remoteTags: [rtA, rtB] };
+    const u = { name: "team", color: "#123456", members: ["m1", "m2"], ids: ["gL", rtA.id, rtB.id], localId: "gL",
+                homes: ["TESTHOST-A", "TESTHOST-B"], remotes: [rtA, rtB] };
+    p._editTagUnion(u, { rename: "crew" });
+    assert.deepEqual(order, ["TESTHOST-A", "TESTHOST-B", "local"], "every remote half is posted first; the local half commits last");
+    assert.deepEqual(frames.map((f) => [f.host, f.name, f.rename, f.delete]),
+      [["TESTHOST-A", "team", "crew", false], ["TESTHOST-B", "team", "crew", false]], "the frames name the home and the tag, and carry the edit");
+    assert.equal(local.length, 1); assert.equal(local[0].tags[0].name, "crew");
+    assert.equal(p._pendingTagEdits["TESTHOST-A:g1"].tag.name, "crew", "each remote half renders its optimistic copy meanwhile");
+    assert.equal(p._pendingTagEdits["TESTHOST-B:g7"].tag.name, "crew");
+    assert.equal(p._tagEditErr, null, "nothing was refused");
+    // the wait is for the DISPATCH, not the owner's verdict (federation v1, pinned so a change here is deliberate):
+    // the bridge answers only on failure and only later; that refusal reverts ITS home's overlay and finds the
+    // local half already posted. Holding the local half on the owner's answer needs an ack the editTag frame does
+    // not have today.
+    p.tagEditFailed({ host: "TESTHOST-B", name: "team", error: "a tag named \"crew\" already exists there" });
+    assert.deepEqual(Object.keys(p._pendingTagEdits), ["TESTHOST-A:g1"], "only the refusing home's overlay reverts");
+    assert.equal(local.length, 1, "the local write stands; nothing here claims otherwise");
+    assert.equal(p._tagEditErr.host, "TESTHOST-B");
+    assert.doesNotMatch(p._tagEditErr.error, /nothing was changed/, "…and the notice does not say nothing changed, because something did");
+    // a REMOVE and a DELETE ride the same gate
+    frames.length = 0; order.length = 0; local.length = 0; p._tagEditErr = null;
+    p._editTagUnion(u, { remove: ["m1"] });
+    assert.deepEqual(order, ["TESTHOST-A", "TESTHOST-B", "local"]);
+    assert.deepEqual(frames.map((f) => f.remove), [["m1"], ["m1"]]);
+    frames.length = 0; order.length = 0; local.length = 0;
+    p._editTagUnion(u, { delete: true });
+    assert.deepEqual(order, ["TESTHOST-A", "TESTHOST-B", "local"]);
+    assert.deepEqual(frames.map((f) => f.delete), [true, true]);
+    assert.equal(local[0].tags.length, 0);
+  } finally {
+    if (had) g.window = prev; else delete g.window;
+  }
+});
+
+test("a gesture the host cannot honour is DISABLED with the reason as its tooltip, never offered (review find, 2026-09-08)", () => {
+  // executed: the one text the refusal notice and the tooltips share
+  const p: any = Object.create(TimelinePanel.prototype);
+  assert.equal(p._unreachableText(["TESTHOST-A"], false),
+    "this panel cannot reach TESTHOST-A, so nothing was changed. Edit with: romp tag --host TESTHOST-A");
+  assert.equal(p._unreachableText(["TESTHOST-A", "TESTHOST-B"], true),
+    "this panel cannot reach TESTHOST-A or TESTHOST-B, so nothing was changed. Edit with: romp tag --host TESTHOST-A, then romp tag --host TESTHOST-B, then romp tag (no --host) for this kernel");
+  assert.equal(p._unreachableText([""], false), "this panel cannot reach the owner, so nothing was changed. Edit with: romp tag --host <kernel>",
+    "a host-less remote falls back to the placeholder, as before");
+  // the dialog: rename, recolor and delete on a union with remote halves are held in a bridge-less host:
+  // the action renders disabled wearing the reason, and takes no click
+  assert.match(SRC, /const held = editable && !canEdit && \(tg\.remotes \|\| \[\]\)\.length\n\s*\? this\._unreachableText\(\(tg\.remotes \|\| \[\]\)\.map\(\(rt\) => rt\.host\), !!tg\.localId\) : '';/);
+  assert.match(SRC, /if \(held\) \{\n\s*a\.setAttribute\('style', 'cursor:default;opacity:0\.35;color:' \+ MENU_FG \+ ';'\);\n\s*a\.setAttribute\('title', held\);\n\s*a\.setAttribute\('aria-disabled', 'true'\);\n\s*return a;/,
+    "the disabled action: dim, no pointer, the reason as tooltip, no listeners");
+  assert.match(SRC, /action\(del, 'delete', [^\n]*, held\);\n\s*if \(!held\) \{/, "delete's hover and click ride only when not held");
+  assert.match(SRC, /action\(ren, 'rename', 'rename this tag \(everywhere it is defined\)', held\);\n\s*if \(!held\) \{/, "rename's too");
+  // re-aimed 2026-09-09 (the many-tags change): the inline swatches became one colour dot that opens a
+  // popover; a held dot wears the reason and takes no click (its listeners ride the else branch)
+  assert.match(SRC, /if \(held\) \{ dot\.setAttribute\('title', held\); dot\.setAttribute\('aria-disabled', 'true'\); \}\n\s*else \{/, "the colour dot says why, and opens nothing");
+  // the chip: a ✕ that would remove the pair from a remote half no bridge can reach is not drawn; the tooltip says why
+  assert.match(SRC, /const homesHolding = \(g\.remotes \|\| \[\]\)\.filter\(\(rt\) => \(rt\.members \|\| \[\]\)\.indexOf\(s\.id\) >= 0\)\.map\(\(rt\) => rt\.host\);\n\s*if \(homesHolding\.length && !this\._remoteBridge\(\)\) \{/);
+  assert.match(SRC, /ch\.setAttribute\('title', 'tagged "' \+ g\.name \+ '": ' \+ this\._unreachableText\(homesHolding, localHolds\)\);\n\s*ch\.setAttribute\('aria-disabled', 'true'\);\n\s*continue;/);
+  // a local-only tag (no remote halves) keeps every gesture in every host: `held` is empty without remotes
+  const p2: any = Object.create(TimelinePanel.prototype);
+  assert.equal(p2._remoteBridge(), false, "this harness has no bridge");
+});
+
 test("the lane gear carries the SAME tag editor — the shared builders, never a fork (the user 2026-08-24)", () => {
   // both surfaces call the one chip builder and the one join menu
   assert.ok((SRC.match(/this\._tagChips\(/g) || []).length >= 2, "dialog rows AND the gear");
@@ -411,6 +642,79 @@ test("the lane gear carries the SAME tag editor — the shared builders, never a
   // the gear's section: compact label row + [+] behind it, menu vocabulary throughout
   assert.match(SRC, /const tlab = trow\.createSpan\(\{ text: 'Tags' \}\);/);
   assert.match(SRC, /this\._tagJoinMenu\(am, \[s\.id\], build\);/);
+});
+
+test("the lane model menu labels a family by its own label and marks a learned version as new", () => {
+  // the family row's text is the family label from /models — no version-table lookup — so the
+  // kernel's alias default ("fable") renders exactly as a pinned id did; ✓ matches the leading word
+  assert.match(SRC, /const item = menu\.createDiv\(\{ text: c\.label \}\);/);
+  assert.match(SRC, /return kind === 'effort' \? cur === value : cur\.startsWith\(value\);/);
+  // a version a running session's CLI reported that the seed table lacks (kernel /models `learned`)
+  // is offered AND marked — same treatment as the chat's meta-menu, inlined for the foreign document
+  assert.match(SRC, /if \(v\.learned\) \{[\s\S]{0,600}row\.createSpan\(\{ text: ' new' \}\)/);
+  assert.match(SRC, /if \(v\.learned\) \{[\s\S]{0,600}font-size:0\.82em;opacity:0\.6/, "the menu vocabulary's sub-line size and opacity");
+});
+
+test("the lane version submenu opens with a Latest row that clears the family's pin through the command bridge", () => {
+  // the chat picker's floating gesture, on the lane menu: Latest sends "/model <family>" with the
+  // `floating` flag, which the kernel's sendCommand arm hands to _set_model_or_park to forget the
+  // family's remembered pin — the one gesture back to floating once a family is pinned
+  const BOOT = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "timeline-boot.ts"), "utf8");
+  const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.match(SRC, /const pick = \(value, floating\) => \{/);
+  assert.match(SRC, /this\._sendCommand\(s\.name, '\/' \+ kind \+ ' ' \+ value, kind === 'model', floating \? \{ floating: true \} : null\);/);
+  assert.match(SRC, /const pinned = !!c\.default && c\.default !== c\.value;/);
+  assert.match(SRC, /latest\.createDiv\(\{ text: 'Latest' \}\);/);
+  assert.match(SRC, /pick\(c\.value, true\)/, "sends the ALIAS with the flag");
+  assert.match(SRC, /lsub\.setAttribute\('style', 'font-size:0\.82em;opacity:0\.6;'\);[\s\S]{0,1200}for \(const v of versions\)/,
+    "heads the submenu, ahead of the versions, wearing the sub-line vocabulary");
+  assert.match(SRC, /if \(!pinned && cur\) \{ const ck = latest\.createSpan\(\{ text: '✓' \}\)/, "✓ when unpinned and the lane runs the family");
+  // the bridge carries the flag in every host: the VS Code boot glue and the kernel's shell page
+  assert.match(SRC, /_sendCommand\(name, cmd, confirm, extra\) \{/);
+  assert.match(SRC, /window\.__rompTimelineSendCommand\(name, cmd, extra \|\| undefined\); return;/);
+  // bare Obsidian (no host hook): the kernel's /send route over HTTP is the transport (T331); no tmux shell-out remains
+  assert.match(SRC, /this\._kernelPost\('\/send', \{ name, text: cmd \}\)\.then\(\(r\) => \{ if \(r && r\.ok === false\) this\._commandRefused\(name, kind, r\); \}\);/,
+    "a refusal reaches the lane, never the console alone (review find)");
+  assert.match(SRC, /_commandRefused\(name, kind, r\) \{[\s\S]{0,400}this\.settingRefused\(\{ gesture: 'command', sid, flag: kind \|\| '', text \}\);/);
+  assert.match(SRC, /if \(m && m\.gesture === 'command' && sid\) \{\s*\n[^\n]*\n\s*if \(flag\) delete this\._metaPending\[sid \+ ':' \+ flag\]; else delete this\._compactClicked\[sid\];/, "the optimistic cue is dropped");
+  assert.doesNotMatch(SRC, /console\.warn\('romp timeline: \/(send|compact)/);
+  assert.doesNotMatch(SRC, /_tmuxPath|send-keys|paste-buffer|set-buffer/, "the direct tmux path is gone");
+  assert.doesNotMatch(SRC, /require\('child_process'\), tmux/);
+  assert.match(BOOT, /__rompTimelineSendCommand: \(name: string, cmd: string, extra\?: Record<string, unknown>\) => post\(\{ type: "sendCommand", name, cmd, \.\.\.\(extra \|\| \{\}\) \}\)/);
+  assert.match(KERNEL, /window\.__rompTimelineSendCommand=function\(name,cmd,extra\)\{post\(Object\.assign\(\{type:"sendCommand",name:name,cmd:cmd\},extra\|\|\{\}\)\);\};/);
+  assert.match(KERNEL, /_route_meta_command\(be, sid, cmd, client, floating=bool\(msg\.get\("floating"\)\)\)/);
+});
+
+test("executed: the lane picker's /models list re-fetches IN PLACE on the kernel's models frame", async () => {
+  // the list was fetched once at load and never refreshed, so after a Latest un-pin the lane's next
+  // family click sent the stale pinned id and silently re-pinned. loadModelChoices is the one loader
+  // (page load is its first call); refreshModels — the frame's arm in both boots — calls it again,
+  // and the array keeps its reference so _openMetaMenu reads the fresh `default`.
+  const { loadModelChoices, MODEL_CHOICES } = requireCjs(VIEW_PATH);
+  const realFetch = (globalThis as any).fetch;
+  let served: any = { models: [{ label: "Fable", value: "fable", default: "claude-fable-5", versions: [] }], efforts: [{ label: "High", value: "high" }] };
+  (globalThis as any).fetch = async () => ({ json: async () => served });
+  try {
+    const ref = MODEL_CHOICES;
+    await loadModelChoices();
+    assert.equal(MODEL_CHOICES, ref, "same array — the menu builder's reference");
+    assert.equal(MODEL_CHOICES[0].default, "claude-fable-5", "pinned");
+    assert.deepEqual(MODEL_CHOICES[MODEL_CHOICES.length - 1], { label: "Default", value: "default" }, "the lane's own sentinel still appended");
+    served = { models: [{ label: "Fable", value: "fable", default: "fable", versions: [] }], efforts: [] };
+    const p: any = Object.create(TimelinePanel.prototype);
+    await p.refreshModels();                       // what the models frame calls
+    assert.equal(MODEL_CHOICES, ref);
+    assert.equal(MODEL_CHOICES[0].default, "fable", "un-pinned: the next family click sends the alias");
+    assert.equal(MODEL_CHOICES.length, 2);
+  } finally {
+    (globalThis as any).fetch = realFetch;
+  }
+  // both boots dispatch the frame to it — the VS Code glue and the kernel's inline browser twin
+  const BOOT = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "timeline-boot.ts"), "utf8");
+  const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.match(BOOT, /if \(m\.type === "models" && panel\.refreshModels\) \{ panel\.refreshModels\(\); return true; \}/);
+  assert.match(KERNEL, /else if\(m\.type==="models"&&panel\.refreshModels\)panel\.refreshModels\(\);/);
+  assert.match(SRC, /^loadModelChoices\(\);$/m, "page load is the first call");
 });
 
 test("the lane model menu exposes VERSIONS: submenu affordance, remembered default, keyboard (the user 2026-08-25)", () => {
@@ -477,11 +781,11 @@ test("the corner grew two icon buttons and the menus split (the user 2026-08-25)
   assert.match(SRC, /item\('Configure tags…', \{ dim: true \}\)/, "one management entry");
   assert.ok(!/item\('New tag…', \{ dim: true \}\)/.test(SRC), "New tag left the menu…");
   assert.match(SRC, /text: '\+ New tag'/,
-    "…and lives in the tag TABLE's final row (the 18:17 revision — the bulk-bar copy died)");
+    "…and lives in the row under the tag table, outside its scroll (the 18:17 revision put it in the table's final row; the bulk-bar copy died)");
   assert.match(SRC, /apply\(lensToggle\(lens, \{ tag: g\.name \}\), false\)/,
     "tag rows TOGGLE and the menu stays open (repaint in place)");
   assert.match(SRC, /apply\(\{ all: true \}, true\)/, "All is a plain pick and closes");
-  assert.match(SRC, /nv\.actives = Object\.assign\(\{\}, nv\.actives, \{ timeline: nl \}\)/,
+  assert.match(SRC, /this\._setLens\(\{ actives: Object\.assign\(this\._lensBaseActives\(\), \{ timeline: nl \}\) \}, \{ surfaces: \['timeline'\] \}\)/,
     "writes land on THIS surface's lens only");
 });
 
@@ -495,8 +799,9 @@ test("dialog polish + reachable tag management (the user 2026-08-25)", () => {
   // the dialog reads at the page's 13px form scale (the menu 12px was the too-small complaint)
   assert.match(SRC, /padding:22px 26px;font-size:13px;'/,
     "the 13px form scale rides the card's own declarations (after MENU_STYLE, whose 4px padding they beat)");
-  // the session table scrolls WITHIN the modal — chrome stays put
-  assert.match(SRC, /gridBox\.setAttribute\('style', 'flex:1 1 auto;min-height:0;overflow-y:auto;'\)/);
+  // the session table scrolls WITHIN the modal; chrome stays put (its floor since 2026-09-09: up to four rows, measured)
+  assert.match(SRC, /gridBox\.setAttribute\('style', gridStyle\(0\)\);/);
+  assert.match(SRC, /gridBox\.setAttribute\('style', gridStyle\(k && sessRowH \? Math\.round\(\(k \* sessRowH \+ \(k - 1\) \* 3\) \* 100\) \/ 100 : 0\)\);/);
   // [+] is a rounded RECTANGLE in its own column between name and tags
   assert.match(SRC, /padding:1px 7px;'\n\s*\+ 'border-radius:5px;/, "the standard button anatomy, not a circle");
   assert.ok(!/width:17px;height:17px;'\n?\s*\+ 'border-radius:50%/.test(SRC), "the circle plus is gone");
@@ -506,20 +811,23 @@ test("dialog polish + reachable tag management (the user 2026-08-25)", () => {
   // tag management reachable from EVERY open: rows with rename/recolor/delete via the union dispatcher
   assert.match(SRC, /text: 'the tags'/);
   assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\);\n\s*build\(\);/, "delete without a tag-scoped open");
-  assert.match(SRC, /this\._editTagUnion\(tg, \{ color: c \}\); build\(\);/, "the identity-palette recolor");
+  assert.match(SRC, /this\._editTagUnion\(now, \{ color: c \}\);/, "the identity-palette recolor (from the colour popover since 2026-09-09)");
 });
 
 test("the dialog redesign: tag TABLE with delete/rename/color actions, five filter rows (the user 2026-08-25, revised same day)", () => {
   // TAGS: a TABLE (the user's revision of the chip cloud) — each row the tag pill at normal size
-  // with NO ✕ on it, then delete | rename | color swatches as their own columns; delete wears the
-  // destructive convention (dim at rest, red on hover); [+ New tag] is the table's FINAL row
+  // with NO ✕ on it, then delete | rename | the colour dot as their own columns (the dot opens the
+  // palette as a popover since 2026-09-09, timeline-tags-scale.test.ts); delete wears the
+  // destructive convention (dim at rest, red on hover); [+ New tag] is the row UNDER the table (its own
+  // flex child since 2026-09-09, so the table's fold never hides it)
   assert.match(SRC, /grid-template-columns:max-content max-content max-content 1fr;/, "the tag table's four columns");
   assert.match(SRC, /the tag itself: the normal pill, NO ✕ — actions live beside it, never on it/);
-  assert.match(SRC, /this\._tagEditorFor = this\._tagEditorFor === tg\.name \? null : tg\.name;/, "rename toggles the pill into an input");
+  assert.match(SRC, /this\._tagEditorFor = this\._tagEditorFor === unionKey\(tg\) \? null : unionKey\(tg\);/,
+    "rename toggles the pill into an input — keyed by the union's stable id, which survives the rename it makes");
   assert.match(SRC, /d\.style\.color = '#F85B5A'/, "delete goes red on hover — destructive, unlike membership ✕");
   assert.match(SRC, /DELETE the tag/, "the hover says what delete does");
-  assert.match(SRC, /text: '\+ New tag'/, "creation is the table's final row");
-  assert.match(SRC, /grid-column:1 \/ -1;/, "…spanning the table's full width");
+  assert.match(SRC, /text: '\+ New tag'/, "creation is the row under the table");
+  assert.match(SRC, /const ntRow = card\.createDiv\(\);/, "…its own flex child, outside the table's scroll");
   // FILTERS: five rows — All surfaces / Chat / Sessions / Outline / Feed (the pane names), each
   // the full lens vocabulary as pills editing ONLY its surface; All-surfaces fans to all four
   assert.match(SRC, /\[\['All surfaces', '\*'\], \['Chat', 'chat'\], \['Sessions', 'timeline'\], \['Outline', 'outline'\], \['Feed', 'feed'\]\]/);

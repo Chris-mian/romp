@@ -15,6 +15,7 @@
 // kernel gates every request on the serve token (loopback included), and a
 // webview's cross-origin fetch carries no cookie.
 import { kernelUrl } from "./media";
+import { durLabel } from "./duration";
 
 export type UsageWindow = {
   key: string;
@@ -33,9 +34,12 @@ const WINS: Array<[string, number, string, string]> = [
   ["fable", 7 * 86400, "Fable 5", "F5"],
 ];
 
-// The rail's usage color ramp: green under 70%, amber under 90%, red at 90+.
+import { usageFallbackColor } from "./ctx-color";
+
+// The rail's usage color: theme-aware (ctx-color.ts) — classic keeps main's 70/90 palette
+// verbatim (the owner's call, PR #763); the yatharth themes use the unified warn/danger pair.
 export function usageColor(pct: number): string {
-  return pct >= 90 ? "#c0392b" : pct >= 70 ? "#e0b020" : "#54B204";
+  return usageFallbackColor(pct);
 }
 
 export function fmtAgo(ep: number, nowS: number): string {
@@ -46,13 +50,12 @@ export function fmtAgo(ep: number, nowS: number): string {
   return ((d ? `${d}d ` : "") + (h || d ? `${h}h ` : "") + `${m}m`).trim() + " ago";
 }
 
+// "soon" at rollover, else the ONE duration format (duration.ts durLabel) — this used to be its own
+// d/h/m formatter with no seconds, one of six span formats the 2026-09-08 audit found across the panes
 export function fmtReset(resetsAt: number, nowS: number): string {
   const dt = resetsAt - nowS;
   if (dt <= 0) return "soon";
-  const d = Math.floor(dt / 86400);
-  const h = Math.floor((dt % 86400) / 3600);
-  const m = Math.floor((dt % 3600) / 60);
-  return (d ? `${d}d ` : "") + (h || d ? `${h}h ` : "") + `${m}m`;
+  return durLabel(dt);
 }
 
 // /usage payload → the windows worth drawing (unreported windows drop out).
@@ -126,11 +129,20 @@ export function apiCell(usage: any): ApiCell | null {
   }
   if (!segs.length) return null;
   const lines = ["API-key spend"];
-  for (const [key, label] of [["day", "1 day"], ["week", "1 week"], ["month", "1 month"]] as const) {
+  // '1 month' is ROLLING 30 days (T235); 'this month' is the calendar figure the bill accrues — an older
+  // kernel ships only a calendar `month`, which the hover files under "this month" (the same skew rule)
+  for (const [key, label] of [["day", "1 day"], ["week", "1 week"], ["month", "1 month"], ["monthToDate", "this month"]] as const) {
     const seg = sp[key];
     if (!seg || typeof seg.usd !== "number") continue;
     const turns = seg.turns || 0;
     lines.push(`${label} — ${fmtUsd(seg.usd)} · ${fmtTok(seg.tok || 0)} tok · ${turns} turn${turns === 1 ? "" : "s"}`);
+    // the by-KIND split under each window (the user 2026-09-06, who read the day's token count and
+    // could not see how it was possible): cache reads — every API call of a turn re-reads the whole
+    // context — are most of it, at a tenth of the input price. A window without the split (an older
+    // kernel) simply has no second line — the rail hover's fleetSpendHTML makes the same call.
+    if (typeof seg.tokCacheR === "number")
+      lines.push(`    ${fmtTok(seg.tokCacheR)} cache read · ${fmtTok(seg.tokCacheW || 0)} cache write · `
+                 + `${fmtTok(seg.tokIn || 0)} in · ${fmtTok(seg.tokOut || 0)} out`);
   }
   return { segs, title: lines.join("\n") };
 }
@@ -340,6 +352,71 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
     .catch(() => { /* the live pushes fill it in */ });
 }
 
+// The attach box's host list, as <option> ELEMENTS: value and text set as properties, never as markup.
+// An alias is whatever ~/.ssh/config says, and the old innerHTML template (an option tag with the alias
+// interpolated into its value attribute) let a crafted one close the attribute and add a handler (2026-09-08). Non-strings are dropped, the list is capped, and an
+// empty list still names why (loud, never silently empty). Exported so the shape is testable on its own;
+// the web shell's datalist twin (_LANDING_REMOTES_JS fillHosts) builds its options the same way.
+export function fillHostSelect(sel: HTMLSelectElement, hosts: unknown, empty: string): void {
+  sel.textContent = "";
+  const all = (Array.isArray(hosts) ? hosts : []).filter((h): h is string => typeof h === "string" && h.length > 0);
+  const hs = all.slice(0, 512);
+  for (const h of hs.length ? hs : [""]) {
+    const o = document.createElement("option");
+    o.value = h;
+    o.textContent = h || empty;
+    sel.appendChild(o);
+  }
+  if (all.length > hs.length) {                    // a cut list says so, never silently (the kernel's fillHosts wears the same marker)
+    const o = document.createElement("option");
+    o.value = o.textContent = `… ${all.length - hs.length} more not shown`;
+    o.disabled = true;
+    sel.appendChild(o);
+  }
+}
+
+// The sub-panel's note for rows the kernel's whitelist left out of a peer's /tunnels/of answer (a row whose
+// host ssh would not accept): one sentence, worn by BOTH panels — the web shell's subBlock carries the same
+// words (net-remote-controls.test.ts pins both). "" when nothing was left out, or the count is not a count.
+// A fetch rejection's reason, as an Error: an Error as it is; an object by its message, or its JSON when it has none
+// (the old wrap flattened it to "[object Object]"); null and undefined as "fetch rejected"; anything else by its string.
+// The caller marks the result as a network fault, which the pickers and the popover read apart from a status.
+export type FetchFault = Error & { network?: boolean; httpStatus?: number };
+export function asFetchError(e: unknown): FetchFault {
+  if (e instanceof Error) return e as FetchFault;
+  if (e && typeof e === "object") {
+    const o: any = e;
+    let text = typeof o.message === "string" && o.message ? o.message : "";
+    if (!text) { try { text = JSON.stringify(e); } catch { text = String(e); } }
+    return new Error(text);
+  }
+  return new Error(e == null ? "fetch rejected" : String(e));
+}
+
+// The host picker's answer to a failed read, one rule for both surfaces (the landing page's twin says the same): a
+// non-ok status or an unparseable body keeps the last list once one was read; a rejected fetch never does (a dead
+// kernel must not hide behind a stale list), and a first load's failure is named by its kind.
+export function hostPickerVerdict(err: FetchFault | null | undefined, lastHosts: string[] | null): { keep: boolean; label: string } {
+  const network = !!(err && err.network);
+  if (lastHosts && !network) return { keep: true, label: "(no ~/.ssh/config hosts)" };
+  if (network) return { keep: false, label: "(kernel unreachable)" };
+  if (err && err.httpStatus) return { keep: false, label: `(the kernel answered HTTP ${err.httpStatus})` };
+  return { keep: false, label: "(the kernel's answer could not be read)" };
+}
+
+// The popover's line for a failed /tunnels read: a status (the kernel is up and refusing or failing), a rejected fetch
+// (the kernel is unreachable), or a 200 whose body will not parse (the kernel is up; its answer is not).
+export function tunnelsFailureLine(err: FetchFault | null | undefined, base: string): string {
+  if (err && err.httpStatus) return `The kernel answered HTTP ${err.httpStatus} to /tunnels; retrying…`;
+  if (err && err.network) return `Couldn't reach the kernel (${base}) — retrying…`;
+  return "The kernel's answer to /tunnels could not be read; retrying…";
+}
+
+export function droppedRowsNote(via: string, dropped: unknown): string {
+  const n = typeof dropped === "number" && dropped > 0 ? Math.floor(dropped) : 0;
+  return n ? `${n} row${n === 1 ? "" : "s"} from ${via} had no usable host and ${n === 1 ? "was" : "were"} left out` : "";
+}
+
 // The remote-kernels popover — the strip twin of the web shell's rail-net
 // popover (_LANDING_REMOTES_JS in bin/romp-kernel): same kernel endpoints
 // (/ssh-hosts, /tunnels, /tunnels/detach|update|start), leaner chrome. The two
@@ -398,7 +475,8 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
 
   const LBL: Record<string, string> = {
     up: "connected", authorizing: "authorizing…", connecting: "connecting…", starting: "connecting…",
-    "no-kernel": "kernel not answering", down: "reconnecting…", error: "error",   // a row exists = intent stands; romp never stops dialing (the user 2026-08-24)
+    "no-kernel": "kernel not answering", restarting: "restarting after update…",
+    down: "reconnecting…", error: "error",   // a row exists = intent stands; romp never stops dialing (the user 2026-08-24)
   };
   // Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
   // Mirrors the web popover's TIP map — the two copies must say the same thing.
@@ -408,6 +486,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
     connecting: "The ssh tunnel is up; waiting for the remote kernel to answer on its port.",
     starting: "The ssh tunnel is up; waiting for the remote kernel to answer on its port.",
     "no-kernel": "The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine's romp there and boots it.",
+    restarting: "This machine just pushed its build there; that kernel is restarting into it and will answer again in a moment. Nothing to do.",
     down: "The ssh tunnel is not up. romp keeps retrying on its own, waiting longer between tries the longer it stays down, so a machine that comes back is picked up without you doing anything. Try now dials immediately.",
     error: "The connection failed. Hover the status text for the reason romp got back. romp keeps retrying in the background.",
   };
@@ -415,13 +494,24 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
   const schedule = (ms: number) => { clearTimeout(timer); if (!pop.hidden) timer = setTimeout(refresh, ms); };
   const busy = (s: string) => s !== "up" && s !== "down" && s !== "error" && s !== "no-kernel";
 
+  let lastHosts: string[] | null = null;   // the last list read: a failed refresh keeps it instead of painting none
   function loadHosts() {
-    fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
-      const hs: string[] = (d && d.hosts) || [];
-      sel.innerHTML = hs.length
-        ? hs.map((h) => `<option value="${h}">${h}</option>`).join("")
-        : `<option value="">(no ~/.ssh/config hosts)</option>`;
-    }).catch(() => { sel.innerHTML = `<option value="">(kernel unreachable)</option>`; });   // loud, never silently empty
+    // a non-ok answer is not the host list (a JSON-bodied 5xx painted "no ~/.ssh/config hosts"): it throws with its
+    // status, and the catch keeps the last good list, as it does for a body that will not parse; a REJECTED fetch (the
+    // kernel gone) keeps the kernel-unreachable signal whatever was read before, so a dead kernel never hides behind a
+    // stale list; both say so in the console, and the kept list is named only when there is one
+    fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).catch((e: unknown) => { const f = asFetchError(e); f.network = true; throw f; })
+      .then((r) => { if (!r.ok) { const e: FetchFault = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })
+      .then((d) => { lastHosts = (d && d.hosts) || []; fillHostSelect(sel, lastHosts, "(no ~/.ssh/config hosts)"); })
+      .catch((err: FetchFault) => {
+        const v = hostPickerVerdict(err, lastHosts);   // the rule, executed by the strip's test over every failure shape
+        try { console.error("romp: ssh hosts could not be read" + (v.keep ? "; keeping the last list" : ""), err); } catch { /* the line is never worth the read */ }
+        if (v.keep) { fillHostSelect(sel, lastHosts as string[], v.label); return; }
+        // nothing kept: the list is forgotten too, so the next failure cannot claim to keep one and the stale list never
+        // repaints after the unreachable signal
+        lastHosts = null;
+        fillHostSelect(sel, [], v.label);   // loud, never silently empty
+      });
   }
 
   function act(path: string, host: string, b: HTMLButtonElement, busyText: string, via?: string) {
@@ -559,6 +649,11 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
             : bb > 0 ? ` · behind ${bb} commit${bb === 1 ? "" : "s"}` : ver;
         }
         if (stale) ver = ver.replace(" · ", " · last known: ");
+      } else if (t.restartPending) {
+        // its checkout matches this machine, but its kernel booted from older kernel code: not behind, a restart pending
+        // (plans/drift-by-running-code.md); the Update offer below asks that restart. A remembered flag (the row not
+        // polled while disconnected) wears the same hedge the drift words do.
+        ver = stale ? " · last known: running older code" : " · running older code";
       }
       // A connected host reporting NO build at all runs a plain file copy (no git checkout): it cannot
       // name a release or commit, and drift can't be measured — it may be months behind and never say
@@ -568,6 +663,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       nm.textContent = `${t.host} — ${LBL[t.status] || t.status}` + ver;
       nm.title = (TIP[t.status] || "")
         + (t.outOfDate ? `\n\nRunning ${t.kernelSha || "?"}${t.kernelDate ? " from " + t.kernelDate : ""}; this machine is at ${t.localSha || "?"}.` : "")
+        + (!t.outOfDate && t.restartPending ? `\n\nIts checkout is at ${t.checkoutSha || t.localSha || "?"}, the same as this machine, but its kernel still runs ${t.kernelSha || "?"}: a restart brings it onto the code it holds.` : "")
         + (unversioned ? `\n\n${t.host} is running romp from a plain file copy — not a git checkout — so it cannot name its release or commit, and how far it is from this machine cannot be measured: it may be far behind and never say so. Reinstall it as a git clone to restore the build name and updates.` : "")
         + (stale && t.outOfDate ? `\nLast confirmed ${seen || "not since this kernel started"}; not re-checked while ${LBL[t.status] || t.status}.` : "")
         + (t.outOfDate && t.checkinPeer
@@ -576,6 +672,16 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
             : " No ssh path from this machine (it checked in over its own tunnel) — sync from its own dashboard.")
           : "");
       r.append(dot, nm);
+      // a PINNED machine's mark (plans/settings-across-machines.md, phase two): the host keeps one or more synchronized settings
+      // against the mesh; the glyph names them on hover, the same fact the settings' machine selector shows per row
+      const pinnedStores = Object.keys((t.settingsPinned as Record<string, boolean> | null) || {}).filter((k) => !!(t.settingsPinned as Record<string, boolean>)[k]);
+      if (pinnedStores.length) {
+        const pin = document.createElement("span");
+        pin.className = "sn-pin";
+        pin.textContent = "pinned";
+        pin.title = `${t.host} keeps its own value for ${pinnedStores.join(", ")}: other machines' picks are not applied there (Settings, the machine selector).`;
+        r.appendChild(pin);
+      }
       // Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is
       // HELD for your approval; isolated = dashboard only, no postal. The gate lives in the bus.
       const trust = document.createElement("select");
@@ -632,9 +738,11 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       }
       if (t.status === "up" && t.askPull && !apx) {
         const a = document.createElement("button");
-        a.textContent = "Update";
-        a.title = `${t.host} checked in over its own tunnel, so this machine cannot push to it. This asks its romp `
-          + `to pull these commits from here and restart, over the link it already holds.`;
+        a.textContent = t.outOfDate ? "Update" : "Restart";
+        a.title = t.outOfDate
+          ? `${t.host} checked in over its own tunnel, so this machine cannot push to it. This asks its romp `
+            + `to pull these commits from here over the link it already holds, and to restart only if what it pulled changes what its kernel runs.`
+          : `${t.host} holds this machine's build but its kernel still runs older kernel code. This asks it to restart onto the code it holds.`;
         a.addEventListener("click", () => act("/tunnels/askpull", t.host, a, "Asking…"));
         r.appendChild(a);
       }
@@ -851,7 +959,8 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       return;
     }
     const rows = d.tunnels || [];
-    if (!rows.length) {
+    const note = droppedRowsNote(via, d.dropped);
+    if (!rows.length && !note) {
       const e = document.createElement("div");
       e.className = "sn-sub sn-empty";
       e.textContent = `${via} has no hosts attached.`;
@@ -859,6 +968,12 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       return;
     }
     for (const s of rows) subRow(via, s);
+    if (note) {                                    // said beneath the rows that passed, never a silently shorter list
+      const e = document.createElement("div");
+      e.className = "sn-sub sn-empty";
+      e.textContent = note;
+      list.appendChild(e);
+    }
   }
 
   function subRow(via: string, s: any) {
@@ -885,6 +1000,8 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
           : ab > 0 ? ` · ahead ${ab} commit${ab === 1 ? "" : "s"}`
           : bb > 0 ? ` · behind ${bb} commit${bb === 1 ? "" : "s"}` : ver;
       }
+    } else if (s.restartPending) {
+      ver = " · running older code";
     }
     nm.textContent = `${s.host} — ${LBL[s.status] || s.status}${ver}`;
     nm.title = `${via}'s tunnel to ${s.host}. ` + (TIP[s.status] || "")
@@ -991,7 +1108,11 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
 
   let diagPending = false;   // report the first /tunnels outcome of each open, not every 3s poll
   function refresh() {
-    fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
+    // a non-ok answer is not the host list (a proxy in JSON-error mode answers a 5xx whose body parses, and it read as
+    // an empty list: "No remotes attached", the autoUpdate box mirrored off, a clientDiag filed as ok); it throws into
+    // the catch below, the same rule as the dashboard rail's refresh and the federation manager's poll
+    fetch(kernelUrl("/tunnels"), { cache: "no-store" }).catch((e: unknown) => { const f = asFetchError(e); f.network = true; throw f; })   // the picker's marker
+      .then((r) => { if (!r.ok) { const e: FetchFault = new Error("/tunnels answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); }).then((d) => {
       const ts = (d && d.tunnels) || [];
       if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: true, tunnels: ts.length } }); }
       if (!autoCb.disabled) autoCb.checked = !!(d && d.autoUpdate);   // mirror the kernel; never clobber a write in flight
@@ -1003,14 +1124,16 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       const pushing = ts.some((t: any) => t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting" || t.autoPush.phase === "pulling"));
       button.classList.toggle("busy", ts.some((t: any) => busy(t.status)) || pushing);
       schedule(ts.some((t: any) => busy(t.status)) || pushing ? 600 : 3000);   // fast while mid-attach/pushing, slow keep-alive after
-    }).catch((err) => {
-      // Fail loudly: an unreachable kernel renders as an error line, never a
-      // silently empty box that reads as a dead button.
+    }).catch((err: FetchFault) => {
+      // Fail loudly, and say which failure (tunnelsFailureLine, executed by the strip's test): a status, an unreachable
+      // kernel, or an answer that would not parse; the console gets the error too, and nothing renders as a silently
+      // empty box that reads as a dead button.
+      try { console.error("romp: /tunnels could not be read", err); } catch { /* never worth the read */ }
       if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: false, err: String(err) } }); }
       list.textContent = "";
       const e = document.createElement("div");
       e.className = "sn-empty";
-      e.textContent = `Couldn't reach the kernel (${(window as any).__rompKernelBase || "same origin"}) — retrying…`;
+      e.textContent = tunnelsFailureLine(err, (window as any).__rompKernelBase || "same origin");
       list.appendChild(e);
       schedule(3000);
     });

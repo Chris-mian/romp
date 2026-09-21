@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { parseAgentNotif } from "./agent-notif";
+import { parseAgentNotif, notifHead } from "./agent-notif";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -54,6 +54,44 @@ test("a non-zero exit shows in the detail", () => {
   assert.equal(a!.detail, "exit 2");
 });
 
+// CLI 2.1.263 (the user 2026-09-07): the notification arrives with a fixed preamble paragraph AHEAD of the tag,
+// or wrapped in a <system-reminder> with the preamble inside. The kernel peels the wrappers and lifts the
+// preamble out; whatever reaches here — the clean inner XML, or the raw preamble-led text on the live tail —
+// must still parse to the agent, never to null (null would have left the record a bubble of its own text).
+const PREAMBLE = "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\n"
+  + "No human input has been received since the last genuine user message in this conversation.";
+
+test("a preamble-led notification parses to the same agent card", () => {
+  const a = parseAgentNotif(PREAMBLE + "\n\n<task-notification>" + NOTIF + "</task-notification>");
+  assert.ok(a);
+  assert.equal(a!.kind, "agent");
+  assert.equal(a!.label, "widget audit");
+  assert.match(a!.result, /Found 3 widgets/);
+  assert.doesNotMatch(a!.result, /SYSTEM NOTIFICATION/, "the preamble never leaks into the report");
+});
+
+test("a system-reminder-wrapped notification with the preamble inside parses to the agent", () => {
+  // the kernel peels <system-reminder> and hands the inner text as one reminder: preamble + notification
+  const inner = PREAMBLE + "\n\n<task-notification>" + NOTIF + "</task-notification>";
+  const a = parseAgentNotif(inner);
+  assert.ok(a);
+  assert.equal(a!.kind, "agent");
+  assert.equal(a!.toolUseId, "toolu_0abcDEF123");
+});
+
+test("the head names WHAT it is before WHICH one, in the user's words", () => {
+  // "Background agent finished · widget audit", not the bare "widget audit · completed" (the user 2026-09-07:
+  // a report card whose head is just the agent's description reads like a message about that topic)
+  assert.equal(notifHead(parseAgentNotif(NOTIF)!), "Background agent finished · widget audit");
+  assert.equal(notifHead(parseAgentNotif('<task-id>x</task-id><status>failed</status><summary>Agent "widget audit" came to rest</summary>')!),
+               "Background agent failed · widget audit");
+  assert.equal(notifHead(parseAgentNotif('<task-id>x</task-id><status>completed</status>'
+    + '<summary>Background command "flaky check" completed (exit code 2)</summary>')!),
+               "Background command finished · flaky check · exit 2");
+  assert.equal(notifHead(parseAgentNotif('<task-id>x</task-id><status>failed</status><summary>background sweep came to rest</summary>')!),
+               "Background task failed · background sweep");
+});
+
 test("a plain <system-reminder> (no task-id / Agent summary) is NOT an agent card", () => {
   assert.equal(parseAgentNotif("Your context is getting full. Consider /compact."), null);
   assert.equal(parseAgentNotif("<system-reminder>be concise</system-reminder>"), null);
@@ -79,26 +117,34 @@ test("render.ts splits agent notifications out of the reminders into agent notic
   assert.match(RENDER, /turn\.appendChild\(renderAgentNotif\(a, ev\.taskOutputs,/);
   assert.match(RENDER, /else plain\.push\(r\);/);
   // the leftover plain reminders now get their OWN muted notice card too (not the old italic fold)
-  assert.match(RENDER, /noticeCard\(\{ variant: "reminder", chip: "system"/);
-  assert.match(RENDER, /\$\{n\} reminder/);
-  // an agent notif IS a notice card now (accent-blue); the chip is "task" for a command, "agent" for an agent
-  assert.match(RENDER, /const chip = a\.kind === "agent" \? "agent" : "task";/);
-  assert.match(RENDER, /noticeCard\(\{ variant: "agent", chip, head, body/);
+  // 2026-09-08 (the notice-vocabulary pass): both ride the ONE builder, notice(spec) — the reminders under the
+  // SYSTEM source label, an agent report under "background agent" / a command under "background command", the
+  // kind carried by the SOURCE label + line glyph rather than a coloured chip (noticeCard is retired)
+  assert.match(RENDER, /notice\(\{ src: "system", glyph: "system", gist: `\$\{n\} reminder\$\{n > 1 \? "s" : ""\}`, body,/);
+  assert.match(RENDER, /src: a\.kind === "agent" \? "background agent" : "background command",/);
+  assert.match(RENDER, /glyph: a\.kind === "agent" \? "agent" : "command",/);
 });
 
 test("the card gist never re-prints its body — the head is label+detail, the body is result or command/output", () => {
   // the double-print bug (the user 2026-07-23): the old card put the summary on BOTH the head gist and the
   // body. The head is now the compact "label · detail"; the body is the RESULT (agent) or the command +
   // output tail (command), and is omitted entirely when there is nothing more than the gist.
-  assert.match(RENDER, /const head = a\.detail \? `\$\{a\.label\} · \$\{a\.detail\}` : a\.label;/);
-  assert.match(RENDER, /collapsible: hasBody/);
+  // the head is notifHead's "Background agent finished · <label>" since 2026-09-08 (the sourced-notice work): it
+  // says what the card IS before which agent — the old `label · detail` pin was retired deliberately
+  // 2026-09-08: the head is the builder's GIST slot (notifHead's words), the body is passed only when there is one
+  assert.match(RENDER, /gist: notifHead\(a\), meta: \/\^exit \\d\+\$\/\.test\(a\.detail\) \? a\.detail : undefined,/);
+  assert.match(RENDER, /body: hasBody \? body : null, key, nested: opts\.nested !== false \}\);/);
   assert.doesNotMatch(RENDER, /p\.textContent = a\.summary/);   // the old "print the summary again" body is gone
-  // a flat card (no body) drops the whole body wrapper so there is no stray padding
-  assert.match(RENDER, /if \(hasBody\) \{ const bodyEl = el\("div", "notice-body"\)/);
+  // a flat card (no body) drops the whole body wrapper so there is no stray padding — the builder's rule
+  assert.match(RENDER, /if \(body\) \{ const wrap = el\("div", "notice-body"\); wrap\.appendChild\(body\); card\.appendChild\(wrap\); \}/);
 });
 
-test("styles define the agent notice card in the romp accent and the command detail sub-labels", () => {
-  assert.match(CSS, /\.notice-card-agent \{ border-left-color: var\(--accent\); \}/);
-  assert.match(CSS, /\.notice-chip-agent \{ color: var\(--accent\)/);
+test("styles: the notice glyph is coloured by the severity rail (info = dim), and the command detail sub-labels exist", () => {
+  // 2026-09-08 (the notice-vocabulary pass): the per-variant accent rules (.notice-card-agent / .notice-chip-agent)
+  // are retired — a background report is an INFO notice whose kind is its source label + fork glyph; the glyph
+  // reads the rail's colour, never a colour of its own
+  assert.match(CSS, /\.notice-glyph \{[^}]*color: var\(--notice-rail, var\(--dim\)\)/);
+  assert.match(CSS, /\.notice-sev-info\s+\{ --notice-rail: var\(--dim\);/);
+  assert.doesNotMatch(CSS, /\.notice-card-agent|\.notice-chip-agent/);
   assert.match(CSS, /\.notice-sub \{/);
 });

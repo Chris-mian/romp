@@ -15,7 +15,7 @@ Synthetic only — hermetic temp STATE, placeholder host, no real ssh.
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -24,9 +24,9 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 PQ_WARNING = (
     "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
@@ -92,7 +92,8 @@ class DivergedMessageIsActionable(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "DIVERGED\n", PQ_WARNING)
             return subprocess.CompletedProcess(argv, 0, "DIR:/home/u/romp\nHEAD:deadbeef\nDIRTY:\n", PQ_WARNING)
         with mock.patch.object(km.subprocess, "run", side_effect=fake_run), \
-             mock.patch.object(km, "_local_head", side_effect=lambda short=False: "cafe1234" if not short else "cafe123"):
+             mock.patch.object(km, "_local_head", side_effect=lambda short=False: "cafe1234" * 5 if not short else "cafe123"), \
+             mock.patch.object(km, "_fresh_local_head", return_value="cafe1234" * 5):
             return km._update_remote("TESTHOST")
 
     def test_names_the_rewritten_history_cause_and_the_remedy(self):

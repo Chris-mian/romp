@@ -15,7 +15,7 @@ const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-ke
 
 test("the retrying badge is built once and rides the session-state row beside the API-error badge", () => {
   assert.match(FEED, /const retryBadge = el\("span", "fask-retrying"\)/);
-  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, jauthBadge, blkBadge,/,
+  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge,/,
     "session-STATE badges ride the name row, off the action row");
   assert.match(FEED, /a\._retryBadge = retryBadge;/);
 });
@@ -33,8 +33,9 @@ test("the tooltip says the session is in motion, not stalled", () => {
   assert.match(FEED, /still in motion, not stalled; it resumes on its own when the API recovers/);
 });
 
-test("it wears the red api-trouble family, faded because the session is still in motion", () => {
-  assert.match(CSS, /\.fask-retrying \{[^}]*color: #e5484d/);
+test("it wears the retrying amber its ring, chip and lane badge wear (plans/needs-you.md: red is the hard stop's), faded because the session is still in motion", () => {
+  assert.match(CSS, /\.fask-retrying \{[^}]*color: var\(--st-retrying-bg\); border: 1px solid var\(--st-retrying-bg\)/);
+  assert.doesNotMatch(CSS, /\.fask-retrying \{[^}]*#e5484d/, "the alarm red is the hard stop's alone");
   assert.match(CSS, /\.fask-retrying \{[^}]*font-size: 0\.7em/, "same size as .fask-apierror — same information type");
   assert.match(CSS, /\.fask-retrying \{[^}]*opacity: 0\.85/, "faded — in motion, unlike the stopped-on-error badge");
 });

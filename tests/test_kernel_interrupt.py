@@ -7,9 +7,10 @@ Isolated from test_kernel.py (a peer is churning it). Synthetic fixtures only.""
 import json
 import os
 import tempfile
+import types
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin")
@@ -17,10 +18,10 @@ BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+em = load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-km = SourceFileLoader("romp_kernel_intr", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_intr", os.path.join(BIN, "romp-kernel"))
 
 # The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
 # tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
@@ -112,14 +113,14 @@ class InterruptingChip(unittest.TestCase):
         km._interrupt_clicked.clear()
 
     def test_stamp_reads_interrupting_before_the_stop_lands(self):
-        # tmux path (no SDK flag in the snapshot): stop sent, no stop record yet → interrupting
+        # no backend flag in the snapshot: stop sent, no stop record yet → interrupting
         km._interrupt_clicked[SID] = NOW - 2
         self.assertTrue(km._interrupting(SID, {"turns": [{"atoms": []}]}, NOW, None),
                         "stop sent, no stop record yet → interrupting")
 
     def test_a_closed_tail_without_a_stop_record_stays_interrupting(self):
         # THE FIX (the user 2026-07-07): the open/closed state of the turn is no longer consulted at all —
-        # only the stop RECORD (or the cap) settles a tmux interrupt. A tail that momentarily reads closed
+        # only the stop RECORD (or the cap) settles the interrupt. A tail that momentarily reads closed
         # mid-settle must NOT drop the chip to 'working' (the flicker they reported).
         km._interrupt_clicked[SID] = NOW - 2
         self.assertTrue(km._interrupting(SID, {"turns": [{"atoms": []}]}, NOW, None),
@@ -233,7 +234,7 @@ class FeedCardInterruptingBadge(unittest.TestCase):
 
     def test_build_feed_computes_and_gates_the_interrupting_badge(self):
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_key) + inspect.getsource(km._feed_session_entry)   # T368: the key computes it, the body wears it
         self.assertIn("sess_interrupting = _interrupting(fsid, ps or {}, now, tm)", src,
                       "the card reuses the chip's derivation — safe to call again in this push")
         self.assertIn('"interrupting": bool(sess_interrupting', src, "the card carries the in-flight flag")
@@ -399,7 +400,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         km._parse_cache.clear()
         km._autonudge_cache.clear()
         km._pending_ops.clear()
-        self.tmux = {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
+        self.live = {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
                            "context": None, "compactPct": None, "color": None}}
         km._set_auto_nudge(True)
 
@@ -438,13 +439,22 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         return g
 
     def _stub(self):
+        """The nudge goes out through the owning backend (Sessions.backend_for(sid).send): a fake that
+        records each (sid, body) stands in, with an empty queue so the in-flight guard reads nothing."""
         sent = []
-        saved = km._tmux_send, jd.optimistic_followup
-        km._tmux_send = lambda name, body, **kw: sent.append((name, body))
+        saved = km.Sessions.backend_for, jd.optimistic_followup
+
+        class _Be:
+            def owns(self, sid): return True
+            def busy(self, sid): return False
+            def pending_queued(self, sid): return []
+            def send(self, sid, body): sent.append((sid, body)); return True
+        be = _Be()
+        km.Sessions.backend_for = staticmethod(lambda sid: be)
         jd.optimistic_followup = lambda sid, gid: True
 
         def restore():
-            km._tmux_send, jd.optimistic_followup = saved
+            km.Sessions.backend_for, jd.optimistic_followup = staticmethod(saved[0]), saved[1]
         return sent, restore
 
     def test_control_a_normally_ended_stall_still_nudges(self):
@@ -454,7 +464,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         g = self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.tmux)
+            km._auto_nudge_tick(NOW, self.live)
             self.assertEqual(len(sent), 1, "the orphaned working goal is nudged")
             self.assertIn("romp-goal-id: " + g, sent[0][1])
         finally:
@@ -465,7 +475,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.tmux)
+            km._auto_nudge_tick(NOW, self.live)
             self.assertEqual(sent, [], "the user stopped this turn themselves — they're driving, not stalled")
         finally:
             restore()
@@ -476,7 +486,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         km._pending_ops[SID] = [("model", "fable")]
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.tmux)
+            km._auto_nudge_tick(NOW, self.live)
             self.assertEqual(sent, [], "queued user intent outranks a nudge — never jump the user's queue")
         finally:
             restore()
@@ -495,7 +505,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.tmux)
+            km._auto_nudge_tick(NOW, self.live)
             self.assertEqual(sent, [], "a peer spoke, the user didn't — still their pause, still suppressed")
         finally:
             restore()
@@ -507,7 +517,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.tmux)
+            km._auto_nudge_tick(NOW, self.live)
             self.assertEqual(len(sent), 1, "the user re-engaged and the goal re-stalled → nudging resumes")
         finally:
             restore()
@@ -518,7 +528,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._transcript(interrupted=True)
         self._goal()
         km._parse(str(self.tpath), SID, NOW)                       # warm the cache (stands in for _warm_fleet_bg)
-        card = next(a for a in km.build_feed(NOW, self.tmux)["asks"] if a["itemId"] == SID + ":gw")
+        card = next(a for a in km.build_feed(NOW, self.live)["asks"] if a["itemId"] == SID + ":gw")
         self.assertTrue(card.get("interrupted"), "user-stopped + no message since → interrupted badge")
 
     def test_feed_badge_clears_once_the_user_re_engages(self):
@@ -526,7 +536,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._append([uline(T0 + 200, "keep going with plan B", "u4", "u3")])   # user spoke; turn back open
         self._goal()
         km._parse(str(self.tpath), SID, NOW)
-        card = next(a for a in km.build_feed(NOW, self.tmux)["asks"] if a["itemId"] == SID + ":gw")
+        card = next(a for a in km.build_feed(NOW, self.live)["asks"] if a["itemId"] == SID + ":gw")
         self.assertFalse(card.get("interrupted"), "the user's next message retires the badge")
 
 
@@ -553,7 +563,7 @@ class AutoNudgeArming(AutoNudgeInterruptGate):
         g = self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.tmux)
+            km._auto_nudge_tick(NOW, self.live)
             self.assertEqual(len(sent), 1, "the working goal takes its FIRST nudge even though the "
                                            "latest turn is romp-injected (the restart banner)")
             self.assertIn("romp-goal-id: " + g, sent[0][1])
@@ -567,7 +577,7 @@ class AutoNudgeArming(AutoNudgeInterruptGate):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.tmux)
+            km._auto_nudge_tick(NOW, self.live)
             self.assertEqual(len(sent), 1)
             self._write([
                 uline(T0, "please wire the thing", "u1"),
@@ -575,7 +585,7 @@ class AutoNudgeArming(AutoNudgeInterruptGate):
                 uline(T0 + 100, "<!-- romp-injected -->[romp] status check follow-up", "u2", "a1"),
                 aline(T0 + 120, "still where I left it.", "a2", "u2", "end_turn")])
             km._parse_cache.clear()
-            km._auto_nudge_tick(NOW + 10, self.tmux)
+            km._auto_nudge_tick(NOW + 10, self.live)
             self.assertEqual(len(sent), 1, "a romp-triggered response turn does not move arm_id → no re-fire")
         finally:
             restore()
@@ -587,7 +597,7 @@ class AutoNudgeArming(AutoNudgeInterruptGate):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.tmux)
+            km._auto_nudge_tick(NOW, self.live)
             self.assertEqual(sent, [], "no genuine ended turn to arm off → never fires")
         finally:
             restore()
@@ -639,3 +649,97 @@ class KernelDisplayParseReadsStates(unittest.TestCase):
                         "the states idle transition became an idle atom in the display parse")
         self.assertFalse(km._session_working(ps["turns"]),
                          "a states-only idle transition clears 'working' on the display parse (cache busted)")
+
+
+class RefusedInterruptPaintsNothing(unittest.TestCase):
+    """The optimistic stamp lands only when the backend TOOK the stop (2026-09-11). Ctrl+C in an idle Codex
+    session's composer, or a Stop click reaching the kernel just as its turn ended, asked the Codex backend to
+    interrupt a session with no turn in flight: it answered False and sent nothing, yet the WS op stamped
+    _interrupt_clicked anyway. The merged liveness row carries no `interrupting` flag (the SDK merge copies an
+    explicit key list), so _interrupting took the transcript path and could clear the stamp only on a stop
+    record an idle session never writes, or at the 120 s cap: the chat chip, the timeline lane and the feed
+    badge read Interrupting… for two minutes with nothing in flight, and a turn started inside that window
+    read Interrupting… over Working. And a refusal WITH work in flight (the Codex backend answers False too
+    while a turn's start is still being acknowledged, when its app-server client is gone, or when the
+    interrupt RPC raised) is a stop that did not land: gated on the stamp alone it read as an idle press and
+    the click had no visible effect, so that case toasts (review find, same day). Drives the real _drive with
+    the backend as the one stubbed seam; busy() is the ABC's in-flight signal the arm reads on a refusal."""
+
+    def setUp(self):
+        self._saved = (km._kernel_knows, km.Sessions.__dict__["backend_for"],
+                       km._suppress_session_retry, km._mark_views_dirty)
+        km._kernel_knows = lambda sid: True                 # a session this kernel has; _drive refuses a foreign one
+        self.suppressed = []                                # the ledger write is test_session_retry_suppress's subject;
+        km._suppress_session_retry = lambda sid: (self.suppressed.append(sid), None)[1]   # here only THAT it ran
+        km._mark_views_dirty = lambda *a, **k: None         # no pusher in the test
+        km._interrupt_clicked.clear()
+        self.warned = []
+        self.client = {"send": lambda s: self.warned.append(json.loads(s))}
+
+    def tearDown(self):
+        (km._kernel_knows, km.Sessions.backend_for, km._suppress_session_retry, km._mark_views_dirty) = self._saved
+        km._interrupt_clicked.clear()
+
+    def _backend(self, verdict, busy=None, compacting=None):
+        asked = []
+        be = types.SimpleNamespace(interrupt=lambda sid: (asked.append(sid), verdict)[1], busy=lambda sid: busy)
+        if compacting is not None:                        # a double without the verb stands for a backend that has none
+            be.compacting = lambda sid: compacting
+        km.Sessions.backend_for = staticmethod(lambda sid: be)
+        return asked
+
+    def test_a_refused_stop_leaves_no_interrupting_stamp(self):
+        asked = self._backend(False, busy=False)            # Codex with no turn in flight and nothing queued
+        self.assertTrue(km._drive({"type": "interrupt", "id": SID}, self.client), "the op is consumed")
+        self.assertEqual(asked, [SID], "the backend was asked — the gate reads its answer, it does not pre-empt it")
+        self.assertNotIn(SID, km._interrupt_clicked,
+                         "nothing was interrupted, so nothing reads Interrupting… — the chip stays honest")
+        self.assertEqual(self.warned, [], "nothing to stop is not a failure: an idle Ctrl+C stays quiet")
+        self.assertEqual(self.suppressed, [SID],
+                         "a refused stop is still the person asking romp to stop retrying into this thread")
+
+    def test_a_refused_stop_on_a_dead_tab_stays_quiet_too(self):
+        self._backend(False, busy=None)                     # the unowned route: no backend, no in-flight signal
+        self.assertTrue(km._drive({"type": "interrupt", "id": SID}, self.client))
+        self.assertNotIn(SID, km._interrupt_clicked)
+        self.assertEqual(self.warned, [], "no signal of work in flight → nothing to report")
+
+    def test_a_refused_stop_with_work_in_flight_says_so(self):
+        # the Codex backend's False with a turn still in flight: its start not yet acknowledged, its
+        # app-server client gone, or the interrupt RPC raised — the stop did NOT land
+        asked = self._backend(False, busy=True)
+        self.assertTrue(km._drive({"type": "interrupt", "id": SID}, self.client))
+        self.assertEqual(asked, [SID])
+        self.assertNotIn(SID, km._interrupt_clicked, "no stop landed, so nothing reads Interrupting…")
+        self.assertEqual([w["type"] for w in self.warned], ["warn"],
+                         "…and the person who clicked hears that their stop was dropped, once")
+        self.assertEqual(self.warned[0]["text"], "the stop was not delivered: the session is still working")
+        self.assertEqual(self.suppressed, [SID], "the press still stops romp's auto-retry into the thread")
+
+    def test_a_refused_stop_under_a_compaction_is_worded_for_the_state(self):
+        # Esc and the Stop button during a compaction (review find, 2026-09-21): busy() reads True under the
+        # backend's compaction bracket and interrupt() is the no-turn False, so the press answered "still working"
+        # under a chip reading Compacting. The backend's compacting() verdict, by identity, is read ahead of busy.
+        asked = self._backend(False, busy=True, compacting=True)
+        self.assertTrue(km._drive({"type": "interrupt", "id": SID}, self.client))
+        self.assertEqual(asked, [SID])
+        self.assertNotIn(SID, km._interrupt_clicked, "no stop landed")
+        self.assertEqual([w["text"] for w in self.warned],
+                         ["the stop was not delivered: the session is compacting its conversation, and a compaction runs to its end"])
+        self.assertEqual(self.suppressed, [SID], "the press still stops romp's auto-retry into the thread")
+
+    def test_a_backend_with_no_verdict_keeps_the_optimistic_stamp(self):
+        # only an explicit False is a refusal (the ABC's bool): a double, or a backend, that answers None
+        # keeps the stamp — a truthiness gate would drop it and read every such stop as refused
+        asked = self._backend(None)
+        self.assertTrue(km._drive({"type": "interrupt", "id": SID}, self.client))
+        self.assertEqual(asked, [SID])
+        self.assertIn(SID, km._interrupt_clicked, "no verdict is not a refusal: the chip flips NOW, as before")
+        self.assertEqual(self.warned, [])
+
+    def test_an_accepted_stop_still_stamps_at_once(self):
+        asked = self._backend(True)                         # the SDK: False only for an unknown sid
+        self.assertTrue(km._drive({"type": "interrupt", "id": SID}, self.client))
+        self.assertEqual(asked, [SID])
+        self.assertIn(SID, km._interrupt_clicked, "a stop the backend took flips the chip NOW, as before")
+        self.assertEqual(self.warned, [])

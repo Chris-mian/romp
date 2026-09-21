@@ -10,7 +10,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -20,7 +20,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_ct", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_ct", os.path.join(BIN, "romp-kernel"))
 jd = km.jd        # the SAME judge module the kernel uses → our fixture overrides reach discover()/build_feed
 
 NOW = 1781100000
@@ -58,18 +58,18 @@ class CardTime(unittest.TestCase):
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-                      km.NAMES, km._tmux_sessions)
+                      km.NAMES, km._live_map)
         jd.NAMES, jd.PROJECTS = names, proj
         jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR = td / "captions", td / "archive", td / "goals"
         jd.STATE = td
         km.NAMES = names
-        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
+        km._live_map = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         jd.GOALDIR.mkdir(parents=True)
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-         km.NAMES, km._tmux_sessions) = self.saved
+         km.NAMES, km._live_map) = self.saved
         self.td.cleanup()
 
     def _store(self, nodes, status):

@@ -19,14 +19,14 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()   # hermetic BEFORE any romp code loads
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_event_model_t", os.path.join(ROOT, "kernel", "event_model.py")).load_module()
+em = load_source("romp_event_model_t", os.path.join(ROOT, "kernel", "event_model.py"))
 
 TS = "2026-01-01T00:00:00.000Z"
 T0 = em.parse_z(TS)
@@ -158,8 +158,11 @@ class ConsumersApplyExpiry(unittest.TestCase):
                       "the awaiting-stamp lift must not wait forever on a dead monitor")
         self.assertIn("em._bg_expired(tk, time.time())", kernel,
                       "source 0.75's normalized rows must drop expired monitors")
-        self.assertIn("em._bg_expired(t, time.time())", judge,
-                      "the judge's settled gate must apply expiry with a fresh now, not the cached one")
+        body = judge.split("def _bg_unresolved(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("em._bg_expired(t, now)", body,
+                      "the judge's settled gate must apply expiry outside the cache, with the caller's now")
+        self.assertIn("now = time.time()", body,
+                      "...a fresh wall clock when no pass clock is handed in, not the cached one")
 
 
 if __name__ == "__main__":

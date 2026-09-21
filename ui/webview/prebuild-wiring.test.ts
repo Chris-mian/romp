@@ -23,13 +23,19 @@ test("the pre-build runs at IDLE priority (requestIdleCallback) with a setTimeou
 test("a pass YIELDS to the active tab's build and is chunked to the idle deadline", () => {
   // never compete with the active (foreground) heavy build — defer and retry next idle
   assert.match(RENDER, /if \(pendingBuildRaf != null\) \{ schedulePrebuild\(\); return; \}/);
-  // stop when the idle budget is spent and resume next idle (chunked → never janks the main thread)
-  assert.match(RENDER, /if \(deadline\.timeRemaining\(\) < \d+\) \{ schedulePrebuild\(\); break; \}/);
+  // stop when the idle budget is spent and resume next idle (chunked → never janks the main thread); checked
+  // BEFORE each tab since 2026-09-04 (see tab-switch-lag.test.ts). A timed-out callback (didTimeout true,
+  // timeRemaining 0) still chunks — one tab per pass — rather than building every planned tab at once
+  // (review fold on #934, 2026-09-07): the break fires unless nothing has been built yet this pass.
+  assert.match(RENDER, /if \(deadline\.timeRemaining\(\) < \d+ && \(!deadline\.didTimeout \|\| built > 0\)\) \{ schedulePrebuild\(\); break; \}/);
 });
 
 test("a pass builds each off-screen tab's hidden DOM via ensureView + syncView", () => {
   assert.match(RENDER, /function runPrebuild\(deadline: IdleDeadline\): void/);
-  assert.match(RENDER, /ensureView\(id\);\s*\n\s*syncView\(id\);/);
+  // ensureView, then (a re-collapse of an overgrown hidden view — #934 fold), then syncView
+  assert.match(RENDER, /ensureView\(id\);[\s\S]*?syncView\(id\);/);
+  assert.match(RENDER, /v\.el\.querySelectorAll\("\.turn"\)\.length > WINDOW_CAP\) \{\s*\n\s*v\.rendered = 0; v\.winStart = 0;/,
+    "an overgrown hidden view is re-collapsed to the tail window in idle, off the click path");
   // one malformed tab must not abort pre-building the rest
   assert.match(RENDER, /try \{[\s\S]*ensureView\(id\);[\s\S]*syncView\(id\);[\s\S]*\} catch/);
   // restore the render-key so nothing keys off a pre-built tab after the pass
@@ -49,5 +55,5 @@ test("pre-building is wired into the lifecycle: switch, content arrival, updates
   const staleRebuilds = RENDER.match(/schedulePrebuild\(\); \/\/ rebuild the now-stale off-screen view/g) || [];
   assert.ok(staleRebuilds.length >= 2, "both update() and chatTail() re-warm a now-stale off-screen view");
   // a compact-mode flip resets every view → cancel the stale plan, then re-warm under the new setting
-  assert.match(RENDER, /cancelPrebuild\(\);[\s\S]*showActive\(\);\s*\n\s*schedulePrebuild\(\); \/\/ rebuild every off-screen view/);
+  assert.match(RENDER, /cancelPrebuild\(\);[\s\S]*showActive\(keep\);\s*\n\s*schedulePrebuild\(\); \/\/ rebuild every off-screen view/);   // rerenderAll hands showActive the anchor it captured before the clear (T249 review fold)
 });

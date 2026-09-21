@@ -20,7 +20,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -31,9 +31,9 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_em_ghost", os.path.join(BIN, "romp-event-model")).load_module()
-jd = SourceFileLoader("romp_judge_ghost", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_ghost", os.path.join(BIN, "romp-kernel")).load_module()
+em = load_source("romp_em_ghost", os.path.join(BIN, "romp-event-model"))
+jd = load_source("romp_judge_ghost", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_ghost", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 NOW = 1781100000
@@ -172,10 +172,10 @@ class BuildSessionNeverResurrectsARolledBackReply(unittest.TestCase):
             mod.NAMES, mod.PROJECTS = names, proj
             mod.CAPDIR, mod.ARCHDIR, mod.GOALDIR = td / "captions", td / "archive", td / "goals"
             mod.STATE, mod.STATESDIR = td, td / "states"
-        self.saved_km = (km.NAMES, km._tmux_sessions, km._GLOBAL_CLAUDE_MD)
+        self.saved_km = (km.NAMES, km._live_map, km._GLOBAL_CLAUDE_MD)
         km.NAMES = names
         km._GLOBAL_CLAUDE_MD = td / "no-global-claude.md"
-        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
+        km._live_map = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None,
                                            "color": None}}
         km._parse_cache.clear()
@@ -184,7 +184,7 @@ class BuildSessionNeverResurrectsARolledBackReply(unittest.TestCase):
         for mod, *vals in self.saved:
             (mod.NAMES, mod.PROJECTS, mod.CAPDIR, mod.ARCHDIR,
              mod.GOALDIR, mod.STATE, mod.STATESDIR) = vals
-        (km.NAMES, km._tmux_sessions, km._GLOBAL_CLAUDE_MD) = self.saved_km
+        (km.NAMES, km._live_map, km._GLOBAL_CLAUDE_MD) = self.saved_km
         km._parse_cache.clear()
         self.td.cleanup()
 

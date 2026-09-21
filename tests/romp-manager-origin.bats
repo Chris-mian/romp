@@ -6,14 +6,27 @@
 # kill the user's kernels. Server-side clients (the kernel's Restart proxy, the
 # `romp on` CLI) send no Origin and must keep working.
 
+load free-port
+load cli-scope-floor
+
 setup() {
     TEST_DIR="$(mktemp -d)"
     MGR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-manager"
+    # The manager under test is REAL: the floor keeps it from leaving a transient scope on the
+    # developer's user manager (tests/cli-scope-floor.bash).
+    cli_scope_floor
+    # The manager's state root is private too: with neither variable set, `up` boots from the live
+    # ~/.local/state/romp's kernels.json (the fake launcher below, once per kernel registered there,
+    # each handed that entry's stateDir) and the drain poll's token comes from the live serve-token.
+    # ROMP_STATE_DIR outranks the XDG floor and a profiled kernel's sessions inherit it, so it is
+    # dropped, not shadowed (tests/bats-state-isolation.bats keeps both lines in every such suite).
+    unset ROMP_STATE_DIR
+    export XDG_STATE_HOME="$TEST_DIR/state"; mkdir -p "$XDG_STATE_HOME"
     # Fake kernel launcher: stays alive without binding a real port.
     FAKE="$TEST_DIR/fake-serve"
     printf '#!/usr/bin/env bash\nexec sleep 30\n' > "$FAKE"
     chmod +x "$FAKE"
-    CPORT=7571; MPORT=7572
+    free_port CPORT MPORT   # fresh per test, never a literal (tests/free-port.bash)
 }
 
 teardown() {

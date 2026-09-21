@@ -7,13 +7,15 @@ is written only once the turn produces output). So the gate saw 'not working' an
 of the model/message pressed right after it, which then parked and stalled.
 
 The fix: SessionBackend.busy(sid) exposes the truth the backend already knows (SdkSession.inflight); the SDK
-overrides it, tmux leaves it None (→ unchanged cached-parse fallback). _working_now — and thus _ops_gate —
-prefers it. These tests pin that a session the backend reports BUSY parks every drive op even when the cached
-parse still shows it idle. Synthetic only — no real session data."""
+and Codex backends override it, and the ABC base's default returns None (→ unchanged cached-parse fallback:
+the answer of a backend with no such signal, which the tmux backend was when this landed; that backend was
+removed 2026-09-11). _working_now — and thus _ops_gate — prefers it. These tests pin that a session the
+backend reports BUSY parks every drive op even when the cached parse still shows it idle. Synthetic only — no
+real session data."""
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()   # isolate: importing the kernel must not touch live state
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
@@ -21,7 +23,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
-km = SourceFileLoader("romp_kernel_opsbusy", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_opsbusy", os.path.join(BIN, "romp-kernel"))
 
 # The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
 # tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
@@ -77,7 +79,8 @@ class OpsGateAuthoritativeBusy(unittest.TestCase):
         self.assertFalse(km._working_now(SID), "backend says idle → not working")
 
     def test_a_none_busy_signal_falls_back_to_the_cached_parse(self):
-        # tmux (and a dormant SDK sid) return None → the event-model parse decides, exactly as before.
+        # the ABC base's busy() default (and a dormant SDK sid) return None → the event-model parse decides,
+        # exactly as before.
         self._use_backend(None)
         self.assertFalse(km._working_now(SID), "None busy → cached parse (idle here) → not working")
 
@@ -101,15 +104,15 @@ class CompactingAuthoritativeSignal(unittest.TestCase):
     def setUp(self):
         self._saved_sdk = km._sdk
         self._saved_parse = km._parse_cached
-        self._saved_tmux = km._tmux_sessions
+        self._saved_live_map = km._live_map
         km._parse_cached = lambda *a, **k: {"turns": []}
-        km._tmux_sessions = lambda: {}
+        km._live_map = lambda: {}
         km._compact_clicked[SID] = km.time.time()   # optimistic latch STAMPED (would hold 180s on its own)
 
     def tearDown(self):
         km._sdk = self._saved_sdk
         km._parse_cached = self._saved_parse
-        km._tmux_sessions = self._saved_tmux
+        km._live_map = self._saved_live_map
         km._compact_clicked.pop(SID, None)
 
     def test_backend_says_done_overrides_a_stamped_optimistic_latch(self):
@@ -123,9 +126,10 @@ class CompactingAuthoritativeSignal(unittest.TestCase):
         self.assertTrue(km._compacting_now(SID), "the backend's live /compact bracket reads as compacting")
 
     def test_none_signal_falls_back_to_the_optimistic_latch(self):
-        # tmux (compacting→None) keeps the existing optimistic corroboration: the stamp + no boundary → True.
+        # the ABC base's compacting() default (None: a backend with no /compact bracket) keeps the existing
+        # optimistic corroboration: the stamp + no boundary → True.
         km._sdk = lambda: _FakeBackend(False, compacting_val=None)
-        self.assertTrue(km._compacting_now(SID), "None → the unchanged optimistic/tmux path (latch active here)")
+        self.assertTrue(km._compacting_now(SID), "None → the unchanged optimistic path (latch active here)")
 
 
 if __name__ == "__main__":

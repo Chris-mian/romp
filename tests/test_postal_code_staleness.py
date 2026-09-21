@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Bus code-staleness self-restart (the user 2026-06-29): the postal bus is a long-lived singleton keyed on
 its port, so a process started before a code change keeps serving STALE in-memory code — which silently
-stranded mail to SDK sessions (a bus from before the "deliver via the kernel, not by pasting into a tmux
-pane" refactor couldn't reach a pane-less SDK recipient). Guard: the bus fingerprints its own source at boot
+stranded mail to SDK sessions (a bus from before the 2026-06-26 "deliver through the kernel" refactor still
+reached for recipients the way the since-removed backend did and could not reach an SDK recipient at all).
+Guard: the bus fingerprints its own source at boot
 and the monitor re-execs into the new code the moment the on-disk file changes.
 
 Synthetic only — no real session data.
@@ -10,7 +11,7 @@ Synthetic only — no real session data.
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -18,7 +19,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()      # hermetic; constants resolve under here at import
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal-service")).load_module()
+pm = load_source("romp_postal", os.path.join(BIN, "romp-postal-service"))
 
 
 class SourceFingerprint(unittest.TestCase):

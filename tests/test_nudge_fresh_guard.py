@@ -7,13 +7,20 @@ session stopped its own loop 11:18:32, the nudge fired 11:18:33 asking where the
 guard is the writer-yields family at the fire moment: the transcript's newest assistant timestamp
 moving past the snapshot's IS the world outrunning the evidence — hold, re-judge ONCE against the
 fresh report (never a loop), fire only what survives. Every gate decision is now a nudge-events row
-(fired / skipped-redundant / held-fresh-re-judged / force-fired-at-cap, each carrying the evidence
-timestamp), so redundant fires are countable from the log alone. SYNTHETIC fixtures only."""
+(fired / skipped-redundant / held-fresh-re-judged / fired-at-cap / skipped-redundant-at-cap /
+skipped-redundant-memo / resolved-at-send / blocked-on-user-at-send, each carrying the evidence
+timestamp), so redundant
+fires are countable from the log alone. That accounting is what re-shaped the cap (the user
+2026-08-27, T120): the blind third fire measured at 56% of deliveries, re-asking answered
+questions — the cap now ESCALATES to one more judgment on the freshest evidence, never past it.
+And the send moment re-reads the store: an item the fresh rollup no longer calls working leaves
+the card (resolved-at-send / blocked-on-user-at-send) — the redundancy judge deliberates for
+seconds, and verdicts land in that gap. SYNTHETIC fixtures only."""
 import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -24,7 +31,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_freshg", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_freshg", os.path.join(BIN, "romp-kernel"))
 jd = km.jd                                        # the kernel's OWN judge instance — patches must land
 #                                                   where the walk reads them (a same-named reload would
 #                                                   be a different module object)
@@ -53,14 +60,14 @@ class FreshGuard(unittest.TestCase):
             "_interrupt_suppresses_nudge", "_backend_queued", "_backend_rewind_pending",
             "_last_state", "_session_awaiting", "_closer_settled", "_revivers_pending",
             "_pending_ops", "_last_assistant_report", "_all_outstanding_delegated")}
-        self._orig_jd = {n: getattr(jd, n) for n in ("parsed_session", "load_goals", "_segs",
+        self._orig_jd = {n: getattr(jd, n) for n in ("parsed_session", "load_goals", "load_goals_shared_or_fault", "_segs",
                                                      "plan_units", "nudge_redundant")}
         self._orig_backend = km.Sessions.backend_for
         km._session_flag = lambda sid, flag: False
         km._compacting_now = lambda sid: False
         km._api_error = lambda path: None
         km._session_working = lambda turns: False
-        km._interrupt_suppresses_nudge = lambda turns, sid="": False
+        km._interrupt_suppresses_nudge = lambda turns, sid="", **k: False
         km._backend_queued = lambda sid: False
         km._backend_rewind_pending = lambda sid: False
         km._last_state = lambda sid: ("", 0)
@@ -70,7 +77,7 @@ class FreshGuard(unittest.TestCase):
         km._all_outstanding_delegated = lambda nodes, gid: False
         km._pending_ops = {}
         jd._segs = lambda tn, store: []
-        jd.plan_units = lambda session, store: []
+        jd.plan_units = lambda session, store, **kw: []   # the callers pass lazy_text (T396)
         uid = "u-t1"
         self.turns = [{"id": "t1", "t": ARM_T, "end": ARM_T + 60, "ended": True,
                        "trigger": {"uuid": uid},
@@ -78,6 +85,7 @@ class FreshGuard(unittest.TestCase):
         jd.parsed_session = lambda sid, paths, now: {"turns": self.turns}
         self.store = _store()
         jd.load_goals = lambda sid: self.store
+        jd.load_goals_shared_or_fault = lambda sid: (self.store, None)   # the walk reads the shared view; the fresh re-read stays on load_goals
         self.sent = []
         # the tail reads the gate makes, in order: [snapshot, fire-time freshness re-read]
         self.reports = [("working through the queue", ARM_T + 50),
@@ -152,18 +160,125 @@ class FreshGuard(unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.assertEqual([r["verdict"] for r in self._rows()], ["skipped-redundant"])
 
-    def test_the_cap_path_is_unchanged_and_now_distinguishable(self):
-        # two consecutive skips already recorded → the fire goes out with NO judging at all —
-        # even when the world moved mid-tick, the held pass never re-judges a cap-fire
+    def test_the_cap_consults_the_judge_and_a_fresh_answer_skips(self):
+        # T120 (the user 2026-08-27): past two consecutive skips the judge is CONSULTED once more
+        # instead of short-circuited — a still-redundant verdict skips, because the report IS the
+        # answer (the measured blind fire delivered 38 of 68 nudges, two of them AFTER the report
+        # they asked about).
+        self._seed_rec({"count": 1, "lastTurnId": "t0", "armAtoms": 1, "at": ARM_T - 500,
+                        "redundantSkips": 2})
+        self.reports = [("all done — merged and reported", ARM_T + 50)]
+        self.judge_replies = [True]
+        self._tick()
+        self.assertEqual(self.sent, [], "the judge ruled the ask answered — no fire at the cap")
+        self.assertEqual(len(self.judge_calls), 1, "the cap consulted the judge, never bypassed it")
+        self.assertEqual([r["verdict"] for r in self._rows()], ["skipped-redundant-at-cap"])
+        rec = km._auto_nudge_data()["nudged"][G1]
+        self.assertEqual(rec.get("answeredAt"), NOW, "the report is recorded as the answer")
+
+    def test_the_cap_fires_when_the_judge_says_the_ask_is_live(self):
+        # the forever-pause the cap was built against still ends: a not-redundant verdict at the
+        # cap fires — now as a JUDGED fire, and its row says how
+        self._seed_rec({"count": 1, "lastTurnId": "t0", "armAtoms": 1, "at": ARM_T - 500,
+                        "redundantSkips": 2})
+        self.judge_replies = [False]
+        self.assertTrue(self._tick())
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.judge_calls), 1)
+        self.assertEqual([r["verdict"] for r in self._rows()], ["fired-at-cap"])
+        self.assertEqual(km._auto_nudge_data()["nudged"][G1].get("redundantSkips", 0), 0,
+                         "a real fire resets the count")
+
+    def test_a_capped_candidate_rides_the_held_pass_re_judge(self):
+        # the old early-keep was the second half of the blind fire: a report landing DURING
+        # deliberation now re-judges a capped candidate exactly like an organic one
         self._seed_rec({"count": 1, "lastTurnId": "t0", "armAtoms": 1, "at": ARM_T - 500,
                         "redundantSkips": 2})
         self.reports = [("working through the queue", ARM_T + 50),
                         ("all done — merged and reported", ARM_T + 590)]
-        self.judge_replies = [False]                 # would be consulted only by a bug
+        self.judge_replies = [False, True]           # live on the snapshot; answered by the fresh report
+        self._tick()
+        self.assertEqual(self.sent, [], "the fresh report answered the ask mid-tick")
+        self.assertEqual(len(self.judge_calls), 2, "snapshot consult + held-pass re-judge")
+        # the verdict is the ORDINARY freshness hold, deliberately: the cap's escalated consult
+        # ruled the ask live (resetting the consecutive count), so the held-pass yield is exactly
+        # an organic writer-yields — the at-cap names mark only decisions taken AT the cap
+        self.assertEqual([r["verdict"] for r in self._rows()], ["held-fresh-re-judged"])
+        self.assertEqual(self._rows()[0]["evT"], ARM_T + 590,
+                         "the row carries the fresh evidence it yielded to")
+
+    def test_a_memoed_pair_serves_without_a_judge_call(self):
+        # THE MEMO (T142): a (goal, evidence) pair ruled redundant is never re-judged — a skip
+        # consumes no arm, so a capped goal came due every tick and re-judged constant evidence
+        # (147 re-judgments on one goal in 68 minutes; ~$1.92/day)
+        self._seed_rec({"count": 1, "lastTurnId": "t0", "armAtoms": 1, "at": ARM_T - 500,
+                        "redundantSkips": 1, "redundantEvT": ARM_T + 50,
+                        "redundantSettleT": 0})       # both memo keys current (2026-08-29: the memo
+        #                                               is two-keyed; a record missing the settle key
+        #                                               re-judges ONCE by design — the upgrade path,
+        #                                               pinned in test_nudge_memo_deadlock.py)
+        self.judge_replies = [True]                   # would be consulted only by a bug
+        self._tick()
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.judge_calls, [], "the memo serves the ruling — no call")
+        self.assertEqual(self._rows(), [], "a parked visit logs nothing (the parked-tick round: "
+                                           "rows mark state changes, never visits)")
+
+    def test_the_at_cap_flip_class_dies_by_construction(self):
+        # 3 of 10 measured fired-at-cap rows were the judge FLIPPING on a (gid, evT) it had just
+        # ruled redundant — nondeterminism delivering the stale nudge T120 exists to stop. The
+        # memo is consulted before the at-cap consult too, so the flip cannot happen.
+        self._seed_rec({"count": 1, "lastTurnId": "t0", "armAtoms": 1, "at": ARM_T - 500,
+                        "redundantSkips": 2, "redundantEvT": ARM_T + 50,
+                        "redundantSettleT": 0})       # both memo keys current (see the memo test above)
+        self.judge_replies = [False]                  # the flip verdict, never reachable
+        self._tick()
+        self.assertEqual(self.sent, [], "a pair ruled redundant can never fire on the same evidence")
+        self.assertEqual(self._rows(), [], "…and the parked visit logs nothing")
+        self.assertEqual(self.judge_calls, [])
+
+    def test_a_judged_redundancy_stamps_the_memo(self):
+        self.judge_replies = [True]
+        self._tick()
+        rec = km._auto_nudge_data()["nudged"][G1]
+        self.assertEqual(rec.get("redundantEvT"), ARM_T + 50,
+                         "the ruling persists keyed on the evidence it judged")
+
+    def test_a_moved_report_kills_the_memo_and_re_enters_the_judge(self):
+        self._seed_rec({"count": 1, "lastTurnId": "t0", "armAtoms": 1, "at": ARM_T - 500,
+                        "redundantSkips": 1, "redundantEvT": ARM_T + 50})
+        self.reports = [("fresh words about new work", ARM_T + 800)]
+        self.judge_replies = [False]
         self.assertTrue(self._tick())
-        self.assertEqual(len(self.sent), 1, "past the cap the nudge fires regardless")
-        self.assertEqual(self.judge_calls, [], "…without asking the judge")
-        self.assertEqual([r["verdict"] for r in self._rows()], ["force-fired-at-cap"])
+        self.assertEqual(len(self.sent), 1, "new evidence → a real judgment → a real fire")
+        self.assertEqual(len(self.judge_calls), 1)
+        self.assertEqual([r["verdict"] for r in self._rows()], ["fired"])
+
+    def test_an_item_resolved_mid_deliberation_leaves_at_the_send_moment(self):
+        # SEND-MOMENT FRESHNESS (T120): the fire list read the store before the redundancy judge
+        # deliberated — a verdict landing in that gap used to leave a resolved item on the card
+        test = self
+        working, resolved = self.store, _store()
+        resolved["status"][G1] = "completed"
+        jd.load_goals = lambda sid: resolved if test.judge_calls else working
+        jd.load_goals_shared_or_fault = lambda sid: (working, None)
+        self.judge_replies = [False]
+        self._tick()
+        self.assertEqual(self.sent, [], "nothing survives → nothing sends")
+        self.assertEqual([r["verdict"] for r in self._rows()], ["resolved-at-send"])
+
+    def test_a_block_landing_mid_deliberation_suppresses_the_send(self):
+        # blocked-on-user (T120): the user IS the pending event — nudging the session re-asks a
+        # question already parked on the human; the unblocker's verdict is what re-enables
+        test = self
+        working, blocked = self.store, _store()
+        blocked["status"][G1] = "blocked"
+        jd.load_goals = lambda sid: blocked if test.judge_calls else working
+        jd.load_goals_shared_or_fault = lambda sid: (working, None)
+        self.judge_replies = [False]
+        self._tick()
+        self.assertEqual(self.sent, [])
+        self.assertEqual([r["verdict"] for r in self._rows()], ["blocked-on-user-at-send"])
 
 
 if __name__ == "__main__":

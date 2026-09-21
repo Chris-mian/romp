@@ -33,6 +33,20 @@ test("Continue shows only on a LIVE needs-you card with no live ask (and never o
   assert.match(FEED, /contBtn\.style\.display = \(askColumn\(it\) === "needsInput" && it\.live && !it\.provisional && !it\.blocked\)/);
 });
 
+test("the latched 'Sent' explains itself — what went, when, and the exact re-arm event (T150)", () => {
+  // the buttons rule's honest-disabled half (the user 2026-08-28: a card read 'Sent' and clicking did
+  // nothing — the latch was correct, the silence was the violation). ONE title writer for both states
+  // of both buttons; the age rides the payload's followupAt, shipped beside followupPending.
+  assert.match(FEED, /function contTitle\(latched: boolean, verb: string, at\?: number \| null\): string \{/);
+  assert.match(FEED, /" — waiting for the session's reply to be judged; this re-arms then, and the card moves on its own"/);
+  assert.match(FEED, /contBtn\.title = contTitle\(contBtn\.disabled, "a continue", it\.followupAt\);/,
+    "the card button re-titles on every push — the age stays honest");
+  assert.match(FEED, /cont\.title = contTitle\(true, "a continue", null\);/, "…and the instant it latches");
+  assert.match(FEED, /csEl\.title = contTitle\(csEl\.disabled, "a status ask", it\.followupAt\);/, "the modal pair too");
+  assert.match(FEED, /contEl\.title = contTitle\(contEl\.disabled, "a continue", it\.followupAt\);/);
+  assert.match(KERNEL, /"followupAt": nodes\[nid\]\.get\("followupAt"\) or None,/, "the payload carries the when");
+});
+
 test("Continue acknowledges INSTANTLY (disable + relabel) and re-arms only after the judge has ruled", () => {
   // the click-safety rule: the ack precedes any kernel round-trip; same contract as the modal's
   // Check status ("Sent" survives re-renders while followupPending/recheck holds)

@@ -14,6 +14,7 @@ import * as path from "node:path";
 
 const PREVIEW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "preview.ts"), "utf8");
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const LINKS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "path-links.ts"), "utf8");   // the matcher, lifted out of render.ts
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
@@ -26,7 +27,9 @@ test("previewFull renders the image itself; a PDF is a click-to-view CARD, never
   const pf = PREVIEW.slice(PREVIEW.indexOf("export function previewFull"));
   assert.doesNotMatch(pf, /createElement\("iframe"\)/, "no auto-loading PDF frame in the chat strip");
   assert.match(pf, /box\.classList\.add\("path-full-pdfcard"\);/);
-  assert.match(pf, /box\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); openLightbox\(path, sid\); \};/);
+  // a plain click opens the PDF in the lightbox, like an image; a Cmd/Ctrl- or middle-click opens it in
+  // its OWN browser tab (openPdf → openPdfTab, the user 2026-09-07) — pdf-new-tab.test.ts runs the opener
+  assert.match(pf, /box\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); openPdf\(path, sid, ev\); \};/);   // the gesture rides along: a modified click → its own tab (pdf-new-tab.test.ts)
   // the HEAD probe (headers only — never a download) HIDES a failed UNVERIFIED card and keeps it
   // registered for the heal events (2026-08-24 — self-removal erased the spot until a send); a
   // kernel-verified card skips the probe — the kernel already stat'd the file
@@ -46,7 +49,8 @@ test("a kernel-VERIFIED preview fails LOUDLY: a retry chip holds the figure's sp
     "a retry RESUMES from the bytes already received (kernel /file honors the suffix range)");
   // the render layer feeds the verdict: spacePaths and pathLinks hits are kernel-stat'd paths
   assert.match(RENDER, /const kernelVerified = new Set<string>\(\);/);
-  assert.match(RENDER, /if \(!isUri && typeof fixed === "string"\) kernelVerified\.add\(open\);/);
+  assert.match(LINKS, /verified: !isUri && typeof fixed === "string"/, "the walk (path-links.ts) says which hit the kernel fixed…");
+  assert.match(RENDER, /if \(verified\) kernelVerified\.add\(open\);/, "…and the chat feeds that verdict to the figure pass");
   assert.match(CSS, /\.path-full-retry \{ display: inline-flex;/, "visible chrome — the chip has chat-sheet css");
 });
 
@@ -59,8 +63,10 @@ test("the failure chip narrates what happens next, escalates on repeat, and a re
   // while auto-retries remain the box KEEPS its loading persona (swirl + note, whole box tappable);
   // the ⚠ chip is the GIVE-UP state only (the user 2026-08-16, third report: state bouncing between
   // "trying" and "unavailable" on every retry cycle read as impatient even when it eventually loaded)
-  assert.match(pf, /if \(autoRetries > 0 \|\| transient\) \{\s*\n\s*if \(!transient\) autoRetries--;\s*\n\s*failedPreviews\.set\(box, \(\) => build\(true\)\);/);
-  assert.match(pf, /\+ " — retrying · tap to retry now";/);
+  // a LINK failure registers for the reconnect-class heal only, a real verdict spends the budget on the per-message heal (T291)
+  assert.match(pf, /if \(autoRetries > 0 \|\| transient\) \{[\s\S]*?if \(transient\) settledPreviews\.set\(box, \(\) => build\(true\)\);\s*\n\s*else \{ autoRetries--; failedPreviews\.set\(box, \(\) => build\(true\)\); \}/);
+  assert.match(pf, /\+ \(transient \? " — retries when the link is back · tap to retry now" : " — retrying · tap to retry now"\)\);/,   // set on the reused note; the link case says what will happen (T291)
+    "the note says what happens next: a retry on the link's return, or the bounded retrying");
   assert.match(pf, /wait\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); autoRetries = 3; ackTap\(ev\); build\(true\); \};/,
     "the whole retrying box is the tap target — a tap re-arms persistence and acknowledges");
   assert.match(pf, /"⚠ preview unavailable"\)\)\s*\n\s*\+ " — tap to retry";/,
@@ -77,16 +83,19 @@ test("the failure chip narrates what happens next, escalates on repeat, and a re
   assert.match(pf, /if \(!box\.isConnected\) return;/);
 });
 
-test("a failed preview heals on the next kernel push — the kernel-is-back event, not a tap or a timer", () => {
+test("a failed preview heals on the next kernel push (a link failure: on the reconnect event) — never a tap or a timer", () => {
   // the 2026-08-15 report: the fetch died in a converge-restart window, and delta-send never rebuilds
   // an old turn's DOM, so the chip sat until a human tapped it. Any incoming kernel message proves the
   // kernel is reachable again; no pushes arrive while it's down, so retry-on-push can't spam.
   const pf = PREVIEW.slice(PREVIEW.indexOf("export function previewFull"));
   assert.match(pf, /let autoRetries = 3;/, "bounded — a genuinely-dead file settles on the tap chip");
   // a failure naming the LINK, not the image, never spends the budget (the user 2026-08-17: the
-  // kernel-restart tunnel window burned all three attempts right before the link came back)
+  // kernel-restart tunnel window burned all three attempts right before the link came back) — and since
+  // T291 it waits for the reconnect-class event instead of re-attempting on every push (a dead link
+  // answered every push of a streaming session instantly, and each attempt moved the transcript)
   assert.match(pf, /const transient = \/tunnel to \.\* is not answering\|no attached host\|re-dialing\/i\.test\(lastErr\);/);
-  assert.match(pf, /if \(autoRetries > 0 \|\| transient\) \{\s*\n\s*if \(!transient\) autoRetries--;\s*\n\s*failedPreviews\.set\(box, \(\) => build\(true\)\);/);
+  // a LINK failure registers for the reconnect-class heal only, a real verdict spends the budget on the per-message heal (T291)
+  assert.match(pf, /if \(autoRetries > 0 \|\| transient\) \{[\s\S]*?if \(transient\) settledPreviews\.set\(box, \(\) => build\(true\)\);\s*\n\s*else \{ autoRetries--; failedPreviews\.set\(box, \(\) => build\(true\)\); \}/);
   assert.match(PREVIEW, /export function retryFailedPreviews\(\): void/);
   assert.match(PREVIEW, /if \(box\.isConnected\) rebuild\(\);/, "a re-rendered turn's fresh box supersedes the old");
   assert.match(RENDER, /retryFailedPreviews\(\);/, "called from the kernel message handler");
@@ -105,7 +114,8 @@ test("figures render AT their mention: after the block naming them; same-block f
   assert.match(RENDER, /const BLOCK_SEL = "p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th";/);
   assert.match(RENDER, /anchor\.insertAdjacentElement\("afterend", strip\);/, "a paragraph's figure lands right after it");
   assert.match(RENDER, /\/\^\(LI\|TD\|TH\)\$\/\.test\(anchor\.tagName\)/, "a list item keeps its figure inside, under its bullet");
-  assert.match(RENDER, /previewable\.slice\(0, 4\)/, "the wallpaper cap stays");
+  // no eager cap since the user's 2026-08-30 ruling: every mention renders, lazily loaded
+  assert.match(RENDER, /for \(const p of previewable\) renderFig\(p\);/);
 });
 
 test("VS Code's pending image chip pulses while the host round-trip is in flight; a failed one doesn't", () => {
@@ -125,6 +135,36 @@ test("full-size images wear the user-image scale — one size per information ty
   assert.match(CSS, /\.path-full-img \{[^}]*max-height: 320px/);
   assert.match(CSS, /\.user-img \{[^}]*max-height: 320px/);
   assert.match(CSS, /\.path-full-pdfcard \{/);
+});
+
+test("EVERY figure mention renders eagerly — no cap, no chip (the user's 2026-08-30 ruling)", () => {
+  // Their ruling, paraphrased: they should be able to preview as many images as they want in the
+  // thread — overruling the 4-eager+chip fold shipped a day earlier. All verified mentions render
+  // at their anchors through the one renderFig path; off-screen cost is bounded by the browser's
+  // own lazy loading, never by a count.
+  assert.match(RENDER, /for \(const p of previewable\) renderFig\(p\);/);
+  assert.ok(!/FIG_EAGER|figsExpanded|path-more/.test(RENDER), "the cap/latch/chip machinery is gone, not dormant");
+  assert.ok(!/linkifyFileUris\([^)]*foldKey/.test(RENDER), "the latch's foldKey param retired with it");
+  assert.ok(!CSS.includes(".path-more"), "the chip's CSS retired with it");
+  assert.match(PREVIEW, /img\.loading = "lazy";/);
+  assert.match(PREVIEW, /img\.decoding = "async";/);
+});
+
+test("a verified relative path is previewable exactly like an absolute one — the cap was the only gate", () => {
+  // Parity, pinned where each hop lives: the walk's open target is the kernel's verdict (the token
+  // itself for a tier-1 relative hit, the fixed repo path for tiers 2/3 — so a backticked relative
+  // AND a bare filename both ride), previewKind is extension-only (relativity-blind), and both the
+  // eager and the expanded render hand previewFull the SAME entry previewable carries — pin lookup
+  // included, so a relative embed rides its own pin key ((pathPins || {})[p]).
+  assert.match(LINKS, /const target = isUri \? fileUriToPath\(tok\) : \(fixed \?\? tok\);\n\s*const open = opts && opts\.resolve \? opts\.resolve\(target\) : target;/);   // the walk's open target (path-links.ts; the chat passes no resolve)…
+  assert.match(RENDER, /for \(const \{ el: link, open, verified, inPre \} of linkifyPathTokens\(root, pathLinks, FENCE_WALK\)\) \{/);   // …is what the chat reads per hit (a fenced hit is skipped for the preview, 2026-09-12)
+  assert.match(RENDER, /previewable\.push\(open\);/);
+  assert.match(PREVIEW, /const ext = path\.slice\(path\.lastIndexOf\("\."\) \+ 1\)\.toLowerCase\(\);/);
+  assert.match(RENDER, /previewFull\(p, renderingOwnerSid \?\? activeId, kernelVerified\.has\(p\), \(pathPins \|\| \{\}\)\[p\]\)/);
+  // kernel side of the same claim: a tier-1 hit keys the verdict AND the pin on the token as
+  // written (relative stays relative; /file?path=<relative>&sid= serves it — verified live)
+  assert.ok(KERNEL.includes("return tok                                        # tier 1"), "tier 1 keeps the token as its own target");
+  assert.match(KERNEL, /pins\[r\] = pin/);
 });
 
 test("the feed's artifact strips keep their compact thumbnails (cards stay glanceable)", () => {
@@ -156,7 +196,7 @@ test("a flaky link finishes the picture ACROSS retries: resume, narrate progress
   // swirl and chip share one fixed-footprint wait box — retry churn cannot shift the scroll
   assert.match(PREVIEW, /function mkWait\(box: HTMLElement\): HTMLElement/);
   assert.match(CSS, /\.path-full-wait \{ display: inline-flex; flex-direction: column;/);
-  assert.match(CSS, /\.path-load-note \{ font-size: 0\.85em;/);
+  assert.match(CSS, /\.path-load-note \{ font-size: 0\.86em;/);
   // no artificial deadline anywhere: patience is the point — only a real error ends an attempt
   assert.doesNotMatch(pf, /AbortController|setTimeout\([^,]*abort/i, "no client-side fetch deadline");
   // the kernel side: /file honors the one suffix form and the federation relay passes 206 through

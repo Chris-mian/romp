@@ -22,7 +22,7 @@ import os
 import re
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -30,7 +30,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-sb = SourceFileLoader("romp_sdk_backend_spawnpin", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+sb = load_source("romp_sdk_backend_spawnpin", os.path.join(BIN, "romp_sdk_backend.py"))
 
 SID = "11111111-2222-3333-4444-aaaaaaaaaaaa"
 BRIEF = "Kick off: run the staged comparison suite and report embedding drift."
@@ -45,7 +45,8 @@ class _FakeBackend:
     def _poke(self): pass
     def _deliver_rename_ping(self, s): return False   # settle hook (2026-08-25); no ping in these worlds
     def _update_reg(self, *a, **k): pass
-    def _mark_dropped_echoes(self, sid, surviving): self.dropped_calls.append((sid, list(surviving)))
+    def _mark_dropped_echoes(self, sid, surviving, refeed=True):
+        self.dropped_calls.append((sid, list(surviving), refeed))
     # the ResultMessage settle's other hooks (mirrors test_sdk_compacting_signal's fake)
     def _turn_completed(self, sid): pass
     def _record_spend(self, *a, **k): pass
@@ -89,6 +90,9 @@ class ReconcileStranded(unittest.TestCase):
         s._reconcile_stranded()
         self.assertEqual(s._pending, [], "never re-fed into a resumable conversation")
         self.assertEqual(len(be.dropped_calls), 1, "the loss is surfaced immediately")
+        self.assertIs(be.dropped_calls[0][2], False,
+                      "…and FLAG-ONLY (2026-08-26): the redeliver arm's missed _text_landed scan "
+                      "must never land the message twice here")
 
     def test_clean_reconnect_is_a_no_op(self):
         s, be = _session()
@@ -123,7 +127,9 @@ class SpawnPinsRideTheFirstConnect(unittest.TestCase):
     KERNEL = open(os.path.join(BIN, "romp-kernel")).read()
 
     def test_prefs_apply_before_the_eager_connect(self):
-        body = self.KERNEL[self.KERNEL.index("def _create_sdk_session"):]
+        # the public _create_sdk_session is a claim wrapper since session names are reserved
+        # atomically (2026-09-08); the spawn → prefs → connect order lives in the body it wraps
+        body = self.KERNEL[self.KERNEL.index("def _create_sdk_session_inner"):]
         body = body[:body.index("\ndef ")]
         spawn_at = body.index("_sdk().spawn(")
         prefs_at = body.index("_apply_new_session_prefs(sid, prefs or {})")
@@ -132,7 +138,9 @@ class SpawnPinsRideTheFirstConnect(unittest.TestCase):
                         "pins land in the reg after spawn and BEFORE connect — connect-time, race-free")
 
     def test_the_new_route_threads_the_body_through(self):
-        self.assertTrue(re.search(r"_create_sdk_session\(nm, cwd, auth=\(a if a in \(\"login\", \"key\"\) else \"\"\),\s*\n\s*prefs=b\)", self.KERNEL),
+        # the env request rides the same call, after prefs (inline comments tolerated), and since
+        # tab groups (2026-09-04) so do parent + tags — the call's last line
+        self.assertTrue(re.search(r"_create_sdk_session\(nm, cwd, auth=\(a if lg\.parse_pick\(a\)\[0\] else \"\"\),\s*\n\s*prefs=b,[^\n]*\n\s*env=env_req,[^\n]*\n\s*parent=psid, tags=tags_req\)", self.KERNEL),
                         "/new hands its body to the create path instead of applying pins after connect")
 
 

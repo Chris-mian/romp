@@ -22,7 +22,7 @@ test("the tip adopts the topmost same-origin document, guarded for cross-origin 
 
 test("adopting a foreign host carries the tip styles over from OUR stylesheets (one source of truth)", () => {
   assert.match(SRC, /tipDoc\.getElementById\('romp-tl-tip-css'\)/, "injected once, id-guarded");
-  assert.match(SRC, /r\.selectorText\.indexOf\('\.romp-tl-tip'\) === 0/, "copied by selector prefix, not duplicated literals");
+  assert.match(SRC, /r\.selectorText\.indexOf\('\.romp-tl-tip'\) !== -1/, "copied by selector SUBSTRING (not prefix — the light theme's 'body.theme-light .romp-tl-tip' variants must ride along), not duplicated literals");
 });
 
 test("the tip carries its OWN font, so the adopted host page can't restyle it", () => {

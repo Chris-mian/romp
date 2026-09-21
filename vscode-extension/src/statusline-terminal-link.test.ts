@@ -9,22 +9,26 @@ import * as path from "node:path";
 const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
+// the rule itself lives beside the status line's folder widget since T409 (status-widgets.ts folderLink); render.ts keeps
+// asFolderLink as a thin delegate for its other callers (the System-context Directory row)
+const SW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-widgets.ts"), "utf8");
 test("asFolderLink routes by host: BROWSE on the web, folder-open in VS Code (the user 2026-08-14)", () => {
-  assert.match(SRC, /function asFolderLink\(elem: HTMLElement, cwd: string, sid\?: string\): void/);
+  assert.match(SRC, /function asFolderLink\(elem: HTMLElement, cwd: string, sid\?: string\): void \{\n\s*folderLink\(elem, cwd, sid\);/);
   // web dashboard → the file browser (works from every device); VS Code keeps the host-side open
-  assert.match(SRC, /elem\.dataset\.act = web \? "browseFiles" : "openFolder";/);   // pane-local browse needs no shell frame (2026-08-24)
-  assert.match(SRC, /elem\.dataset\.cwd = cwd;/);
-  assert.match(SRC, /elem\.classList\.add\("folder-link"\)/);
-  assert.match(SRC, /click to browse this folder/);
-  assert.match(SRC, /click to open this folder/);
+  assert.match(SW, /elem\.dataset\.act = web \? "browseFiles" : "openFolder";/);   // pane-local browse needs no shell frame (2026-08-24)
+  assert.match(SW, /elem\.dataset\.cwd = cwd;/);
+  assert.match(SW, /elem\.classList\.add\("folder-link"\)/);
+  assert.match(SW, /click to browse this folder/);
+  assert.match(SW, /click to open this folder/);
   // OS-open demoted, not deleted: the folder link's right-click still posts the old openFolder
-  assert.match(SRC, /item\.textContent = "Open folder window";/);
+  assert.match(SRC, /label: "Open folder window", sub: "on the machine the session runs on",/);   // on the shared menu builder since v0.16.0
 });
 
 test("it's applied to the statusline folder AND the System-context Directory row, carrying the session id", () => {
   // the session id (possibly host-prefixed) rides along too — the user 2026-07-03, so a REMOTE session's
   // click can SSH out instead of treating the path as local
-  assert.match(SRC, /asFolderLink\(dir, s\.cwd, activeId \|\| undefined\)/);                                  // statusline 📁
+  assert.match(SW, /folderLink\(dir, rec\.cwd, rec\.id\);/);                                                // the statusline folder widget (T409), the session id from the record slice
+  assert.match(SRC, /host: hostOf\(id\) \};/);                                                                // ...built by render.ts from the active session's id
   assert.match(SRC, /if \(k === "Directory"\) asFolderLink\(ve, val, renderingSid \|\| undefined\)/);            // system-context cwd row
 });
 

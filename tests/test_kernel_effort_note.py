@@ -12,7 +12,7 @@ import inspect
 import json
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -23,8 +23,8 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_effort", os.path.join(BIN, "romp-kernel")).load_module()
-sb = SourceFileLoader("romp_sdk_backend_effort", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+km = load_source("romp_kernel_effort", os.path.join(BIN, "romp-kernel"))
+sb = load_source("romp_sdk_backend_effort", os.path.join(BIN, "romp_sdk_backend.py"))
 BACKEND_SRC = open(os.path.join(BIN, "romp_sdk_backend.py")).read()
 
 
@@ -78,7 +78,7 @@ class EffortNoteSourcePins(unittest.TestCase):
 
     def test_build_session_interleaves_the_durable_note_by_time(self):
         src = inspect.getsource(km.build_session)
-        self.assertIn("efforts = _effort_changes(sid)", src)
+        self.assertIn("efforts = _past_floor(_effort_changes(sid))", src)   # floored at the episode boundary since T131
         self.assertIn('events.append({"kind": "effortApplied", "effort": _e["effort"], "ts": iso(_e["t"]),', src)
         # flushed by the SAME time-gate as the recovery notes, so both stay ordered against the atoms
         self.assertIn("while _ei < len(efforts) and (upto is None or efforts[_ei][\"t\"] <= upto):", src)

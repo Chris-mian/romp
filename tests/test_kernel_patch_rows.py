@@ -8,7 +8,7 @@ import json
 import os
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 import tempfile
 
@@ -20,7 +20,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 
@@ -62,6 +62,36 @@ class PatchRows(unittest.TestCase):
         rows = km._patch_rows(big)
         self.assertLessEqual(len(rows), 601)
 
+    def test_a_non_string_line_entry_degrades_the_hunk_never_raises(self):
+        # The record is external input and the chat-build consumer has no guard: a lines array
+        # carrying an int/None used to raise TypeError (ln[:1]) out of the view build, and the
+        # escape aborted EVERY push cycle permanently (the record is permanent). A bad line shape
+        # degrades its hunk to no rows, exactly like every other malformed patch here.
+        bad = [{"oldStart": 3, "newStart": 3, "lines": ["-old_line", 5, "+new_line"]}]
+        self.assertEqual(km._patch_rows(bad), [])
+        self.assertEqual(km._patch_rows([{"oldStart": 1, "newStart": 1, "lines": [None]}]), [])
+        self.assertEqual(km._patch_rows([{"oldStart": 1, "newStart": 1, "lines": 7}]), [])
+        # …and a good hunk beside a bad one still renders — the degrade is per-hunk
+        rows = km._patch_rows(bad + [{"oldStart": 9, "newStart": 9, "lines": ["+kept"]}])
+        self.assertEqual([r["text"] for r in rows], ["@@ -9 +9 @@", "kept"])
+
+    def test_a_non_list_container_degrades_never_raises(self):
+        # The CONTAINER is external input too: a truthy non-iterable structuredPatch (int/bool/
+        # float) used to TypeError at the `for` itself, OUTSIDE the per-hunk try — the same escape
+        # to the push loop's outer except, the same permanent abort of every push cycle.
+        self.assertEqual(km._patch_rows(7), [])
+        self.assertEqual(km._patch_rows(True), [])
+        self.assertEqual(km._patch_rows(2.5), [])
+
+    def test_a_string_lines_field_degrades_the_hunk_like_every_other_bad_shape(self):
+        # A STRING lines value slips the per-entry check (the chars of a str are strs themselves)
+        # and used to render one garbage row per character; a non-list lines degrades its hunk to
+        # no rows, and a good sibling hunk still renders.
+        bad = [{"oldStart": 1, "newStart": 1, "lines": "+ab"}]
+        self.assertEqual(km._patch_rows(bad), [])
+        rows = km._patch_rows(bad + [{"oldStart": 4, "newStart": 4, "lines": ["+kept"]}])
+        self.assertEqual([r["text"] for r in rows], ["@@ -4 +4 @@", "kept"])
+
 
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
@@ -87,19 +117,19 @@ class BuildSessionDiffRows(unittest.TestCase):
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self.saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE, km.NAMES,
-                      km._tmux_sessions, km._read_task_store, km._GLOBAL_CLAUDE_MD)
+                      km._live_map, km._read_task_store, km._GLOBAL_CLAUDE_MD)
         jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE = names, proj, td / "goals", td
         km.NAMES = names
         km._GLOBAL_CLAUDE_MD = td / "no-global.md"           # keep a real ~/.claude/CLAUDE.md out of the fixture
         km._read_task_store = lambda fsid, fold=None: []                # no to-do card in the way
-        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
+        km._live_map = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         jd.GOALDIR.mkdir(parents=True)
         km._parse_cache.clear()
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE, km.NAMES,
-         km._tmux_sessions, km._read_task_store, km._GLOBAL_CLAUDE_MD) = self.saved
+         km._live_map, km._read_task_store, km._GLOBAL_CLAUDE_MD) = self.saved
         km._parse_cache.clear()
         self.td.cleanup()
 

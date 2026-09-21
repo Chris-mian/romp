@@ -23,8 +23,8 @@ const STYLES = here("styles.css");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 
 test("the kernel publishes the unreadable-state list, and no ready list", () => {
-  assert.ok(KERNEL.includes("def _state_unknown_names(alive, tmux, working, awaiting):"));
-  assert.ok(KERNEL.includes('"stateUnknown": _state_unknown_names(alive, tmux, working, awaiting)'));
+  assert.ok(KERNEL.includes("def _state_unknown_names(alive, live_map, working, awaiting):"));
+  assert.ok(KERNEL.includes('"stateUnknown": _state_unknown_names(alive, live_map, working, awaiting)'));
   const feedSrc = KERNEL.slice(KERNEL.indexOf("def build_feed"), KERNEL.indexOf("def _push_feed"));
   assert.ok(!/"ready":\s*ready/.test(feedSrc), "a quiet session is not enumerated — blank already says it");
 });
@@ -54,7 +54,12 @@ test("the sessions pane speaks the same three-way language", () => {
 });
 
 test("the tab strip draws the gray ring for a missing state and nothing for idle", () => {
-  assert.match(RENDER, /else if \(!st\) tab\.appendChild\(el\("span", "tab-dot unknown"\)\);/);
+  // the unknown ring comes from the one dot rule (tabDotClass, T262g): a missing state → "tab-dot unknown"
+  const TS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-state.ts"), "utf8");
+  assert.match(TS, /if \(!st\) return "tab-dot unknown";/);
+  const TW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-widgets.ts"), "utf8");   // the dot is a WIDGET since T379: its render is the one rule's site
+  assert.match(TW, /const cls = tabDotClass\(status\.state\);/, "the dot widget renders from the one rule");
+  assert.match(RENDER, /composeTabWidgets\(tab, "before"/, "the strip composes it");
   // ready/idle reaches no branch at all — the ladder ends without appending
   assert.ok(!/tab-dot ready/.test(RENDER), "no ready pip on the strip");
 });

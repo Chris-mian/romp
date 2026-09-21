@@ -25,7 +25,8 @@ test("session rank = the kernel's session-order list (tab/lane order); unknown s
   // the order rides every feed push; the kernel emits session-order.json, federation concatenates per host
   assert.match(FEED, /if \(Array\.isArray\(m\.order\)\) sessionOrder = m\.order\.filter/);
   assert.match(FEED, /const rank = new Map\(sessionOrder\.map\(\(s, i\) => \[s, i\] as const\)\);/);
-  assert.match(FEED, /return rank\.has\(s\) \? rank\.get\(s\)! : 1e9 \+ \(extra\.get\(s\) \|\| 0\);/);
+  // the owner-less notice run (the reserved no-session key) heads the column before the order list (the feed board's owner rule, 2026-09-18)
+  assert.match(FEED, /return isOwnerless\(s\) \? -1 : rank\.has\(s\) \? rank\.get\(s\)! : 1e9 \+ \(extra\.get\(s\) \|\| 0\);/);   // isOwnerless strips a remote host's prefix (round two of PR 1831)
   // stable sort: per-session cards keep the column's newest/oldest order
   assert.match(FEED, /buckets\[k\]\.sort\(\(x, y\) => rk\(x\) - rk\(y\)\);/);
   assert.match(FED, /if \(Array\.isArray\(f\.order\)\) merged\.order\.push\(\.\.\.f\.order\);/);
@@ -34,9 +35,9 @@ test("session rank = the kernel's session-order list (tab/lane order); unknown s
 test("a name+dot header entry opens each session's run; only runs that exist get one", () => {
   // `folded` joined the header entry with collapsible threads (feed-thread-fold.test.ts, 2026-07-31):
   // it counts the cards a FOLDED header stands in for, and is 0 while the thread is open.
-  assert.match(FEED, /\{ kind: "sess"; t: number; sid: string; name: string; color: \{ bg: string; fg: string \} \| null; live: boolean; folded: number \}/);
+  assert.match(FEED, /\{ kind: "sess"; t: number; sid: string; col: Column; name: string; color: \{ bg: string; fg: string \} \| null; live: boolean; folded: number \}/, "the header entry names its column (T263c: the fold is per session per column)");
   assert.match(FEED, /if \(s !== cur\) \{/);
-  assert.match(FEED, /head = \{ kind: "sess", t: e\.t, sid: s, name: src\.name, color: src\.color \|\| null, live: !!src\.live, folded: 0 \};\s*\n\s*withHeads\.push\(head\);/);
+  assert.match(FEED, /head = \{ kind: "sess", t: e\.t, sid: s, col: k, name: src\.name, color: src\.color \|\| null, live: !!src\.live, folded: 0 \};\s*\n\s*withHeads\.push\(head\);/);
   // reconcile keys headers per (column, sid) — one session can head a run in EVERY column
   assert.match(FEED, /key = "s:" \+ listEl\.id \+ ":" \+ e\.sid;/);
   // the header carries the identity: colored name, host prefix treatment, the yellow working dot
@@ -69,6 +70,7 @@ test("clearing a run's last card drops its session header at once, not on the ne
   assert.match(FEED, /function dropDismissed\(ids: string\[\]\): void \{/);
   assert.match(FEED, /asks = asks\.filter\(\(a\) => !gone\.has\(a\.itemId\)\);\s*\n\s*render\(\);/);
   // both optimistic dismiss paths finish through it: the single ask card and the sibling-group card
-  assert.match(FEED, /card\.remove\(\); askEls\.delete\(it\.itemId\); dropDismissed\(\[it\.itemId\]\);/);
-  assert.match(FEED, /groupEls\.delete\(cur\.turnId\); dropDismissed\(cur\.members\.map\(\(m\) => m\.itemId\)\);/);
+  assert.match(FEED, /for \(const c of twins\) \{ c\.remove\(\); if \(askEls\.get\(it\.itemId\) === c\) askEls\.delete\(it\.itemId\);[^\n]*\n\s*dropDismissed\(\[it\.itemId\]\);/);
+  // the group card's finish, by ITEM across both copies since T347: every copy still dismissing leaves, both caches forget it, then the members drop
+  assert.match(FEED, /if \(fsGroupEls\.get\(cur\.turnId\) === c\) fsGroupEls\.delete\(cur\.turnId\); \}\s*\n\s*dropDismissed\(cur\.members\.map\(\(m\) => m\.itemId\)\);/);
 });

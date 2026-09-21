@@ -30,7 +30,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -41,7 +41,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_injarm", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_injarm", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 SID = "11111111-2222-3333-4444-555555555555"
@@ -141,13 +141,13 @@ class InjectedTurnDeadlockEndToEnd(unittest.TestCase):
             "_interrupt_suppresses_nudge", "_backend_queued", "_backend_rewind_pending",
             "_last_state", "_session_awaiting", "_closer_settled", "_revivers_pending",
             "_pending_ops")}
-        self._orig_jd = {n: getattr(jd, n) for n in ("parsed_session", "load_goals", "_segs", "plan_units")}
+        self._orig_jd = {n: getattr(jd, n) for n in ("parsed_session", "load_goals", "load_goals_shared_or_fault", "_segs", "plan_units")}
         self._orig_backend = km.Sessions.backend_for
         km._session_flag = lambda sid, flag: False
         km._compacting_now = lambda sid: False
         km._api_error = lambda path: None
         km._session_working = lambda turns: False
-        km._interrupt_suppresses_nudge = lambda turns, sid="": False
+        km._interrupt_suppresses_nudge = lambda turns, sid="", **k: False
         km._backend_queued = lambda sid: False
         km._backend_rewind_pending = lambda sid: False
         km._last_state = lambda sid: ("", 0)
@@ -156,13 +156,14 @@ class InjectedTurnDeadlockEndToEnd(unittest.TestCase):
         km._revivers_pending = lambda *a: ""          # every other reviver exhausted
         km._pending_ops = {}
         jd._segs = lambda tn, store: []
-        jd.plan_units = lambda session, store: []
+        jd.plan_units = lambda session, store, **kw: []   # the callers pass lazy_text (T396)
         # _turn_romp_injected stays REAL: the deadlock lives in its interaction with the arm scan.
         self.turns = [self._turn("t1", ARM_T, "human", ended=True),
                       self._turn("t2", INJ_T, "romp", ended=True)]
         jd.parsed_session = lambda sid, paths, now: {"turns": self.turns}
         self.store = _store({G1: _node(G1, "Ship the reconnect banner", log=_incident_log())})
         jd.load_goals = lambda sid: self.store
+        jd.load_goals_shared_or_fault = lambda sid: (self.store, None)   # the walk reads the shared view; the fresh re-read stays on load_goals
         self.sent = []
         test = self
 

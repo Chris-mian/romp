@@ -47,7 +47,7 @@ import time
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -58,8 +58,8 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_idledrain", os.path.join(BIN, "romp-kernel")).load_module()
-sb = SourceFileLoader("romp_sdk_backend_idledrain", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+km = load_source("romp_kernel_idledrain", os.path.join(BIN, "romp-kernel"))
+sb = load_source("romp_sdk_backend_idledrain", os.path.join(BIN, "romp_sdk_backend.py"))
 SRC = open(os.path.join(BIN, "romp-kernel")).read()
 
 SID = "11111111-2222-3333-4444-555555555555"
@@ -121,7 +121,7 @@ def _backlog(count=3, minute0=14):
 
 class WakeTail(unittest.TestCase):
     """kernel._undelivered_wake_tail — the trailing unconsumed enqueues, from the transcript's own
-    queue-operation records (the authoritative queue). The display fold _pending_queued is a SEPARATE
+    queue-operation records (the authoritative queue). The ledger reader _pending_ledger is a SEPARATE
     reader with its own semantics — it credits a dequeue, which this one deliberately does not — and the
     two agree only on the record kinds whose meaning is unambiguous: a content-addressed remove, a
     content-less remove taking the oldest, and popAll withdrawing everything."""
@@ -159,7 +159,22 @@ class WakeTail(unittest.TestCase):
         entries, _ = self._tail(_turn() + [_qop("enqueue", _wrap(0)),
                                            _qop("enqueue", _wrap(1), ts=TS % (15, 0)), _qop("remove")])
         self.assertEqual([e["text"] for e in entries], [_wrap(1)],
-                         "no content → FIFO, exactly as _pending_queued folds the same records")
+                         "no content → FIFO, exactly as _queue_ledger_step folds the same records")
+
+    def test_popAll_withdraws_the_whole_tail(self):
+        # popAll — the whole queue recalled in one record — was unhandled here too (the user 2026-08-26),
+        # so a recalled backlog went on reading as signals still owed a turn and kept the session a drive
+        # candidate indefinitely (one live session was holding twelve).
+        entries, mark = self._tail(_turn() + [_qop("enqueue", _wrap(0)),
+                                              _qop("enqueue", _wrap(1), ts=TS % (15, 0)),
+                                              _qop("popAll", _wrap(0))])
+        self.assertEqual((entries, mark), ([], None), "a withdrawn queue owes no turn")
+
+    def test_an_enqueue_after_popAll_is_still_owed_a_turn(self):
+        entries, mark = self._tail(_turn() + [_qop("enqueue", _wrap(0)), _qop("popAll", _wrap(0)),
+                                              _qop("enqueue", _wrap(1), ts=TS % (15, 0))])
+        self.assertEqual([e["text"] for e in entries], [_wrap(1)], "the recall clears only what preceded it")
+        self.assertIsNotNone(mark)
 
     def test_popAll_withdraws_the_whole_tail(self):
         # popAll — the whole queue recalled in one record — was unhandled here too (the user 2026-08-26),
@@ -309,7 +324,7 @@ class DriveTick(unittest.TestCase):
 
     def _tick(self, now=None):
         with mock.patch.object(km, "_sdk", lambda: self.fb), \
-             mock.patch.object(km, "_alive_sessions", lambda now, tmux: self.alive):
+             mock.patch.object(km, "_alive_sessions", lambda now, live_map: self.alive):
             km._idle_queue_drive_tick(int(time.time()) if now is None else now, {SID: {}})
 
     def test_wake_signals_reach_the_backend(self):
@@ -413,15 +428,15 @@ class DriveTick(unittest.TestCase):
     def test_sessions_of_other_backends_are_skipped(self):
         self.fb.owned = set()
         self._tick()
-        self.assertEqual(self.fb.calls, [], "tmux CLIs are interactive — they deliver their own queue")
+        self.assertEqual(self.fb.calls, [], "a session another backend owns is not the SDK drive's to deliver")
 
     def test_the_pusher_cycle_runs_the_tick(self):
-        # (now, tmux) — the cycle's ONE liveness snapshot, not a per-job fresh read (2026-08-10 CPU fix).
+        # (now, live_map) — the cycle's ONE liveness snapshot, not a per-job fresh read (2026-08-10 CPU fix).
         # Scoped to the CYCLE's body: the whole-file pin also matched the tick's own def line, so
         # deleting the wiring kept every test green (2026-08-18 review, mutation-verified).
-        src = inspect.getsource(km._pusher_cycle_jobs)
-        self.assertIn("_idle_queue_drive_tick(now, tmux)", src,
-                      "the pusher cycle drives queued wake signals server-side — unattended, no client needed")
+        src = inspect.getsource(km._jobs_pass)                          # the jobs thread's list (the housekeeping split, 2026-09-13)
+        self.assertIn("_idle_queue_drive_tick(now, live_map)", src,
+                      "the jobs pass drives queued wake signals server-side — unattended, no client needed")
 
 
 class FakeLive:
@@ -777,7 +792,7 @@ class DriveDelivery(unittest.TestCase):
 class QueuedBubbleDisplay(unittest.TestCase):
     """A driven wrapper parked in the SDK pending queue must never render as the user's queued
     message (the 2026-06-30 regression: a raw <task-notification> shown as '1 queued message'). The
-    _genuine_queued filter used to exist only on the tmux transcript fold; the drive now routes
+    _genuine_queued filter used to exist only on the terminal backend's transcript fold; the drive now routes
     wrappers through the SDK's _pending/reg queue, which build_session reads raw — so the bubble
     build filters too, keeping idx aligned with the backend position for cancelQueued."""
 
@@ -815,7 +830,7 @@ class QueuedBubbleDisplay(unittest.TestCase):
              mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: be)), \
              mock.patch.object(km, "_captions", lambda sid: {}), \
              mock.patch.object(km, "_limit_hold", lambda sid: None):
-            m = km.build_session(SID, self.now, tmux={})
+            m = km.build_session(SID, self.now, live_map={})
         self.assertIsNotNone(m, "the session must build")
         return m["events"]
 
@@ -827,6 +842,22 @@ class QueuedBubbleDisplay(unittest.TestCase):
                          "the wrapper is delivery plumbing, not the user's pending input")
         self.assertEqual(q["texts"][0]["idx"], 1,
                          "a surviving bubble's idx still names its backend _pending position")
+
+    def test_a_romp_injected_queued_entry_carries_the_landed_flags(self):
+        # T243 (the user 2026-09-07): a queued watch notice romp itself injected rendered as the user's own
+        # pending bubble. The queued entry now carries the same flags a LANDED romp message gets from the same
+        # markers (romp / rompSystem / rompAuto), so the client can draw the landed romp notice grammar
+        notice = ("<!-- romp-injected --><!-- romp-system --><!-- romp-tag: watch -->"
+                  "[romp] The pull request you asked romp to watch has MERGED: notes-api/web#12. This watch is done.")
+        nudge = "<!-- romp-injected --><!-- romp-auto -->Where does each of these stand?"
+        evs = self._events([notice, "please rerun the failing test", nudge])
+        q = next((e for e in evs if e.get("kind") == "queued"), None)
+        self.assertIsNotNone(q)
+        by_idx = {t["idx"]: t for t in q["texts"]}
+        self.assertEqual((by_idx[0].get("romp"), by_idx[0].get("rompSystem"), by_idx[0].get("rompAuto")), (True, True, None))
+        self.assertNotIn("romp", by_idx[1], "the user's own message carries no romp flag")
+        self.assertEqual((by_idx[2].get("romp"), by_idx[2].get("rompSystem"), by_idx[2].get("rompAuto")), (True, None, True))
+        self.assertIn("<!-- romp-injected -->", by_idx[0]["md"], "the marker still rides the text — the client hides it as the landed card does")
 
     def test_an_all_wrapper_queue_emits_no_queued_event(self):
         evs = self._events([_wrap(0)])
@@ -863,7 +894,7 @@ class OvernightShape(unittest.TestCase):
     def test_the_overnight_backlog_drives_one_turn(self):
         with mock.patch.object(self.be, "_ensure", lambda sid, **kw: self.fake), \
              mock.patch.object(km, "_sdk", lambda: self.be), \
-             mock.patch.object(km, "_alive_sessions", lambda now, tmux: self.alive):
+             mock.patch.object(km, "_alive_sessions", lambda now, live_map: self.alive):
             km._idle_queue_drive_tick(int(time.time()), {SID: {}})
             # the drive runs on a worker thread from the tick — wait for it (bounded)
             for _ in range(100):

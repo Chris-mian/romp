@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { markerLabel, dayContext } from "./time-marker";
+import { markerLabel, dayContext, dayOpens, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 
 // All epochs below are built from local-time components so the test is timezone-agnostic
 // (markerLabel reads getHours()/getMinutes()/getDate() in local time, matching the browser).
@@ -103,4 +103,107 @@ test("dayContext speaks the relative-day vocabulary, midnight-relative", () => {
   assert.equal(dayContext(at(2026, 6, 22), now), "3 weeks ago", "26 days");
   assert.equal(dayContext(at(2026, 6, 15), now), "Jul 15", "past a month → the divider's own date form");
   assert.equal(dayContext(at(2025, 11, 30), now), "Dec 30 2025", "a different year says so");
+});
+
+// T339 (the user 2026-09-11): a day divider opens only on a FORWARD crossing into a past day. A row stamped earlier than the
+// row before it (a notice that kept the moment it was queued and landed at delivery) drew "Yesterday" inside today.
+test("dayOpens: the first row of a past day opens it, forward; today never opens; the same day never opens", () => {
+  assert.strictEqual(dayOpens(at(2026, 5, 11, 10, 0), at(2026, 5, 10, 10, 0), NOW), "Yesterday", "two days ago → yesterday: a forward crossing");
+  assert.strictEqual(dayOpens(at(2026, 5, 11, 10, 0), null, NOW), "Yesterday", "the first timed row of a past day, nothing before it");
+  assert.strictEqual(dayOpens(at(2026, 5, 12, 7, 5), at(2026, 5, 11, 22, 28), NOW), "", "yesterday → today: today wears no divider");
+  assert.strictEqual(dayOpens(at(2026, 5, 11, 10, 28), at(2026, 5, 11, 10, 0), NOW), "", "the same day: no boundary");
+  assert.strictEqual(dayOpens(at(2026, 5, 9, 10, 0), at(2026, 5, 8, 10, 0), NOW), "Tue", "a weekday within the week");
+});
+
+test("dayOpens: a step BACK in time is not a day opening, whatever markerLabel would have said", () => {
+  // the reported shape: a row of today, then a row stamped yesterday (a notice run's first member), then today again
+  assert.strictEqual(dayOpens(at(2026, 5, 11, 9, 47), at(2026, 5, 12, 8, 15), NOW), "", "yesterday after today: no divider");
+  assert.strictEqual(markerLabel(at(2026, 5, 11, 9, 47), at(2026, 5, 12, 8, 15), NOW).day, true, "…though the marker rule alone reads it as a day change (the bug)");
+  assert.strictEqual(dayOpens(at(2026, 5, 12, 8, 15), at(2026, 5, 11, 9, 47), NOW), "", "and the return to today opens nothing either");
+  assert.strictEqual(dayOpens(at(2026, 5, 10, 9, 0), at(2026, 5, 11, 9, 0), NOW), "", "two days ago after yesterday: a step back, no divider");
+  assert.strictEqual(dayOpens(at(2026, 5, 11, 9, 0), at(2026, 5, 11, 9, 0), NOW), "", "the same instant: no divider");
+});
+
+// T339 review: the walk's reference is a HIGH-WATER MARK. Against the previous row alone, a step back followed by a return
+// into a PAST day re-opened it: the stale row drew no divider but became the reference, and the next in-sequence row then
+// crossed "forward" into a day already open. Today never opens, so only a same-day-as-today return was ever safe.
+test("DayWalk: a step back never rewinds the mark, so the return into a past day opens nothing a second time", () => {
+  const TOMORROW = new Date(2026, 5, 13, 12, 0, 0).getTime();   // the transcript read the next day: its rows are yesterday's
+  const w = new DayWalk();
+  const seen: string[] = [];
+  for (const ep of [at(2026, 5, 12, 9, 5), at(2026, 5, 10, 9, 40), at(2026, 5, 10, 9, 41), at(2026, 5, 12, 9, 10)]) {
+    seen.push(w.open(ep, TOMORROW)); w.pass(ep);
+  }
+  assert.deepStrictEqual(seen, ["Yesterday", "", "", ""], "one divider for yesterday, none for the two stale rows, none on the return");
+  assert.strictEqual(w.mark, at(2026, 5, 12, 9, 10), "the mark is the latest epoch passed");
+});
+
+test("DayWalk: passing an earlier epoch or null leaves the mark; a forward crossing into a past day opens once", () => {
+  const w = new DayWalk();
+  assert.strictEqual(w.open(at(2026, 5, 10, 10, 0), NOW), "Wed", "the first row of a past day opens it");
+  w.pass(at(2026, 5, 10, 10, 0)); w.pass(null); w.pass(at(2026, 5, 9, 23, 0));
+  assert.strictEqual(w.mark, at(2026, 5, 10, 10, 0), "null and an earlier epoch never move the mark");
+  assert.strictEqual(w.open(at(2026, 5, 10, 10, 5), NOW), "", "the same day again: nothing");
+  assert.strictEqual(w.open(at(2026, 5, 11, 8, 0), NOW), "Yesterday", "the next day opens");
+  w.pass(at(2026, 5, 11, 8, 0));
+  assert.strictEqual(w.open(at(2026, 5, 12, 8, 0), NOW), "", "today never opens");
+});
+
+// T342: the top-of-view day label names the WALK's day at a row, the mark after passing it, which pass() returns. On the
+// two reported sequences the label over the stale echo reads the surrounding rows' day, never the echo's own.
+test("DayWalk.pass returns the mark after the row: a stale echo sits under the walk's day, never its own", () => {
+  const TOMORROW = new Date(2026, 5, 13, 12, 0, 0).getTime();
+  // rows all yesterday, two echoes two days ago between them (the served lab's `api`), read the next day
+  const w = new DayWalk();
+  const labels = [at(2026, 5, 12, 9, 5), at(2026, 5, 12, 9, 6), at(2026, 5, 11, 9, 40), at(2026, 5, 11, 9, 41), at(2026, 5, 12, 9, 10)]
+    .map((ep) => dayContext(w.pass(ep)!, TOMORROW));
+  assert.deepStrictEqual(labels, ["Yesterday", "Yesterday", "Yesterday", "Yesterday", "Yesterday"], "the echoes read Yesterday, never 2 days ago");
+  assert.deepStrictEqual([dayContext(at(2026, 5, 11, 9, 40), TOMORROW)], ["2 days ago"], "…which their own moment would have said");
+  // today's rows with one echo stamped yesterday among them (the served lab's `web`): today wears no label at all
+  const w2 = new DayWalk();
+  const labels2 = [at(2026, 5, 12, 0, 10), at(2026, 5, 12, 0, 11), at(2026, 5, 11, 9, 47), at(2026, 5, 12, 0, 12)]
+    .map((ep) => dayContext(w2.pass(ep)!, NOW));
+  assert.deepStrictEqual(labels2, ["", "", "", ""], "no day word over today's rows, the stale echo included");
+  assert.strictEqual(new DayWalk().pass(null), null, "nothing passed yet: no mark");
+});
+
+// TODAY's label (T406, the user 2026-09-13, the wording theirs: digits, "min", hour and hours spelled out): how long
+// ago in place of the clock; any other day "". Calendar minutes: the clock's minute of the row against the clock's
+// minute now, so the seconds never matter.
+test("relativeLabel: the vocabulary, in calendar minutes, today only", () => {
+  const now = new Date(2026, 5, 12, 14, 30, 20).getTime();   // 14:30:20 today
+  const rows: Array<[number, string]> = [
+    [at(2026, 5, 12, 14, 30, 5), "now"],               // the same clock minute, 15s ago
+    [at(2026, 5, 12, 14, 29, 59), "1 min ago"],        // 21s ago, but the minute before: the clock's grain
+    [at(2026, 5, 12, 14, 28, 0), "2 min ago"],
+    [at(2026, 5, 12, 13, 31, 0), "59 min ago"],
+    [at(2026, 5, 12, 13, 30, 0), "1 hour ago"],
+    [at(2026, 5, 12, 12, 31, 0), "1 hour ago"],        // 119 minutes: still one hour, no minutes remainder
+    [at(2026, 5, 12, 12, 30, 0), "2 hours ago"],
+    [at(2026, 5, 12, 0, 1, 0), "14 hours ago"],
+    [at(2026, 5, 12, 0, 0, 0), "14 hours ago"],        // the first minute of the local day is still today
+    [at(2026, 5, 11, 23, 59, 59), ""],                 // yesterday, one second earlier: the divider names it, HH:MM stays
+    [at(2026, 5, 11, 14, 30, 0), ""],
+    [at(2026, 5, 12, 14, 31, 0), "now"],               // stamped ahead of the clock (skew): never negative
+  ];
+  for (const [epoch, want] of rows) assert.equal(relativeLabel(epoch, now), want, new Date(epoch * 1000).toString());
+});
+
+test("relativeLabel: a row of today turns over exactly at the clock's minute, and hands back to HH:MM after midnight", () => {
+  const row = at(2026, 5, 12, 23, 58, 30);
+  assert.equal(relativeLabel(row, new Date(2026, 5, 12, 23, 58, 59).getTime()), "now");
+  assert.equal(relativeLabel(row, new Date(2026, 5, 12, 23, 59, 0).getTime()), "1 min ago");   // the boundary, not sixty seconds
+  assert.equal(relativeLabel(row, new Date(2026, 5, 12, 23, 59, 59).getTime()), "1 min ago");
+  assert.equal(relativeLabel(row, new Date(2026, 5, 13, 0, 0, 0).getTime()), "", "a new local day: the clock time again, the divider comes with the next render");
+  assert.equal(markerLabel(row, null, new Date(2026, 5, 13, 0, 0, 0).getTime()).hm, "23:58", "and the HH:MM it hands back to");
+});
+
+test("relativeLines: only the plural-hours form takes 'ago' on a line of its own (the one form that does not fit the slot)", () => {
+  assert.equal(relativeLines("2 hours ago"), "2 hours\nago");
+  assert.equal(relativeLines("23 hours ago"), "23 hours\nago");
+  assert.equal(relativeLines("1 hour ago"), "1 hour ago");
+  assert.equal(relativeLines("59 min ago"), "59 min ago");
+  assert.equal(relativeLines("1 min ago"), "1 min ago");
+  assert.equal(relativeLines("now"), "now");
+  assert.equal(relativeLines(""), "");
 });

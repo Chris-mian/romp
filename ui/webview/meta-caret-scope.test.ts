@@ -13,7 +13,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("the badge caret stays in flow; only MENU-ROW carets are absolutely positioned", () => {
   // the badge rule: in-flow, sized/dimmed only
-  assert.match(CSS, /\.meta-caret \{ font-size: 0\.78em; opacity: 0\.65; \}/);
+  assert.match(CSS, /\.meta-caret \{ font-size: 0\.82em; opacity: 0\.65; \}/);
   // the row rule: scoped under .meta-item (its position:relative anchor)
   assert.match(CSS, /\.meta-item \.meta-caret \{ position: absolute; right: 22px; top: 50%;/);
   // the cascade pin: NO bare .meta-caret rule may carry position — a later unscoped one is exactly

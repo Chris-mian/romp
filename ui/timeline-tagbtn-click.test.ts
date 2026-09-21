@@ -147,3 +147,33 @@ test("the view speaks plain DOM: no Obsidian-only helper calls (the hosts instal
   for (const bad of [/\.empty\(\)/, /\.setText\(/, /\.addClass\(/, /\.removeClass\(/, /\.toggleClass\(/, /\.detach\(\)/])
     assert.doesNotMatch(SRC, bad, "Obsidian-only helper in the shared view: " + bad);
 });
+
+test("executed: clicking a tag row in the views menu APPLIES the lens — the filter filters (T213)", () => {
+  // The dashboard regression: with the menu LIFTED into the shell document, the shell's menu-echo
+  // writer broadcast the row's own pointerdown, the storage event bounced back into this pane, and
+  // _onMenuEcho detached the row before its click fired — a human-length press always lost the
+  // race, so "clicking a tag does nothing". The fix keeps in-menu presses out of the echo (both
+  // writers skip [data-tag-menu]/[data-romp-menu] subtrees — menu-echo.test.ts pins that); THIS
+  // test executes the click's productive half end-to-end: row click → lens toggled → views posted
+  // → redraw narrows the lanes to the tag's members, menu still open (a settings panel, not a command).
+  const panel = drawnPanel();
+  const posts: any[] = [];
+  (g as any).__rompTimelineSetViews = (v: any) => posts.push(v);
+  try {
+    const btn = cornerBtn(panel, "filter these lanes by tag");
+    btn._listeners.pointerdown({ preventDefault() {}, stopPropagation() {} });
+    const menu = g.document.body.children[g.document.body.children.length - 1];
+    assert.equal(menu.dataset.rompMenu, "1", "the menu marks itself for the echo writers' skip");
+    const textOf = (n: any): string => (n.textContent || "") + (n.children || []).map(textOf).join("");
+    const row = (menu.children || []).find((r: any) => textOf(r) === "infra");
+    assert.ok(row, "the tag's row renders in the menu");
+    row._listeners.click();
+    assert.equal(posts.length, 1, "the click posts the views blob (setTimelineViews)");
+    assert.deepEqual(posts[0].actives.timeline, { tags: ["infra"] }, "the lens carries the picked NAME");
+    assert.deepEqual(panel._vis.map((s: any) => s.id), ["s2"],
+      "the redraw narrows the lanes to the tag's members — the filter FILTERS");
+    assert.ok(menu.parentNode, "multi-select: the menu stays open across toggles");
+  } finally {
+    delete (g as any).__rompTimelineSetViews;
+  }
+});

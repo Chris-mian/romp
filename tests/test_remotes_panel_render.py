@@ -19,7 +19,7 @@ import os
 import subprocess
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -27,12 +27,12 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-km = SourceFileLoader("romp_kernel_rpanel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_rpanel", os.path.join(BIN, "romp-kernel"))
 
 TUNNELS = {
     "tunnels": [{
         "host": "TESTHOST", "kernelPort": 29855, "localPort": 51000, "busPort": 51001,
-        "checkin": False, "checkinPeer": False, "token": "tok", "status": "up", "detail": "",
+        "checkin": False, "checkinPeer": False, "hasToken": True, "status": "up", "detail": "",
         "sids": ["11111111-2222-3333-4444-555555555555"], "trust": "directed",
         "kernelSha": "abc1234", "localSha": "abc1234", "outOfDate": False,
         "behindBy": 0, "aheadBy": 0, "kernelDate": "",
@@ -45,14 +45,23 @@ TUNNELS = {
 # Minimal DOM/browser stub: enough for the panel IIFE to wire itself up and run one refresh.
 HARNESS = r"""
 'use strict';
+const HTML_SETS = [];           // every string any element was given as innerHTML, in order (the markup sinks)
+const DROPS = [];               // every rn-drop class added, by element id: the rail's host-fell-off flash, one per drop
 function mkEl(id){
-  return {id:id, hidden:true, textContent:'', title:'', style:{}, value:'', className:'',
-    children:[], _listeners:{}, _html:'',
+  const cls = new Set();   // ONE class set behind classList and className, so contains() answers what the DOM would
+  return {id:id, hidden:true, _text:'', title:'', style:{}, value:'',
+    get className(){return Array.from(cls).join(' ');},
+    set className(v){cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(function(c){cls.add(c);});},
+    children:[], _listeners:{}, _html:'',   // innerHTML stays a string sink: markup inside it is never parsed into children or classes here
     // Assigning innerHTML replaces an element's contents, so it must drop appended children too. Without
     // that, render()'s opening `list.innerHTML=''` left the previous pass's rows in place and every
     // refresh doubled the list.
-    get innerHTML(){return this._html;}, set innerHTML(v){this._html=v; this.children=[];},
-    classList:{_s:new Set(), add(){}, remove(){}, toggle(){}, contains(){return false;}},
+    get innerHTML(){return this._html;}, set innerHTML(v){this._html=v; this.children=[]; HTML_SETS.push(String(v));},
+    // …and so does assigning textContent (the DOM's rule) — the option lists clear themselves that way
+    get textContent(){return this._text;}, set textContent(v){this._text=v; this.children=[];},
+    // classes are RECORDED (the drop cue is a class the icon gains), the DOM's toggle rule included, over the same set className reads and writes
+    classList:{add(c){cls.add(c); if(c==='rn-drop') DROPS.push(id);}, remove(c){cls.delete(c);},
+      toggle(c,v){ if(v===undefined) v=!cls.has(c); if(v) cls.add(c); else cls.delete(c); return v; }, contains(c){return cls.has(c);}},
     appendChild(c){this.children.push(c); return c;},
     querySelector(){return null;}, querySelectorAll(){return [];},
     addEventListener(k,f){this._listeners[k]=f;}, removeEventListener(){},
@@ -70,15 +79,30 @@ const document = {
 const localStorage = { getItem(){return null;}, setItem(){} };
 const TUNNELS = __TUNNELS__;
 const PAIRS = __PAIRS__;        // /tunnels/pairs answer; null = the read never lands (loader-state test)
+const SUB = __SUB__;            // /tunnels/of answer (a PEER's own rows); null = answer with TUNNELS as before
+const TQ = __TQ__;              // a QUEUE of /tunnels answers ({ok, status, body}), one per poll in order; empty = TUNNELS, ok, every time
+const HQ = __HQ__;              // a QUEUE of /ssh-hosts answers ({ok, status, body} or {reject}), one per load; empty = {hosts:['TESTHOST']}, ok
 const POSTS = [];               // every write the panel makes, so a test can assert what Attach sent
 function fetch(url, opts){
   if (opts && opts.method === 'POST') {
     POSTS.push({url:url, body:JSON.parse(opts.body || '{}')});
     return Promise.resolve({ ok:true, json(){ return Promise.resolve({ok:true}); } });
   }
+  if (url === '/tunnels' && TQ.length) {
+    const a = TQ.shift();
+    return Promise.resolve({ ok:!!a.ok, status:a.status, json(){ return Promise.resolve(a.body); } });
+  }
   if (url.indexOf('/tunnels/pairs') >= 0) {
     if (PAIRS === null) return new Promise(function(){});
     return Promise.resolve({ ok:true, json(){ return Promise.resolve(PAIRS); } });
+  }
+  if (url.indexOf('/tunnels/of') >= 0 && SUB !== null) {
+    return Promise.resolve({ ok:true, json(){ return Promise.resolve(SUB); } });
+  }
+  if (url.indexOf('/ssh-hosts') >= 0 && HQ.length) {
+    const a = HQ.shift();
+    if ('reject' in a) return Promise.reject(a.reject);   // the reason as given: a string, an object, null (the wrap's shapes)
+    return Promise.resolve({ ok:!!a.ok, status:a.status, json(){ return Promise.resolve(a.body); } });
   }
   const body = url.indexOf('/ssh-hosts') >= 0 ? {hosts:['TESTHOST']} : TUNNELS;
   return Promise.resolve({ ok:true, json(){ return Promise.resolve(body); } });
@@ -86,7 +110,9 @@ function fetch(url, opts){
 const ALERTS = [];
 function alert(m){ ALERTS.push(String(m)); }
 const setTimeout_ = setTimeout;
-const window = { addEventListener(){}, location:{reload(){}} };
+// listeners are RECORDED so a test can deliver a pane's postMessage (the hostsPending row copy)
+const window = { _l:{}, addEventListener(k,f){ (this._l[k]=this._l[k]||[]).push(f); }, location:{reload(){}} };
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
 const console_err = [];
 const console = { error(...a){ console_err.push(a.map(String).join(' ')); }, log(){}, warn(){} };
 
@@ -108,25 +134,98 @@ setTimeout_(() => {
     const list = ELS['rnet-list'];
     const rows = list.children.length;
     const html = list.children.map(collect).join(' | ');
-    const add = ELS['rnet-add'], plus = ELS['rnet-plus'], dl = ELS['rnet-hosts'];
-    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err,
-      addHidden:!!add.hidden, plusHidden:!!plus.hidden, hostsHtml:String(dl.innerHTML||''),
-      posts:POSTS, alerts:ALERTS}));
-    process.exit(0);   // the panel re-arms its own poll timer forever, so exit once measured
+    const add = ELS['rnet-add'], plus = ELS['rnet-plus'], dl = ELS['rnet-hosts'], fs = ELS['rnet-from'];
+    // the stub's own contract, reported so a test pins it: classList and className share one set
+    const _e = mkEl('stub-check'); _e.classList.add('a'); const viaName = _e.className; _e.className = 'b c';
+    const stubSharedClasses = viaName === 'a' && _e.classList.contains('c') && !_e.classList.contains('a');
+    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err, drops:DROPS, tqLeft:TQ.length, hqLeft:HQ.length, stubSharedClasses:stubSharedClasses,
+      addHidden:!!add.hidden, plusHidden:!!plus.hidden,
+      hosts:dl.children.map(function(o){return o.value;}), hostsHtml:String(dl.innerHTML||''),
+      hostsLastDisabled:!!(dl.children.length&&dl.children[dl.children.length-1].disabled),
+      fromOpts:fs.children.map(function(o){return [o.value, o.textContent];}), fromHtml:String(fs.innerHTML||''),
+      htmlSets:HTML_SETS, posts:POSTS, alerts:ALERTS}), function(){process.exit(0);});
+    // exit once the measurement has FLUSHED: a pipe write is asynchronous, and exit() right after it cut a
+    // 600-row report mid-string (unterminated JSON); the panel re-arms its own poll timer forever otherwise
   }, 40);
 }, 60);
 """
 
 
-class RemotesPanelRender(unittest.TestCase):
-    def _run(self, drive="", tunnels=None, pairs=None):
+class _PanelHarness:
+    """Runs the real panel JS in node against the DOM stub above and returns what it measured. A MIXIN with
+    no tests of its own, so the classes below share the driver without inheriting each other's tests (a
+    subclass of a TestCase re-runs every inherited test — three copies of 26 node spawns, review find)."""
+
+    def _run(self, drive="", tunnels=None, pairs=None, sub=None, tq=None, hq=None):
         js = (HARNESS.replace("__PANEL_JS__", km._LANDING_REMOTES_JS)
                      .replace("__TUNNELS__", json.dumps(tunnels if tunnels is not None else TUNNELS))
                      .replace("__PAIRS__", json.dumps(pairs))
+                     .replace("__SUB__", json.dumps(sub))
+                     .replace("__TQ__", json.dumps(tq or []))
+                     .replace("__HQ__", json.dumps(hq or []))
                      .replace("__DRIVE__", drive))
         p = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
         self.assertEqual(p.returncode, 0, "panel JS crashed:\n%s" % p.stderr[-2000:])
         return json.loads(p.stdout or "{}")
+
+
+class RemotesPanelRender(_PanelHarness, unittest.TestCase):
+    def test_a_non_ok_tunnels_answer_is_a_failed_refresh_and_keeps_the_was_up_map_so_the_next_real_drop_flashes(self):
+        # A proxy in JSON-error mode answers /tunnels with a 5xx whose body parses. The refresh read the body without a
+        # status check, so the answer counted as "no hosts": the panel painted no hosts, and dropCue, which writes
+        # by ABSENCE, forgot every host it had seen up, so the next real drop never flashed (2026-09-14; the manager's own
+        # poll had the same class of bug). Three polls: the host up, the 502, the host down. The 502 is a failed refresh
+        # (named in the console, the loud road) and the drop on the third poll flashes exactly once.
+        down = json.loads(json.dumps(TUNNELS)); down["tunnels"][0]["status"] = "down"
+        # four answers for the four reads the drive makes (the panel's own open, then two opens from the drive, and the
+        # pairs refresh's re-read behind the third): the queue is asserted EMPTY at the end, so a read the harness default
+        # answered would show as a leftover, never as a silent pass on TUNNELS
+        tq = [{"ok": True, "status": 200, "body": TUNNELS},
+              {"ok": False, "status": 502, "body": {"error": "upstream timeout"}},
+              {"ok": True, "status": 200, "body": down},
+              {"ok": True, "status": 200, "body": down}]
+        out = self._run(drive="window.__rompOpenNet(); setTimeout_(function(){ window.__rompOpenNet(); }, 10);", tq=tq)
+        self.assertTrue(any("remotes refresh failed" in e and "HTTP 502" in e for e in out["errors"]), out["errors"])
+        self.assertEqual(out["drops"], ["rail-net"], "one flash, on the real drop; the 502 neither flashed nor forgot")
+        self.assertEqual(out["tqLeft"], 0, "every queued answer was read: the queue matches the reads")
+
+    def test_the_host_pickers_failure_rule_executed_a_status_keeps_the_list_a_rejection_forgets_it_and_an_object_reason_keeps_its_message(self):
+        # the fifth tidy: the rule stood on source pins alone. Four loads (the panel's open and three from the drive): a list
+        # with one host the tunnels never name; a 500 (the list kept, the console says so); a rejected fetch with a STRING
+        # reason (the list forgotten, the console does not claim to keep one); a rejected fetch with an OBJECT reason (its
+        # JSON in the console line, where the old wrap printed [object Object])
+        hq = [{"ok": True, "status": 200, "body": {"hosts": ["SSHONLY"]}},
+              {"ok": False, "status": 500, "body": {"error": "upstream"}},
+              {"reject": "socket closed"},
+              {"reject": {"code": 7}}]
+        drive = "window.__rompOpenNet(); setTimeout_(function(){ window.__rompOpenNet(); setTimeout_(function(){ window.__rompOpenNet(); }, 5); }, 5);"
+        out = self._run(drive=drive, hq=hq)
+        self.assertEqual(out["hqLeft"], 0, "every queued answer was read: four loads")
+        self.assertNotIn("SSHONLY", out["hosts"], "after the rejected fetches the ssh-config host is gone: a dead kernel does not hide behind the stale list")
+        errs = [e for e in out["errors"] if "ssh hosts could not be read" in e]
+        self.assertEqual(len(errs), 3, out["errors"])
+        self.assertIn("keeping the last list", errs[0], "the 500 kept the list and said so")
+        self.assertNotIn("keeping the last list", errs[1], "the rejection forgot the list and claimed no kept one")
+        self.assertIn("socket closed", errs[1])
+        self.assertNotIn("keeping the last list", errs[2], "after a rejection the flag is down: the next failure claims nothing")
+        self.assertIn('{"code":7}', errs[2], "an object reason reaches the console by its JSON, not as [object Object]")
+
+    def test_a_status_alone_keeps_the_ssh_config_host_in_the_picker(self):
+        hq = [{"ok": True, "status": 200, "body": {"hosts": ["SSHONLY"]}}, {"ok": False, "status": 500, "body": {"error": "upstream"}}]
+        out = self._run(drive="window.__rompOpenNet();", hq=hq)
+        self.assertEqual(out["hqLeft"], 0)
+        self.assertIn("SSHONLY", out["hosts"], "a non-ok answer keeps the last good list in the datalist")
+
+    def test_the_stubs_classlist_and_classname_share_one_set(self):
+        # a class added through classList reads back through className and a className write is what classList then
+        # contains; the base's split stub (a no-op classList beside a plain className string) answers false here
+        out = self._run()
+        self.assertTrue(out["stubSharedClasses"], "classList and className must be two views of one set")
+
+    def test_both_shell_side_tunnels_reads_check_the_status_before_the_body(self):
+        pin = "then(function(r){if(!r.ok)throw new Error('/tunnels answered HTTP '+r.status);return r.json();})"
+        self.assertIn(pin, km._LANDING_REMOTES_JS, "the network rail's refresh")
+        self.assertIn(pin, km._RDRIFT_JS, "the update banner's check")
 
     def test_an_attached_host_renders_a_row(self):
         out = self._run()
@@ -194,6 +293,26 @@ class RemotesPanelRender(unittest.TestCase):
         if tiers is not None:
             tn["peerTiers"] = tiers
         return tn
+
+    def test_a_peer_running_older_code_than_its_checkout_says_so_and_offers_the_restart(self):
+        """plans/drift-by-running-code.md: a peer whose checkout matches this machine is not behind, whatever its kernel
+        booted from; when its kernel runs older kernel code the row says so and the ask slot offers the restart, not an
+        update. Before, such a peer read "behind N" forever and was asked to pull and restart on every pass."""
+        tn = json.loads(json.dumps(TUNNELS))
+        tn["tunnels"][0].update({"status": "up", "checkinPeer": True, "outOfDate": False, "behindBy": 0, "aheadBy": 0,
+                                 "kernelSha": "abc1234", "checkoutSha": "def5678", "localSha": "def5678",
+                                 "kernelVer": "v0.1.3", "localVer": "v0.2.0", "restartPending": True, "askPull": True})
+        out = self._run(tunnels=tn)
+        html = out.get("html", "")
+        self.assertIn("(running older code)", html)
+        self.assertNotIn("behind", html, "its checkout matches: no drift count")
+        self.assertIn("a restart brings it onto the code it holds", html)
+        self.assertRegex(html, r'data-a="[^"]*"[^>]*>Restart</button>', "the ask slot offers the restart, not an update")
+        quiet = json.loads(json.dumps(TUNNELS))
+        quiet["tunnels"][0].update({"status": "up", "checkinPeer": True, "restartPending": False, "askPull": False})
+        html2 = self._run(tunnels=quiet).get("html", "")
+        self.assertNotIn("running older code", html2)
+        self.assertNotIn("Restart</button>", html2)
 
     def test_a_live_row_states_its_drift_plainly(self):
         # The control: an `up` row DID just poll, so its drift is fact and wears no hedge.
@@ -288,8 +407,9 @@ class RemotesPanelRender(unittest.TestCase):
         tun = json.loads(json.dumps(TUNNELS))
         tun["known"] = [{"host": "otherbox", "trust": "trusted", "lastAttachedAt": 1}]
         out = self._run(tunnels=tun)
-        self.assertIn("TESTHOST", out.get("hostsHtml", ""))
-        self.assertIn("otherbox", out.get("hostsHtml", ""))
+        self.assertIn("TESTHOST", out.get("hosts", []))
+        self.assertIn("otherbox", out.get("hosts", []))
+        self.assertEqual(out.get("hostsHtml"), "", "the datalist is built from option elements, never markup (2026-09-08)")
 
     def test_a_down_host_says_it_is_still_being_dialed_and_when(self):
         # romp never stops dialing an attached host (the user 2026-07-29), so the row's job is to prove
@@ -356,6 +476,158 @@ class RemotesPanelRender(unittest.TestCase):
         self.assertIn("select[data-pt-on]", js)
         self.assertIn("/tunnels/trust-remote", js)
         self.assertIn("/tunnels/pairs", js)
+
+
+# A hostile string in every place a peer gets to choose one. Markers are chosen so a raw one is unambiguous
+# in any innerHTML the panel assigned (`<img src=x` / `<script` / `" onmouseover=`) and its escaped form is
+# equally unambiguous (`&lt;img src=x`).
+IMG = "<img src=x onerror=alert(1)>"
+QUOTE = 'x" onmouseover="alert(1)'
+SCRIPT = "<script>alert(1)</script>"
+
+
+class PeerStringsRenderAsText(_PanelHarness, unittest.TestCase):
+    """Every string a PEER chooses reaches this panel through innerHTML — a host it named (a checked-in
+    peer names itself; the rows /tunnels/of relays are a peer's whole list), its status word, its build,
+    the bus gossip (tiers, relay hosts, holds). They were concatenated into markup as they came, so a
+    hostile or merely odd peer scripted the dashboard that displayed it (2026-09-08). Executed against the
+    real panel JS: every innerHTML the panel assigned is recorded, and none may carry a raw marker while
+    the escaped text must actually be shown (rendered as text, not dropped)."""
+
+    def _assert_inert(self, out, *markers):
+        sets = out.get("htmlSets", [])
+        self.assertTrue(sets, "the panel rendered something")
+        for h in sets:
+            for m in ("<img src=x", "<script", '" onmouseover='):
+                self.assertNotIn(m, h, "a peer string reached innerHTML as markup:\n%s" % h[:400])
+        html = out.get("html", "")
+        for m in markers:
+            self.assertIn(m, html, "the hostile string must still be SHOWN, as text")
+
+    def test_a_peer_named_host_build_status_and_gossip_render_as_text_on_the_main_rows(self):
+        tn = json.loads(json.dumps(TUNNELS))
+        tn["tunnels"][0].update({"host": "TEST" + IMG + "HOST", "status": "up", "outOfDate": True,
+                                 "behindBy": 2, "aheadBy": 0, "kernelSha": "abc" + QUOTE,
+                                 "kernelVer": "v1" + SCRIPT, "localSha": "def5678", "localVer": "v0.2.0",
+                                 "kernelDate": "<b>2026</b>", "stale": True, "lastOk": 1785272930})
+        tn["peerTiers"] = {"TEST" + IMG + "HOST": "<i>trusted</i>"}
+        tn["known"] = [{"host": "known" + IMG, "trust": "trusted", "lastAttachedAt": 1, "attached": True}]
+        tn["viaReach"] = [{"host": "relay" + IMG, "via": "hub" + QUOTE, "agents": "<u>3</u>", "trust": "directed"}]
+        tn["remoteHolds"] = [{"atHost": "holder" + IMG, "frm": "a", "to": "b", "gist": QUOTE, "origin": "a"}]
+        out = self._run(tunnels=tn)
+        self.assertEqual(out.get("errors"), [], "the render must not throw on any of it")
+        self._assert_inert(out, "TEST&lt;img src=x onerror=alert(1)&gt;HOST", "abc" + "x&quot; onmouseover=&quot;alert(1)",
+                           "v1&lt;script&gt;", "&lt;i&gt;trusted&lt;/i&gt;", "known&lt;img", "relay&lt;img",
+                           "hub" + "x&quot; onmouseover", "holder&lt;img")
+        # the completions list carries the raw NAME as an option value — a value, not markup
+        self.assertIn("TEST" + IMG + "HOST", out.get("hosts", []))
+        self.assertEqual(out.get("hostsHtml"), "")
+
+    def test_the_connect_from_select_is_option_elements_naming_the_up_hosts(self):
+        tn = json.loads(json.dumps(TUNNELS))
+        tn["tunnels"][0]["host"] = "up" + QUOTE
+        out = self._run(tunnels=tn)
+        self.assertEqual(out.get("fromHtml"), "", "no markup was assigned to the select (2026-09-08)")
+        self.assertEqual(out.get("fromOpts"), [["", "from: this machine"], ["up" + QUOTE, "from: up" + QUOTE]])
+
+    def test_a_peers_own_rows_in_the_connections_expand_render_as_text(self):
+        # The stub has no selector engine, so the expand toggle is stood in for: a button the panel finds
+        # under `button[data-x]`, whose data-x names the up host — the panel binds its onclick on render,
+        # the drive re-renders (a hostsPending post) and clicks it, and the /tunnels/of stub answers SUB.
+        sub = {"ok": True, "of": "TESTHOST", "tunnels": [{
+            "host": "peer" + IMG, "status": "up" + SCRIPT, "outOfDate": True, "behindBy": 1, "aheadBy": 0,
+            "kernelSha": "abc" + QUOTE, "kernelVer": "v9" + SCRIPT, "localSha": "def5678", "localVer": "v0.2.0",
+            "trust": "directed", "fastForward": True, "hasToken": True, "localPort": 5, "kernelPort": 6}]}
+        drive = ("var BTN=mkEl('button');BTN.getAttribute=function(){return 'TESTHOST';};"
+                 "ELS['rnet-list'].querySelectorAll=function(sel){return sel==='button[data-x]'?[BTN]:[];};"
+                 + PendingHostsRowCopy.DELIVER + "BTN.click();")
+        out = self._run(drive=drive, sub=sub)
+        self.assertEqual(out.get("errors"), [])
+        html = out.get("html", "")
+        self.assertIn("rnet-subrow", html, "the expand rendered the peer's rows")
+        self._assert_inert(out, "peer&lt;img src=x onerror=alert(1)&gt;", "up&lt;script&gt;", "v9&lt;script&gt;")
+
+    def test_rows_the_kernel_left_out_are_said_beneath_the_rows_that_passed(self):
+        # tunnels_of counts the peer rows it dropped (no host ssh would accept) as `dropped`; a list that is
+        # simply shorter would be a silent thinning, so the note names the count — as text — in BOTH panels
+        # (strip.ts droppedRowsNote wears the same sentence; net-remote-controls.test.ts pins the pair)
+        sub = {"ok": True, "of": "TESTHOST", "dropped": 2,
+               "tunnels": [{"host": "peerbox", "status": "up", "trust": "directed", "hasToken": True}]}
+        drive = ("var BTN=mkEl('button');BTN.getAttribute=function(){return 'TESTHOST';};"
+                 "ELS['rnet-list'].querySelectorAll=function(sel){return sel==='button[data-x]'?[BTN]:[];};"
+                 + PendingHostsRowCopy.DELIVER + "BTN.click();")
+        out = self._run(drive=drive, sub=sub)
+        self.assertEqual(out.get("errors"), [])
+        html = out.get("html", "")
+        self.assertIn("peerbox", html, "the rows that passed still render")
+        self.assertIn("2 rows from TESTHOST had no usable host and were left out", html)
+        one = json.loads(json.dumps(sub)); one["dropped"] = 1; one["tunnels"] = []
+        html1 = self._run(drive=drive, sub=one).get("html", "")
+        self.assertIn("1 row from TESTHOST had no usable host and was left out", html1)
+        self.assertNotIn("has no hosts attached", html1, "a list emptied by the drop is not 'no hosts attached'")
+
+    def test_a_cut_completions_list_says_how_many_it_left_out(self):
+        # 600 remembered hosts + the attached one: 512 option values, then ONE disabled marker naming the rest
+        # (strip.ts fillHostSelect and the connect-from select wear the same marker)
+        tun = json.loads(json.dumps(TUNNELS))
+        tun["known"] = [{"host": "h%d" % i, "trust": "directed", "lastAttachedAt": 1} for i in range(600)]
+        out = self._run(tunnels=tun)
+        hosts = out.get("hosts", [])
+        self.assertEqual(len(hosts), 513)
+        self.assertEqual(hosts[-1], "\u2026 89 more not shown")
+        self.assertTrue(out.get("hostsLastDisabled"), "the marker is not a pickable host")
+        self.assertFalse(any("\u2026" in h for h in hosts[:-1]), "the marker is the only non-host entry")
+
+    def test_the_markup_sinks_no_longer_interpolate_a_peers_strings_raw(self):
+        js = km._LANDING_REMOTES_JS
+        self.assertIn("function esc(s)", js, "one escape helper, beside the panel's other one-liners")
+        # the rail icon's hover summary keeps a raw `(LBL[t.status]||t.status)`: that is a title PROPERTY (text)
+        for gone in ("'<b>'+t.host+'</b>'", "'<b>'+s.host+'</b>'", "'<b>'+k.host+'</b>'", "'<b>'+v.host+'</b>'",
+                     "'<b>'+hn+'</b>'", "(LBL[t.status]||t.status)+((t.status", "(LBL[t.status]||t.status)+'.'",
+                     "(LBL[s.status]||s.status)+sver", "dl.innerHTML=", "fromSel.innerHTML=", "t.token"):
+            self.assertNotIn(gone, js, "a raw peer string in a markup sink came back: %s" % gone)
+        self.assertEqual(js.count("document.createElement('option')"), 4,
+                         "the completions datalist and the connect-from select build option ELEMENTS — each its "
+                         "hosts plus the one disabled cut marker")
+        self.assertIn("t.hasToken", js, "the row reads the fact of a token, never the token")
+
+
+class PendingHostsRowCopy(_PanelHarness, unittest.TestCase):
+    """The panel must not contradict a blank board (the user 2026-09-02): after a kernel restart or a
+    phone re-foreground the panes can show no trace of an attached host for a while (their relay
+    sockets are still (re)dialing, the first payload has not landed) while this panel's row, read off
+    the kernel's /tunnels, says a bare 'connected'. Each pane's federation manager posts the hosts IT
+    still waits on ({romp:'hostsPending', app, hosts}); a host any pane still pends wears
+    'connected · loading sessions…' with the loader until that pane's next post drops it."""
+
+    DELIVER = ("(window._l.message||[]).forEach(function(f){f({data:{romp:'hostsPending',app:'feed',"
+               "hosts:['TESTHOST']}});});")
+    RETIRE = ("(window._l.message||[]).forEach(function(f){f({data:{romp:'hostsPending',app:'feed',"
+              "hosts:[]}});});")
+
+    def test_a_pane_still_waiting_on_an_up_host_marks_its_row_as_loading(self):
+        out = self._run(drive=self.DELIVER)
+        self.assertEqual(out["rows"], 1)
+        self.assertIn("loading sessions\u2026", out["html"])
+        self.assertIn("rnet-spin", out["html"], "the romp loader, not a bare word that could equally be stuck")
+        self.assertIn("connected", out["html"], "the kernel's own truth stays: the tunnel IS up")
+
+    def test_the_mark_leaves_when_the_pane_reports_the_payload_landed(self):
+        out = self._run(drive=self.DELIVER + self.RETIRE)
+        self.assertNotIn("loading sessions", out["html"])
+
+    def test_a_host_no_pane_pends_wears_no_mark(self):
+        out = self._run()
+        self.assertNotIn("loading sessions", out["html"])
+
+    def test_a_down_host_never_wears_the_loading_mark(self):
+        # the kernel's own status word covers a down tunnel ("reconnecting…"); the pane-side mark is
+        # only for the case where the tunnel is FINE and the dashboard is the one still catching up
+        t = json.loads(json.dumps(TUNNELS))
+        t["tunnels"][0]["status"] = "down"
+        out = self._run(drive=self.DELIVER, tunnels=t)
+        self.assertNotIn("loading sessions", out["html"])
+        self.assertIn("reconnecting", out["html"])
 
 
 if __name__ == "__main__":

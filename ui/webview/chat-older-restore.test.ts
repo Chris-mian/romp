@@ -69,12 +69,12 @@ test("scrollToAnchor restores a keep-offset instead of landing on it", () => {
   const branch = body.slice(at, body.indexOf('landTrail.push("pointer-exact")', at));   // the keep branch alone
   assert.match(branch, /landTrail\.push\("pointer-keep-offset"\)/,
     "the audit trail names the restore, so it is never mistaken for a click again");
-  assert.match(branch, /content\.scrollTop = yNow - keepY/,
+  assert.match(branch, /writeScroll\(content, yNow - keepY, "keep-offset"\)/,
     "the row comes back at its captured offset");
   assert.ok(!/landOn\(/.test(branch), "a restore must NOT top-align + flash the row like a jump");
   // …and the ordinary path still does land properly.
-  assert.match(body, /landTrail\.push\("pointer-exact"\);\s*\n\s*landOn\(target, uuid\);/,
-    "a genuine deep-link still lands via landOn (uuid = the one-flash-per-navigation key)");
+  assert.match(body, /landTrail\.push\("pointer-exact"\);[\s\S]{0,1200}?landOn\(target, uuid, quoteEl \?\? firstTextAtomBelow\(target\), quote\);/,
+    "a genuine deep-link still lands via landOn (uuid = the one-flash-per-navigation key), aligned on the words when the frame quotes them (T386)");
 });
 
 test("a keep-offset restore that misses does not toast the reader 'couldn't locate'", () => {

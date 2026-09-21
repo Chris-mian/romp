@@ -7,7 +7,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spinFor } from "./spin-caption";
+import { spinFor, kindWord, workingFor } from "./spin-caption";
 import { distillInputs, distillText, distillPending } from "./distiller-line";
 
 // --- THE REGRESSION: a re-judging card always spins ----------------------------------------------
@@ -47,10 +47,11 @@ test("AWAITING outranks everything and wears the box", () => {
   assert.match(s.tip, /Not on you|not on you/);
 });
 
-test("the kind words the box: 'Awaiting job' for an external computation, per KIND_WORD", () => {
-  // the wait's CLASS in the visible label (the user 2026-08-15) — tooltips are dead on the touch PWA
+test("the kind words the box: 'Awaiting watch' for an armed watch, per KIND_WORD", () => {
+  // the wait's CLASS in the visible label (the user 2026-08-15) — tooltips are dead on the touch PWA.
+  // The kernel's "job" key reads "watch" since slice 2 (2026-09-05): the plain word for what it is
   assert.equal(spinFor({ awaiting: { why: "", kind: "job" }, column: "working" }, false, false).caption,
-               "Awaiting job");
+               "Awaiting watch");
   assert.equal(spinFor({ awaiting: { why: "", kind: "timer" }, column: "working" }, false, false).caption,
                "Awaiting timer");
   assert.equal(spinFor({ awaiting: { why: "", kind: "banana" }, column: "working" }, false, false).caption,
@@ -166,12 +167,17 @@ test("a settled card displaced to Working loses its line but never its caption",
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
 test("feed.ts routes the card's swirl through spinFor and keeps no inline copy of the ladder", () => {
-  assert.match(FEED, /import \{ spinFor, KIND_WORD, waitedSuffix \} from "\.\/spin-caption";/);
+  assert.match(FEED, /import \{ spinFor, awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, type AwaitRow \} from "\.\/spin-caption";/);   // slice 2: the rows' vocabulary rides the same import
   // the elapsed readout reaches the OTHER two awaiting surfaces through the same helper: the
-  // "Awaiting task" pill and the "Awaiting <peer>" chip (the user 2026-08-23)
-  assert.match(FEED, /const pillWaited = waitedSuffix\(it\.awaiting && it\.awaiting\.since, Date\.now\(\) \/ 1000\);/);
-  assert.match(FEED, /const woWaited = waitedSuffix\(wo\.since, Date\.now\(\) \/ 1000\);/);
-  assert.match(FEED, /const spin = spinFor\(it, distillPending\(/);
+  // "Awaiting task" pill and the "Awaiting <peer>" chip (the user 2026-08-23). That helper is durNodes —
+  // waitedSuffix's rule (" · " + the duration for a known start, nothing otherwise) rendered as a stamped
+  // element the 15 s live pass keeps moving (feed-age.ts fmt "dur")
+  assert.match(FEED, /function durNodes\(since: number \| null \| undefined\): \(string \| HTMLElement\)\[\] \{\n\s*return since && since > 0 \? \[" · ", durSpan\(since\)\] : \[\];/);
+  assert.match(FEED, /pillLbl\.append\(\.\.\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);\s*\/\/ the waited time, live/);
+  assert.match(FEED, /const woDur = durNodes\(wo\.since\);/);
+  // …and the ladder itself runs on the kernel's clock, like every other age on the board
+  assert.match(FEED, /dCompleted, nowSec\(\)\);/);
+  assert.match(FEED, /const spin = spinFor\(it, !it\.notice && distillPending\(/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
   // the inline ladder is gone — no second, drifting copy of the rule
   assert.doesNotMatch(FEED, /spinCaption = "Analyzing…";/);
@@ -180,7 +186,7 @@ test("feed.ts routes the card's swirl through spinFor and keeps no inline copy o
   // …and it still drives the same DOM
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
   assert.match(FEED, /a\._awaitSpin\.classList\.toggle\("await-paused", awaitingBg\);/);
-  assert.match(FEED, /\} else a\._awaitWhy\.textContent = spinCaption;\n\s*a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
+  assert.match(FEED, /else a\._awaitWhy\.textContent = spinCaption;\n\s*a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 
 // --- the working narration (the user 2026-08-13): the previously-mute ordinary working card ---------
@@ -230,9 +236,13 @@ test("THE FLOOR IS TOTAL — a working-column card can never be mute (the user 2
   assert.equal(open.caption, "Working…");
   assert.ok(!open.still, "an open turn spins — it IS in flight");
   const quiet = spinFor({ column: "working", sessState: "quiet" }, false, false, 100);
-  assert.match(quiet.caption || "", /^Paused — resumes when its wait ends$/);   // plain truth (the user
-  // 2026-08-24): never promise the session's NEXT turn — waits lift on their own ending events, and
-  // the next turn may work another thread entirely
+  assert.match(quiet.caption || "", /^Paused — nothing running right now; the session picks this back up$/);
+  // plain truth, both rounds pinned: no NEXT-turn promise (2026-08-24 — the next turn may work
+  // another thread) and no implied inspectable "wait" either (2026-08-29 — the user went looking
+  // in the chat for one). The tooltip may promise the chase: the memo re-arm + dead-man backstop
+  // landed 2026-08-27, so "romp nudges the session if this stays parked" is now simply true.
+  assert.ok(!/wait/.test(quiet.caption || ""), "no invented wait to go looking for");
+  assert.match(quiet.tip || "", /romp nudges the session about it/, "the chase promise — true since the dead-session round");
   assert.equal(quiet.still, true, "nothing in motion → the glyph stills (a spin would lie)");
   const unk = spinFor({ column: "working", sessState: "unknown" }, false, false, 100);
   assert.match(unk.caption || "", /unknown — this machine isn't reporting/);
@@ -274,4 +284,77 @@ test("awaiting WITH tracked tasks says it ONCE — no caption, and never the pau
   // …and so do the richer in-motion stories (a re-judge under an awaiting pill is worth a line)
   const rj = spinFor({ awaiting: { tasks: ["t"] }, rejudging: true, column: "working" }, false, false);
   assert.equal(rj.caption, "Analyzing…");
+});
+
+// --- T225 rider (the user 2026-09-02): the kind word agrees in NUMBER, from one count -------------
+test("kindWord: exactly one agent is 'agent'; two or more are 'agents'", () => {
+  assert.equal(kindWord("agents", 1), "agent");
+  assert.equal(kindWord("agents", 2), "agents");
+  assert.equal(kindWord("agents", 7), "agents");
+});
+
+test("kindWord: the other kinds pluralize by count too — in the plain words of slice 2 (2026-09-05)", () => {
+  // the kernel's KEYS stay (task / job); the WORDS are what the thing is: a background command, an armed
+  // watch. "watch" pluralizes to "watches", not "watchs".
+  assert.equal(kindWord("task", 1), "command");
+  assert.equal(kindWord("task", 3), "commands");
+  assert.equal(kindWord("job", 1), "watch");
+  assert.equal(kindWord("job", 2), "watches");
+  assert.equal(kindWord("peer", 1), "peer");
+  assert.equal(kindWord("peer", 2), "peers");
+  assert.equal(kindWord("timer", 4), "timers");
+  assert.equal(kindWord("mixed", 4), "", "several kinds at once have no word — the number is the label");
+});
+
+test("kindWord: an unknown count keeps the surfaces' historic default; an unknown kind stays agents", () => {
+  assert.equal(kindWord("agents", null), "agents");
+  assert.equal(kindWord("agents", undefined), "agents");
+  assert.equal(kindWord("task", null), "command");
+  assert.equal(kindWord(null, 1), "agent");
+  assert.equal(kindWord("", 2), "agents");
+  assert.equal(kindWord("nonsense", 2), "agents");
+});
+
+test("the spin caption derives its word from the kernel's count", () => {
+  const one = spinFor({ awaiting: { why: "", kind: "agents", count: 1 }, column: "working" }, false, false);
+  assert.equal(one.caption, "Awaiting agent");
+  const two = spinFor({ awaiting: { why: "", kind: "agents", count: 2 }, column: "working" }, false, false);
+  assert.equal(two.caption, "Awaiting agents");
+  const legacy = spinFor({ awaiting: { why: "", kind: "agents" }, column: "working" }, false, false);
+  assert.equal(legacy.caption, "Awaiting agents", "an older kernel with no count reads as before");
+});
+
+// --- the caption's running duration as a separate part -----------------------------------------------
+test("a caption that ends in a duration also says where the duration starts: caption === dur.text + workingFor(now - since)", () => {
+  const NOW = 100_000;
+  const check = (s: ReturnType<typeof spinFor>) => {
+    assert.ok(s.dur, "the duration part is present");
+    assert.equal(s.caption, s.dur!.text + workingFor(NOW - s.dur!.since), "the two renderings agree to the character");
+  };
+  check(spinFor({ awaiting: { why: "", since: NOW - 42 * 60 }, column: "working" }, false, false, NOW));
+  check(spinFor({ awaiting: { why: "waiting on 3 subagents", since: NOW - 3 * 3600 - 5 * 60 }, column: "working" }, false, false, NOW));
+  check(spinFor({ column: "working", working: { since: NOW - 8 * 60, toolUses: 23 } }, false, false, NOW));
+  check(spinFor({ column: "working", working: { since: NOW - 3 * 60, toolUses: 0 } }, false, false, NOW));
+  assert.equal(spinFor({ column: "working", working: { since: NOW - 3 * 60, toolUses: 0 } }, false, false, NOW).dur!.text, "Working — ",
+    "no count: the duration alone follows the dash");
+  assert.equal(spinFor({ column: "working", working: { since: NOW - 8 * 60, toolUses: 23 } }, false, false, NOW).dur!.text, "Working — 23 tool uses · ");
+});
+
+test("a wait that started this very second, or whose clock runs ahead of the kernel's, reads 0m — still a live part", () => {
+  const NOW = 100_000;
+  for (const since of [NOW, NOW + 30]) {
+    const s = spinFor({ awaiting: { why: "", since }, column: "working" }, false, false, NOW);
+    assert.equal(s.caption, "Awaiting agents · 0m");
+    assert.deepEqual(s.dur, { text: "Awaiting agents · ", since });
+    const w = spinFor({ column: "working", working: { since, toolUses: 1 } }, false, false, NOW);
+    assert.equal(w.caption, "Working — 1 tool use · 0m");
+    assert.deepEqual(w.dur, { text: "Working — 1 tool use · ", since });
+  }
+});
+
+test("no start, no duration part: the caption stands alone", () => {
+  assert.equal(spinFor({ awaiting: { why: "" }, column: "working" }, false, false, 5000).dur, null);
+  assert.equal(spinFor({ awaiting: { why: "", since: 1000 }, column: "working" }, false, false).dur, null, "no clock, no duration");
+  assert.equal(spinFor({ column: "working", working: { toolUses: 2 } }, false, false, 5000).dur, null);
+  assert.equal(spinFor({ column: "working", judging: true }, false, false, 5000).dur, undefined, "the other rungs carry none");
 });

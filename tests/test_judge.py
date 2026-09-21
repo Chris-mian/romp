@@ -6,14 +6,17 @@ single-segment-turn caption reuse, the unit-text builder, the caption store + de
 and the engine pass (discovery / budget / fairness / write) — is tested deterministically.
 All fixtures are SYNTHETIC (invented text, placeholder UUIDs, hostname TESTHOST).
 """
+import contextlib
+import io
 import json
 import os
 import shutil
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -21,8 +24,8 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+em = load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+jd = load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
@@ -476,17 +479,17 @@ class LiveWorkCaption(_FleetHarness, unittest.TestCase):
                 self.assertEqual(len(lives()), 1, "the first live caption fires once a CHUNK of work has accrued")
                 self.assertEqual(lives()[0]["grain"], "segment", "no turn-grain while open")
                 # grow by ONE atom (< CHUNK) → throttled, NO re-caption
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 self._tpath.write_text("\n".join(json.dumps(r) for r in self._opened(CHUNK + 2)) + "\n")
                 jd.run_index(now=now + 10)
                 self.assertEqual(len(lives()), 1, "a sub-chunk growth does NOT re-caption (throttled)")
                 # grow by a full CHUNK more → re-caption
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 self._tpath.write_text("\n".join(json.dumps(r) for r in self._opened(2 * CHUNK + 2)) + "\n")
                 jd.run_index(now=now + 20)
                 self.assertEqual(len(lives()), 2, "re-captioned once a full new chunk of atoms accrues")
                 # CLOSE the turn → a FINAL non-live segment caption, and the seg id becomes deduped
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 self._tpath.write_text("\n".join(json.dumps(r) for r in [
                     uline(T0, "investigate the crash", "u1", ps="typed"),
                     aline(T0 + 30, "Fixed the off-by-one crash.", "a1", "u1", tools=("Bash", "Edit"), stop="end_turn")]) + "\n")
@@ -730,11 +733,11 @@ class PlanParseStorm(unittest.TestCase):
             jd._group_store = lambda *a, **k: None         # don't fire the real grouper model after a placement
             try:
                 tpath.write_text("\n".join(json.dumps(r) for r in recs1) + "\n")
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd._plan_session(SID, str(tpath), NOW)
                 if recs2 is not None:
                     tpath.write_text("\n".join(json.dumps(r) for r in recs2) + "\n")
-                    jd._PARSE_CACHE.clear()
+                    jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                     jd._plan_session(SID, str(tpath), NOW + 100)
                 store = jd.load_goals(SID)
             finally:
@@ -1121,7 +1124,7 @@ class SegKeyDrift(unittest.TestCase):
             jd._group_store = lambda *a, **k: None
             try:
                 tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd.plan_llm = lambda *a, **k: '{"ops":[{"why":"asked","do":"mint","text":"Ship the exporter"}]}'
                 jd._plan_session(SID, str(tpath), NOW)
                 store = jd.load_goals(SID)
@@ -1137,7 +1140,7 @@ class SegKeyDrift(unittest.TestCase):
 
                 calls = []
                 jd.plan_llm = lambda *a, **k: (calls.append(1), '{"ops":[{"why":"dup","do":"mint","text":"DUP"}]}')[1]
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd._plan_session(SID, str(tpath), NOW + 100)
                 self.assertEqual(calls, [], "a drift-shifted placement still dedups — the planner is not re-run")
                 self.assertEqual(len(jd.load_goals(SID)["nodes"]), 1, "no duplicate goal was minted")
@@ -1303,11 +1306,24 @@ class ClearedSeal(unittest.TestCase):
     def setUp(self):
         self._saved_state = jd.STATE
         self._td = tempfile.mkdtemp()
-        jd.STATE = Path(self._td)
+        jd._rebind_state(Path(self._td))
 
     def tearDown(self):
-        jd.STATE = self._saved_state
+        jd._rebind_state(self._saved_state)
         shutil.rmtree(self._td, ignore_errors=True)
+
+    def test_the_stores_this_class_saves_do_not_outlive_it(self):
+        # The residue pin (T282): a store saved through this module's judge (the object every kernel shares) lands
+        # under the sandbox root, and the run-wide root is exactly as it was.
+        shared = Path(self._saved_state) / "goals" / (SID + ".json")
+        before = (shared.exists(), shared.stat().st_mtime_ns if shared.exists() else None)
+        st = jd.load_goals(SID)
+        st["nodes"][SID + ":t282"] = jd.GuardedNode({"id": SID + ":t282", "text": "a note", "parentId": None, "nodeComplete": False,
+                                                    "blocked": False, "cleared": False, "trail": [], "t": 1, "mt": 1, "log": []})
+        jd.save_goals(SID, st)
+        self.assertTrue((Path(self._td) / "goals" / (SID + ".json")).exists(), "the store lives under the sandbox root")
+        self.assertEqual((shared.exists(), shared.stat().st_mtime_ns if shared.exists() else None), before,
+                         "the run-wide goals directory is untouched by this class")
 
     def _view_clear(self, *ids):
         with (jd.STATE / "cleared.jsonl").open("a") as f:
@@ -1435,7 +1451,7 @@ class Grouper(unittest.TestCase):
         # empty dir so every grouper test is hermetic (no real cleared.jsonl bleeds in).
         self._saved_state = jd.STATE
         self._state_td = tempfile.mkdtemp()
-        jd.STATE = Path(self._state_td)
+        jd._rebind_state(Path(self._state_td))
 
     def _two_tops(self):
         s = _store()
@@ -1586,10 +1602,10 @@ class Grouper(unittest.TestCase):
         return str(pdir / (SID + ".jsonl"))
 
     def tearDown(self):
-        jd.STATE = self._saved_state
-        shutil.rmtree(self._state_td, ignore_errors=True)
         if hasattr(self, "_saved"):
-            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.group_llm) = self._saved
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.group_llm) = self._saved   # _setup's own dirs, off first
+        jd._rebind_state(self._saved_state)   # ...then the import-time root and every derived dir
+        shutil.rmtree(self._state_td, ignore_errors=True)
 
     def test_view_cleared_top_is_excluded_from_grouping(self):
         # The reappearance bug (the user 2026-06-18): the user CLEARS a top from the feed (a row in
@@ -1681,7 +1697,7 @@ class Grouper(unittest.TestCase):
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm)
         jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         gcalls = []
         try:
             jd.plan_llm = (lambda text, menu, human=False, **_kw:
@@ -1698,7 +1714,7 @@ class Grouper(unittest.TestCase):
             self.assertGreaterEqual(len(gcalls), 1, "the planner invoked the grouper after a placement")
         finally:
             (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm) = saved
-            jd._PARSE_CACHE.clear()
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
 
 
 class Consolidator(unittest.TestCase):
@@ -1710,13 +1726,13 @@ class Consolidator(unittest.TestCase):
     def setUp(self):
         self._saved_state = jd.STATE
         self._state_td = tempfile.mkdtemp()
-        jd.STATE = Path(self._state_td)
+        jd._rebind_state(Path(self._state_td))
 
     def tearDown(self):
-        jd.STATE = self._saved_state
-        shutil.rmtree(self._state_td, ignore_errors=True)
         if hasattr(self, "_saved"):
-            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.group_llm) = self._saved
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.group_llm) = self._saved   # _setup's own dirs, off first
+        jd._rebind_state(self._saved_state)   # ...then the import-time root and every derived dir
+        shutil.rmtree(self._state_td, ignore_errors=True)
 
     def _completed_store(self, specs):
         # specs: [(gid_suffix, text, [trail segs])] → a store of completed top goals (rolled up to "completed")
@@ -2297,7 +2313,7 @@ class PostalDelegation(unittest.TestCase):
                 jd.save_goals(SID, store)
                 if view_cleared and gid:
                     jd._view_cleared = lambda g=gid: {g}   # the user crossed G off the feed → _reopen won't unseal it
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 for _ in range(passes):
                     jd._plan_session(SID, str(tpath), NOW)
                 return jd.load_goals(SID), seg_id, gid
@@ -2401,7 +2417,7 @@ class PostalDelegation(unittest.TestCase):
                 for s in peers:                            # the courier marked every one coordination
                     store["placements"][s["id"]] = "fyi"
                 jd.save_goals(SID, store)
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd._plan_session(SID, str(tpath), NOW)     # ONE pass
                 store = jd.load_goals(SID)
                 tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
@@ -2464,7 +2480,7 @@ class NudgeMustResolve(unittest.TestCase):
                                          "nodeComplete": False, "blocked": False, "cleared": False,
                                          "trail": ["seed"], "t": T0, "mt": T0}}}
                 jd.save_goals(SID, store)
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd._plan_session(SID, str(tpath), NOW)
                 return jd.load_goals(SID), gid
             finally:
@@ -2547,7 +2563,7 @@ class NudgeMustResolve(unittest.TestCase):
                 self.assertEqual([n for n in mid["nodes"].values() if n.get("parentId") == gid], [],
                                  "no stub node is minted — the reopen event alone holds the top open")
                 self.assertEqual(mid["status"][gid], "working", "held at working through the optimistic window")
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd._plan_session(SID, str(tpath), NOW)
                 store = jd.load_goals(SID)
                 subs = [n for n in store["nodes"].values() if n.get("parentId") == gid]
@@ -2766,7 +2782,7 @@ class DelegationPropagation(unittest.TestCase):
             saved = (jd.GOALDIR, jd.discover)
             jd.GOALDIR = Path(td) / "goals"
             jd.GOALDIR.mkdir(parents=True)
-            jd.discover = lambda now: [(self.B, "p", "a", "bee")]
+            jd.discover = lambda now, window=None, forks=True: [(self.B, "p", "a", "bee")]
             try:
                 jd.save_goals(self.A, a_store)
                 jd.save_goals(self.B, b_store)
@@ -3022,7 +3038,7 @@ class PlanTuning(unittest.TestCase):
         import inspect
         # the wrap-up asks for no reply since 2026-07-29, so ONE card is the exception, not the default
         # the phrase spans two source literals, so pin the half that carries the rule
-        self.assertIn("**one** new top-level goal, blocked on the user", inspect.getsource(jd.plan_units))
+        self.assertIn("**one** new top-level goal, blocked on the user", inspect.getsource(jd.plan_units) + inspect.getsource(jd._work_note))   # the note lives in the planner's note helper (T377)
 
     def test_menu_prompts_state_the_numbering_base(self):
         # The zero-based tell's prompt half (the user 2026-07-17): every menu-reading prompt says the
@@ -3079,9 +3095,14 @@ class PlanTuning(unittest.TestCase):
     def test_why_cap_raised_to_300(self):
         long = "word " * 100                                   # ~500 chars after normalization
         ops = jd._parse_plan('{"ops":[{"why":"%s","do":"mint","text":"G"}]}' % long.strip(), 1)
-        self.assertEqual(len(ops[0]["why"]), 300, "planner why capped at 300 (was 200)")
+        # the ceiling is 300 (was 200); since T388 the cut lands at a word or sentence boundary under it and ends
+        # with the visible cut mark, so the stored why is never a mid-word stump the brief judge could misread
+        self.assertLessEqual(len(ops[0]["why"]), 300 + len(jd.WHY_CUT_MARK), "planner why capped at 300 (was 200)")
+        self.assertGreaterEqual(len(ops[0]["why"]), 150, "…and cut no lower than half the cap")
+        self.assertTrue(ops[0]["why"].endswith("word" + jd.WHY_CUT_MARK), ops[0]["why"][-12:])
         done = jd._parse_close('{"done":[{"goal":1,"why":"%s"}]}' % long.strip(), 1)["done"]
-        self.assertEqual(len(done[1]), 300, "closer doneWhy capped at 300 (was 200)")
+        self.assertLessEqual(len(done[1]), 300 + len(jd.WHY_CUT_MARK), "closer doneWhy capped at 300 (was 200)")
+        self.assertTrue(done[1].endswith("word" + jd.WHY_CUT_MARK), done[1][-12:])
 
     def test_planner_eager_done_and_no_grouping(self):
         # the user 2026-06-17: the planner biases toward marking goals done EAGERLY, and (split out the
@@ -3660,6 +3681,8 @@ class SweepSession(unittest.TestCase):
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
+        self._saved_errors, jd.ERRORS = jd.ERRORS, td / "judge-errors.jsonl"   # the sweep's own rows, readable
+        self.cdir, self.pdir, self.names = cdir, pdir, names   # a test may add a second session beside SID
         # positive-only: always MINT a top, never DONE -> every top is left 'working'
         jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"x","do":"mint","text":"Goal"}]}'
         jd.group_llm = lambda menu: '{"ops":[]}'   # planner now groups inline; keep the sweep's tops un-nested
@@ -3667,7 +3690,15 @@ class SweepSession(unittest.TestCase):
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.closer_llm, jd.group_llm) = self._saved
+        jd.ERRORS = self._saved_errors
+        jd._judge_ctx.paused, jd._judge_ctx.last_call_fail = False, None   # a stub's per-thread stash dies here
         self._td.cleanup()
+
+    def _errors(self):
+        try:
+            return [json.loads(l) for l in Path(jd.ERRORS).read_text().splitlines()]
+        except OSError:
+            return []
 
     def test_completes_and_settles_finished_tops_on_turn_end(self):
         jd.run_plan(now=self.now)
@@ -3780,18 +3811,412 @@ class SweepSession(unittest.TestCase):
         n = jd.run_close(now=self.now)
         self.assertGreaterEqual(n, 1, "the grown turn re-judged and completed the goal")
 
-    def test_transient_failures_never_tombstone(self):
-        # a 529/timeout recovers when the storm ends — those keep the plain retry-next-pass contract
+    # the dead-CLI stash byte-for-byte as _judge_run leaves it (its DEAD CLI branch): "" back to the
+    # caller, the per-thread dict naming the exit. -14 is SIGALRM — the CALL_ALARM_S kill, the shape of
+    # the 2026-09-03 incident (192 consecutive kills inside ONE session's walk, 6h22m of silence)
+    DEAD_CLI = {"note": "the model CLI died with no output (exit -14)", "model": "sonnet", "kill": True}
+
+    # the other failure stashes _judge_run leaves, byte-for-byte: subprocess.TimeoutExpired (its except
+    # branches stash the exception's type name — the CALL_ALARM_S + 5 backstop firing), the codex engine's
+    # empty -o file, and an API error envelope (the CLI answering with an error string; the stash is that
+    # message). The first two are KILLS like the dead CLI — the call RAN TO THE TIMER: TimeoutExpired, or
+    # the alarm's SIGALRM as the exit code — and _judge_run stamps `kill: True` only then (a clean exit of
+    # any code is the process answering: no flag); the envelope is the API answering and carries no flag.
+    # _call_fail_kill reads the flag, never the note (the producer-side pins live in FailureContract).
+    TIMEOUT = {"note": "TimeoutExpired", "model": "sonnet", "kill": True}
+    CODEX_EMPTY = {"note": "codex empty reply (exit -14)", "model": "codex-default", "kill": True}
+    ENVELOPE_529 = {"note": "API Error: 529 overloaded_error", "model": "sonnet"}
+
+    def _failing_closer(self, calls, stash):
+        return lambda tt, mt, *_a: (calls.append(1), setattr(
+            jd._judge_ctx, "last_call_fail", dict(stash)), "")[2]
+
+    def _dead_closer(self, calls):
+        return self._failing_closer(calls, self.DEAD_CLI)
+
+    def test_a_failed_call_cuts_this_sessions_sweep_for_the_pass(self):
+        # 2026-09-03: one session's closer calls were alarm-killed 192 times in a row inside ONE
+        # _close_session walk — every judge for every session silent for 6h22m, because the walk
+        # `continue`d to the next end-known turn after each kill and the next call died the same way
+        # (the same over-full menu rides every turn until a LANDED reply stamps it). A failed CALL is
+        # evidence about the session's calls, not about one turn: the first one ends this session's
+        # walk for the pass, loudly. Below the cap the turn takes a strike — a KILL is prompt-shaped
+        # (_call_fail_kill) — but no tombstone, and the loop BREAKS rather than returns, so the store
+        # still saves and the death-marker epilogue still runs.
         jd.run_plan(now=self.now)
         calls = []
-        jd.closer_llm = lambda tt, mt, *_a: (calls.append(1), setattr(
-            jd._judge_ctx, "last_call_fail",
-            {"note": "API Error: Repeated 529 Overloaded errors.", "model": "fable"}), "")[2]
-        for _ in range(jd.DISTILL_FAIL_CAP + 2):
+        jd.closer_llm = self._dead_closer(calls)
+        jd.run_close(now=self.now)
+        self.assertEqual(len(calls), 1, "the first failed call ends this session's walk for the pass")
+        store = jd.load_goals(SID)
+        self.assertFalse(store.get("closedTurns"), "nothing swept while the calls fail")
+        t1, t2 = self._turn_ids()
+        self.assertEqual(store.get("closeFails"), {t1: {"fp": 2, "fails": 1, "kind": "kill"}},
+                         "the cut is struck against the turn it died on, at its current size, in its own streak")
+        self.assertIn("closedSig", store, "a break, not a return: the store was still saved")
+        rows = [r for r in self._errors() if r.get("err") == "sweep-cut"]
+        self.assertEqual(len(rows), 1, "one loud row per cut walk")
+        self.assertEqual((rows[0]["judge"], rows[0]["fsid"]), ("closer", SID))
+        self.assertIn("1 end-known turn(s)", rows[0]["note"], "the row counts the turns left behind")
+        self.assertIn("exit -14", rows[0]["note"], "…and carries the call failure it acted on")
+        self.assertIn("kill 1 of %d" % jd.DISTILL_FAIL_CAP, rows[0]["note"], "…and says how far the turn is from its give-up")
+        jd.run_close(now=self.now)
+        self.assertEqual(len(calls), 2, "ONE call per pass below the cap: retrying, never walking past the failure")
+        self.assertFalse(jd.load_goals(SID).get("closedTurns"), "below the cap a failed call never adopts the turn")
+
+    def test_a_cut_walk_leaves_a_death_marker_pending(self):
+        # review find (2026-09-03): a dead session is swept ONLY through the death drain, and the drain
+        # skips finalized markers — so finalizing off a CUT walk (turns left unswept behind the failed
+        # call) would strand those turns for good. The epilogue waits for a walk that reaches the end.
+        jd.run_plan(now=self.now)
+        marker = jd.GONEDIR / (SID + ".json")
+        jd.GONEDIR.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"t": self.now - 100, "by": "kill"}))
+        jd._gone_memo.pop(SID, None)
+        try:
+            calls = []
+            jd.closer_llm = self._dead_closer(calls)
             jd.run_close(now=self.now)
-        self.assertEqual(len(calls), 2 * (jd.DISTILL_FAIL_CAP + 2),
-                         "still retrying every pass — transient failures never adopt the turn")
-        self.assertFalse(jd.load_goals(SID).get("closedTurns"), "nothing swept while the calls fail")
+            self.assertEqual(len(calls), 1, "the walk was cut at the first failed call")
+            self.assertNotIn("endedAt", json.loads(marker.read_text()),
+                             "a cut walk does not finalize the marker: the session's turns are still owed")
+            jd.closer_llm = lambda tt, mt, *_a: '{"done": [], "block": []}'   # calls land again
+            jd.run_close(now=self.now)
+            self.assertEqual(len(jd.load_goals(SID).get("closedTurns") or []), 2, "the walk reached the end")
+            self.assertIn("endedAt", json.loads(marker.read_text()),
+                          "…and only then does the one-shot epilogue stamp the marker")
+        finally:
+            marker.unlink(missing_ok=True)
+            jd._gone_memo.pop(SID, None)
+
+    def test_a_parse_reject_still_walks_every_turn(self):
+        # the boundary: a served-but-unparseable reply is the MODEL's answer to THIS turn's prompt
+        # (last_call_fail stays None — a served reply retires it), so the next turn is still worth
+        # asking. `res is None` alone would cut here too; the discriminator is the call-failure stash.
+        jd.run_plan(now=self.now)
+        calls = []
+        jd.closer_llm = lambda tt, mt, *_a: (calls.append(1), "not json")[1]
+        jd.run_close(now=self.now)
+        self.assertEqual(len(calls), 2, "a parse reject walks on to the next turn")
+        store = jd.load_goals(SID)
+        self.assertEqual(len(store.get("closeFails") or {}), 2, "each turn took its own parse strike")
+        self.assertFalse(store.get("closedTurns"), "under the cap nothing is swept")
+        self.assertEqual([r for r in self._errors() if r.get("err") == "sweep-cut"], [],
+                         "a parse reject is not a cut")
+
+    def test_a_paused_skip_still_walks_every_turn(self):
+        # the other boundary: the rate gate / retry pause / scratch refusal return "" with paused=True
+        # and NO call was made — nothing failed, so the walk keeps visiting (and skipping) every turn
+        jd.run_plan(now=self.now)
+        calls = []
+        jd.closer_llm = lambda tt, mt, *_a: (calls.append(1), setattr(jd._judge_ctx, "paused", True), "")[2]
+        jd.run_close(now=self.now)
+        self.assertEqual(len(calls), 2, "a pause-skip is not a failed call: every turn is still visited")
+        store = jd.load_goals(SID)
+        self.assertFalse(store.get("closedTurns"), "nothing swept on a pause")
+        self.assertFalse(store.get("closeFails"), "nothing struck on a pause")
+        self.assertEqual([r for r in self._errors() if r.get("err") == "sweep-cut"], [],
+                         "a pause-skip is not a cut")
+
+    def test_other_sessions_close_while_one_is_cut(self):
+        # the incident's cost was not one session's stall but EVERY session's: run_close awaits one
+        # future per session, so the cut session's walk ending lets the pass finish and its peers close.
+        # Two sessions, the second under a PRIVATE synthetic sid (its override journal lives under this
+        # test's GOALDIR tempdir and dies with it in tearDown).
+        sid_b = "22222222-3333-4444-5555-666666666666"
+        records = [uline(T0, "task C", "u1", ps="typed"),
+                   aline(T0 + 30, "did C", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "task D", "u2", "a1", ps="typed"),
+                   aline(T0 + 130, "did D", "a2", "u2", stop="end_turn")]
+        (self.pdir / (sid_b + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        (self.names / sid_b).write_text("testsess2\t%s\t#abcdef\n" % str(self.cdir))
+        jd.run_plan(now=self.now)
+        self.assertTrue(jd.load_goals(sid_b)["nodes"], "the second session planned goals too")
+        calls = []
+
+        def closer(tt, mt, *_a):
+            calls.append(jd._judge_ctx.fsid)
+            if jd._judge_ctx.fsid == SID:
+                jd._judge_ctx.last_call_fail = dict(self.DEAD_CLI)
+                return ""
+            return '{"done": [{"goal": 1, "why": "done"}], "block": []}'
+        jd.closer_llm = closer
+        jd.run_close(now=self.now)
+        self.assertEqual(calls.count(SID), 1, "the failing session made exactly one call")
+        self.assertEqual(calls.count(sid_b), 2, "the healthy session was judged turn by turn")
+        self.assertFalse(jd.load_goals(SID).get("closedTurns"), "the cut session swept nothing")
+        self.assertEqual(len(jd.load_goals(sid_b).get("closedTurns") or []), 2,
+                         "every end-known turn of the healthy session closed in the same pass")
+        rows = [r for r in self._errors() if r.get("err") == "sweep-cut"]
+        self.assertEqual([r["fsid"] for r in rows], [SID], "one cut row, naming the cut session")
+
+    def _turn_ids(self):
+        path = next(p for f, p, a, n in jd.discover(self.now) if f == SID)
+        return [t["id"] for t in jd.parsed_session(SID, [path], self.now)["turns"]]
+
+    @staticmethod
+    def _turn_tag(tid):
+        return tid.split(":", 1)[1]                   # `t:hash` — the part of `sid:t:hash` that tells turns apart
+
+    def test_repeated_cuts_on_one_turn_give_it_up_and_the_walk_moves_on(self):
+        # the follow-up the sweep-cut row named (review of the cut, 2026-09-03): a LIVE session whose head
+        # turn's call dies the same way every pass (a menu the timer cannot fit even capped, a prompt the
+        # model never finishes) was cut at that turn every pass — one doomed call per pass forever, and
+        # every LATER end-known turn never reached, since the walk always ended at the head. A dead
+        # session at least rotated to the back of the death drain; a live one simply lost its later turns.
+        # Mirror the safeguards tombstone: strike-count the cuts per turn at its current size; at the cap
+        # adopt the turn (swept, no verdicts) LOUDLY, and walk ON in the same pass.
+        jd.run_plan(now=self.now)
+        t1, t2 = self._turn_ids()
+        cap = jd.DISTILL_FAIL_CAP
+        calls = []
+        jd.closer_llm = self._dead_closer(calls)
+        for _ in range(cap - 1):
+            jd.run_close(now=self.now)
+        self.assertEqual(len(calls), cap - 1, "below the cap: one cut call per pass, always at the head turn")
+        store = jd.load_goals(SID)
+        self.assertFalse(store.get("closedTurns"), "nothing adopted below the cap")
+        self.assertEqual(store["closeFails"], {t1: {"fp": 2, "fails": cap - 1, "kind": "kill"}},
+                         "the head turn's cut streak, at its size; the second turn was never reached")
+        jd.run_close(now=self.now)                       # the capping pass
+        self.assertEqual(len(calls), cap + 1,
+                         "the capping pass adopted the head turn and went ON to the second turn's call")
+        store = jd.load_goals(SID)
+        self.assertEqual(store.get("closedTurns"), [t1], "the head turn is adopted at the cap…")
+        self.assertEqual(store["closedSig"][t1], 2, "…at the size it was struck at (growth re-judges it)")
+        self.assertTrue(all(not nd.get("nodeComplete") and not nd.get("blocked") for nd in store["nodes"].values()),
+                        "swept WITHOUT verdicts — no goal state was invented")
+        self.assertEqual(store["closeFails"], {t2: {"fp": 2, "fails": 1, "kind": "kill"}},
+                         "the give-up retired the head turn's record; the second turn took its own first cut")
+        give = [r for r in self._errors() if r.get("err") == "give-up"]
+        self.assertEqual(len(give), 1, "one loud give-up row")
+        self.assertEqual((give[0]["judge"], give[0]["fsid"]), ("closer", SID))
+        note = give[0]["note"]
+        self.assertIn(self._turn_tag(t1), note, "the row names the turn given up")
+        self.assertNotIn(self._turn_tag(t2), note)
+        self.assertIn("%d killed calls" % cap, note, "…the number of kills")
+        self.assertIn("exit -14", note, "…the failure class it acted on")
+        self.assertIn("turn growing", note, "…and the re-arm event: new evidence, never a clock")
+        cuts = [r for r in self._errors() if r.get("err") == "sweep-cut"]
+        self.assertEqual(len(cuts), cap, "each pass was still cut once: twice at the head turn, then at the second")
+        self.assertIn(self._turn_tag(t2), cuts[-1]["note"], "the capping pass's cut is at the SECOND turn")
+        self.assertIn("0 end-known turn(s)", cuts[-1]["note"])
+        for _ in range(cap - 1):                          # the second turn's own streak runs to the cap
+            jd.run_close(now=self.now)
+        store = jd.load_goals(SID)
+        self.assertEqual(sorted(store["closedTurns"]), sorted([t1, t2]), "the second turn is given up in turn")
+        self.assertFalse(store.get("closeFails"), "no record outlives its give-up")
+        n = len(calls)
+        jd.run_close(now=self.now)
+        self.assertEqual(len(calls), n, "a fully given-up session costs ZERO further calls")
+
+    def test_a_cut_strike_resets_when_the_turn_grows(self):
+        # the strike is per turn AT ITS CURRENT SIZE (the safeguards arm's rule): a turn that grew is a
+        # different prompt — new evidence — so its count starts over, and cuts on two sizes never add up
+        # to a give-up
+        path = next(p for f, p, a, n in jd.discover(self.now) if f == SID)
+        jd.run_plan(now=self.now)
+        t1, t2 = self._turn_ids()
+        cap = jd.DISTILL_FAIL_CAP
+        calls = []
+        jd.closer_llm = self._dead_closer(calls)
+        for _ in range(cap - 1):
+            jd.run_close(now=self.now)
+        self.assertEqual(jd.load_goals(SID)["closeFails"][t1], {"fp": 2, "fails": cap - 1, "kind": "kill"},
+                         "one cut short of the give-up")
+        # the head turn GROWS: another assistant record on its chain, the second prompt re-parented onto it
+        recs = [uline(T0, "task A", "u1", ps="typed"),
+                aline(T0 + 30, "did A", "a1", "u1", stop="end_turn"),
+                aline(T0 + 60, "did more of A", "a1b", "a1", stop="end_turn"),
+                uline(T0 + 100, "task B", "u2", "a1b", ps="typed"),
+                aline(T0 + 130, "did B", "a2", "u2", stop="end_turn")]
+        Path(path).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self.assertEqual(self._turn_ids(), [t1, t2], "fixture: the same two turns, the first now larger")
+        jd.run_close(now=self.now)                       # the cut that would have capped, had the count carried
+        store = jd.load_goals(SID)
+        self.assertEqual(len(calls), cap, "one call: the walk is cut at the head turn again")
+        self.assertFalse(store.get("closedTurns"), "NOT adopted: this cut is the first at the new size")
+        self.assertEqual(store["closeFails"][t1], {"fp": 3, "fails": 1, "kind": "kill"},
+                         "the record restarted at the new size")
+        self.assertEqual([r for r in self._errors() if r.get("err") == "give-up"], [], "no give-up across sizes")
+
+    def test_cut_strikes_and_parse_strikes_do_not_add_up(self):
+        # two different streaks: a parse reject means the model ANSWERED this turn's prompt (the parser
+        # refused its text); a cut means it never did. closeFails holds the turn's CURRENT streak, and a
+        # strike of the other kind starts over — so a cut, a parse reject and a cut are never "3 in a row"
+        # toward either cap
+        jd.run_plan(now=self.now)
+        t1, t2 = self._turn_ids()
+        calls = []
+        jd.closer_llm = self._dead_closer(calls)
+        jd.run_close(now=self.now)                                          # cut
+        self.assertEqual(jd.load_goals(SID)["closeFails"], {t1: {"fp": 2, "fails": 1, "kind": "kill"}})
+        jd.closer_llm = lambda tt, mt, *_a: (calls.append(1), "not json")[1]
+        jd.run_close(now=self.now)                                          # parse reject (walks both turns)
+        store = jd.load_goals(SID)
+        self.assertEqual(store["closeFails"], {t1: 1, t2: 1},
+                         "the parse strike starts its own count on the head turn: the model answered, the cut streak is over")
+        jd.closer_llm = self._dead_closer(calls)
+        jd.run_close(now=self.now)                                          # cut
+        store = jd.load_goals(SID)
+        self.assertEqual(store["closeFails"][t1], {"fp": 2, "fails": 1, "kind": "kill"},
+                         "the cut starts over too: three strikes of two kinds are not three in a row")
+        self.assertEqual(store["closeFails"][t2], 1, "the second turn's parse strike is untouched (the walk was cut before it)")
+        self.assertFalse(store.get("closedTurns"), "nothing adopted")
+        self.assertEqual([r for r in self._errors() if r.get("err") == "give-up"], [], "no give-up of either kind")
+
+    def test_a_landed_call_retires_the_cut_record(self):
+        # the record's own retire event is a call for that turn LANDING — the same pop a landed judgment
+        # has always done for the parse strikes — so a turn that dies twice and then answers carries no
+        # trace of the cuts
+        jd.run_plan(now=self.now)
+        t1, t2 = self._turn_ids()
+        calls = []
+        jd.closer_llm = self._dead_closer(calls)
+        jd.run_close(now=self.now)
+        self.assertEqual(jd.load_goals(SID)["closeFails"], {t1: {"fp": 2, "fails": 1, "kind": "kill"}}, "the cut is on record")
+        jd.closer_llm = lambda tt, mt, *_a: '{"done": [], "block": []}'
+        jd.run_close(now=self.now)
+        store = jd.load_goals(SID)
+        self.assertEqual(sorted(store["closedTurns"]), sorted([t1, t2]), "the landed calls swept both turns")
+        self.assertFalse(store.get("closeFails"), "…and the landed call retired the cut record")
+
+    def test_a_later_turn_lands_in_the_pass_that_gives_up_the_head(self):
+        # the whole point of the give-up, end to end: the pass that adopts the head turn goes on, and the
+        # session's later turn is judged from a REAL reply — a verdict lands, not merely a sweep
+        jd.run_plan(now=self.now)
+        t1, t2 = self._turn_ids()
+        store = jd.load_goals(SID)
+        g1, g2 = [nd["id"] for nd in sorted((nd for nd in store["nodes"].values() if nd["parentId"] is None),
+                                            key=lambda nd: nd["t"])]
+        calls = []
+
+        def closer(tt, mt, *_a):
+            calls.append(1)
+            if "task A" in tt:                            # the head turn's call is alarm-killed every pass
+                jd._judge_ctx.last_call_fail = dict(self.DEAD_CLI)
+                return ""
+            return '{"done": [{"goal": 1, "why": "B shipped"}], "block": []}'
+        jd.closer_llm = closer
+        for _ in range(jd.DISTILL_FAIL_CAP - 1):
+            jd.run_close(now=self.now)
+        self.assertEqual(len(calls), jd.DISTILL_FAIL_CAP - 1, "cut at the head every pass: the second turn never asked")
+        n = jd.run_close(now=self.now)                    # the capping pass
+        store = jd.load_goals(SID)
+        self.assertEqual(sorted(store["closedTurns"]), sorted([t1, t2]), "both turns closed in the same pass")
+        self.assertFalse(store["nodes"][g1].get("nodeComplete"), "the head turn was adopted WITHOUT verdicts")
+        self.assertTrue(store["nodes"][g2].get("nodeComplete"), "the second turn was judged from a real reply: its top completed")
+        self.assertEqual(store["status"][g2], "completed")
+        self.assertGreaterEqual(n, 1, "the pass reported the completion")
+        self.assertEqual(len(calls), jd.DISTILL_FAIL_CAP + 1, "one landed call for the second turn, in the capping pass")
+        self.assertFalse(store.get("closeFails"), "the give-up retired the head's record; the landed call left none")
+        self.assertEqual(len([r for r in self._errors() if r.get("err") == "give-up"]), 1)
+        self.assertEqual(len([r for r in self._errors() if r.get("err") == "sweep-cut"]), jd.DISTILL_FAIL_CAP - 1,
+                         "no cut on the capping pass: the walk reached the end")
+
+    def test_a_transient_failure_cuts_the_walk_but_never_strikes_the_turn(self):
+        # review find on this change's first cut (2026-09-03): the strike counted EVERY failure class.
+        # Passes are event-driven with a seconds backstop and nothing but the retry pause holds judge
+        # calls, so a thirty-second 529 storm would have cut the same live turn three passes running
+        # and adopted it without verdicts — for good, since an end-known turn of a live session never
+        # grows. An error envelope is the API ANSWERING (with an error): evidence about the storm, not
+        # about this turn's prompt. It still cuts the walk, loudly, and leaves the plain retry.
+        jd.run_plan(now=self.now)
+        t1, t2 = self._turn_ids()
+        calls = []
+        jd.closer_llm = self._failing_closer(calls, self.ENVELOPE_529)
+        for _ in range(jd.DISTILL_FAIL_CAP + 1):
+            jd.run_close(now=self.now)
+        self.assertEqual(len(calls), jd.DISTILL_FAIL_CAP + 1, "one cut call per pass, every pass")
+        store = jd.load_goals(SID)
+        self.assertFalse(store.get("closeFails"), "a transient failure is never a strike against the turn")
+        self.assertFalse(store.get("closedTurns"), "…and never adopts it: the storm ending is its recovery")
+        rows = [r for r in self._errors() if r.get("err") == "sweep-cut"]
+        self.assertEqual(len(rows), jd.DISTILL_FAIL_CAP + 1, "each pass was still cut, loudly")
+        self.assertTrue(all("529" in r["note"] and "transient" in r["note"] for r in rows),
+                        "the row carries the failure and its class")
+        self.assertEqual([r for r in self._errors() if r.get("err") == "give-up"], [], "no give-up on a storm")
+
+    def _kill_class_gives_up(self, stash, marker):
+        jd.run_plan(now=self.now)
+        t1, t2 = self._turn_ids()
+        calls = []
+        jd.closer_llm = self._failing_closer(calls, stash)
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd.run_close(now=self.now)
+        store = jd.load_goals(SID)
+        self.assertEqual(store.get("closedTurns"), [t1], "a kill streak at the cap adopts the head turn")
+        self.assertEqual(store["closeFails"], {t2: {"fp": 2, "fails": 1, "kind": "kill"}},
+                         "…and the same pass went on to the second turn, which took its own first kill")
+        cuts = [r for r in self._errors() if r.get("err") == "sweep-cut"]
+        self.assertIn("kill 1 of %d" % jd.DISTILL_FAIL_CAP, cuts[0]["note"], "the cut row names the class")
+        give = [r for r in self._errors() if r.get("err") == "give-up"]
+        self.assertEqual(len(give), 1, "one loud give-up row")
+        self.assertIn(marker, give[0]["note"], "…carrying the failure it acted on")
+
+    def test_a_timeout_is_a_kill(self):
+        # subprocess.TimeoutExpired is the CALL_ALARM_S + 5 backstop firing: the call ran and never
+        # completed, prompt-shaped like the alarm kill, so it strikes and gives up the same way
+        self._kill_class_gives_up(self.TIMEOUT, "TimeoutExpired")
+
+    def test_a_codex_empty_reply_is_a_kill(self):
+        # the codex engine's only success signal is its -o file; an empty one is a call that never
+        # completed on that engine — the same class, the same strike
+        self._kill_class_gives_up(self.CODEX_EMPTY, "codex empty reply")
+
+    def test_a_transient_cut_leaves_a_kill_streak_untouched(self):
+        # the interleave decision: a storm between two kills is evidence about the API, not the prompt,
+        # so it neither adds to the kill streak nor erases it — only evidence about the prompt moves the
+        # record (a kill adds; a served reply, parsed or not, retires or restarts it)
+        jd.run_plan(now=self.now)
+        t1, t2 = self._turn_ids()
+        cap = jd.DISTILL_FAIL_CAP
+        calls = []
+        jd.closer_llm = self._dead_closer(calls)
+        for _ in range(cap - 1):
+            jd.run_close(now=self.now)
+        rec = {"fp": 2, "fails": cap - 1, "kind": "kill"}
+        self.assertEqual(jd.load_goals(SID)["closeFails"], {t1: rec}, "one kill short of the give-up")
+        jd.closer_llm = self._failing_closer(calls, self.ENVELOPE_529)
+        jd.run_close(now=self.now)                                          # the storm
+        store = jd.load_goals(SID)
+        self.assertEqual(store["closeFails"], {t1: rec}, "the storm neither added to the kill streak nor erased it")
+        self.assertFalse(store.get("closedTurns"), "…and did not cap it: not adopted")
+        self.assertEqual(len(calls), cap, "the storm pass was still cut at the head turn")
+        jd.closer_llm = self._dead_closer(calls)
+        jd.run_close(now=self.now)                                          # the capping kill
+        self.assertEqual(jd.load_goals(SID).get("closedTurns"), [t1],
+                         "the next kill caps the streak the storm left standing")
+
+
+class CloseStrike(unittest.TestCase):
+    """_close_strike, the closer's no-reply strike count: closeFails holds ONE record per turn, so the
+    latest kind wins and nothing adds up — the count continues only for the same kind at the same size."""
+
+    def test_kill_after_safeguards_restarts_at_one(self):
+        self.assertEqual(jd._close_strike({"fp": 2, "fails": 2, "kind": "safeguards"}, 2, "kill"), 1)
+
+    def test_safeguards_after_kill_restarts_at_one(self):
+        self.assertEqual(jd._close_strike({"fp": 2, "fails": 2, "kind": "kill"}, 2, "safeguards"), 1)
+
+    def test_the_same_kind_at_the_same_size_continues(self):
+        self.assertEqual(jd._close_strike({"fp": 2, "fails": 2, "kind": "kill"}, 2, "kill"), 3)
+        self.assertEqual(jd._close_strike({"fp": 2, "fails": 1, "kind": "safeguards"}, 2, "safeguards"), 2)
+
+    def test_a_legacy_record_reads_as_safeguards(self):
+        # written before kinds existed, by the safeguards arm — the only writer then
+        self.assertEqual(jd._close_strike({"fp": 2, "fails": 2}, 2, "safeguards"), 3, "its count continues")
+        self.assertEqual(jd._close_strike({"fp": 2, "fails": 2}, 2, "kill"), 1, "…and a kill does not continue it")
+
+    def test_a_size_change_restarts(self):
+        # the turn grew: a different prompt, new evidence
+        self.assertEqual(jd._close_strike({"fp": 2, "fails": 2, "kind": "kill"}, 3, "kill"), 1)
+        self.assertEqual(jd._close_strike({"fp": 3, "fails": 2, "kind": "kill"}, 2, "kill"), 1)
+
+    def test_a_non_dict_restarts_at_one(self):
+        # the parse path's int, or no record at all
+        self.assertEqual(jd._close_strike(2, 2, "kill"), 1)
+        self.assertEqual(jd._close_strike(None, 2, "safeguards"), 1)
 
 
 class CloserKeyMigration(unittest.TestCase):
@@ -3888,11 +4313,11 @@ class ModelTiers(unittest.TestCase):
         # read nor deleted). The tier split must hold on the DEFAULT aliases.
         self._saved_state = jd.STATE
         self._td = tempfile.mkdtemp()
-        jd.STATE = Path(self._td)
+        jd._rebind_state(Path(self._td))
         jd._state_cache.clear()
 
     def tearDown(self):
-        jd.STATE = self._saved_state
+        jd._rebind_state(self._saved_state)
         jd._state_cache.clear()
         shutil.rmtree(self._td, ignore_errors=True)
 
@@ -3965,13 +4390,13 @@ class SettledGateStates(unittest.TestCase):
         statesdir = td / "states"; statesdir.mkdir()
         self._saved = (jd.STATESDIR, dict(jd._PARSE_CACHE))
         jd.STATESDIR = statesdir
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         return str(path), statesdir
 
     def tearDown(self):
         if hasattr(self, "_saved"):
             jd.STATESDIR = self._saved[0]
-            jd._PARSE_CACHE.clear(); jd._PARSE_CACHE.update(self._saved[1])
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._PARSE_CACHE.update(self._saved[1])
 
     def test_ended_turn_is_settled_without_idle(self):
         # the fix: an ended turn (assistant handed back the floor) is settled immediately — no idle needed.
@@ -4017,7 +4442,7 @@ class SettledGateStates(unittest.TestCase):
         Path(path).write_text("\n".join(json.dumps(r) for r in
                               [uline(T0, "ship it", "u1", ps="typed"),
                                aline(T0 + 10, "shipped", "a1", "u1", stop="end_turn")]) + "\n")
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd.rollup_status(s, jd._session_closed(jd.parsed_session(SID, [path], now)))
         self.assertEqual(s["status"][g["id"]], "completed", "turn ended → focus goal finalizes (no prompt, no idle)")
 
@@ -4048,14 +4473,14 @@ class FollowUp(unittest.TestCase):
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm)
         jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd.migrate_store(store)                        # fixtures are legacy-shaped: adopt their diaries
         jd.save_goals(SID, store)
 
     def tearDown(self):
         if hasattr(self, "_saved"):
             (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm) = self._saved
-            jd._PARSE_CACHE.clear()
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
 
     def _completed_top(self, gid, blocked=False):
         return {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked" if blocked else "completed"},
@@ -4369,10 +4794,10 @@ class DeltaScopedDistill(unittest.TestCase):
         self._saved_state = jd.STATE
         self._saved_distill = jd.distill_llm
         self._td = tempfile.mkdtemp()
-        jd.STATE = Path(self._td)
+        jd._rebind_state(Path(self._td))
 
     def tearDown(self):
-        jd.STATE = self._saved_state
+        jd._rebind_state(self._saved_state)
         jd.distill_llm = self._saved_distill
         shutil.rmtree(self._td, ignore_errors=True)
 
@@ -4579,11 +5004,12 @@ class DistillAtDone(unittest.TestCase):
     def setUp(self):
         self._saved = (jd.STATE, jd.STATESDIR, jd.distill_llm)
         self._td = tempfile.mkdtemp()
-        jd.STATE = Path(self._td)
+        jd._rebind_state(Path(self._td))
         jd.STATESDIR = Path(self._td) / "states"
 
     def tearDown(self):
         jd.STATE, jd.STATESDIR, jd.distill_llm = self._saved
+        jd._rebind_state(jd.STATE)   # the tuple restores STATE; every derived dir follows it (T282)
         shutil.rmtree(self._td, ignore_errors=True)
 
     def _write(self, status="working", confirming=True, log=None, **nd_extra):
@@ -4635,6 +5061,74 @@ class DistillAtDone(unittest.TestCase):
         store["nodes"][self.G]["settledAt"] = T0 + 300
         self.assertEqual(jd._distill_due_t(store, self.G, False), T0 + 300,
                          "no done events (pre-diary store) → the settle stamp, then mt")
+
+    def test_the_cited_span_is_located_and_stored_end_to_end(self):
+        # T218: the distiller returns QUOTE, the kernel locates it in the CITED atom's own text and
+        # stores the raw span + offset; an unfindable quote stores None (never a guess).
+        long_a = ("Shipped the widget end to end; the suite is GREEN across every case and the "
+                  "follow-ups are filed for the two edge shapes we deferred.")
+        records = [uline(T0, "build the widget", "u1", ps="typed"),
+                   aline(T0 + 10, long_a, "a1", "u1", stop="end_turn")]
+        segs = [sg for turn in build_session(records)["turns"] for sg in em.segments(turn)]
+        path = Path(self._td) / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        node = {"id": self.G, "text": "build the widget", "parentId": None, "nodeComplete": True,
+                "blocked": False, "cleared": False, "trail": [sg["id"] for sg in segs],
+                "t": T0, "mt": T0 + 30, "summary": None,
+                "log": [{"src": "planner", "kind": "done", "ev_t": T0 + 20, "at": T0 + 21}]}
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": self.G,
+                            "placements": {}, "status": {self.G: "working"},
+                            "confirming": [self.G], "nodes": {self.G: node}})
+        jd.distill_llm = (lambda *a, **k:
+                          'BACKGROUND: b.\nTAKEAWAY: shipped it.\nSOURCE: m1\nQUOTE: "the suite is green across every case"')
+        self.assertEqual(jd._distill_session(SID, str(path), NOW), 1)
+        nd = jd.load_goals(SID)["nodes"][self.G]
+        self.assertEqual(nd["summaryQuote"], "the suite is GREEN across every case",
+                         "normalized (case-insensitive) match maps back to the atom's RAW span")
+        self.assertEqual(nd["summaryQuoteOff"], long_a.index("the suite is GREEN"))
+        # unfindable → honest None (re-arm a fresh distill by clearing the episode)
+        store = jd.load_goals(SID)
+        store["nodes"][self.G]["summary"] = None
+        store["nodes"][self.G]["distilledMt"] = 0
+        jd.save_goals(SID, store)
+        jd.distill_llm = (lambda *a, **k:
+                          'TAKEAWAY: shipped it again.\nSOURCE: m1\nQUOTE: "a sentence that never appeared"')
+        self.assertEqual(jd._distill_session(SID, str(path), NOW), 1)
+        nd = jd.load_goals(SID)["nodes"][self.G]
+        self.assertIsNone(nd["summaryQuote"], "unfindable stores None — the landing keeps today's behavior")
+
+    def test_per_paragraph_cites_store_aligned_end_to_end(self):
+        # T220: two takeaway paragraphs resting on two different messages — each cited with its own
+        # SOURCE k (+ a QUOTE for the first), stored aligned; the third (uncited) paragraph stays None.
+        a1 = ("Alpha wrapped end to end; the alpha suite is green across every case and both "
+              "follow-ups are filed under their own items.")
+        a2 = ("Beta shipped separately this afternoon; its bundle went out with the compat shim "
+              "and the rollout notes were posted to the thread.")
+        records = [uline(T0, "ship alpha and beta", "u1", ps="typed"),
+                   aline(T0 + 10, a1, "aa", "u1"),
+                   aline(T0 + 20, a2, "ab", "aa", stop="end_turn")]
+        segs = [sg for turn in build_session(records)["turns"] for sg in em.segments(turn)]
+        path = Path(self._td) / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        node = {"id": self.G, "text": "ship alpha and beta", "parentId": None, "nodeComplete": True,
+                "blocked": False, "cleared": False, "trail": [sg["id"] for sg in segs],
+                "t": T0, "mt": T0 + 30, "summary": None,
+                "log": [{"src": "planner", "kind": "done", "ev_t": T0 + 25, "at": T0 + 26}]}
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": self.G,
+                            "placements": {}, "status": {self.G: "working"},
+                            "confirming": [self.G], "nodes": {self.G: node}})
+        jd.distill_llm = (lambda *a, **k:
+                          "TAKEAWAY: Alpha done.\n\nBeta done.\n\nStill open: the smoke pass.\n"
+                          'SOURCE: m2\nSOURCE 1: m1\nQUOTE 1: "the alpha suite is green"\nSOURCE 2: m2')
+        self.assertEqual(jd._distill_session(SID, str(path), NOW), 1)
+        nd = jd.load_goals(SID)["nodes"][self.G]
+        anchors = nd["summaryAnchors"]
+        self.assertEqual(len(anchors), 3, "aligned to the takeaway's three paragraphs")
+        self.assertEqual(anchors[0]["a"], "aa")
+        self.assertEqual(anchors[0]["q"], "the alpha suite is green", "paragraph 1's span, located in ITS atom")
+        self.assertEqual(anchors[1], {"a": "ab"})
+        self.assertIsNone(anchors[2], "the uncited leftover paragraph falls back to the whole-summary landing")
+        self.assertEqual(nd["summaryAnchor"], "ab", "the whole-summary citation stands beside them, unchanged")
 
     def test_a_confirming_top_distills_before_settle(self):
         path = self._write()
@@ -4693,10 +5187,10 @@ class ProceduralBlockStillSpeaks(unittest.TestCase):
         self._saved_stall = jd.stall_llm
         self._saved_brief = jd.brief_llm
         self._td = tempfile.mkdtemp()
-        jd.STATE = Path(self._td)
+        jd._rebind_state(Path(self._td))
 
     def tearDown(self):
-        jd.STATE = self._saved_state
+        jd._rebind_state(self._saved_state)
         jd.stall_llm = self._saved_stall
         jd.brief_llm = self._saved_brief
         shutil.rmtree(self._td, ignore_errors=True)
@@ -4895,11 +5389,11 @@ class KnownTargetContext(unittest.TestCase):
             jd._group_store = lambda *a, **k: None
             try:
                 tpath.write_text("\n".join(json.dumps(r) for r in recs1) + "\n")
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd.plan_llm = plan1
                 jd._plan_session(SID, str(tpath), NOW)
                 tpath.write_text("\n".join(json.dumps(r) for r in recs2) + "\n")
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd.plan_llm = plan2
                 jd._plan_session(SID, str(tpath), NOW + 200)
                 return jd.load_goals(SID)
@@ -5221,14 +5715,14 @@ class SourceCitation(unittest.TestCase):
                          "only the substantive wrap-up is offered for citation")
 
     def test_split_source_strips_the_final_citation_line(self):
-        self.assertEqual(jd._split_source("The fix shipped.\nSOURCE: m3"), ("The fix shipped.", "m3"))
-        self.assertEqual(jd._split_source("The fix shipped.\n SOURCE: [m12] "), ("The fix shipped.", "m12"))
+        self.assertEqual(jd._split_source("The fix shipped.\nSOURCE: m3"), ("The fix shipped.", "m3", None))
+        self.assertEqual(jd._split_source("The fix shipped.\n SOURCE: [m12] "), ("The fix shipped.", "m12", None))
 
     def test_split_source_is_none_when_absent_or_not_final(self):
-        self.assertEqual(jd._split_source("No citation."), ("No citation.", None))
-        self.assertEqual(jd._split_source(""), ("", None))
+        self.assertEqual(jd._split_source("No citation."), ("No citation.", None, None))
+        self.assertEqual(jd._split_source(""), ("", None, None))
         body = "It mentions SOURCE: m2 mid-sentence and keeps going."
-        self.assertEqual(jd._split_source(body), (body, None),
+        self.assertEqual(jd._split_source(body), (body, None, None),
                          "only a citation anchored at the END of the reply is parsed off")
 
     def test_prompts_ask_for_the_source_line(self):
@@ -5272,10 +5766,12 @@ class SourceCitation(unittest.TestCase):
         # pre-decided next lever repeats the requirement as the LAST thing the model reads (recency), after
         # the section specs, so the trailing line is top-of-mind at generation time. Briefer-only: the
         # distiller was clean post-fix (0 cite-miss), so its working prompt is left untouched.
-        tail = jd.BLOCK_BRIEF_SYS[-260:]
-        self.assertIn("final line of your", tail, "the reminder rides at the very end of the briefer prompt")
+        tail = jd.BLOCK_BRIEF_SYS[-700:]           # the reminder grew QUOTE (T218) + per-paragraph cites (T220) — same recency lever
+        self.assertIn("your reply must end with", tail, "the reminder rides at the very end of the briefer prompt")
+        self.assertIn("SOURCE k: mN", tail, "…and offers the per-paragraph form (T220)")
         self.assertIn("SOURCE: mN", tail, "and it restates the exact required line")
         self.assertIn("Do not stop at the takeaway", tail, "hammering the observed miss: ending on the takeaway")
+        self.assertIn("QUOTE:", tail, "the supporting-span option rides the same end-reminder (T218)")
         # ADDITIVE, not a replacement: the detailed citation paragraph (which message to cite) still precedes it
         self.assertLess(jd.BLOCK_BRIEF_SYS.index("complete **only**"),
                         jd.BLOCK_BRIEF_SYS.rindex("SOURCE: mN"),
@@ -5301,13 +5797,13 @@ class Distiller(unittest.TestCase):
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.distill_llm, jd.brief_llm)
         jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR = names, proj, td / "goals", td / "states"
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         return str(path)
 
     def tearDown(self):
         if hasattr(self, "_saved"):
             (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.distill_llm, jd.brief_llm) = self._saved
-            jd._PARSE_CACHE.clear()
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
 
     def test_distills_completed_top_from_its_discontinuous_trail(self):
         records = [uline(T0, "do part one", "u1", ps="typed"),
@@ -5973,6 +6469,194 @@ class Distiller(unittest.TestCase):
             jd._judge_run = saved
 
 
+class JudgeFailureScanMemo(unittest.TestCase):
+    """judge_failure_scan's per-store memo. The kernel asks for the give-up count on every timeline build
+    once any store is saved, and the scan used to parse EVERY store each time. Now a store is parsed only
+    when its file identity (inode, mtime_ns, size) changed. What makes that sound is st_mtime_ns strictly
+    increasing across publishes of one path; the inode alone does not, because tmp+rename recycles inode
+    numbers on the second publish (measured on ext4), so the inode distinguishes one publish only. Linux
+    6.13+ multigrain timestamps guarantee the mtime ordering (the scan's own stat marks the prior inode as
+    queried); a coarse-timestamp kernel has a one-tick aliasing window, smaller than the one-second window
+    of kernel.py's _jf_cache gate. Raw stores under PRIVATE synthetic sids (CLAUDE.md, goal-store
+    fixtures); nothing here goes through load_goals, and the scan must not either (it counts raw file
+    content)."""
+
+    A = "b9b9b9b9-0000-4000-8000-00000000000a"
+    B = "b9b9b9b9-0000-4000-8000-00000000000b"
+    C = "b9b9b9b9-0000-4000-8000-00000000000c"
+
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+        self.saved_state = jd.STATE
+        self.saved = (jd._jf_store_memo, jd._jf_cause_memo, jd._giveup_cause, jd._failed_nodes, jd.load_goals)
+        jd._rebind_state(self.td)
+        jd._jf_store_memo, jd._jf_cause_memo = {}, (None, None)
+        self.parses, self.causes = [], []
+        real = jd._failed_nodes
+        jd._failed_nodes = lambda store: (self.parses.append(1), real(store))[1]      # one call per parsed store
+        jd._giveup_cause = lambda: (self.causes.append(1), ("the summarizer kept hitting errors or timeouts", False))[1]
+        jd.load_goals = lambda *a, **k: self.fail("the scan counts raw file content, never a load_goals-replayed store")
+
+    def tearDown(self):
+        jd._jf_store_memo, jd._jf_cause_memo, jd._giveup_cause, jd._failed_nodes, jd.load_goals = self.saved
+        jd._rebind_state(self.saved_state)
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def _store(self, sid, failed, mt=T0 + 10, kind="summary-failed"):
+        """`kind` is the warn's kind; one outside _FAILED_WARN_KINDS of the same length ("summary-landed")
+        publishes a store of the same byte size that counts nothing."""
+        nid = sid + ":g1"
+        nd = {"id": nid, "text": "Ship the notes-api tests", "parentId": None, "nodeComplete": True,
+              "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": mt, "summary": ""}
+        if failed:
+            nd["warns"] = [{"kind": kind, "t": T0 + 20, "msg": "the summary gave up"}]
+        jd.save_goals(sid, {"rompUuid": sid, "seq": 1, "placementsV": jd.PLACEMENTS_V, "placements": {},
+                            "status": {nid: "completed"}, "nodes": {nid: nd}})
+
+    def _path(self, sid):
+        return str(jd.GOALDIR / (sid + ".json"))
+
+    def test_parses_each_store_once_until_its_file_changes(self):
+        self._store(self.A, failed=True); self._store(self.B, failed=False); self._store(self.C, failed=False)
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        self.assertEqual(len(self.parses), 3, "the first call parses every store")
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        self.assertEqual(len(self.parses), 3, "no store changed: nothing is parsed")
+        self._store(self.B, failed=False, mt=T0 + 500)         # one store republished: a new mtime_ns
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        self.assertEqual(len(self.parses), 4, "only the changed store is parsed")
+
+    def test_the_count_clears_when_the_warn_clears(self):
+        self._store(self.A, failed=True)
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        self._store(self.A, failed=False)                       # a landed summary drops the warn
+        self.assertIsNone(jd.judge_failure_scan(), "the rewritten store is re-read and the count clears")
+        self._store(self.A, failed=True)
+        self.assertEqual(jd.judge_failure_scan()["count"], 1, "and a fresh give-up counts again")
+
+    def test_a_deleted_store_drops_from_the_sum(self):
+        self._store(self.A, failed=True); self._store(self.B, failed=True)
+        self.assertEqual(jd.judge_failure_scan()["count"], 2)
+        os.unlink(self._path(self.B))
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        self.assertNotIn(self._path(self.B), jd._jf_store_memo, "the memo is rebuilt from the glob, so the deleted store is gone")
+        self.assertEqual(len(self.parses), 2, "the surviving store was not re-parsed")
+
+    def test_the_cause_is_named_once_per_store_change(self):
+        self._store(self.A, failed=True); self._store(self.C, failed=False)
+        first = jd.judge_failure_scan()
+        self.assertEqual(jd.judge_failure_scan(), first)
+        self.assertEqual(len(self.causes), 1, "no store changed: the cause is not recomputed, so count|cause holds")
+        self._store(self.C, failed=False, mt=T0 + 500)         # any store's change re-names the cause
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        self.assertEqual(len(self.causes), 2)
+
+    def test_an_unparseable_store_counts_nothing_and_is_retried(self):
+        self._store(self.A, failed=True)
+        Path(self._path(self.B)).write_bytes(b"{not a store")
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        self.assertNotIn(self._path(self.B), jd._jf_store_memo, "a parse failure is not memoized")
+        self.assertEqual(len(self.parses), 1, "the good store is parsed once; the broken one never reaches _failed_nodes")
+        self._store(self.B, failed=True)                        # repaired and republished: a new mtime_ns, read like any change
+        self.assertEqual(jd.judge_failure_scan()["count"], 2)
+
+    def test_the_scan_returns_none_when_no_store_is_failing(self):
+        self._store(self.A, failed=False); self._store(self.B, failed=False)
+        self.assertIsNone(jd.judge_failure_scan())
+        self.assertIsNone(jd.judge_failure_scan())
+        self.assertEqual(len(self.parses), 2, "nothing failing is the common case: the memo is kept on a None "
+                                              "return too, so the second call parses nothing")
+        self.assertEqual(self.causes, [], "no give-up: the cause is never asked for")
+
+    def _rewrite_in_place(self, path, body, mtime_ns):
+        """Rewrite a store IN PLACE (same inode) and pin its mtime_ns, so one key component moves at a time
+        without depending on inode recycling or on the clock's granularity."""
+        st = os.stat(path)
+        with open(path, "r+b") as f:
+            f.write(body)
+            f.truncate()
+        os.utime(path, ns=(st.st_atime_ns, mtime_ns))
+        return os.stat(path)
+
+    def test_a_newer_mtime_ns_alone_re_reads_a_store_of_the_same_inode_and_size(self):
+        """st_mtime_ns is what keeps the memo sound once tmp+rename has recycled an inode number (two
+        publishes back on ext4): a version with the memo's inode and size but a later mtime_ns is re-read."""
+        self._store(self.A, failed=True)
+        path = self._path(self.A)
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        st1 = os.stat(path)
+        st2 = self._rewrite_in_place(path, Path(path).read_bytes().replace(b"summary-failed", b"summary-landed"),
+                                     st1.st_mtime_ns + 1)
+        self.assertEqual((st2.st_ino, st2.st_size), (st1.st_ino, st1.st_size), "precondition: only mtime_ns moved")
+        self.assertIsNone(jd.judge_failure_scan(), "a later mtime_ns alone is a new version: re-read, and the count clears")
+        self.assertEqual(len(self.parses), 2)
+
+    def test_the_inode_distinguishes_a_publish_when_the_clock_does_not_move(self):
+        """A coarse-timestamp kernel (Linux < 6.13) gives two same-size publishes inside one tick the same
+        mtime_ns; st_ino tells them apart for one publish. save_goals' tmp+rename takes a fresh inode; the
+        new file's mtime_ns is pinned back to the memo's value explicitly."""
+        self._store(self.A, failed=True)
+        path = self._path(self.A)
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        st1 = os.stat(path)
+        self._store(self.A, failed=True, kind="summary-landed")      # same size, not a give-up kind, new inode
+        os.utime(path, ns=(st1.st_atime_ns, st1.st_mtime_ns))
+        st2 = os.stat(path)
+        self.assertEqual((st2.st_size, st2.st_mtime_ns), (st1.st_size, st1.st_mtime_ns), "precondition: size and mtime_ns held")
+        self.assertNotEqual(st2.st_ino, st1.st_ino, "precondition: the publish took a fresh inode")
+        self.assertIsNone(jd.judge_failure_scan(), "the inode alone is a new version")
+        self.assertEqual(len(self.parses), 2)
+
+    def test_a_size_change_alone_is_a_new_version(self):
+        """st_size is defense in depth: romp's writers publish by tmp+rename, so a size change never arrives
+        without a new inode. The one deterministic way to isolate it models a non-rename writer under a clock
+        that does not move: an in-place rewrite at another size with mtime_ns pinned to the memo's."""
+        self._store(self.A, failed=True)
+        path = self._path(self.A)
+        self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        st1 = os.stat(path)
+        st2 = self._rewrite_in_place(path, Path(path).read_bytes().replace(b"summary-failed", b"landed"), st1.st_mtime_ns)
+        self.assertEqual((st2.st_ino, st2.st_mtime_ns), (st1.st_ino, st1.st_mtime_ns), "precondition: only the size moved")
+        self.assertNotEqual(st2.st_size, st1.st_size)
+        self.assertIsNone(jd.judge_failure_scan(), "the size alone is a new version")
+        self.assertEqual(len(self.parses), 2)
+
+    def test_the_key_names_the_version_that_was_read(self):
+        """A publish landing between the listing's stat and the open: the bytes read are the new version's,
+        so the key must be taken by fstat on that descriptor. Keyed on the pre-open stat, the next call
+        would re-parse a store that did not change again (one wasted parse, never a wrong count)."""
+        self._store(self.A, failed=True)
+        path = self._path(self.A)
+        real_open, fired = open, []
+
+        def hooked(fp, *a, **k):
+            if not fired and str(fp) == path:
+                fired.append(1)
+                self._store(self.A, failed=False, mt=T0 + 500)   # a writer lands between the stat and the open
+            return real_open(fp, *a, **k)
+
+        jd.open = hooked                                         # module global shadows the builtin
+        try:
+            self.assertIsNone(jd.judge_failure_scan(), "the bytes read are the new version's")
+        finally:
+            del jd.open
+        self.assertEqual(fired, [1])
+        self.assertEqual(len(self.parses), 1)
+        self.assertIsNone(jd.judge_failure_scan())
+        self.assertEqual(len(self.parses), 1, "the memo key names the version read, so nothing is re-parsed")
+
+    def test_a_store_gone_between_the_glob_and_the_stat_is_skipped(self):
+        import glob
+        self._store(self.A, failed=True)
+        ghost = self._path(self.B)                               # listed, never written
+        real_glob = glob.glob
+        with mock.patch.object(glob, "glob", lambda *a, **k: real_glob(*a, **k) + [ghost]):
+            self.assertEqual(jd.judge_failure_scan()["count"], 1)
+        self.assertEqual(len(self.parses), 1)
+        self.assertNotIn(ghost, jd._jf_store_memo)
+
+
 class RunTriage(unittest.TestCase):
     """run_triage is the TRIAGE-tier sequence as one unit (so the kernel can run it parallel to the
     always-on index tier): plan → close → courier → group → distill, in that order."""
@@ -6041,12 +6725,48 @@ class JudgeUsageLog(unittest.TestCase):
 
 
 class JudgeEnv(unittest.TestCase):
-    """The INDEX tier (captioner + archiver) disables extended thinking; TRIAGE keeps it.
-    Haiku otherwise emits a long thinking block before the trivial caption — pure output waste."""
+    """The INDEX tier (captioner + archiver) runs with MAX_THINKING_TOKENS=0 on EVERY model (2026-09-01;
+    unconditional since the PR #880 review). A model without adaptive thinking (Haiku, Sonnet 4.5, Opus
+    4.5 and older — the CLI's 2.1.257 / 2.1.258 denylist) otherwise emits a long thinking block before the
+    trivial caption — pure output waste — and Sonnet/Opus 4.6+ honor the var too. Where the CLI drops the
+    parameter outright (Fable, Mythos: its rejects_disabled_thinking capability) the var is a harmless
+    no-op and `--effort low` is the lever that lands (IndexTierLever below). The model-keyed half of the
+    lever lives in _judge_run; _judge_env reads no model. TRIAGE keeps thinking on every model."""
 
-    def test_index_tier_disables_thinking(self):
-        self.assertEqual(jd._judge_env("index").get("MAX_THINKING_TOKENS"), "0",
-                         "captioner/archiver run with thinking off")
+    def test_index_tier_sets_thinking_off_for_every_model(self):
+        self.assertEqual(jd._judge_env("index", model="haiku").get("MAX_THINKING_TOKENS"), "0",
+                         "captioner/archiver on Haiku run with thinking off")
+        self.assertEqual(jd._judge_env("index", model="claude-haiku-4-5").get("MAX_THINKING_TOKENS"), "0",
+                         "a full Haiku id is the same family")
+        for m in ("fable", "opus", "sonnet", "claude-opus-4-8", "claude-sonnet-5", "claude-mythos-5-1"):
+            # the var rides the index tier UNCONDITIONALLY (PR #880 review): a harmless no-op where the CLI
+            # drops it (Fable, Mythos), the honored lever on 4.6+ Sonnet/Opus — effort lands beside it
+            self.assertEqual(jd._judge_env("index", model=m).get("MAX_THINKING_TOKENS"), "0",
+                             "%s: the var always rides the index tier" % m)
+
+    def test_the_boundary_is_generational_not_per_family(self):
+        # Sonnet 4.5 and Opus 4.5 — both offered by the gear's version submenu — carry no adaptive
+        # thinking, so the env var is their lever (the CLI's denylist; Sonnet 4.5 also ignores --effort,
+        # Opus 4.5 takes it but still thinks at full budget without the var). Red under a family-only
+        # rule ("not Haiku"), which passes them --effort low and no var — full extended thinking: 3.5x
+        # the cost and 2.3x the latency of this env var, measured.
+        for m in ("claude-sonnet-4-5", "claude-opus-4-5", "claude-opus-4-1", "claude-sonnet-4-5-20250929",
+                  "claude-3-5-sonnet-20241022"):
+            self.assertEqual(jd._judge_env("index", model=m).get("MAX_THINKING_TOKENS"), "0", m)
+        for m in ("claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-8", "claude-fable-5-1"):
+            # 4.6+ honors thinking:disabled too — withholding the var there traded a measured thinking-off
+            # path for unmeasured adaptive-low; it rides everywhere now, effort decides the rest
+            self.assertEqual(jd._judge_env("index", model=m).get("MAX_THINKING_TOKENS"), "0", m)
+
+    def test_every_tier_disables_prompt_caching(self):
+        # One-shot judge calls never read the cache back — the per-call security mark re-rolls the
+        # system prompt every call, so every prefix is unique and cache_r stayed 0 across full 24h
+        # windows while every call paid the 1.25x cache-write premium (user-approved fix via the
+        # nightly optimizer, 2026-08-30; measured 19.6% per-call saving live). Every tier: the mark
+        # rides triage, distill, and index calls alike.
+        for tier in ("triage", "distill", "index"):
+            self.assertEqual(jd._judge_env(tier).get("DISABLE_PROMPT_CACHING"), "1",
+                             "%s judge calls must not pay the cache-write premium" % tier)
 
     def test_triage_tier_does_not_force_thinking_off(self):
         had = os.environ.pop("MAX_THINKING_TOKENS", None)   # isolate from an inherited cap
@@ -6065,6 +6785,419 @@ class JudgeEnv(unittest.TestCase):
             os.environ.pop("TMUX", None)
         self.assertEqual(env.get("ROMP_SUMMARIZING"), "1")
         self.assertNotIn("TMUX", env)
+
+
+class EffortCapability(unittest.TestCase):
+    """_adaptive_thinking is the CLI's rule (2.1.257 and 2.1.258, read from the binaries 2026-09-02), not
+    a family heuristic: Fable and Mythos (every version), Opus >= 4.6 and Sonnet >= 4.6 run adaptive
+    thinking; Haiku 4.5 and older, Sonnet 4.5 and older, Opus 4.5 and older and every claude-3 model do
+    not — that is the CLI's own hardcoded denylist. A bare alias is the catalog's head for it (`haiku` is
+    Haiku 4.5, below the line). A stranger — no family it knows, or no readable version — gets what the
+    CLI gives an unlisted first-party model: adaptive thinking, --effort forwarded, and thinking:disabled
+    REFUSED (dropped from the request), so the answer is True and the effort lever, announced once on
+    stderr. Answering False there — the env var as the "cost-safe" choice — gets it backwards on
+    first-party: that var is exactly the parameter the CLI drops for such a model."""
+
+    ADAPTIVE = ("fable", "opus", "sonnet", "fable[1m]", "Claude-Opus-5", "claude-fable-5", "claude-fable-5-1",
+                "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+                "claude-sonnet-4-6", "claude-opus-4-6-20260115", "us.anthropic.claude-sonnet-5-20260301-v1:0",
+                "claude-opus-5@20260301", "claude-mythos-5", "claude-mythos-5-1")
+    NOT = ("haiku", "claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5", "claude-opus-4-1",
+           "claude-opus-4-0", "claude-sonnet-4-0", "claude-sonnet-4-5[1m]", "claude-sonnet-4-5-20250929",
+           "claude-opus-4-20250514", "claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022")
+
+    def setUp(self):
+        # `haiku -> False` below reads the table only while the alias record is empty: cleared here so
+        # the pin does not depend on AliasHeadDrift's tearDown having run in the same xdist worker
+        jd._ALIAS_SERVED.clear()
+
+    def test_the_catalog_rule_in_both_directions(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            for m in self.ADAPTIVE:
+                self.assertTrue(jd._adaptive_thinking(m), "%s takes --effort" % m)
+            for m in self.NOT:
+                self.assertFalse(jd._adaptive_thinking(m), "%s ignores --effort: the env var is its lever" % m)
+        self.assertEqual(err.getvalue(), "", "every id above is placeable — nothing announced")
+
+    def test_family_and_version_parse(self):
+        p = jd._model_family_version
+        self.assertEqual(p("opus"), ("opus", None))
+        self.assertEqual(p("claude-opus-4-5"), ("opus", (4, 5)))
+        self.assertEqual(p("claude-sonnet-5"), ("sonnet", (5, 0)))
+        self.assertEqual(p("claude-fable-5-1-20260601"), ("fable", (5, 1)))
+        self.assertEqual(p("claude-opus-4-20250514"), ("opus", (4, 0)), "a dated 4.0 id: the date is not a minor")
+        self.assertEqual(p("claude-3-5-sonnet-20241022"), ("sonnet", (3, 5)), "the 2024 shape, version first")
+        self.assertEqual(p("us.anthropic.claude-opus-4-6-20260115-v1:0"), ("opus", (4, 6)))
+        self.assertEqual(p("claude-sonnet-4-5[1m]"), ("sonnet", (4, 5)))
+        self.assertEqual(p("claude-mystery-9"), (None, None))
+        self.assertEqual(p("opusplan"), (None, None), "a family SUBSTRING is not a family")
+        self.assertEqual(p("claude-opus-latest"), ("opus", ()), "family named, version unreadable")
+        self.assertEqual(p("claude-mythos-5-1"), ("mythos", (5, 1)), "the fifth family in the CLI's catalog")
+
+    def test_a_stranger_follows_the_cli_fallback_and_is_announced_once(self):
+        # The CLI answers every capability question for a model outside its catalog and its denylists
+        # with the provider default, and on first-party that default is YES: effort forwarded, adaptive
+        # thinking, and thinking:disabled refused — the env var is DROPPED from the request for such a
+        # model. So the effort lever is the one that lands; the env var would be a silent no-op.
+        jd._UNKNOWN_MODEL_LOGGED.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertTrue(jd._adaptive_thinking("claude-mystery-9"), "the CLI treats a stranger as adaptive")
+            self.assertTrue(jd._adaptive_thinking("claude-mystery-9"))
+            self.assertTrue(jd._adaptive_thinking("claude-opus-latest"), "a family with no readable version too")
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 2, "one line per distinct id, however often it is asked")
+        self.assertIn("claude-mystery-9", lines[0])
+        self.assertIn("--effort", lines[0], "the line names the lever the stranger gets")
+        self.assertNotIn("MAX_THINKING_TOKENS=0", lines[0], "…and not the one the CLI would drop")
+        self.assertIn("claude-opus-latest", lines[1])
+        jd._UNKNOWN_MODEL_LOGGED.clear()
+
+    def test_a_bare_alias_is_the_catalog_head_not_a_blanket_yes(self):
+        # the catalog's aliases block: fable → 5.1, opus → 5, sonnet → 5 (all past the line) but
+        # haiku → 4.5 (below it) — an alias is placed by the version it resolves to, never by family
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            for alias, want in (("fable", True), ("opus", True), ("sonnet", True), ("haiku", False)):
+                self.assertEqual(jd._adaptive_thinking(alias), want, alias)
+        self.assertEqual(err.getvalue(), "", "every alias is placeable — nothing announced")
+
+
+class IndexTierLever(unittest.TestCase):
+    """The index tier's cost lever is EFFORT on a model with adaptive thinking (2026-09-01): the
+    thinking-off env var is a no-op the CLI drops on Fable and Mythos (full-cost thinking, silently),
+    and effort is the lever those models honor. _judge_run resolves the tier's model first, then: no
+    adaptive thinking (Haiku, Sonnet 4.5, Opus 4.5 and older) → MAX_THINKING_TOKENS=0 and no --effort
+    flag; adaptive thinking (Fable, Mythos, Opus 4.6+, Sonnet 4.6+, and any model the CLI's catalog does
+    not place — its first-party default) → `--effort <index-effort setting, default low>`, with the env
+    var riding beside it (unconditional on the index tier since the PR #880 review: honored on 4.6+
+    Sonnet/Opus, a no-op where the CLI drops it). The gear's existing Indexing effort pick
+    (STATE/index-effort) is the configurability; the tier logs which lever applied, once per model. The
+    subprocess is stubbed and its argv + env captured — nothing runs."""
+
+    def setUp(self):
+        self.calls = []
+        self._saved_usage = jd.USAGE
+        self._td = Path(tempfile.mkdtemp())
+        jd.USAGE = self._td / "judge-usage.jsonl"
+        (jd.STATE / "index-effort").unlink(missing_ok=True)
+        jd._state_cache.clear()
+        jd._LEVER_LOGGED.clear()
+        # the alias record and the no-modelUsage latch are per process: cleared here so this class's
+        # `haiku` pins do not depend on AliasHeadDrift's tearDown having run in the same xdist worker
+        jd._ALIAS_SERVED.clear()
+        jd._NO_MODEL_USAGE_LOGGED.clear()
+        os.environ.pop("MAX_THINKING_TOKENS", None)
+
+        class _P:
+            stdout = '{"result": "a caption", "usage": {}}'
+
+        def fake_run(cmd, **kw):
+            self.calls.append((cmd, kw.get("env") or {}))
+            return _P()
+
+        self._patch = mock.patch.object(jd.subprocess, "run", side_effect=fake_run)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        (jd.STATE / "index-effort").unlink(missing_ok=True)
+        jd._state_cache.clear()
+        jd.USAGE = self._saved_usage
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _run(self, model):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            jd._judge_run(model, "SYS", "payload", judge="captioner", tier="index")
+        self.assertEqual(len(self.calls), 1, "exactly one subprocess call")
+        cmd, env = self.calls[0]
+        return cmd, env, err.getvalue()
+
+    def _effort_of(self, cmd):
+        return cmd[cmd.index("--effort") + 1] if "--effort" in cmd else None
+
+    def test_fable_index_model_gets_effort_low_and_the_var_rides_along(self):
+        cmd, env, _ = self._run("fable")
+        self.assertEqual(self._effort_of(cmd), "low", "the default lever on an adaptive-thinking model")
+        # .get() rather than assertNotIn(..., env), here and below: a failure must not print the
+        # whole environment (a copy of os.environ, credentials included) into the log
+        self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0",
+                         "the var rides unconditionally on the index tier: a no-op where the CLI drops it (Fable), "
+                         "the honored lever on 4.6+ Sonnet/Opus — effort is what lands on Fable")
+
+    def test_opus_and_sonnet_index_models_take_the_same_lever(self):
+        for m in ("opus", "sonnet", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5", "claude-fable-5-1",
+                  "claude-sonnet-4-6", "claude-opus-4-6", "claude-mythos-5-1"):
+            self.calls.clear()
+            cmd, env, _ = self._run(m)
+            self.assertEqual(self._effort_of(cmd), "low", m)
+            self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0", "%s: the var always rides the index tier" % m)
+
+    def test_haiku_index_model_keeps_thinking_off_and_passes_no_effort_flag(self):
+        cmd, env, _ = self._run("haiku")
+        self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0", "Haiku has no adaptive thinking: the old lever stays")
+        self.assertNotIn("--effort", cmd, "no effort flag by default on Haiku (the long-standing shape)")
+
+    def test_pre_4_6_sonnet_and_opus_index_models_keep_thinking_off_and_pass_no_effort_flag(self):
+        # Red under a family-only rule ("not Haiku"): Sonnet 4.5 and Opus 4.5 (both in the gear's version
+        # submenu) got `--effort low` and NO env var — full extended thinking, measured at 3.5x the cost
+        # and 2.3x the latency of the env-var path. The CLI denylists both for adaptive thinking (Sonnet
+        # 4.5 also for effort; Opus 4.5 does take --effort, but that never turns its thinking off), so
+        # the env var is their lever, the default passes no flag, and the log line says which applied.
+        for m in ("claude-sonnet-4-5", "claude-opus-4-5"):
+            self.calls.clear()
+            jd._LEVER_LOGGED.clear()
+            cmd, env, err = self._run(m)
+            self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0", m)
+            self.assertNotIn("--effort", cmd, "no flag by default on %s: thinking-off is its lever" % m)
+            self.assertIn("MAX_THINKING_TOKENS=0", err, "the lever line names the env var for %s" % m)
+
+    def test_an_unknown_index_model_follows_the_cli_fallback_and_says_so_once(self):
+        # The CLI's answer for a model outside its catalog and denylists is the first-party default:
+        # adaptive, effort forwarded, thinking:disabled refused — so the env var would be dropped from
+        # the request and effort is the lever that lands. (Sending the env var here as the "cost-safe"
+        # choice gets it backwards: for a stranger it is the one lever guaranteed not to work.)
+        jd._UNKNOWN_MODEL_LOGGED.clear()
+        try:
+            cmd, env, err = self._run("claude-mystery-9")
+            self.assertEqual(self._effort_of(cmd), "low", "the CLI treats a stranger as adaptive: effort is the lever")
+            self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0", "the var still rides (the CLI drops it — harmless)")
+            self.assertIn("claude-mystery-9", err)
+            self.assertEqual(err.count("not one I can place"), 1,
+                             "announced once, though the predicate ran three times inside the one call")
+            self.assertIn("--effort low", err, "…and the lever line still says which lever applied")
+        finally:
+            jd._UNKNOWN_MODEL_LOGGED.clear()
+
+    def test_the_index_effort_setting_flows_through_on_adaptive_models(self):
+        (jd.STATE / "index-effort").write_text("medium")
+        jd._state_cache.clear()
+        cmd, env, _ = self._run("fable")
+        self.assertEqual(self._effort_of(cmd), "medium", "the gear's Indexing effort pick is the configurability")
+        self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0", "…and the var rides regardless")
+
+    def test_an_explicit_index_effort_also_reaches_haiku_but_the_env_var_stays(self):
+        # the gear pick has always been passed regardless of model ("not every model accepts every
+        # level" is the gear's own caveat on its effort rows); what Haiku never loses is the thinking-off
+        # env var
+        (jd.STATE / "index-effort").write_text("low")
+        jd._state_cache.clear()
+        cmd, env, _ = self._run("haiku")
+        self.assertEqual(self._effort_of(cmd), "low")
+        self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0")
+
+    def test_a_caller_effort_still_wins_over_the_default(self):
+        # the plan A/B harness passes effort explicitly; the tier default must not override it
+        with contextlib.redirect_stderr(io.StringIO()):
+            jd._judge_run("fable", "SYS", "payload", effort="high", judge="captioner", tier="index")
+        cmd, _env = self.calls[0]
+        self.assertEqual(self._effort_of(cmd), "high")
+
+    def test_the_lever_is_logged_once_per_model(self):
+        _cmd, _env, err = self._run("fable")
+        self.assertIn("index tier", err)
+        self.assertIn("fable", err)
+        self.assertIn("--effort low", err, "the line names the lever that applied")
+        self.calls.clear()
+        _cmd, _env, err2 = self._run("fable")
+        # the stub carries no modelUsage, so the once-per-process line about that lands on the FIRST
+        # call of this test (setUp cleared the latch) and the second is quiet by the latch — in any order
+        self.assertEqual(err2, "", "same model again → no second line (one line per lever change)")
+        self.calls.clear()
+        _cmd, _env, err3 = self._run("haiku")
+        self.assertIn("MAX_THINKING_TOKENS=0", err3, "a model change re-logs, naming the other lever")
+
+    def test_triage_tier_is_untouched(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            jd._judge_run("fable", "SYS", "payload", judge="planner", tier="triage")
+        cmd, env = self.calls[0]
+        self.assertNotIn("--effort", cmd, "triage keeps its own default (no flag unless the gear says so)")
+        self.assertIsNone(env.get("MAX_THINKING_TOKENS"))
+
+
+class AliasHeadDrift(unittest.TestCase):
+    """_ALIAS_HEAD is a guess about the CLI's catalog — its aliases block as read from the 2.1.257 / 2.1.258
+    binaries — and 2.1.263 resolves alias targets at run time from a published catalog, so the table can
+    go stale with no CLI upgrade. The CLI's own answer rides every successful call: the result envelope's
+    `modelUsage` is keyed by the model id that actually served (a dated claude-haiku-4-5-20251001).
+    _note_served_model reads it after each call on a BARE alias, records the served version
+    (_ALIAS_SERVED), and _adaptive_thinking consults that ahead of the table from then on; a served
+    version the table disagrees with is announced once per (alias, served id). Quiet when they agree, on
+    a versioned pin (never remapped), and when the envelope names no same-family model — no evidence
+    either way, so the table's answer stands exactly as before. An envelope with no modelUsage map at
+    all is the other case (the #948 review): the check cannot run for any alias, so a stale table would
+    be trusted with nothing logged — said once per process, latched in _NO_MODEL_USAGE_LOGGED. The
+    subprocess is stubbed and its argv + env captured — nothing runs."""
+
+    def setUp(self):
+        self.calls = []
+        self.stdout = json.dumps({"result": "a caption", "usage": {}})
+        self._saved_usage = jd.USAGE
+        self._td = Path(tempfile.mkdtemp())
+        jd.USAGE = self._td / "judge-usage.jsonl"
+        (jd.STATE / "index-effort").unlink(missing_ok=True)
+        self._reset()
+        os.environ.pop("MAX_THINKING_TOKENS", None)
+
+        def fake_run(cmd, **kw):
+            self.calls.append((cmd, kw.get("env") or {}))
+            return mock.Mock(stdout=self.stdout, stderr="", returncode=0)
+
+        self._patch = mock.patch.object(jd.subprocess, "run", side_effect=fake_run)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        (jd.STATE / "index-effort").unlink(missing_ok=True)
+        self._reset()   # again, deliberately: a drifted head left behind would flip EffortCapability's
+        jd.USAGE = self._saved_usage   # `haiku -> False` pin in whichever worker runs it next
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _reset(self):
+        jd._state_cache.clear()
+        jd._LEVER_LOGGED.clear()
+        jd._ALIAS_SERVED.clear()
+        jd._ALIAS_DRIFT_LOGGED.clear()
+        jd._NO_MODEL_USAGE_LOGGED.clear()
+
+    def _run(self, model, model_usage=None, tier="index", judge="captioner"):
+        """One stubbed call; the envelope carries `model_usage` under modelUsage when given (None: the
+        envelope carries no modelUsage map at all, the IndexTierLever stub's shape). Returns (argv, env,
+        stderr text)."""
+        self.calls.clear()
+        wrap = {"result": "a caption", "usage": {}}
+        if model_usage is not None:
+            wrap["modelUsage"] = model_usage
+        self.stdout = json.dumps(wrap)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            reply = jd._judge_run(model, "SYS", "payload", judge=judge, tier=tier)
+        self.assertEqual(len(self.calls), 1, "exactly one subprocess call")
+        self.assertEqual(reply, "a caption", "the reply comes back whatever the envelope says about the model")
+        cmd, env = self.calls[0]
+        return cmd, env, err.getvalue()
+
+    def _effort_of(self, cmd):
+        return cmd[cmd.index("--effort") + 1] if "--effort" in cmd else None
+
+    @staticmethod
+    def _drift_lines(err):
+        return [ln for ln in err.splitlines() if "_ALIAS_HEAD" in ln]
+
+    @staticmethod
+    def _missing_map_lines(err):
+        return [ln for ln in err.splitlines() if "modelUsage" in ln]
+
+    def test_a_served_version_that_matches_the_table_is_quiet(self):
+        cmd, env, err = self._run("haiku", {"claude-haiku-4-5-20251001": {"inputTokens": 100, "outputTokens": 15}})
+        self.assertEqual(self._drift_lines(err), [], "the table agrees with the CLI: nothing to say")
+        self.assertIn("MAX_THINKING_TOKENS=0", err, "the lever line is the only line")
+        self.assertNotIn("--effort", cmd)
+        # .get() rather than assertNotIn(..., env), here and below: a failure must not print the whole
+        # environment (a copy of os.environ, credentials included) into the log
+        self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0")
+        self.assertEqual(jd._ALIAS_SERVED.get("haiku"), (4, 5), "an agreeing answer is recorded all the same")
+
+    def test_a_moved_alias_is_announced_once_and_the_lever_follows(self):
+        moved = {"claude-haiku-4-6-20260301": {"inputTokens": 100, "outputTokens": 15}}
+        cmd, env, err = self._run("haiku", moved)
+        self.assertNotIn("--effort", cmd, "the first call runs under the table's answer: the envelope arrives after it")
+        self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0")
+        lines = self._drift_lines(err)
+        self.assertEqual(len(lines), 1, "one drift line, got: %r" % err)
+        for s in ("haiku", "claude-haiku-4-6-20260301", "4.6", "4.5"):
+            self.assertIn(s, lines[0], "the line names the alias, the served id and both versions")
+        self.assertTrue(jd._adaptive_thinking("haiku"), "the served version places the alias from here")
+        cmd, env, err = self._run("haiku", moved)
+        self.assertEqual(self._effort_of(cmd), "low", "the second call carries the lever for the served version")
+        self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0", "…and the var still rides")
+        self.assertIn("--effort low", err, "the lever change is re-announced by the existing per-model line")
+        self.assertEqual(self._drift_lines(err), [], "the drift is said once per (alias, served id)")
+        _cmd, _env, err = self._run("haiku", moved)
+        self.assertEqual(err, "", "a third call: same lever, same served id — nothing new to say")
+
+    def test_the_reply_writer_decides_when_two_same_family_ids_appear(self):
+        _cmd, _env, err = self._run("haiku", {"claude-haiku-4-6-20260301": {"outputTokens": 40},
+                                              "claude-haiku-4-5-20251001": {"outputTokens": 3}})
+        self.assertEqual(jd._ALIAS_SERVED.get("haiku"), (4, 6), "the model that wrote the reply is the served one")
+        self.assertEqual(len(self._drift_lines(err)), 1)
+        self._reset()
+        _cmd, _env, err = self._run("haiku", {"claude-haiku-4-6-20260301": {"outputTokens": 3},
+                                              "claude-haiku-4-5-20251001": {"outputTokens": 40}})
+        self.assertEqual(jd._ALIAS_SERVED.get("haiku"), (4, 5))
+        self.assertEqual(self._drift_lines(err), [], "a side call's id does not move the alias")
+
+    def test_only_the_alias_family_speaks(self):
+        _cmd, _env, err = self._run("sonnet", {"claude-sonnet-5-20260201": {"outputTokens": 30},
+                                               "claude-haiku-4-6-20260301": {"outputTokens": 5}})
+        self.assertEqual(jd._ALIAS_SERVED.get("sonnet"), (5, 0))
+        self.assertNotIn("haiku", jd._ALIAS_SERVED, "another family's entry never speaks for haiku")
+        self.assertFalse(jd._adaptive_thinking("haiku"))
+        self.assertEqual(self._drift_lines(err), [], "sonnet's served 5.0 is the table's head")
+
+    def test_a_versioned_pin_is_never_remapped(self):
+        _cmd, _env, err = self._run("claude-haiku-4-5", {"claude-haiku-4-6-20260301": {"outputTokens": 15}})
+        self.assertEqual(jd._ALIAS_SERVED, {}, "a pin is a pin: only a bare alias is subject to resolution")
+        self.assertEqual(self._drift_lines(err), [])
+        self.assertFalse(jd._adaptive_thinking("claude-haiku-4-5"))
+
+    def test_every_tier_feeds_the_record_and_only_the_index_lever_reads_it(self):
+        # a triage call on the alias reveals its head just as well; triage's own levers are untouched
+        cmd, env, err = self._run("haiku", {"claude-haiku-4-6-20260301": {"outputTokens": 200}},
+                                  tier="triage", judge="planner")
+        self.assertNotIn("--effort", cmd, "triage keeps its own default")
+        self.assertIsNone(env.get("MAX_THINKING_TOKENS"))
+        self.assertEqual(len(self._drift_lines(err)), 1)
+        self.assertEqual(jd._ALIAS_SERVED.get("haiku"), (4, 6))
+        cmd, env, err = self._run("haiku")
+        self.assertEqual(self._effort_of(cmd), "low", "the index tier's lever follows what triage learned")
+        self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0")
+
+    def test_an_envelope_naming_no_model_is_quiet(self):
+        # a PRESENT map that names no same-family model carries no evidence of drift: the table's answer
+        # stands exactly as before this check existed, and nothing is said — the absence of a
+        # same-family entry is not the absence of the map (the next test)
+        for mu in ({}, {"claude-sonnet-5-20260201": {"outputTokens": 30}}):
+            self._reset()
+            cmd, env, err = self._run("haiku", mu)
+            self.assertEqual(self._drift_lines(err), [], "modelUsage=%r" % (mu,))
+            self.assertEqual(self._missing_map_lines(err), [], "modelUsage=%r" % (mu,))
+            self.assertNotIn("haiku", jd._ALIAS_SERVED)
+            self.assertNotIn("--effort", cmd)
+            self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0")
+
+    def test_a_missing_model_usage_map_is_announced_once_per_process(self):
+        # No map at all — a CLI older than the field, or a shape change: the check's own precondition
+        # fails, so the index tier keeps choosing its lever from a table nothing has verified. Silent, that
+        # is the degradation the loud-failure rule forbids; one line per PROCESS is the whole signal (the
+        # field is a property of the CLI, not of the call), so IndexTierLever's stub, which carries no
+        # map, still keeps its second-call empty-stderr pin.
+        cmd, env, err = self._run("haiku", None)
+        lines = self._missing_map_lines(err)
+        self.assertEqual(len(lines), 1, "one line, got: %r" % err)
+        self.assertIn("haiku", lines[0], "the line names the alias whose call revealed it")
+        self.assertIn("alias table", lines[0], "…and says what the lever answers from meanwhile")
+        self.assertEqual(self._drift_lines(err), [], "not a drift line: the table was not contradicted")
+        self.assertEqual(jd._ALIAS_SERVED, {})
+        self.assertNotIn("--effort", cmd)
+        self.assertEqual(env.get("MAX_THINKING_TOKENS"), "0")
+        _cmd, _env, err = self._run("sonnet", None)
+        self.assertEqual(self._missing_map_lines(err), [], "once per process, not per alias")
+        self._reset()
+        _cmd, _env, err = self._run("claude-haiku-4-5", None)
+        self.assertEqual(self._missing_map_lines(err), [], "a versioned pin is never checked: nothing to announce")
+        self._reset()
+        _cmd, _env, err = self._run("haiku", None)
+        self.assertEqual(len(self._missing_map_lines(err)), 1, "the latch is the state the tests clear")
+
+    def test_a_malformed_entry_cannot_cost_the_reply(self):
+        # best-effort like _log_judge_usage: the reply is the call's product, the check is bookkeeping
+        for mu in ({"claude-haiku-4-6-20260301": "not a dict"},
+                   {"claude-haiku-4-6-20260301": {"outputTokens": "many"}},
+                   {"claude-haiku-4-6-20260301": None, "<synthetic>": {"outputTokens": 0}},
+                   "not a dict at all", 7):
+            self._reset()
+            self._run("haiku", mu)                    # asserts the reply came back
 
 
 class GistLlm(unittest.TestCase):
@@ -6122,10 +7255,10 @@ class OrphanRollup(unittest.TestCase):
     def setUp(self):
         self._saved_state = jd.STATE
         self._td = tempfile.mkdtemp()
-        jd.STATE = Path(self._td)                        # hermetic: _reopen's _view_cleared reads STATE
+        jd._rebind_state(Path(self._td))                        # hermetic: _reopen's _view_cleared reads STATE
 
     def tearDown(self):
-        jd.STATE = self._saved_state
+        jd._rebind_state(self._saved_state)
         shutil.rmtree(self._td, ignore_errors=True)
 
     def test_completed_top_rolls_its_open_children_done(self):
@@ -6189,12 +7322,13 @@ class LivePickerBrief(unittest.TestCase):
         self._saved = (jd.GOALDIR, jd.STATESDIR, jd.STATE, jd.brief_llm, jd.distill_llm)
         self._td = Path(tempfile.mkdtemp())
         jd.GOALDIR = self._td / "goals"
-        jd.STATE = self._td
+        jd._rebind_state(Path(self._td))
         jd.STATESDIR = self._td / "states"
         jd.STATESDIR.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
         (jd.GOALDIR, jd.STATESDIR, jd.STATE, jd.brief_llm, jd.distill_llm) = self._saved
+        jd._rebind_state(jd.STATE)   # the tuple restores STATE; every derived dir follows it (T282)
         shutil.rmtree(self._td, ignore_errors=True)
 
     _RECORDS = [uline(T0, "wire the picker", "u1", ps="typed"),
@@ -6594,15 +7728,17 @@ class LiveReplan(unittest.TestCase):
         self.saved = (jd.GOALDIR, jd.GOALARCHDIR, jd.PCACHE, jd.STATE,
                       jd.plan_llm, jd.opener_llm, jd._group_store)
         jd.GOALDIR, jd.GOALARCHDIR = td / "goals", td / "goals-archive"
+        jd._rebind_state(Path(td))   # every derived dir moves too; the explicit ones below still win (T282)
         jd.PCACHE, jd.STATE = td / "pcache", td
         jd.GOALDIR.mkdir()
         jd._group_store = lambda *a, **k: None           # never fire the real grouper model
         jd.opener_llm = self._boom                  # the deduped prompt-run must never re-fire
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
 
     def tearDown(self):
         (jd.GOALDIR, jd.GOALARCHDIR, jd.PCACHE, jd.STATE,
          jd.plan_llm, jd.opener_llm, jd._group_store) = self.saved
+        jd._rebind_state(jd.STATE)   # the tuple restores STATE; every derived dir follows it (T282)
         self.td.cleanup()
 
     @staticmethod
@@ -6704,7 +7840,7 @@ class LiveReplan(unittest.TestCase):
         tpath.write_text("\n".join(json.dumps(r) for r in (recs or self.OPEN_RECS)) + "\n")
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
         jd.plan_llm = llm
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd._plan_session(SID, str(tpath), now)
         return jd.load_goals(SID)
 
@@ -6732,7 +7868,7 @@ class LiveReplan(unittest.TestCase):
         self.assertEqual(store["placements"].get(seg + "#live"), tops[0]["id"],
                          "keyed seg#live so it runs exactly once")
         jd.plan_llm = self._boom                        # a second pass must not re-fire the live run
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd._plan_session(SID, str(Path(self.td.name) / (SID + ".jsonl")), NOW + 5)
 
     def test_live_phase_skip_is_coerced_the_invariant_is_hard(self):
@@ -6760,7 +7896,7 @@ class LiveReplan(unittest.TestCase):
             calls.append(k)
             return '{"ops":[{"why":"the work landed","do":"sub","under":%d,"text":"Reworked the grid"}]}' % k["goal_num"]
         jd.plan_llm = work_llm
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd._plan_session(SID, str(tpath), NOW + 1000)
         store = jd.load_goals(SID)
         self.assertEqual(len(calls), 1, "one work-run call for the ended segment")
@@ -6892,11 +8028,25 @@ class FailureContract(unittest.TestCase):
     event (the turn gaining atoms / the top set changing)."""
 
     def setUp(self):
+        self._saved_state = jd.STATE
         self._td = tempfile.mkdtemp()
-        jd._rebind_state(Path(self._td))
+        jd._rebind_state(Path(self._td))   # GOALDIR and every derived dir move too (T282)
+        # the model-health latch is process-global, keyed by model: the failing calls below push "model-x"
+        # and "gpt-5-test" past the degraded cap, so snapshot it here and restore it after — a later test
+        # must not inherit a degraded model (review nit, 2026-09-03)
+        with jd._health_lock:
+            self._health = (set(jd._CALL_HEALTH["degraded"]), jd._CALL_HEALTH["recovered"],
+                            {m: dict(st) for m, st in jd._CALL_HEALTH["stats"].items()})
 
     def tearDown(self):
+        jd._rebind_state(self._saved_state)   # the shared judge goes back to the run-wide root (T282)
         shutil.rmtree(self._td, ignore_errors=True)
+        with jd._health_lock:
+            jd._CALL_HEALTH["degraded"].clear()
+            jd._CALL_HEALTH["degraded"].update(self._health[0])
+            jd._CALL_HEALTH["recovered"] = self._health[1]
+            jd._CALL_HEALTH["stats"].clear()
+            jd._CALL_HEALTH["stats"].update(self._health[2])
 
     def _errors(self):
         try:
@@ -6927,6 +8077,9 @@ class FailureContract(unittest.TestCase):
             jd.subprocess = saved_sub
             jd._judge_ctx.fsid = saved_fsid
         self.assertEqual(out, "", "an error envelope reads as an empty reply to every caller")
+        last = jd._judge_ctx.last_call_fail
+        self.assertIsInstance(last, dict, "the failure is stashed for the closer's sweep-cut")
+        self.assertFalse(last.get("kill"), "the API ANSWERED, with an error: transient for the closer's strike, never a kill")
         row = self._errors()[-1]
         self.assertEqual((row["judge"], row["err"], row["fsid"]), ("closer", "call", "sid-env"))
         self.assertIn("API Error: 529 overloaded", row["note"], "the API's own message is the evidence")
@@ -6950,11 +8103,229 @@ class FailureContract(unittest.TestCase):
             jd.subprocess = saved_sub
             jd._judge_ctx.fsid = saved_fsid
         self.assertEqual(out, "", "a dead CLI reads as an empty reply to every caller")
+        self.assertFalse(jd._judge_ctx.last_call_fail.get("kill"),
+                         "a crash (exit 134) is the process ANSWERING, not the timer: transient for the closer's strike")
         row = self._errors()[-1]
         self.assertEqual((row["judge"], row["err"], row["fsid"]), ("briefer", "call", "sid-dead"))
         self.assertIn("exit 134", row["note"], "the returncode is the evidence")
         self.assertIn("heap out of memory", row["note"], "…with the stderr tail")
         self.assertFalse(Path(jd.USAGE).exists(), "a dead CLI logs no usage row")
+
+    def test_a_kill_is_the_alarm_signal_and_nothing_else(self):
+        # second review of the kill strike (2026-09-03): the flag was stamped at the empty-output exit
+        # however the process ended, so a broken install — exec failing under perl's alarm wrapper exits 0
+        # with empty stdout; a CLI dying at startup exits 1 — would have tombstoned every turn it touched
+        # after three passes. A kill is the call RUNNING TO THE TIMER and nothing else: the wrapper's
+        # SIGALRM landing on the child (returncode == -signal.SIGALRM) or TimeoutExpired. A clean exit of
+        # any code, or any other signal, is the process ANSWERING — a crash, a refusal, a missing binary —
+        # and stays transient.
+        import signal
+        import types
+        saved_sub, saved_fsid = jd.subprocess, getattr(jd._judge_ctx, "fsid", None)
+        jd._judge_ctx.fsid = "sid-rc"
+        cases = ((-signal.SIGALRM, True, "the alarm's signal: the call ran to the timer"),
+                 (1, False, "a clean nonzero exit is the process answering (a startup crash, a refusal)"),
+                 (0, False, "exit 0 with empty stdout is a failed exec under the wrapper, not a kill"),
+                 (-signal.SIGKILL, False, "another signal is not the timer"))
+        try:
+            for rc, kill, why in cases:
+                with self.subTest(rc=rc):
+                    res = types.SimpleNamespace(stdout="", stderr="", returncode=rc)
+                    jd.subprocess = types.SimpleNamespace(run=lambda *a, _r=res, **k: _r)
+                    jd._judge_ctx.last_call_fail = None
+                    self.assertEqual(jd._judge_run("model-x", "sys", "user", judge="closer"), "")
+                    last = jd._judge_ctx.last_call_fail
+                    self.assertIn("exit %d" % rc, last["note"], "the exit code stays the row's evidence")
+                    self.assertEqual(bool(last.get("kill")), kill, why)
+        finally:
+            jd.subprocess, jd._judge_ctx.fsid = saved_sub, saved_fsid
+            jd._judge_ctx.last_call_fail = None
+
+    def test_a_codex_kill_is_the_alarm_signal_and_nothing_else(self):
+        # the codex branch has NO error-envelope exit: a usage-limit refusal, an auth failure or a network
+        # error all end as `codex exec` exiting nonzero with no -o file — so stamping every empty -o file a
+        # kill was the 529-storm defect over again on this engine. Only the alarm's signal is a kill here too.
+        import signal
+        import types
+        saved = (jd.subprocess, getattr(jd._judge_ctx, "fsid", None), jd._judge_cmd_codex, jd._judge_engine)
+        jd._judge_cmd_codex = lambda model, effort, outp: ["codex-stub"]
+        jd._judge_engine = lambda: "codex"
+        jd._judge_ctx.fsid = "sid-cxrc"
+        cases = ((-signal.SIGALRM, True, "the alarm's signal: the call ran to the timer"),
+                 (1, False, "exit 1 with no -o file is codex answering: a refusal, an auth or network failure"),
+                 (0, False, "exit 0 with no -o file is not the timer either"),
+                 (-signal.SIGKILL, False, "another signal is not the timer"))
+        try:
+            for rc, kill, why in cases:
+                with self.subTest(rc=rc):
+                    res = types.SimpleNamespace(stdout="", stderr="", returncode=rc)
+                    jd.subprocess = types.SimpleNamespace(run=lambda *a, _r=res, **k: _r)
+                    jd._judge_ctx.last_call_fail = None
+                    self.assertEqual(jd._judge_run("gpt-5-test", "sys", "user", judge="closer"), "")
+                    last = jd._judge_ctx.last_call_fail
+                    self.assertIn("codex empty reply (exit %d)" % rc, last["note"])
+                    self.assertEqual(bool(last.get("kill")), kill, why)
+        finally:
+            jd.subprocess, jd._judge_ctx.fsid, jd._judge_cmd_codex, jd._judge_engine = saved
+            jd._judge_ctx.last_call_fail = None
+
+    def test_only_the_timeout_exception_is_stamped_a_kill(self):
+        # the closer's cut arm strikes a turn only for a KILL — a call that ran and never completed — and
+        # reads that off the stash's `kill` flag, which the producer stamps here (never matched on note
+        # text). Of the subprocess exceptions only TimeoutExpired (the CALL_ALARM_S + 5 backstop) is one;
+        # any other exception is the OS answering (a missing binary, a broken pipe) and stays transient.
+        # Both engines' handlers draw the same line.
+        import subprocess as sp
+        import types
+        saved = (jd.subprocess, getattr(jd._judge_ctx, "fsid", None), jd._judge_cmd_codex, jd._judge_engine)
+        jd._judge_ctx.fsid = "sid-exc"
+
+        def raising(exc):
+            def run(*a, **k):
+                raise exc
+            return types.SimpleNamespace(run=run)
+        try:
+            jd.subprocess = raising(sp.TimeoutExpired("claude", jd.CALL_ALARM_S + 5))
+            self.assertEqual(jd._judge_run("model-x", "sys", "user", judge="closer"), "")
+            last = jd._judge_ctx.last_call_fail
+            self.assertEqual((last["note"], last.get("kill")), ("TimeoutExpired", True), "the backstop timer is a kill")
+            jd.subprocess = raising(OSError("no such binary"))
+            self.assertEqual(jd._judge_run("model-x", "sys", "user", judge="closer"), "")
+            last = jd._judge_ctx.last_call_fail
+            self.assertEqual(last["note"], "OSError")
+            self.assertFalse(last.get("kill"), "any other exception is the OS answering: transient")
+            jd._judge_cmd_codex = lambda model, effort, outp: ["codex-stub"]
+            jd._judge_engine = lambda: "codex"
+            jd.subprocess = raising(sp.TimeoutExpired("codex", jd.CALL_ALARM_S + 5))
+            self.assertEqual(jd._judge_run("gpt-5-test", "sys", "user", judge="closer"), "")
+            self.assertIs(jd._judge_ctx.last_call_fail.get("kill"), True, "a timeout on the codex engine is a kill too")
+            jd.subprocess = raising(OSError("no such binary"))
+            self.assertEqual(jd._judge_run("gpt-5-test", "sys", "user", judge="closer"), "")
+            self.assertFalse(jd._judge_ctx.last_call_fail.get("kill"), "…and its other exceptions stay transient")
+        finally:
+            jd.subprocess, jd._judge_ctx.fsid, jd._judge_cmd_codex, jd._judge_engine = saved
+            jd._judge_ctx.last_call_fail = None
+
+    def test_codex_engine_dead_call_leaves_the_same_traces(self):
+        # 2026-09-03 review: the closer's sweep-cut keys on _judge_ctx.last_call_fail and the model-health
+        # latch on _mark_call_failed — both written only by the claude branch, so under `romp engine codex`
+        # an alarm-killed closer call walked on exactly as before the fix. The codex exits leave the same
+        # three traces now: the stash, the latch (a failed row), and the call shape on the row.
+        import types
+        saved = (jd.subprocess, getattr(jd._judge_ctx, "fsid", None), jd._judge_cmd_codex, jd._judge_engine)
+        jd.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: types.SimpleNamespace(stdout="", stderr="", returncode=-14))
+        jd._judge_cmd_codex = lambda model, effort, outp: ["codex-stub"]
+        jd._judge_engine = lambda: "codex"
+        jd._judge_ctx.fsid = "sid-cx"
+        jd._judge_ctx.last_call_fail = None
+        try:
+            out = jd._judge_run("gpt-5-test", "S", "U", judge="closer")
+        finally:
+            jd.subprocess, jd._judge_ctx.fsid, jd._judge_cmd_codex, jd._judge_engine = saved
+        self.assertEqual(out, "", "a dead codex call reads as an empty reply to every caller")
+        last = jd._judge_ctx.last_call_fail
+        self.assertIsInstance(last, dict, "the sweep-cut discriminator sees the failure on this engine too")
+        self.assertIn("codex empty reply (exit -14)", last["note"])
+        self.assertEqual(last["model"], "gpt-5-test")
+        self.assertIs(last.get("kill"), True, "an empty -o file with the alarm's exit (-14 is SIGALRM): a KILL for the closer's strike")
+        row = self._errors()[-1]
+        self.assertEqual((row["judge"], row["err"], row["fsid"]), ("closer", "call", "sid-cx"))
+        for word in ("exit -14", "model=gpt-5-test", "chars=2", "ms="):
+            self.assertIn(word, row["note"], "the row carries the evidence and the call shape")
+
+    def test_codex_engine_served_call_clears_the_latch_and_the_stash(self):
+        # review find 2026-09-03: the codex exits above arm the model-health latch and the sweep-cut stash,
+        # but the codex SERVED path never called _mark_call_served nor cleared last_call_fail (the claude
+        # branch does both) — one failed call left the model 'degraded' for the process's life, three spread
+        # over any span read as "N in a row", and a stale stash outlived served replies. The served exit
+        # now leaves the same recovery edge on both engines.
+        import types
+        from pathlib import Path
+        saved = (jd.subprocess, getattr(jd._judge_ctx, "fsid", None), jd._judge_cmd_codex, jd._judge_engine)
+        captured = {}
+
+        def cmd(model, effort, outp):
+            captured["outp"] = outp
+            return ["codex-stub"]
+
+        def dead(*a, **k):
+            return types.SimpleNamespace(stdout="", stderr="", returncode=-14)
+
+        def served(*a, **k):
+            os.makedirs(os.path.dirname(captured["outp"]), exist_ok=True)
+            Path(captured["outp"]).write_text('{"done": [], "block": []}', encoding="utf-8")
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+        jd._judge_cmd_codex = cmd
+        jd._judge_engine = lambda: "codex"
+        jd._judge_ctx.fsid = "sid-cx2"
+        jd._judge_ctx.last_call_fail = None
+        with jd._health_lock:
+            jd._CALL_HEALTH["stats"].pop("gpt-5-test", None)
+            jd._CALL_HEALTH["degraded"].discard("gpt-5-test")
+        try:
+            jd.subprocess = types.SimpleNamespace(run=dead)
+            self.assertEqual(jd._judge_run("gpt-5-test", "S", "U", judge="closer"), "")
+            self.assertIsInstance(jd._judge_ctx.last_call_fail, dict, "the failure is stashed")
+            with jd._health_lock:
+                self.assertEqual(jd._CALL_HEALTH["stats"]["gpt-5-test"]["fails"], 1, "the failure latched")
+            jd.subprocess = types.SimpleNamespace(run=served)
+            out = jd._judge_run("gpt-5-test", "S", "U", judge="closer")
+        finally:
+            jd.subprocess, jd._judge_ctx.fsid, jd._judge_cmd_codex, jd._judge_engine = saved
+        self.assertEqual(out, '{"done": [], "block": []}', "the served reply reaches the caller")
+        self.assertIsNone(jd._judge_ctx.last_call_fail, "a served reply retires the stash on this engine too")
+        with jd._health_lock:
+            self.assertNotIn("gpt-5-test", jd._CALL_HEALTH["stats"], "the consecutive-failure count resets")
+            self.assertNotIn("gpt-5-test", jd._CALL_HEALTH["degraded"], "the model is not degraded for life")
+
+    def test_dead_cli_call_row_carries_the_call_shape(self):
+        # 2026-09-03: 192 consecutive alarm kills (exit -14) read as "the CLI is dying" until a reader
+        # correlated the served calls' duration with their OUTPUT size — the kills were healthy-but-slow
+        # calls on an over-full menu. The row now carries the model, the prompt size in chars (no
+        # prompt text — privacy holds) and the wall-clock spent, so that diagnosis is a grep.
+        import re
+        import types
+        saved_sub, saved_fsid = jd.subprocess, getattr(jd._judge_ctx, "fsid", None)
+        jd.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: types.SimpleNamespace(stdout="", stderr="", returncode=-14))
+        jd._judge_ctx.fsid = "sid-slow"
+        try:
+            out = jd._judge_run("sonnet", "S", "U", judge="closer")
+        finally:
+            jd.subprocess = saved_sub
+            jd._judge_ctx.fsid = saved_fsid
+        self.assertEqual(out, "")
+        row = self._errors()[-1]
+        self.assertEqual((row["judge"], row["err"], row["fsid"]), ("closer", "call", "sid-slow"))
+        self.assertIn("exit -14", row["note"], "the returncode stays the headline evidence")
+        self.assertIn("model=sonnet", row["note"], "…with the model that was asked")
+        self.assertRegex(row["note"], r"\bchars=2\b", "…the size of what was sent (system + user), never its text")
+        self.assertRegex(row["note"], r"\bms=\d+\b", "…and the wall-clock the call took")
+        self.assertNotIn("S U", row["note"])
+
+    def test_subprocess_exception_call_row_carries_the_call_shape(self):
+        # the sibling branch: a subprocess that raised (a timeout past the alarm, an OSError) gets the
+        # same shape, so a grep over 'call' rows reads both kinds alike
+        import types
+
+        def boom(*a, **k):
+            raise OSError("no such binary")
+        saved_sub, saved_fsid = jd.subprocess, getattr(jd._judge_ctx, "fsid", None)
+        jd.subprocess = types.SimpleNamespace(run=boom)
+        jd._judge_ctx.fsid = "sid-boom"
+        try:
+            out = jd._judge_run("sonnet", "SYS", "U", judge="closer")
+        finally:
+            jd.subprocess = saved_sub
+            jd._judge_ctx.fsid = saved_fsid
+        self.assertEqual(out, "")
+        row = self._errors()[-1]
+        self.assertEqual((row["judge"], row["err"], row["fsid"]), ("closer", "call", "sid-boom"))
+        self.assertIn("OSError", row["note"], "the exception name stays the headline evidence")
+        self.assertIn("model=sonnet", row["note"])
+        self.assertRegex(row["note"], r"\bchars=4\b")
+        self.assertRegex(row["note"], r"\bms=\d+\b")
 
     # ── empty replies never count as parse rejects ──
     def test_empty_planner_reply_never_burns_retries_or_logs_parse(self):
@@ -7169,11 +8540,12 @@ class OrphanedHistory(unittest.TestCase):
         self._saved_state, self._saved_errors = jd.STATE, jd.ERRORS
         self._saved_distill = jd.distill_llm
         self._td = tempfile.mkdtemp()
-        jd.STATE = Path(self._td)
+        jd._rebind_state(Path(self._td))
         jd.ERRORS = jd.STATE / "judge-errors.jsonl"   # module-level twin of STATE — captured at import
 
     def tearDown(self):
         jd.STATE, jd.ERRORS = self._saved_state, self._saved_errors
+        jd._rebind_state(jd.STATE)   # the tuple restores STATE; every derived dir follows it (T282)
         jd.distill_llm = self._saved_distill
         shutil.rmtree(self._td, ignore_errors=True)
 
@@ -7289,8 +8661,10 @@ class StaleBlockGuard(unittest.TestCase):
         # this pin just keeps the planner on the one seam.
         import inspect
         src = inspect.getsource(jd)
-        self.assertIn('if t and record_verdict(store, nodes[t], "planner", "block", seg_t', src,
-                      "the planner's block op must go through record_verdict exactly like the closer")
+        self.assertIn('file_block(store, nodes[t], "planner", o["why"], seg_t, seg=seg_id) if t else', src,
+                      "the planner's block op goes through the one block writer, like the closer (T334)")
+        self.assertIn('record_verdict(store, nd, src, "block", ev_t, why=why, seg=seg)', inspect.getsource(jd.file_block),
+                      "…and that writer files a user's block through record_verdict, the fused gate+recorder")
 
 
 class FollowupContinuationCarry(unittest.TestCase):
@@ -7318,7 +8692,7 @@ class FollowupContinuationCarry(unittest.TestCase):
                 recs1 = [uline(T0, "add a GUI control for the deep-sleep window", "u1", ps="typed"),
                          aline(T0 + 10, "Built it, pushed, verified.", "a1", "u1", stop="end_turn")]
                 tpath.write_text("\n".join(json.dumps(r) for r in recs1) + "\n")
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd._plan_session(SID, str(tpath), NOW)
                 store = jd.load_goals(SID)
                 gid = next(iter(store["nodes"]))
@@ -7328,7 +8702,7 @@ class FollowupContinuationCarry(unittest.TestCase):
                                  aline(T0 + 110, "Confirmed: defaults to off, verified on device.",
                                        "a2", "u2", stop="end_turn")]
                 tpath.write_text("\n".join(json.dumps(r) for r in recs2) + "\n")
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd._plan_session(SID, str(tpath), NOW + 200)
                 return jd.load_goals(SID), gid
             finally:

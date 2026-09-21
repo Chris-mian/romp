@@ -14,7 +14,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("the caret folds a category to its header and persists like every other disclosure", () => {
   assert.match(FEED, /const fold = el\("button", "fcol-fold"\);/);
-  assert.match(FEED, /if \(collapsedCols\.has\(key\)\) collapsedCols\.delete\(key\); else collapsedCols\.add\(key\);/);
+  assert.match(FEED, /if \(collapsedCols\.has\(foldKey\(key\)\)\) collapsedCols\.delete\(foldKey\(key\)\); else collapsedCols\.add\(foldKey\(key\)\);/);
   assert.match(FEED, /cols: \[\.\.\.collapsedCols\],\s*\n\s*order: colOrder\.slice\(\)/, "rides the persisted view state (the key stays `order` across the 2026-08-24 merge)");
   // The fold BITES only in the stacked layout (the user 2026-08-18): collapsed while stacked, then
   // widened to three columns, the section stayed hidden with no caret to reopen it. The rule must
@@ -56,8 +56,9 @@ test("the chip drags in BOTH layouts — grab affordance, live provisional movem
   assert.doesNotMatch(FEED, /fcol-grip/, "the grip is gone");
   assert.match(FEED, /const vertical = getComputedStyle\(colsEl\)\.flexDirection === "column";/,
     "the layout picks the drag AXIS now — never a capture refusal (the 2026-08-16 exclusion is reversed)");
-  assert.match(FEED, /const fallback = vertical \? STACK_DEFAULT : ROW_DEFAULT;/,
-    "each layout's own default order seeds the drag until a custom order exists");
+  assert.match(FEED, /const fallback = slots\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);/,
+    "each layout's own default order seeds the drag until a custom order exists (the board's spec passes it through; T410)");
+  assert.match(FEED, /fallback: \(d\) => d,/, "BOARD_SLOTS: the layout default as is");
   assert.match(FEED, /const ROW_DEFAULT = \["asks", "needsInput", "completed"\];/);
   assert.match(FEED, /else col\.style\.removeProperty\("--col-order"\);/,
     "no custom order → the var comes OFF and each layout keeps its own default");
@@ -70,7 +71,8 @@ test("the chip drags in BOTH layouts — grab affordance, live provisional movem
   assert.match(FEED, /chip\.addEventListener\("pointercancel", up\);/, "a cancelled drag still settles + persists");
   // a no-op drag leaves no trace: ending on the layout's own default with no pre-existing custom
   // order resets to [] — an explicit order would silently re-arrange the OTHER layout (review 2026-08-24)
-  assert.match(FEED, /if \(!hadCustom && colOrder\.length === 3 && colOrder\.join\(\) === fallback\.join\(\)\) \{/);
+  assert.match(FEED, /if \(!hadCustom && orderComplete\(cur\) && cur\.join\(\) === fallback\.join\(\)\) slots\.set\(\[\]\);/);   // a complete order names every column of the ACTIVE board once (phase four)
+  assert.match(FEED, /set: \(o\) => \{ colOrder = o; applyColStack\(\); \},/, "BOARD_SLOTS writes colOrder and repaints the board");
   // the keyboard card cursor walks the VISUAL order — the effective column `order`, var resolved
   assert.match(FEED, /slot\.set\(e, col \? parseInt\(getComputedStyle\(col\)\.order \|\| "0", 10\) \|\| 0 : 0\);/);
   assert.match(FEED, /\.sort\(\(a, b\) => a\.s - b\.s \|\| a\.i - b\.i\)/, "column slot first, DOM order within");

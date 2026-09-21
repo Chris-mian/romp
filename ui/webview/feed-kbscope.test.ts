@@ -12,10 +12,12 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
 test("scope entry: the hovered card (clicks hover too), else the keyboard card cursor", () => {
-  assert.match(FEED, /if \(!card\) card = \(freezeKey \? cardElByKey\(freezeKey\) : null\) \|\| kbCardEl;/,
-    "hover truth (freezeKey rides the card's own mouseenter) first, the kb cursor as the keyboard-only path");
-  assert.match(FEED, /function cardElByKey\(key: string\): HTMLElement \| null/,
-    "keys resolve through the same data-key vocabulary the reconcile writes");
+  // the HOVERED element itself first (T347: the focused section's copy is a second element for the card, and
+  // Tab must land where the pointer is), then hover truth by key, then the kb cursor as the keyboard-only path
+  assert.match(FEED, /if \(!card\) card = document\.querySelector<HTMLElement>\("\.fitem:hover"\) \|\| \(freezeKey \? cardElByKey\(freezeKey\) : null\) \|\| kbCardEl;/,
+    "the pointer's element, then hover truth (freezeKey rides the card's own mouseenter), then the kb cursor");
+  assert.match(FEED, /function cardElByKey\(key: string, copy = false\): HTMLElement \| null/,
+    "keys resolve through the same data-key vocabulary the reconcile writes; `copy` picks the section's twin (T347)");
   // typing in an input OUTSIDE the card keeps its normal Tab
   assert.match(FEED, /if \(ae && \/\^\(INPUT\|TEXTAREA\|SELECT\)\$\/\.test\(ae\.tagName\) && !card\.contains\(ae\)\) return;/);
 });
@@ -70,8 +72,8 @@ test("focus survives a re-render by LOGICAL identity — a rebuild must not eat 
 
 test("release: Escape anywhere, or the pointer leaving the card — back to normal page order", () => {
   assert.match(FEED, /if \(e\.key === "Escape" && tabScopeKey\) \{/);
-  assert.match(FEED, /if \(tabScopeKey === key\) releaseTabScope\(\);   \/\/ hover-away releases the keyboard scope too/,
-    "rides the same leave event the freeze uses");
+  assert.match(FEED, /if \(tabScopeKey === key && tabScopeCopy === copy\) releaseTabScope\(\);   \/\/ hover-away releases the keyboard scope too/,
+    "rides the same leave event the freeze uses, for the twin it holds (T410)");
   const relStart = FEED.indexOf("function releaseTabScope");
   const rel = FEED.slice(relStart, FEED.indexOf('window.addEventListener("keydown"', relStart));
   assert.ok(rel.includes('document.querySelectorAll(".kbd-focus").forEach((n) => n.classList.remove("kbd-focus"));'),

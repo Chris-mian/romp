@@ -9,7 +9,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin")
@@ -17,10 +17,10 @@ BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-km = SourceFileLoader("romp_kernel_bgstale", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_bgstale", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 SID = "11111111-2222-3333-4444-555555555555"
@@ -58,7 +58,7 @@ class BgTasksStale(unittest.TestCase):
 
     def test_no_spawned_at_keeps_everything(self):
         self.assertEqual(km._bg_tasks(self.path)["count"], 2,
-                         "tmux / never-spawned sessions are unfiltered")
+                         "never-spawned sessions are unfiltered")
 
     def test_tasks_predating_the_live_cli_are_dropped(self):
         cutoff = self._epoch("2026-06-10T07:00:00Z")
@@ -80,12 +80,12 @@ class BgTasksStale(unittest.TestCase):
         self.assertIsNone(km._sdk_spawned_at(SID))
 
     def test_build_session_wires_spawned_at(self):
-        # spawned_at stays the tmux/no-snapshot fallback; an SDK session's box is gated by the backend's
+        # spawned_at stays the no-snapshot fallback; an SDK session's box is gated by the backend's
         # LIVE task-lifecycle set (the user 2026-07-11) — both ride the same call. The live gate reads
-        # the CALLER's snapshot, never a fresh _tmux_sessions() (the 2026-08-10 pusher CPU fix).
+        # the CALLER's snapshot, never a fresh _live_map() (the 2026-08-10 pusher CPU fix).
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn('_bg_tasks(sess["path"], _sdk_spawned_at(sid),', src)
-        self.assertIn('live=(tmux.get(str(sid)) or {}).get("bgTasks")', src)
+        self.assertIn('live=(live_map.get(str(sid)) or {}).get("bgTasks")', src)
 
 
 if __name__ == "__main__":

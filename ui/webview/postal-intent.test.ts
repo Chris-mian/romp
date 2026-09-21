@@ -33,11 +33,12 @@ test("the DECLARED kind (ev.intent) drives the chip; the body-token parse is onl
   assert.match(RENDER, /intent\?: string;/);   // the event carries the declared kind
 });
 
-test("the chip is rendered on the postal head and styled per type (three classes only)", () => {
-  assert.match(RENDER, /el\("span", "postal-service-intent postal-service-intent-" \+ intent\.cls\)/);
-  assert.match(CSS, /\.postal-service-intent \{/);
-  assert.match(CSS, /\.postal-service-intent-delegate \{/);
-  assert.match(CSS, /\.postal-service-intent-coordinate \{/);
-  assert.match(CSS, /\.postal-service-intent-question \{/);
-  assert.doesNotMatch(CSS, /\.postal-service-intent-fyi \{/);    // FYI chip class is gone
+test("the intent reads as coloured TEXT in the postal head's meta slot — no chip (2026-09-08; colours back as text, T302)", () => {
+  // the notice-vocabulary pass retired the chip; T302 (the user 2026-09-10) brings the three per-type colours back as
+  // TEXT colours on the word (a chip reads as a tag now): postal-state.ts kindLabel, postal-card.test.ts pins the rest.
+  // The word "delivered" left the meta for the delivery icon.
+  assert.match(RENDER, /const kind = kindLabel\(intent \? intent\.cls : null\);/);
+  assert.doesNotMatch(RENDER, /meta\.push\("delivered"\)/);
+  assert.doesNotMatch(CSS, /\.postal-service-intent/);
+  assert.match(CSS, /\.postal-kind-delegate \{ color: var\(--postal-delegate, #9088f0\); \}/);   // the aurora ramp's last stop (T371; postal-kind-ramp.test.ts holds the stops)
 });

@@ -14,7 +14,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -24,7 +24,7 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-km = SourceFileLoader("romp_kernel_fileedit", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_fileedit", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 OTHER = "99999999-8888-7777-6666-555555555555"
@@ -96,14 +96,14 @@ class TheOwningSessionIsTold(unittest.TestCase):
         self.td.cleanup()
 
     def _with_sessions(self, mapping, fn):
-        """Run fn with _tmux_sessions/_cwd_of faked to `mapping` ({sid: dir})."""
-        old_t, old_c = km._tmux_sessions, km._cwd_of
-        km._tmux_sessions = lambda: {s: {} for s in mapping}
+        """Run fn with _live_map/_cwd_of faked to `mapping` ({sid: dir})."""
+        old_t, old_c = km._live_map, km._cwd_of
+        km._live_map = lambda: {s: {} for s in mapping}
         km._cwd_of = lambda s: mapping.get(s, "")
         try:
             return fn()
         finally:
-            km._tmux_sessions, km._cwd_of = old_t, old_c
+            km._live_map, km._cwd_of = old_t, old_c
 
     def test_longest_prefix_wins(self):
         p = os.path.join(self.deeper, "a.md")

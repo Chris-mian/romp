@@ -20,8 +20,8 @@ const PIPE = fs.readFileSync(path.join(ROOT, "vscode-extension", "src", "pipe-in
 const U = "11111111-2222-3333-4444-555555555555";
 const V = "99999999-8888-7777-6666-555555555555";
 const unions: TagUnion[] = [
-  { name: "infra", color: "", members: [U], ids: ["t1"], localId: "t1", remotes: [] },
-  { name: "web", color: "", members: [V], ids: ["TESTHOST:t2"], localId: null, remotes: [] },
+  { name: "infra", color: "", members: [U], ids: ["t1"], localId: "t1", locals: [{ id: "t1", name: "infra", members: [U] }], remotes: [] },
+  { name: "web", color: "", members: [V], ids: ["TESTHOST:t2"], localId: null, locals: [], remotes: [{ id: "TESTHOST:t2", name: "web", members: [V] }] },
 ];
 
 test("arbitrary combinations union-filter; All is exclusive and the default board is byte-identical", () => {
@@ -38,8 +38,8 @@ test("arbitrary combinations union-filter; All is exclusive and the default boar
 test("the lens is its own slot in the view family; needs-you passes (the family's interrupt rule)", () => {
   assert.match(FEED, /function viewScope\(list: AskItem\[\]\): AskItem\[\]/,
     "the combobox/search scoping kept its own layer");
-  assert.match(FEED, /return s\.filter\(\(a\) => lensVisible\(feedLens, u, a\.sid\) \|\| a\.column === "needs_input"\);/,
-    "the same breakthrough the satellite and internals lens wear");
+  assert.match(FEED, /return s\.filter\(\(a\) => lensVisible\(feedLens, u, a\.sid\) \|\| isNeedsYou\(boardOf\(a\), a\.category \?\? a\.column\)\);/,
+    "the same breakthrough the satellite and internals lens wear: the card's OWN board's badge category (board-def.ts, phase two; the 1861 read), needs_input for the feed");
   // hover-freeze counts through viewFiltered = viewBase — the badges stay honest for free (the
   // team-internals slot retired 2026-08-25 on the user's verdict; the slot family stands)
   assert.match(FEED, /return viewBase\(list\);/);
@@ -90,6 +90,6 @@ test("what the lens hides stays one glance away: whisper, promoted banner, click
     "the promoted line NAMES the lens");
   assert.match(FEED, /lmore\.onclick = \(\) => \{ setFeedLens\(\{ all: true \}\); render\(\); \};/,
     "the way out is purely local — no kernel round-trip");
-  assert.match(CSS, /#feed-lensmore\.prominent \{ margin: 6px 8px 2px; padding: 10px 14px; background: #252526;/,
-    "the judge-limit banner's card chrome — neutral, a narrowed board is a choice");
+  assert.match(CSS, /#feed-lensmore\.prominent \{ margin: 6px 8px 2px; padding: 10px 14px; background: var\(--vscode-editorWidget-background, #252526\);/,
+    "the judge-limit banner's card chrome — neutral, a narrowed board is a choice (tokenized, T151)");
 });

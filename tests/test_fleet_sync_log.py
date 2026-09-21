@@ -18,7 +18,7 @@ import inspect
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -28,7 +28,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_syncnote", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_syncnote", os.path.join(BIN, "romp-kernel"))
 
 
 class Ring(unittest.TestCase):
@@ -109,9 +109,29 @@ class VersionTag(unittest.TestCase):
     def test_the_version_route_publishes_it(self):
         self.assertIn("kernel_ver", km._version_info())
 
+    def test_the_version_route_publishes_parse_stats(self):
+        # the assembly cache's counters ride /version (T210): /healthz's body is a frozen
+        # liveness contract, so this is the designed runtime-observability home — deploy
+        # verification reads the live fold rate here
+        v = km._version_info()
+        self.assertIn("parse", v)
+        for key in ("full", "fold", "serve", "bypass", "fallback"):
+            self.assertIsInstance(v["parse"].get(key), int)
+        before = km.em._ASM_STATS["fold"]
+        km.em._ASM_STATS["fold"] = before + 7
+        try:
+            self.assertEqual(km._version_info()["parse"]["fold"], before + 7,
+                             "the payload reads the LIVE counters, not a boot-time copy")
+        finally:
+            km.em._ASM_STATS["fold"] = before
+
     def test_a_remote_poll_carries_the_tag_alongside_the_sha(self):
         src = inspect.getsource(km._poll_remote_version)
-        self.assertIn('"ver": str(j.get("kernel_ver") or "")', src)
+        # the tag is read off /version beside the sha and returned as `ver` — since 2026-09-08 only when it
+        # fits _kernel_ver's shape (a peer's word, judged before it is stored; test_peer_payloads_as_text)
+        self.assertIn('ver = j.get("kernel_ver") or ""', src)
+        self.assertIn("if ver and not _peer_ver(ver):", src)
+        self.assertIn('"ver": ver,', src)
         self.assertIn('"sha": sha', src)
 
     def test_the_row_publishes_both_sides(self):

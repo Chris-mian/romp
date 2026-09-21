@@ -18,7 +18,7 @@ rail measured 870..900 inside a 600px-tall body before, and 570..600 after.
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -28,7 +28,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_vhfit", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_vhfit", os.path.join(BIN, "romp-kernel"))
 
 
 class OneHeightBasis(unittest.TestCase):
@@ -57,13 +57,13 @@ class OneHeightBasis(unittest.TestCase):
         # inset:0 already IS the viewport box for a fixed element; the explicit 100vw/100vh overrode it.
         # (background:transparent rides the same rules: an opaque lifted iframe blacks out the window —
         # see test_kernel.test_settings_is_a_fullscreen_modal.)
-        self.assertIn("body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200;background:transparent}", self.html)
+        self.assertIn("body.settings-open #f-settings{display:block;position:fixed;inset:0;z-index:200;background:transparent}", self.html)
         # The PICKER lift is the one exception on the VERTICAL axis: its height follows --app-h (the
         # shell's live visible height) because the layout viewport ignores the phone keyboard — inset:0
         # left the picker's lower rows behind it — and the --app-h sizing is also what turns the keyboard
         # into an in-iframe resize event for the picker's short-window fold (the user 2026-08-10).
         # Horizontally it stays inset-sized (left:0;right:0), no 100vw.
-        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;left:0;right:0;top:0;"
+        self.assertIn("body.picker-open iframe.lifted{display:block;position:fixed;left:0;right:0;top:0;"
                       "height:var(--app-h,100dvh);z-index:200;background:transparent}", self.html)
 
     def test_an_unpainted_pane_is_dark_not_white(self):
@@ -87,17 +87,26 @@ class RefitsWhenTheVisibleHeightChanges(unittest.TestCase):
 
     def test_it_refits_on_the_events_ios_actually_changes_the_height_on(self):
         # iOS collapses its toolbars AS YOU SCROLL, with no window resize; the visual viewport's own
-        # scroll event is where that settles. pageshow covers a back/forward-cache restore.
-        for ev in ("'resize',fit", "'orientationchange',fit", "'pageshow',fit"):
+        # scroll event is where that settles. pageshow covers a back/forward-cache restore. Since
+        # 2026-09-08 every event binds `refit`, the one-frame coalescer, and the set also covers a
+        # return from the background (visibilitychange, window focus) and a keyboard the composer's
+        # blur dismissed (focusout) — the installed iPhone app came back keyboard-short otherwise.
+        # Behavior is pinned by test_kernel_mobile.MobileFitExecutes; these are the wiring strings.
+        for ev in ("'resize',refit", "'orientationchange',refit", "'pageshow',refit", "'focus',refit"):
             self.assertIn("window.addEventListener(" + ev, self.js)
-        self.assertIn("window.visualViewport.addEventListener('scroll',fit)", self.js)
-        self.assertIn("window.visualViewport.addEventListener('resize',fit)", self.js)
+        self.assertIn("document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')refit();});", self.js)
+        self.assertIn("document.addEventListener('focusout',refit);", self.js)
+        self.assertIn("window.visualViewport.addEventListener('scroll',refit)", self.js)
+        self.assertIn("window.visualViewport.addEventListener('resize',refit)", self.js)
+        # one fit per animation frame, however many events a keyboard slide or a resume fires
+        self.assertIn("fitRaf=window.requestAnimationFrame(function(){fitRaf=0;fit();});", self.js)
 
     def test_the_fit_runs_even_with_no_mobile_tab_bar(self):
         # it must apply on a desktop/tablet layout too, so the fit and its listeners come BEFORE the
         # #mtabs early return — that ordering is the whole reason a landscape tablet gets a real height
-        fit_at = self.js.index("fit();window.addEventListener('resize',fit)")
-        bar_at = self.js.index("var bar=document.getElementById('mtabs');if(!bar)return;")
+        fit_at = self.js.index("fit();window.addEventListener('resize',refit)")
+        # the line-anchored form: barfit() looks the bar up the same way, guarded, BEFORE the wiring
+        bar_at = self.js.index("\nvar bar=document.getElementById('mtabs');if(!bar)return;\n")
         self.assertLess(fit_at, bar_at)
 
 

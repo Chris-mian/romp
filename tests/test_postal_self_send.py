@@ -15,14 +15,14 @@ and "Delivered" is reserved for actually delivered. Synthetic ids and hostnames 
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()      # hermetic; constants resolve under here
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-pm = SourceFileLoader("romp_postal_self_send", os.path.join(BIN, "romp-postal-service")).load_module()
+pm = load_source("romp_postal_self_send", os.path.join(BIN, "romp-postal-service"))
 
 ME = "11111111-2222-3333-4444-555555555555"
 PEER = "22222222-3333-4444-5555-666666666666"
@@ -229,9 +229,8 @@ class DeliveredMeansDelivered(unittest.TestCase):
     """A relayed or parked message is not a delivered one, and the tool surface has to say which."""
 
     def setUp(self):
-        self._saved = {k: getattr(pm, k) for k in ("_http", "my_name", "my_id", "_heartbeat")}
-        pm.my_name = lambda: "web"
-        pm.my_id = lambda: ME
+        self._saved = {k: getattr(pm, k) for k in ("_http", "_self_identity", "_heartbeat")}
+        pm._self_identity = lambda: (ME, "web")     # the one resolver every tool call reads (2026-09-06)
         pm._heartbeat = lambda *a, **k: None
 
     def tearDown(self):

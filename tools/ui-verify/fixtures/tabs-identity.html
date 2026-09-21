@@ -1,0 +1,19 @@
+<!-- SYNTHETIC fixture: the chat tab strip + a sliver of transcript, session colors set inline the
+     way render.ts sets them (--chip-bg per tab, --active-accent on body) — for eyeballing the
+     identity linkage: active tab tint gradient + soft border, the tinted #tabbar line it fuses
+     into, the #winframe ring, the rail. Invented sessions (notes-api demo domain). Run:
+       tools/ui-verify/shot.sh --css ui/webview/styles.css --body tools/ui-verify/fixtures/tabs-identity.html \
+           --out /tmp/tabs-identity.png --size 700x220 --extra-css 'body{--active-accent:#1EA1EB}'
+-->
+<div id="winframe"></div>
+<div id="tabbar"><span id="tabs">
+  <span class="tab active colored" style="--chip-bg:#1EA1EB"><span class="tab-label">web</span></span>
+  <span class="tab colored" style="--chip-bg:#54B204"><span class="tab-label">api</span></span>
+  <span class="tab colored" style="--chip-bg:#DD42FF"><span class="tab-label">docs</span></span>
+  <span class="tab"><span class="tab-label">scratch</span></span>
+  <span class="tab colored tab-blocked" style="--chip-bg:#4EA8A9"><span class="tab-label">tests</span></span>
+</span></div>
+<div id="content" style="flex:1 1 auto">
+  <div class="turn turn-user"><div class="user-bubble">Where does the exporter stand?</div></div>
+  <div class="turn"><div class="md"><p>Fixtures updated; re-running the suite now.</p></div></div>
+</div>

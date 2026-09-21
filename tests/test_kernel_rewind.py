@@ -13,7 +13,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -24,7 +24,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_rw", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_rw", os.path.join(BIN, "romp-kernel"))
 
 # The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
 # tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
@@ -129,7 +129,7 @@ class DriveOpPins(unittest.TestCase):
 
     def test_rewind_send_gates_on_backend_and_busy(self):
         src = inspect.getsource(km._rewind_send)
-        self.assertIn('if not hasattr(be, "rewind"):', src)          # SDK-only (tmux has Esc Esc natively)
+        self.assertIn('if not hasattr(be, "rewind"):', src)          # Claude Code only (the removed tmux backend had Esc Esc natively)
         self.assertIn("if _ops_gate(sid):", src)                     # busy/compacting/parked-queue → refuse
         self.assertIn("target, err = _rewind_target(", src)          # transcript validation before the backend
 
@@ -153,12 +153,19 @@ class DeleteRollback(unittest.TestCase):
         self.assertIn('client["send"](json.dumps({"type": "warn", "text": err}))', arm)
         self.assertNotIn("_send_or_park", arm)
 
-    def test_rollback_gates_match_the_edit_rewind(self):
+    def test_rollback_validates_like_the_edit_but_never_gates_on_busy(self):
+        # Delete-while-busy (the user 2026-08-29): the kernel-side busy gate is GONE from the
+        # delete path — the backend decides (a bare delete on an in-flight turn interrupts it and
+        # arms the rewind at the turn's end; compacting/queued keep honest refusals there). The
+        # edit rewind keeps its gate (test above): its replacement turn must not race a dying one.
         src = inspect.getsource(km._rewind_rollback)
-        self.assertIn('if not hasattr(be, "rollback"):', src)    # SDK-only (tmux has Esc Esc natively)
-        self.assertIn("if _ops_gate(sid):", src)                 # busy/compacting/parked-queue → refuse
+        self.assertIn('if not hasattr(be, "rollback"):', src)    # Claude Code only (the removed tmux backend had Esc Esc natively)
+        self.assertNotIn("if _ops_gate(sid):", src)              # busy is the BACKEND's decision now
         self.assertIn("target, err = _rewind_target(", src)      # the SAME cut point as an edit
-        self.assertIn("be.rollback(sid, target)", src)
+        # the arm-time re-check rides along: a mid-window compaction can move the boundary past
+        # the target, and only the kernel's parse can see that — so the closure re-runs it
+        self.assertIn("be.rollback(sid, target,", src)
+        self.assertIn('revalidate=lambda: _rewind_target(path, sid, str(user_uuid))[1]', src)
 
 
 class ParseCut(unittest.TestCase):
@@ -235,18 +242,23 @@ class ParseCut(unittest.TestCase):
         conversation content — filtering them on the cut's timestamp would blank the live working
         indicator for any session sitting on a pending delete."""
         src = inspect.getsource(km.em.parse_session)
-        cut_block = src[src.index("if leaf_override and leaf_override in adapter.by_uuid"):]
+        cut_block = src[src.index("if cut_t:"):]   # the cut filter (cut_t resolved in _assemble)
         self.assertNotIn("synthesize_idle", cut_block.split("atoms += orphans")[0])
         self.assertIn("orphans = [a for a in orphans if a[\"t\"] <= cut_t]", src)
 
     def test_kernel_parse_keys_the_cache_on_the_cut(self):
         # arming and clearing both change the parse with NO file change — the cut must ride the key
+        # stage 2 (2026-09-11): the kernel's parse is the judges' parsed_session; the cut rides ITS key and its slot
         src = inspect.getsource(km._parse)
-        self.assertIn("cut = _be.pending_cut(sid) if _be else \"\"", src)
-        self.assertIn("key = (st.st_mtime, st.st_size, cut)", src)
-        self.assertIn("leaf_override=cut or None", src)
-        # the never-parsing feed reader compares the file identity prefix only
-        self.assertIn("tuple(hit[0][:2]) == key", inspect.getsource(km._parse_cached))
+        self.assertIn("jd.parsed_session(sid, [path], now, asm_mode_out=_mode, stats=stats, states=states,", src)
+        self.assertIn("sdk_human=_display_sdk_human(sid))", src, "the display passes its own owner answer: a differing judge answer keeps its own slot")
+        jsrc = inspect.getsource(km.jd.parsed_session)
+        self.assertIn("cut = _pending_cut(fsid)", jsrc)
+        self.assertIn("key = (pair[0], cut) if pair is not None else None", jsrc)
+        self.assertIn("hit = _parse_slot(fsid, cut, ", jsrc, "the slot is per cut: two callers reading different cuts never share a tree")
+        self.assertIn("leaf_override=cut or None", jsrc)
+        # the never-parsing feed reader asks the shared store under the live key
+        self.assertIn("jd.parse_cached(", inspect.getsource(km._parse_cached))
 
     def test_the_built_chat_cache_sig_carries_the_cut_too(self):
         # same lesson one level up: the BUILT payload cache would otherwise keep pushing a
@@ -287,9 +299,9 @@ class RevertOnDelete(unittest.TestCase):
         # never happened).
         src = inspect.getsource(km._rewind_rollback)
         self.assertIn("cut_t = _atom_epoch(", src)                   # resolved before be.rollback
-        self.assertIn("ok, berr = be.rollback(sid, target)", src)
+        self.assertIn("ok, berr = be.rollback(sid, target,", src)   # + the arm-time revalidate closure
         self.assertIn("_arm_rewind_hold(be, sid, cut_t)", src)       # hide on success; archive at the take
-        self.assertLess(src.index("cut_t = _atom_epoch("), src.index("be.rollback(sid, target)"),
+        self.assertLess(src.index("cut_t = _atom_epoch("), src.index("be.rollback(sid, target,"),
                         "the deleted message's time is read BEFORE the cut is armed")
 
     def test_edit_hides_born_in_range_goals_too(self):
@@ -527,7 +539,11 @@ class TwoPhaseRewindTiming(unittest.TestCase):
         # tab-hover recents derived from it) read jd.load_goals raw and kept showing the doomed
         # asks for the whole armed window — unbounded on a bare delete
         src = inspect.getsource(km.build_session)
-        self.assertIn("gstore = _apply_rewind_hold(sid, jd.load_goals(sid))", src)
+        # the read goes through the per-session boundary (a faulting store renders an EMPTY tree
+        # instead of failing every tab's build) onto the shared read-only view, and the hold filter is
+        # applied to what it read
+        self.assertIn("gstore, gfault = jd.load_goals_shared_or_fault(sid)", src)
+        self.assertIn("gstore = _apply_rewind_hold(sid, gstore)", src)
 
     def test_the_boot_pass_resolves_a_hold_the_transcript_moved_past_out_of_band(self):
         # bare rollback armed, kernel dies, the user continues the session CLI-natively: the OLD
@@ -628,6 +644,36 @@ class TwoPhaseRewindTiming(unittest.TestCase):
             km._sdk = saved_sdk
         self.assertNotIn(self.doomed, km.jd.load_goals(SID)["nodes"])
         self.assertIsNone(km._rewind_hold_get(SID))
+
+
+class HoldLeafEclipsedFlip(unittest.TestCase):
+    """T209 companion: _hold_leaf_still_active on a leaf a MACHINE api_error spur abandoned.
+    Before the eclipsed verdict, that leaf read "rewind" -> False -> the resolver ARCHIVED the
+    held cards on a machine artifact; now it reads kept -> True -> restore, the direction that
+    never destroys on an event no user made."""
+
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+        self._saved_sessions = km._sessions
+
+    def tearDown(self):
+        km._sessions = self._saved_sessions
+
+    def test_an_eclipsed_leaf_reads_still_active(self):
+        p = self.td / (SID + ".jsonl")
+        with open(p, "w") as f:
+            for r in [_rec("user", "u1", None, "first ask"),
+                      _rec("assistant", "a1", "u1", "first reply"),
+                      _rec("user", "u2", "a1", "second ask"),
+                      _rec("assistant", "a2", "u2", "the reply the spur eclipsed"),
+                      _rec("system", "e1", "u2", subtype="api_error",
+                           error={"message": "429 rate_limit_error (synthetic)"}),
+                      _rec("user", "u3", "e1", "third ask"),
+                      _rec("assistant", "a3", "u3", "third reply")]:
+                f.write(json.dumps(r) + "\n")
+        km._sessions = lambda now: [{"sid": SID, "path": str(p)}]
+        self.assertIs(km._hold_leaf_still_active(SID, "a2"), True,
+                      "a machine-eclipsed leaf is live content, not a taken rewind")
 
 
 class RewindKeptLookupEconomy(unittest.TestCase):

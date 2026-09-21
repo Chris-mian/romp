@@ -6,9 +6,10 @@ parked message rendering BEFORE the model change parked ahead of it). A repeated
 replaces its earlier parked op in place. Same event-corroborated _compacting_now gate as ever; a parked
 send stamps its optimistic echo only when it actually fires (an early echo killed the compacting cue).
 SYNTHETIC fixtures only."""
+import json
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -19,7 +20,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_sendpark", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_sendpark", os.path.join(BIN, "romp-kernel"))
 
 # The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
 # tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
@@ -28,7 +29,13 @@ km = SourceFileLoader("romp_kernel_sendpark", os.path.join(BIN, "romp-kernel")).
 # limit. Pinning it off keeps them hermetic.
 km._limit_hold = lambda sid: None
 
+# The PROMPT HOLD (_hold_drain: a turn-opening delivery holds the sid for a moment, tested in
+# tests/test_kernel_parked_ops_liveness.py) is a separate axis: off here, so back-to-back
+# _apply_pending_ops calls stand for successive cycles.
+km._PROMPT_HOLD_S = 0.0
+
 SID = "11111111-2222-3333-4444-555555555555"
+THEIRS = "99999999-8888-7777-6666-555555555555"   # a session another machine's kernel owns
 
 
 class _FakeBackend:
@@ -55,17 +62,13 @@ class _FakeBackend:
 class OpQueueParkOrDeliver(unittest.TestCase):
     def setUp(self):
         self.be = _FakeBackend()
-        self.echoes = []
-        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
-                       km._working_now)
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._working_now)
         km._push_all = lambda: None
-        km._optimistic_echo = lambda sid, text, author="human": self.echoes.append((text, author))
         km._working_now = lambda sid: False            # explicit: each test picks the busy state
         km._pending_ops.clear()
 
     def tearDown(self):
-        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
-         km._working_now) = self._saved
+        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._working_now) = self._saved
         km._pending_ops.clear()
 
     def test_not_compacting_everything_applies_immediately(self):
@@ -74,7 +77,6 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         km._set_model_or_park(self.be, SID, "opus")
         km._set_effort_or_park(self.be, SID, "high")
         self.assertEqual(self.be.calls, [("send", "hello there"), ("model", "opus"), ("effort", "high")])
-        self.assertEqual(self.echoes, [("hello there", "human")], "the instant echo still fires")
         self.assertNotIn(SID, km._pending_ops)
 
     def test_compacting_parks_everything_in_order(self):
@@ -84,7 +86,6 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         km._send_or_park(self.be, SID, "now do the thing", echo="human")
         km._set_effort_or_park(self.be, SID, "medium")
         self.assertEqual(self.be.calls, [], "mid-compaction the backend is NOT touched")
-        self.assertEqual(self.echoes, [], "no echo atom lands — an echo would kill the compacting cue")
         self.assertEqual(km._pending_ops.get(SID),
                          [("model", "opus"), ("send", "now do the thing", "human"), ("effort", "medium")],
                          "ONE queue, in park order — messages and slash commands interleaved as sent")
@@ -103,20 +104,20 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         # gate holds (compaction/open turn), a re-pick replaces the earlier parked toggle in place, and
         # _apply_pending_ops hands it to the backend once the session is quiet.
         km._compacting_now = lambda sid: True
-        self.assertTrue(km._set_fast_or_park(self.be, SID, "on"))
+        self.assertTrue(km._set_fast_or_park(self.be, SID, "on")[0])   # (took, parked): took
         km._send_or_park(self.be, SID, "then this", echo=None)
-        self.assertTrue(km._set_fast_or_park(self.be, SID, "off"))   # re-pick → in-place replace
+        self.assertTrue(km._set_fast_or_park(self.be, SID, "off")[0])   # re-pick → in-place replace
         self.assertEqual(self.be.calls, [], "mid-compaction the backend is NOT touched")
         self.assertEqual(km._pending_ops.get(SID),
                          [("fast", "off"), ("send", "then this", None)])
-        self.assertFalse(km._set_fast_or_park(self.be, SID, "sideways"), "only on|off are /fast arguments")
+        self.assertEqual(km._set_fast_or_park(self.be, SID, "sideways"), (False, False), "only on|off are /fast arguments")
         km.Sessions.backend_for = lambda sid: self.be
         km._compacting_now = lambda sid: False
         km._apply_pending_ops()
         self.assertEqual(self.be.calls, [("fast", "off"), ("send", "then this")],
                          "the toggle applies and delivery continues; the send ends the pass")
         km._compacting_now = lambda sid: False
-        self.assertTrue(km._set_fast_or_park(self.be, SID, "on"), "quiet session → applies immediately")
+        self.assertEqual(km._set_fast_or_park(self.be, SID, "on"), (True, False), "quiet session → applies immediately, not parked")
         self.assertEqual(self.be.calls[-1], ("fast", "on"))
 
     def test_apply_delivers_sequentially_when_quiet_and_not_before(self):
@@ -140,7 +141,6 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         self.assertEqual(km._pending_ops.get(SID), [("effort", "high")], "the effort waits for that turn")
         km._apply_pending_ops()                        # the send's turn ended (still quiet in this fixture)
         self.assertEqual(self.be.calls, [("model", "opus"), ("send", "go"), ("effort", "high")])
-        self.assertEqual(self.echoes, [("go", "human")], "echo only where the send path echoed")
         self.assertNotIn(SID, km._pending_ops, "consumed — never re-delivered")
 
     def test_compact_clicked_mid_turn_parks_and_fires_at_turn_end(self):
@@ -176,7 +176,6 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         km._set_model_or_park(self.be, SID, "opus")
         km._send_or_park(self.be, SID, "now do it", echo="human")
         self.assertEqual(self.be.calls, [], "nothing fires into an open turn")
-        self.assertEqual(self.echoes, [], "no orphan echo either")
         self.assertEqual(km._pending_ops.get(SID),
                          [("model", "opus"), ("send", "now do it", "human")], "press order, as chips")
 
@@ -201,17 +200,24 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         km._apply_pending_ops()                         # must not raise
         self.assertNotIn(SID, km._pending_ops, "a dead session's queue is dropped, never retried forever")
 
-    def test_producer_ticks_the_apply(self):
+    def test_the_pusher_cycle_delivers_the_parked_queue_not_the_producer(self):
+        # 2026-09-03: delivery moved OFF the judge producer's tail — a pass can run for hours (one session's
+        # closer sweep, alarm-killed turn after turn) and held every parked op hostage. It rides the pusher
+        # cycle now, woken by the settle itself, and runs FIRST so the delivered op's echo rides the push.
         import inspect
-        src = inspect.getsource(km._producer)
-        self.assertIn("_apply_pending_ops()", src, "the producer tick delivers the parked queue")
+        self.assertNotIn("_apply_pending_ops()", inspect.getsource(km._producer),
+                         "the judge pass no longer gates delivery")
+        src = inspect.getsource(km._pusher_cycle_jobs)
+        self.assertIn("_apply_pending_ops()", src, "the pusher cycle delivers the parked queue")
+        self.assertLess(src.index("_apply_pending_ops()"), src.index("_push_all("), "…ahead of the push")
 
 
 class _FakeForwardBackend:
-    """An SDK-like backend: forwards_sends() True, and send() enqueues into an in-memory queue exposed by
-    pending_queued (the SDK's _pending). The actual mid-turn forward / fold happens inside the SDK, not here
-    — for the kernel gate what matters is that a working send is HANDED OVER (lands in send()/the queue),
-    not parked in the kernel FIFO."""
+    """An SDK-like backend for sends: forwards_sends() True, and send() enqueues into an in-memory queue
+    exposed by pending_queued (the SDK's _pending). The actual mid-turn forward / fold happens inside the SDK,
+    not here — for the kernel gate what matters is that a working send is HANDED OVER (lands in send()/the
+    queue), not parked in the kernel FIFO. It also declares model_switches_live, so the live-pick ordering
+    can be pinned; the real SdkBackend says False for now (see its docstring)."""
 
     def __init__(self):
         self.calls = []
@@ -219,6 +225,10 @@ class _FakeForwardBackend:
 
     def forwards_sends(self):
         return True
+
+    def model_switches_live(self):
+        return True     # a backend that CAN switch mid-turn — the shape the SDK's control channel would take once the
+                        # CLI persists a mid-turn switch correctly; the real SdkBackend declares False for now (#923)
 
     def send(self, sid, text):
         self.calls.append(("send", text))
@@ -239,25 +249,26 @@ class _FakeForwardBackend:
 
 class SdkForwardsAndBatch(unittest.TestCase):
     """The user 2026-07-17: get typed messages in AS SOON AS POSSIBLE (no interrupt), and when a pile is
-    queued, send them ALL AT ONCE — the SDK folds them into one turn, tmux merges them. A backend that
+    queued, send them ALL AT ONCE: the kernel drains the pile in one pass. The SDK enqueues each and its
+    inputs() hands them to the CLI one message each, in order (2026-09-08, when two texts sent during one
+    turn reached the agent as one fused message; that superseded the one-turn merge for SDK sessions); a
+    backend with no such queue (Codex) gets them merged into one message. A backend that
     forwards its own sends (forwards_sends) takes a composer send even MID-TURN, instead of the kernel
-    parking it until the turn ends; slash-command drive ops still park in press order. Synthetic only."""
+    parking it until the turn ends; slash-command drive ops still park in press order — except a model
+    pick on a backend that declares model_switches_live, which fires and keeps order by going first
+    (#923; no shipped backend declares it yet). Synthetic only."""
 
     def setUp(self):
-        self.be = _FakeBackend()                       # tmux-like (no forwards_sends)
+        self.be = _FakeBackend()                       # Codex-like (no forwards_sends)
         self.fbe = _FakeForwardBackend()               # SDK-like
-        self.echoes = []
-        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
-                       km._working_now)
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._working_now)
         km._push_all = lambda: None
-        km._optimistic_echo = lambda sid, text, author="human": self.echoes.append((text, author))
         km._compacting_now = lambda sid: False
         km._working_now = lambda sid: False
         km._pending_ops.clear()
 
     def tearDown(self):
-        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
-         km._working_now) = self._saved
+        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._working_now) = self._saved
         km._pending_ops.clear()
 
     def test_sdk_send_while_working_is_handed_over_not_parked(self):
@@ -272,34 +283,49 @@ class SdkForwardsAndBatch(unittest.TestCase):
         for t in ("one", "two", "three"):
             km._send_or_park(self.fbe, SID, t, echo="human")
         self.assertEqual(self.fbe.calls, [("send", "one"), ("send", "two"), ("send", "three")],
-                         "all three reach the SDK queue → its inputs() folds them into one turn")
+                         "all three reach the SDK queue → its inputs() hands them to the CLI one message each, in order")
         self.assertNotIn(SID, km._pending_ops)
 
-    def test_a_send_after_a_parked_drive_op_chains_behind_it_even_for_the_sdk(self):
-        # press-order beats mid-turn forwarding: once a /model is parked, a later message stays behind it
-        # (the user 2026-07-17, who asked to be careful with that aspect). The drive op parks (a queue exists), so the
-        # send parks too — it does NOT jump ahead by forwarding mid-turn.
+    def test_a_send_after_a_live_model_pick_still_reaches_the_model_second(self):
+        # press-order beats mid-turn forwarding (the user 2026-07-17, who asked to be careful with that
+        # aspect) — and on a backend that can apply a model change mid-turn (model_switches_live) it is
+        # kept by DELIVERING in order rather than by deferring both: the pick's control request goes over
+        # first, the send that follows is handed over next (see tests/test_model_live_midturn.py). What must
+        # never happen — the message reaching the model BEFORE the switch — still cannot. The parked shape
+        # this test used to pin is still pinned wherever the pick DOES park: Codex, the real SDK for
+        # now, a compaction, an existing queue, a limit hold (all in test_model_live_midturn.py).
         km._working_now = lambda sid: True
+        km._set_model_or_park(self.fbe, SID, "opus")
+        km._send_or_park(self.fbe, SID, "after the model", echo="human")
+        self.assertEqual(self.fbe.calls, [("model", "opus"), ("send", "after the model")],
+                         "model first, then the message — press order, both immediate")
+        self.assertNotIn(SID, km._pending_ops, "nothing needed to park")
+
+    def test_a_send_after_a_PARKED_drive_op_still_chains_behind_it(self):
+        # the original 2026-07-17 shape, on the path where the pick still parks: a compaction. The send must
+        # not forward past it.
+        km._working_now = lambda sid: True
+        km._compacting_now = lambda sid: True
         km._set_model_or_park(self.fbe, SID, "opus")
         km._send_or_park(self.fbe, SID, "after the model", echo="human")
         self.assertEqual(self.fbe.calls, [], "nothing fires: model parked, the send chained behind it")
         self.assertEqual(km._pending_ops.get(SID),
                          [("model", "opus"), ("send", "after the model", "human")], "press order held")
 
-    def test_tmux_merges_a_run_of_queued_sends_into_one_message(self):
+    def test_a_non_forwarding_backend_merges_a_run_of_queued_sends_into_one_message(self):
         km.Sessions.backend_for = lambda sid: self.be
         km._pending_ops[SID] = [("send", "alpha", None), ("send", "beta", None), ("send", "gamma", None)]
         km._apply_pending_ops()
         self.assertEqual(self.be.calls, [("send", "alpha\n\nbeta\n\ngamma")],
-                         "tmux has no fold → the run merges into a single blank-line-separated message")
+                         "a backend with no fold (Codex) → the run merges into a single blank-line-separated message")
         self.assertNotIn(SID, km._pending_ops, "the whole run delivered at once")
 
-    def test_sdk_delivers_a_run_as_separate_sends_to_fold(self):
+    def test_sdk_delivers_a_run_as_separate_sends_one_message_each(self):
         km.Sessions.backend_for = lambda sid: self.fbe
         km._pending_ops[SID] = [("send", "a", None), ("send", "b", None), ("send", "c", None)]
         km._apply_pending_ops()
         self.assertEqual(self.fbe.calls, [("send", "a"), ("send", "b"), ("send", "c")],
-                         "the SDK enqueues each — its inputs() folds them into one turn, no merge")
+                         "the SDK enqueues each: its inputs() hands them to the CLI one message each, in order; no merge")
         self.assertNotIn(SID, km._pending_ops)
 
     def test_a_drive_op_then_a_run_applies_the_op_then_batches_the_sends(self):
@@ -365,14 +391,14 @@ class SendPathsPark(unittest.TestCase):
     def test_ws_drive_paths_use_the_parks(self):
         with open(os.path.join(BIN, "romp-kernel")) as f:
             src = f.read()
-        self.assertIn('_send_or_park(be, sid, str(msg["text"]), echo="human")', src,
-                      "the composer send parks mid-compaction")
+        self.assertIn('_send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_wire_paths(msg))', src,
+                      "the composer send parks mid-compaction, and speaks as the user (T315)")
         self.assertIn("_send_or_park(be, sid, body,", src, "the follow-up/nudge send parks mid-compaction")
-        self.assertIn("_send_or_park(be, sid, cmd)", src, "the timeline sendCommand parks mid-compaction")
+        self.assertIn("_send_or_park(be, sid, cmd, user=True)", src, "the timeline sendCommand parks mid-compaction; the user typed it")
         self.assertIn('_set_effort_or_park(be, sid, str(msg["value"]))', src,
                       "the setEffort drive op parks mid-compaction (the user 2026-07-02: it slipped through)")
-        self.assertIn('_set_effort_or_park(be, sid, cmd[len("/effort "):].strip())', src,
-                      "the timeline /effort parks mid-compaction")
+        self.assertIn("_set_effort_or_park(be, sid, value)    # mid-compaction → parked as a queued command", src,
+                      "the timeline's and the composer's /effort park mid-compaction (_route_meta_command)")
 
 
 class QueuedBubble(unittest.TestCase):
@@ -384,26 +410,57 @@ class QueuedBubble(unittest.TestCase):
                       "the queued indicator shows even when a parked op is the only pending item")
         self.assertIn("for j, op in enumerate(pending_ops):", src,
                       "ONE loop, park order — rendering IS execution order")
-        self.assertIn('{"md": _parked_md(op), "park": j, "cancelable": True}', src,
+        self.assertIn('{"md": _parked_md(op), "park": j, "cancelable": True, **(_queued_romp_flags(op[1]) if op[0] == "send" else {})}', src,
                       "parked ops are CANCELABLE (the user 2026-07-08): park index + shared body renderer")
+
+    def test_a_queued_copy_carries_its_attachment_list_and_a_parked_follow_up_its_goal_id(self):
+        # T373 fold: the send frame names every attachment its trailing line carried; the kernel keeps the list beside the
+        # copy's id (a parked send's sixth slot, the backend queue's meta) and ships it on the queued copy, so the chat's
+        # rescind gives the image and the document back as chips by the record, never by a guess; a PARKED follow-up
+        # carries its goal id as the backend branch does (low 3), so its goal chip comes back too
+        import inspect
+        src = inspect.getsource(km.build_session)
+        self.assertIn('m["paths"] = [str(x) for x in _metas[i]["paths"] if isinstance(x, str)]', src, "the backend-queue copy")
+        self.assertIn('m["paths"] = _op_paths(op)', src, "the parked copy")
+        self.assertEqual(src.count('m["goalId"] = _gid.group(1)'), 2, "both branches ship the goal id")
+        drive = inspect.getsource(km._drive)
+        self.assertIn('return [p for p in raw if isinstance(p, str) and p][:64] or None', inspect.getsource(km._wire_paths), "one reader of the frame's list, bounded")
+        self.assertIn("user=True, paths=_wire_paths(msg))", drive, "the composer send")
+        self.assertIn('user=not msg.get("nudge"), paths=_wire_paths(msg)) is None', drive, "the follow-up arm reads the same list (round two's medium)")
+        self.assertIsNone(km._wire_paths({"text": "x"})); self.assertIsNone(km._wire_paths({"paths": []})); self.assertIsNone(km._wire_paths({"paths": "a.png"}))
+        self.assertEqual(km._wire_paths({"paths": ["a.png", 3, "", "b.pdf"]}), ["a.png", "b.pdf"])
+        park = inspect.getsource(km._send_or_park)
+        self.assertIn("op = op + (None,) * (5 - len(op)) + (list(paths),)", park, "the sixth slot")
+        self.assertEqual(km._op_paths(("send", "hi", "human", "echo:1", True, ["plots/a.png", "docs/r.pdf"])), ["plots/a.png", "docs/r.pdf"])
+        self.assertEqual(km._op_paths(("send", "hi", "human", "echo:1", True)), [], "an older op: none")
+        self.assertEqual(km._op_paths(("command", "/compact", "human", None, True, ["x"])), [], "a command carries no attachments")
+        self.assertIn("paths=_op_paths(op) or None", inspect.getsource(km._deliver_send_batch), "the drain hands the list to the backend with the id")
 
     def test_drive_routes_park_cancels(self):
         import inspect
         src = inspect.getsource(km._drive)
         self.assertIn('t == "cancelQueued" and msg.get("park") is not None', src)
-        self.assertIn('_cancel_parked(sid, int(msg["park"]), str(msg.get("md") or ""))', src)
-        self.assertIn('_cancel_backend_queued(be, sid, int(msg["idx"]), str(msg.get("md") or ""))', src,
+        self.assertIn('_cancel_parked(sid, int(msg["park"]), str(msg.get("md") or ""), qid=_wire_qid(msg))', src)
+        self.assertIn('_cancel_backend_queued(be, sid, int(msg["idx"]), str(msg.get("md") or ""), qid=_wire_qid(msg))', src,
                       "the backend-queue cancel goes through the drift guard now")
+
+    def test_a_body_only_cancel_that_finds_nothing_is_logged(self):
+        # T244 (the user 2026-09-07): a ✕ on a "sending…" bubble left no evidence of which way the cancel went.
+        # The body-only arm now logs a miss (sid only — the body is the user's text) so the next report carries it.
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        arm = src.split('elif t == "cancelQueued" and msg.get("md"):')[1].split("\n    elif ")[0]
+        self.assertIn('sys.stderr.write("queued-cancel miss: %s (body-only)\\n" % sid)', arm)
 
     def test_drive_answers_every_cancel_with_an_authoritative_result_frame(self):
         # the user 2026-07-20: a ✕ whose target had already been handed to the CLI silently no-opped
-        # while the client showed the message as deleted — and the CLI answered it anyway. BOTH cancel
-        # arms now reply with a cancelResult frame (ok + the 'too late' text on a miss) so the client
-        # can toast and undo its optimistic composer restore.
+        # while the client showed the message as deleted — and the CLI answered it anyway. EVERY cancel
+        # arm replies with a cancelResult frame (ok + the 'too late' text on a miss) so the client
+        # can toast and undo its optimistic composer restore. Three arms since 2026-08-30: park, idx,
+        # and the optimistic md-only arm (a ✕ before any park/idx has round-tripped).
         import inspect
         src = inspect.getsource(km._drive)
-        self.assertEqual(src.count('"type": "cancelResult"'), 2,
-                         "one authoritative reply per cancel arm (park + idx)")
+        self.assertEqual(src.count('"type": "cancelResult"'), 3,
+                         "one authoritative reply per cancel arm (park + idx + md-only)")
         self.assertIn('"ok": not err', src)
         self.assertIn('"text": err or ""', src)
 
@@ -537,18 +594,14 @@ class SlashCommandParksWhileTurnOpen(unittest.TestCase):
     def setUp(self):
         self.be = _FakeBackend()
         self.be.forwards_sends = lambda: True          # an SDK-like backend: takes sends mid-turn
-        self.echoes = []
-        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
-                       km._working_now)
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._working_now)
         km._push_all = lambda: None
-        km._optimistic_echo = lambda sid, text, author="human": self.echoes.append((text, author))
         km._compacting_now = lambda sid: False
         km._working_now = lambda sid: True             # a turn is OPEN throughout, unless a test says otherwise
         km._pending_ops.clear()
 
     def tearDown(self):
-        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
-         km._working_now) = self._saved
+        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._working_now) = self._saved
         km._pending_ops.clear()
 
     def test_shape_matcher_commands_yes_paths_and_prose_no(self):
@@ -564,10 +617,8 @@ class SlashCommandParksWhileTurnOpen(unittest.TestCase):
         km._send_or_park(self.be, SID, "/autocompact auto", echo="human")
         self.assertEqual(self.be.calls[1:], [], "the command did NOT go into the running turn")
         self.assertEqual(km._pending_ops.get(SID), [("command", "/autocompact auto", "human")])
-        self.assertEqual(self.echoes, [("keep going, and also check the logs", "human")],
-                         "the parked command has not echoed yet — it renders as a queued bubble instead")
 
-    def test_parked_command_fires_alone_at_turn_end_with_its_echo_and_ends_the_pass(self):
+    def test_parked_command_fires_alone_at_turn_end_and_ends_the_pass(self):
         km._pending_ops[SID] = [("command", "/autocompact auto", "human"), ("send", "then this", None)]
         km.Sessions.backend_for = lambda sid: self.be
         km._apply_pending_ops()
@@ -576,7 +627,6 @@ class SlashCommandParksWhileTurnOpen(unittest.TestCase):
         km._apply_pending_ops()
         self.assertEqual(self.be.calls, [("send", "/autocompact auto")],
                          "the command fires ALONE — never folded into a send batch")
-        self.assertEqual(self.echoes, [("/autocompact auto", "human")], "echo stamps at fire time")
         self.assertEqual(km._pending_ops.get(SID), [("send", "then this", None)],
                          "the pass ends at the command — its turn must finish first")
 
@@ -602,8 +652,123 @@ class SlashCommandParksWhileTurnOpen(unittest.TestCase):
         km._send_or_park(self.be, SID, "/autocompact auto", echo="human")
         self.assertEqual(self.be.calls, [("send", "/autocompact auto")],
                          "idle → a fresh top-level prompt already, nothing to park")
-        self.assertEqual(self.echoes, [("/autocompact auto", "human")])
         self.assertNotIn(SID, km._pending_ops)
+
+
+class WhoSpeaks(unittest.TestCase):
+    """T315 (the commit-13 review's third item): the caller that knows who speaks classifies a send, never the
+    route. The composer, the phone and an untagged `romp send` hand the backend user=True (the word that retries a
+    stood-down attach); a watch notice through _pr_watch_deliver hands nothing; a parked user send remembers it on
+    its fifth slot and the replay hands it on; a tagged `romp send` is a machine's."""
+
+    class Speaking:
+        def __init__(self):
+            self.calls = []; self.ok = True
+        def send(self, sid, text, qid=None, user=False):
+            self.calls.append((text, user)); return self.ok
+        def forwards_sends(self):
+            return True                 # the SDK's shape: a run of parked sends is delivered one by one
+        def pending_queued(self, sid):
+            return []
+
+    def setUp(self):
+        self.be = self.Speaking()
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._working_now, km._limit_hold)
+        km.Sessions.backend_for = staticmethod(lambda sid: self.be)
+        km._push_all = lambda *a, **k: None
+        km._working_now = lambda sid: False
+        km._compacting_now = lambda sid: False
+        km._limit_hold = lambda sid: None
+        km._pending_ops.pop(SID, None)
+
+    def tearDown(self):
+        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._working_now, km._limit_hold) = self._saved
+        km._pending_ops.pop(SID, None)
+
+    def test_the_user_route_hands_user_true_and_a_watch_notice_hands_nothing(self):
+        km._send_or_park(self.be, SID, "the user's words", echo="human", user=True)
+        self.assertEqual(self.be.calls, [("the user's words", True)])
+        self.assertTrue(km._pr_watch_deliver(SID, "romp watch: the condition holds"))
+        self.assertEqual(self.be.calls[-1], ("romp watch: the condition holds", False), "a watch notice is romp's, never the user's")
+        km._send_or_park(self.be, SID, "a scripted send <!-- romp-tag: nightly -->")
+        self.assertEqual(self.be.calls[-1][1], False, "a machine caller passes nothing")
+
+    def test_a_parked_user_send_remembers_who_spoke_and_the_replay_hands_it_on(self):
+        km._compacting_now = lambda sid: True
+        km._send_or_park(self.be, SID, "queued words", echo="human", user=True)
+        km._send_or_park(self.be, SID, "a queued notice")
+        ops = km._pending_ops.get(SID)
+        self.assertEqual([km._op_user(o) for o in ops], [True, False])
+        self.assertEqual(ops[0][:3], ("send", "queued words", "human"), "the first three slots are as they were")
+        self.assertIsNone(km._op_qid(ops[0]), "a None fourth slot reads as no id")
+        km._compacting_now = lambda sid: False
+        km._deliver_send_batch(self.be, SID, list(ops))
+        self.assertEqual(self.be.calls, [("queued words", True), ("a queued notice", False)])
+
+    def test_a_parked_command_replays_through_the_drain_with_its_speaker_and_a_refusal_is_visible(self):
+        # the commit-14 review's sixth item (the command replay's classification, driven) and third (a refused
+        # replay used to stamp the echo and the compacting cue anyway)
+        km._compacting_now = lambda sid: True
+        km._send_or_park(self.be, SID, "/frobnicate", echo="human", user=True)
+        km._send_or_park(self.be, SID, "/compact-later <!-- romp-tag: cron -->")
+        self.assertEqual([km._op_user(o) for o in km._pending_ops[SID]], [True, False])
+        km._compacting_now = lambda sid: False
+        saved = (km._mark_compacting, km._send_to_app, km._after_turn_opening)
+        marks, warns = [], []          # no kernel-side echo exists since the tmux backend's removal: the backend echoes inside send
+        km._mark_compacting = lambda sid: marks.append(sid)
+        km._send_to_app = lambda app, m: warns.append((app, m))
+        km._after_turn_opening = lambda *a, **k: None
+        try:
+            km._apply_pending_ops()
+            self.assertEqual(self.be.calls[-1], ("/frobnicate", True), "the parked command replays as the user's")
+            self.assertEqual(warns, [])
+            # the second op (a machine's command) is refused by the backend: no echo, a visible refusal naming it, popped
+            self.assertEqual([o[1] for o in km._pending_ops[SID]], ["/compact-later <!-- romp-tag: cron -->"], "the machine command waits its turn")
+            self.be.ok = False
+            km._apply_pending_ops()
+            self.assertEqual(self.be.calls[-1], ("/compact-later <!-- romp-tag: cron -->", False))
+            self.assertEqual([m["type"] for _, m in warns], ["warn"], "the refusal reaches the chat")
+            self.assertIn("/compact-later", warns[0][1]["text"])
+            self.assertEqual(km._pending_ops.get(SID) or [], [], "popped, never replayed forever")
+            # and a refused parked compact click: no compacting cue
+            km._pending_ops[SID] = [("compact",)]
+            km._apply_pending_ops()
+            self.assertEqual(marks, [], "no compacting cue for a compaction that never started")
+            self.assertEqual(len(warns), 2)
+        finally:
+            km._mark_compacting, km._send_to_app, km._after_turn_opening = saved
+
+    def test_the_manual_retry_is_the_users_gesture_and_the_automatic_one_is_not(self):
+        # the fifth item: the Retry click sent RETRY_MSG with no user keyword, so on a stood-down session it queued
+        saved = (km._note_retry_sent, km._retry_paused_on, km._session_retry_suppressed, km._retry_suppress_unknown,
+                 km._api_error, km._path_of, km._retry_gate_state, dict(km._auto_retried))
+        km._note_retry_sent = lambda *a, **k: None
+        km._retry_paused_on = lambda: False
+        km._session_retry_suppressed = lambda sid: False
+        km._retry_suppress_unknown = lambda: False
+        km._api_error = lambda path: {"uuid": "err-1", "text": "API error"}   # an api-blocked session: the auto arm sends
+        km._path_of = lambda sid, now=None: "/synthetic/transcript.jsonl"
+        km._retry_gate_state = lambda sid: (0, 0)
+        km._auto_retried.pop(SID, None)
+        try:
+            self.assertTrue(km._fire_api_retry(SID, self.be, manual=True))
+            self.assertEqual(self.be.calls[-1], (km.RETRY_MSG, True))
+            km._auto_retried.pop(SID, None)
+            n = len(self.be.calls)
+            self.assertTrue(km._fire_api_retry(SID, self.be, manual=False))
+            self.assertEqual(self.be.calls[n:], [(km.RETRY_MSG, False)], "the automatic retry sends, and never as the user")
+        finally:
+            (km._note_retry_sent, km._retry_paused_on, km._session_retry_suppressed, km._retry_suppress_unknown,
+             km._api_error, km._path_of, km._retry_gate_state, prev) = saved
+            km._auto_retried.clear(); km._auto_retried.update(prev)
+
+    def test_the_send_route_treats_an_untagged_send_as_the_users_and_a_tagged_one_as_a_machines(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "kernel", "kernel.py")).read()
+        # the route's local arm is the one delivery door _deliver_text since the notice cards (T370): the who-speaks rule sits there
+        self.assertIn('user="<!-- romp-tag: " not in text', src, "the delivery door: untagged is the user's, `romp send --tag` is a machine's")
+        self.assertIn('ok, err, queued = _deliver_text(sid, body["text"])', src, "POST /send takes that door")
+        self.assertIn("user=not msg.get(\"nudge\")", src, "a follow-up is the user's; a nudge is romp's")
+        self.assertIn('_send_or_park(be, sid, text) is not None', src, "the watch deliverer passes nothing")
 
 
 if __name__ == "__main__":

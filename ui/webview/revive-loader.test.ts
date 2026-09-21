@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const PLACEHOLDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "pane-placeholder.ts"), "utf8");   // the empty pane's placeholder, by kind (T355)
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("the Revive click acknowledges at once: post reviveSession AND show the loader", () => {
@@ -22,7 +23,7 @@ test("the Revive click acknowledges at once: post reviveSession AND show the loa
 test("the loader is the romp treatment: wordmark + swirl + pulsing dots + caption", () => {
   // ONE shared builder (rompLoaderInner) carries the anatomy — the revive loader and the comment
   // popover's boot both wear it, per the loading-states rule
-  assert.match(RENDER, /function rompLoaderInner\(caption: string, opts\?: \{ wordmark\?: boolean \}\): HTMLElement/);   // parameterized, never forked (the popover drops the wordmark; everything else keeps it)
+  assert.match(RENDER, /function rompLoaderInner\(caption: string, opts\?: \{ wordmark\?: boolean; cls\?: string \}\): HTMLElement/);   // parameterized, never forked (the popover drops the wordmark; the chat placeholders pass a size class)
   assert.match(RENDER, /const word = el\("div", "rl-word"\)/, "the shared .rl-* anatomy");
   assert.match(RENDER, /swirl\.src = mediaSrc\("romp-swirl-o\.svg"\)/);
   assert.match(RENDER, /const dots = el\("div", "rl-dots"\)/);
@@ -35,7 +36,7 @@ test("event-based clear: the kernel's focus for the reviving sid retires the loa
 
 test("the tab mints immediately: stub session + order + setActive, before any waiting", () => {
   // the openProvisional idiom — "opening" is the designed vocabulary for a tab whose payload is coming
-  assert.match(RENDER, /if \(!sessions\.has\(id\)\) \{\s*\n\s*sessions\.set\(id, \{ id, name, color: null, events: \[\], status: \{ state: "opening", sinceEpoch: Date\.now\(\) \} \}\);\s*\n\s*order\.push\(id\);/);
+  assert.match(RENDER, /if \(!sessions\.has\(id\)\) \{\s*\n\s*sessions\.set\(id, \{ id, name, color: null, events: \[\], status: \{ state: "opening", sinceEpoch: Date\.now\(\) \} \}\);\s*\n\s*if \(!order\.includes\(id\)\) order\.push\(id\);/);   // once: a skeleton the strip already carries (2026-09-10)
   const fn = RENDER.split("function showReviveLoader(")[1].split("\nfunction ")[0];
   assert.ok(fn.includes("renderTabs();"), "the tab is on the strip at once");
   assert.ok(fn.includes("setActive(id);"), "and foregrounded");
@@ -59,7 +60,9 @@ test("failure is loud AND pane-local: named error in the session's placeholder +
   assert.match(RENDER, /failedRevives\.set\(id, msg\);/);
   assert.match(RENDER, /warnToast\(msg\);/, "the warn-toast family — dismissible (✕ / Esc), never window-blocking");
   // the session's own pane says it: the empty-transcript placeholder wears the named failure
-  assert.match(RENDER, /if \(failedRevives\.has\(id\)\) \{\s*\n\s*ph\.textContent = failedRevives\.get\(id\) \|\| "";\s*\n\s*ph\.classList\.add\("tx-revive-failed"\);/);
+  assert.match(RENDER, /failedRevive: failedRevives\.get\(id\) \|\| null,/, "the failed revive decides the placeholder's kind first (pane-placeholder.ts, T355)");
+  assert.match(PLACEHOLDER, /if \(st\.failedRevive\) return "revive-failed";/);
+  assert.match(PLACEHOLDER, /case "revive-failed":\s*\n\s*ph\.textContent = ctx\.text\.failedRevive \|\| "";\s*\n\s*ph\.classList\.add\("tx-revive-failed"\);/);
   assert.match(CSS, /\.tx-empty\.tx-revive-failed \{ color: var\(--vscode-errorForeground, #f48771\); \}/);
   // a fresh revive attempt clears the parked failure — the gesture beats the stale verdict
   assert.match(RENDER, /failedRevives\.delete\(id\);/);

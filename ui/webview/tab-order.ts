@@ -29,6 +29,33 @@
  * @param known       whether the client actually has a tab for this id (a session arrived / is a placeholder)
  * @param kernelSeen  whether ANY kernel tabOrder push has ever carried this id (kernel-owned → no keep)
  */
+/**
+ * A live session the kernel affirms (frame `live`) but that this tabOrder push's `order` OMITS is a
+ * TRANSIENT read failure, never a close (T258, the user 2026-09-08: a live session whose transcript file was
+ * briefly unreadable dropped off the kernel's order and the pane tore its tab down through the T236 omission
+ * path). The kernel-side fix keeps such a session in `order`, so this is defense in depth: return the kernel
+ * order with every live-but-omitted local id spliced back in at the slot it holds locally (after its nearest
+ * surviving predecessor), so the tab neither tears down nor jumps while the next frame re-lists it in place.
+ * `live` empty (an older kernel that sends no marker) → the kernel order verbatim, exactly as before.
+ */
+export function retainLiveOmitted(
+  kernelOrder: readonly string[],
+  local: readonly string[],
+  live: ReadonlySet<string>,
+): string[] {
+  if (!live.size) return kernelOrder.filter((id): id is string => typeof id === "string");
+  const inKernel = new Set(kernelOrder.filter((id): id is string => typeof id === "string"));
+  const out = kernelOrder.filter((id): id is string => typeof id === "string");
+  for (let i = 0; i < local.length; i++) {
+    const id = local[i];
+    if (typeof id !== "string" || inKernel.has(id) || !live.has(id) || out.includes(id)) continue;
+    let at = 0;                                   // insert after the nearest preceding local id that survived
+    for (let j = i - 1; j >= 0; j--) { const k = out.indexOf(local[j]); if (k >= 0) { at = k + 1; break; } }
+    out.splice(at, 0, id);
+  }
+  return out;
+}
+
 export function reconcileTabOrder(
   kernelOrder: readonly string[],
   local: readonly string[],
@@ -47,4 +74,62 @@ export function reconcileTabOrder(
     }
   }
   return out;
+}
+
+/** A session frame's id joins the order ONCE. The kernel sends a new session's tabOrder frame before its session
+ *  frame (tabs-first), so the id is usually in the order already when the session frame arrives; pushing it again put
+ *  a duplicate there that renderTabs hid but a drag's commit wrote into the browser's arrangement (review find,
+ *  2026-09-10). `existed` is the session map's word; the order's own is asked too. Returns whether it was added. */
+export function adoptArrival(order: string[], id: string, existed: boolean): boolean {
+  if (existed || order.includes(id)) return false;
+  order.push(id);
+  return true;
+}
+
+/** The provenance a merged tabOrder frame carries (render.ts OrderReport; federation.ts emitMergedOrder): `reemit` for a
+ *  synthetic re-emission served from the manager's stored slices, `freshHost` naming the one host whose own push drove a
+ *  fresh emission ("" is the local kernel, host-prefix.ts hostOf's key for an unprefixed id). A frame the kernel sent
+ *  directly (VS Code, a page without a federation manager) carries neither. */
+export type StripReport = { reemit?: boolean; freshHost?: string } | undefined;
+
+/**
+ * Is this frame the LOCAL kernel's own strip — the one event that means "the board has been heard on this socket"?
+ * A synthetic re-emission never is: it is re-served from whatever the manager has stored, which on a fresh page is
+ * NOTHING, so its order is [] (the vanishing tab, the user 2026-09-12: a view-order storage event from another pane
+ * landed between a new chat column's bundle registering its frame handler and its kernel's first strip; the column
+ * read that empty re-emission as the board, reported its one member gone, and was closed under it while the kernel
+ * listed the session all along). Nor is another host's fresh push: its ids are that kernel's word, not this one's.
+ * No provenance at all (a frame the kernel sent directly) is the kernel's own.
+ */
+export function localStrip(report: StripReport): boolean {
+  return stripHost(report) === "";
+}
+
+/**
+ * The host whose OWN strip a tabOrder frame carries fresh — the one host this frame is evidence about: `""` for the local
+ * kernel (its push under federation names `freshHost` "", and a frame with no provenance is the kernel's own), the named
+ * host for a remote kernel's fresh push, and null for a synthetic re-emission, which re-serves every stored slice and is
+ * nobody's fresh word. The chat's emptiness post keys on this (render.ts hostsSeen): a column may call a member ABSENT
+ * only once the member's host has reported on this socket, because the local kernel's strip lands first and says nothing
+ * about a remote host's sessions — a tab dragged into a new column under a host prefix was judged gone the instant that
+ * first strip landed, ~250 ms before its own host's strip arrived, and the column folded under it (the user 2026-09-14).
+ * `localStrip(report)` is `stripHost(report) === ""`.
+ */
+export function stripHost(report: StripReport): string | null {
+  if (!report) return "";
+  if (report.reemit) return null;
+  return typeof report.freshHost === "string" ? report.freshHost : "";
+}
+
+/** The close backstop (render.ts CLOSE_ACK_MS): how long a ✕'d tab the kernel keeps listing stays hidden before the page
+ *  says the close did not take and lets it back. Fifteen seconds, or the page's localStorage under this key — a positive
+ *  integer of milliseconds — for a lab that drives the backstop in seconds rather than waiting out fifteen
+ *  (tests/test_chat_split_served.py), the shape scroll-write.ts readScrollDiagCap gives its own knob. */
+export const CLOSE_ACK_KEY = "romp:closeAckMs";
+export const CLOSE_ACK_DEFAULT_MS = 15_000;
+export function readCloseAckMs(getItem: (key: string) => string | null): number {
+  let raw: string | null = null;
+  try { raw = getItem(CLOSE_ACK_KEY); } catch { raw = null; }
+  const n = raw == null ? NaN : Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : CLOSE_ACK_DEFAULT_MS;
 }

@@ -15,7 +15,7 @@ import re
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -24,7 +24,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_courierorigin", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge_courierorigin", os.path.join(BIN, "romp-judge"))
 
 RECIP = "11111111-2222-3333-4444-555555555555"
 SENDER = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -79,7 +79,7 @@ class CourierOriginHost(unittest.TestCase):
         jd.MESSAGES = self.tl / "messages.jsonl"
         jd.ERRORS = td / "judge-errors.jsonl"
         jd.courier_llm = lambda *a, **k: '{"verdict": "delegating", "goal": 0, "text": "wire up the export button"}'
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd._discover_cache["fp"] = None
         jd._discover_cache["result"] = None
         jd._postal_from_memo["key"] = None

@@ -8,7 +8,8 @@ and a producer pass framed before the rewind published its mints after the sweep
 shape, proven live). The fix, pinned here:
   - em.chain_membership: THE exported membership predicate, built from the display parse's exact
     inputs (resume links + lineage closure + pending cut). "rewind" is the only sweepable verdict;
-    "clear" is /clear jurisdiction, "broken" chains are kept, unknown uuids prove nothing.
+    "clear" is /clear jurisdiction, "broken" chains are kept, "eclipsed" chains are kept (a machine
+    api_error spur's abandonment, T209 — never a user gesture), unknown uuids prove nothing.
   - jd.parsed_session honors the backend's pending cut (leaf_override), so an armed bare rollback
     stops yielding abandoned units at the source.
   - jd.apply_plan_guarded: the write-moment stand-down at every planner mint site — fresh,
@@ -22,7 +23,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -31,7 +32,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_rwclean", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge_rwclean", os.path.join(BIN, "romp-judge"))
 em = jd.em
 
 SID = "11111111-2222-3333-4444-555555555555"
@@ -72,7 +73,7 @@ class Base(unittest.TestCase):
     def tearDown(self):
         jd.set_pending_cut_provider(None)
         jd.end_pass_frame(True)
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd._rebind_state(self._saved_state)
 
     def write(self, recs):
@@ -94,6 +95,33 @@ class Base(unittest.TestCase):
         """The consumed rewind: u3 branches from a1, abandoning u2/a2."""
         return [uline(T0 + 60, "second ask, rewritten", "u3", "a1"),
                 aline(T0 + 70, "Reply on the new branch, settled.", "a3", "u3")]
+
+    def eclipse_recs(self):
+        """T209's machine geometry: the CLI's buffered api_error spur roots at u2 (the turn's
+        opener) and the next prompt chains onto it, abandoning a2 with no user gesture."""
+        return [{"type": "system", "subtype": "api_error", "timestamp": iso(T0 + 25),
+                 "uuid": "e1", "parentUuid": "u2",
+                 "error": {"message": "429 rate_limit_error (synthetic)"}},
+                uline(T0 + 60, "third synthetic ask", "u3", "e1"),
+                aline(T0 + 70, "Third synthetic reply.", "a3", "u3")]
+
+
+def flush_orphan_recs():
+    """The api_error-flush orphaning shape (2026-09-01, synthetic): the CLI recovered from a
+    storm and persisted the reply (a2x), then flushed its buffered api_error records from the
+    PRE-reply leaf (u2), hijacking the chain — the reply branch is bypassed on disk with no user
+    gesture anywhere near the fork."""
+    return [uline(T0, "first synthetic ask", "u1"),
+            aline(T0 + 10, "First synthetic reply, fully settled here.", "a1", "u1"),
+            uline(T0 + 20, "the stormed ask", "u2", "a1"),
+            aline(T0 + 40, "Reply the flush bypassed on disk.", "a2x", "u2"),
+            {"type": "system", "subtype": "api_error", "timestamp": iso(T0 + 21), "uuid": "e1",
+             "parentUuid": "u2", "level": "error", "retryAttempt": 1, "maxRetries": 10,
+             "retryInMs": 1000, "source": "request_retry"},
+            {"type": "system", "subtype": "stop_hook_summary", "timestamp": iso(T0 + 41),
+             "uuid": "sh1", "parentUuid": "e1", "level": "suggestion"},
+            uline(T0 + 60, "the ask after the storm", "u3", "sh1"),
+            aline(T0 + 70, "Reply on the flushed spine.", "a3", "u3")]
 
 
 class ChainMembershipPredicate(Base):
@@ -154,8 +182,57 @@ class ChainMembershipPredicate(Base):
     def test_an_unknown_uuid_is_in_no_set(self):
         self.write(self.base_recs())
         mem = em.chain_membership(self.path)
-        for k in ("kept", "rewind", "clear", "broken"):
+        for k in ("kept", "rewind", "clear", "broken", "eclipsed"):
             self.assertNotIn("orphan:12345", mem[k], "a synthetic salvage id proves nothing")
+
+    def test_an_eclipsed_branch_is_kept_never_rewind(self):
+        # T209: the abandoned reply is the ONLY visible copy — it must classify eclipsed (kept),
+        # and never enter the one sweepable set.
+        self.write(self.base_recs() + self.eclipse_recs())
+        mem = em.chain_membership(self.path)
+        self.assertEqual(mem["eclipsed"], {"a2"}, "the machine-abandoned reply is eclipsed")
+        self.assertIn("a2", mem["kept"], "eclipsed content is kept")
+        self.assertEqual(mem["rewind"], set(), "an eclipse is never sweepable")
+
+    def test_a_tail_spur_is_already_eclipsed_mid_flush(self):
+        # adversarial-review finding on the first cut: with the spur as the transcript's TAIL
+        # (a parse racing the CLI's multi-line flush, or a session dead mid-storm) the probe
+        # exhausted into "rewind" — one-way goal archives in the race window, and the T209 eat
+        # made permanent on the mid-storm death. An api_error on the spine out of the fork is
+        # a machine artifact whatever follows.
+        self.write(self.base_recs() + [
+            {"type": "system", "subtype": "api_error", "timestamp": iso(T0 + 25),
+             "uuid": "e1", "parentUuid": "u2",
+             "error": {"message": "429 rate_limit_error (synthetic)"}}])
+        mem = em.chain_membership(self.path)
+        self.assertEqual(mem["eclipsed"], {"a2"}, "the tail spur already eclipses, never sweeps")
+        self.assertEqual(mem["rewind"], set())
+        self.assert_parity_shape(mem)
+
+    def test_a_cyclic_machine_spine_terminates_and_keeps(self):
+        # adversarial-review finding on the first cut: a multi-node parent CYCLE of system
+        # records (corruption this module's classify already anticipates with its own cycle
+        # branch) closed the spine-child map and the probe looped forever — one corrupt
+        # transcript hung every chat build and judge pass. The guard exits the cycle and the
+        # machine-spine terminal keeps the branch (keep-on-unprovable, the module's bias).
+        # the LEAF sits inside the cycle (cyC is the file's last uuid-bearing record), which
+        # is what closes the spine-child map — a leaf outside it leaves an open chain and only
+        # the exhaustion terminal fires
+        recs = [{"type": "system", "subtype": "api_error", "timestamp": iso(T0 + i),
+                 "uuid": u, "parentUuid": pu,
+                 "error": {"message": "429 rate_limit_error (synthetic)"}}
+                for i, (u, pu) in enumerate([("cyA", "cyC"), ("cyB", "cyA")])]
+        recs.append(uline(T0 + 10, "ask rejoining the cycle", "ux", "cyA"))
+        recs.append({"type": "system", "subtype": "api_error", "timestamp": iso(T0 + 11),
+                     "uuid": "cyC", "parentUuid": "cyB",
+                     "error": {"message": "429 rate_limit_error (synthetic)"}})
+        self.write(recs)
+        mem = em.chain_membership(self.path)          # pre-guard: this call never returned
+        self.assertIn("ux", mem["kept"], "a real ask off a corrupt machine spine is kept")
+
+    def assert_parity_shape(self, mem):
+        """kept == active ∪ broken ∪ eclipsed, from the same verdict sets we were handed."""
+        self.assertTrue(mem["eclipsed"] <= mem["kept"])
 
     def test_a_pending_cut_moves_the_tail_into_rewind(self):
         # the armed bare-rollback window: nothing on disk yet, but the cut is the ground truth
@@ -164,6 +241,33 @@ class ChainMembershipPredicate(Base):
         self.assertEqual(full["rewind"], set())
         cut = em.chain_membership(self.path, leaf_override="a1")
         self.assertEqual(cut["rewind"], {"u2", "a2"})
+
+    def test_a_flush_bypassed_reply_is_eclipsed_never_rewind(self):
+        # the api_error-flush orphaning (2026-09-01): the bypass at the fork is the CLI's own
+        # buffered-error chain — probed THROUGH the stop_hook_summary to the landed next
+        # prompt — so the persisted reply rejoins "kept" via "eclipsed" and no sweep
+        # predicate can ever read it as abandoned
+        self.write(flush_orphan_recs())
+        mem = em.chain_membership(self.path)
+        self.assertEqual(mem["eclipsed"], {"a2x"})
+        self.assertIn("a2x", mem["kept"], "eclipsed is a subset of kept")
+        self.assertEqual(mem["rewind"], set())
+
+    def test_the_sweep_predicates_spare_an_eclipsed_branch(self):
+        # the fix's downstream face: _rewound_away is the write-moment mint stand-down AND the
+        # drop-sweep discriminator; _per_file_rewound feeds the dead-branch reconciliation
+        # (reconcile_rewound_goals unions it with mem["rewind"]) — before the eclipse, both
+        # read the machine-orphaned branch as a rewind and goals anchored there were archived
+        # by a sweep no user gesture ever justified
+        self.write(flush_orphan_recs())
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "a2x"),
+                         "an eclipsed uuid never stands a mint down")
+        pf, fails = jd._per_file_rewound(SID, [str(self.path)])
+        self.assertEqual(fails, 0)
+        self.assertNotIn("a2x", pf, "the per-file discriminator agrees: nothing to sweep")
+        # contrast, same predicates: a genuine user-gesture fork still answers durably rewound
+        self.write(self.base_recs() + self.fork_recs())
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
 
 
 class PredicateParityGolden(Base):
@@ -185,6 +289,20 @@ class PredicateParityGolden(Base):
 
     def test_parity_on_a_plain_rewind_fork(self):
         self.write(self.base_recs() + self.fork_recs())
+        self.assert_parity(self.path)
+
+    def test_parity_on_an_eclipsed_machine_spur(self):
+        # the parity guard bites on the eclipsed geometry too: kept_uuids and
+        # chain_membership["kept"] must include the eclipsed branch IDENTICALLY (T209)
+        self.write(self.base_recs() + self.eclipse_recs())
+        self.assert_parity(self.path)
+        mem = em.chain_membership(self.path)
+        self.assertIn("a2", mem["kept"])
+
+    def test_parity_on_a_flush_orphaned_branch(self):
+        # the eclipse (probe + chain selection) lives inside chain_verdicts, so BOTH faces
+        # (kept_uuids and chain_membership) inherit it from the one implementation — pinned anyway
+        self.write(flush_orphan_recs())
         self.assert_parity(self.path)
 
     def test_parity_under_a_pending_cut(self):
@@ -409,6 +527,340 @@ class WriteMomentStandDown(Base):
         unplanned = [u for u in dead
                      if not jd._placed_key(s["placements"], jd._unit_key(u[0], u[1]), live)]
         self.assertEqual(unplanned, [], "every stood-down unit reads placed — the gate is open")
+
+
+class ChainMemo(Base):
+    """The write-moment chain memo: _rewound_away answers an unchanged session without a second
+    FileAdapter, and every input the adapter reads busts the memo — a
+    transcript append, a states resumeFork row (by the states file's own stat, and by the lineage
+    closure it grows), a from-file leaving that closure, the pending cut — and the key is taken
+    before the build reads, so a write that lands mid-build is never sealed under it. A build that
+    raises and a key that cannot be stat'd never memoize; reconcile_rewound_goals shares the on-disk
+    slot; entries evict oldest-used at the cap and _rebind_state clears them."""
+
+    def setUp(self):
+        super().setUp()
+        jd._CHAIN_MEMO.clear()
+        self.built = []
+        orig = em.FileAdapter.__init__
+
+        def counting(ad, *a, **k):
+            self.built.append(1)
+            return orig(ad, *a, **k)
+        self._orig_init = orig
+        em.FileAdapter.__init__ = counting
+
+    def tearDown(self):
+        em.FileAdapter.__init__ = self._orig_init
+        super().tearDown()
+
+    def test_unchanged_files_build_one_adapter_and_agree(self):
+        self.write(self.base_recs() + self.fork_recs())
+        first = jd._rewound_away(SID, str(self.path), "u2")
+        second = jd._rewound_away(SID, str(self.path), "u2")
+        self.assertEqual((first, second), ("durable", "durable"))
+        self.assertEqual(len(self.built), 1, "the second call served the memo")
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "u3"), "a kept uuid, same memo")
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "nobody"), "an unknown uuid, same memo")
+        self.assertEqual(len(self.built), 1)
+
+    def test_a_transcript_append_invalidates_and_answers_fresh(self):
+        self.write(self.base_recs())
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "u2"))
+        self.append(self.fork_recs())                            # the branch-take lands on disk
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertEqual(len(self.built), 2)
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertEqual(len(self.built), 2, "the new world is memoized in turn")
+
+    def test_a_states_resume_fork_row_invalidates_and_answers_fresh(self):
+        # the leaf is a fresh head; only the states row's lineage closure joins the from-file in
+        # which u2 sits on a rewound branch, so the row alone must change the answer
+        frm = "22222222-3333-4444-5555-666666666666"
+        (self.td / (frm + ".jsonl")).write_text(
+            "\n".join(json.dumps(r) for r in self.base_recs() + self.fork_recs()) + "\n")
+        self.write([uline(T0 + 100, "continues after the machine cut", "u5", None),
+                    aline(T0 + 110, "Stitched reply.", "a5", "u5")])
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "u2"), "no lineage: u2 is unknown")
+        jd.STATESDIR.mkdir(parents=True, exist_ok=True)
+        (jd.STATESDIR / (SID + ".jsonl")).write_text(
+            json.dumps({"resumeFork": {"from": frm, "to": SID}, "t": T0 + 90}) + "\n")
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable",
+                         "the closure joined the from-file and u2 rejoins the stitched spine")
+        self.assertEqual(len(self.built), 2)
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertEqual(len(self.built), 2, "the stitched world is memoized too")
+
+    def test_a_states_row_whose_from_file_is_already_the_anchor_invalidates_by_its_stat_alone(self):
+        # the common first-hop shape: the SDK's resume fork records from=<the stable sid>, and
+        # _judge_candidates already carries <sid>.jsonl as the anchor, so the row adds NOTHING to
+        # the lineage closure — only the states file's (mtime, size) in the key moves, and that
+        # has to be enough on its own
+        self.write(self.base_recs() + self.fork_recs())                 # SID.jsonl: the anchor
+        other = "33333333-4444-5555-6666-777777777777"
+        leaf = self.td / (other + ".jsonl")
+        leaf.write_text("\n".join(json.dumps(r) for r in [
+            uline(T0 + 100, "continues after the machine cut", "u5", None),
+            aline(T0 + 110, "Stitched reply.", "a5", "u5")]) + "\n")
+        jd.STATESDIR.mkdir(parents=True, exist_ok=True)
+        states = jd.STATESDIR / (SID + ".jsonl")
+        states.write_text(json.dumps({"t": T0 + 80, "note": "an unrelated synthetic states row"}) + "\n")
+        self.assertFalse(jd._rewound_away(SID, str(leaf), "u2"), "no link yet: u2 sits in the anchor's own graph")
+        self.assertEqual(len(self.built), 1)
+        with open(states, "a") as f:
+            f.write(json.dumps({"resumeFork": {"from": SID, "to": other}, "t": T0 + 90}) + "\n")
+        self.assertEqual(jd._rewound_away(SID, str(leaf), "u2"), "durable",
+                         "the stitch re-points the fresh head at the anchor's tip, behind which u2 is rewound")
+        self.assertEqual(len(self.built), 2, "the states stat alone busted the memo")
+
+    def test_a_from_file_that_vanishes_invalidates_through_the_closure(self):
+        # the lineage closure's own channel: the from-file is not a candidate and nothing writes
+        # the states file, so neither the candidates' stats nor the states stat move — only the
+        # closure (with the from-file stats it carries) can bust the key
+        frm = "22222222-3333-4444-5555-666666666666"
+        (self.td / (frm + ".jsonl")).write_text(
+            "\n".join(json.dumps(r) for r in self.base_recs() + self.fork_recs()) + "\n")
+        self.write([uline(T0 + 100, "continues after the machine cut", "u5", None),
+                    aline(T0 + 110, "Stitched reply.", "a5", "u5")])
+        jd.STATESDIR.mkdir(parents=True, exist_ok=True)
+        (jd.STATESDIR / (SID + ".jsonl")).write_text(
+            json.dumps({"resumeFork": {"from": frm, "to": SID}, "t": T0 + 90}) + "\n")
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertEqual(len(self.built), 1)
+        (self.td / (frm + ".jsonl")).unlink()
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "u2"), "no from-file: u2 is unknown again")
+        self.assertEqual(len(self.built), 2, "the closure lost a file and the key moved with it")
+        self.assertFalse(jd.ERRORS.exists() and "chain-check" in jd.ERRORS.read_text(),
+                         "a clean rebuild, not a failed one answering False")
+
+    def test_the_key_is_taken_before_the_build_reads(self):
+        # a rewind that lands DURING a build (after the key's stats, while the adapter reads) is
+        # never sealed under that key: the next call re-stats, sees the append and rebuilds,
+        # instead of serving a pre-append verdict as the post-append world's
+        self.write(self.base_recs())
+        orig = em.chain_membership
+
+        def append_mid_build(*a, **k):
+            out = orig(*a, **k)
+            em.chain_membership = orig                          # once: the racing writer
+            self.append(self.fork_recs())
+            return out
+        em.chain_membership = append_mid_build
+        try:
+            self.assertFalse(jd._rewound_away(SID, str(self.path), "u2"), "built from the pre-append records")
+        finally:
+            em.chain_membership = orig
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable",
+                         "the key predates the append, so the next call's stat misses and rebuilds")
+        self.assertEqual(len(self.built), 2)
+
+    def test_arming_and_clearing_the_cut_each_answer_fresh(self):
+        self.write(self.base_recs())
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "u2"))          # the on-disk build
+        jd.set_pending_cut_provider(lambda sid: "a1")
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "pending")
+        self.assertEqual(len(self.built), 2, "the armed world is a second build; the durability "
+                                             "check reads the on-disk slot already in the memo")
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "pending")
+        self.assertEqual(len(self.built), 2, "the armed world is memoized under its cut")
+        jd.set_pending_cut_provider(None)
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "u2"), "the dissolved rollback's ask is live again")
+        self.assertEqual(len(self.built), 2, "clearing serves the on-disk slot: it never depended on the cut")
+        jd.set_pending_cut_provider(lambda sid: "u1")                          # a different cut
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "a1"), "pending")
+        self.assertEqual(len(self.built), 3, "another cut is another world")
+
+    def test_the_on_disk_slot_is_built_only_when_a_cut_armed_check_needs_it(self):
+        self.write(self.base_recs())
+        jd.set_pending_cut_provider(lambda sid: "a1")
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "u1"), "kept under the cut too")
+        self.assertEqual(len(self.built), 1, "no durability question, no on-disk build")
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "pending")
+        self.assertEqual(len(self.built), 2, "the first rewind answer under the cut builds the on-disk graph")
+
+    def test_a_build_that_raises_is_loud_and_never_memoized(self):
+        self.write(self.base_recs() + self.fork_recs())
+        orig, calls = em.chain_membership, []
+
+        def boom(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("synthetic adapter failure")
+            return orig(*a, **k)
+        em.chain_membership = boom
+        try:
+            self.assertFalse(jd._rewound_away(SID, str(self.path), "u2"), "pre-fix behavior: mint anyway")
+            self.assertIn("chain-check", jd.ERRORS.read_text(), "the failure is loud")
+            self.assertNotIn(SID, jd._CHAIN_MEMO, "a raised build leaves no entry")
+            self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+            self.assertIn(SID, jd._CHAIN_MEMO)
+        finally:
+            em.chain_membership = orig
+
+    def test_a_key_that_cannot_be_stat_ed_bypasses_the_memo(self):
+        self.write(self.base_recs() + self.fork_recs())
+        orig = jd._fileset_key
+
+        def no_stat(files):
+            raise OSError("synthetic stat failure")
+        jd._fileset_key = no_stat
+        try:
+            before = jd.chain_memo_stats()
+            self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable", "built fresh")
+            self.assertNotIn(SID, jd._CHAIN_MEMO, "an unkeyable build is not memoized")
+            self.assertEqual(jd.chain_memo_stats()["bypass"], before["bypass"] + 1)
+        finally:
+            jd._fileset_key = orig
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertIn(SID, jd._CHAIN_MEMO, "with the stat back, the next call memoizes")
+
+    def test_reconcile_shares_the_on_disk_slot_both_ways(self):
+        self.write(self.base_recs() + self.fork_recs())
+        orig, calls = em.chain_membership, []
+
+        def counting(*a, **k):
+            calls.append(1)
+            return orig(*a, **k)
+        em.chain_membership = counting
+        try:
+            jd._RECON_MEMO.clear()
+            self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+            jd.reconcile_rewound_goals(SID, str(self.path), T0 + 200)
+            self.assertEqual(len(calls), 1, "the reconciliation read the memo's on-disk slot")
+            jd._CHAIN_MEMO.clear()
+            jd._RECON_MEMO.clear()
+            jd.reconcile_rewound_goals(SID, str(self.path), T0 + 300)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+            self.assertEqual(len(calls), 2, "the stand-down read what the reconciliation built")
+        finally:
+            em.chain_membership = orig
+
+    def test_the_served_sets_are_immutable_and_the_dict_is_a_copy(self):
+        self.write(self.base_recs() + self.fork_recs())
+        mem = jd._chain_membership(SID, str(self.path), "")
+        self.assertIsInstance(mem["rewind"], frozenset)
+        mem["rewind"] = set()                                    # a caller scribbling on its copy
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertEqual(len(self.built), 1)
+
+    def test_the_memo_evicts_the_oldest_used_entry_at_the_cap(self):
+        saved = jd._CHAIN_MEMO_MAX
+        jd._CHAIN_MEMO_MAX = 2
+        try:
+            sids = ["%08d-1111-2222-3333-444444444444" % i for i in range(3)]
+            paths = []
+            for sid in sids:
+                pth = self.td / (sid + ".jsonl")
+                pth.write_text("\n".join(json.dumps(r) for r in self.base_recs() + self.fork_recs()) + "\n")
+                paths.append(str(pth))
+            jd._rewound_away(sids[0], paths[0], "u2")
+            jd._rewound_away(sids[1], paths[1], "u2")
+            jd._rewound_away(sids[0], paths[0], "u2")            # a hit: sids[0] is the hot entry
+            jd._rewound_away(sids[2], paths[2], "u2")            # at the cap: the oldest-USED goes
+            self.assertEqual(set(jd._CHAIN_MEMO), {sids[0], sids[2]})
+        finally:
+            jd._CHAIN_MEMO_MAX = saved
+
+    def test_the_counters_report_hits_misses_and_populates(self):
+        self.write(self.base_recs() + self.fork_recs())
+        before = jd.chain_memo_stats()
+        jd._rewound_away(SID, str(self.path), "u2")
+        jd._rewound_away(SID, str(self.path), "u2")
+        after = jd.chain_memo_stats()
+        self.assertEqual([after[k] - before[k] for k in ("miss", "populate", "hit", "bypass")], [1, 1, 1, 0])
+
+    def test_rebind_state_clears_the_memo(self):
+        self.write(self.base_recs() + self.fork_recs())
+        jd._rewound_away(SID, str(self.path), "u2")
+        self.assertIn(SID, jd._CHAIN_MEMO)
+        jd._rebind_state(self.td / "state")
+        self.assertEqual(jd._CHAIN_MEMO, {})
+
+    def test_a_from_file_rewritten_in_place_invalidates_by_its_own_stat(self):
+        # the lineage from-files are frozen after their fork in practice, but the key stats them anyway:
+        # a from-file that grows in place moves no candidate stat, no states stat and no closure
+        # membership, so only its own (mtime, size) in the key can bust the memo
+        frm = "22222222-3333-4444-5555-666666666666"
+        fpath = self.td / (frm + ".jsonl")
+        fpath.write_text("\n".join(json.dumps(r) for r in self.base_recs()) + "\n")
+        self.write([uline(T0 + 100, "continues after the machine cut", "u5", None),
+                    aline(T0 + 110, "Stitched reply.", "a5", "u5")])
+        jd.STATESDIR.mkdir(parents=True, exist_ok=True)
+        (jd.STATESDIR / (SID + ".jsonl")).write_text(
+            json.dumps({"resumeFork": {"from": frm, "to": SID}, "t": T0 + 90}) + "\n")
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "u2"), "the stitch hangs u5 under a2: u2 is kept")
+        self.assertEqual(len(self.built), 1)
+        with open(fpath, "a") as f:
+            for r in self.fork_recs():                            # the from-file's tip is now a3: u2 rewound
+                f.write(json.dumps(r) + "\n")
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertEqual(len(self.built), 2, "the from-file's stat alone busted the memo")
+
+    def test_two_threads_that_miss_together_both_build_outside_the_lock(self):
+        # the build runs outside _CHAIN_LOCK, which serializes the dict operations only: two callers
+        # that miss together both build (the loser's populate is one wasted adapter walk, never the
+        # judge pools stalled behind one builder holding the lock)
+        import threading
+        self.write(self.base_recs() + self.fork_recs())
+        before = jd.chain_memo_stats()
+        orig, broken, out = em.chain_membership, [], []
+        barrier = threading.Barrier(2, timeout=10)              # the event: both builders inside the build at
+        #                                                         once; the timeout only bounds the failure
+
+        def meeting(*a, **k):
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                broken.append(1)
+            return orig(*a, **k)
+        em.chain_membership = meeting
+        try:
+            ts = [threading.Thread(target=lambda: out.append(jd._rewound_away(SID, str(self.path), "u2")))
+                  for _ in range(2)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+        finally:
+            em.chain_membership = orig
+        self.assertEqual(broken, [], "both builders were inside the build at once: neither held the lock there")
+        self.assertEqual(out, ["durable", "durable"])
+        self.assertEqual(len(self.built), 2)
+        self.assertEqual(jd.chain_memo_stats()["populate"] - before["populate"], 2)
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertEqual(len(self.built), 2, "the third call is a hit")
+
+    def test_a_same_identity_rewrite_is_served_stale_until_the_memo_is_cleared(self):
+        # WHY every test site that clears _PARSE_CACHE clears _CHAIN_MEMO beside it: both key on the
+        # transcript's (mtime, size), so a fixture rewritten in place to the same byte count inside one
+        # clock tick keeps its key, and a memo an earlier test populated serves the OLD verdict for the
+        # new bytes without reading the file. Deterministic here: the mtime is pinned back with
+        # os.utime, never left to the clock. em's records cache keys on the same identity and is
+        # cleared beside the two, so the rebuild reads the new bytes and the chain memo's own
+        # contribution is what the test isolates.
+        recs = self.base_recs() + self.fork_recs()
+        self.write(recs)
+        want = self.path.stat().st_size
+        st = os.stat(self.path)
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable")
+        self.assertEqual(len(self.built), 1)
+        # the same byte count with u2 LIVE: the fork rows go, a padded row under a2 makes up the length
+        pad = want - len(("\n".join(json.dumps(r) for r in self.base_recs() + [uline(T0 + 60, "", "u9", "a2")]) + "\n").encode())
+        self.assertGreaterEqual(pad, 0, "the filler row fits inside the original byte count")
+        live = self.base_recs() + [uline(T0 + 60, "x" * pad, "u9", "a2")]
+        self.write(live)
+        os.utime(self.path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        now = os.stat(self.path)
+        self.assertEqual((now.st_mtime_ns, now.st_size), (st.st_mtime_ns, st.st_size), "precondition: same identity")
+        self.assertEqual(jd._rewound_away(SID, str(self.path), "u2"), "durable",
+                         "the hazard: the memo serves the pre-rewrite verdict for bytes under which u2 is live")
+        self.assertEqual(len(self.built), 1, "...without a build, so nothing read the new bytes")
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()          # the swept sites' form
+        em._JSONL_CACHE.clear()                                  # the records cache under the adapter, same key
+        self.assertFalse(jd._rewound_away(SID, str(self.path), "u2"), "cleared: rebuilt from the new bytes, u2 kept")
+        self.assertEqual(len(self.built), 2)
 
 
 class PlanSessionIntegration(Base):

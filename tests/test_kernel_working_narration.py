@@ -5,7 +5,7 @@ regression becomes visible at a glance. Synthetic fixtures only."""
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -13,7 +13,7 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-km = SourceFileLoader("romp_kernel_narr", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_narr", os.path.join(BIN, "romp-kernel"))
 
 T0 = 1781100000
 
@@ -51,7 +51,7 @@ class OpenTurnProgress(unittest.TestCase):
 class PayloadPins(unittest.TestCase):
     def test_working_cards_carry_the_narration(self):
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('sess_progress = _open_turn_progress(ps["turns"]) if (ps and who_working) else None', src)
         self.assertIn('"working": (sess_progress if column == "working" else None)', src)
 
@@ -61,7 +61,7 @@ class PayloadPins(unittest.TestCase):
         # read: a cold cache or a machine reporting nothing) — and every working card carries it, so
         # the feed's spin floor can speak even when the narration payload cannot ride.
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('sess_state = "open" if who_working else ("quiet" if ps else "unknown")', src)
         self.assertIn('"sessState": (sess_state if column == "working" else None)', src)
 

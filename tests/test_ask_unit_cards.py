@@ -18,7 +18,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -29,7 +29,8 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_askunit", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge_askunit", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_askunit", os.path.join(BIN, "romp-kernel"))
 
 NOW = 1_787_500_000
 T0 = NOW - 3600
@@ -95,7 +96,7 @@ class CourierWorld(unittest.TestCase):
         jd.discover = lambda now, window=None, forks=True: fleet
         self._llm = jd.courier_llm
         jd.courier_llm = lambda text, menu, declared=None: '{"verdict": "delegating", "goal": 1, "text": "drag-range selection"}'
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
 
     def tearDown(self):
         jd._delegate_user_rooted = self._rooted
@@ -167,7 +168,7 @@ class CourierWorld(unittest.TestCase):
              "to_id": WK1, "kind": "delegate", "body": BODY1},
             {"t": T0 + 120, "ev": "sent", "id": MID2, "from": "web", "from_id": MGR,
              "to_id": WK1, "kind": "delegate", "body": BODY2}]) + "\n")
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd.run_courier(now=NOW)
         self.assertEqual(len(self._trackers_under(MGR + ":g1")), 1)
         self.assertEqual(len(self._trackers_under(MGR + ":g2")), 1,
@@ -183,6 +184,31 @@ class CourierWorld(unittest.TestCase):
         planted = [nd for nd in w1["nodes"].values() if isinstance(nd.get("origin"), dict)]
         self.assertEqual(len(planted), 1, "no ask node resolved → the recipient card IS the ask's card")
         self.assertTrue(planted[0].get("frame"), "the fallback mint keeps the frame enrichment")
+
+    def test_the_fanned_ask_keeps_one_visible_card_through_completion(self):
+        # THE BOARD CONSEQUENCE of the link path: the kernel's _pure_delegation_top suppressed any
+        # top whose every leaf is a handoff dict — exactly the shape T101's own link path builds
+        # for a fully-fanned ask — so one dictated ask fanned to two workers had NO card anywhere
+        # (no recipient tops by design, the ask top suppressed). The suppression exempts the
+        # ask-unit now: ONE card, visible in Working with its two tracker children, and still
+        # visible when it lands in Completed.
+        self._mgr()
+        jd.run_courier(now=NOW)
+        m = jd.load_goals(MGR)
+        ask = MGR + ":g1"
+        self.assertEqual(len(self._trackers_under(ask)), 2)
+        self.assertFalse(km._pure_delegation_top(m["nodes"], ask),
+                         "the dictated ask keeps its card — fan-out lives INSIDE it")
+        jd.rollup_status(m, False)
+        self.assertEqual(m["status"].get(ask, "working"), "working", "…in Working while open")
+        for nid, nd in m["nodes"].items():
+            if isinstance(nd.get("handoff"), dict):
+                jd.record_verdict(m, nd, "romp", "done", NOW + 10, why="the peer reported back")
+        jd.record_verdict(m, m["nodes"][ask], "closer", "done", NOW + 20, why="both halves landed")
+        jd.rollup_status(m, True)
+        self.assertEqual(m["status"].get(ask), "completed", "…and lands in Completed")
+        self.assertFalse(km._pure_delegation_top(m["nodes"], ask),
+                         "a finished ask is still the ask — never re-read as pure coordination")
 
     def test_linking_never_moves_the_ask_cards_column(self):
         self._mgr()
@@ -309,6 +335,189 @@ class UmbrellaDissolution(unittest.TestCase):
         jd.rollup_status(st, False)
         self.assertEqual(st["nodes"][MGR + ":a1"].get("promptUuid"), "hu",
                          "the un-stranded ask carries its own evidence — the trace can reach it now")
+
+    def test_an_undo_restored_container_survives_the_dissolution(self):
+        # THE SWEEP YIELDS TO THE USER'S UNDO: UndoClear pulls an archived pre-T101 container back
+        # into the live store (archives keep their containers), and the very next rollup dissolved
+        # it — the card the user just restored vanished into its promoted children. The un-clear
+        # IS newer information than the standing purge: it is recorded on the node by the real
+        # writers (_mark_nodes_cleared's dual-write and the unclear override replay both file the
+        # user reopen row with undo=True), and a container whose latest clear-family event is that
+        # restore is SPARED. Everything without that fresh restore — legacy leftovers, peer-adopted
+        # copies — dissolves exactly as before.
+        st = self._legacy()
+        u1 = st["nodes"][MGR + ":u1"]
+        self.assertTrue(jd.record_verdict(st, u1, "user", "clear", NOW - 100,
+                                          why="cleared from the feed"))
+        self.assertTrue(jd.record_verdict(st, u1, "user", "reopen", NOW - 50,
+                                          why="undo clear", undo=True))
+        u1["cleared"] = False
+        jd.rollup_status(st, False)
+        self.assertIn(MGR + ":u1", st["nodes"], "the card the user restored survives the sweep")
+        self.assertEqual(st["nodes"][MGR + ":a1"].get("parentId"), MGR + ":u1",
+                         "…with its children where the user left them")
+        self.assertEqual(st["placements"].get("segX"), MGR + ":u1", "…and its placement intact")
+        self.assertNotIn(MGR + ":u2", st["nodes"],
+                         "the spare is exact: a nested container with no restore still dissolves")
+        self.assertEqual(st["nodes"][MGR + ":a2"].get("parentId"), MGR + ":u1",
+                         "…its child re-parents to the first surviving non-dissolved ancestor")
+        snap = json.dumps(st["nodes"], sort_keys=True, default=dict)
+        jd.rollup_status(st, False)
+        self.assertEqual(json.dumps(st["nodes"], sort_keys=True, default=dict), snap, "idempotent")
+
+    def test_a_re_cleared_spared_container_waits_for_the_compactor(self):
+        # the round trip's other half: after the restore the user clears the card AGAIN. Between
+        # that clear and the archive compaction the container sits flag-cleared in the live store —
+        # the sweep must stand down there too, or it pops the container and promotes its children
+        # OUT of the user's seal as fresh live tops. The compactor owns a cleared card's exit.
+        st = self._legacy()
+        u1 = st["nodes"][MGR + ":u1"]
+        jd.record_verdict(st, u1, "user", "clear", NOW - 100, why="cleared from the feed")
+        jd.record_verdict(st, u1, "user", "reopen", NOW - 50, why="undo clear", undo=True)
+        jd.record_verdict(st, u1, "user", "clear", NOW - 10, why="cleared from the feed")
+        u1["cleared"] = True
+        jd.rollup_status(st, False)
+        self.assertIn(MGR + ":u1", st["nodes"],
+                      "flag-cleared: the compactor archives it whole — the sweep never dissolves it")
+        self.assertEqual(st["nodes"][MGR + ":a1"].get("parentId"), MGR + ":u1",
+                         "…so its children never escape the user's clear")
+
+
+MID3 = "1787499000.000003_1.TESTHOST"
+MID4 = "1787499000.000004_1.TESTHOST"
+
+
+class ImageOnlyAsk(unittest.TestCase):
+    """_human_prompt_record returns an EMPTY-TEXT record for an image-only dictated prompt (a human
+    record with no text blocks), and a fallback that gated the userAsk stamp on text.strip()
+    minted with askRef but NO userAsk — a top with no dictation evidence the ask-unit exemption
+    accepts, so a fully-fanned image ask rendered NOWHERE and the dedupe linked later dispatches
+    into that invisible top. The stamp falls back to the '(user message)' placeholder
+    (_seg_label's own titleless-prompt presentation), so the exemption's userAsk check holds for
+    image asks."""
+
+    def test_an_image_only_human_record_is_still_a_record(self):
+        rec = jd._human_prompt_record({"uuid": "hu", "type": "user", "author": "human",
+                                       "message": {"role": "user", "content": [
+                                           {"type": "image",
+                                            "source": {"media_type": "image/png",
+                                                       "data": "Zm9v"}}]}}, MGR)
+        self.assertIsInstance(rec, dict, "an image-only prompt is dictation — the chain roots")
+        self.assertEqual(rec.get("text"), "")
+
+    def _mint(self, st, seg, mid):
+        rec = {"text": "", "sid": MGR, "carded": False,
+               "askRef": {"peer": MGR, "goalId": MGR + ":g1"}}
+        return jd.apply_courier(st, seg, T0, "review the screenshot",
+                                {"peer": MGR, "goalId": MGR + ":t1", "msgId": mid},
+                                prompt_uuid="anchor", frame="review the screenshot",
+                                user_ask=rec)
+
+    def test_the_fallback_mint_stamps_a_userask_for_an_image_only_ask(self):
+        st = {"rompUuid": WK1, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+        nid = self._mint(st, "seg1", MID1)
+        ua = st["nodes"][nid].get("userAsk")
+        self.assertIsInstance(ua, dict, "askRef never rides without the dictation stamp")
+        self.assertTrue(str(ua.get("text") or "").strip(),
+                        "empty dictation stamps the placeholder, never nothing")
+        # …and the exemption accepts it: fanned onward, the ask keeps its card
+        st["nodes"]["h1"] = _node("h1", "↪ delegated to tests: the screenshot", nid,
+                                  handoff={"peer": WK2, "msgId": MID2})
+        self.assertFalse(km._pure_delegation_top(st["nodes"], nid),
+                         "a fully-fanned image ask renders SOMEWHERE")
+
+    def test_a_second_dispatch_of_the_image_ask_links_into_the_visible_top(self):
+        st = {"rompUuid": WK1, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+        nid = self._mint(st, "seg1", MID1)
+        nid2 = self._mint(st, "seg2", MID3)
+        self.assertEqual(nid2, nid, "one image ask, one card — the placeholder is its identity")
+        self.assertIn(MID3, [l.get("msgId") for l in (st["nodes"][nid].get("links") or [])])
+
+
+class MergeCarriesDelegationIdentity(unittest.TestCase):
+    """_merge_nodes dropped origin, links, and askRef when the grouper folded a courier-minted top
+    into a planner twin — a lost askRef reopened duplicate minting for the next dispatch of the
+    same ask, and a lost origin/links stranded the sender's non-quiet tracker FOREVER
+    (run_propagate's back-link and its dismissal arm both join on the msgId)."""
+
+    def _world(self):
+        surv = _node(WK1 + ":g1", "Drag-range selection over run rows", None)
+        dupe = _node(WK1 + ":g2", "Drag-range selection (delegated)", None,
+                     origin={"peer": MGR, "goalId": MGR + ":t1", "msgId": MID1},
+                     userAsk={"text": "drag-range selection over run rows", "sid": MGR},
+                     askRef={"peer": MGR, "goalId": MGR + ":a1"},
+                     links=[{"peer": MGR, "goalId": MGR + ":t2", "msgId": MID2}])
+        return {"rompUuid": WK1, "seq": 2, "nodes": {surv["id"]: surv, dupe["id"]: dupe},
+                "placements": {}, "status": {}}
+
+    def test_the_merge_carries_origin_links_and_askref(self):
+        st = self._world()
+        self.assertEqual(jd._merge_nodes(st, WK1 + ":g2", WK1 + ":g1", T0 + 10, "twin"), 1)
+        surv = st["nodes"][WK1 + ":g1"]
+        self.assertEqual((surv.get("origin") or {}).get("msgId"), MID1)
+        self.assertEqual(surv.get("askRef"), {"peer": MGR, "goalId": MGR + ":a1"})
+        self.assertIn(MID2, [l.get("msgId") for l in (surv.get("links") or [])])
+        self.assertEqual((surv.get("userAsk") or {}).get("sid"), MGR)
+
+    def test_a_survivor_with_its_own_origin_keeps_the_dupes_msgid_as_a_link(self):
+        st = self._world()
+        st["nodes"][WK1 + ":g1"]["origin"] = {"peer": MGR, "goalId": MGR + ":t0", "msgId": MID4}
+        jd._merge_nodes(st, WK1 + ":g2", WK1 + ":g1", T0 + 10, "twin")
+        surv = st["nodes"][WK1 + ":g1"]
+        self.assertEqual((surv.get("origin") or {}).get("msgId"), MID4,
+                         "the survivor's own birth stands — origin stays truthful")
+        self.assertIn(MID1, [l.get("msgId") for l in (surv.get("links") or [])],
+                      "…and the dupe's delegation stays joinable by msgId")
+
+    def test_merge_then_second_dispatch_links_not_mints(self):
+        st = self._world()
+        jd._merge_nodes(st, WK1 + ":g2", WK1 + ":g1", T0 + 10, "twin")
+        rec = {"text": "drag-range selection over run rows", "sid": MGR, "carded": False,
+               "askRef": {"peer": MGR, "goalId": MGR + ":a1"}}
+        before = set(st["nodes"])
+        nid = jd.apply_courier(st, "segN", T0 + 20, "drag-range, second pass",
+                               {"peer": MGR, "goalId": MGR + ":t3", "msgId": MID3},
+                               prompt_uuid="anc", frame="second pass", user_ask=rec)
+        self.assertEqual(nid, WK1 + ":g1", "the ask identity survived the merge — link")
+        self.assertEqual(set(st["nodes"]), before, "no duplicate mint")
+        self.assertIn(MID3, [l.get("msgId") for l in (st["nodes"][nid].get("links") or [])])
+
+    def test_merge_then_ending_completes_the_senders_trackers(self):
+        # end-to-end: the recipient's merged card completes → run_propagate ends BOTH the
+        # origin's tracker and the linked dispatch's tracker off the one surviving card
+        td = tempfile.TemporaryDirectory()
+        _msgs, _disc = jd.MESSAGES, jd.discover
+        jd.MESSAGES = Path(td.name) / "messages.jsonl"
+        jd.MESSAGES.write_text("")
+        jd.discover = lambda now, window=None, forks=True: [
+            (WK1, "/dev/null", None, "api"), (MGR, "/dev/null", None, "web")]
+        try:
+            st = self._world()
+            jd._merge_nodes(st, WK1 + ":g2", WK1 + ":g1", T0 + 10, "twin")
+            jd.record_verdict(st, st["nodes"][WK1 + ":g1"], "closer", "done", NOW - 100,
+                              why="both halves landed")
+            jd.save_goals(WK1, st)
+            jd.save_goals(MGR, {"rompUuid": MGR, "seq": 2, "nodes": {
+                MGR + ":t1": _node(MGR + ":t1", "↪ delegated to api: drag-range", None,
+                                   handoff={"peer": WK1, "msgId": MID1}),
+                MGR + ":t2": _node(MGR + ":t2", "↪ delegated to api: drag-range, again", None,
+                                   handoff={"peer": WK1, "msgId": MID2})},
+                "placements": {}, "status": {}})
+            jd.run_propagate(now=NOW)
+            m = jd.load_goals(MGR)
+            self.assertTrue(m["nodes"][MGR + ":t1"].get("nodeComplete"),
+                            "the origin back-link ends t1")
+            self.assertTrue(m["nodes"][MGR + ":t2"].get("nodeComplete"),
+                            "the carried link ends t2")
+        finally:
+            jd.MESSAGES, jd.discover = _msgs, _disc
+            for sid in (MGR, WK1):
+                for dd in (jd.GOALDIR, jd.GOALARCHDIR):
+                    try:
+                        (dd / (sid + ".json")).unlink()
+                    except OSError:
+                        pass
+            td.cleanup()
 
 
 if __name__ == "__main__":

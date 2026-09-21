@@ -6,7 +6,7 @@ kernel may be stopped on purpose, so the click is the consent. SYNTHETIC hosts; 
 import inspect
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -17,7 +17,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_start", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_start", os.path.join(BIN, "romp-kernel"))
 
 HOST = "TESTHOST"
 
@@ -102,6 +102,156 @@ class StartRemote(unittest.TestCase):
         km._start_remote(HOST)
         self.assertEqual(seen["status"], "starting", "the popover shows the boot phase, not stale no-kernel")
         self.assertTrue(seen["booting"])
+
+    def test_an_escaped_exception_releases_the_hold_and_parks_the_failure(self):
+        # Every planned failure returns through _fail; an exception a step lets escape is the exit
+        # nothing planned for. The hold must not outlive the call: while it stands the supervisor
+        # skips its status write and the no-kernel hint, so the row never reads up or no-kernel again,
+        # no rendered row shows a Start button, and only a kernel restart's load reset frees it.
+        def boom(h):
+            raise RuntimeError("stand-in step failed")
+        km._update_remote = boom
+        with self.assertRaises(RuntimeError):
+            km._start_remote(HOST)              # the exception still propagates to the route
+        r = km._remotes[HOST]
+        self.assertFalse(r["booting"], "the hold must not outlive the call")
+        self.assertEqual(r["status"], "no-kernel", "the row reads the settled state, so the popover shows Start again")
+        self.assertEqual(r["detail"], "Start on %s failed unexpectedly (RuntimeError): stand-in step failed" % HOST,
+                         "the popover row carries the failure, like every failed Start")
+        self.assertEqual(self.started, [], "the boot leg never ran; the update leg raised first")
+
+    def test_the_recovery_counter_moves_on_the_first_answered_pass_after_an_escaped_exception(self):
+        # _note_recovery skips its bump under the hold (T291b), so a hold left standing also froze the
+        # row's recovery counter; once the hold is released the first answered pass on the not-up row
+        # bumps once, the one recovery of that Start
+        def boom(h):
+            raise RuntimeError("stand-in step failed")
+        km._update_remote = boom
+        with self.assertRaises(RuntimeError):
+            km._start_remote(HOST)
+        r = km._remotes[HOST]
+        r["misses"] = 0
+        self.assertTrue(km._note_recovery(r, "up"), "no hold left standing to freeze the recovery counter")
+        self.assertEqual(r["upSeq"], 1)
+
+    def test_an_escaped_exception_in_the_boot_leg_releases_the_hold_too(self):
+        km._update_remote = lambda h: (True, "already up to date (abc1234)")
+        def boom(h):
+            raise RuntimeError()                # no message: the detail ends at the type
+        km._start_remote_kernel = boom          # kernel_up stays False, so the boot leg runs
+        with self.assertRaises(RuntimeError):
+            km._start_remote(HOST)
+        r = km._remotes[HOST]
+        self.assertFalse(r["booting"])
+        self.assertEqual(r["status"], "no-kernel")
+        self.assertEqual(r["detail"], "Start on %s failed unexpectedly (RuntimeError)" % HOST)
+
+    def test_an_exit_that_is_not_an_exception_releases_the_hold_too(self):
+        # except BaseException, not Exception: a SystemExit or KeyboardInterrupt in the handler thread
+        # releases the hold the same way, and the parked detail names the type
+        def boom(h):
+            raise SystemExit("stand-in exit")
+        km._update_remote = boom
+        with self.assertRaises(SystemExit):
+            km._start_remote(HOST)
+        r = km._remotes[HOST]
+        self.assertFalse(r["booting"], "the hold must not outlive a non-Exception exit either")
+        self.assertEqual(r["status"], "no-kernel")
+        self.assertEqual(r["detail"], "Start on %s failed unexpectedly (SystemExit): stand-in exit" % HOST)
+
+    def test_a_long_failure_message_is_stripped_and_cut_in_the_parked_detail(self):
+        def boom(h):
+            raise RuntimeError("  " + "x" * 400 + "  ")
+        km._update_remote = boom
+        with self.assertRaises(RuntimeError):
+            km._start_remote(HOST)
+        self.assertEqual(km._remotes[HOST]["detail"],
+                         "Start on %s failed unexpectedly (RuntimeError): %s" % (HOST, "x" * 160))
+
+
+class StartRemoteKernelRespectsRompDown(unittest.TestCase):
+    """The bare boot (`nohup romp-serve` over ssh: attach's bootstrap and the popover's Start after an
+    up-to-date update) is the last door that could put a kernel on a host stopped by `romp down`: it
+    would serve under a marker that says down, owned by no manager. The remote script checks the
+    marker right before the boot and answers DOWN; the caller fails loudly and names `romp up` on
+    that host."""
+
+    def setUp(self):
+        self._run = km.subprocess.run
+
+    def tearDown(self):
+        km.subprocess.run = self._run
+
+    def _ssh(self, out):
+        seen = []
+        def fake(argv, **kw):
+            seen.append(argv)
+            class R: stdout, stderr, returncode = out, "", 0
+            return R()
+        km.subprocess.run = fake
+        return seen
+
+    def test_a_marker_on_the_host_means_no_boot_and_a_named_way_out(self):
+        seen = self._ssh("DOWN")
+        started, detail = km._start_remote_kernel(HOST)
+        self.assertFalse(started)
+        self.assertEqual(detail, "romp is stopped on TESTHOST by romp down; not starting it (romp up there starts it)")
+        cmd = seen[0][-1]
+        marker = 'if [ -f "$LOGDIR/down-by-romp" ]; then echo DOWN; exit 0; fi'
+        self.assertIn(marker, cmd)
+        self.assertLess(cmd.index('LOGDIR="${ROMP_STATE_DIR:-'), cmd.index(marker), "the state root is resolved first")
+        self.assertLess(cmd.index(marker), cmd.index('nohup "$S"'), "the check sits right before the boot")
+
+    def test_a_host_with_no_marker_boots_as_before(self):
+        self._ssh("STARTED:/home/u/romp/bin/romp-serve")
+        started, detail = km._start_remote_kernel(HOST)
+        self.assertTrue(started)
+        self.assertEqual(detail, "/home/u/romp/bin/romp-serve")
+
+    def test_the_popover_start_surfaces_the_stop_instead_of_booting_bare(self):
+        # `_start_remote` on an up-to-date host falls through to the bare boot; with the marker there
+        # the click ends in a loud, specific failure rather than an unsupervised kernel
+        saved = (km._update_remote, km._remote_kernel_up, km._start_remote_kernel, km._remotes)
+        km._remotes = {HOST: {"host": HOST, "kernel_port": 29855, "local_port": 8801, "token": "t",
+                              "proc": None, "status": "no-kernel", "detail": "", "sids": []}}
+        km._update_remote = lambda h: (True, "already up to date (abc1234)")
+        km._remote_kernel_up = lambda h, p: False
+        km._start_remote_kernel = lambda h: (False, "romp is stopped on %s by romp down; not starting it (romp up there starts it)" % h)
+        try:
+            ok, detail = km._start_remote(HOST)
+            self.assertFalse(ok)
+            self.assertIn("stopped on TESTHOST by romp down", detail)
+            self.assertEqual(km._remotes[HOST]["status"], "no-kernel")
+            self.assertEqual(km._remotes[HOST]["detail"], detail, "the row carries the reason for the popover")
+        finally:
+            km._update_remote, km._remote_kernel_up, km._start_remote_kernel, km._remotes = saved
+
+    def test_an_attach_that_fetched_a_token_still_carries_the_reason(self):
+        # a host attached before it was stopped still has its serve-token file, so the attach's
+        # fetch returns one; the bootstrap then asks for the boot and is refused. The reason must
+        # ride the row whenever the boot was declined, not only on the no-token path, so the
+        # popover shows the stop and the way out instead of the generic no-kernel hint.
+        class _Proc:
+            pid = 4242
+            def poll(self):
+                return None
+        saved = (km._fetch_remote_token, km._remote_kernel_up, km._start_remote_kernel, km._spawn_tunnel,
+                 km._known_note, km._remotes_save, km._remotes)
+        km._remotes = {}
+        km._fetch_remote_token = lambda h: "tok-cached"
+        km._remote_kernel_up = lambda h, p: False
+        km._start_remote_kernel = lambda h: (False, "romp is stopped on %s by romp down; not starting it (romp up there starts it)" % h)
+        km._spawn_tunnel = lambda r: r.update(proc=_Proc(), status="starting", detail="")
+        km._known_note = lambda *a, **k: None
+        km._remotes_save = lambda: None
+        try:
+            pub = km.attach_remote(HOST)
+            self.assertEqual(pub["detail"], "romp is stopped on TESTHOST by romp down; not starting it (romp up there starts it)")
+            self.assertEqual(km._remotes[HOST]["detail"], pub["detail"], "the row carries the reason for the popover")
+            self.assertEqual(km._remotes[HOST]["token"], "tok-cached", "the token is kept and the tunnel dials as before")
+        finally:
+            (km._fetch_remote_token, km._remote_kernel_up, km._start_remote_kernel, km._spawn_tunnel,
+             km._known_note, km._remotes_save, km._remotes) = saved
 
 
 class SupervisorRespectsBoot(unittest.TestCase):

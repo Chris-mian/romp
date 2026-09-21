@@ -6,7 +6,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { usageColor, fmtAgo, fmtReset, fmtUsd, fmtTok, usageWindows, apiCell, STRIP_PANES } from "./strip";
+import { usageColor, fmtAgo, fmtReset, fmtUsd, fmtTok, usageWindows, apiCell, STRIP_PANES, fillHostSelect, droppedRowsNote, asFetchError, hostPickerVerdict, tunnelsFailureLine } from "./strip";
 
 test("fmtTok: 3 significant figures at every magnitude (the user 2026-08-13)", () => {
   assert.equal(fmtTok(1_318_619_909), "1.32B");
@@ -19,7 +19,8 @@ test("fmtTok: 3 significant figures at every magnitude (the user 2026-08-13)", (
   assert.equal(fmtTok(999), "999");               // below 1k the raw count already carries 3 figures
 });
 
-test("usageColor mirrors the rail's green/amber/red ramp", () => {
+test("usageColor is theme-aware (ctx-color.ts): with no body classes = CLASSIC = main's 70/90 verbatim", () => {
+  // PR #763 item 1: classic keeps its exact palette; the yatharth pair is exercised in ctx-color.test.ts
   assert.equal(usageColor(0), "#54B204");
   assert.equal(usageColor(69), "#54B204");
   assert.equal(usageColor(70), "#e0b020");
@@ -27,11 +28,13 @@ test("usageColor mirrors the rail's green/amber/red ramp", () => {
   assert.equal(usageColor(90), "#c0392b");
 });
 
-test("fmtReset renders d/h/m compactly and 'soon' at rollover", () => {
+test("fmtReset is 'soon' at rollover, else the ONE duration format (duration.ts, 2026-09-08)", () => {
+  // the notice audit counted six span formats across the panes; every one rides durLabel now — the two-digit
+  // minor unit keeps a ticking value from jittering, and days show where the old strip format did
   assert.equal(fmtReset(10_000, 10_100), "soon");
-  assert.equal(fmtReset(10_000 + 5 * 60, 10_000), "5m");
-  assert.equal(fmtReset(10_000 + 2 * 3600 + 5 * 60, 10_000), "2h 5m");
-  assert.equal(fmtReset(10_000 + 86400 + 3600, 10_000), "1d 1h 0m");
+  assert.equal(fmtReset(10_000 + 5 * 60, 10_000), "5m 0s");
+  assert.equal(fmtReset(10_000 + 2 * 3600 + 5 * 60, 10_000), "2h 05m");
+  assert.equal(fmtReset(10_000 + 86400 + 3600, 10_000), "1d 01h");
 });
 
 test("usageWindows keeps only reported windows, clamps, and computes pace", () => {
@@ -44,7 +47,7 @@ test("usageWindows keeps only reported windows, clamps, and computes pace", () =
   assert.deepEqual(ws.map((w) => w.short), ["5h", "F5"], "each window carries its compressed tag");
   assert.equal(ws[0].pct, 91);
   assert.equal(ws[0].elapsedPct, 80);
-  assert.match(ws[0].title, /5 hours — used 91% · 80% through the window · resets in 1h 0m/);
+  assert.match(ws[0].title, /5 hours — used 91% · 80% through the window · resets in 1h 00m/);   // the one duration format (2026-09-08)
   assert.equal(ws[1].pct, 100);
   assert.equal(ws[1].elapsedPct, 0);
 });
@@ -76,6 +79,24 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
   assert.ok(src.includes('"/restart"') || src.includes("/restart`"), "the refresh button restarts the kernel");
   for (const ep of ["/ssh-hosts", "/tunnels", "/tunnels/detach", "/tunnels/update", "/tunnels/start"])
     assert.ok(src.includes(ep), `the network popover must drive ${ep} (the rail twin)`);
+  // the popover's /tunnels read checks the status before the body (the fourth reader of that route to gain the rule: a
+  // JSON-bodied 5xx read as "No remotes attached" with the autoUpdate box mirrored off and a clientDiag filed as ok)
+  assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: FetchFault = new Error("/tunnels answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
+    "a non-ok /tunnels answer throws, with its status on the error, instead of reading as an empty host list");
+  // the popover's refresh says which failure it had, as the host picker does: a status for a non-ok answer, unreachable for a rejected fetch, a console line for both
+  assert.ok(src.includes('console.error("romp: /tunnels could not be read", err)'), "the popover's refresh says its failure in the console");
+  assert.ok(src.includes("if (err && err.httpStatus) return `The kernel answered HTTP ${err.httpStatus} to /tunnels; retrying…`;"), "a non-ok answer is named by its status, not called an unreachable kernel (tunnelsFailureLine, executed below)");
+  // the host picker's /ssh-hosts read has the same rule and keeps the last list it read on a failure
+  assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: FetchFault = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
+    "a non-ok /ssh-hosts answer throws, with its status on the error, instead of painting no hosts");
+  // the rule itself is executed below (hostPickerVerdict, tunnelsFailureLine, asFetchError); these pin that the two reads call it
+  assert.equal(src.split(".catch((e: unknown) => { const f = asFetchError(e); f.network = true; throw f; })").length - 1, 2,
+    "both /ssh-hosts and /tunnels wrap a rejected fetch's reason and mark it before the status check");
+  assert.ok(src.includes("const v = hostPickerVerdict(err, lastHosts);"), "the picker's catch takes its verdict from the executed rule");
+  assert.ok(src.includes("lastHosts = null;"), "nothing kept means the list is forgotten too, so a stale list never repaints after the unreachable signal");
+  assert.ok(src.includes("e.textContent = tunnelsFailureLine(err,"), "the popover's refresh takes its line from the executed rule");
+  assert.ok(src.includes("fillHostSelect(sel, [], v.label);   // loud, never silently empty"), "nothing kept paints the verdict's label on an empty list");
+  assert.ok(src.includes('console.error("romp: ssh hosts could not be read"'), "every failure shape says so in the console");
   assert.ok(src.includes('{ type: "openPane", pane: p.key }'), "quick-opens post openPane to the host");
 });
 
@@ -174,7 +195,7 @@ test("both bundles init the strip; the web pages never opt in", () => {
 // calendar-ish windows (the user 2026-08-13): 1 day + 1 month on the cell, 1 week in the hover.
 test("apiCell arms on the spend windows' presence and carries 1 day + 1 month", () => {
   const cell = apiCell({ spend: {
-    day: { usd: 12.34, tok: 3_456_000, turns: 5 },
+    day: { usd: 12.34, tok: 3_456_000, turns: 5, tokIn: 300, tokOut: 20_000, tokCacheR: 3_000_000, tokCacheW: 435_700 },
     week: { usd: 40.2, tok: 9_000_000, turns: 21 },
     month: { usd: 87.9, tok: 20_500_000, turns: 60 },
   } });
@@ -186,6 +207,10 @@ test("apiCell arms on the spend windows' presence and carries 1 day + 1 month", 
   assert.match(cell!.title, /^API-key spend\n/);
   assert.match(cell!.title, /1 week — \$40 · 9\.00M tok · 21 turns/, "the hover keeps the full breakdown");
   assert.match(cell!.title, /1 day — \$12 · 3\.46M tok · 5 turns/);   // 3 sig figs (the user 2026-08-13)
+  // the by-kind split under a window that carries one (the user 2026-09-06: the count is mostly cache
+  // reads, and the hover says so); a window without it (an older kernel) has no second line
+  assert.match(cell!.title, /1 day — \$12 · 3\.46M tok · 5 turns\n    3\.00M cache read · 436k cache write · 300 in · 20\.0k out\n1 week/);
+  assert.match(cell!.title, /1 week — \$40 · 9\.00M tok · 21 turns\n1 month/);
 });
 
 test("an older kernel's fiveHour window still arms the cell (version skew)", () => {
@@ -228,4 +253,118 @@ test("an unknown window is not drawn on the bar at all — its last-known lives 
   assert.doesNotMatch(src, /ru-qmark/, "the '?' slot is gone");
   assert.doesNotMatch(css, /ru-qmark/);
   assert.doesNotMatch(css, /\.ru-w\.ru-unk \.ru-fill \{ opacity: 0\.3; \}/, "the faded fill stays gone");
+});
+
+// ── the attach box's host list is built from ELEMENTS, never markup (2026-09-08) ─────────────────────
+// An ssh alias is whatever ~/.ssh/config says. loadHosts used to render `<option value="${h}">${h}</option>`
+// through innerHTML, so an alias that closed the attribute carried a handler into the popover. Executed
+// against a minimal element stand-in whose innerHTML setter THROWS, so the only way to pass is to set
+// value/textContent on option elements.
+class FakeEl {
+  tagName: string;
+  value = "";
+  children: FakeEl[] = [];
+  attrs: Record<string, string> = {};
+  private _text = "";
+  constructor(tag: string) { this.tagName = tag.toUpperCase(); }
+  get textContent(): string { return this._text; }
+  set textContent(v: string) { this._text = v; this.children = []; }   // the DOM's: assigning text drops children
+  set innerHTML(_v: string) { throw new Error("innerHTML is not how host options are built"); }
+  appendChild(c: FakeEl): FakeEl { this.children.push(c); return c; }
+  setAttribute(k: string, v: string): void { this.attrs[k] = v; }
+}
+function withDocument(fn: () => void): void {
+  const g: any = globalThis;
+  const had = "document" in g, prev = g.document;
+  g.document = { createElement: (t: string) => new FakeEl(t) };
+  try { fn(); } finally { if (had) g.document = prev; else delete g.document; }
+}
+
+test("fillHostSelect: a crafted alias is an option's VALUE and TEXT, never markup; non-strings are dropped", () => {
+  withDocument(() => {
+    const sel: any = new FakeEl("select");
+    const hostile = ['x"onmouseover="alert(1)', "<img src=x onerror=alert(1)>"];
+    fillHostSelect(sel, [...hostile, 42, "", null], "(none)");
+    assert.equal(sel.children.length, 2, "the two strings; the number, the empty string and the null are dropped");
+    assert.deepEqual(sel.children.map((o: any) => o.tagName), ["OPTION", "OPTION"]);
+    assert.deepEqual(sel.children.map((o: any) => o.value), hostile, "the value IS the string, character for character");
+    assert.deepEqual(sel.children.map((o: any) => o.textContent), hostile, "…and so is the label");
+    for (const o of sel.children) assert.deepEqual(o.attrs, {}, "nothing went through the attribute/markup path");
+  });
+});
+
+test("fillHostSelect: an empty or malformed list still says why, and the list is capped", () => {
+  withDocument(() => {
+    const sel: any = new FakeEl("select");
+    fillHostSelect(sel, [], "(kernel unreachable)");
+    assert.equal(sel.children.length, 1);
+    assert.equal(sel.children[0].value, "");
+    assert.equal(sel.children[0].textContent, "(kernel unreachable)", "loud, never silently empty");
+    fillHostSelect(sel, "not-a-list", "(no ~/.ssh/config hosts)");
+    assert.equal(sel.children.length, 1, "a previous fill is replaced, not appended to");
+    assert.equal(sel.children[0].textContent, "(no ~/.ssh/config hosts)");
+    fillHostSelect(sel, Array.from({ length: 600 }, (_, i) => "h" + i), "x");
+    assert.equal(sel.children.length, 513, "512 real options, then ONE marker for the rest");
+    assert.deepEqual(sel.children.slice(0, 512).map((o: any) => o.value), Array.from({ length: 512 }, (_, i) => "h" + i));
+    const marker = sel.children[512];
+    assert.equal(marker.textContent, "… 88 more not shown", "a cut list says how much it left out, never silently");
+    assert.equal(marker.disabled, true, "…and the marker is not a pickable host");
+    assert.ok(sel.children.slice(0, 512).every((o: any) => !o.disabled));
+    fillHostSelect(sel, Array.from({ length: 512 }, (_, i) => "h" + i), "x");
+    assert.equal(sel.children.length, 512, "exactly at the cap: no marker");
+  });
+});
+
+test("droppedRowsNote: the sub-panel names the peer rows the kernel left out, in one sentence both panels share", () => {
+  assert.equal(droppedRowsNote("TESTHOST", 2), "2 rows from TESTHOST had no usable host and were left out");
+  assert.equal(droppedRowsNote("TESTHOST", 1), "1 row from TESTHOST had no usable host and was left out");
+  for (const none of [0, -1, "2", undefined, null, NaN]) assert.equal(droppedRowsNote("TESTHOST", none), "", `${String(none)} is not a count`);
+  const ROOT = path.resolve(process.cwd(), "..");
+  const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
+  const sub = src.slice(src.indexOf("function renderSub(via: string)"), src.indexOf("function subRow(via: string"));
+  assert.match(sub, /const note = droppedRowsNote\(via, d\.dropped\);/, "renderSub reads the kernel's count");
+  assert.match(sub, /if \(!rows\.length && !note\)/, "a list emptied by the drop is not 'no hosts attached'");
+  assert.match(sub, /e\.textContent = note;/, "…and the note is rendered as text beneath the rows");
+});
+
+test("loadHosts routes both outcomes through fillHostSelect — no innerHTML host rendering remains in strip.ts", () => {
+  const ROOT = path.resolve(process.cwd(), "..");
+  const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
+  assert.match(src, /fillHostSelect\(sel, lastHosts, "\(no ~\/\.ssh\/config hosts\)"\)/);   // the list read, kept across a failed refresh
+  assert.match(src, /fillHostSelect\(sel, \[\], v\.label\)/);   // the failure label comes from the executed verdict (kernel unreachable among them)
+  assert.doesNotMatch(src, /<option value="\$\{h\}">/, "the template that rendered an alias as markup");
+});
+
+// The pickers' failure rule, EXECUTED over every shape (the fifth tidy: the rule was pinned by source text alone, which a
+// semantically equivalent rewrite could hollow out with every pin green). hostPickerVerdict is the one rule both surfaces
+// use; asFetchError is the rejection wrap; tunnelsFailureLine the popover's three wordings.
+test("asFetchError keeps an Error, an object's message or its JSON, names null, and strings the rest", () => {
+  const e = new Error("boom");
+  assert.equal(asFetchError(e), e);
+  assert.equal(asFetchError({ message: "socket closed" }).message, "socket closed");
+  assert.equal(asFetchError({ code: 7 }).message, '{"code":7}');
+  assert.equal(asFetchError(null).message, "fetch rejected");
+  assert.equal(asFetchError(undefined).message, "fetch rejected");
+  assert.equal(asFetchError("down").message, "down");
+});
+
+test("hostPickerVerdict: a status or a parse fault keeps the list once read; a rejected fetch never does; a first failure is named by kind", () => {
+  const status500 = Object.assign(new Error("HTTP 500"), { httpStatus: 500 });
+  const network = Object.assign(new Error("down"), { network: true });
+  const parse = new SyntaxError("Unexpected token <");
+  const list = ["web", "api"];
+  assert.deepEqual(hostPickerVerdict(status500, list), { keep: true, label: "(no ~/.ssh/config hosts)" });
+  assert.deepEqual(hostPickerVerdict(parse, list), { keep: true, label: "(no ~/.ssh/config hosts)" });
+  assert.deepEqual(hostPickerVerdict(network, list), { keep: false, label: "(kernel unreachable)" }, "a dead kernel never hides behind a stale list");
+  assert.deepEqual(hostPickerVerdict(network, null), { keep: false, label: "(kernel unreachable)" });
+  assert.deepEqual(hostPickerVerdict(status500, null), { keep: false, label: "(the kernel answered HTTP 500)" }, "a first load's 500 is not an unreachable kernel");
+  assert.deepEqual(hostPickerVerdict(parse, null), { keep: false, label: "(the kernel's answer could not be read)" });
+  assert.deepEqual(hostPickerVerdict(status500, []), { keep: true, label: "(no ~/.ssh/config hosts)" }, "an empty list read is a list: a later 500 keeps it and shows the no-hosts label");
+});
+
+test("tunnelsFailureLine names a status, an unreachable kernel, or an answer that would not parse", () => {
+  assert.equal(tunnelsFailureLine(Object.assign(new Error("x"), { httpStatus: 502 }), "same origin"), "The kernel answered HTTP 502 to /tunnels; retrying…");
+  assert.match(tunnelsFailureLine(Object.assign(new Error("x"), { network: true }), "http://127.0.0.1:1"), /^Couldn't reach the kernel \(http:\/\/127\.0\.0\.1:1\)/);
+  assert.equal(tunnelsFailureLine(new SyntaxError("bad json"), "same origin"), "The kernel's answer to /tunnels could not be read; retrying…");
+  assert.equal(tunnelsFailureLine(null, "same origin"), "The kernel's answer to /tunnels could not be read; retrying…");
 });

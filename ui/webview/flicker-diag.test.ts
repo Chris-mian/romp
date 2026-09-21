@@ -27,9 +27,21 @@ test("feed: an item entering/leaving the model posts an itemset breadcrumb (ids 
 });
 
 test("federation: every remote socket open/close/detach posts a hostconn breadcrumb", () => {
-  assert.match(FED, /ws\.onopen = \(\) => this\.diag\("hostconn", \{ host: conn\.host, ev: "open" \}\);/);
+  // the open breadcrumb also names any queued settings it flushed, and the detach any it discarded
+  // (federation-send-queue.test.ts owns that queue's behavior) — the events themselves stay pinned here
+  assert.match(FED, /this\.diag\("hostconn", flushed\.length \? \{ host: conn\.host, ev: "open", flushed \}\s*\n\s*: \{ host: conn\.host, ev: "open" \}\);/);
+  // the open handler is a block body shared with the T215 relay-up dispatch (pending-attach.test.ts
+  // owns that event's wiring); the breadcrumb stays inside it, AFTER the flush and BEFORE the dispatch
+  // — a re-shipped upload rides that event and must not overtake a queued setting on this socket
+  const onopen = FED.slice(FED.indexOf("ws.onopen = () => {"), FED.indexOf("ws.onmessage"));
+  assert.ok(onopen.length > 0, "ws.onopen block located");
+  const flushAt = onopen.indexOf("this.flushPending(conn)");
+  const crumbAt = onopen.indexOf('this.diag("hostconn"');
+  const relayAt = onopen.indexOf('"romp:hostRelayUp"');
+  assert.ok(flushAt >= 0 && crumbAt > flushAt && relayAt > crumbAt, "onopen order: flush, breadcrumb, relay-up dispatch");
   assert.match(FED, /this\.diag\("hostconn", \{ host: conn\.host, ev: "close", code: ev\.code, clean: ev\.wasClean, detached: conn\.closed \}\);/);
-  assert.match(FED, /this\.diag\("hostconn", \{ host, ev: "detach" \}\);/);
+  // …by TYPE (pendingTypes): a held bookkeeping entry's queue key carries the sid it is per (2026-09-10)
+  assert.match(FED, /this\.diag\("hostconn", c\.pending\.size \? \{ host, ev: "detach", pendingDropped: pendingTypes\(c\) \}\s*\n\s*: \{ host, ev: "detach" \}\);/);
   // breadcrumbs ride the LOCAL kernel socket into the same client-diag journal the feed writes
   assert.match(FED, /s\(\{ type: "clientDiag", surface: "federation", what, data \}\);/);
 });

@@ -24,7 +24,7 @@ import os
 import tempfile
 import time
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -33,11 +33,16 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-km = SourceFileLoader("romp_kernel_limitqueue", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_limitqueue", os.path.join(BIN, "romp-kernel"))
+
+# The PROMPT HOLD (_hold_drain: a turn-opening delivery holds the sid for a moment, tested in
+# tests/test_kernel_parked_ops_liveness.py) is a separate axis from the ACCOUNT gate this module covers:
+# off here, so back-to-back _apply_pending_ops calls stand for successive cycles.
+km._PROMPT_HOLD_S = 0.0
 jd = km.jd
 
 SID = "11111111-2222-3333-4444-555555555555"
@@ -72,13 +77,12 @@ class _Base(unittest.TestCase):
         jd.STATE = Path(self.td.name)
         self.be = _FakeBackend()
         self._saved = {n: getattr(km, n) for n in
-                       ("_compacting_now", "_working_now", "_push_all", "_optimistic_echo",
+                       ("_compacting_now", "_working_now", "_push_all",
                         "_mark_views_dirty", "_mark_compacting", "_mark_model_pending", "_path_of")}
         self._saved_backend = km.Sessions.backend_for
         km._compacting_now = lambda sid: False
         km._working_now = lambda sid: False
         km._push_all = lambda: None
-        km._optimistic_echo = lambda sid, text, author="human": None
         km._mark_views_dirty = lambda *a, **k: None
         km._mark_compacting = lambda sid: None
         km._mark_model_pending = lambda sid, v: None

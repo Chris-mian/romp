@@ -54,12 +54,13 @@ test("chat tab bar: select + ✕ (Close / End session) are DELEGATED to the stab
   // and the tab is dropped + a new one reselected OPTIMISTICALLY (don't wait for the kernel's closed event →
   // no stale content from the just-closed session — the user 2026-06-24)
   assert.match(RENDER, /closeTab", id \}\);\s*\n\s*closeTabLocally\(id\);/);   // …and it STAYS gone: tab-close-optimistic.test.ts
-  assert.match(RENDER, /function dismissSession\(id: string\): void/);
-  assert.match(RENDER, /m\.type === "closed"\) dismissSession\(m\.id\)/);   // the kernel's own death event reuses it
+  assert.match(RENDER, /function dismissSession\(id: string, why: DismissWhy, doomed\?: ReadonlySet<string>\): void/);
+  // the kernel's own death event reuses it — naming its reason (T236: federation's stand-in for a dropped host is stamped, not an end)
+  assert.match(RENDER, /m\.type === "closed"\) dismissSession\(m\.id, m\.hostDrop === true \? "hostDrop" : "end"\)/);
 });
 
 test("Fleet: header / row open + caret fold are DELEGATED to the stable #fleet-list, not per-node", () => {
-  assert.match(FLEET, /import \{ delegate \} from "\.\/actions";/);
+  assert.match(FLEET, /import \{ delegate, flash \} from "\.\/actions";/);   // flash: the fold-mode buttons' press pulse rides the shared helper (2026-08-28)
   assert.match(FLEET, /head\.dataset\.act = "open"; head\.dataset\.sid = s\.sid;/);
   assert.match(FLEET, /row\.dataset\.act = "open"; row\.dataset\.sid = s\.sid;/);
   assert.match(FLEET, /tri\.dataset\.act = "fold"; tri\.dataset\.sid = s\.sid; tri\.dataset\.nid = n\.id; tri\.dataset\.folded =/);
@@ -77,8 +78,11 @@ test("Timeline: the EXTERNAL redraws (poll + live-tick) are held under a pressed
   assert.match(TIMELINE, /this\.svg\.addEventListener\('pointerdown', \(\) => \{ this\._pointerHeld = true; \}\);/);
   // the poll update() buffers (reusing the freeze-on-hover _dirtyWhileTip path) instead of relaying out
   assert.match(TIMELINE, /\|\| this\._pointerHeld\) \{ this\._dirtyWhileTip = true; return; \}/);
-  // the live-edge tick skips its frame's draw but keeps the rAF loop alive so it resumes on release
-  assert.match(TIMELINE, /if \(this\._pointerHeld\) \{ this\._liveRAF = requestAnimationFrame\(\(\) => this\._tickLive\(\)\); return; \}/);
+  // the live-edge tick skips its look's draw but keeps the loop alive so it resumes on release — since
+  // 2026-09-04 the loop sleeps between looks (see timeline-live-tick.test.ts), so a held pointer re-arms it
+  // on a short sleep rather than the next animation frame
+  assert.match(TIMELINE, /if \(this\._pointerHeld\) \{ this\._liveResume = true; return; \}/);
+  assert.match(TIMELINE, /if \(this\._liveResume\) \{ this\._liveResume = false; this\._startLiveTick\(\); \}/, "the release event restarts the loop");
   // release repaints the buffered catch-up AFTER the click fires (setTimeout 0) — event-based, no time heuristic
   assert.match(TIMELINE, /window\.addEventListener\('pointerup', _release\);/);
   assert.match(TIMELINE, /window\.addEventListener\('pointercancel', _release\);/);

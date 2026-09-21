@@ -12,8 +12,10 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
+
+from tests.conftest import restore_env
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -28,19 +30,25 @@ Path(_SESS).write_text(json.dumps([
     {"id": STABLE, "name": "web", "dir": "/tmp/notes-api", "state": "waiting",
      "working": "", "lastSid": FORK}]))
 os.environ["ROMP_SESSIONS_FILE"] = _SESS
-ps = SourceFileLoader("romp_postal_selfid", os.path.join(BIN, "romp-postal-service")).load_module()
+ps = load_source("romp_postal_selfid", os.path.join(BIN, "romp-postal-service"))
 
 
 class ForkedSelfIdentity(unittest.TestCase):
     def setUp(self):
+        self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = _SESS
         self._env = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        # a Codex session's shell carries CODEX_THREAD_ID, the second identity source since 2026-09-15: a
+        # run launched from inside one would otherwise resolve an identity in the "no environment" case
+        self._codex = os.environ.pop("CODEX_THREAD_ID", None)
 
     def tearDown(self):
         if self._env is None:
             os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         else:
             os.environ["CLAUDE_CODE_SESSION_ID"] = self._env
+        restore_env("CODEX_THREAD_ID", self._codex)
+        restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
 
     def test_exact_id_match_resolves_directly(self):
         os.environ["CLAUDE_CODE_SESSION_ID"] = STABLE

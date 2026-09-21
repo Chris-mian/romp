@@ -1,0 +1,36 @@
+<!-- SYNTHETIC fixture (the notes-api demo domain: web/api/tests — never real session data).
+     The timeline pane's CSS-owned chrome: top bar + window slider, a mock SVG plot (gridlines and
+     axis labels on the --text-muted/--text-faint tokens, the values the JS PAL() mirrors), and the
+     hover tip card. Render in both themes:
+       tools/ui-verify/shot.sh --css ui/webview/timeline-pane.css \
+           --body tools/ui-verify/fixtures/timeline-pane.html --out /tmp/tl-dark.png --size 760x300
+       …add --body-class theme-light for the light pass. -->
+<div id="host">
+  <div class="romp-tl-top">
+    <span class="romp-tl-winlabel">window: 30 min</span>
+    <input class="romp-tl-slider" type="range" min="0" max="100" value="62">
+    <span class="romp-tl-src">3 sessions · notes-api</span>
+  </div>
+  <div class="romp-tl-wrap">
+    <svg width="740" height="150" viewBox="0 0 740 150">
+      <line x1="200" y1="8" x2="200" y2="123" stroke="var(--text-faint)" stroke-opacity="0.25" stroke-width="1"/>
+      <line x1="400" y1="8" x2="400" y2="123" stroke="var(--text-faint)" stroke-opacity="0.25" stroke-width="1"/>
+      <line x1="600" y1="8" x2="600" y2="123" stroke="var(--text-faint)" stroke-opacity="0.25" stroke-width="1"/>
+      <text x="14" y="34" fill="#E0A030" font-size="12" font-weight="650">web</text>
+      <rect x="200" y="26" width="180" height="8" rx="3" fill="#E0A030"/>
+      <text x="14" y="74" fill="#4EA8A9" font-size="12" font-weight="650">api</text>
+      <rect x="320" y="66" width="240" height="8" rx="3" fill="#4EA8A9"/>
+      <text x="14" y="114" fill="#9088F0" font-size="12" font-weight="650">tests</text>
+      <rect x="440" y="106" width="120" height="8" rx="3" fill="#9088F0"/>
+      <text x="200" y="140" text-anchor="middle" fill="var(--text-muted)" font-size="10">14:10</text>
+      <text x="400" y="140" text-anchor="middle" fill="var(--text-muted)" font-size="10">14:20</text>
+      <text x="600" y="140" text-anchor="middle" fill="var(--text-muted)" font-size="10">14:30</text>
+    </svg>
+  </div>
+  <div class="romp-tl-tip show" style="left:340px;top:64px;">
+    <div class="r"><span class="chip" style="background:#4EA8A9"></span><span class="who" style="color:#4EA8A9">api</span>
+      <span class="ar">→</span><span class="t">14:22</span></div>
+    <div class="k">prompt</div>
+    <div class="b">wire the exporter's retry path and add a failing test first</div>
+  </div>
+</div>

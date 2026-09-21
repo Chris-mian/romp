@@ -40,8 +40,10 @@ test("the armed second click fires rewindDelete and paints the bare overlay", ()
 });
 
 test("the bare overlay dims the deleted bubble itself, not just the tail", () => {
-  assert.match(RENDER, /if \(pr\.bare\) \{/);
-  assert.match(RENDER, /for \(let j = idx; j < s\.events\.length; j\+\+\) \(s\.events\[j\] as any\)\.rewound = true;/);
+  // the pass lives in rewind-reconcile.ts (executed there: "a bare delete dims from the deleted bubble itself")
+  const PASS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "rewind-reconcile.ts"), "utf8");
+  assert.match(PASS, /\} else if \(pr\.bare\) \{/);
+  assert.match(PASS, /for \(let j = idx; j < events\.length; j\+\+\) events\[j\]\.rewound = true;/);
 });
 
 test("the delete button dresses like edit, with a destructive armed state", () => {
@@ -96,7 +98,7 @@ test("kernel: rewindDelete sends nothing and the parse renders the pending cut",
   assert.match(KERNEL, /elif t == "rewindDelete" and msg\.get\("uuid"\):/);
   assert.match(KERNEL, /def _rewind_rollback\(sid, user_uuid, now=None\):/);
   assert.match(KERNEL, /leaf_override=cut or None/);
-  assert.match(BACKEND, /def rollback\(self, sid: str, target_uuid: str\)/);
+  assert.match(BACKEND, /def rollback\(self, sid: str, target_uuid: str, revalidate=None\)/);
   assert.match(BACKEND, /def pending_cut\(self, sid: str\) -> str:/);
   assert.match(EM, /if leaf_override and leaf_override in self\.by_uuid:/);
 });

@@ -14,7 +14,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -25,7 +25,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 SID = "11111111-2222-3333-4444-555555555555"
@@ -53,6 +53,7 @@ def _node(nid, parent, **kw):
 
 class EpisodeBoundaryTest(unittest.TestCase):
     def setUp(self):
+        self._saved_state = jd.STATE
         self._td = tempfile.mkdtemp()
         jd._rebind_state(Path(self._td))
         self.proj = Path(self._td) / "proj"
@@ -60,6 +61,7 @@ class EpisodeBoundaryTest(unittest.TestCase):
         self.g = lambda n: "%s:%s" % (SID, n)
 
     def tearDown(self):
+        jd._rebind_state(self._saved_state)   # the judge module is shared process-wide: never leave it on a removed dir
         shutil.rmtree(self._td, ignore_errors=True)
 
     def _store(self):

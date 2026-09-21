@@ -1,0 +1,60 @@
+// A box BELOW the transcript growing must not drop an at-bottom reader out of follow mode (T262e, the user
+// 2026-09-08 11:30 AM PT: when the awaiting/background-task box appears between the transcript and the composer
+// and covers part of the text, a reader at the bottom must stay at the bottom — the pane scrolls by the box's
+// height — and today it does not). A box below the scroller changes the scroller's clientHeight and nothing else:
+// the browser keeps scrollTop, fires no scroll event, and the reader who was at the bottom is now the box's
+// height above it with the last lines covered; the next append reads atBottom false and leaves them there — the
+// pane has fallen into scrolled-up mode by itself. The composer auto-grows the same way while a message is typed.
+// Fix: a ResizeObserver on #bg-tasks and #footer with the rule OPPOSITE to the boxes-above compensation: a reader
+// whose recorded follow mode is on (the view's `stick`, untouched by the growth since no scroll event fired) is
+// written to the new bottom (writer "box-below"); a scrolled-up reader is untouched (their top line never moved).
+// Pure rule executed here; render.ts wiring pinned. Also pinned: the browser's scroll anchoring stays ON for #content
+// (a measured result, see the comment beside the rule in styles.css — the opt-out let the visible line drift
+// 194-246 px after a window slide, where the anchoring held it at 0).
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { followBoxBelow } from "./scroll-keep";
+
+const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
+
+test("a follow-mode reader follows the bottom when a box below grows or shrinks; a scrolled-up reader is untouched", () => {
+  assert.equal(followBoxBelow(true, 64), true, "the awaiting box appeared: pin to the new bottom");
+  assert.equal(followBoxBelow(true, -64), true, "it went away: the bottom is the bottom (the clamp already got there; the write is a no-op)");
+  assert.equal(followBoxBelow(true, 0), false, "no height change, no write");
+  assert.equal(followBoxBelow(false, 64), false, "reading history: the top line never moved, leave them");
+  assert.equal(followBoxBelow(false, -64), false);
+});
+
+test("render.ts observes #bg-tasks and #footer and writes the new bottom through the scroll-write helper", () => {
+  assert.match(RENDER, /import \{[^}]*\bfollowBoxBelow\b[^}]*\} from "\.\/scroll-keep";/);
+  assert.match(RENDER, /const BOXES_BELOW = \["notices", "bg-tasks", "footer"\];/); assert.match(RENDER, /for \(const boxId of BOXES_BELOW\) \{/);
+  const m = RENDER.match(/for \(const boxId of BOXES_BELOW\) \{([\s\S]*?)\n\}/);
+  assert.ok(m, "the boxes-below observer block");
+  const body = m![1];
+  assert.match(body, /new ResizeObserver\(/);
+  assert.match(body, /followBoxBelow\(v\.stick \|\| wasAtBottom, dh\)/, "the recorded follow mode decides, or the PRE-growth position read back from the geometry (2026-09-19); never a post-growth atBottom read (the growth already moved the bottom away)");
+  assert.match(body, /writeScroll\(content, content\.scrollHeight, "box-below", true\);/);
+  assert.match(body, /v\.scrollTop = content\.scrollTop;/, "the per-view saved position follows");
+  assert.match(body, /content\.clientHeight > 0/, "a hidden pane measures 0: nothing to do");
+  // the pass is an event a reader of the bottom holds at (the load flake of 2026-09-19): one per pass, with the height the pass acted on
+  assert.match(body, /window\.dispatchEvent\(new CustomEvent\("romp:box-below", \{ detail: \{ id: boxId, height: h, repinned \} \}\)\);/, "the event names the box, carries the height and says whether the reader was re-pinned");
+  assert.ok(body.indexOf("lastH = h;") < body.indexOf('new CustomEvent("romp:box-below"'), "the event fires after the pass's own work, never before it");
+  assert.match(body, /writeScroll\(content, content\.scrollHeight, "box-below", true\);\s*\n\s*v\.scrollTop = content\.scrollTop;[^\n]*\n\s*v\.stick = true;[^\n]*\n\s*repinned = true;/, "re-pinned is the write's branch, and the record says follow mode");
+  // the pre-growth truth: the geometry with the growth added back to #content's height, for a growth only (a shrink is the browser's clamp)
+  assert.match(body, /const wasAtBottom = !!\(content && lastH >= 0 && dfoot > 0 && atBottomBeforeGrowth\(content\.scrollHeight, content\.scrollTop, content\.clientHeight, dfoot\)\);/, "where the reader stood before the growth: the box's FOOTPRINT change added back (2026-09-20), never the content rect's");
+  // the growth added back (the review of PR 1926): this box's content delta while shown (a stale recorded footprint after a margin-only change), its whole footprint on a first show, the other boxes' change since the last pass, one shared record refreshed at every pass
+  assert.match(body, /dfoot \+= id === boxId \? \(prev > 0 \? dh : now\[id\]\) : now\[id\] - prev;/); assert.match(body, /lastH = h; for \(const id of BOXES_BELOW\) FEET\[id\] = now\[id\];/);
+  assert.match(RENDER, /const FEET: Record<string, number> = \{\};/); assert.doesNotMatch(body, /lastFoot/, "no per-box footprint memory remains");
+  assert.match(RENDER, /function boxFootprint\(box: HTMLElement\): number \{\s*\n\s*const r = box\.getBoundingClientRect\(\);\s*\n\s*if \(!\(r\.height > 0\)\) return 0;\s*\n\s*const cs = getComputedStyle\(box\);\s*\n\s*return r\.height \+ \(parseFloat\(cs\.marginTop\) \|\| 0\) \+ \(parseFloat\(cs\.marginBottom\) \|\| 0\);/, "the footprint: the border box plus the vertical margins, 0 while hidden");
+  // the boxes ABOVE keep their own (opposite) rule
+  assert.match(RENDER, /for \(const boxId of \["tabbar", "ledger"\]\) \{/);
+  assert.match(RENDER, /writeScroll\(content, content\.scrollTop \+ \(h - lastH\), "box-resize"\);/);
+});
+
+test("#content keeps the browser's scroll anchoring: measured, the opt-out made the line drift after a window slide", () => {
+  assert.doesNotMatch(CSS, /#content[^{]*\{[^}]*overflow-anchor/, "do not add overflow-anchor to #content");
+  assert.match(CSS, /The browser's scroll anchoring stays ON here \(measured 2026-09-08, T262e\)/);
+});

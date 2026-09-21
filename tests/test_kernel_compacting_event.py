@@ -6,7 +6,7 @@ where the transcript's {kind:"compact"} boundary divider takes over. Source pins
 import inspect
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -17,21 +17,20 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 class CompactingEvent(unittest.TestCase):
     def setUp(self):
         self.src = inspect.getsource(km.build_session)
 
-    def test_compacting_signal_is_hoisted_from_the_busy_check(self):
-        # the corroborated compacting signal is computed once and reused (not the raw tmux state);
+    def test_compacting_signal_is_hoisted_and_computed_once(self):
+        # the corroborated compacting signal is computed once and reused (not the raw live-map state);
         # the path_override arm is the read-only episode render, where nothing is live by definition
         self.assertIn(
             '_compacting(sid, (tm0 or {}).get("state", ""), parsed, now, (tm0 or {}).get("since"))',
             self.src)
-        self.assertIn('busy = not path_override and (_session_working(parsed["turns"]) or compacting_now)',
-                      self.src)
+        self.assertEqual(self.src.count("compacting_now = "), 1, "computed once, then reused")
 
     def test_a_compacting_event_is_emitted_while_compacting(self):
         self.assertIn('if compacting_now:', self.src)

@@ -13,21 +13,23 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("compact mode folds the stream via compactDisplay, rendered through the unified window path", () => {
   // compact is no longer a separate rebuild path: displayItems() returns compactDisplay's folded units when
   // the setting is on, and renderWindowItems renders them the same way as per-event units.
-  assert.match(RENDER, /if \(!settings\.compact\) \{[\s\S]*?\}\s*\n\s*return compactDisplay\(s\.events\.map\(/);
+  assert.match(RENDER, /if \(!settings\.compact\) \{[\s\S]*?\} else \{\s*\n\s*out = compactDisplay\(s\.events\.map\(/);
 });
 
-test("a collapsed tool run renders bold tool labels via toolCounts and is click-to-expand", () => {
+test("a collapsed tool run renders its head by action via actionHead (T418: the user's terms, the edits' totals apart) and is click-to-expand", () => {
   assert.match(RENDER, /el\("div", "toolgroup-line"\)/);
-  assert.match(RENDER, /toolCounts\(tools\.map\(/);
-  assert.match(RENDER, /el\("span", "toolgroup-tool"\)/, "each tool word is its own bold span");
+  assert.match(RENDER, /const parts = actionParts\(tools\);/, "the head speaks by action: Ran 11 commands, read 4 files, edited 3 files, created 2 files, the totals once at the end");
+  assert.match(RENDER, /el\("span", "toolgroup-head"\)/, "the phrases in one span; the totals follow in the diff colours (appendTotals)");
   // the "N Edits" summary shows only when collapsed; expanded → just the arrow
   assert.match(RENDER, /if \(!open\) \{/);
   // clicking the line toggles expand → the full non-compact cards for that span, indented
-  assert.match(RENDER, /line\.addEventListener\("click",[\s\S]*?toggleToolGroup\(key\)/);
+  // 2026-09-08 (the notice-vocabulary pass): the toggle rides the body delegate (data-act=noticetoggle + data-gkey)
+  // and the run's open state lives in openFolds — the per-node listener and the expandedGroups Set are gone
+  assert.match(RENDER, /line\.dataset\.act = "noticetoggle"; line\.dataset\.gkey = key;/);
+  assert.match(RENDER, /noticetoggle: \(el\) => \{\s*\n\s*const gkey = el\.dataset\.gkey;\s*\n\s*if \(gkey\) \{ toggleToolGroup\(gkey\); return; \}/);
   assert.match(RENDER, /function toggleToolGroup/);
-  assert.match(RENDER, /expandedGroups\.has\(key\)/);
+  assert.match(RENDER, /if \(openFolds\.has\(key\)\) openFolds\.delete\(key\); else openFolds\.add\(key\);/);
   assert.match(RENDER, /classList\.add\("tg-child"\)/, "expanded children are tagged for indent");
-  assert.match(CSS, /\.toolgroup-tool \{[^}]*font-weight: 700/);
   assert.match(CSS, /\.tg-child \{[^}]*margin-left/);
 });
 
@@ -35,11 +37,12 @@ test("the chat has NO gear of its own — it only consumes the shared setting (g
   assert.doesNotMatch(RENDER, /chat-settings-gear/, "the gear was moved to the timeline");
   // renderTabs rides the change too: the tab strip reads settings (the context gauge toggle,
   // the user 2026-08-08) and rerenderAll only rebuilds the transcript views.
-  assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\)/);
+  // ...and updateStatusline since T409: the status line reads settings too (its widgets), and a gear switch repaints it at once
+  assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); updateStatusline\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\)/);
 });
 
 test("the + New session button sends the picker's backend toggle, defaulting to the gear's (the user 2026-06-23)", () => {
   // the per-session toggle wins; it RESETS to the gear default (read fresh via loadSettings()) on each open
-  assert.match(RENDER, /startCreate\(\{ name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend,/);
-  assert.match(RENDER, /const def = loadSettings\(\)\.backend \|\| "tmux";/);   // toggle defaults to the gear setting
+  assert.match(RENDER, /const backend = beSel\?\.dataset\.be \|\| effectiveDefaultBackend\(loadSettings\(\)\.backend\);\s*\n[\s\S]{0,400}startCreate\(\{ name, backend,/);
+  assert.match(RENDER, /const def = effectiveDefaultBackend\(loadSettings\(\)\.backend\);/);   // toggle defaults to the gear setting, as offered (T288; a retired saved default reads as Claude Code, T331)
 });

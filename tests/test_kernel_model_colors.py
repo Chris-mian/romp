@@ -6,7 +6,7 @@ mirroring ctxColor); the clients just apply it. Ranks live only in bin/romp-kern
 import inspect
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -17,7 +17,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 class ModelColors(unittest.TestCase):
@@ -66,12 +66,38 @@ class ModelColors(unittest.TestCase):
         self.assertIsNone(km._effort_color("turbo", self.stops))
         self.assertIsNone(km._effort_color("", self.stops))
 
-    def test_ranks_use_the_full_ramp_ends(self):
-        # the most/least capable and the extreme efforts hit the map's endpoints exactly
+    def test_classic_colors_use_the_full_colormap_ends_and_tones_ride_beside(self):
+        # DUAL palette (PR #763 review item 1): the CLASSIC colors are the recency-colormap sample,
+        # byte-identical to what main always shipped — the default theme's colors are the owner's
+        # call. The single-hue TONES (orange model / violet effort) ship in parallel fields for the
+        # yatharth themes; the client picks.
         self.assertEqual(km._model_color("fable", self.stops), list(km.cm.ramp(1.0, self.stops)))
         self.assertEqual(km._model_color("haiku", self.stops), list(km.cm.ramp(0.0, self.stops)))
-        self.assertEqual(km._effort_color("ultracode", self.stops), list(km.cm.ramp(1.0, self.stops)))   # the ladder's new top (the user 2026-08-04)
+        self.assertEqual(km._effort_color("ultracode", self.stops), list(km.cm.ramp(1.0, self.stops)))
         self.assertEqual(km._effort_color("low", self.stops), list(km.cm.ramp(0.0, self.stops)))
+        self.assertEqual(km._model_tone("fable"), list(km.cm.tone_rgb("model", 1.0)))
+        self.assertEqual(km._model_tone("haiku"), list(km.cm.tone_rgb("model", 0.0)))
+        self.assertEqual(km._effort_tone("ultracode"), list(km.cm.tone_rgb("effort", 1.0)))
+        self.assertEqual(km._effort_tone("low"), list(km.cm.tone_rgb("effort", 0.0)))
+        self.assertIsNone(km._model_tone("mystery"))
+        self.assertIsNone(km._effort_tone("turbo"))
+
+    def test_tone_families_are_distinct_and_legible_on_dark(self):
+        # the three quantities may never collide again, and every sampled value must clear ~5:1
+        # on the #1e1e1e page (the WCAG floor is 4.5; the ramps are tuned above it)
+        def lum(rgb):
+            def ch(c):
+                c = c / 255.0
+                return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+            return 0.2126 * ch(rgb[0]) + 0.7152 * ch(rgb[1]) + 0.0722 * ch(rgb[2])
+        dark_l = lum((30, 30, 30))
+        for fam in ("model", "effort", "context"):
+            for v in (0.0, 0.5, 1.0):
+                c = km.cm.tone_rgb(fam, v)
+                ratio = (lum(c) + 0.05) / (dark_l + 0.05)
+                self.assertGreaterEqual(ratio, 4.5, "%s@%s %s" % (fam, v, c))
+        self.assertNotEqual(km.cm.tone_rgb("model", 1.0), km.cm.tone_rgb("effort", 1.0))
+        self.assertNotEqual(km.cm.tone_rgb("model", 0.0), km.cm.tone_rgb("effort", 0.0))
 
     def test_build_session_status_carries_model_and_effort_colors(self):
         src = inspect.getsource(km.build_session)

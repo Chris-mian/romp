@@ -13,7 +13,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -23,8 +23,8 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-sb = SourceFileLoader("romp_sdk_backend_gaveup", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
-km = SourceFileLoader("romp_kernel_gaveup", os.path.join(BIN, "romp-kernel")).load_module()
+sb = load_source("romp_sdk_backend_gaveup", os.path.join(BIN, "romp_sdk_backend.py"))
+km = load_source("romp_kernel_gaveup", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -159,7 +159,7 @@ class KernelReaderAndInterleave(unittest.TestCase):
 
     def test_build_session_interleaves_the_gave_up_note_and_the_error_card(self):
         src = inspect.getsource(km.build_session)
-        self.assertIn("gaveups = _retry_gaveups(sid)", src)
+        self.assertIn("gaveups = _past_floor(_retry_gaveups(sid))", src)   # floored at the episode boundary since T131
         self.assertIn('"kind": "retryGaveUp", "retries": _g["retries"]', src)
         # the transcript's isApiError record becomes durable error CHROME, not an agent bubble
         self.assertIn('events.append({"kind": "apiErrorNote", "md": txt,', src)

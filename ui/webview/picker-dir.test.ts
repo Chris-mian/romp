@@ -31,7 +31,9 @@ test("createSession carries the chosen dir, alongside name + backend", () => {
   // backend comes from the + dialog's per-session toggle, falling back to the gear default (the user
   // 2026-06-23). The whole request goes through startCreate, which remembers it so a missing directory
   // can be created and the SAME create re-sent (the user 2026-07-28).
-  assert.match(RENDER, /startCreate\(\{ name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend,\s*\n\s*dir: dirInput\.value\.trim\(\), host: hostSel, \.\.\.\(auth \? \{ auth \} : \{\}\) \}\)/);
+  // (…and the Tags row's picks since tab groups, 2026-09-04 — omitted like auth when nothing is picked)
+  assert.match(RENDER, /const backend = beSel\?\.dataset\.be \|\| effectiveDefaultBackend\(loadSettings\(\)\.backend\);/);   // the EFFECTIVE default since T288
+  assert.match(RENDER, /startCreate\(\{ name, backend,\s*\n\s*dir: dirInput\.value\.trim\(\), host: hostSel, \.\.\.\(auth \? \{ auth \} : \{\}\), \.\.\.\(tags\.length \? \{ tags \} : \{\}\) \}\)/);
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "createSession", \.\.\.req/);
 });
 
@@ -51,15 +53,21 @@ test("a session carries cwd, shown on the statusline just left of the mode/model
   assert.match(RENDER, /cwd: msg\.cwd \?\? \(prev \? prev\.cwd : ""\)/);
   // a status-dir element (basename; full path on hover + click-to-open via asFolderLink), appended BEFORE
   // #spinner-meta (the controls cluster)
-  assert.match(RENDER, /el\("span", "status-dir"\)/);
-  assert.match(RENDER, /asFolderLink\(dir, s\.cwd, activeId \|\| undefined\)/);
-  assert.match(RENDER, /right\.appendChild\(dir\);[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
+  // the folder is the status line's FOLDER WIDGET since T409 (status-widgets.ts); the renderer composes the right slot
+  // ahead of the controls
+  const SW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-widgets.ts"), "utf8");
+  assert.match(SW, /el\("span", opts\.show === "path" \? "status-dir status-dir-full" : "status-dir"\)/);
+  assert.match(SW, /folderLink\(dir, rec\.cwd, rec\.id\);/);
+  assert.match(RENDER, /cwd: s\.cwd \|\| ""/, "the record slice carries the session's cwd");
+  assert.match(RENDER, /composeStatusWidgets\(right, "right", rec, settings\.statusWidgets\);[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
   // and NOT on the tab anymore (the user 2026-06-23)
   assert.doesNotMatch(RENDER, /tab-dir/);
 });
 
 test("the system-context card shows the dir basename in its collapsed summary", () => {
-  assert.match(RENDER, /bits\.push\("📁 " \+ \(ev\.cwd/);
+  // 2026-09-08 (the notice-vocabulary pass): the basename rides the notice META slot; the 📁 text glyph is retired
+  // (the head's one glyph is the gear line icon)
+  assert.match(RENDER, /bits\.push\(ev\.cwd\.replace\(\/\\\/\+\$\/, ""\)\.split\("\/"\)\.pop\(\) \|\| ev\.cwd\)/);
 });
 
 test("the status-dir and picker-dir-input styles exist", () => {

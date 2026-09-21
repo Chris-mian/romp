@@ -53,9 +53,10 @@ test("the specimen's copy is untouched — only the trap was the bug", () => {
 });
 
 test("federation surfaces a dropped route instead of vanishing it", () => {
-  // both send sites carry the else — the undoClear fast path and the main route loop
-  const drops = FEDERATION.match(/else this\.dropWarn\(/g) || [];
-  assert.equal(drops.length, 2, "every not-open host socket send has a dropWarn else");
+  // both send sites (the undoClear fast path and the main route loop) route through sendRemote —
+  // federation-send-queue.test.ts pins that — whose not-open fall-through pairs the toast with a
+  // client-diag breadcrumb. Kernel settings take neither: they queue for the reconnect instead.
+  assert.match(FEDERATION, /this\.diag\("senddrop", \{ host, msgType: \(msg && msg\.type\) \|\| "" \}\);\s*\n\s*this\.dropWarn\(host, msg\);/);
   assert.match(FEDERATION, /private dropWarn\(host: string, msg: any\)/);
   assert.match(FEDERATION, /was not delivered/);
 });

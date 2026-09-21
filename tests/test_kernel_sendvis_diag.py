@@ -5,7 +5,7 @@ sent message is invisible, this names the layer that dropped it instead of anoth
 probing; failures inside the diagnostic report as strings, never silently. SYNTHETIC fixtures only."""
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -16,7 +16,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_sendvis", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_sendvis", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -56,7 +56,14 @@ class SendVisDiag(unittest.TestCase):
         echoes = [a for a in out["liveAtoms"] if a["echo"]]
         self.assertEqual([a["echo"] for a in echoes], ["an in-flight echo"])
         self.assertIn("compacting", out)
-        self.assertIn("tmuxEchoes", out)
+
+    def test_an_unowned_sid_reads_as_unowned(self):
+        # the routing layer named first: a sid no backend owns is "unowned", never a guess at a backend
+        out = km._sendvis_diag("22222222-3333-4444-5555-666666666666")
+        self.assertEqual(out["backend"], "unowned")
+        self.assertFalse(out["sdkOwns"])
+        self.assertEqual(out["pendingQueued"], [])
+        self.assertEqual(out["liveAtoms"], [])
 
     def test_a_tmux_echo_row_says_whether_it_is_settled(self):
         # A settled loss and an in-flight send read identically here until `dropped` was carried (the user

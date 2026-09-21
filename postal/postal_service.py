@@ -22,22 +22,26 @@
 # tunnels that port to the laptop with `ssh -R PORT:127.0.0.1:PORT`. The bus
 # persists mailboxes to $XDG_STATE_HOME/romp/postal/mail/<session-id>/ (Maildir,
 # atomic delivery), resolves recipient names against the live romp sessions
-# (tmux) plus any heartbeating remote agents, and shuts itself down once no romp
-# clients remain.
+# (the kernel's listing of Claude Code and Codex sessions) plus any heartbeating
+# remote agents, and shuts itself down once no romp clients remain.
 #
 # Delivery has two paths. The backstop is the Stop hook: a recipient drains its
 # mailbox at the next turn boundary (also check_inbox / `romp mail inbox`). On
-# top of that, push-on-deliver (see _push) auto-wakes an IDLE local session by
-# typing the mail straight into its prompt and submitting it — so a session
-# sitting idle reacts immediately instead of only at its next turn. The push is
-# careful never to clobber a draft (it stashes/restores via Ctrl+S) and stays
-# clear of sessions at a permission prompt or mid-turn-with-a-draft, falling back
-# to the drain whenever live injection isn't safe. Disable the push alone with
-# ~/.claude/romp-postal-nopush; disable everything with ~/.claude/romp-postal-off.
+# top of that, push-on-deliver (see _push) auto-wakes an IDLE local session
+# through the kernel (POST /deliver), which hands the mail to the session as its
+# next turn — so a session sitting idle reacts immediately instead of only at
+# its next turn boundary. When the kernel reports the session did not take the
+# wake (not live or resumable, its mailbox toggled off), the mail goes back for
+# the drain. Disable the push alone with ~/.claude/romp-postal-nopush; disable
+# everything with ~/.claude/romp-postal-off.
 
 import base64
+import errno
+import fcntl
 import hashlib
 import hmac
+import http.client
+import itertools
 import json
 import os
 import random
@@ -45,6 +49,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -54,55 +59,192 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
 from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("ROMP_POSTAL_PORT", "25302"))   # renumbered from 47100 alongside the kernel's port (the user 2026-07-24), same random draw. A bus that cannot bind degrades fleet messaging silently, rather than failing a URL someone is looking at, so a collision here is worth avoiding more, not less.
 BASE = f"http://{HOST}:{PORT}"
-KERNEL_BASE = "http://127.0.0.1:%s" % os.environ.get("ROMP_KERNEL_PORT", "29855")  # the dashboard kernel — it owns the backend session query (tmux + SDK)
+KERNEL_BASE = "http://127.0.0.1:%s" % os.environ.get("ROMP_KERNEL_PORT", "29855")  # the dashboard kernel — it owns the backend session query (Claude Code and Codex)
 
 STATE = Path(os.environ.get("ROMP_STATE_DIR")      # per-kernel state root override (plans/multi-kernel.md)
-             or Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "romp") / "postal"
+             or Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "romp") / "postal"
+# `or`, not a .get default, here and at NAMES_DIR: an empty XDG_STATE_HOME is unset (the note at
+# kernel/event_model.py's STATE).
 MAILROOT = STATE / "mail"
 MAILPENDING = STATE / "mail-pending"   # touch <sid> here IFF that session has unread mail in new/
+MAILHELD = STATE / "mail-held"         # <sid>: one message id per line, claimed into cur/ and not put back because cur/ could not be
+#                                        read (restore's UNKNOWN); the retry loop puts them back once cur/ reads (2026-09-14)
 WARNED = STATE / "warned-undelivered"  # marker per msg-id we've already warned a sender is STILL UNDELIVERED (one-time)
 LOG = STATE / "server.log"
 PIDFILE = STATE / "server.pid"
+PORTFILE = STATE / "postal-port"        # {"port", "pid"}: the port this bus BOUND, written after the bind and removed on a clean
+#                                          exit under the pid it names (the kernel's serve-port pattern), so the kernel's loopback
+#                                          dials read the bus's own answer ahead of the environment (2026-09-18: a kernel and a bus
+#                                          that read ROMP_POSTAL_PORT from different environments dialed different ports, and a
+#                                          held message's approve reached a bus that never held it, refused as "no held message")
 NAMES_DIR = Path(os.environ.get("ROMP_STATE_DIR")
-                 or Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "romp") / "names"
+                 or Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "romp") / "names"
 TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (messages.jsonl)
 SESSION_FLAGS = STATE.parent / "session-flags.json"   # the kernel's per-session view flags {sid:{flag:true}}; we honour postalServiceOff (legacy: postalOff)
 # The reserved key in that file carrying MASTER defaults per-session entries override — a uuid can never
 # collide with it. Must stay identical to kernel.POSTAL_ALL_KEY: both files read the one store.
 POSTAL_ALL_KEY = "*"
+CODEX_REGISTRY = STATE.parent / "codex" / "registry.json"   # the kernel's Codex backend's store: rows keyed by the stable sid, each carrying the native thread id ("tid"); read by _codex_self_id only
 
 
 # ── serve-token gate (Jupyter's model; the same 0600 file the kernel mints) ─────
 # Loopback is reachable by EVERY local user on the machine, so the bus — which can wake sessions
-# and inject mail straight into their prompts — requires the machine's serve token on every
+# and hand them mail as their next turn — requires the machine's serve token on every
 # request except the /ping liveness probe. The 0600 file is the same-user trust boundary; kernel
 # and bus share it (whichever daemon starts first mints it, identical logic). A peer bus dialing
 # through an ssh forward authorizes with the DIALED machine's token (?token=), which rides the
-# kernel's /peer notifies and /tunnels rows.
+# kernel's /peer notifies only (never /tunnels rows, which a page reads too; since 2026-09-08 a
+# restarted bus gets every token re-notified, see peers_snapshot).
+#
+# _serve_token_read_or_mint is a COPY of the kernel's (kernel.py, same name; KEEP IN SYNC): the bus
+# imports nothing from kernel/ by design, and the two daemons boot together, so they must agree on
+# the whole contract, not just the path. Why it is shaped this way is in the kernel's docstring; in
+# one line: FileNotFoundError is the only mint trigger, the mint lands by rename of a 0600 temp,
+# and it all happens under serve-token.lock. A fault raises RuntimeError, which at import refuses to
+# start the bus (or a session's MCP process): the old loader minted its OWN token on any read fault
+# and every request it then made was a silent 403. The refusal is not one message: the bus is started
+# again by whatever needs it (a kernel boot's _ensure_postal_bus, a session's MCP process running
+# `ensure`), and the kernel's own copy of this refusal repeats on bin/romp-manager's respawn backoff
+# (a traceback in manager.log every 10 s at the cap), so both repeat until the file is repaired and
+# stop by themselves once it is, with the token every client holds untouched throughout (review
+# find, 2026-09-08).
+def _serve_token_read_or_mint(f, who):
+    lock = f.with_name(f.name + ".lock")
+
+    def fault(path, what, e, fix="Make the file yours and mode 0600 (or set ROMP_SERVE_TOKEN)"):
+        code = getattr(e, "errno", None)
+        why = ("%s, errno %s" % (errno.errorcode.get(code, type(e).__name__), code) if code is not None
+               else type(e).__name__)
+        raise RuntimeError(
+            "%s: cannot %s (%s). romp did NOT replace the serve token, so every client holding it "
+            "stays valid. %s, then start again." % (path, what, why, fix)) from e
+
+    def read():
+        try:
+            if stat.S_ISLNK(os.lstat(f).st_mode):
+                # refused BEFORE anything reads or chmods through it: both land on the target, some
+                # other file (review find, 2026-09-08). lstat sees a dangling link too; read_text
+                # would call that absent and mint over it.
+                fault(f, "use it: the token path is a symlink, and romp reads or tightens no token "
+                         "through a link", OSError(errno.ELOOP, os.strerror(errno.ELOOP)),
+                      fix="Replace the link with a regular file that is yours and mode 0600 (or set "
+                          "ROMP_SERVE_TOKEN)")
+            return f.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeDecodeError) as e:   # a token that is not text is a fault too, never a mint
+            fault(f, "read it", e)
+
+    def mode():
+        try:
+            return stat.S_IMODE(os.lstat(f).st_mode)   # lstat, like read(): the file's own mode, never a link target's
+        except OSError as e:
+            fault(f, "stat it", e)
+
+    def loose(m):
+        return m & ~0o600                    # any bit outside rw-------: group, other, execute, set-id, sticky
+
+    def mint(why):
+        if why:
+            print("[%s] serve token %s: %s; minting a fresh one" % (who, f, why), file=sys.stderr)
+        v = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
+        tmp = f.with_name("%s.%d.tmp" % (f.name, os.getpid()))
+        fd = None
+        try:
+            for stale in f.parent.glob(f.name + ".*.tmp"):
+                try:
+                    os.unlink(stale)         # under the lock, so any temp here is a crashed earlier attempt, any pid's
+                except FileNotFoundError:
+                    pass
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            data = v.encode()
+            n = os.write(fd, data)
+            if n != len(data):
+                raise OSError(errno.EIO, "short write, %d of %d bytes" % (n, len(data)))
+            os.fsync(fd)
+            os.close(fd)
+            fd = None
+            os.replace(str(tmp), str(f))
+        except OSError as e:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            fault(f, "mint it (via %s)" % tmp.name, e)
+        return v
+
+    lfd = None
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        lfd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(lfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # another starter (the kernel and the bus boot together) is reading or minting: say so
+            # once, then wait for it. The blocking take is the right wait; it was just silent, and a
+            # starter stuck behind a wedged holder looked hung (review find, 2026-09-08).
+            print("[%s] serve token: waiting for the holder of %s (another starter is reading or "
+                  "minting it)" % (who, lock), file=sys.stderr)
+            fcntl.flock(lfd, fcntl.LOCK_EX)
+    except OSError as e:
+        if lfd is not None:
+            try:
+                os.close(lfd)
+            except OSError:
+                pass
+        v = read()                           # a read fault is its own RuntimeError
+        m = mode() if v else None
+        if v and not loose(m):
+            print("[%s] serve token: could not lock %s (%s); using the existing token as is (mode "
+                  "%04o, nothing to tighten)" % (who, lock, e, m), file=sys.stderr)
+            return v
+        # the refusal names the LOCK, the fault, and what the lock was needed for. It used to send the
+        # operator to make the token file 0600, also when no such file existed (review find, 2026-09-08).
+        need = ("that minting a token needs; no token file exists to fall back on" if v is None else
+                "that minting a token needs; the token file is empty, a torn earlier mint" if not v else
+                "that tightening the token file from mode %04o needs" % m)
+        fault(lock, "take the lock %s" % need, e,
+              fix="Make the lock file yours, or remove it (or set ROMP_SERVE_TOKEN)")
+    try:
+        v = read()
+        if v is None:
+            return mint(None)
+        if not v:
+            return mint("the file is empty, a torn earlier mint that no client can be holding")
+        m = mode()
+        if loose(m):
+            want = m & 0o600                 # strip what is loose, add nothing: 0640 -> 0600, 0444 -> 0400
+            try:
+                os.chmod(f, want)
+            except OSError as e:
+                fault(f, "tighten its mode from %04o to %04o" % (m, want), e)
+            print("[%s] serve token %s was mode %04o; tightened to %04o" % (who, f, m, want), file=sys.stderr)
+        return v
+    finally:
+        try:
+            fcntl.flock(lfd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(lfd)
+
+
 def _load_serve_token():
     t = (os.environ.get("ROMP_SERVE_TOKEN") or "").strip()
     if t:
         return t
-    f = STATE.parent / "serve-token"              # ~/.local/state/romp/serve-token (STATE is romp/postal)
-    try:
-        v = f.read_text().strip()
-        if v:
-            return v
-    except OSError:
-        pass
-    v = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
-    try:
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(v)
-        os.chmod(f, 0o600)
-    except OSError:
-        pass
-    return v
+    # ~/.local/state/romp/serve-token (STATE is romp/postal): the kernel's file, shared.
+    return _serve_token_read_or_mint(STATE.parent / "serve-token", "postal")
 
 
 SERVE_TOKEN = _load_serve_token()
@@ -122,7 +264,6 @@ HEARTBEAT_TTL = int(os.environ.get("ROMP_POSTAL_HEARTBEAT_TTL", "90"))  # remote
 WINDOW = 30        # loop-guard rolling window (seconds)
 MAX = 6            # loop-guard: max auto-deliveries per window before pausing
 RETRY_INTERVAL = int(os.environ.get("ROMP_POSTAL_RETRY", "5"))  # re-attempt deferred deliveries every N s
-PICKER_GRACE = int(os.environ.get("ROMP_POSTAL_PICKER_GRACE", "10"))  # secs the kernel watches a revive for the resume picker (passed as the /picker-check timeout)
 ORPHAN_GRACE = int(os.environ.get("ROMP_POSTAL_ORPHAN_GRACE", "900"))  # bounce unread mail to a dead recipient after N s
 STUCK_GRACE = int(os.environ.get("ROMP_POSTAL_STUCK_GRACE", "600"))  # warn the SENDER when a LIVE-but-idle recipient still hasn't read after N s
 
@@ -130,75 +271,212 @@ REPLY_HINT = ('To reply (only if you have something substantive to add, not just
               'acknowledge): romp mail send --kind delegate|coordinate|question <name> "<text>" — '
               'put the whole point in your first sentence.')
 
-# The bus no longer shells tmux: session enumeration, the working-note, mail delivery/wake, the resume-picker
-# check, and the status-bar chrome all go through the kernel (the SessionBackend API), which owns the one tmux
-# integration. Identity is the CLAUDE_CODE_SESSION_ID env. (the user 2026-06-26: tmux + SDK behind one API.)
+# Every backend operation goes through the kernel (the SessionBackend API): session enumeration (GET
+# /sessions), the working-note (POST /working) and mail delivery/wake (POST /deliver). The bus never touches a
+# session directly. Identity is the CLAUDE_CODE_SESSION_ID env (the user 2026-06-26: every backend behind one API); a
+# Codex session's tool shell carries CODEX_THREAD_ID instead, resolved to the stable sid through the Codex registry
+# (_codex_self_id, 2026-09-15).
 
 
 def _self_id():
-    """THIS session's fsid, from CLAUDE_CODE_SESSION_ID — the harness sets it for EVERY session (SDK and tmux
-    alike), so it's the reliable identity, and the only one that's right for an SDK session (whose MCP may be
-    parented under a leftover tmux pane and so resolve to a DIFFERENT session — the user 2026-06-24). None when
-    not in a romp session. No tmux fallback: the bus never shells tmux; the env var IS the designed identity."""
-    return (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip() or None
+    """THIS session's fsid, from CLAUDE_CODE_SESSION_ID — the harness sets it for EVERY Claude Code session, so it
+    is the reliable identity (the user 2026-06-24: an identity read from the process's surroundings once resolved
+    an SDK session to a DIFFERENT one; the env var IS the designed identity). A CODEX session's tool shell carries
+    neither it nor any romp id, only CODEX_THREAD_ID (Codex's own id for the thread), so every `romp mail` from
+    one was refused as anonymous (2026-09-15); when the Claude variable is absent and that one is set, the thread
+    id resolves to the stable romp sid through _codex_self_id. The Claude variable wins when both are set: a
+    Claude Code session with a stray Codex variable in its shell keeps its own identity. None when neither names
+    a session (not a romp session), or when the Codex lookup failed; _self_id_why tells those two apart, and the
+    command that refuses on the missing identity says the reason there (_identity_refusal), so a command that
+    never needed one (`agents`, the heartbeat) says nothing."""
+    return _self_id_why()[0]
 
-def _self_row():
-    """THIS session's live agent row. CLAUDE_CODE_SESSION_ID is the CURRENT transcript fsid, and a
-    /clear or resume fork moves that off the stable romp sid every store is keyed by (names registry,
+def _self_id_why():
+    """(fsid, why): the id, and when it is None, WHETHER that is a refusal. `why` is None when the shell is not a
+    session's at all (neither identity variable set: a script or a bare shell, the caller `send --from <label>`
+    exists for), and a sentence naming CODEX_THREAD_ID when the shell IS a Codex session's and its identity did
+    not resolve. That distinction is the hinge of the door: a Codex session with a broken identity is refused
+    outright, --from included (a label would sign a session's mail as a script's and bury the bug), while the
+    shell with neither variable keeps the label. A CODEX_THREAD_ID set but blank is a failed lookup with its own
+    line, never a silent None: a refusal that points at "the reason above" must always have one."""
+    fsid = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if fsid:
+        return fsid, None
+    raw = os.environ.get("CODEX_THREAD_ID")
+    if raw is None:
+        return None, None
+    tid = raw.strip()
+    if not tid:
+        return None, "CODEX_THREAD_ID is set but empty, so this shell cannot be matched to a session"
+    return _codex_self_id(tid)
+
+def _codex_self_id(tid):
+    """(sid, None): the stable romp sid of the Codex session whose native thread id is `tid`, read from the kernel's
+    Codex registry (CODEX_REGISTRY: an object keyed by the stable sid, each row carrying "tid" = the thread id and
+    "dead" once the session ended). Reading the store directly is the authoritative-sources rule's second choice,
+    taken because there is no first: no kernel route publishes native thread ids (a Codex row on GET /sessions
+    carries the stable sid as both id and lastSid), and the kernel's Codex backend runs ONE app-server for every
+    thread, so no per-session environment can carry the sid either — one CLAUDE_CODE_SESSION_ID exported into that
+    process would sign every Codex session's mail as one sender. So the resolution is per command, here.
+
+    (None, why) in every case but exactly one live, well-formed row for the thread, each with its own sentence and
+    the path so the fix is named: the file missing; the file unreadable (a permission, a directory in its place, an
+    I/O error: "could not be read"); bytes that are not JSON, a decode error included ("is not valid JSON"); JSON
+    that is not an object of sessions; no row for the thread; only ended rows; two live rows (the registry disagrees
+    with itself; guessing would mail as the wrong session); a matching row whose KEY is not a session id (the key
+    becomes the sender's id, a path component under the mail and names roots, so "../other" or "" is refused with
+    its own words and never returned to reach a store; a clean row beside it does not rescue the thread, because a
+    registry carrying a malformed claim on it is not one to trust about it). A torn read is not a case: the backend
+    publishes the file through an O_EXCL temp file, fsync and os.replace (CodexBackend._write_registry_locked), so a
+    reader sees a whole file or none. Nothing is memoized, like the rest of the identity: a miss (the kernel
+    mid-spawn, a repair in progress) is retried in full by the next command. Says nothing itself: the command that
+    refuses on the missing identity prints `why` (_identity_refusal)."""
+    path = CODEX_REGISTRY
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "CODEX_THREAD_ID is set but %s does not exist, so this thread cannot be matched to a session" % path
+    except OSError as e:
+        return None, ("CODEX_THREAD_ID is set but %s could not be read (%s), so this thread cannot be matched to a "
+                      "session" % (path, e))
+    except ValueError as e:               # json.JSONDecodeError and UnicodeDecodeError are both ValueErrors
+        return None, ("CODEX_THREAD_ID is set but %s is not valid JSON (%s), so this thread cannot be matched to a "
+                      "session" % (path, e))
+    if not isinstance(rows, dict):
+        return None, "CODEX_THREAD_ID is set but %s is not an object of sessions, so this thread cannot be matched" % path
+    matches = [(sid, r) for sid, r in rows.items() if isinstance(r, dict) and r.get("tid") == tid]
+    if any(not _safe_id(sid) for sid, _ in matches):
+        return None, ("CODEX_THREAD_ID names a thread that a malformed row in %s claims (its key is not a session "
+                      "id); refusing to use it" % path)
+    live = [sid for sid, r in matches if not r.get("dead")]
+    if len(live) == 1:
+        return live[0], None
+    if not matches:
+        return None, "CODEX_THREAD_ID names a thread that %s has no session for" % path
+    if not live:
+        return None, "CODEX_THREAD_ID names a thread whose session has ended (only ended rows in %s)" % path
+    return None, ("CODEX_THREAD_ID names a thread that %d live sessions in %s claim; refusing to guess which"
+                  % (len(live), path))
+
+def _identity_refusal():
+    """The sentence a command that resolved NO identity says before it refuses, or None when the shell is simply not
+    a session's (neither identity variable set: the caller `send --from` serves, and the case every short "not in
+    a romp session" refusal was written for). Derived from the environment again HERE, on the refusal path only,
+    rather than carried out of _self_identity: that pair is the one resolver every command and tool call reads
+    (and every test stubs), and its shape is shared. The DECISION is the environment's alone (CODEX_THREAD_ID set
+    and CLAUDE_CODE_SESSION_ID not: a Codex session's shell whose identity did not resolve), so it cannot differ
+    from the resolution the command just made; only the wording is re-derived, and a registry that answers on this
+    second read (the kernel finished a spawn between the two) says so, still a refusal, instead of turning the
+    command into a --from send or a "not in a romp session"."""
+    fsid, why = _self_id_why()
+    if why:
+        return why
+    if fsid and not (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip():
+        return ("CODEX_THREAD_ID matched a session in %s on a second read but not on the first (the registry changed "
+                "under this command); retry" % CODEX_REGISTRY)
+    return None
+
+def _self_row(sid=None):
+    """THIS session's live agent row. CLAUDE_CODE_SESSION_ID is a transcript fsid, and a /clear or
+    resume fork moves that off the stable romp sid every store is keyed by (names registry,
     mailboxes, working notes, session flags) — so a forked session that trusted the env var mailed as
     "unknown", published its working note under an id no peer could see, and read an EMPTY mailbox
-    (the user 2026-07-27). Resolve through the kernel's sessions seam instead: an exact id match
-    first, else the row whose lastSid is our fsid (the SDK registry's authoritative stable→current
-    join, published on every /sessions row). None when not a romp session or the kernel is down."""
-    sid = _self_id()
+    (the user 2026-07-27). Resolve through the kernel instead, three joins in order: an exact id match
+    on the sessions listing; the row whose lastSid is our fsid (the SDK registry's authoritative
+    stable→current join, published on every /sessions row); and, when neither matches, the kernel's
+    own answer to which live session has owned this transcript (GET /sessions/by-fsid,
+    _kernel_session_by_fsid). The third join exists because a process's environment is fixed when it
+    starts: the session's postal MCP server is a child started with the CLI, so after a /clear it still
+    carries the PRE-clear id while the kernel's row has moved lastSid to the new one — every message
+    the session sent through the MCP tools arrived "from an unidentified session" and check_inbox read
+    a mailbox keyed by a transcript id nobody delivers to, until the CLI restarted (reproduced
+    2026-09-15; a `romp mail send` from a fresh shell, whose environment carried the current id, was
+    attributed, which is the mechanism). The kernel is the authority on which session owned a prior id
+    (its episode and fork records): it answers with ONE row or refuses (404 unknown, 409 claimed by
+    two), and a refusal, an old kernel or an unreachable one leaves the fallback below exactly as it
+    was (the env id). An EMPTY listing is not asked about: it is the kernel down or no live session
+    at all, and neither can own the id. A comment thread whose stale id the kernel has on record (its
+    resume forks; a thread's own /clear leaves no row and keeps this fallback) is answered with its
+    thread row (thread/parent as the ?threads=1 listing carries them), so the sender gate then reads its
+    reg under the resolved id and the thread rule (T356) holds its mail as it would have off the listing;
+    under the stale id no reg exists and a thread read as an ordinary session. A Codex session's id
+    (_codex_self_id) IS the stable sid, so it takes the exact match. `sid`: an id already resolved by
+    the caller (_self_identity resolves
+    once per command); None resolves here. None when not a romp session or the kernel is down."""
+    if sid is None:
+        sid = _self_id()
     if not sid:
         return None
     agents = local_agents(threads=True)   # a comment thread resolves to its OWN row/name (2026-08-22)
     return (next((a for a in agents if a.get("id") == sid), None)
-            or next((a for a in agents if a.get("lastSid") == sid), None))
+            or next((a for a in agents if a.get("lastSid") == sid), None)
+            or (_kernel_session_by_fsid(sid) if agents else None))
+
+def _self_identity():
+    """(id, name) of THIS session from ONE _self_row() resolution — one GET /sessions, where the
+    `my_name(), my_id()` pair a caller used to write cost two (2026-09-06: with about 30 sessions
+    beating every 30 s the heartbeat was nearly all of the kernel's GET /sessions traffic, and this
+    pair two of the three fetches each beat cost; the by-fsid join _self_row adds for a stale
+    pre-/clear id is one more small GET, and only when the listing matched nothing). Both fallbacks
+    kept: no row → the env fsid as the id (mail still routes by id) and the names registry for the
+    name (kernel-down fallback; a comment-thread session withholds its names entry, which is why the
+    row comes first). (None, None) when not in a romp session. Nothing is
+    memoized: a resolution that missed (kernel mid-restart) is retried in full by the next call."""
+    fsid = _self_id()                     # once per command; a failed Codex lookup's reason is the refusing command's to say
+    row = _self_row(fsid) if fsid else None
+    sid = row["id"] if row else fsid
+    if row and row.get("name"):
+        return sid, row["name"]
+    if not fsid:
+        return sid, None
+    try:
+        return sid, ((NAMES_DIR / fsid).read_text().split("\t")[0].strip() or None)
+    except Exception:
+        return sid, None
 
 def my_id():
-    row = _self_row()
-    return row["id"] if row else _self_id()
+    return _self_identity()[0]
 
 def my_name():
     # The live agent row first (it tracks renames AND survives transcript forks); the names registry as
-    # the kernel-down fallback. None when not in a romp session (no tmux fallback: the bus never shells
-    # tmux).
-    row = _self_row()
-    if row and row.get("name"):
-        return row["name"]
-    sid = _self_id()
-    if not sid:
-        return None
-    try:
-        return (NAMES_DIR / sid).read_text().split("\t")[0].strip() or None
-    except Exception:
-        return None
+    # the kernel-down fallback. A caller that needs BOTH halves calls _self_identity() once instead of
+    # this pair — each of these is a full resolution.
+    return _self_identity()[1]
 
 # ───────────────────────── maildir store ─────────────────────────
 
 def _iso_now():
     return datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
 
-_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 def _safe_id(s):
     """True iff `s` is safe as a single path component under the mail/names roots.
     Blocks path traversal (`..`, `/`, `\\`, NUL, leading dot, absolute paths) in
     any id/name that arrives over the (unauthenticated) bus. Session ids are
     UUIDs and names are sanitized to [A-Za-z0-9_-] at creation, so both match;
-    anything else is a crafted reference (e.g. `../../../etc`) and is rejected."""
+    anything else is a crafted reference (e.g. `../../../etc`) and is rejected.
+    Duplicated in the kernel (its _safe_id; tests/test_postal_self_host.py pins
+    the two copies identical). fullmatch, never match against `^...$`: `$` also
+    matches before ONE trailing newline, so "abc\\n" cleared the rule and
+    self_host's override branch declared it verbatim (review find, 2026-09-08)."""
     if not s or len(s) > 128:
         return False
     if "/" in s or "\\" in s or "\x00" in s or s.startswith("."):
         return False
-    return bool(_SAFE_ID_RE.match(s))
+    return bool(_SAFE_ID_RE.fullmatch(s))
 
 # Every character str.splitlines() treats as a line break — \n \r \v \f \x1c \x1d \x1e
 # \x85 U+2028 U+2029 — plus the rest of the C0/C1 control range and NUL with them. Nothing
 # printable is in here: spaces, punctuation, accents, CJK and emoji all live outside it.
 _HDR_BREAK_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+def _marker_val(v):
+    """A relay marker as the wire may carry it: the kernel's own alphabet (digits, letters, ':' '_' '.' '-'), at most 64
+    characters; anything else is dropped, so a value from a tokened client, a far host or a held record can carry
+    no header line and forge nothing."""
+    return re.sub(r"[^A-Za-z0-9:_.-]", "", str(v or ""))[:64]
+
 
 def _hdr_val(v):
     """One value, made safe to write into a maildir header line (see deliver).
@@ -233,42 +511,194 @@ def _unique():
     # self_host(), not raw gethostname: the mid is a path component under mail/ and the peer's
     # outbox (_safe_id-checked at outbox_put), so a stomped hostname baked in here silently killed
     # every OUTBOUND cross-host send too — same 2026-08-11 breakage as self_host's docstring.
-    return f"{int(time.time())}.{os.getpid()}_{random.randint(0, 99999)}.{self_host()}"
+    # 128 bits from os.urandom, not random.randint(0, 99999) (2026-09-08): five decimal digits gave
+    # 100k names per second per process, and deliver()'s publish renamed OVER a standing new/<name>
+    # on a collision — somebody's unread mail replaced without a trace. The same id keys the outbox
+    # record and the quarantine file, so it has to be unique ACROSS processes and hosts, not merely
+    # within one process's second. Still digits, ".", "_", hex and the host, so _safe_id passes it
+    # (a DNS label is at most 63 chars; the whole id stays under the 128 cap).
+    return f"{int(time.time())}.{os.getpid()}_{os.urandom(16).hex()}.{self_host()}"
 
 def _mark_pending(sid):
     """Reconcile the on-disk pending-mail marker with reality: mail-pending/<sid>
     exists IFF that session has unread mail in new/. Call after ANY mutation of a
-    new/ box (deliver, consuming read_box, recall, sweep). On-disk and tmux-free,
-    so it's the ONE fact every view can agree on — including DEAD sessions (no tmux
-    vars) and across a bus restart. Self-correcting + idempotent; never raises."""
+    new/ box (deliver, consuming read_box, recall, sweep). On-disk and owned by no
+    process, so it's the ONE fact every view can agree on — including DEAD sessions
+    and across a bus restart. Self-correcting + idempotent; never raises."""
     if not sid:
         return
     m = MAILPENDING / sid
     newd = MAILROOT / sid / "new"
+    empty = _dir_empty(newd)                       # True, False, or None for a new/ that cannot be read. None covers EACCES and
+    #                                                EIO (the directory exists and cannot be listed); ENOENT, ENOTDIR, EBADF and
+    #                                                ELOOP read MISSING by the shared tuple (REG_MISSING_ERRNOS), so a symlink-loop
+    #                                                or file-shaped new/ clears the marker like an absent one, deliberately
+    if empty is None:
+        # UNKNOWN keeps the marker as it stands, present or absent, never an unlink: a box whose new/ cannot be listed
+        # read as "no mail" here and lost the marker the retry arm had just kept, and the unread mail stranded with no
+        # wake and no line (the review of the exists() fix, 2026-09-14; serve() reconciles every box at each start)
+        _log("mail-pending marker for %s left as it stands: its inbox cannot be read" % sid)
+        return
     try:
-        has = newd.is_dir() and any(newd.iterdir())
-    except Exception:
-        has = False
-    try:
-        if has:
+        if not empty:
             MAILPENDING.mkdir(parents=True, exist_ok=True)
             m.touch()
-        elif m.exists():
-            m.unlink()
+        else:
+            m.unlink()                                 # FileNotFoundError lands in the except below like every other fault
     except Exception:
         pass
 
+_TL_FAULT = [False]      # transition-only logging for _tl_append (the _PRESENCE_SERVE_WARNED idiom)
+
 def _tl_append(fname, obj):
-    """Append one JSON line to a timeline log (best-effort; never raises)."""
+    """Append one JSON line to a timeline log. Returns True iff the row LANDED (the OS accepted the
+    write), False on any fault — with ONE stderr line per fault episode (and one when it writes
+    again), never per call. Never raises.
+
+    The return matters to the writers whose accounting IS the row (2026-09-08): deliver()'s sent
+    row, the relay park's sent row, and the outbox terminal rows (relayed / bounced). Before this the
+    append was best-effort with no return, so mail was published with no row anybody could see, and
+    an outbox record was deleted before its receipt existed. The exec / unexec / recall rows keep
+    ignoring the return: each is an annotation on a message that already exists, not the record of
+    whether it does."""
     try:
         TLDIR.mkdir(parents=True, exist_ok=True)
         with open(TLDIR / fname, "a") as fh:
             fh.write(json.dumps(obj) + "\n")
-    except Exception:
-        pass
+        if _TL_FAULT[0]:
+            _TL_FAULT[0] = False
+            _log("timeline log %s writes again" % fname)
+        return True
+    except Exception as e:
+        if not _TL_FAULT[0]:
+            _TL_FAULT[0] = True
+            _log("timeline log %s: append failed (%s) — sends are refused until it writes again"
+                 % (fname, e))
+        return False
+
+class DeliveryNotRecorded(Exception):
+    """deliver() refused: nothing reached the recipient, and NO row names the attempt. Either the
+    publish was refused — the name already stands in the inbox (a collision), or the filesystem said
+    no — so the name was never this message's and nothing is written under it; or the publish landed
+    and the sent row could not, and the mail was taken back out of new/ before anyone read it. The
+    sender still holds the text and retries. The message text is written for the SENDER's eyes: the
+    /send route answers it as the refusal body."""
+
+NOT_RECORDED_TEXT = ("the send was not recorded (the message log could not be written), so it was not "
+                     "delivered — nothing is lost; retry")
+
+# The `why` of a terminal `bounced` row that records a REFUSAL — nothing left this machine and no
+# return note exists — as opposed to a peer's refusal, which _bounce_apply returns to the sender as
+# a note. format_receipts phrases the two apart (2026-09-08): a refusal must not promise a note.
+# deliver() itself writes no WHY_NOT_PUBLISHED row: a publish it refuses records nothing (the name
+# was never its own — see deliver). The prefix remains for the start sweep's close of a temp whose
+# sent row stood open (WHY_STOPPED_BEFORE_PUBLISH).
+WHY_NOT_PUBLISHED = "not published: "
+WHY_NOT_PARKED = "not parked: the outbox record could not be written"
+WHY_OUTBOX_UNREADABLE = "outbox record unreadable, moved aside"
+WHY_INBOX_UNREADABLE = "inbox file unreadable, moved aside"    # read_box's move-aside (review find, 2026-09-08)
+REFUSAL_WHYS = (WHY_NOT_PUBLISHED, "not parked:", WHY_OUTBOX_UNREADABLE, WHY_INBOX_UNREADABLE)
+
+_DASHBOARD_MISSED = [False]   # transition-only logging for _refused_notice's kernel leg
+
+def _refused_notice(text):
+    """A fault the USER should see, not only whoever reads server.log (review find, 2026-09-08): the
+    bus has no dashboard surface of its own, so the text goes to the kernel (POST /postal-notice),
+    which files it as one bell row under the `refused` kind, the kind every state file the kernel
+    could not read or write already wears, so a mute on machine-sync notices never hides it. The
+    stderr line is written here too: a caller says a fault once, in one place, and both surfaces
+    carry it. Best-effort toward the kernel: one that is down, or too old to know the route, leaves
+    the log line and the ledger row standing, and the miss is said once per episode."""
+    _log(text)
+    r = _kernel_post("/postal-notice", {"text": text})
+    if r is not None and r.get("ok"):
+        if _DASHBOARD_MISSED[0]:
+            _DASHBOARD_MISSED[0] = False
+            _log("the dashboard hears the mail service's notices again")
+        return
+    if not _DASHBOARD_MISSED[0]:
+        _DASHBOARD_MISSED[0] = True
+        _log("the dashboard could not be told (the kernel %s); the log and the ledger still carry it"
+             % ("refused the notice" if r else "did not answer"))
+
+_REFUSAL_SAID = {}       # site -> True while that site's refusal episode is open (said once, not per pass)
+
+def _say_refused_once(site, what, exc):
+    """One _log line per refusal EPISODE at a periodic site (the orphan sweep, the stuck-mail warning):
+    the pass that met the refusal says it, the passes that meet it again stay quiet, and the first
+    pass whose send lands again (_refusal_over) re-arms it."""
+    if _REFUSAL_SAID.get(site):
+        return
+    _REFUSAL_SAID[site] = True
+    _log("%s: %s was refused (%s) — kept for the next pass" % (site, what, exc))
+
+def _refusal_over(site):
+    _REFUSAL_SAID.pop(site, None)
+
+_LINK_FALLBACK_SAID = [False]
+
+def _publish_new(tmp, dst):
+    """Publish a finished temp as new/<name> WITHOUT ever replacing a standing message. rename()
+    silently overwrites an existing target, so a name collision destroyed somebody's unread mail
+    with no trace (2026-09-08). link() refuses an existing target atomically (FileExistsError) — the
+    maildir protocol's own answer to this — and the temp is unlinked after, so the message is
+    visible under exactly one name at every instant. A filesystem that refuses hard links falls
+    back to an exists-check + rename, said once: that check is not atomic, but a collision there
+    needs two writers minting the same 128-bit name in the same instant, so the protection is the
+    same in practice. Raises OSError (FileExistsError on a collision); the caller refuses and
+    records nothing — the name was never this delivery's (see deliver).
+
+    EVERY link() refusal but a collision takes the fallback (review find, 2026-09-08). The first
+    cut named six errnos as "no hard links here" (EPERM, EOPNOTSUPP, ENOTSUP, ENOSYS, EMLINK,
+    EXDEV) and re-raised the rest as real faults, but filesystems answer that question in more
+    ways than six (EACCES and EINVAL on some network and FUSE mounts), and an errno off the list
+    turned EVERY send on such a machine into a refusal. The checked rename is the right answer to
+    all of them: a real fault (EIO, ENOSPC) fails the rename the same way, so nothing is ever
+    delivered over a fault, and the fallback line names the errno so a fault reads as one."""
+    try:
+        os.link(tmp, dst)
+    except FileExistsError:
+        raise
+    except OSError as e:
+        if not _LINK_FALLBACK_SAID[0]:
+            _LINK_FALLBACK_SAID[0] = True
+            _log("mail publish: hard links unavailable here (%s) — falling back to a checked rename" % e)
+        if dst.exists():
+            raise FileExistsError(str(dst))
+        # os.rename, not Path.rename: on Python 3.10 pathlib binds os.rename at import, so a fault
+        # staged on os.rename never reaches Path.rename there and a real fault would publish over it
+        # (review find, 2026-09-08: the fallback test was green on 3.11+ and red on 3.10 for this alone).
+        os.rename(tmp, dst)
+        return
+    try:
+        tmp.unlink()
+    except OSError as e:
+        _log("mail publish: %s is out but its temp could not be removed (%s)" % (dst.name, e))
+
+def _walk_root_record(frm_id):
+    """The sending session's kernel-walked root-ask record, fetched at SEND time for a cross-host
+    delegate (the user 2026-08-27, T126): the receiving kernel's chain walk rightly refuses
+    foreign-kernel hops because the evidence (goal stores + transcripts) lives on THIS machine's
+    disk — but at send time that evidence and the outgoing payload share a disk and the host is
+    definitionally online, so the origin kernel walks its own chain and the proof rides the wire.
+    The bus is stdlib-only by design, so the walk is a kernel HTTP ask (the /redial pattern):
+    best-effort, and an unreachable kernel enriches nothing — mail never blocks on enrichment.
+    The record is KERNEL-written (never agent prose), which is what earns it the walk-proved trust
+    class on the receiving side."""
+    r = _kernel_post("/walk-root", {"sid": frm_id}) or {}
+    txt = str((r or {}).get("text") or "").strip()
+    if not txt:
+        return None
+    return {"text": txt[:1200], "sid": str(r.get("sid") or frm_id), "host": self_host()}
+
 
 def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host="",
-            relay_mid="", relay_via="", tracked=False):
+            relay_mid="", relay_via="", tracked=False, user_ask=None, relayed=False, relay_marker=""):
+    # relayed=True (T334, 2026-09-11): romp sent this on the SENDER's behalf (the kernel relaying a worker's block
+    # toward the peer that delegated its goal, as the worker's own question). The header and the row say so, so
+    # the courier and the sender's own receipts can tell it from a typed ask (the recipient reads ordinary mail);
+    # relay_marker is the kernel's identity for the relay, written on the row so a send whose answer was lost is
+    # found again and never repeated.
     # park=True marks a HANDOFF parked for a session that's currently dead. The
     # maildir is keyed by the session UUID (which `romp resume` reuses), so the
     # message simply waits on disk until that session is revived — delivered then,
@@ -282,7 +712,10 @@ def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host="",
     # from — stamped into headers so the read receipt can flow back when the recipient actually reads
     # it (read_box/restore queue it into the readbox). The maildir file is the durable record: the
     # receipt route survives a bus restart exactly as long as the unread mail does.
-    mb = _mailbox(to_id)
+    relayed = bool(relayed) and kind == "question"   # the invariant every path shares (the /send gate, the far side's
+    relay_marker = _marker_val(relay_marker) if relayed else ""   # deliver, a held message's approve): only a question is
+    mb = _mailbox(to_id)                             #   relayed; the marker (the kernel's relay identity) rides with it,
+    #                                                  clamped to a marker's own alphabet (a wire value forges nothing)
     name = _unique()
     tmp = mb / "tmp" / name
     # THE header write point — every value that lands in a header line goes through _hdr_val
@@ -310,9 +743,12 @@ def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host="",
         hdr += "X-From-Host: %s\n" % h["from_host"]
     if h["relay_mid"] and h["relay_via"]:
         hdr += "X-Peer-Mid: %s\nX-Peer-Via: %s\n" % (h["relay_mid"], h["relay_via"])
+    if relayed:
+        hdr += "X-Relayed: romp\n"                  # sent by romp on the sender's behalf (T334)
+    if relay_marker:
+        hdr += "X-Relay-Marker: %s\n" % _hdr_val(relay_marker)   # the kernel's marker id (clamped above; the one
+        #                                                          sanitizer every header value passes, as well)
     tmp.write_text(hdr + "\n" + body + "\n")
-    tmp.rename(mb / "new" / name)   # atomic within the same filesystem
-    _mark_pending(to_id)            # new/ is now non-empty -> raise the marker (covers park + live)
     # Timeline log: a message was SENT (the matching exec event is logged when
     # the recipient consumes it in read_box). id = maildir filename joins the two.
     ev = {"t": int(time.time()), "ev": "sent", "id": name,
@@ -321,16 +757,173 @@ def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host="",
         ev["park"] = True
     if kind:
         ev["kind"] = kind                            # additive (consumer contract above)
+    if relayed:
+        ev["relayed"] = True                         # additive (consumer contract above): romp relayed it (T334)
+    if relay_marker:
+        ev["relayMarker"] = relay_marker             # additive: the kernel finds a send it lost the record of by this
     if tracked:
         ev["tracked"] = True                         # additive (consumer contract above): report-back
         #                                              delegation — the row is the flag's ONE record;
         #                                              no header, no prose (the recipient reads nothing)
-    if from_host:
-        ev["from_host"] = from_host                  # additive (consumer contract above)
-    _tl_append("messages.jsonl", ev)
-    return name   # the message id (maildir filename); joins to the log + status-bar prefix
+    ev["from_host"] = from_host or ""                # additive (consumer contract above): "" says LOCAL
+    #                                                  outright — written only when set before, which left
+    #                                                  a local row and a pre-field relayed row the same shape
+    if relay_mid:
+        ev["originMid"] = relay_mid                  # the SENDER-side id for relayed mail (2026-08-28,
+        #                                              the dead-session round): local delivery mints its
+        #                                              own maildir mid, so sender and recipient held
+        #                                              DIFFERENT ids for one message and the delegation
+        #                                              mirror join never formed — this is the durable
+        #                                              join key the courier stamps into origin
+    if isinstance(user_ask, dict) and str(user_ask.get("text") or "").strip():
+        # the origin kernel's walked root-ask record (T126) — whitelisted copy, additive: the
+        # receiving courier reads it off this row (_postal_row) as walk-proved provenance
+        ev["userAsk"] = {"text": str(user_ask["text"])[:1200], "sid": str(user_ask.get("sid") or ""),
+                         "host": str(user_ask.get("host") or "")}
+    # The PUBLISH is the claim on the name, and the row follows it (2026-09-08). The row is the ONE
+    # record the sender's receipts, the timeline and the kernel's courier read — and a row is a
+    # statement about a NAME. Until link() has granted this delivery the name, the name may be
+    # somebody else's: a row-first order under a collision filed the refused message's `sent` row
+    # and then the refusal's `bounced` row under the STANDING message's id, and every reader of the
+    # ledger saw a delivered message as bounced. link() refuses an existing target atomically, so
+    # the publish is the one act that proves the name is ours; a refused publish therefore records
+    # nothing (the retry lands under a fresh name with its own row). The sender-side rule "row
+    # before park" is not contradicted: that row is the sender's receipt under the sender's OWN mid;
+    # this one is the recipient's record of a message that landed. What keeps new/ honest while the
+    # bus runs (before 2026-09-08 a best-effort append after the publish left mail in the inbox that
+    # nothing else knew about) is the take-back below: a row that cannot land pulls the mail back out
+    # before it is read, and the caller answers a retryable refusal while the sender still holds the
+    # text. The one gap the take-back cannot reach is a bus killed between the publish and the row:
+    # that message stands in new/ with no record until _sweep_unfinished_writes rebuilds its row from
+    # the file's headers at the next start (review find, 2026-09-08).
+    dst = mb / "new" / name
+    try:
+        _publish_new(tmp, dst)
+    except Exception as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        # A collision — a standing new/<name> — is the one case named apart: impossible in practice
+        # with 128-bit ids, so if it ever shows up it is evidence of something badly wrong, not a
+        # tiebreak. Either way the name was never this message's, so nothing is written under it.
+        # No row says this, so the log says it on every refusal, and the USER hears it once per
+        # recipient episode as a bell row (review find, 2026-09-08: a refusal on the relay leg has
+        # the dialer re-relay the message every exchange while the sender's receipt reads queued, so
+        # a fault that lasted had no surface anyone watched); the next publish to that recipient
+        # that lands re-arms it.
+        why = ("a message with this id already stands in the recipient's inbox; refusing to replace it"
+               if isinstance(e, FileExistsError) else str(e))
+        text = "deliver to %s: %s was not published (%s): refused, nothing recorded" % (to_id, name, why)
+        site = "deliver:%s" % to_id
+        if _REFUSAL_SAID.get(site):
+            _log(text)
+        else:
+            _REFUSAL_SAID[site] = True
+            _refused_notice(text + "; the sender holds the text and retries until the inbox can be written")
+        raise DeliveryNotRecorded("the message could not be placed in the recipient's inbox (%s) — "
+                                  "nothing was delivered; retry" % why)
+    _refusal_over("deliver:%s" % to_id)          # a publish landed: the next refusal here is a new episode
+    if not _tl_append("messages.jsonl", ev):
+        # The mail is out but its row is not: take it back, so nothing stands in new/ that the
+        # ledger does not know, and refuse: the sender still holds the text. Two outcomes the
+        # take-back cannot undo leave a DELIVERED message the ledger will never carry, and each
+        # answers the id, because the message is in (or on its way to) the recipient's hands: a
+        # reader claimed the file in the instant between the publish and the row (read_box renamed
+        # it into cur/), or the unlink itself was refused (the file stands in new/ and the next read
+        # gets it; the start sweep rebuilds that one's row if the bus restarts first). Both are said
+        # by name on stderr AND as a bell row, since no row will ever say it (the log fault itself
+        # was already said by _tl_append).
+        try:
+            dst.unlink()
+        except FileNotFoundError:
+            _refused_notice("deliver to %s: %s was read before its row could be written; delivered, and "
+                            "the ledger has no record of it" % (to_id, name))
+            _mark_pending(to_id)
+            return name
+        except OSError as e:
+            _refused_notice("deliver to %s: %s stands in the inbox without its row and could not be taken "
+                            "back (%s); delivered, and the ledger has no record of it" % (to_id, name, e))
+            _mark_pending(to_id)
+            return name
+        _mark_pending(to_id)        # new/ may be empty again -> reconcile the marker
+        raise DeliveryNotRecorded(NOT_RECORDED_TEXT)
+    _mark_pending(to_id)            # new/ is now non-empty -> raise the marker (covers park + live)
+    return name   # the message id (maildir filename); joins to the log
+
+_UNREADABLE_SAID = set()   # (path, errno) already logged this bus run — said once, not per poll
+
+def _say_unreadable_once(path, exc, where):
+    """One _log line per (file, errno) per bus run for a file a listing had to skip AND could not move
+    aside (the fallback under _mail_unreadable / _list_json_records). A poll loop (/inbox, /drain,
+    every exchange) re-meets the same file every pass; the registry keeps the fact loud and the log
+    readable."""
+    key = (str(path), getattr(exc, "errno", None))
+    if key in _UNREADABLE_SAID:
+        return
+    _UNREADABLE_SAID.add(key)
+    _log("%s: %s is unreadable (errno %s: %s) and could not be moved aside: skipped and left in place; "
+         "the rest is served" % (where, path.name, exc.errno, exc.strerror or exc))
+
+def _aside_name(f):
+    """`<name>.corrupt-<utc stamp>[-n]` beside `f`: the kernel stores' quarantine naming, so one
+    convention reads across every store romp moves a bad file aside in."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    aside, n = f.with_name("%s.corrupt-%s" % (f.name, stamp)), 0
+    while aside.exists():                            # a second one in the same second
+        n += 1
+        aside = f.with_name("%s.corrupt-%s-%d" % (f.name, stamp, n))
+    return aside
+
+def _mail_unreadable(f, sid, exc):
+    """One inbox file in new/ that cannot be read (EACCES, EIO): moved ASIDE, once, to
+    `<mailbox>/<name>.corrupt-<utc stamp>`, beside new/, so no listing (read_box, the sweeps,
+    restore) meets it again, and never deleted, so the evidence survives; with a terminal
+    `bounced` row (WHY_INBOX_UNREADABLE) closing the sender's receipt as refused, one stderr line
+    and one bell row on the dashboard (review find, 2026-09-08). The first cut skipped the file in
+    place and said it once in the log: that left the pending marker latched (the retry pass
+    re-pushed a no-op every interval), the sender's receipt pending forever, the stuck-mail
+    warning and the orphan sweep unable to touch it, and nothing the user could see. A file that
+    cannot be moved either is the fallback: skipped, said once per (file, errno)."""
+    aside = _aside_name(f.parent.parent / f.name)
+    try:
+        os.replace(f, aside)
+    except FileNotFoundError:
+        return                                       # consumed or recalled meanwhile: nothing to account
+    except OSError:
+        _say_unreadable_once(f, exc, "inbox %s" % sid)
+        return
+    who = _name_for_id(sid) or sid[:8]
+    _refused_notice("mail for %s: %s could not be read (errno %s: %s); moved aside to %s; the sender's "
+                    "receipt reads refused" % (who, f.name, exc.errno, exc.strerror or exc, aside.name))
+    _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": f.name, "to_id": sid,
+                                  "why": "%s (errno %s)" % (WHY_INBOX_UNREADABLE, exc.errno)})
+    _mark_pending(sid)                               # new/ may be empty now → drop the marker
+
+def _inbox_fault(err):
+    """Whether a BusError is the bus's own 503 for an inbox that cannot be listed (the reason already in the bus's log, once
+    per spell), as opposed to a fault the bus never saw: unreachable, another status, a decode fault (round five)."""
+    return getattr(err, "status", None) == 503 and "cannot be listed" in str(err)
+
+
+class InboxUnreadable(Exception):
+    """A mailbox whose new/ cannot be listed: /inbox and /drain answer this as a fault the client can show (a 503 with
+    the reason and an `unreadable` field beside empty rows), never as an empty inbox where mail sits unread; the push
+    and the sweeps skip the box with one line per fault spell, and the next poll or pass retries (2026-09-14)."""
+
+
+_INBOX_UNREADABLE_SAID = set()   # boxes whose listing fault was said (cleared by the box's next clean listing)
+
+
+def _say_inbox_unreadable_once(sid, why):
+    if sid not in _INBOX_UNREADABLE_SAID:
+        _INBOX_UNREADABLE_SAID.add(sid)
+        _log("%s; skipped until it can be listed" % why)
+
 
 def read_box(sid, consume):
+    """The unread mail of `sid`'s box, oldest first (consume: claimed into cur/). Raises InboxUnreadable when new/ exists
+    and cannot be listed; the callers answer the fault (never an empty inbox, which the client would read as no mail)."""
     if not _safe_id(sid):            # reject traversal in the id from /inbox, /drain
         return []
     if _postal_off(sid):             # isolated: hold mail — don't deliver while the mailbox is off (it waits in new/)
@@ -342,34 +935,61 @@ def read_box(sid, consume):
     if consume:
         (mb / "cur").mkdir(parents=True, exist_ok=True)
     out = []
-    for f in sorted(newd.iterdir(), key=lambda p: p.name):   # oldest first
+    try:
+        entries = sorted(newd.iterdir(), key=lambda p: p.name)   # oldest first
+    except OSError as e:
+        raise InboxUnreadable("inbox of %s cannot be listed (%s: %s)" % (sid, type(e).__name__, str(e)[:120]))
+    _INBOX_UNREADABLE_SAID.discard(sid)                   # listed: a later fault is a new spell
+    for f in entries:
         if not f.is_file():
             continue
-        text = f.read_text(errors="replace")
+        try:
+            text = f.read_text(errors="replace")
+        except FileNotFoundError:
+            continue                                 # consumed or recalled between the listing and the read
+        except OSError as e:
+            # One unreadable file (EACCES, EIO) used to raise out of the whole read — and do_GET
+            # has no handler, so /inbox and /drain answered NOTHING, on every poll, and the session
+            # got no mail at all while the Stop-hook drain hid the traceback (2026-09-08). The file
+            # is moved aside once, said once, and its ledger closed (_mail_unreadable); the rest of
+            # the box is served.
+            _mail_unreadable(f, sid, e)
+            continue
         head, _, body = text.partition("\n\n")
         meta = {}
         for line in head.splitlines():
             k, _, v = line.partition(": ")
             meta[k.lower()] = v
-        out.append({"from": meta.get("from", "?"), "from_id": meta.get("from-id", ""),
-                    "date": meta.get("date", ""), "body": body.rstrip("\n"), "id": f.name,
-                    "park": bool(meta.get("x-park")), "kind": meta.get("x-kind", ""),
-                    "from_host": meta.get("x-from-host", "")})
         if consume:
-            f.rename(mb / "cur" / f.name)
+            try:
+                f.rename(mb / "cur" / f.name)
+            except FileNotFoundError:
+                # gone between the read and the claim: recalled, taken back by a deliver() whose row
+                # could not land, or claimed by a second reader (2026-09-08). Nobody's to hand over,
+                # so no exec row and no entry; the rest of the box is served (an unguarded rename
+                # here raised out of the whole read, and /inbox and /drain answered nothing).
+                continue
             _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "exec", "id": f.name})
             _queue_read_receipt(meta, dmid=f.name)   # cross-host mail: the sender's host learns it was read
             #   dmid = THIS host's delivery mid — the id the recipient's transcript markers carry, so the
             #   sender's timeline can join the connector to the true process turn (the user 2026-08-06)
+        out.append({"from": meta.get("from", "?"), "from_id": meta.get("from-id", ""),
+                    "date": meta.get("date", ""), "body": body.rstrip("\n"), "id": f.name,
+                    "park": bool(meta.get("x-park")), "kind": meta.get("x-kind", ""),
+                    "relayed": bool(meta.get("x-relayed")),   # romp sent it on the sender's behalf (T334)
+                    "from_host": meta.get("x-from-host", "")})
     if consume:
         _mark_pending(sid)         # cleared the box -> drop the marker (no-op if more arrived)
     return out
+
+RESTORED, RESTORE_MISSING, RESTORE_UNKNOWN = "restored", "missing", "unknown"   # restore()'s three answers
+
 
 def restore(sid, mid):
     """UNCLAIM a consumed message: move cur/<mid> back to new/ under its ORIGINAL id.
 
     The counterpart to read_box(consume=True). A consuming drain is a CLAIM, not a delivery — the
-    claimer may fail to hand the mail over (the kernel can't inject safely), and then the claim has
+    claimer may fail to hand the mail over (the session did not take the wake), and then the claim has
     to be rolled back. Rolling it back by re-sending through deliver() mints a NEW id and logs a
     NEW "sent" event, which is what made a timeline message arc click land nowhere: the arc is drawn
     from the message log, so every deferred push drew ANOTHER arc for the same message, and only the
@@ -378,12 +998,21 @@ def restore(sid, mid):
     one message one arc, and that arc lands. Restoring the FILE also keeps the original headers
     (X-Park, X-Kind, Date), which the re-send dropped.
 
-    Returns True iff the message was put back."""
+    Answers one of three words (2026-09-14): RESTORED, the message is back in new/ under its id; RESTORE_MISSING,
+    nothing to put back (recalled or swept while we held it, or an unsafe id), the callers' cue to re-send under a
+    new id; RESTORE_UNKNOWN, cur/ cannot be read, so the claim may well sit there: the callers neither re-send (a
+    second id and a second sent row for one message) nor mark it restored (a claim the message is back when it is
+    not), say so once, and the next sweep retries. The first cut answered "put back" for unknown, a quiet claim the
+    repo's rule refuses."""
     if not _safe_id(sid) or not _safe_id(mid):
-        return False
+        return RESTORE_MISSING
     src = MAILROOT / sid / "cur" / mid
-    if not src.is_file():                # recalled/swept while we held it — nothing to put back
-        return False
+    state = _record_state(src)
+    if state == "unreadable":
+        _log("restore of %s for %s: its cur/ cannot be read; the claim stands where it is for the next sweep" % (mid, sid))
+        return RESTORE_UNKNOWN
+    if state == "missing":               # recalled/swept while we held it: nothing to put back
+        return RESTORE_MISSING
     try:
         head = src.read_text(errors="replace").partition("\n\n")[0]
     except OSError:
@@ -391,8 +1020,11 @@ def restore(sid, mid):
     try:
         (MAILROOT / sid / "new").mkdir(parents=True, exist_ok=True)
         src.rename(MAILROOT / sid / "new" / mid)
-    except OSError:
-        return False
+    except FileNotFoundError:
+        return RESTORE_MISSING
+    except OSError as e:
+        _log("restore of %s for %s: the move back to new/ failed (%s); the claim stands for the next sweep" % (mid, sid, type(e).__name__))
+        return RESTORE_UNKNOWN
     # The exec stamp said "the recipient read it"; it didn't. Retract it so the sender's receipt
     # reads pending again (_sent_receipts drops an exec that a later unexec retracts).
     _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "unexec", "id": mid})
@@ -401,7 +1033,36 @@ def restore(sid, mid):
         k, _, v = ln.partition(": "); meta[k.lower()] = v
     _queue_read_receipt(meta, unread=True)   # cross-host: retract the read the claim implied
     _mark_pending(sid)                   # new/ is non-empty again -> raise the marker
-    return True
+    return RESTORED
+
+def restore_stranded(data):
+    """POST /restore {id, mids} — the kernel handing back mail it FED and LOST (SdkSession._return_stranded_mail,
+    2026-09-12): a banner fed to a session's client that was torn down before the turn resulted was dropped on the
+    kernel's side, while this bus had retired its durable copy on `injected: true` (which only ever meant "queued
+    in kernel memory"). Each named message goes back to new/ under its ORIGINAL id (restore, the same roll-back the
+    not-injected push takes), and the session is woken so it re-delivers now; the retry pass covers a session that
+    cannot take the wake yet. Answers {ok, restored: [...], missing: [...]}: `missing` are ids no longer in cur/
+    (recalled, swept, never claimed, or unsafe as a path) — the caller's cue NOT to re-feed them on its own. 400
+    for a malformed ask (no safe session id, mids not a list of strings)."""
+    sid = str(data.get("id") or "")
+    mids = data.get("mids")
+    if not sid or not _safe_id(sid) or not isinstance(mids, list) or not mids \
+            or not all(isinstance(m, str) and m for m in mids):
+        return {"ok": False, "error": "id and a list of message ids required"}, 400
+    restored, missing, unknown = [], [], []
+    for mid in mids:
+        r = restore(sid, mid) if _safe_id(mid) else RESTORE_MISSING
+        if r == RESTORE_UNKNOWN:
+            _hold_claim(sid, mid)                    # the fourth UNKNOWN site: recorded for the retry loop, the exec row retracted
+        (restored if r == RESTORED else unknown if r == RESTORE_UNKNOWN else missing).append(mid)
+    if restored:
+        _log("restore for %s: %d message(s) the kernel fed and lost (a connection rebuild stranded the turn) put back "
+             "in new/ under their own ids for re-delivery: %s" % (sid, len(restored), ", ".join(restored)))
+        threading.Thread(target=_wake_when_ready, args=(sid,), daemon=True).start()
+    if unknown:
+        _log("restore for %s: %d message(s) could not be answered for (cur/ unreadable); held (mail-held/), neither put back "
+             "nor re-fed, the retry loop puts them back once cur/ reads: %s" % (sid, len(unknown), ", ".join(unknown)))
+    return {"ok": True, "restored": restored, "missing": missing, "unknown": unknown}, 200
 
 def _queue_read_receipt(meta, unread=False, dmid=""):
     """Cross-host read backflow: mail delivered over the peer bus carries X-Peer-Mid/X-Peer-Via
@@ -434,7 +1095,13 @@ def _queue_read_receipt(meta, unread=False, dmid=""):
 #      {ev:"sent", id, from, from_id, to_id, body, t, park?, kind?, from_host?, tracked?}
 #      (park/kind/from_host/tracked are all additive; `tracked` marks a report-back delegation —
 #      kind stays "delegate" — whose sender-side view is primary: the kernel courier reads it off
-#      this row, never off the message prose).
+#      this row, never off the message prose). A CROSS-HOST relay row has to_id "peer:<host>" and
+#      adds toName ("<host>:<name>") + to_sid (the recipient's stable id — the wait readers key on
+#      it; rows from before 2026-09-08 lack it and fall back to the name alias). from_host is written
+#      on EVERY row since 2026-09-06 — "" for local delivery, the origin host for relayed mail — so a
+#      row WITHOUT the key is one from before that, whose sender may be either; a reader that needs
+#      the distinction (the kernel's postal card, for the sender's repository) treats absence as
+#      unknown, not as local.
 # The HUMAN-FACING prose (banner text, headers, the "⏸ parked" tag, REPLY_HINT) is
 # NOT a contract — consumers must not parse it, so it stays free to change.
 
@@ -518,11 +1185,20 @@ def format_receipts(recs):
         elif r.get("recalled"):
             st = "recalled %s" % _hhmm_epoch(r["recalled"])
         elif r.get("bounced"):
-            st = "bounced %s — undeliverable, returned to you" % _hhmm_epoch(r["bounced"])
+            why = str(r.get("bouncedWhy") or "")
+            if why.startswith(REFUSAL_WHYS):
+                # a REFUSAL (2026-09-08): nothing left this machine and no return note exists, so the
+                # refusal is the whole story — never promise a note that is not coming
+                st = "bounced %s — refused — %s" % (_hhmm_epoch(r["bounced"]), why)
+            else:
+                st = "bounced %s — undeliverable, returned to you" % _hhmm_epoch(r["bounced"])
         elif r.get("parked"):                  # cross-host, still in the outbox awaiting relay
             # "(unreachable)" ONLY when the link is actually down (the user 2026-08-24): a healthy
             # queue is normal transit, not a failure. An older bus omits parkedUp — claim nothing.
-            if r.get("parkedUp"):
+            if r.get("carried"):               # it left with an exchange; the far side's ack is not back
+                st = "left for %s %s — awaiting delivery confirmation · id %s" % (
+                    r["parked"], _hhmm_epoch(r["carried"]), r.get("id", "?"))
+            elif r.get("parkedUp"):
                 st = "queued for relay to %s · id %s" % (r["parked"], r.get("id", "?"))
             elif "parkedUp" in r:
                 st = "parked for %s (unreachable) — delivers on reconnect · id %s" % (r["parked"], r.get("id", "?"))
@@ -532,7 +1208,8 @@ def format_receipts(recs):
             st = "delivered %s (not read yet) · id %s" % (_hhmm_epoch(r["relayed"]), r.get("id", "?"))
         else:                                  # still unread -> recallable; show the id to target it
             st = "pending (not read yet) · id %s" % r.get("id", "?")
-        out.append("  → %-18s sent %s · %s" % (r.get("to", "?"), _hhmm_epoch(r["sent"]), st))
+        out.append("  → %-18s sent %s · %s%s" % (r.get("to", "?"), _hhmm_epoch(r["sent"]), st,
+                                                  " · sent on your behalf" if r.get("onBehalf") else ""))
     return "\n".join(out)
 
 # ───────────────────────── the bus (server) ─────────────────────────
@@ -542,55 +1219,85 @@ STREAKS = {}           # id -> (count, last_epoch)        (loop guard)
 _lock = threading.Lock()
 
 def _kernel_sessions(threads=False):
-    """LIVE romp sessions (tmux + SDK) from the kernel's unified GET /sessions — the kernel owns the backend
-    query (TmuxBackend for tmux liveness + the SDK registry), so the bus enumerates sessions WITHOUT shelling
-    tmux and WITHOUT reading the SDK registry directly: ONE source. Loopback, authorized with X-Romp-Token
+    """LIVE romp sessions (Claude Code and Codex) from the kernel's unified GET /sessions — the kernel owns
+    the backend query (the SDK registry and the Codex registry), so for ADDRESSING the bus never reads a
+    registry directly: ONE source. (One deliberate exception since 2026-08-31: _durable_session reads a
+    per-session reg file on the REFUSAL path only, to corroborate a suspected listing blink before ruling
+    a session dead — never to resolve delivery.) Loopback, authorized with X-Romp-Token
     (the shared 0600 serve-token file — the kernel gates every request, loopback included). [] if the kernel
     is unreachable (rare — the manager supervises it); the bus then shows no local
-    agents until it's back, rather than reaching past the abstraction to tmux.
+    agents until it's back, rather than reaching past the abstraction.
 
     ROMP_SESSIONS_FILE is a test seam (like ROMP_*_BIN): a JSON file of the same rows, read instead of the
     live kernel so the bus is testable without one."""
+    return _kernel_sessions_checked(threads=threads)[0]
+
+
+def _kernel_sessions_checked(threads=False):
+    """(rows, answered) — answered False means the liveness source DID NOT ANSWER (the kernel is
+    unreachable, typically mid-restart), which is different information from an empty listing.
+    Callers that are about to make a CLAIM about liveness (resolve_recipient's refusal) must
+    check `answered` — an unanswered fetch collapsed to [] read exactly like universal deadness,
+    and the refusal it produced blamed a demonstrably live peer (sighting 2026-08-29: a send was
+    refused as not-live mid-restart; the retry 101 seconds later delivered)."""
     seam = os.environ.get("ROMP_SESSIONS_FILE")
     if seam:
         try:
             data = json.loads(Path(seam).read_text())
             if not isinstance(data, list):
-                return []
+                return [], True
             # the seam mirrors the route: thread rows ride only when asked (the user 2026-08-22)
-            return data if threads else [r for r in data if not (isinstance(r, dict) and r.get("thread"))]
+            return (data if threads else
+                    [r for r in data if not (isinstance(r, dict) and r.get("thread"))]), True
         except Exception:
-            return []
+            return [], True
     import urllib.request
     try:
         req = urllib.request.Request(KERNEL_BASE + "/sessions" + ("?threads=1" if threads else ""),
                                      headers={"X-Romp-Token": SERVE_TOKEN})
-        with urllib.request.urlopen(req, timeout=2) as r:
+        # 6s and _http's 15s are ONE BUDGET PAIR: a refusal-bound send makes two sequential
+        # fetches (the pool + the corroboration probe), and the honest refusal must reach the
+        # sender inside the client cap — 6+6=12 < 15. Raise them TOGETHER or not at all (the
+        # 2026-08-31 review reproduced the failure mode: a fetch cap raised past the client cap
+        # made the refusal die on a closed socket, blaming the bus). 6s is measured, not guessed:
+        # the live /sessions route on a loaded 30-session kernel sampled p50 0.6s / p90 3.5s /
+        # max 4.9s (2026-08-31) — the old 2s cap failed a fifth of fetches, and each failure
+        # started the refusal chain the blink specimens rode.
+        with urllib.request.urlopen(req, timeout=6) as r:
             data = json.loads(r.read().decode("utf-8"))
-        return data if isinstance(data, list) else []
+        return (data if isinstance(data, list) else []), True
     except Exception:
-        return []
+        return [], False
 
 
 def local_agents(threads=False):
-    """LIVE local sessions (tmux + SDK) as postal agent rows, read from the kernel's unified GET /sessions.
-    The kernel merges both backends, so an SDK session is a live agent here too — a send to an open SDK
-    session delivers instead of parking as dead (the user via ui, 2026-06-26).
+    """LIVE local sessions (Claude Code and Codex) as postal agent rows, read from the kernel's unified GET
+    /sessions. The kernel merges every backend, so a session of either kind is a live agent here — a send to
+    an open session delivers instead of parking as dead (the user via ui, 2026-06-26).
 
     `threads` (the user 2026-08-22): also include COMMENT-THREAD sessions — real forked sessions the
     kernel hides from tabs/lanes/cards until promotion. Opt-in per consumer so the default listing and
     every other reader stay exactly as they were: self-identity, recipient resolution, and the agents
-    listing pass True (a thread mails its parent under its OWN name and is addressable for replies);
-    everything else never sees them."""
+    listing pass True (a thread mails its parent under its OWN name and is addressable for replies),
+    and so does every reader that judges a MAILBOX live or dead — the heartbeat (2026-09-06), the
+    orphan sweep, the stuck-mail warning, the revive wake and the retry pass (2026-09-10: those four
+    read the default listing, so a live thread's box was dead to them — the sweep destroyed a parent's
+    reply to its own thread after ORPHAN_GRACE and told the sender the thread had exited, and the
+    retry and wake never delivered it). Readers that only count or show presence keep the default."""
+    return _agent_rows(_kernel_sessions(threads=threads))
+
+
+def _agent_rows(sessions):
     res = []
-    for s in _kernel_sessions(threads=threads):
+    for s in sessions:
         sid = s.get("id")
         if not sid:
             continue
         row = {"name": s.get("name") or sid[:8], "id": sid, "remote": False,
                "working": s.get("working", ""), "dir": s.get("dir", ""),
                "lastSid": s.get("lastSid", ""),   # the session's CURRENT transcript fsid (self-identity join)
-               "state": s.get("state", "")}   # state: working/idle/waiting/... → working-note freshness
+               "state": s.get("state", ""),   # state: working/idle/waiting/... → working-note freshness
+               "backend": s.get("backend", "")}   # sdk | codex: _push words the banner's reply hint by it (2026-09-19)
         if s.get("thread"):
             row["thread"] = True
             row["parent"] = s.get("parent") or ""
@@ -598,13 +1305,27 @@ def local_agents(threads=False):
     return res
 
 
+def local_agents_checked(threads=False):
+    """(local_agents rows, answered) — the honesty-arm variant for consumers whose REFUSALS ride the
+    listing (the inbound relay's bounces, the presence producer): 'answered' distinguishes a kernel
+    that said "no sessions" from one that couldn't answer at all (mid-restart), the same bit the
+    sending resolver has carried since the answered-but-absent round (2026-08-31)."""
+    rows, answered = _kernel_sessions_checked(threads=threads)
+    return _agent_rows(rows), answered
+
+
 def _kernel_post(path, body, timeout=2):
     """POST a small JSON body to the kernel (loopback, X-Romp-Token from the shared 0600 file) — the bus's
-    one-way control channel for the
-    ops the kernel owns now that the bus never shells tmux: the working-note, mail delivery/wake, the
-    status-bar chrome, and the resume-picker check. Returns the parsed JSON response dict, or None
-    (unreachable kernel / non-2xx / parse error → the caller degrades). No-op (None) under the
-    ROMP_SESSIONS_FILE test seam, which signals a test running with no live kernel."""
+    one-way control channel for the ops the kernel owns: the working-note (/working), mail delivery/wake
+    (/deliver), the host redial (/redial), the courier's root walk (/walk-root) and a notice into the
+    dashboard (/postal-notice). Returns the parsed JSON response dict; None when
+    the kernel could not be reached or its answer could not be parsed (the caller degrades); or, for a
+    kernel that REFUSED the request (a 4xx/5xx), {"ok": False, "status": <code>, "error": <its text>},
+    logged here by status with a bounded slice of the kernel's own reason, so a refusal never reads as
+    a dead kernel (review find, 2026-09-08: every non-2xx came back as None, and the kernel's 413 on an
+    oversize /deliver body was filed as "deferred" and re-posted forever). A caller that tests
+    `resp.get("ok")` or `resp.get("injected")` sees a refusal as the failure it is. No-op (None) under
+    the ROMP_SESSIONS_FILE test seam, which signals a test running with no live kernel."""
     if os.environ.get("ROMP_SESSIONS_FILE"):
         return None
     import urllib.request
@@ -616,8 +1337,76 @@ def _kernel_post(path, body, timeout=2):
             if getattr(r, "status", 200) // 100 != 2:
                 return None
             return json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        text = ""
+        try:
+            text = " ".join((e.read(512) or b"").decode("utf-8", "replace").split())   # a bounded slice: the
+        except Exception:                                                                # kernel's reason, never
+            pass                                                                         # a whole error page
+        _log("kernel refused POST %s: HTTP %d %s" % (path, e.code, text))
+        return {"ok": False, "status": int(e.code), "error": text}
     except Exception:
         return None
+
+
+_KERNEL_GET_SAID = set()   # (path, status) pairs a said_once caller has already had logged in this process
+
+
+def _kernel_get(path, timeout=2, said_once=()):
+    """GET one small JSON document from the kernel (loopback, X-Romp-Token from the shared 0600 file) — the
+    read twin of _kernel_post, for the one-document lookups the kernel owns (GET /sessions/by-fsid). The
+    same three answers: the parsed body on a 2xx; for a kernel that REFUSED (a 4xx/5xx) {"ok": False,
+    "status": <code>, "error": <its text>}, logged by status with a bounded slice of the kernel's own
+    reason, so a refusal never reads as a dead kernel; None when the kernel could not be reached or its
+    answer could not be parsed (the caller degrades). None under the ROMP_SESSIONS_FILE test seam, which
+    signals a test running with no live kernel: the sessions listing has its own seam, and a lookup this
+    one cannot serve falls back the way an unreachable kernel does. `said_once`: the statuses that are a
+    route's DESIGNED answer for this path rather than a failure (the by-fsid 404: no live session's records
+    hold the id) — still returned as the refusal dict, but logged the first time this process hears one for
+    the path and silent after, because the caller asks per command and the answer does not change; every
+    other status is logged each time it comes back."""
+    if os.environ.get("ROMP_SESSIONS_FILE"):
+        return None
+    try:
+        req = urllib.request.Request(KERNEL_BASE + path, headers={"X-Romp-Token": SERVE_TOKEN})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if getattr(r, "status", 200) // 100 != 2:
+                return None
+            return json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        text = ""
+        try:
+            text = " ".join((e.read(512) or b"").decode("utf-8", "replace").split())
+        except Exception:
+            pass
+        if int(e.code) not in said_once or (path, int(e.code)) not in _KERNEL_GET_SAID:
+            _log("kernel refused GET %s: HTTP %d %s" % (path, e.code, text))
+            if int(e.code) in said_once:
+                _KERNEL_GET_SAID.add((path, int(e.code)))
+        return {"ok": False, "status": int(e.code), "error": text}
+    except Exception:
+        return None
+
+
+def _kernel_session_by_fsid(fsid):
+    """The agent row of the live session that has owned transcript `fsid` at any point — GET
+    /sessions/by-fsid, where the kernel joins the id against every live session's and comment thread's
+    recorded transcripts (the sid, the current one, each /clear episode head, both ends of every resume
+    fork) and answers with that ONE session's row as its listing carries it (a thread's with thread and
+    parent, the ?threads=1 shape). None when no live session claims it (404), more than one does (409:
+    the kernel refuses to guess, and so does the bus), the kernel is unreachable or too old to serve the
+    route, or the row's id is not a session id. _self_row's third join, after the exact id and the
+    lastSid; why it exists is said there. The listing's 6 s budget, not _kernel_post's 2 s: the route
+    does a subset of the listing's work on the same loaded kernel (its p90 was 3.5 s, 2026-08-31). A 404
+    is the route's designed miss — no live session's records hold the id: an id romp never recorded, a
+    comment thread's own /clear head, a kernel from before the route — and the same for every ask this
+    process makes, so it is said once per process, not once per command; a 409 or a 5xx is said each time."""
+    resp = _kernel_get("/sessions/by-fsid?fsid=" + urllib.parse.quote(fsid, safe=""), timeout=6,
+                       said_once=(404,))
+    if not isinstance(resp, dict) or resp.get("ok") is False:
+        return None
+    rows = _agent_rows([resp])
+    return rows[0] if rows and _safe_id(rows[0]["id"]) else None
 
 
 def _kernel_up():
@@ -639,13 +1428,15 @@ def _kernel_up():
 
 
 def _publish_working(sid, text):
-    """Publish/clear THIS session's working-note via the kernel's backend-agnostic store (POST /working) — no
-    tmux. The kernel owns the store and both backends read it (it appears in GET /sessions' `working` field),
-    so an SDK session can publish a note too."""
-    return _kernel_post("/working", {"id": str(sid), "text": text}) is not None if sid else False
+    """Publish/clear THIS session's working-note via the kernel's store (POST /working). The kernel owns the
+    store and every backend reads it (it appears in GET /sessions' `working` field)."""
+    if not sid:
+        return False
+    r = _kernel_post("/working", {"id": str(sid), "text": text})
+    return r is not None and r.get("ok") is not False        # None: unreachable; ok false: the kernel refused
 
-def all_agents(threads=False):
-    agents = local_agents(threads=threads)
+def _with_remote_presence(agents):
+    """The local rows plus every heartbeat-known REMOTE session (within HEARTBEAT_TTL, not already local)."""
     local_ids = {a["id"] for a in agents}
     now = time.time()
     for sid, (name, ts) in list(HEARTBEATS.items()):
@@ -653,40 +1444,219 @@ def all_agents(threads=False):
             agents.append({"name": name, "id": sid, "remote": True})
     return agents
 
+def all_agents(threads=False):
+    return _with_remote_presence(local_agents(threads=threads))
+
 def _record_heartbeat(sid, name):
     """Record remote-presence for an incoming heartbeat — but ONLY for a sid the local kernel does NOT already
     own. A local session is already visible via the kernel's /sessions, so recording its heartbeat would leave
     it lingering as a phantom [remote] peer for the TTL after it dies. A genuine REMOTE (federated) session,
-    reaching us over an -R tunnel, is NOT in the local kernel — heartbeats are its only presence signal."""
-    if sid and _safe_id(sid) and sid not in {a["id"] for a in local_agents()}:
-        HEARTBEATS[sid] = (name or "?", time.time())
+    reaching us over an -R tunnel, is NOT in the local kernel — heartbeats are its only presence signal.
+
+    Returns True iff the sid is LOCAL: the bus's own listing ANSWERED and contains it (thread rows
+    included — a comment thread heartbeats under its own row, and until 2026-09-06 the thread-less
+    listing read here filed every live thread as REMOTE presence, a phantom that also reached
+    STATE/remote-sids; the by-name consumers that used to find a thread through that phantom,
+    _recip_id_for for recall, now read the listing with thread rows). The /heartbeat route hands that bit
+    back so a local session's MCP can stop heartbeating (2026-09-06: every local beat cost the kernel
+    three GET /sessions for a no-op). An UNANSWERED listing (kernel mid-restart) is False and records
+    the beat exactly as before — the answer is derived from the listing only, never from the
+    client's claim, so a remote session never hears "local" and never stops."""
+    local = False
+    if sid and _safe_id(sid):
+        rows, answered = local_agents_checked(threads=True)
+        if answered and any(a["id"] == sid for a in rows):
+            local = True
+        else:
+            HEARTBEATS[sid] = (name or "?", time.time())
+    _write_remote_sids()                           # presence changed → refresh the deadness mirror
+    return local
+
+def present_count_checked():
+    """(present count, answered) for the autostop gate: local rows plus heartbeat presence, and whether
+    the kernel's listing ANSWERED. An answered listing is also remembered (_remember_presence: the
+    in-memory last-good rows and their disk twin), which is the evidence _idle_tick reads when a later
+    listing does not answer."""
+    rows, answered = local_agents_checked()
+    if answered:
+        _remember_presence(rows)
+    return len(_with_remote_presence(list(rows))), answered
 
 def present_count():
-    return len(all_agents())
+    return present_count_checked()[0]
+
+THREAD_REG_UNREADABLE = "?"   # _thread_of: a reg that EXISTS but cannot be read; the mail rule fails closed on it
+# The stat errors that mean "no such record" (ENOENT, and the path shapes that cannot hold one: a component that is
+# not a directory, a bad descriptor, a symlink loop); any other stat error (EACCES on the directory, EIO) means a
+# record that exists but cannot be read. KEEP IN SYNC with kernel.py's _REG_MISSING_ERRNOS (the kernel's thread-reg
+# reader must agree with the bus's, or the bus holds mail while the tab paints mail on; a parity test pins the two).
+# Never Path.exists(): CPython 3.14 answers False on every stat error where 3.10 to 3.13 raised on EACCES (2026-09-14).
+REG_MISSING_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+
+
+def _dir_empty(d):
+    """True when `d` is a directory with nothing in it or does not exist (an absent directory holds nothing), False when it
+    holds an entry, None when it exists but cannot be read (unknown is never empty)."""
+    try:
+        return not any(d.iterdir())
+    except OSError as e:
+        return True if e.errno in REG_MISSING_ERRNOS else None   # ENOTDIR is in the tuple: a new/ that is a file is MISSING, the
+    #                                                              same word the reg rule gives it (a False here minted a permanent
+    #                                                              marker on a file-shaped box and the retry pushed every pass)
+
+
+def _record_state(p):
+    """'present', 'missing' or 'unreadable' for a message or record FILE the bus itself wrote: only ENOENT is missing (a
+    symlink loop, a non-directory component or a permission fault is a path the bus cannot answer for, so it is unreadable
+    and the sweep leaves the temp and the ledger alone). The reg reader's wider missing set (_path_state) is the kernel's
+    parity rule for a session's record, not this one."""
+    try:
+        p.stat()
+        return "present"
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unreadable"
+
+
+def _path_state(p):
+    """'present', 'missing' or 'unreadable' for a path, by an explicit stat under the rule above: the one shape every
+    fail-closed reader here uses, so an unreadable answer is never mistaken for an absent one on any interpreter."""
+    try:
+        p.stat()
+        return "present"
+    except OSError as e:
+        return "missing" if e.errno in REG_MISSING_ERRNOS else "unreadable"
+
+def _thread_of(sid):
+    """The parent sid when `sid` is a COMMENT THREAD (its durable SDK reg, beside session-flags.json in the kernel's
+    state, carries threadOf), '' for an ordinary session, and THREAD_REG_UNREADABLE when a reg exists but cannot be
+    read (the review's low on this change: an unreadable reg read as "not a thread" and mail went out; the kernel
+    writes regs by os.replace, so an unreadable one is corrupt, never torn, and the rule fails CLOSED on it). No reg
+    at all is an ordinary session (a thread's reg is written before its first turn, so a live thread always has one)."""
+    if not sid or not _safe_id(sid):
+        return ""
+    p = SESSION_FLAGS.parent / "sdk" / (sid + ".json")
+    try:
+        # the stat sits INSIDE the try (the review's medium): a directory that cannot be read (EACCES, EIO) raised
+        # out of every reader — read_box, the sender gate, resolve_recipient, the /agents filter — a crash, not a
+        # closed door; here it is the closed door. An EXPLICIT stat under the kernel's own errno rule (_path_state,
+        # REG_MISSING_ERRNOS), never Path.exists(): on CPython 3.14 exists() answers False on EACCES where 3.10 to 3.13
+        # raised, and the door read "not a thread" (2026-09-14)
+        state = _path_state(p)
+        if state == "missing":
+            return ""
+        if state == "unreadable":
+            return THREAD_REG_UNREADABLE
+        d = json.loads(p.read_text())
+        return str(d.get("threadOf") or "") if isinstance(d, dict) else THREAD_REG_UNREADABLE
+    except Exception:
+        return THREAD_REG_UNREADABLE
+
+def _mail_off_why(sid):
+    """Why `sid` can neither send nor receive mail right now, or '' when its mail is on:
+      "thread"    — a comment thread (T356, the user 2026-09-11: a thread of a manager session received the
+                    manager's mail, mailed two workers and merged a pull request as if it were the manager). A
+                    thread's mail is OFF by default, both directions, until the user breaks it out into a session
+                    of its own; the default derives from the thread-ness itself, so a thread on disk with no flag
+                    reads OFF, and the one way on short of a break-out is the fresh key `threadMail` at the literal
+                    True in session-flags.json (never an old key re-read). A break-out clears threadOf, and the
+                    promoted session falls to the ordinary rule.
+      "unreadable" — the session's durable record exists but cannot be read (corrupt, or a directory the bus cannot
+                    stat): closed, with its own words (the review's low: an ordinary session with a corrupt record was
+                    told it was a comment thread, a wrong diagnosis the norms then make final).
+      "isolation" — the user toggled POSTAL ISOLATION on (the timeline lane's mailbox icon → postalServiceOff;
+                    the legacy `postalOff` key still honoured).
+      "flags":    the kernel's session-flags file, which carries the isolation boundaries, cannot be read (a read or
+                    parse fault, or bytes the kernel quarantined beside a now-missing file) and no flags are known:
+                    closed for every session until the file is written again (mail held; the UI names the settings file).
+    Both read the kernel's shared files. The flags file that cannot be read or parsed is an UNKNOWN source
+    (_session_flags_read): the last known flags stand, said once per fault spell, and with none known yet the door is
+    closed under "flags" (before 2026-09-14 the flag read failed OPEN, a quiet wrong answer where the repo's rule wants
+    a fault; the kernel's _mail_off_why_k keeps the same rule over the same file, so the two sides agree on every shape
+    WITHIN a process's knowledge; across processes a warm kernel holding a cached clean read paints mail on while a
+    cold bus holds everything under "flags" until it reads the file once cleanly). A MISSING flags file with no
+    quarantine sidecar beside it is a genuine state (no flag ever set): known, mail on. The thread default holds
+    regardless of the flag file's health."""
+    if not sid:
+        return ""
+    flags, known = _session_flags_read()
+    f = flags.get(sid) if isinstance(flags, dict) else None
+    t = _thread_of(sid)
+    if t == THREAD_REG_UNREADABLE:
+        return "unreadable"                              # a record that exists but cannot be read: closed, never open
+    if t and not (isinstance(f, dict) and f.get("threadMail") is True):
+        return "thread"
+    if not known:
+        return "flags"                                   # the flags cannot be read and none are known: closed, never open
+    # Most-specific-wins: the session's own key decides either way, else the MASTER default under
+    # POSTAL_ALL_KEY. The kernel's reader honours the master too, and the two MUST agree — were only the
+    # kernel to, this service would go on advertising peers and taking sends the kernel treats as isolated.
+    if isinstance(f, dict):
+        for key in ("postalServiceOff", "postalOff"):
+            if key in f:
+                return "isolation" if f[key] else ""
+    master = flags.get(POSTAL_ALL_KEY) if isinstance(flags, dict) else None
+    return "isolation" if (isinstance(master, dict) and master.get("postalServiceOff")) else ""
+
+
+_FLAGS_LAST = [None]          # the last session-flags dict read cleanly (a missing file reads {}); None: none yet
+_FLAGS_FAULT_SAID = [False]   # the flags file's read fault said once per fault spell (re-armed by a clean read)
+
+
+def _session_flags_read():
+    """The kernel's session-flags file as (flags, known): the parsed object, or {} for a missing file with no quarantine
+    sidecar beside it (a genuine state), both known; on a read or parse fault, or a missing file the kernel quarantined
+    (a `session-flags.json.corrupt-<stamp>` sidecar stands: torn bytes moved aside, the flags they carried unknown), the
+    LAST KNOWN flags with one log line per fault spell (known), or (None, False) when this process has none yet:
+    unknown, and the readers close their doors for every session. Mirrors the kernel's _session_flags, which keeps its
+    last cached value on a fault or a quarantine and says so once per episode."""
+    def _unknown(what):
+        if not _FLAGS_FAULT_SAID[0]:
+            _FLAGS_FAULT_SAID[0] = True
+            _log("session-flags.json %s: %s" % (what,
+                 "the last known flags stand until it reads again" if _FLAGS_LAST[0] is not None
+                 else "no flags known yet, so mail is held for EVERY session (closed) until the file is written again"))
+        return _FLAGS_LAST[0], _FLAGS_LAST[0] is not None
+    try:
+        d = json.loads(SESSION_FLAGS.read_text())
+        if not isinstance(d, dict):
+            raise ValueError("not an object")
+    except FileNotFoundError:
+        try:
+            quarantined = any(True for _ in SESSION_FLAGS.parent.glob(SESSION_FLAGS.name + ".corrupt-*"))
+        except OSError:
+            quarantined = True
+        if quarantined:
+            return _unknown("is missing with a quarantine sidecar beside it (the kernel moved torn bytes aside)")
+        d = {}
+    except Exception as e:
+        return _unknown("cannot be read (%s: %s)" % (type(e).__name__, str(e)[:80]))
+    _FLAGS_LAST[0] = d
+    _FLAGS_FAULT_SAID[0] = False
+    return d, True
 
 def _postal_off(sid):
-    """True if the session is in POSTAL ISOLATION: invisible to list_agents, can't send, can't receive.
+    """True if the session can neither send nor receive mail (see _mail_off_why): it's invisible to list_agents,
+    can't send, and can't receive."""
+    return bool(_mail_off_why(sid))
 
-    Resolved most-specific-wins against the kernel's shared session-flags.json, mirroring
-    kernel._postal_isolated exactly — the session's own override (the timeline lane's mailbox icon, legacy
-    `postalOff` included) if it set one, else the MASTER default under the reserved POSTAL_ALL_KEY. The two
-    readers MUST agree: were only the kernel to honour the master, this service would go on advertising
-    peers and accepting sends that the kernel then treats as isolated.
+ISOLATION_SENDER = ("isolation: YOUR OWN mailbox is OFF. This session is in postal isolation (its mailbox icon is toggled off "
+                    "on its timeline lane), so it can't send OR receive any mail. This is NOT the recipient's mailbox — the "
+                    "recipient is fine; nothing was sent. To fix, ask the USER to toggle THIS session's mailbox back on in "
+                    "the timeline, then retry. When you relay this, say it's YOUR mailbox that's off, not theirs.")
 
-    Best-effort: any error → not isolated (fail OPEN, never wedge messaging)."""
-    if not sid:
-        return False
-    try:
-        flags = json.loads(SESSION_FLAGS.read_text())
-        own = flags.get(sid)
-        if isinstance(own, dict):
-            for key in ("postalServiceOff", "postalOff"):
-                if key in own:
-                    return bool(own[key])
-        master = flags.get(POSTAL_ALL_KEY)
-        return bool(isinstance(master, dict) and master.get("postalServiceOff"))
-    except Exception:
-        return False
+UNREADABLE_REG_SENDER = ("isolation: YOUR OWN mail is held because this session's record (its entry under the kernel's sdk/ "
+                         "directory) cannot be read, so the bus cannot tell what kind of session this is. Mail to and from it is "
+                         "held until the record is repaired. Nothing was sent, and this is final: do not route around it. Tell "
+                         "the user the session record cannot be read.")
+
+THREAD_MAIL_OFF_SENDER = ("isolation: YOUR OWN mail is OFF because this session is a COMMENT THREAD. A thread neither "
+                          "sends nor receives peer mail until the user breaks it out into a session of its own. "
+                          "Nothing was sent, and this is final: do not route around it (not the kernel's /send, not "
+                          "another session's mailbox, not a file drop). Answer in the thread, and leave mail to the "
+                          "session the thread belongs to. When you relay this, say the thread's mail is off until it "
+                          "is broken out.")
 
 def _git_branch(d):
     """Current git branch of a dir (for the agent list — same-branch is what makes
@@ -700,10 +1670,17 @@ def _git_branch(d):
     except Exception:
         return ""
 
-def _name_for_id(sid):
+def _name_for_id(sid, rows=None):
+    """A session's display name: its live row (thread rows included — a comment thread's name lives
+    only on its row, no names entry), else the names registry, else the short id. `rows` is a listing
+    the caller already holds, so an operation that names many ids fetches GET /sessions once, not once
+    per id (2026-09-06: the orphan sweep named every dead mailbox with its own fetch, 28 per 30 s poll
+    on a box with 58 mailboxes; a recall by a dead name fetched once per mailbox). None fetches."""
     if not sid:
         return "?"
-    for a in local_agents():
+    if rows is None:
+        rows = local_agents(threads=True)
+    for a in rows:
         if a["id"] == sid:
             return a["name"]
     try:
@@ -711,16 +1688,66 @@ def _name_for_id(sid):
     except Exception:
         return sid[:8]
 
-def _recip_id_for(to):
+def _recip_id_for(to, rows=None):
     """A recipient reference (live name, or UUID with an existing mailbox) -> session
     UUID, or None. Addressing is LIVE-only: a name that isn't a currently-live session
-    fails (no dead-session resurrection)."""
-    for a in all_agents():
+    fails (no dead-session resurrection). Thread rows included, the 2026-08-22 rule every
+    by-name resolver follows (resolve_recipient, GET /agents): a comment thread is addressable
+    by its own name, and recall of mail parked for it must find it (2026-09-06: it used to be
+    found through a phantom remote-presence row its heartbeat left; that phantom is gone).
+    `rows`: a listing the caller already holds (recall shares one across its lookups)."""
+    agents = _with_remote_presence(list(rows)) if rows is not None else all_agents(threads=True)
+    for a in agents:
         if a["name"] == to:
             return a["id"]
     if _safe_id(to) and (MAILROOT / to).is_dir():  # already an id with a mailbox (in-flight mail)
         return to
     return None
+
+def _durable_session(bare, by_id):
+    """Does `bare` name a session the DURABLE per-session registry knows as live-or-resumable?
+    The corroboration read behind the answered-but-absent refusal arm (2026-08-31): the kernel's
+    listing transiently omitted live sessions (a restart-settle blink), and the bus converted an
+    incomplete-but-200 listing into a hard "not live" for both address forms — one specimen
+    mis-routed a warning mail. A reg with alive=true is a session romp WILL list (running or
+    dormant-resumable), so its absence from one listing is a listing gap, never evidence of death.
+    The kernel owns every session's life and keeps a durable record for each (an SDK reg here; the
+    Codex backend's registry is its own file, so a Codex session's blink is not corroborated by this
+    read and falls to the listing). Reads the registry file directly (same box, kernel-owned): the designed API is the
+    listing itself, which is exactly the thing being second-guessed here."""
+    root = STATE.parent
+    if by_id:
+        sids = [bare]
+    elif re.fullmatch(r"[0-9a-fA-F][0-9a-fA-F-]{7,35}", bare):
+        # the short-id form (the ` · <8-char>` every list_agents row shows) — the third address
+        # form, blink-protected like the other two: prefix-match the registry files themselves
+        try:
+            sids = [f.stem for f in (root / "sdk").glob("*.json") if f.stem.startswith(bare)]
+        except OSError:
+            sids = []
+        if len(sids) != 1:
+            sids = []          # ambiguity is the standing refusal's call, never a guess here
+    else:
+        sids = []
+    if not by_id and not sids:
+        try:
+            for f in NAMES_DIR.iterdir():
+                try:
+                    if f.read_text().split("\t")[0].strip() == bare:
+                        sids.append(f.name)
+                except OSError:
+                    continue
+        except OSError:
+            pass
+    for sid in sids:
+        try:
+            reg = json.loads((root / "sdk" / (sid + ".json")).read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(reg, dict) and reg.get("alive"):
+            return True
+    return False
+
 
 def resolve_recipient(to, frm_id=""):
     """Resolve a recipient reference to exactly ONE destination, or explain why it can't.
@@ -751,9 +1778,10 @@ def resolve_recipient(to, frm_id=""):
     # unique by construction, so the ambiguity arm below never fires for it; the self-send check
     # still does — mailing your own sid is the same loopback as mailing your own name.
     by_id = bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", bare))
+    pool = all_agents(threads=True)                                   # threads addressable for replies
     direct_all = ([] if (want_host and want_host != here)
-                  else [a for a in all_agents(threads=True)
-                        if (a.get("id") == bare if by_id else a["name"] == bare)])   # threads addressable for replies
+                  else [a for a in pool
+                        if (a.get("id") == bare if by_id else a["name"] == bare)])
     if not direct_all and not by_id and not want_host             and re.fullmatch(r"[0-9a-fA-F][0-9a-fA-F-]{7,35}", bare):
         # a SHORT id — the ` · <8-char>` form every list_agents row now carries (the user
         # 2026-08-24) — addresses by unambiguous id PREFIX, so the row is enough to act on. An
@@ -761,7 +1789,7 @@ def resolve_recipient(to, frm_id=""):
         # a stray word can never catch a session by luck; a remote row's id ("host:uuid") matches
         # on its uuid part, the part the row shows. TWO prefix hits fall through to the standing
         # ambiguity refusal below, exactly like a duplicated name.
-        direct_all = [a for a in all_agents(threads=True)
+        direct_all = [a for a in pool
                       if str(a.get("id") or "").rsplit(":", 1)[-1].startswith(bare)]
 
     if frm_id and any(a["id"] == frm_id for a in direct_all):
@@ -797,25 +1825,125 @@ def resolve_recipient(to, frm_id=""):
     if peer_cands:
         return {"kind": "relay", "host": peer_cands[0][0], "agent": peer_cands[0][1]}
     if direct_all:                        # live, but every candidate has its mailbox off
+        whys = {a["id"]: _mail_off_why(a["id"]) for a in direct_all}
+        if "unreadable" in whys.values():
+            return {"kind": "error", "status": 403,
+                    "error": "isolation: the RECIPIENT '%s' has a session record the bus cannot read; mail to it is held "
+                             "until the record is repaired. YOUR mailbox is fine; nothing was sent, and this is final." % to}
+        if "thread" in whys.values():
+            # a comment thread's mail is off until the user breaks it out (T356): say what it is, so the sender
+            # reaches the session the thread belongs to instead of waiting on a mailbox toggle nobody offers
+            return {"kind": "error", "status": 403,
+                    "error": "isolation: the RECIPIENT '%s' is a COMMENT THREAD, and a thread's mail is OFF, both "
+                             "directions, until the user breaks it out into a session of its own. YOUR mailbox is "
+                             "fine; nothing was sent, and this is final. Mail the session the thread belongs to "
+                             "instead, or wait for the user to break the thread out." % to}
         return {"kind": "error", "status": 403,
                 "error": "isolation: the RECIPIENT '%s' has its mailbox OFF (it's in "
                          "postal isolation — its mailbox icon is toggled off), so it can't receive "
                          "mail right now. YOUR mailbox is fine; nothing was sent. It'll "
                          "be reachable once the user toggles ITS mailbox back on." % to}
-    # Addressing is LIVE-only: no dead-session resurrection, so anything left is a typo.
+    # Addressing is LIVE-only: no dead-session resurrection — but "not live" is a claim about the
+    # world, and the kernel is its authoritative source (fail loudly, never degrade silently, the
+    # user 2026-07-03). Before making the claim, ask whether the source ANSWERED: a mid-restart
+    # kernel yields an empty listing that reads exactly like universal deadness. One loopback GET,
+    # paid only on this refusal path — and even an ANSWERED listing is interrogated before the
+    # death ruling (2026-08-31: two verified specimens of a 200 listing omitting a LIVE session,
+    # by id and by name — a restart-settle blink; the refusal mis-routed a warning mail). The
+    # fresh fetch's own rows and the answered bit travel together from ONE call, so a kernel
+    # coming back between two fetches can't convert unreachable into a false death ruling; the
+    # durable per-session registry (_durable_session) corroborates what one listing missed.
+    if want_host and want_host != here:
+        # a host qualifier naming somebody ELSE took every local out of the running by DESIGN —
+        # the local listing and registry can say nothing about that host's sessions, and blink
+        # arms firing on a same-named LOCAL row turned a typo'd host into an endless retry-shortly
+        # (review find, 2026-08-31)
+        return {"kind": "error", "status": 404, "error": "no live romp session named '%s'" % to}
+    rows, answered = _kernel_sessions_checked(threads=True)
+    if not answered and not any(not a.get("remote") for a in pool):
+        # only an EMPTY local world raises the unreachable question — a pool with live locals in
+        # it proves the source was answering (and heartbeating remotes can't vouch for LOCALS)
+        return {"kind": "error", "status": 503,
+                "error": "can't tell whether '%s' is live right now: the liveness source (the romp "
+                         "kernel) didn't answer — likely mid-restart. Nothing was sent, and this is "
+                         "NOT a claim that '%s' is dead. Retry shortly." % (bare, bare)}
+    fresh = set()
+    for r in rows:
+        if isinstance(r, dict):
+            fresh.add(str(r.get("id") or ""))
+            fresh.add(str(r.get("name") or ""))
+    blinked = bare in fresh or _durable_session(bare, by_id)
+    if not blinked and not by_id and re.fullmatch(r"[0-9a-fA-F][0-9a-fA-F-]{7,35}", bare):
+        # the short-id form prefix-matches the fresh rows too, like the pool arm it mirrors
+        hits = {i for i in fresh if i.startswith(bare)}
+        blinked = len(hits) == 1
+    if blinked:
+        return {"kind": "error", "status": 503,
+                "error": "'%s' looks live (its durable registry entry stands) but the session "
+                         "listing came back without it — likely a restart-settle blink. Nothing "
+                         "was sent, and this is NOT a claim that '%s' is dead. Retry shortly."
+                         % (bare, bare)}
     return {"kind": "error", "status": 404, "error": "no live romp session named '%s'" % to}
 
 
-def _recall(from_id, to, mid):
+WHY_CARRIED = "already left for %s and can no longer be withdrawn"        # _recall: a carried outbox record
+WHY_IN_FLIGHT = "is on its way to %s right now (try again in a moment)"    # _recall: a record an exchange is carrying
+
+def _recall(from_id, to, mid, kept=None):
     """Unsend UNREAD mail: delete messages still sitting in a recipient's `new/`
     (queued or parked) that were sent BY from_id. With `to`, scope to that one
     recipient; with `mid` (and no `to`), find it across mailboxes; both narrows to
     one message. Only the original sender's own messages are touched. Already-read
-    mail has left `new/` and can't be recalled. Returns [{to, id, body}] removed."""
+    mail has left `new/` and can't be recalled. Returns [{to, id, body}] removed.
+
+    Cross-host mail parked in the OUTBOX is recallable only until an exchange CARRIES it
+    (2026-09-08). The record does not leave the outbox when it rides — it leaves on the
+    end-to-end ack, one round trip later at best and a whole outage later when a response was
+    lost — and the far bus delivers on arrival, so in that window the recipient already holds
+    the message and may be answering it. Unlinking the record then, as this arm used to, and
+    filing a terminal recall row for it, told the sender's receipts (and every reader that
+    treats a recall as final) that a read message had been withdrawn. Two states refuse here
+    now, both exact events of the exchange, and a refused record stays, no row is written, and
+    the refusal is appended to `kept` (a list the caller passes; None drops them) as {to, id,
+    host, carried, why, body} so the sender is told in plain words:
+    - CARRIED (`carried` on the record, durable): the exchange's OUTCOME said the record reached
+      the far bus — the dialer got a response, or its dial failed only after the request went
+      out; the dialed side's response write returned (_mark_carried has the event per side).
+      "already left for <host> and can no longer be withdrawn".
+    - IN FLIGHT (_inflight, in memory): an open exchange — any of them; two run at once for one
+      host — listed the record and its outcome is not in yet: the bytes are on the wire or about
+      to be, so a recall can neither be granted (the
+      recipient may already hold them) nor told they left (a refused dial means they never
+      will). "is on its way to <host> right now (try again in a moment)": the outcome, seconds
+      away, turns it into the carried refusal or frees the record for the recall.
+    The check and the unlink here share _outbox_lock with the listing that puts a record in
+    flight (_relays_for) and the outcome that marks or frees it (_flight_done), so a recall
+    either unlinks before the listing sees the record, or meets one of the two refusals; never
+    a granted recall for a record an exchange is carrying.
+
+    Every recall row names the box it came from — `box: 'new'` (a recipient's maildir) or
+    `box: 'outbox'` (a parked cross-host record, with `host`) — so a reader can tell the two
+    apart by an explicit field instead of an id's shape."""
     if not from_id:
         return []
+    listing = []                                 # ONE listing per recall, at first need; every name lookup reads it
+
+    def _rows():
+        if not listing:
+            listing.append(local_agents(threads=True))
+        return listing[0]
+
     if to:
-        rid = _recip_id_for(to)
+        rid = _recip_id_for(to, rows=_rows())
+        if not rid and MAILROOT.is_dir():
+            # Addressing is live-only, but RECALL is not addressing: the sender is unsending their
+            # own bytes, not raising the dead. Mail parked for a session that has since died sits
+            # right here in its new/ — a name that no longer resolves live falls back to the
+            # durable name map so parked mail stays recallable (sighting 2026-08-29: a handoff
+            # parked for a dead session could not be unsent by name; only the raw id worked).
+            hits = [b.name for b in MAILROOT.iterdir()
+                    if b.is_dir() and _name_for_id(b.name, rows=_rows()) == to]
+            rid = hits[0] if len(hits) == 1 else None    # two dead boxes, one name: refuse, stay scoped
         boxes = [rid] if rid else []
     elif MAILROOT.is_dir():
         boxes = [b.name for b in MAILROOT.iterdir() if b.is_dir()]
@@ -843,35 +1971,72 @@ def _recall(from_id, to, mid):
                 f.unlink()
             except Exception:
                 continue
-            removed.append({"to": _name_for_id(rid), "id": f.name, "body": " ".join(body.split())[:120]})
-            _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "recall", "id": f.name})
+            removed.append({"to": _name_for_id(rid, rows=_rows()), "id": f.name, "body": " ".join(body.split())[:120]})
+            _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "recall", "id": f.name, "box": "new"})
         _mark_pending(rid)         # recall may have emptied new/ -> reconcile the marker
     if peers_on() and OUTBOX.is_dir():
-        # A recall that beats the truck always wins: parked cross-host mail is still local, so the
-        # sender can unsend it right up until the exchange carries it. Forwarded mail (origin set)
-        # belongs to a sender on another host — never touched here.
+        # A recall that beats the truck wins: parked cross-host mail is still local, so the sender
+        # can unsend it right up until an exchange carries it — and not one moment after (the
+        # `carried` mark; see the docstring). Forwarded mail (origin set) belongs to a sender on
+        # another host — never touched here.
         for hostdir in OUTBOX.iterdir():
             if not hostdir.is_dir():
                 continue
             for f in list(hostdir.glob("*.json")):
                 if mid and f.stem != mid:
                     continue
-                try:
-                    msg = json.loads(f.read_text())
-                except Exception:
-                    continue
-                if msg.get("frm_id") != from_id or msg.get("origin"):
-                    continue
-                if to and (msg.get("to") or "") != to and "%s:%s" % (hostdir.name, msg.get("to") or "") != to:
-                    continue
-                try:
-                    f.unlink()
-                except Exception:
-                    continue
+                with _outbox_lock:                   # the listing, the mark and this unlink share it: no
+                    try:                             # unlink of a record an exchange is carrying right now
+                        msg = json.loads(f.read_text())
+                    except Exception:
+                        continue
+                    if msg.get("frm_id") != from_id or msg.get("origin"):
+                        continue
+                    if to and (msg.get("to") or "") != to and "%s:%s" % (hostdir.name, msg.get("to") or "") != to:
+                        continue
+                    riding = any(f.stem in mids for mids in (_inflight.get(hostdir.name) or {}).values())
+                    if msg.get("carried") or riding:
+                        if kept is not None:
+                            kept.append({"to": "%s:%s" % (hostdir.name, msg.get("to") or "?"), "id": f.stem,
+                                         "host": hostdir.name, "carried": msg.get("carried"),
+                                         "why": (WHY_CARRIED if msg.get("carried") else WHY_IN_FLIGHT) % hostdir.name,
+                                         "body": " ".join((msg.get("body") or "").split())[:120]})
+                        continue                     # it stays; no row: nothing about it changed
+                    try:
+                        f.unlink()
+                    except Exception:
+                        continue
                 removed.append({"to": "%s:%s" % (hostdir.name, msg.get("to") or "?"), "id": f.stem,
                                 "body": " ".join((msg.get("body") or "").split())[:120]})
-                _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "recall", "id": f.stem})
+                _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "recall", "id": f.stem,
+                                              "box": "outbox", "host": hostdir.name})
     return removed
+
+def _relay_marker_sent_row(from_id, marker):
+    """The sent row of a relayed question `from_id` sent under the kernel's relay marker `marker`, if any: the bus's own
+    record that makes /send idempotent for a relay (a stalled answer has the kernel POST again; the manager must hold
+    the question once). A row whose id was bounced as NOT PARKED never went anywhere and does not count. Reads the
+    log's tail, newest first."""
+    log = TLDIR / "messages.jsonl"
+    if not (from_id and marker) or not log.exists():
+        return None
+    try:
+        lines = log.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    unsent = set()
+    for line in reversed(lines):
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if e.get("ev") == "bounced" and e.get("notParked"):
+            unsent.add(str(e.get("id") or ""))
+        elif (e.get("ev") == "sent" and e.get("from_id") == from_id and e.get("relayed")
+              and str(e.get("relayMarker") or "") == str(marker) and str(e.get("id") or "") not in unsent):
+            return e
+    return None
+
 
 def _sent_receipts(mid):
     """[{to, id, sent, exec, recalled}] for messages SENT by `mid`, joined by id,
@@ -880,7 +2045,7 @@ def _sent_receipts(mid):
     log = TLDIR / "messages.jsonl"
     if not mid or not log.exists():
         return []
-    sent, execs, recalls, relays, bounced = {}, {}, {}, {}, {}
+    sent, execs, recalls, relays, bounced, bounced_why = {}, {}, {}, {}, {}, {}
     for line in log.read_text(errors="replace").splitlines():
         try: e = json.loads(line)
         except Exception: continue
@@ -897,26 +2062,43 @@ def _sent_receipts(mid):
             relays[e["id"]] = e["t"]
         elif ev == "bounced":                        # peer-bus: definitively undeliverable, returned
             bounced[e["id"]] = e["t"]
+            bounced_why[e["id"]] = str(e.get("why") or "")   # a REFUSAL's why renders apart (format_receipts)
 
-    def _parked(i, e):                               # still in the outbox → honestly parked, not lost
-        tid = e.get("to_id", "")
+    def _parked(i, e):                               # still in the outbox → honestly parked, not lost:
+        tid = e.get("to_id", "")                     # (host, record) — the record carries the carry mark
         if tid.startswith("peer:") and not relays.get(i) and not bounced.get(i) and not recalls.get(i):
             h = tid[5:]
-            if outbox_get(h, i):
-                return h
-        return None
+            rec = outbox_get(h, i)
+            if rec:
+                return h, rec
+        return None, None
+
+    listing = []                                 # one GET /sessions for every row without toName, at first need
+
+    def _name(sid):
+        if not listing:
+            listing.append(local_agents(threads=True))
+        return _name_for_id(sid, rows=listing[0])
 
     def _row(i, e):
-        h = _parked(i, e)
-        r = {"to": e.get("toName") or _name_for_id(e.get("to_id", "")), "id": i, "sent": e["t"],
+        h, rec = _parked(i, e)
+        r = {"to": e.get("toName") or _name(e.get("to_id", "")), "id": i, "sent": e["t"],
              "exec": execs.get(i), "recalled": recalls.get(i),
              "relayed": relays.get(i), "bounced": bounced.get(i), "parked": h}
+        if e.get("relayed"):
+            r["onBehalf"] = True                     # romp sent it on this session's behalf (T334): the receipt says so
+        if r["bounced"]:
+            r["bouncedWhy"] = bounced_why.get(i, "")   # additive: an older client ignores it
         if h:
             # the LINK state rides along (the user 2026-08-24): outbox residency alone is not
             # unreachability — a message queued ahead of the next exchange on a healthy link is
             # just in transit, and labeling it "(unreachable)" cried wolf on every normal relay.
             # PEERS is the authoritative dial state the send path already branches on.
             r["parkedUp"] = bool((PEERS.get(h) or {}).get("up"))
+            if rec.get("carried"):
+                # an exchange CARRIED it and the ack is not back (2026-09-08): the same fact the
+                # recall refuses on, so the two surfaces agree (additive: an older client ignores it)
+                r["carried"] = rec["carried"]
         return r
 
     out = [_row(i, e) for i, e in sent.items()]
@@ -927,30 +2109,58 @@ def _drain(sid):
     # forever. Over the cap -> pause (don't consume); after a quiet window the
     # streak resets and delivery resumes.
     with _lock:
-        peek = read_box(sid, consume=False)
-        if not peek:
-            return {"messages": [], "paused": False}
-        now = time.time()
-        count, last = STREAKS.get(sid, (0, 0))
-        count = count + 1 if now - last <= WINDOW else 1
-        if count > MAX:
-            return {"messages": [], "paused": True}
-        STREAKS[sid] = (count, now)
-        return {"messages": read_box(sid, consume=True), "paused": False}
+        try:
+            peek = read_box(sid, consume=False)
+            if not peek:
+                return {"messages": [], "paused": False}
+            now = time.time()
+            count, last = STREAKS.get(sid, (0, 0))
+            count = count + 1 if now - last <= WINDOW else 1
+            if count > MAX:
+                return {"messages": [], "paused": True}
+            STREAKS[sid] = (count, now)
+            return {"messages": read_box(sid, consume=True), "paused": False}
+        except InboxUnreadable as e:
+            # the box cannot be listed: a fault the caller can show (the /drain handler answers 503 with it, the push
+            # skips the box with one line), never an empty drain
+            return {"messages": [], "paused": False, "unreadable": str(e)}
 
 # ───────────────────────── push-on-deliver (auto-wake) ─────────────────────────
 # When mail lands for a LOCAL romp session that's sitting idle, the bus wakes the recipient through the
 # kernel (POST /deliver) so it sees the mail immediately instead of waiting for its next Stop-hook drain. The
-# kernel owns the wake per backend — a tmux session gets the banner pasted into its prompt (draft-preserving),
-# an SDK session gets it enqueued — so the BUS never shells tmux. The maildir drain stays as the backstop:
-# whenever the kernel can't inject safely (a permission prompt, a draft it can't preserve, Claude mid-turn
-# with a draft), it returns injected:false and the bus puts the mail back for the next-turn drain. Disable
-# the live push with ~/.claude/romp-postal-nopush (or romp-postal-off, which also disables the drain).
+# kernel owns the wake: it enqueues the banner as the session's next turn (the SessionBackend.deliver seam,
+# one shape for every backend). The maildir drain stays as the backstop: when the kernel answers
+# injected:false — the session is not live or resumable, or its mailbox is toggled off — the bus puts the
+# mail back for the next-turn drain. Disable the live push with ~/.claude/romp-postal-nopush (or
+# romp-postal-off, which also disables the drain).
 PUSH_SENTINEL = "#" * 44                          # the banner's rule line (format_push)
 
+_PUSH_LAST = [None]          # the last answer _push_disabled read cleanly (None: none yet this process)
+_PUSH_FAULT_SAID = [False]   # the sentinels' read fault said once per fault spell (re-armed by a clean read)
+
+
 def _push_disabled():
+    """The push is off when either sentinel file stands under ~/.claude. When the directory cannot be read the sentinels'
+    state is UNKNOWN, and an unknown source never yields a quiet answer of its own: the LAST KNOWN answer stands, said once
+    per fault spell, and with no answer known yet the push is OFF (closed) until the directory reads again (Path.exists()
+    read the sentinels absent there on 3.14 and raised on 3.13, the fail-open class of the exists() fix; the first cut of
+    this reader answered OFF on every unreadable read, which turned a working push off on a transient fault, 2026-09-14)."""
     h = Path.home() / ".claude"
-    return (h / "romp-postal-off").exists() or (h / "romp-postal-nopush").exists()
+    states = (_record_state(h / "romp-postal-off"), _record_state(h / "romp-postal-nopush"))
+    if "present" in states:
+        off = True
+    elif "unreadable" in states:
+        if not _PUSH_FAULT_SAID[0]:
+            _PUSH_FAULT_SAID[0] = True
+            _log("the push sentinels under ~/.claude cannot be read: %s" % (
+                "the last known answer stands (push %s) until they read again" % ("off" if _PUSH_LAST[0] else "on")
+                if _PUSH_LAST[0] is not None else "no answer known yet, so the push is off until they read"))
+        return True if _PUSH_LAST[0] is None else _PUSH_LAST[0]
+    else:
+        off = False
+    _PUSH_LAST[0] = off
+    _PUSH_FAULT_SAID[0] = False
+    return off
 
 def _sweep_orphans():
     """Bounce mail stuck UNREAD in a DEAD recipient's mailbox back to its (live)
@@ -960,9 +2170,11 @@ def _sweep_orphans():
     the grace still gets its mail. Run periodically by the bus monitor."""
     if not MAILROOT.is_dir():
         return
-    live = local_agents()
-    if not live:                                       # tmux hiccup, not "everyone died" — don't mass-bounce
-        return
+    live = local_agents(threads=True)                 # a comment thread's box is live while its row is (2026-09-10)
+    if not live:                                       # [] is also what an UNANSWERED listing collapses to (kernel
+        return                                         # mid-restart), indistinguishable here from "everyone died":
+                                                       # never mass-bounce; a real orphan waits for a sweep that
+                                                       # has a live row to compare against
     live_ids = {a["id"] for a in live}
     by_name = {a["name"]: a for a in live}
     now = time.time()
@@ -972,12 +2184,26 @@ def _sweep_orphans():
         newd = box / "new"
         if not newd.is_dir():
             continue
-        recip = _name_for_id(box.name)
-        for f in list(newd.iterdir()):
+        recip = _name_for_id(box.name, rows=live)  # dead by construction: the registry names it, no fetch
+        try:
+            files = list(newd.iterdir())
+        except OSError as e:
+            _say_inbox_unreadable_once(box.name, "inbox of %s cannot be listed (%s: %s)" % (box.name, type(e).__name__, str(e)[:120]))
+            continue                                    # skipped with a line, never bounced or tidied
+        _INBOX_UNREADABLE_SAID.discard(box.name)        # listed: a later fault is a new spell
+        for f in files:
             if not f.is_file():
                 continue
             try:
                 text = f.read_text(errors="replace")
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                # a dead recipient's box has no drain to meet an unreadable file, so the sweep moves
+                # it aside the way read_box does (review find, 2026-09-08); before, it skipped the
+                # file on every pass and the marker stayed latched for a session that will never read
+                _mail_unreadable(f, box.name, e)
+                continue
             except Exception:
                 continue
             meta = {}
@@ -999,23 +2225,39 @@ def _sweep_orphans():
                 try:
                     deliver(s["id"], "Romp Postal Service", "", bounce)
                     threading.Thread(target=_push, args=(s["id"], s), daemon=True).start()
+                except DeliveryNotRecorded as e:
+                    # The bounce note was REFUSED (its row could not land). Destroying the orphan now
+                    # would lose the mail with no notice and no row — deliver() never refused before
+                    # 2026-09-08, so this arm is new. Keep the file; the next sweep retries.
+                    _say_refused_once("orphan sweep", "the bounce note for %s" % f.name, e)
+                    continue
                 except Exception as e:
                     _log("bounce to %s failed: %s" % (s["name"], e))
+                _refusal_over("orphan sweep")
+            # the destroy is the message's TERMINAL EVENT — record it on the original mid, the
+            # way _bounce_apply records a peer's refusal (the user 2026-08-24): without this row
+            # the ledger's last word stayed "sent", and the timeline's pending flag had to lean
+            # on an age window / recipient liveness — which a same-sid REVIVAL then flips back
+            # to pending for mail that no longer exists. The ledger is now terminal-complete.
+            # The row lands BEFORE the unlink (2026-09-08), the batch's rule: a destroy that could
+            # not be recorded does not happen; the file waits for the next sweep.
+            if not _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": f.name,
+                                                 "to": recip or "?",
+                                                 "why": "recipient exited; unread mail destroyed by the orphan sweep"}):
+                continue
             try:
                 f.unlink()
-                # the destroy is the message's TERMINAL EVENT — record it on the original mid, the
-                # way _bounce_apply records a peer's refusal (the user 2026-08-24): without this row
-                # the ledger's last word stayed "sent", and the timeline's pending flag had to lean
-                # on an age window / recipient liveness — which a same-sid REVIVAL then flips back
-                # to pending for mail that no longer exists. The ledger is now terminal-complete.
-                _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": f.name,
-                                              "to": recip or "?",
-                                              "why": "recipient exited; unread mail destroyed by the orphan sweep"})
             except Exception:
                 pass
         _mark_pending(box.name)                         # bounced orphans may have emptied new/
         try:                                            # tidy: drop the mailbox if nothing's left
-            if all(not any((box / d).iterdir()) for d in ("new", "cur", "tmp") if (box / d).is_dir()):
+            if all(_dir_empty(box / d) for d in ("new", "cur", "tmp")) \
+                    and not any(p.is_file() for p in box.iterdir()):
+                # …and no `.corrupt-*` sidecar beside the three dirs: a file moved aside is evidence
+                # the tidy must not sweep away with the empty box (review find, 2026-09-08). _dir_empty
+                # answers None for a directory that cannot be read, and all() over a None is False (an
+                # is_dir() that read False there on 3.14 dropped the unreadable new/ from the check and the
+                # box, mail and all, was removed)
                 shutil.rmtree(box, ignore_errors=True)
         except Exception:
             pass
@@ -1033,7 +2275,7 @@ def _warn_stuck_mail():
     messages are pruned so WARNED stays bounded to currently-pending mail."""
     if not MAILROOT.is_dir():
         return
-    live = local_agents()
+    live = local_agents(threads=True)                 # thread rows too: an idle thread can be stuck like any session
     if not live:                                       # kernel hiccup, not "everyone's stuck" — don't warn
         return
     by_id = {a["id"]: a for a in live}
@@ -1048,7 +2290,13 @@ def _warn_stuck_mail():
             continue
         recip = by_id.get(box.name)
         recip_settled = bool(recip and recip.get("state", "") in ("idle", "waiting"))
-        for f in list(newd.iterdir()):
+        try:
+            files = list(newd.iterdir())
+        except OSError as e:
+            _say_inbox_unreadable_once(box.name, "inbox of %s cannot be listed (%s: %s)" % (box.name, type(e).__name__, str(e)[:120]))
+            continue                                    # skipped with a line: no warning owed on what cannot be seen
+        _INBOX_UNREADABLE_SAID.discard(box.name)        # listed: a later fault is a new spell (a box no client polls re-arms here)
+        for f in files:
             if not f.is_file():
                 continue
             seen_ids.add(f.name)
@@ -1074,15 +2322,18 @@ def _warn_stuck_mail():
                 continue
             s = by_name.get(meta.get("from", ""))
             if s and s["id"] != box.name:               # warn the live sender (never self)
-                warn = ("↩ STILL UNDELIVERED — '%s' is live but hasn't read your message after %d min; it may "
-                        "be stuck. Check on it or resend.\nOriginal: %s"
-                        % (recip.get("name") or box.name[:8], max(1, STUCK_GRACE // 60),
-                           " ".join(body.split())[:160]))
+                warn = _stuck_warn_text(recip, box.name, body)
                 try:
                     deliver(s["id"], "Romp Postal Service", "", warn)
                     threading.Thread(target=_push, args=(s["id"], s), daemon=True).start()
+                except DeliveryNotRecorded as e:
+                    # REFUSED (its row could not land): touching the one-time marker now would mean
+                    # the sender never hears the warning. Leave it; the next pass fires it.
+                    _say_refused_once("stuck-mail warning", "the warning for %s" % f.name, e)
+                    continue
                 except Exception as e:
                     _log("stuck-warn to %s failed: %s" % (s.get("name", "?"), e))
+                _refusal_over("stuck-mail warning")
             try:                                        # mark one-time even if the sender was dead/absent → no re-scan churn
                 WARNED.mkdir(parents=True, exist_ok=True)
                 marker.touch()
@@ -1097,13 +2348,46 @@ def _warn_stuck_mail():
         pass
 
 
+def _stuck_warn_text(recip, box_sid, body):
+    """The one-time line a sender gets about a message its LIVE recipient has not read: 'resend' for a stuck session,
+    but never for a comment thread whose mail is off (the review's low on this change: the resend invitation was the
+    very reroute the thread refusal calls final) — its mail is HELD in the box and lands when the user breaks the
+    thread out; nothing to resend, nothing to do."""
+    name = recip.get("name") or box_sid[:8]
+    original = " ".join(body.split())[:160]
+    why = _mail_off_why(box_sid)
+    if why == "unreadable":
+        return ("↩ HELD — '%s' has a session record the bus cannot read; your message waits in its box until the record "
+                "is repaired. Nothing to resend.\nOriginal: %s" % (name, original))
+    if why == "thread":
+        return ("↩ HELD — '%s' is a comment thread, and a thread's mail is off until the user breaks it out. Your "
+                "message waits in its box and lands the moment they do. Nothing to resend, and no other door: the "
+                "refusal is final.\nOriginal: %s" % (name, original))
+    return ("↩ STILL UNDELIVERED — '%s' is live but hasn't read your message after %d min; it may "
+            "be stuck. Check on it or resend.\nOriginal: %s" % (name, max(1, STUCK_GRACE // 60), original))
+
+def _isolated_bounce_why(named, to):
+    """Why an inbound cross-host message to `to` bounces when every session answering to it has its mail off: the
+    thread refusal when one of them is a comment thread (the review's low: the sender read 'mailbox off' and waited
+    on a toggle nobody offers), else the isolation line."""
+    whys = {_mail_off_why(a["id"]) for a in named}
+    if "unreadable" in whys:
+        return "recipient '%s' has a session record the bus cannot read; mail to it is held until the record is repaired" % to
+    if "thread" in whys:
+        return ("recipient '%s' is a COMMENT THREAD, and a thread's mail is off, both directions, until the user "
+                "breaks it out into a session of its own; mail the session the thread belongs to instead" % to)
+    return "recipient '%s' has its mailbox off (postal isolation)" % to
+
 def _hhmm(iso):
     # _iso_now() -> "2026-06-05T14:23:45-0700"; pull HH:MM, else fall back to now.
     if iso and len(iso) >= 16 and iso[10:11] == "T":
         return iso[11:16]
     return datetime.now().astimezone().strftime("%H:%M")
 
-def format_push(msgs):
+def format_push(msgs, reply_tool=False):
+    """The banner a wake delivers. `reply_tool` names the send_message TOOL in the reply hint instead of the shell
+    command (2026-09-19): a Codex session mails through kernel-serviced tool calls, and `romp mail send` inside its
+    sandbox is refused by design (the hint used to send Codex threads chasing an out-of-sandbox escalation)."""
     bar = PUSH_SENTINEL
     out = []
     for m in msgs:
@@ -1115,44 +2399,179 @@ def format_push(msgs):
         if m.get("kind"):
             out.append("<!-- romp-msg-kind: %s -->" % m["kind"])   # sender-declared kind, read by the courier
         out.append(bar)
-    out.append('(to reply, only if substantive: romp mail send --kind delegate|coordinate|question %s "...")'
-               % msgs[0].get("from", ""))
+    if reply_tool:
+        out.append("(to reply, only if substantive: the send_message tool, kind delegate|coordinate|question, to %s)"
+                   % msgs[0].get("from", ""))
+    else:
+        out.append('(to reply, only if substantive: romp mail send --kind delegate|coordinate|question %s "...")'
+                   % msgs[0].get("from", ""))
     return "\n".join(out)
+
+def _deliver_body_bytes(sid, msgs, reply_tool=False):
+    """The exact wire size of the /deliver POST carrying `msgs`: the banner in its JSON envelope,
+    serialized as _kernel_post serializes it (ensure_ascii on, so non-ASCII text and every newline
+    inflate past the banner's own length)."""
+    return len(json.dumps({"id": sid, "text": format_push(msgs, reply_tool)}).encode("utf-8"))
+
+
+def _push_chunks(sid, msgs, reply_tool=False):
+    """Split a recipient's pending mail into /deliver bodies that fit under _PUSH_MAX_BYTES, oldest
+    first -> (chunks, oversize). Each chunk is a non-empty run of consecutive messages whose whole body
+    fits; `oversize` are the messages whose body ALONE does not, which no chunk can carry. The banner
+    used to be one body for the whole box (review find, 2026-09-08): past the kernel's cap it was
+    refused, and the refusal re-posted on every retry pass."""
+    chunks, cur, oversize = [], [], []
+    for m in msgs:
+        if cur and _deliver_body_bytes(sid, cur + [m], reply_tool) <= _PUSH_MAX_BYTES:
+            cur.append(m)
+            continue
+        if cur:
+            chunks.append(cur)
+            cur = []
+        if _deliver_body_bytes(sid, [m], reply_tool) <= _PUSH_MAX_BYTES:
+            cur = [m]
+        else:
+            oversize.append(m)
+    if cur:
+        chunks.append(cur)
+    return chunks, oversize
+
+
+_OVERSIZE_NAMED = set()   # mids of oversize mail already named in the log: a message left for the drain
+#                           is re-claimed by every retry pass, and one line per message is the record
+
+
+def _bounce_oversize(sid, m, reply_tool=False):
+    """One message whose /deliver body alone exceeds _PUSH_MAX_BYTES: it can never ride the live wake
+    (the kernel refuses the body before reading it), so it is not posted, and never was going to land
+    however often the retry pass re-posted it. A LOCAL sender hears it, the way a peer's refusal reaches
+    a sender through _bounce_apply: the message leaves the recipient's box (the drain already claimed it)
+    and a bus-authored note names the size and the limit, without echoing the body, which would make
+    the note itself oversize. A message with no local sender to tell (a bus-authored note; relayed mail,
+    whose sender lives on another host and was acked at relay time; a `--from <label>` script, whose
+    `ext:<label>` id names no mailbox: _safe_id has no ':', so deliver() to it raises ValueError, which
+    before 2026-09-10 escaped into _push's catch-all and stranded in cur/ every message the drain had
+    claimed) stays in new/ for the turn-end drain and check_inbox, which have no size cap, and is named
+    in the log once. `reply_tool` is the banner _push judged the message with (a Codex recipient's names
+    the send_message tool, 2 wire bytes longer than the shell hint once json.dumps has escaped the hint's
+    quotes), so the note reports the size as delivered to THIS recipient: measured with the shell banner,
+    a bounce to a Codex recipient named a size under the very limit it had crossed (the review, 2026-09-19)."""
+    n = _deliver_body_bytes(sid, [m], reply_tool)
+    mid, frm_id = m.get("id", ""), m.get("from_id", "")
+    if frm_id and not m.get("from_host") and frm_id != sid and _safe_id(frm_id):
+        to = _name_for_id(sid) or sid
+        why = ("your message is %d bytes as delivered, over the %d-byte limit for delivery into a session"
+               % (n, _PUSH_MAX_BYTES))
+        try:
+            deliver(frm_id, "romp-postal", "", "undeliverable to '%s': %s. Send a shorter message, or write "
+                    "the text to a file and send its path. (The message is not echoed here because of its "
+                    "size.)" % (to, why), kind="coordinate")
+        except DeliveryNotRecorded as e:
+            # The note was REFUSED (its row could not land). The drain already claimed the message, so
+            # letting the refusal out here (into _push's catch-all) would leave it in cur/ with no note
+            # and no row — the arm the orphan sweep grew the same day (2026-09-08). Put it back under
+            # its own id; the next pass re-claims it and retries the bounce once the log writes again.
+            if restore(sid, mid) == RESTORE_UNKNOWN:
+                _hold_claim(sid, mid)                # cur/ unreadable: recorded for the retry loop, the exec row retracted
+                _log("push to %s: the oversize message %s could not be put back (cur/ unreadable); its claim is held "
+                     "for the retry loop" % (sid, mid))
+            _say_refused_once("oversize bounce", "the note for %s" % mid, e)
+            return
+        _refusal_over("oversize bounce")
+        # The drain's claim stamped an exec row ("the recipient read it"); the message was returned, not
+        # read. Retract it the way restore() does, so the sender's receipt (check_sent, `romp mail sent`)
+        # reads bounced and not read: every ledger reader drops an exec a later unexec retracts. Here,
+        # after the note has landed, so the refused arm above (restore writes its own unexec) never doubles it.
+        _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "unexec", "id": mid})
+        _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": mid, "to": to,
+                                      "host": "", "why": why})
+        _log("push to %s: message %s is %d bytes, over the %d-byte /deliver limit; bounced to its sender %s"
+             % (sid, mid, n, _PUSH_MAX_BYTES, frm_id))
+        return
+    r = restore(sid, mid)
+    if r == RESTORE_MISSING:                             # gone from cur/: a re-send is the only way to keep the mail
+        deliver(sid, m.get("from", "?"), frm_id, m.get("body", ""), park=m.get("park", False),
+                kind=m.get("kind", ""), from_host=m.get("from_host", ""), relayed=bool(m.get("relayed")))
+    elif r == RESTORE_UNKNOWN:                           # cur/ unreadable: neither re-sent nor marked; held for the retry loop
+        _hold_claim(sid, mid)
+        _log("push to %s: the oversize message %s could not be put back (cur/ unreadable); its claim is held" % (sid, mid))
+    if mid not in _OVERSIZE_NAMED:
+        _OVERSIZE_NAMED.add(mid)
+        _log("push to %s: message %s is %d bytes, over the %d-byte /deliver limit, and has no local sender "
+             "to bounce to; it waits in new/ for the turn-end drain" % (sid, mid, n, _PUSH_MAX_BYTES))
+
 
 def _push(sid, agent):
     """Live-deliver pending mail to a session by WAKING it through the kernel (POST /deliver) — the kernel
-    injects the banner into the pane (tmux, draft-preserving) or enqueues it (SDK); the bus never shells tmux.
-    Coarse-skip a clearly not-ready session (remote / not idle-or-working) to avoid a needless drain; the
-    kernel does the fine pane-safety (at a ❯ prompt, out of copy-mode, a draft it can safely stash) and tells
-    us whether it injected. Not injected → put the mail back for the maildir-drain backstop. Returns True iff
-    injected (so a revive poll knows to stop). `agent` is the GET /sessions row (id, state, backend, remote)."""
+    enqueues the banner as the session's next turn. Coarse-skip a clearly not-ready local session (not
+    idle-or-working) to avoid a needless drain; the kernel decides whether the session takes the wake (live
+    or resumable, mailbox on) and tells us whether it did. Not injected → put the mail back for the
+    maildir-drain backstop. Returns True iff
+    every message that can ride the wake was injected (so a revive poll knows to stop). `agent` is the GET
+    /sessions row (id, state, backend, remote).
+
+    The box goes over in CHUNKS under _PUSH_MAX_BYTES (review find, 2026-09-08): the kernel reads a POST
+    body only up to _POST_MAX_BYTES, and one banner for the whole box crossed that once enough mail had
+    piled up for one recipient, refused with 413 before a byte was read, filed here as "deferred", and
+    re-posted identically on every retry pass, so the live wake for that recipient never came. Chunks
+    post oldest first; the first that does not land stops the run, and it and everything after it are
+    restored. A single message too large for any chunk is handled by _bounce_oversize. The log line
+    names the cause (a kernel that could not be reached, one that answered a status, or a session that
+    did not take the wake) where every deferral used to read the same."""
     if _push_disabled() or not agent:
         return False
     if os.environ.get("ROMP_SESSIONS_FILE"):                  # test seam: no live kernel → leave it for the drain (don't churn the maildir)
         return False
     # A REMOTE (heartbeat) peer on an attached host: we don't have its live state here, so skip the local
     # state gate and POST /deliver anyway — the local kernel's wake-router forwards it over the host's -L
-    # tunnel, and the OWNING kernel does the pane-safety and tells us whether it injected.
+    # tunnel, and the OWNING kernel decides whether the session takes the wake and tells us whether it did.
     if not agent.get("remote") and agent.get("state", "") not in ("waiting", "idle", "working"):
-        return False                                          # permission / unknown / picker → drain later
+        return False                                          # a permission ask / unknown state → drain later
     try:
         res = _drain(sid)                                     # claim mail (guarded + consuming)
+        if res.get("unreadable"):
+            _say_inbox_unreadable_once(sid, res["unreadable"])   # the box cannot be listed: skipped, said once, retried next pass
+            return False
         msgs = res.get("messages", [])
         if not msgs:
             return False                                      # nothing, or loop-guard paused
-        resp = _kernel_post("/deliver", {"id": sid, "text": format_push(msgs)}, timeout=12)
-        if resp and resp.get("injected"):
-            return True
+        reply_tool = agent.get("backend") == "codex"      # a Codex recipient replies through its send_message tool
+        chunks, oversize = _push_chunks(sid, msgs, reply_tool)
+        for m in oversize:
+            _bounce_oversize(sid, m, reply_tool)
+        landed, held, cause = 0, [], ""
+        for i, chunk in enumerate(chunks):
+            resp = _kernel_post("/deliver", {"id": sid, "text": format_push(chunk, reply_tool)}, timeout=12)
+            if resp and resp.get("injected"):
+                landed += len(chunk)
+                continue
+            if resp is None:
+                cause = "kernel unreachable"
+            elif resp.get("status"):
+                cause = "kernel answered HTTP %s" % resp["status"]   # the reason is in _kernel_post's line
+            else:
+                cause = "not injected"                        # the session did not take the wake (not live/resumable, or mailbox off)
+            held = [m for c in chunks[i:] for m in c]
+            break
+        if not held:
+            return bool(landed)
         # Not injected → UNCLAIM: put each message back under its ORIGINAL id (restore), so a
         # deferred push doesn't mint a second identity for the same message. Only if the file is
         # gone (recalled/swept mid-push) do we fall back to a re-send, which costs a new id but
         # never loses the mail.
-        for m in msgs:
-            if not restore(sid, m.get("id", "")):
+        unknown = 0
+        for m in held:
+            r = restore(sid, m.get("id", ""))
+            if r == RESTORE_MISSING:                     # gone from cur/: a re-send is the only way to keep the mail
                 deliver(sid, m.get("from", "?"), m.get("from_id", ""), m.get("body", ""),
                         park=m.get("park", False), kind=m.get("kind", ""),
-                        from_host=m.get("from_host", ""))
-        _log("push to %s deferred; %d msg(s) restored for the drain backstop" % (sid, len(msgs)))
+                        from_host=m.get("from_host", ""), relayed=bool(m.get("relayed")))
+            elif r == RESTORE_UNKNOWN:                   # cur/ unreadable: neither re-sent nor marked; held for the retry loop
+                _hold_claim(sid, m.get("id", ""))
+                unknown += 1
+        _log("push to %s deferred (%s); %d msg(s) restored for the drain backstop%s%s"
+             % (sid, cause, len(held) - unknown, (" after %d landed" % landed) if landed else "",
+                ("; %d could not be answered for (cur/ unreadable), held for the retry loop" % unknown) if unknown else ""))
         return False
     except Exception as e:
         _log("push error for %s: %s" % (sid, e))
@@ -1163,44 +2582,205 @@ WAKE_TIMEOUT = int(os.environ.get("ROMP_POSTAL_WAKE_TIMEOUT", "45"))
 def _wake_when_ready(sid):
     """Force-deliver pending mail to a REVIVING session once it's ready.
 
-    A resumed session loads its transcript before its prompt box is interactive, and a SessionStart hook can
-    only inject PASSIVE context (it cannot force a turn), so a session revived with parked handoffs would just
-    sit idle on un-acted mail. Instead we poll until the session is live, then _push — which (via the kernel's
-    /deliver) injects AND submits so the session takes a turn (waiting→working→acts→waiting) and shows WORKING
-    in every existing view. The kernel returns injected:false while the prompt isn't live yet, so we just retry
-    until it lands; if it never does within WAKE_TIMEOUT (a huge transcript), the mail stays in new/ for the
-    Stop-hook drain — delivered on the first turn, just not force-acted. Runs off the /wake handler so the
-    revive hook returns instantly."""
+    A resumed session loads its transcript before it can take a turn, and a SessionStart hook can only inject
+    PASSIVE context (it cannot force a turn), so a session revived with parked handoffs would just sit idle on
+    un-acted mail. Instead we poll until the kernel lists the session, then _push — which (via the kernel's
+    /deliver) enqueues the mail as a turn, so the session acts on it (waiting→working→acts→waiting) and shows
+    WORKING in every existing view. The kernel returns injected:false until the session is live or resumable,
+    so we just retry until it lands; if it never does within WAKE_TIMEOUT (a huge transcript), the mail stays
+    in new/ for the Stop-hook drain — delivered on the first turn, just not force-acted. Runs off the /wake
+    handler so the revive hook returns instantly."""
     try:
         deadline = time.time() + WAKE_TIMEOUT
         while time.time() < deadline:
             newd = MAILROOT / sid / "new"
             if not (newd.is_dir() and any(newd.iterdir())):
                 return                                        # nothing pending (or already delivered)
-            agent = next((a for a in local_agents() if a["id"] == sid), None)
+            agent = next((a for a in local_agents(threads=True) if a["id"] == sid), None)   # a reviving thread is a live row
             if not agent:
                 return                                        # session died during load
-            if _push(sid, agent):                             # injected (drain + submit → forces a turn) → done
+            if _push(sid, agent):                             # the kernel took it (enqueued as a turn) → done
                 return
             time.sleep(0.5)
     except Exception as e:
         _log("wake wait failed for %s: %s" % (sid, e))
 
+# The most a POST body may carry -- the kernel's bound, mirrored: every bus route takes a JSON control
+# request (one mail, a peer table, an exchange of presence and acks), tens of KB at most.
+_POST_MAX_BYTES = 1024 * 1024
+
+# The longest the bus waits for an announced, in-bounds body to ARRIVE -- the kernel's _POST_BODY_TIMEOUT,
+# mirrored (review find, 2026-09-08): with no timeout on the socket, a handler thread was pinned for as
+# long as an authorized client cared to trickle its body. Every client sends its body in one write, so
+# 30 s is generous; a read that stalls past it answers 408 and closes.
+_POST_BODY_TIMEOUT = 30.0
+
+# The most one /deliver body the bus BUILDS may carry (review find, 2026-09-08): the kernel reads a POST
+# only up to _POST_MAX_BYTES, and this is what _push measures each chunk of a recipient's box against,
+# the exact wire size, envelope and escaping included, so no chunk is ever refused on size. The gap
+# under the cap is headroom, not a measurement allowance.
+_PUSH_MAX_BYTES = 900 * 1024
+
+
+def _clip_json(v, n=60):
+    """A BOUNDED, WELL-FORMED echo of an offending request value for an error message: a large body must
+    never come back as a large error. Every string is cut INSIDE its quotes and marked, at any depth, so
+    a long string still echoes as one complete quoted thing; a container is cut at the ELEMENT level,
+    its first few members and a marker member, and nests no deeper than four levels, so the echo is
+    valid JSON whatever arrived (review find, 2026-09-08: a slice of the serialized text cut a container
+    mid-token, and ["xxx... came back with its quote and bracket open); a number past n digits echoes as
+    a marked string, since a cut decimal is a mid-token cut too. Members are dropped until the whole
+    echo fits about 4n characters; ensure_ascii is off, or the marker itself comes back as \\u2026. The
+    kernel's shape."""
+    mark = "\u2026"
+
+    def cut(x, keep, depth):
+        if isinstance(x, str):
+            return x[:n] + mark if len(x) > n else x
+        if isinstance(x, dict):
+            if not x:
+                return {}
+            if depth >= 4 or keep == 0:
+                return {mark: mark}
+            items = list(x.items())
+            out = {cut(str(k), keep, depth + 1): cut(val, keep, depth + 1) for k, val in items[:keep]}
+            if len(items) > keep:
+                out[mark] = mark
+            return out
+        if isinstance(x, (list, tuple)):
+            if not x:
+                return []
+            if depth >= 4 or keep == 0:
+                return [mark]
+            out = [cut(val, keep, depth + 1) for val in x[:keep]]
+            if len(x) > keep:
+                out.append(mark)
+            return out
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            s = str(x)                                   # a number past n digits (json.loads takes an int of
+            return x if len(s) <= n else s[:n] + mark    # up to 4300) echoes as a marked STRING: a cut
+        return x                                         # decimal would be a mid-token cut
+
+    try:
+        for keep in (8, 4, 2, 1, 0):
+            s = json.dumps(cut(v, keep, 0), ensure_ascii=False)
+            if len(s) <= 4 * n or keep == 0:
+                return s
+    except (TypeError, ValueError):
+        pass
+    s = repr(v)
+    return s if len(s) <= n else s[:n] + mark
+
+
+def _as_bool(v, field, default=False):
+    """A request flag as the boolean it claims to be -> (value, error). Absent is `default`, and so is an
+    EXPLICIT JSON null: the routes read their fields with .get(), under which the two are one value, and
+    null is the absent case spelled out, not a third kind of flag (review find, 2026-09-08; the kernel's
+    _as_bool states the same rule). JSON true/false pass through; anything else -- the string "false",
+    0/1, "no" -- is refused with `error` naming the field, and the caller must NOT act. Never coerces:
+    bool("false") is True, which is how a string used to arm a tracked delegation and mark a down peer
+    bus up."""
+    if v is None:
+        return default, None
+    if v is True or v is False:
+        return v, None
+    return None, "'%s' must be true or false, got %s" % (field, _clip_json(v))
+
+
+class _RefusedBody(Exception):
+    """A request body Handler._body refused before or instead of parsing it: `status` and `error` are the
+    answer, and the connection closes with it (the body is unread or unusable, so the socket cannot
+    carry a next request)."""
+
+    def __init__(self, status, error):
+        super().__init__(error)
+        self.status, self.error = status, error
+
+
+def _parked_note(phost, frm_id):
+    """The /send answer for a message parked for an unreachable host, read back by the sender from the
+    CLI or the tool. A session sender hears the two ways the park ends: delivery on reconnect, or the
+    peer's refusal returned to its mailbox as a note (_bounce_apply). A `--from <label>` sender mails
+    under `ext:<label>` (cli_send), an id _safe_id refuses, so it has no mailbox for that note: the
+    bounced row is written to messages.jsonl as for any sender, but /sent refuses the same id, so the
+    bus log is the only record of the refusal that sender can read, and the single text used to
+    promise it too that a refusal "bounces back to you" (2026-09-10). The session sender's text is
+    unchanged."""
+    if _safe_id(frm_id):
+        return "parked for %s (unreachable) — delivers on reconnect, or bounces back to you" % phost
+    return ("parked for %s (unreachable) — delivers on reconnect; if %s refuses it, the only record of the "
+            "refusal you can read is the mail service's log (%s): a --from sender has no mailbox for a note "
+            "to return to" % (phost, phost, LOG))
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass   # keep stdout/stderr clean; the bus log is for real events only
 
-    def _send(self, obj, code=200):
+    def _send(self, obj, code=200, close=False):
         body = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if close:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
     def _body(self):
-        n = int(self.headers.get("Content-Length", 0) or 0)
-        return json.loads(self.rfile.read(n)) if n else {}
+        """The request body as the JSON object every route expects, read only within bounds -- the
+        kernel's _read_post_body, mirrored. Refused as _RefusedBody(status, error), each before or
+        instead of parsing: a Transfer-Encoding request (411; bodies are delimited by Content-Length
+        alone), more than one Content-Length (400), a non-decimal one or a digit run past 20 (400), a
+        length past _POST_MAX_BYTES (413, before a byte is read), a body shorter than announced (400,
+        naming the shortfall), one that stalls past _POST_BODY_TIMEOUT (408; the read runs under a socket
+        timeout, so a trickling client cannot pin a handler thread), and a decodable body that is not an
+        object (400, naming what arrived). It
+        used to be `json.loads(rfile.read(int(Content-Length)))` unchecked: the first of two lengths was
+        trusted, nothing was capped, and a non-object came back parsed so the route's first `.get`
+        raised AttributeError out of the handler -- the connection dropped with a traceback on stderr
+        instead of the 400 do_POST answers for undecodable JSON."""
+        if self.headers.get("Transfer-Encoding"):
+            raise _RefusedBody(411, "Transfer-Encoding is not accepted; send the body with a Content-Length")
+        get_all = getattr(self.headers, "get_all", None)   # an HTTPMessage in service; a plain dict in unit tests
+        if callable(get_all):
+            lengths = get_all("Content-Length") or []
+        else:
+            lengths = [] if self.headers.get("Content-Length") is None else [self.headers.get("Content-Length")]
+        if len(lengths) > 1:
+            raise _RefusedBody(400, "body could not be read: more than one Content-Length header")
+        cl = str(lengths[0]).strip() if lengths else "0"
+        if not re.fullmatch(r"[0-9]{1,20}", cl):
+            raise _RefusedBody(400, "body could not be read: Content-Length %s is an invalid literal for a byte count (decimal digits only)" % _clip_json(cl))
+        n = int(cl)
+        if n > _POST_MAX_BYTES:
+            raise _RefusedBody(413, "request body of %d bytes exceeds the %d-byte limit" % (n, _POST_MAX_BYTES))
+        raw = b""
+        if n:
+            # The read runs under a socket timeout (_POST_BODY_TIMEOUT), put back afterwards; a unit-test
+            # handler over a BytesIO has no connection, and a fake rfile that stalls raises the same
+            # socket.timeout the real one would.
+            sock = getattr(self, "connection", None)
+            prior = sock.gettimeout() if sock is not None else None
+            try:
+                if sock is not None:
+                    sock.settimeout(_POST_BODY_TIMEOUT)
+                raw = self.rfile.read(n)
+            except socket.timeout:
+                raise _RefusedBody(408, "body could not be read: %d bytes announced, not all of it arrived within %g s"
+                                   % (n, _POST_BODY_TIMEOUT))
+            finally:
+                if sock is not None:
+                    try:
+                        sock.settimeout(prior)
+                    except OSError:
+                        pass                             # the socket is already gone; the refusal closes it anyway
+        if len(raw) < n:
+            raise _RefusedBody(400, "body could not be read: read %d of the %d bytes Content-Length announced" % (len(raw), n))
+        data = json.loads(raw) if raw else {}
+        if not isinstance(data, dict):
+            raise _RefusedBody(400, "body must be a JSON object, got %s" % _clip_json(data))
+        return data
 
     def _authorized(self):
         """Serve-token gate, every route but /ping (see the SERVE_TOKEN block). Local clients send
@@ -1260,12 +2840,23 @@ class Handler(BaseHTTPRequestHandler):
             peek = (q.get("peek") or ["0"])[0] == "1"
             if not _safe_id(sid):
                 return self._send({"error": "missing or invalid id"}, 400)
-            return self._send({"messages": read_box(sid, consume=not peek)})
+            try:
+                return self._send({"messages": read_box(sid, consume=not peek)})
+            except InboxUnreadable as e:
+                # a fault the client can show (the MCP tool and `romp mail inbox` surface the error text; the pages
+                # read `unreadable`), never an empty inbox where mail sits unread; the next poll retries. The BUS log
+                # carries the reason once per fault spell, for every client (the Stop hook drops its command's stderr)
+                _say_inbox_unreadable_once(sid, str(e))
+                return self._send({"error": str(e), "unreadable": str(e), "messages": []}, 503)
         if u.path == "/drain":
             sid = (q.get("id") or [""])[0]
             if not _safe_id(sid):
                 return self._send({"error": "missing or invalid id"}, 400)
-            return self._send(_drain(sid))
+            res = _drain(sid)
+            if res.get("unreadable"):
+                _say_inbox_unreadable_once(sid, res["unreadable"])   # the bus log carries the reason once per spell
+                return self._send(dict(res, error=res["unreadable"]), 503)
+            return self._send(res)
         if u.path == "/quarantine":                # held inbound mail from directed peers (kernel reads the
             return self._send({"held": quarantine_list()})   # dir directly for cards; this is for introspection/tests
         self._send({"error": "not found"}, 404)
@@ -1277,14 +2868,31 @@ class Handler(BaseHTTPRequestHandler):
                                "~/.local/state/romp/serve-token)"}, 403)
         try:
             data = self._body()
+        except _RefusedBody as e:
+            self.close_connection = True
+            return self._send({"error": e.error}, e.status, close=True)
         except Exception:
             return self._send({"error": "bad json"}, 400)
         if u.path == "/peer":                      # the kernel's tunnel-transition notify (peer-bus mode)
             payload, status = peer_update(data)
             return self._send(payload, status)
         if u.path == "/peer-exchange":             # a peer bus dialing us through the kernel's -L forward
-            payload, status = peer_exchange_handle(data)
-            return self._send(payload, status)
+            flight = []                            # the ids of the flights the handler's listings registered
+            payload, status = peer_exchange_handle(data, flight=flight)
+            # The relays in a 200 leave with this write (2026-09-08): _send writes through the handler's
+            # unbuffered wfile (wbufsize 0 — sendall), so a return means the socket took the bytes and a
+            # dead socket raises here. Returned → the flight ends carried; raised → freed, nothing left,
+            # they ride the next exchange (a re-relay is deduped over there).
+            host = _exchange_peer_name(data)
+            try:
+                self._send(payload, status)
+            except Exception:
+                for fid in flight:
+                    _flight_done(host, fid, carried=False)
+                raise
+            for fid in flight:
+                _flight_done(host, fid, carried=(status == 200))
+            return
         if u.path == "/send":
             to = data.get("to", "")
             frm, frm_id = data.get("from", "unknown"), data.get("from_id", "")
@@ -1303,16 +2911,32 @@ class Handler(BaseHTTPRequestHandler):
             kind = str(data.get("kind", "")).strip().lower()
             if kind not in ("delegate", "coordinate", "question"):
                 kind = ""                              # legacy/CLI mail may be undeclared; never invent one
-            tracked = bool(data.get("tracked")) and kind == "delegate"   # report-back delegation
+            tracked, terr = _as_bool(data.get("tracked"), "tracked")   # report-back delegation
+            if terr:                                   # a string here armed tracking on a plain send
+                return self._send({"error": terr}, 400)
+            tracked = tracked and kind == "delegate"
+            relayed, rerr = _as_bool(data.get("relayed"), "relayed")   # the kernel relaying a worker's question (T334)
+            if rerr:
+                return self._send({"error": rerr}, 400)
+            relayed = relayed and kind == "question"
+            relay_marker = _marker_val(data.get("relayMarker")) if relayed else ""   # the kernel's marker id (T334)
+            if relay_marker:
+                prior = _relay_marker_sent_row(frm_id, relay_marker)
+                if prior is not None:                  # the same relayed question was sent already (a stalled answer had
+                    to_prior = str(prior.get("to_id") or "")   # the kernel ask again): answer THAT send, deliver nothing
+                    if to_prior.startswith("peer:"):
+                        return self._send({"ok": True, "id": prior.get("id"), "duplicate": True, "host": to_prior[5:],
+                                           "note": "already relayed to %s" % to_prior[5:]})
+                    return self._send({"ok": True, "to": to, "id": prior.get("id"), "duplicate": True})
             #   (the user 2026-08-24): only a delegate can be tracked; wire metadata only — nothing
             #   about the flag ever appears in message prose (the injected-voice rule)
-            if _postal_off(frm_id):                # the sender is in isolation → sending is disabled
-                return self._send({"error": "isolation: YOUR OWN mailbox is OFF. This session is in postal "
-                                   "isolation (its mailbox icon is toggled off on its timeline lane), so it "
-                                   "can't send OR receive any mail. This is NOT the recipient's mailbox — the "
-                                   "recipient is fine; nothing was sent. To fix, ask the USER to toggle THIS "
-                                   "session's mailbox back on in the timeline, then retry. When you relay this, "
-                                   "say it's YOUR mailbox that's off, not theirs."}, 403)
+            why_off = _mail_off_why(frm_id)
+            if why_off == "thread":                # a comment thread's own send: refused until broken out (T356)
+                return self._send({"error": THREAD_MAIL_OFF_SENDER}, 403)
+            if why_off == "unreadable":            # its own words: never the thread diagnosis for a corrupt record
+                return self._send({"error": UNREADABLE_REG_SENDER}, 403)
+            if why_off:                            # the sender is in isolation → sending is disabled
+                return self._send({"error": ISOLATION_SENDER}, 403)
             # ONE resolution step for every case (self, ambiguous, isolated, relayed, unknown) —
             # see resolve_recipient. A name that answers to more than one live session is refused
             # here, not tiebroken.
@@ -1322,7 +2946,8 @@ class Handler(BaseHTTPRequestHandler):
             if res["kind"] == "relay":
                 # Peer-bus relay: the name lives on a peer host → park in its outbox; the exchange
                 # (or the next reconnect) carries it, and a definitive refusal bounces back to the
-                # sender.
+                # sender as a note — to a session sender; a --from sender has no mailbox, so its
+                # refusal is recorded only (_bounce_apply, _parked_note).
                 phost, hit = res["host"], res["agent"]
                 # `tracked` deliberately does NOT ride the relay: the primary view lives on the
                 # SENDER's kernel, which the recipient's courier can never reach across hosts — a
@@ -1332,14 +2957,56 @@ class Handler(BaseHTTPRequestHandler):
                 tnote = (" — report-back tracking does not cross hosts yet; sent as a plain handoff"
                          if tracked else "")
                 mid = "px-" + _unique()
-                outbox_put(phost, {"mid": mid, "to": hit.get("name") or to, "frm": frm,
-                                   "frm_id": frm_id, "body": body, "kind": kind,
-                                   "t": int(time.time())})
-                _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "sent", "id": mid,
-                                              "from": frm, "from_id": frm_id,
-                                              "to_id": "peer:%s" % phost,
-                                              "toName": "%s:%s" % (phost, hit.get("name") or to),
-                                              "body": body, "kind": kind})
+                # `to` carries the display name (an old-code far side matches names only), and
+                # `toId` carries the resolved row's SID (review find 2026-09-01): parking the name
+                # ALONE discarded exactly what an id-addressed send chose the sid for — a rename
+                # during the park window bounced a rename-proof address as no-live, and two
+                # same-named far sessions could silently swap deliveries. A new far side matches
+                # toId exactly first; an old one ignores the extra key. Compatible both ways.
+                relay_msg = {"mid": mid, "to": hit.get("name") or to,
+                             "toId": str(hit.get("id") or ""), "frm": frm,
+                             "frm_id": frm_id, "body": body, "kind": kind,
+                             "t": int(time.time())}
+                if kind == "delegate":
+                    # kernel-walked-at-relay provenance (the user 2026-08-27, T126): park time IS
+                    # send time (this write), so the walk always runs where the evidence is local
+                    ua = _walk_root_record(frm_id)
+                    if ua:
+                        relay_msg["userAsk"] = ua
+                if relayed:
+                    relay_msg["relayed"] = True    # the far side's deliver marks it (T334): a relayed question
+                    #                                reaches a far-host manager marked, exactly as a local one does
+                    if relay_marker:
+                        relay_msg["relayMarker"] = relay_marker
+                # `to_sid` (2026-09-08): the recipient's STABLE id, the same value the wire's toId
+                # carries. The row used to name the recipient only ("<host>:<name>"), so every
+                # reader of the wait (the kernel's wait maps, the judge's ask maps) had to join it
+                # back to a sid through a name→sid alias learned from the peer's own rows — and a
+                # name reused by a NEW session re-keyed every OLD message to the new sid. With the
+                # sid on the row the join is exact; the alias stays the fallback for older rows.
+                # The sent row lands BEFORE the park, and the park's own failure is answered
+                # (2026-09-08): the row is what the sender's receipts and the timeline read, so a
+                # park with no row was mail nobody could see, and answering ok regardless of the
+                # append was a "sent" the sender could not trust. A row that can't land refuses the
+                # send; a park that fails after the row closes the ledger on the id and refuses —
+                # either way the sender still holds the text. 503 + ok:false, because _http raises
+                # BusError only on a non-2xx: a 200 would read as "Delivered" in the tool and CLI.
+                if not _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "sent", "id": mid,
+                                                     "from": frm, "from_id": frm_id,
+                                                     "to_id": "peer:%s" % phost,
+                                                     "toName": "%s:%s" % (phost, hit.get("name") or to),
+                                                     "to_sid": str(hit.get("id") or ""),
+                                                     "body": body, "kind": kind,
+                                                     **({"relayed": True} if relayed else {}),   # as deliver's row (T334)
+                                                     **({"relayMarker": relay_marker} if relay_marker else {})}):
+                    return self._send({"ok": False, "error": NOT_RECORDED_TEXT}, 503)
+                if not outbox_put(phost, relay_msg):
+                    _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": mid,
+                                                  "to": hit.get("name") or to, "host": phost,
+                                                  "why": WHY_NOT_PARKED, "notParked": True})   # never left (T334 reads it)
+                    return self._send({"ok": False, "error": "the message could not be parked for %s "
+                                       "(the outbox could not be written), so it was not sent — "
+                                       "nothing is lost; retry" % phost}, 503)
                 if PEERS.get(phost, {}).get("up"):
                     return self._send({"ok": True, "id": mid,
                                        "note": "relaying to '%s' on %s%s" % (hit.get("name") or to, phost, tnote)})
@@ -1347,47 +3014,78 @@ class Handler(BaseHTTPRequestHandler):
                 #                                             re-dial the host's tunnel now instead of
                 #                                             waiting out its backoff (the user 2026-08-16)
                 return self._send({"ok": True, "id": mid, "parked": phost,
-                                   "note": ("parked for %s (unreachable) — delivers on reconnect, "
-                                            "or bounces back to you" % phost) + tnote})
+                                   "note": _parked_note(phost, frm_id) + tnote})
             a0 = res["agent"]
-            mid = deliver(a0["id"], frm, frm_id, body, kind=kind, tracked=tracked)
-            if not a0.get("remote", False):
-                # All through the kernel (it owns the tmux status bar + the wake), off-thread so send latency
-                # stays low: paint the recipient's "📬 from X" badge; record correspondence (peer chips) + the
-                # directional top-line indicator on both ends; and auto-wake the recipient if it's idle.
-                threading.Thread(target=_kernel_post, daemon=True,
-                                 args=("/mail-badge", {"id": a0["id"], "from_name": frm, "from_id": frm_id})).start()
-                threading.Thread(target=_kernel_post, daemon=True,
-                                 args=("/deliver-chrome", {"recip_id": a0["id"], "recip_name": a0["name"],
-                                       "sender_id": frm_id, "sender_name": frm, "body": data.get("body", ""), "mid": mid})).start()
-                threading.Thread(target=_push, args=(a0["id"], a0), daemon=True).start()
-            else:
-                # A REMOTE peer on an attached host: still WAKE it — _push POSTs /deliver to the local kernel,
-                # whose wake-router forwards it over the host's -L tunnel to the owning kernel (which injects
-                # into the pane). The tmux status chrome above is local-only, so it's skipped for remotes.
-                threading.Thread(target=_push, args=(a0["id"], a0), daemon=True).start()
+            try:
+                mid = deliver(a0["id"], frm, frm_id, body, kind=kind, tracked=tracked, relayed=relayed,
+                              relay_marker=relay_marker)
+            except DeliveryNotRecorded as e:
+                # 503 + ok:false (see the relay leg): nothing was published; the sender retries.
+                return self._send({"ok": False, "error": str(e)}, 503)
+            # Auto-wake the recipient through the kernel (POST /deliver), off-thread so send latency stays
+            # low. A local recipient's kernel enqueues the mail as its next turn; a REMOTE peer on an
+            # attached host is woken the same way — the local kernel's wake-router forwards the POST over
+            # the host's -L tunnel to the owning kernel. (Until 2026-09-11 two more POSTs rode here,
+            # /mail-badge and /deliver-chrome, for a backend since removed; the kernel answers them 404.
+            # The bus is a long-lived singleton that restarts only when its own source changes, so an
+            # older bus talking to a newer kernel keeps making those fire-and-forget POSTs and gets 404s
+            # back — harmless, and over at its next restart.)
+            threading.Thread(target=_push, args=(a0["id"], a0), daemon=True).start()
             return self._send({"ok": True, "to": to})
         if u.path == "/recall":
             frm_id = data.get("from_id", "")
             if not frm_id:
                 return self._send({"error": "missing from_id"}, 400)
-            removed = _recall(frm_id, data.get("to", ""), data.get("id", ""))
-            return self._send({"ok": True, "removed": removed})
+            kept = []                                # carried outbox items the recall refused (additive:
+            removed = _recall(frm_id, data.get("to", ""), data.get("id", ""), kept=kept)   # an older client
+            return self._send({"ok": True, "removed": removed, "kept": kept})               # ignores the key)
         if u.path == "/wake":
             sid = data.get("id", "")
             if sid and _safe_id(sid):                         # force-deliver on revive once the prompt is live
                 threading.Thread(target=_wake_when_ready, args=(sid,), daemon=True).start()
             return self._send({"ok": True})
         if u.path == "/heartbeat":
-            _record_heartbeat(data.get("id"), data.get("name", "?"))
-            return self._send({"ok": True})
+            local = _record_heartbeat(data.get("id"), data.get("name", "?"))
+            return self._send({"ok": True, "local": local})
         if u.path == "/quarantine/act":            # human verdict on a held message (approve/deny), from the
             mid = str(data.get("mid") or "")       # blocked card via the kernel; approve delivers, deny drops
             action = str(data.get("action") or "").strip().lower()
             text = data.get("text")                # optional human-edited body for approve
-            ok, err = quarantine_decide(mid, action, text, feedback=data.get("feedback"))
+            ok, err = quarantine_decide(mid, action, text, feedback=data.get("feedback"), sid=data.get("sid"))   # sid: the recipient the kernel names (2026-09-18)
             return self._send({"ok": ok} if ok else {"ok": False, "error": err}, 200 if ok else 400)
+        if u.path == "/restore":                   # the kernel handing back fed-and-lost mail by id (restore_stranded)
+            payload, status = restore_stranded(data)
+            return self._send(payload, status)
         self._send({"error": "not found"}, 404)
+
+def _token_mark():
+    """A short mark of THIS bus's serve token (a sha256 prefix, never the token), so a kernel trusts the record only when its own
+    token makes the same mark: a record left by another bus, another state root's world, or a reused pid can never redirect a
+    kernel's dial to a bus that is not its own (2026-09-18)."""
+    try:
+        return hashlib.sha256(str(SERVE_TOKEN or "").encode()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _write_port_record(port):
+    """Publish the port this bus bound as {"port", "pid", "tok"} (PORTFILE), atomically; best-effort and said when it fails, since
+    a kernel that cannot read the record falls back to the environment and a mismatch there is the fault this removes."""
+    try:
+        _atomic_json_put(PORTFILE, {"port": int(port), "pid": os.getpid(), "tok": _token_mark()})
+    except Exception as e:
+        _log("the port record could not be written (%s); the kernel falls back to ROMP_POSTAL_PORT" % e)
+
+
+def _remove_port_record():
+    """On a clean exit, remove the record when it still names THIS process (a newer bus's record is left standing)."""
+    try:
+        rec = json.loads(PORTFILE.read_text())
+        if int(rec.get("pid") or 0) == os.getpid():
+            PORTFILE.unlink()
+    except Exception:
+        pass
+
 
 def _log(msg):
     try:
@@ -1399,9 +3097,10 @@ def _log(msg):
 # ── code-staleness self-restart ─────────────────────────────────────────────────────────────────────────
 # The bus is a long-lived SINGLETON keyed on its port: `ensure` is a no-op while the old process answers, and
 # `romp refresh` restarts the KERNEL, not the bus. So a bus started before a code change keeps serving STALE
-# in-memory code indefinitely — which silently stranded mail to SDK sessions: a bus from before the "deliver
-# via the kernel, not by pasting into a tmux pane" refactor literally couldn't reach a pane-less SDK recipient,
-# and the message sat unread forever with no bounce (the user 2026-06-29). Guard: the bus fingerprints its own
+# in-memory code indefinitely — which silently stranded mail to SDK sessions: a bus from before the
+# 2026-06-26 "deliver through the kernel" refactor still reached for recipients the way the since-removed
+# backend did, could not reach an SDK recipient at all, and the message sat unread forever with no bounce
+# (the user 2026-06-29). Guard: the bus fingerprints its own
 # source at boot and the monitor re-execs into the new code the moment the file on disk changes. Pending mail
 # lives in the maildir, so nothing is lost across the swap.
 _SRC = os.path.abspath(__file__)
@@ -1437,14 +3136,65 @@ def _maybe_restart_for_code(boot_fp):
         return True
     return False
 
-def _idle_tick(n, idle):
+def _idle_tick(n, idle, answered=True):
     """One autostop decision: (new_idle, stop). Factored out so the gate is unit-testable (the
     monitor loop sleeps). Local clients OR a live local kernel reset the count — a hub with zero
-    local sessions still serves inbound peer exchanges as long as its kernel runs (_kernel_up)."""
+    local sessions still serves inbound peer exchanges as long as its kernel runs (_kernel_up).
+
+    `answered` False means the kernel's listing did not answer. That HOLDS the count only when the
+    bus has evidence that sessions existed: the last ANSWERED listing — in memory, or its disk twin
+    for a bus that started during the blink — was non-empty (_sessions_were_listed). The outage then
+    protects the sessions that were listed before it: an unanswered listing is a kernel that is not
+    there to ask (mid-restart, typically), not a kernel saying the sessions are gone — the kernel owns
+    every session's life, and the one that returns lists (and resumes) the sessions it owned, whose
+    mail must still be here to deliver. An ANSWERED empty listing is the kernel's own word and counts
+    toward the stop. Until 2026-09-06 local sessions' heartbeats masked an
+    outage as presence; with those loops ended in peer mode the gate reads the bit itself. A bus
+    that never saw an answered non-empty listing — a kernel-less `romp mail` bus, a box whose kernel
+    stopped after its sessions had all gone — keeps the autostop: the count advances every poll and
+    stops at IDLE_GRACE. The kernel-less case holds only on a box whose twin holds no rows: a twin left
+    by an earlier kernel primes the hold in a bus spawned later the same way. The hold has ONE release,
+    the next answered listing (which rewrites the twin): a kernel gone for good after listing sessions
+    leaves the bus up until a manual stop or the returning kernel's first answer, and a code-staleness
+    re-exec does not end it (the fresh process re-primes the hold from the twin, which outlives the
+    re-exec by design) (review find, 2026-09-08; pinned by tests/test_postal_bus_lifetime.py). In
+    production an answered listing implies a live kernel (both are the same process), so `answered and
+    n == 0` with the kernel down is reached only through the ROMP_SESSIONS_FILE seam; the stop that
+    matters is the unanswered one without evidence."""
     if n > 0 or _kernel_up():
         return 0, False
+    if not answered and _sessions_were_listed():
+        return idle, False
     idle += 1
     return idle, idle >= IDLE_GRACE
+
+
+def _sessions_were_listed():
+    """True iff the last ANSWERED local listing this bus knows of was non-empty: the evidence the
+    autostop gate needs before an unanswered listing counts as an outage rather than an absence.
+    Primed from the disk twin (_PRESENCE_GOOD_FILE) when this process has not answered yet, so a
+    bus that started during the blink is covered."""
+    _presence_good_load()
+    return bool(_LOCAL_PRESENCE_GOOD[1] and _LOCAL_PRESENCE_GOOD[0])
+
+
+def _monitor_tick(idle):
+    """One poll of _monitor after its sleep: the mail sweeps, the deadness-mirror refresh, and the
+    autostop decision. Returns (idle, stop). Factored out so a tick is unit-testable."""
+    try:
+        _sweep_orphans()    # bounce mail stuck unread in dead recipients' mailboxes
+    except Exception:
+        pass
+    try:
+        _warn_stuck_mail()  # warn the sender when a LIVE-but-idle recipient still hasn't read (backstop)
+    except Exception:
+        pass
+    _write_remote_sids()    # the TTL prunes only at write time; the poll is the write that needs no beat to arrive
+    try:
+        n, answered = present_count_checked()
+    except Exception:
+        n, answered = 1, True   # on error, err on the side of staying up
+    return _idle_tick(n, idle, answered)
 
 
 def _monitor(httpd, boot_fp=""):
@@ -1452,50 +3202,99 @@ def _monitor(httpd, boot_fp=""):
     while True:
         time.sleep(POLL)
         _maybe_restart_for_code(boot_fp)   # reload if the on-disk code changed under us (does not return on restart)
-        try:
-            _sweep_orphans()    # bounce mail stuck unread in dead recipients' mailboxes
-        except Exception:
-            pass
-        try:
-            _warn_stuck_mail()  # warn the sender when a LIVE-but-idle recipient still hasn't read (backstop)
-        except Exception:
-            pass
-        try:
-            n = present_count()
-        except Exception:
-            n = 1   # on error, err on the side of staying up
-        idle, stop = _idle_tick(n, idle)
+        idle, stop = _monitor_tick(idle)
         if stop:
             _log("no romp clients remain (and no local kernel); shutting down")
             threading.Thread(target=httpd.shutdown, daemon=True).start()
             return
 
+def _hold_claim(sid, mid):
+    """restore() answered UNKNOWN for a claimed message (cur/ cannot be read): record the claim in mail-held/<sid> so the
+    retry loop puts it back once cur/ reads (_retry_held_claims), and retract the exec stamp meanwhile, so the sender's
+    receipt reads pending rather than read for mail the recipient never saw. Before this, no road revisited cur/: the
+    claim stood forever with the exec row standing (the lows PR's round two, 2026-09-14)."""
+    if not (_safe_id(sid) and _safe_id(mid)):
+        return
+    try:
+        MAILHELD.mkdir(parents=True, exist_ok=True)
+        m = MAILHELD / sid
+        have = set(m.read_text().split()) if m.exists() else set()
+        if mid not in have:
+            with open(m, "a") as f:
+                f.write(mid + "\n")
+    except OSError as e:
+        _log("held claim %s for %s: the marker could not be written (%s); the claim stands in cur/ unrecorded" % (mid, sid, e))
+    _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "unexec", "id": mid})
+
+
+def _retry_held_claims():
+    """The claims _hold_claim recorded: put each back through restore() once cur/ reads. RESTORED or MISSING drops the id
+    (a put-back mail is pending mail: the marker and the retry below deliver it); UNKNOWN keeps it for the next pass; an
+    emptied marker is removed. Only the recorded ids are touched, never a cur/ walk: cur/ also holds the claims of a
+    push in flight."""
+    try:
+        markers = [m for m in MAILHELD.iterdir() if m.is_file()] if MAILHELD.is_dir() else []
+    except OSError:
+        return
+    for m in markers:
+        sid = m.name
+        try:
+            mids = [x for x in m.read_text().split() if _safe_id(x)]
+        except OSError:
+            continue
+        keep = []
+        for mid in mids:
+            r = restore(sid, mid)
+            if r == RESTORE_UNKNOWN:
+                keep.append(mid)
+            elif r == RESTORED:
+                _log("held claim %s for %s put back in new/ (cur/ reads again)" % (mid, sid))
+        try:
+            if keep:
+                m.write_text("".join(x + "\n" for x in keep))
+            else:
+                m.unlink()
+        except OSError as e:
+            _log("held claims marker for %s could not be rewritten (%s)" % (sid, e))
+        if len(keep) != len(mids):
+            _mark_pending(sid)                      # what came back is pending mail: the retry below pushes it
+
+
 def _retry_pending():
     """RETRY deferred deliveries — the fix for stranded mail. _push (and the revive
-    wake) are single-shot: when they can't safely inject (a resume-from-summary
-    picker, a permission dialog, a prompt not yet at ❯), they correctly DEFER and
-    leave the mail in new/. But an IDLE recipient then has no Stop hook to trigger
-    the drain, so the mail strands until something else happens to arrive. Here the
-    bus periodically re-attempts delivery for every session that still has pending
-    mail (marker present) and is live; _push re-checks safety each pass and injects
-    the moment the block clears and the session is at a clean ❯ prompt. This makes
-    delivery EVENTUAL rather than single-shot — covering both the revive-picker race
-    and the live-idle-behind-a-permission-dialog case. Honors 'don't wake unless
-    needed': only sessions that actually hold mail are touched, and _push still only
-    injects at a safe idle/working ❯ prompt (never mid permission dialog or over a
-    draft it can't preserve). A dead session's marker is skipped (its mail waits for
-    revival); a stale marker (new/ already empty) is reconciled away."""
+    wake) are single-shot: when the session cannot take the wake yet (a revive still
+    loading, a permission ask in progress, a state the coarse gate skips), they
+    correctly DEFER and leave the mail in new/. But an IDLE recipient then has no
+    Stop hook to trigger the drain, so the mail strands until something else happens
+    to arrive. Here the bus periodically re-attempts delivery for every session that
+    still has pending mail (marker present) and is live; _push re-checks each pass,
+    and the kernel takes the mail the moment the session can. This makes delivery
+    EVENTUAL rather than single-shot — covering both the revive race and the
+    live-idle-behind-a-permission-ask case. Honors 'don't wake unless needed': only
+    sessions that actually hold mail are touched, and _push still only wakes a
+    session the kernel lists as idle or working. A dead session's marker is skipped
+    (its mail waits for revival); a stale marker (new/ already empty) is reconciled away. The claims
+    restore() could not answer for (mail-held/) are put back first, so their mail is pending mail this
+    same pass (2026-09-14)."""
+    _retry_held_claims()
     if not MAILPENDING.is_dir():
         return
-    live = {a["id"]: a for a in local_agents()}
-    for m in list(MAILPENDING.iterdir()):
-        if not m.is_file():
-            continue
+    markers = [m for m in MAILPENDING.iterdir() if m.is_file()]
+    if not markers:
+        return                                 # nothing pending: no GET /sessions this pass (2026-09-06)
+    live = None                                # fetched once, and only for a marker that still holds mail
+    for m in markers:
         sid = m.name
         newd = MAILROOT / sid / "new"
-        if not (newd.is_dir() and any(newd.iterdir())):
+        empty = _dir_empty(newd)
+        if empty is None:
+            continue                           # new/ cannot be read: the marker stands (a clear here painted mail as
+        #                                        drained while it sat unread; is_dir() read False there on 3.14)
+        if empty:
             _mark_pending(sid)                 # stale marker -> clear it
             continue
+        if live is None:
+            live = {a["id"]: a for a in local_agents(threads=True)}   # a thread's marker retries like any live session's
         if sid in live:
             try:
                 _push(sid, live[sid])          # re-attempt; the kernel defers again if still unsafe
@@ -1522,14 +3321,301 @@ def _reconcile_markers():
     except Exception as e:
         _log("marker reconcile failed: %s" % e)
 
+WHY_STOPPED_BEFORE_PUBLISH = WHY_NOT_PUBLISHED + "the mail service stopped before the message reached the inbox"
+WHY_STOPPED_BEFORE_PARK = "not parked: the mail service stopped before the outbox record was written"
+
+def _rebuild_rows_for_rowless_mail(box, sent, ended):
+    """The start sweep's pass over <box>/new/ (see _sweep_unfinished_writes): every file whose id the
+    ledger has never heard of gets its sent row now, rebuilt from the headers deliver() wrote (From,
+    From-Id, Date, X-Park, X-Kind, X-From-Host, X-Peer-Mid) and the body after the blank line, and
+    marked `recovered`. The file is never removed and never bounced. Returns how many rows landed."""
+    newd = box / "new"
+    try:
+        files = sorted((f for f in newd.iterdir() if f.is_file()), key=lambda p: p.name) if newd.is_dir() else []
+    except OSError:
+        return 0
+    n = 0
+    for f in files:
+        if f.name in sent or f.name in ended:
+            continue
+        try:
+            text = f.read_text(errors="replace")
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            _mail_unreadable(f, box.name, e)         # its fields cannot be recovered: aside, said, closed
+            continue
+        head, _, body = text.partition("\n\n")
+        meta = {}
+        for ln in head.splitlines():
+            k, _, v = ln.partition(": ")
+            meta[k.lower()] = v
+        try:
+            t = int(datetime.strptime(meta.get("date", ""), "%Y-%m-%dT%H:%M:%S%z").timestamp())
+        except (ValueError, TypeError, OverflowError):
+            try:
+                t = int(f.stat().st_mtime)
+            except OSError:
+                t = int(time.time())
+        row = {"t": t, "ev": "sent", "id": f.name, "from": meta.get("from", "?"),
+               "from_id": meta.get("from-id", ""), "to_id": box.name,
+               "body": body[:-1] if body.endswith("\n") else body,   # deliver() adds exactly one newline
+               "recovered": True}                                    # written at start, not by the send
+        if meta.get("x-park"):
+            row["park"] = True
+        if meta.get("x-kind"):
+            row["kind"] = meta["x-kind"]
+        if meta.get("x-relayed"):
+            row["relayed"] = True                    # romp sent it on the sender's behalf (T334)
+        if meta.get("x-relay-marker"):
+            row["relayMarker"] = str(meta.get("x-relay-marker"))[:64]
+        row["from_host"] = meta.get("x-from-host", "")
+        if meta.get("x-peer-mid"):
+            row["originMid"] = meta["x-peer-mid"]
+        if not _tl_append("messages.jsonl", row):
+            _log("mail %s for %s stands in the inbox with no record of it and its row could not be "
+                 "written at start; it stays for the next start" % (f.name, box.name))
+            continue
+        sent.add(f.name)
+        n += 1
+        if row.get("originMid"):
+            peer_seen_add(row["originMid"])         # the dialer's re-relay of the unacked mid: a duplicate
+        _log("mail %s for %s stood in the inbox with no record of it (the restart cut the delivery "
+             "between the publish and the row); sent row written at start from its headers (a tracked "
+             "flag or a user-ask record lived only on the row and cannot be recovered)" % (f.name, box.name))
+    return n
+
+def _sweep_unfinished_writes():
+    """Bus start: the one event at which no writer of ours is running, so what a crash left on disk
+    is reconciled with the ledger (review find, 2026-09-08). Three passes.
+
+    A maildir temp is a message that stopped before its publish, or the leftover of one that landed.
+    deliver() publishes first (link, then the temp's unlink) and writes its row second, so a temp
+    with no row is a message that never reached the inbox and is simply removed. A temp beside a
+    message that STANDS in new/ or cur/ is a publish that landed whose temp could not be removed
+    (_publish_new tolerates that unlink's failure): the temp goes and the ledger is left alone. The
+    first cut closed such an id as refused, so a message the recipient had already read read refused
+    to its sender after every restart. A temp beside a sent row with the message nowhere (a bus that
+    wrote row-first) is closed with a terminal `bounced` row, so no receipt reads pending forever for
+    a message nothing lists.
+
+    A message in new/ with NO sent row is the residual of the publish-first order: a bus killed
+    between the publish and the row, or a take-back whose unlink was refused. The mail is legitimate
+    and the next read delivers it, so it is never removed and never bounced (a bounced row with no
+    sent row is invisible to the sender's receipts): its sent row is rebuilt from the file's headers
+    (_rebuild_rows_for_rowless_mail), marked `recovered`, so the sender's receipt, the timeline and
+    the courier see it. A tracked flag or a user-ask record lived only on the row and cannot be
+    recovered. A relayed message's origin mid is marked seen, so the dialer's re-relay of the unacked
+    mid is acked as a duplicate instead of delivered twice. A file that cannot be read goes aside the
+    way read_box sends one (_mail_unreadable). A row that cannot be written now leaves the file for
+    the next start.
+
+    The relay leg (row, then outbox_put) has its window still, leaving a `<mid>.json.tmp-*` temp and
+    no record; _atomic_json_put's own failure path removes its temp, so only a crash leaves one. Each
+    temp is removed (never published: it may be half-written), its id's ledger is closed when a sent
+    row stands with no terminal row yet, each is said on stderr, and one bell row reports the sweep.
+    A readbox temp is removed and said; a receipt is not a message. The `.corrupt-*` sidecars are
+    evidence and are never touched."""
+    sent, ended = set(), set()
+    try:
+        for line in (TLDIR / "messages.jsonl").read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(o, dict) or not o.get("id"):
+                continue
+            if o.get("ev") == "sent":
+                sent.add(str(o["id"]))
+            elif o.get("ev") in ("bounced", "recall"):
+                ended.add(str(o["id"]))
+    except OSError:
+        pass
+
+    def _close(mid, row):
+        if mid in sent and mid not in ended:
+            row.update({"t": int(time.time()), "ev": "bounced", "id": mid})
+            if _tl_append("messages.jsonl", row):
+                ended.add(mid)
+                return True
+        return False
+
+    removed, closed, standing, recovered, standing_records = 0, 0, 0, 0, 0
+    try:
+        boxes = [b for b in MAILROOT.iterdir() if b.is_dir()] if MAILROOT.is_dir() else []
+    except OSError:
+        boxes = []
+    for box in boxes:
+        tmpd = box / "tmp"
+        try:
+            temps = [f for f in tmpd.iterdir() if f.is_file()] if tmpd.is_dir() else []
+        except OSError:
+            temps = []
+        for f in temps:
+            states = (_record_state(box / "new" / f.name), _record_state(box / "cur" / f.name))
+            if "unreadable" in states and "present" not in states:
+                # new/ or cur/ cannot be searched: whether the message reached the inbox is UNKNOWN, so the temp and
+                # the ledger are left alone (a bounce here read a delivered message as never published, the
+                # 2026-09-08 regression; Path.exists() answered False on the unsearchable directory on 3.14)
+                _log("unfinished mail %s for %s left at start: its inbox cannot be read, so whether it was published is unknown"
+                     % (f.name, box.name))
+                continue
+            published = "present" in states
+            try:
+                f.unlink()
+            except OSError as e:
+                _log("unfinished mail %s for %s could not be removed (%s)" % (f.name, box.name, e))
+                continue
+            removed += 1
+            if published:
+                standing += 1
+                _log("unfinished mail %s for %s removed at start; the message itself had reached the inbox "
+                     "(a temp its publish could not remove), its ledger left alone" % (f.name, box.name))
+                continue
+            done = _close(f.name, {"to_id": box.name, "why": WHY_STOPPED_BEFORE_PUBLISH})
+            closed += done
+            _log("unfinished mail %s for %s removed at start%s"
+                 % (f.name, box.name, "; its sent row stood with no message published, now closed as refused"
+                    if done else ""))
+        recovered += _rebuild_rows_for_rowless_mail(box, sent, ended)
+    for store, why in ((OUTBOX, WHY_STOPPED_BEFORE_PARK), (READBOX, None)):
+        try:
+            hostdirs = [h for h in store.iterdir() if h.is_dir()] if store.is_dir() else []
+        except OSError:
+            continue
+        for hostdir in hostdirs:
+            try:
+                temps = sorted(hostdir.glob("*.json.tmp-*"))
+            except OSError:
+                continue
+            for f in temps:
+                mid = f.name.split(".json.tmp-", 1)[0]
+                state = _record_state(hostdir / (mid + ".json"))
+                if state == "unreadable":
+                    _log("unfinished %s record %s for %s left at start: the record cannot be read, so whether it stands is unknown"
+                         % (store.name, f.name, hostdir.name))
+                    continue                 # the temp and the ledger stay: never a bounce on an answer the stat could not give
+                record_stands = state == "present"
+                try:
+                    f.unlink()
+                except OSError as e:
+                    _log("unfinished %s record %s could not be removed (%s)" % (store.name, f.name, e))
+                    continue
+                removed += 1
+                if record_stands:
+                    # the temp of a REWRITE of a standing record (_mark_carried publishes the carry mark
+                    # through the same temp-and-replace), cut short: the record itself stands and its
+                    # message is parked, so its ledger is left alone (2026-09-08). Closing it as never
+                    # parked — the reading when outbox_put was the only temp writer — read a parked
+                    # message as refused to its sender.
+                    standing_records += 1
+                    _log("unfinished %s record %s for %s removed at start; the record itself stands (the temp of "
+                         "a rewrite the stop cut short), its ledger left alone" % (store.name, f.name, hostdir.name))
+                    continue
+                if why:
+                    closed += _close(mid, {"host": hostdir.name, "why": why})
+                _log("unfinished %s record %s for %s removed at start" % (store.name, f.name, hostdir.name))
+    parts = []
+    if removed:
+        parts.append("%d unfinished mail write(s) from before the restart removed; %d sender receipt(s) now "
+                     "read refused" % (removed, closed))
+        if standing:
+            parts.append("%d of them the temp of a message that had reached the inbox, its ledger left alone"
+                         % standing)
+        if standing_records:
+            parts.append("%d of them the temp of a record that stands, its ledger left alone"
+                         % standing_records)
+    if recovered:
+        parts.append("%d delivered message(s) stood in an inbox with no sent row (the restart cut the delivery "
+                     "after the publish); each has its row now" % recovered)
+    if parts:
+        _refused_notice("mail service start: %s (the log names each)" % "; ".join(parts))
+
+TESTS_ROOT_MARK = "romp-tests-"   # the test runner's temporary roots (/tmp/romp-tests-*): a state root under one belongs to a test
+DEFAULT_PORT = 25302              # the machine's fixed bus port, the one every real client dials
+OWN_PORT_MARK = "ROMP_POSTAL_HERMETIC"   # set by the test runner and the lab builder: a ROMP_POSTAL_PORT under it is the run's own choice
+
+
+def _fixed_port_refusal():
+    """Why this process must NOT bind the machine's fixed bus port, or None (2026-09-10, widened 2026-09-11). A hermetic
+    kernel, a test's lab process or the kernel module loaded inside a test process, runs `ensure` at boot and again
+    whenever a bus call is refused; that started a bus on the FIXED port the moment the machine's real bus was down for
+    a restart (four leaks in one afternoon, three sites), and every real session's mail then failed against the lab's
+    token. Fixture hygiene (kernel_env's trio, tests/test_hermetic_kernel_postal.py) covers the spawn sites it can
+    see; this refusal, in the bus itself, covers every shape.
+
+    The signals, any one enough: the state root is under a temporary directory (a test runner's romp-tests- root, or
+    the system's temporary directory at all, which is where a module run directly with unittest puts its state), or
+    PYTEST_CURRENT_TEST is set. The state root itself cannot say more than that: the documented relocation of a real
+    install is XDG_STATE_HOME (or ROMP_STATE_DIR), the very variables a lab sets, so a root elsewhere is legitimate
+    unless it is temporary. Under a signal, only a port the RUN chose licenses a bind: ROMP_POSTAL_PORT naming the
+    port this process read at import AND the OWN_PORT_MARK beside it (the test runner, the shell suite's setup and
+    kernel_env set both), never the machine's fixed port. A name inherited from the shell does not count: a machine
+    whose bus runs on a named port (the service writes ROMP_POSTAL_PORT into its unit, a profile's postalPort) hands
+    that name to every session's shell and so to any test run from one, which is the same leak under a different
+    number. With no signal the machine's own bus binds its port as ever, named or default, wherever its root lives.
+    The reason goes to stderr, which a detached serve's log carries and which the kernel's ensure runner copies into
+    its own log."""
+    import tempfile
+    named = (os.environ.get("ROMP_POSTAL_PORT") or "").strip()
+    root = os.path.normpath(str(STATE.parent))
+    tmp = tempfile.gettempdir().rstrip("/") + "/"
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        why = "under a test (PYTEST_CURRENT_TEST is set)"
+    elif TESTS_ROOT_MARK in root:
+        why = "the state root %s is under a test runner's temporary directory" % root
+    elif (root + "/").startswith(tmp) or root.startswith("/tmp/"):
+        why = "the state root %s is under the temporary directory" % root
+    else:
+        return None
+    own = named and named == str(PORT) and os.environ.get(OWN_PORT_MARK) and PORT != DEFAULT_PORT
+    if own:
+        return None
+    if named == str(DEFAULT_PORT):
+        how = " ROMP_POSTAL_PORT names the machine's fixed port itself;"
+    elif named and named == str(PORT):
+        how = " ROMP_POSTAL_PORT names %s, but not as this run's own (%s unset), so it is the machine's name inherited from the shell;" % (named, OWN_PORT_MARK)
+    elif named:
+        how = " ROMP_POSTAL_PORT names %s, but this process read %d at import;" % (named, PORT)
+    else:
+        how = " no ROMP_POSTAL_PORT names a port of this run's own;"
+    return ("%s and%s refusing to bind the machine's fixed bus port %d. A hermetic bus names its own port (ROMP_POSTAL_PORT "
+            "with %s=1, as the test runner and kernel_env set them), or runs client-only with peers off "
+            "(ROMP_POSTAL_CLIENT_ONLY=1 and ROMP_POSTAL_PEERS=0) so it never starts one"
+            % (why, how, PORT, OWN_PORT_MARK))
+
+
+def _refuse_loudly(why):
+    sys.stderr.write("romp-postal-service: " + why + "\n")
+
+
+class _LoopbackServer(ThreadingHTTPServer):
+    """The bus's server, whose bind does NOT reverse-resolve its own address. HTTPServer.server_bind runs
+    socket.getfqdn(host) after bind() and before listen(), and a host whose resolver cannot reverse-resolve
+    loopback quickly holds the whole server there: GitHub's macOS 15 and 16 images block about 36 seconds per
+    server on it (measured 2026-09-16 on the bats leg, where every Python stub and the postal bus paid it once),
+    and a Mac with a stale resolver would keep this bus from answering for as long. server_name feeds
+    nothing this bus reads (the CGI handler's environment, never used here), so it is the bind address."""
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)     # the bind, with allow_reuse_address as HTTPServer sets it
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def serve():
+    why = _fixed_port_refusal()
+    if why:
+        _refuse_loudly(why)
+        return 2
     STATE.mkdir(parents=True, exist_ok=True)
     MAILROOT.mkdir(parents=True, exist_ok=True)
     _reconcile_markers()
+    _sweep_unfinished_writes()             # temps a crash left: removed, said, their ledgers closed (2026-09-08)
     if peers_on():
         _seed_peers_from_kernel()          # a restarted bus re-learns its peers without waiting for a transition
     try:
-        httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+        httpd = _LoopbackServer((HOST, PORT), Handler)     # no reverse lookup at the bind (the class's docstring)
     except OSError as e:
         _log("bus already running on %d (%s)" % (PORT, e))
         return 0
@@ -1537,6 +3623,7 @@ def serve():
         PIDFILE.write_text(str(os.getpid()))
     except Exception:
         pass
+    _write_port_record(httpd.server_address[1])
     _log("bus up on %s (pid %d)" % (BASE, os.getpid()))
     boot_fp = _source_fingerprint()                              # so the monitor can reload if the code changes under us
     threading.Thread(target=_monitor, args=(httpd, boot_fp), daemon=True).start()
@@ -1549,6 +3636,7 @@ def serve():
                 PIDFILE.unlink()
         except Exception:
             pass
+        _remove_port_record()
     return 0
 
 # ───────────────────────── client (talks to the bus) ─────────────────────────
@@ -1562,14 +3650,16 @@ def _http(method, path, payload=None):
     headers["X-Romp-Token"] = SERVE_TOKEN            # same-machine client: the 0600 file is the credential
     req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=15) as r:   # the fetch-budget pair's client half — see _kernel_sessions_checked
             return json.loads(r.read().decode() or "{}")
     except urllib.error.HTTPError as e:
         try:
             msg = json.loads(e.read().decode()).get("error", str(e))
         except Exception:
             msg = str(e)
-        raise BusError(msg)
+        err = BusError(msg)
+        err.status = e.code                          # the bus ANSWERED: its status rides the error, so a client can tell an
+        raise err                                    #  inbox fault the bus already logged (503) from a fault it never saw
     except urllib.error.URLError as e:
         raise BusError("can't reach the Romp Postal Service bus at %s (%s)" % (BASE, getattr(e, "reason", e)))
     except Exception as e:
@@ -1633,7 +3723,10 @@ def peer_update(data):
     prev = PEERS.get(host) or {}
     tok = str(data.get("token") or "") or prev.get("token") or ""
     trust = str(data.get("trust") or "") or prev.get("trust") or "directed"
-    PEERS[host] = {"port": port, "up": bool(data.get("up")), "at": int(time.time()),
+    up, uerr = _as_bool(data.get("up"), "up")
+    if uerr:                                           # a string here marked a DOWN tunnel up
+        return {"error": uerr}, 400
+    PEERS[host] = {"port": port, "up": up, "at": int(time.time()),
                    "token": tok, "trust": trust}
     _peer_threads_reconcile(host)                    # an up peer gets its dialer; a down one is woken to exit
     return {"ok": True, "up": sum(1 for p in PEERS.values() if p["up"])}, 200
@@ -1752,7 +3845,41 @@ def my_tier_of(host):
     return row.get("trust") or "directed"
 
 
+def _write_remote_sids():
+    """STATE/remote-sids — every session id this box knows to be LIVE on another host (federated
+    presence gossip + legacy heartbeats), one per line, atomically. A best-effort mirror for the
+    kernel/judge DEADNESS rule (2026-08-28, the dead-session round): a sid absent from the local
+    registry but present here is a live REMOTE session whose local mirror store must never be
+    presumed closed. The FILE's existence means the bus has spoken; readers treat a missing file
+    as "cannot determine" and stay conservative.
+
+    The TTL is applied at WRITE time, so an expired heartbeat leaves the file only when something
+    writes it: every recorded heartbeat, every peer exchange, and (since 2026-09-06) every _monitor
+    poll. In peer mode (the default) a local session's beats end once its bus confirms it local, and
+    remote presence arrives through the peer exchange, which writes here. In legacy singleton mode
+    the beats continue; the poll-time write is the backstop for a hub whose local sessions have all
+    gone quiet while a dead remote's sid waits out its TTL."""
+    try:
+        now = time.time()
+        ids = {sid for sid, (_nm, ts) in HEARTBEATS.items() if now - ts < HEARTBEAT_TTL}
+        for st in PEER_STATE.values():
+            for pa in st.get("presence") or []:
+                if pa.get("id"):
+                    ids.add(str(pa["id"]))
+        tmp = STATE / "remote-sids.tmp"
+        tmp.write_text("\n".join(sorted(ids)) + ("\n" if ids else ""))
+        os.replace(tmp, STATE / "remote-sids")
+    except Exception:
+        pass
+
+
 def peers_snapshot():
+    """GET /peers: the table, plus WHICH BUS PROCESS is answering (busId, minted per process; epoch, its
+    boot second). The kernel compares that pair across its supervisor passes: a change means this bus
+    restarted, so it re-tells every peer with its token (kernel _note_bus_incarnation). The /tunnels seed
+    below cannot learn tokens (that payload carries none since 2026-09-08), so without this a bus that
+    restarted under a running kernel dialed every peer credential-less until a tunnel bounced
+    (review find, 2026-09-08)."""
     peers = {}
     for h, p in PEERS.items():
         d = dict(p)
@@ -1760,7 +3887,8 @@ def peers_snapshot():
         if tt:
             d["theirTier"] = tt        # how that host holds US, from its last exchange declaration
         peers[h] = d
-    return {"peers": peers, "viaReach": via_reach(), "remoteHolds": remote_holds()}
+    return {"peers": peers, "viaReach": via_reach(), "remoteHolds": remote_holds(),
+            "busId": BUS_ID, "epoch": BUS_EPOCH}
 
 # ── peering protocol (peer-bus mode, stage 2) ───────────────────────────────────
 # One EXCHANGE carries both directions (plans/postal-peer-buses.md): the dialer POSTs
@@ -1795,6 +3923,14 @@ _peer_wakes = {}                           # host -> threading.Event (long-poll 
 _peer_threads = {}                         # host -> Thread (one dialer loop per up peer)
 _peer_pending = {}                         # host -> {"acks": [mid], "bounces": [{mid, why}]} for the NEXT request
 _peer_lock = threading.Lock()
+_outbox_lock = threading.Lock()            # serializes an outbox record's listing-into-flight, carry mark and
+#                                            unlink (recall, ack, bounce): none interleaves (_relays_for, _flight_done)
+_inflight = {}                             # host -> {flight id: {mid}}: the records each OPEN exchange is carrying, from
+#                                            its listing to its outcome; a recall meanwhile is "on its way" (_recall). Two
+#                                            exchanges for one host run at once by design (our dialer and their dial of
+#                                            us), so each listing is its own flight and ending one releases nothing another
+#                                            still holds. Memory only: a restart ends every exchange, so it empties itself
+_flight_seq = itertools.count(1)           # flight ids, minted under _outbox_lock (_relays_for)
 
 def _host_name_candidates():
     """Raw machine-name candidates for the self_host fallback, most meaningful first. macOS keeps
@@ -1848,30 +3984,42 @@ def _minted_host_id():
     return name
 
 _self_host_fb = None                         # resolved fallback identity, cached after the first (logged) resolve
+_postal_host_env_warned = set()              # ROMP_POSTAL_HOST values already said to be unusable — once per value
 
 def self_host():
     """This machine's postal identity: short hostname (each side keys the OTHER by its own name for
-    it, so exact agreement across machines is not required). ROMP_POSTAL_HOST overrides (tests).
-    The name MUST clear _safe_id: peers key the outbox that holds mail FOR us by it, as a path
-    component, so an unkeyable kernel hostname half-works — presence still crosses (PEER_STATE is a
-    dict), but outbox_put on the peer refuses every message back, parked "unreachable" forever with
-    the only trace a server-log line (2026-08-11, a kern.hostname stomped with control bytes). An
-    unsafe name falls back, loudly: the platform's user-set machine name, else a minted persisted
-    id. gethostname stays first and live, so fixing the machine's hostname takes effect on the next
-    call with no restart."""
+    it, so exact agreement across machines is not required). ROMP_POSTAL_HOST overrides (tests) WHEN
+    it clears the same rule. The name MUST clear _safe_id: peers key the outbox that holds mail FOR
+    us by it, as a path component, so an unkeyable kernel hostname half-works — presence still
+    crosses (PEER_STATE is a dict), but outbox_put on the peer refuses every message back, parked
+    "unreachable" forever with the only trace a server-log line (2026-08-11, a kern.hostname stomped
+    with control bytes). An unsafe name falls back, loudly: the platform's user-set machine name,
+    else a minted persisted id. An unsafe OVERRIDE is set aside the same way — said once, naming the
+    name used instead — and the derived name is declared: the override used to come back exactly as
+    set, the one branch that dodged the rule (2026-09-08; the kernel's _self_host had the same and
+    was fixed the same day). gethostname stays first and live, so fixing the machine's hostname
+    takes effect on the next call with no restart."""
+    global _self_host_fb
     env = os.environ.get("ROMP_POSTAL_HOST")
-    if env:
+    if env and _safe_id(env):
         return env
     name = socket.gethostname().split(".")[0]
     if _safe_id(name):
-        return name
-    global _self_host_fb
-    if _self_host_fb is None:
-        _self_host_fb = next((s for s in map(_sanitize_host_name, _host_name_candidates()) if s),
-                             "") or _minted_host_id()
-        _log("self_host: kernel hostname %r fails path-safety; declaring %r to peers instead "
-             "(fix the machine's hostname to control the name)" % (name, _self_host_fb))
-    return _self_host_fb
+        chosen = name
+    else:
+        if _self_host_fb is None:
+            _self_host_fb = next((s for s in map(_sanitize_host_name, _host_name_candidates()) if s),
+                                 "") or _minted_host_id()
+            _log("self_host: kernel hostname %r fails path-safety; declaring %r to peers instead "
+                 "(fix the machine's hostname to control the name)" % (name, _self_host_fb))
+        chosen = _self_host_fb
+    if env and env not in _postal_host_env_warned:
+        _postal_host_env_warned.add(env)
+        shown = env if len(env) <= 60 else env[:57] + "..."
+        _log("self_host: ROMP_POSTAL_HOST=%r is not usable as a machine name (letters, digits, dots, hyphens "
+             "or underscores, starting with a letter or digit, at most 128 characters); declaring %r to peers "
+             "instead. Fix or unset ROMP_POSTAL_HOST to control the name." % (shown, chosen))
+    return chosen
 
 def _peer_wake(host):
     with _peer_lock:
@@ -1901,33 +4049,124 @@ def peer_seen_add(mid):
     except Exception as e:
         _log("peer-seen append failed: %s" % e)     # dedupe degrades to the in-memory window
 
+def _atomic_json_put(path, obj):
+    """Publish one JSON store record atomically: a uniquely named temp in the SAME directory (never
+    a `*.json`, so the listings' glob cannot see it) → write → fsync → os.replace → best-effort
+    directory fsync. A reader (outbox_list on every exchange, the kernel reading the dir) sees the
+    old bytes or the new, never a torn file; a crash mid-write leaves a stray temp, not a record the
+    listing has to refuse. (2026-09-08: the plain write_text the stores used was the one writer
+    that could leave a half-record, and the listings then skipped it silently, every pass, forever.)
+    Raises OSError; the caller says so."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name("%s.tmp-%d-%s" % (path.name, os.getpid(), os.urandom(4).hex()))
+    try:
+        with open(tmp, "w") as fh:
+            fh.write(json.dumps(obj))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    try:
+        dfd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
+
+def _list_json_records(d, where, close_ledger_for=None):
+    """Every parseable `*.json` record under `d`, sorted by name. A record that cannot be parsed
+    (or is not an object) is moved aside ONCE to `<name>.corrupt-<utc stamp>[-n]` — the kernel
+    stores' quarantine naming, so the `*.json` glob never sees it again — with one _log line, and the
+    listing goes on with the rest. It used to skip such a file silently on every pass, forever: a torn
+    outbox record was mail parked for nobody with no trace anywhere (2026-09-08). The file's stat is
+    fingerprinted BEFORE the read: if it changed by the time the parse failed, a writer's atomic
+    rewrite raced the read and the file is left alone for the next pass — a torn read of a healthy
+    record is never moved aside. An unreadable file (EACCES, EIO) is moved aside the same way
+    (review find, 2026-09-08): the first cut skipped it in place, said once, which re-skipped it
+    on every exchange with its mail parked for nobody, the shape the quarantine exists to end. Only
+    a file that cannot be moved either stays, skipped and said once per (file, errno).
+
+    `close_ledger_for` (the OUTBOX's host): a parked message's filename IS its mid, and moving the
+    record aside is that message's terminal event — without a row the sender's receipt reads
+    "pending (not read yet)" forever. A terminal `bounced` row (WHY_OUTBOX_UNREADABLE) is appended
+    best-effort after the move; the quarantine itself never depends on the row landing. The move is
+    said on stderr and as one bell row on the dashboard (_refused_notice)."""
+    out = []
+    try:
+        files = sorted(d.glob("*.json"))
+    except OSError:
+        return out
+    for f in files:
+        st = None
+        try:
+            st = f.stat()
+            rec = json.loads(f.read_text())
+            if not isinstance(rec, dict):
+                raise ValueError("not a JSON object")
+            out.append(rec)
+            continue
+        except FileNotFoundError:
+            continue                                 # gone between the glob and the read (deleted, moved)
+        except OSError as e:
+            if st is None:                           # the stat itself failed: no fingerprint to move by
+                _say_unreadable_once(f, e, where)
+                continue
+            reason = "unreadable, errno %s: %s" % (e.errno, e.strerror or e)
+            fault = e
+        except ValueError as e:
+            reason, fault = e, None
+        try:
+            cur = f.stat()
+            if (cur.st_ino, cur.st_mtime_ns, cur.st_size) != (st.st_ino, st.st_mtime_ns, st.st_size):
+                continue                             # rewritten under us: a torn read, not a torn file
+            aside = _aside_name(f)
+            os.replace(f, aside)
+        except FileNotFoundError:
+            continue                                 # a sibling lister moved it first
+        except OSError as e:
+            if fault is not None:
+                _say_unreadable_once(f, fault, where)
+            else:
+                _say_unreadable_once(f, e, where)    # said once per (file, errno), not per pass
+            continue
+        _refused_notice("%s: %s could not be %s (%s); moved aside to %s; the rest is served%s"
+                        % (where, f.name, "read" if fault is not None else "parsed", reason, aside.name,
+                           "; the sender's receipt reads refused" if close_ledger_for else ""))
+        if close_ledger_for:
+            _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": f.stem,
+                                          "host": close_ledger_for, "why": WHY_OUTBOX_UNREADABLE})
+    return out
+
 def outbox_put(host, msg):
     """Park one cross-host message for `host` and poke its exchange (long-poll release + dialer).
+    Returns True iff the record is on disk (atomic publish); False, said in the log, when it is not.
     `host` and the message `mid` become path components, so both MUST clear _safe_id first: a
     peer-crafted `mid` like `../../../foo` over the unauthenticated bus would otherwise write
     outside OUTBOX (arbitrary-file-write). Legit ids (short hostnames, `_unique()` mids) pass."""
     mid = (msg or {}).get("mid") or ""
     if not (_safe_id(host) and _safe_id(mid)):
         _log("outbox_put: refusing unsafe host/mid %r/%r" % (host, mid))
-        return
-    d = OUTBOX / host
-    d.mkdir(parents=True, exist_ok=True)
-    (d / (mid + ".json")).write_text(json.dumps(msg))
+        return False
+    try:
+        _atomic_json_put(OUTBOX / host / (mid + ".json"), msg)
+    except OSError as e:
+        _log("outbox_put %s/%s: the record could not be written (%s) — nothing parked" % (host, mid, e))
+        return False
     _peer_wake(host).set()
+    return True
 
 def outbox_list(host):
     if not _safe_id(host):
         return []
-    try:
-        out = []
-        for f in sorted((OUTBOX / host).glob("*.json")):
-            try:
-                out.append(json.loads(f.read_text()))
-            except Exception:
-                pass
-        return out
-    except Exception:
-        return []
+    return _list_json_records(OUTBOX / host, "outbox %s" % host, close_ledger_for=host)
 
 def outbox_get(host, mid):
     if not (_safe_id(host) and _safe_id(mid)):   # host/mid are path components — block traversal
@@ -1940,11 +4179,100 @@ def outbox_get(host, mid):
 def outbox_del(host, mid):
     if not (_safe_id(host) and _safe_id(mid)):   # host/mid are path components — block traversal
         return False
-    try:
-        (OUTBOX / host / (mid + ".json")).unlink()
-        return True
-    except Exception:
+    with _outbox_lock:                           # never interleaved with a listing or a carry mark (_flight_done)
+        try:
+            (OUTBOX / host / (mid + ".json")).unlink()
+            return True
+        except Exception:
+            return False
+
+_CARRY_KEYS = ("carried", "carriedVia")        # the record's carry mark; never on the wire (_wire_form)
+
+def _mark_carried(host, mid):
+    """Record on outbox/<host>/<mid> that an exchange CARRIED it: `carried` (epoch of the first
+    departure) and `carriedVia` (the host it left for), published by the same atomic rewrite every
+    store record gets (_atomic_json_put), so the mark stands across a bus restart — the ack that
+    ends the record may arrive after one. True iff the record stands and is marked (2026-09-08).
+
+    The mark lands AFTER the departure, keyed on the exchange's outcome, never on the request
+    being built: a mark at build time survived every failed dial (protocol drift waits 60 s; a
+    refused connection during a restart), refusing a recall for bytes that never left. The
+    events, per side: the DIALER marks when its dial returns a response (peer_exchange_apply,
+    after the acks and bounces, so a record the ack just deleted is simply not there to mark) or
+    fails only AFTER the request went out (a read timeout, an undecodable body): the far bus may
+    have taken the relays and answered into the void (_peer_exchange_once); the DIALED side marks
+    once its response write returned (the /peer-exchange route). A dial the far bus refused with a
+    status (any HTTP error precedes relay intake), that never connected (urllib.error.URLError), or
+    whose socket closed before any status line came back (through the ssh forward, a far bus not
+    listening; review find 2026-09-09) marks nothing. From the listing to that outcome the record is IN FLIGHT
+    (_inflight), which the recall refuses as on its way — so no recall is granted for a record on
+    the wire, and none is told "left" for one that never did.
+
+    Why an exact mark and not the outbox's residency: a record stays in the outbox until the
+    END-TO-END ack, one round trip normally and a whole outage when a response was lost — and the
+    far side delivers on arrival; nothing distinguished a carried record from a parked one, so a
+    recall in that window unlinked a message the recipient already held (_recall has the rest). A
+    re-relay after a lost response finds the mark and writes nothing: the first departure is the
+    fact. False when the record is gone (acked, bounced or recalled first) or when the mark could
+    not be written — then the record RODE and its departure is not recorded, so a recall can still
+    withdraw it (the behaviour before this mark); said in the log by id. Takes _outbox_lock; the
+    _locked form is for callers already holding it (_flight_done)."""
+    with _outbox_lock:
+        return _mark_carried_locked(host, mid)
+
+def _mark_carried_locked(host, mid):
+    if not (_safe_id(host) and _safe_id(mid)):
         return False
+    rec = outbox_get(host, mid)
+    if not rec:
+        return False
+    if rec.get("carried"):
+        return True
+    rec["carried"], rec["carriedVia"] = int(time.time()), host
+    try:
+        _atomic_json_put(OUTBOX / host / (mid + ".json"), rec)
+    except OSError as e:
+        _log("outbox %s/%s: it rode an exchange but its departure could not be recorded (%s); a recall "
+             "can still withdraw it" % (host, mid, e))
+        return False
+    return True
+
+def _wire_form(m):
+    """The record as it rides an exchange: the carry mark stays home. It is this bus's bookkeeping
+    (a forwarding hub would otherwise inherit a `carried` it never carried and re-mark it on its own
+    departure), and keeping it off the wire keeps a record's measured size under the relay budget
+    the same before and after its first departure."""
+    return {k: v for k, v in m.items() if k not in _CARRY_KEYS}
+
+def _flight_done(host, flight_id, carried):
+    """The OUTCOME of one exchange for the flight its listing registered (_relays_for): the flight is
+    popped, and when `carried` — the bytes reached the far bus (the events are in _mark_carried) —
+    each of its records takes the durable mark first, under the one lock, so no instant exists in
+    which a record is neither in flight nor marked. `carried` False frees the flight's records: the
+    request never arrived, and a recall wins again exactly as before the listing — unless another
+    OPEN flight for the host still holds the record (two exchanges for one host run at once by
+    design), in which case it stays on its way until that one ends. Ending one flight never
+    releases what another holds: the first cut kept one set per host, and the first outcome to
+    land released a record the other exchange was still carrying (review find, 2026-09-08). A
+    second call for the same flight, or an unknown id, is a no-op: the fold-then-exception path in
+    _peer_exchange_once relies on that."""
+    with _outbox_lock:
+        mids = (_inflight.get(host) or {}).pop(flight_id, None)
+        if not mids:
+            return
+        if carried:
+            for mid in mids:
+                _mark_carried_locked(host, mid)
+
+def _mark_relays_carried(host, relays):
+    """Mark wire `relays` (anything with a mid) carried, for a fold that runs without a flight to end
+    (peer_exchange_apply driven directly — the tests' build → handle → apply): a response still means
+    the relays reached the far bus."""
+    with _outbox_lock:
+        for m in relays or []:
+            mid = str((m or {}).get("mid") or "")
+            if mid:
+                _mark_carried_locked(host, mid)
 
 def readbox_put(host, rec):
     """Park one read receipt for `host` (readbox/<host>/<mid>.json) and poke its exchange. Keyed by
@@ -1954,25 +4282,19 @@ def readbox_put(host, rec):
     mid = (rec or {}).get("mid") or ""
     if not (_safe_id(host) and _safe_id(mid)):   # host/mid are path components — block traversal
         _log("readbox_put: refusing unsafe host/mid %r/%r" % (host, mid))
-        return
-    d = READBOX / host
-    d.mkdir(parents=True, exist_ok=True)
-    (d / (mid + ".json")).write_text(json.dumps(rec))
+        return False
+    try:
+        _atomic_json_put(READBOX / host / (mid + ".json"), rec)
+    except OSError as e:
+        _log("readbox_put %s/%s: the receipt could not be written (%s) — not parked" % (host, mid, e))
+        return False
     _peer_wake(host).set()
+    return True
 
 def readbox_list(host):
     if not _safe_id(host):
         return []
-    try:
-        out = []
-        for f in sorted((READBOX / host).glob("*.json")):
-            try:
-                out.append(json.loads(f.read_text()))
-            except Exception:
-                pass
-        return out
-    except Exception:
-        return []
+    return _list_json_records(READBOX / host, "readbox %s" % host)
 
 def readbox_del(host, rec):
     """Clear one CONFIRMED receipt — only if the file still says what the peer confirmed (the unread
@@ -1992,10 +4314,18 @@ def _read_arrived(host, r):
     """One read receipt from a peer: ours → log the exec (or its unexec retraction) into
     messages.jsonl, where _sent_receipts joins it to the cross-host sent event by the relay mid.
     Origin-stamped (the mail was forwarded through us) → re-queue one hop backward with the stamp
-    stripped, so it can never loop — the same one-hop-max rule relays live by."""
+    stripped, so it can never loop — the same one-hop-max rule relays live by.
+
+    Returns True iff the receipt was APPLIED (the row landed, or the forward is parked) and False
+    when it was not, so the caller keeps it ON THE WIRE (review find, 2026-09-08): the dialer
+    withholds its readAck, the dialed side names it in the response's `readsKept`, and the peer
+    re-sends it next exchange. Before this readbox_put's new False was ignored: a forwarded receipt
+    the store could not take was acked and gone, where the base's raised OSError had aborted the
+    exchange and left it to retry. A receipt that can NEVER apply (an unaddressable mid, an origin
+    no peer of ours owns) reads as applied: there is nothing a retry could change."""
     mid = (r or {}).get("mid") or ""
     if not _safe_id(mid):
-        return
+        return True
     origin = str((r or {}).get("origin") or "")
     if origin and origin != self_host():
         if PEERS.get(origin):                    # only toward a peer the kernel told us about
@@ -2004,30 +4334,137 @@ def _read_arrived(host, r):
                 fwd["dmid"] = r.get("dmid")
             if r.get("unread"):
                 fwd["unread"] = True
-            readbox_put(origin, fwd)
-        return
+            return readbox_put(origin, fwd)      # False (said by readbox_put) → the peer re-sends it
+        return True
     ev = "unexec" if r.get("unread") else "exec"
     row = {"t": int(r.get("t") or time.time()), "ev": ev, "id": mid}
     d = str((r or {}).get("dmid") or "")
     if _safe_id(d):
         row["dmid"] = d   # the recipient's own delivery mid → the timeline's exact turn join (2026-08-06)
-    _tl_append("messages.jsonl", row)
+    return _tl_append("messages.jsonl", row)
 
 def _bounce_apply(host, b):
     """A peer refused one of our parked messages — return it to the SENDER as a bus-authored note,
-    loudly, and drop it from the outbox. Parking never outlives a definitive refusal."""
+    loudly, and drop it from the outbox. Parking never outlives a definitive refusal.
+
+    Order (2026-09-08): the terminal row, then the return note, then the delete. The record leaves
+    the outbox only once the ledger holds its last word and the sender holds the note; before this
+    the delete came FIRST and a crash between it and the row lost the accounting entirely. If either
+    step fails the record stays: the next exchange re-relays it, the peer's dedupe re-bounces it,
+    and the attempt repeats (a repeated terminal row is harmless — _sent_receipts keys by id).
+
+    Any OTHER failure of the note is bounded the same way (review find, 2026-09-08): a mailbox that
+    cannot be made, a temp that cannot be written (ENOSPC lands here, before the row): each used to
+    escape this function and abort the WHOLE exchange, and with the record now kept until it is
+    accounted the peer re-bounced it next exchange and the abort recurred forever, every other
+    relay, ack and receipt in that exchange lost with it. The record stays, the exchange goes on,
+    the next one retries the note; said once per message, on stderr and as a bell row, since a
+    fault that recurs on every exchange is one the user should see.
+
+    A sender id that is NO mailbox gets no note and holds nothing up (2026-09-10): `romp mail send
+    --from <label>` mails under the synthetic id `ext:<label>` (cli_send), which _safe_id refuses
+    (no ':'), so deliver() to it raises ValueError — not a fault that clears next exchange but the
+    shape of the id. Counted as a fault above, the record stayed parked, the next exchange
+    re-relayed it, the peer re-bounced it, and every round wrote another `bounced` row and cost the
+    peer a listing, for as long as the two buses talked. The record retires on the bounced row, and
+    the log line is the one place a person can see the refusal: the row stands in messages.jsonl,
+    but no reader reaches it for such a sender (/sent refuses an id _safe_id refuses, cli_sent and
+    cli_recall read the session's own id, the dashboard's mail view needs a local lane). Whether
+    /sent should answer ext: ids is a separate decision, not taken here."""
     mid = (b or {}).get("mid") or ""
     msg = outbox_get(host, mid)
-    outbox_del(host, mid)
     if not msg:
+        return                                       # nothing parked under that id (recalled, or a torn
+        #                                              record the listing moves aside) → nothing to account
+    why = (b or {}).get("why") or "refused"
+    if not _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": mid,
+                                          "to": msg.get("to") or "?", "host": host, "why": why}):
+        _log("bounce for %s from %s: the terminal row did not land — the record stays parked" % (mid, host))
         return
-    note = ("undeliverable to '%s' on %s: %s\n\n(your message follows)\n%s"
-            % (msg.get("to") or "?", host, (b or {}).get("why") or "refused", msg.get("body") or ""))
-    if msg.get("frm_id"):
-        deliver(msg["frm_id"], "romp-postal", "", note, kind="coordinate")
-    _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": mid,
-                                  "to": msg.get("to") or "?", "host": host,
-                                  "why": (b or {}).get("why") or "refused"})
+    if msg.get("frm_id") and not _safe_id(msg["frm_id"]):
+        _log("bounce for %s from %s: no return note — the sender %s mailed under the id %s, which is no "
+             "mailbox (a --from label mails this way); the bounced row stands in the ledger and this line "
+             "is the one record of the refusal a person can read"
+             % (mid, host, msg.get("frm") or "?", str(msg["frm_id"])[:40]))
+    elif msg.get("frm_id"):
+        note = "undeliverable to '%s' on %s: %s" % (msg.get("to") or "?", host, why)
+        if not (b or {}).get("omitBody"):   # a SIZE bounce (_budget_relays) names the problem instead of repeating it
+            note += "\n\n(your message follows)\n%s" % (msg.get("body") or "")
+        try:
+            deliver(msg["frm_id"], "romp-postal", "", note, kind="coordinate")
+        except DeliveryNotRecorded as e:
+            _log("bounce for %s from %s: the return note was refused (%s) — the record stays parked" % (mid, host, e))
+            return
+        except Exception as e:
+            if mid not in _NOTE_FAILED_SAID:
+                _NOTE_FAILED_SAID.add(mid)
+                _refused_notice("bounce for %s from %s: the return note to %s could not be delivered (%s: %s); "
+                                "the record stays parked and the note is retried next exchange"
+                                % (mid, host, _name_for_id(msg["frm_id"]) or str(msg["frm_id"])[:8],
+                                   type(e).__name__, e))
+            return
+        _NOTE_FAILED_SAID.discard(mid)
+    outbox_del(host, mid)
+
+_NOTE_FAILED_SAID = set()   # mids whose return note failed outright (not a refusal); said once each
+
+_LOCAL_PRESENCE_GOOD = [[], False]   # [rows, ever_answered] — the last ANSWERED local listing
+_PRESENCE_SERVE_WARNED = [False]     # transition-only logging, the _REG_SERVE_WARNED idiom
+_PRESENCE_GOOD_FILE = STATE / "local-presence-good.json"   # …and its DISK twin: a bus restart
+#   overlapping a kernel restart (the normal self-update path — both restart on code staleness)
+#   would otherwise boot with an empty cache and gossip the blink as authoritative emptiness
+#   (review find 2026-09-01); persisting rides the cache across bus restarts, like remote-sids.
+
+
+def _presence_good_load():
+    """Prime the in-memory last-answered cache from its disk twin, once, at first need."""
+    if _LOCAL_PRESENCE_GOOD[1]:
+        return
+    try:
+        rows = json.loads(_PRESENCE_GOOD_FILE.read_text())
+        if isinstance(rows, list):
+            _LOCAL_PRESENCE_GOOD[0], _LOCAL_PRESENCE_GOOD[1] = rows, True
+    except Exception:
+        pass                                         # no twin yet (fresh box) → nothing to prime
+
+
+def _remember_presence(rows):
+    """Record an ANSWERED local listing as the last-good rows, in memory and in the disk twin
+    (_PRESENCE_GOOD_FILE). Read by _local_presence while the kernel does not answer, and by the
+    autostop gate's _sessions_were_listed."""
+    _LOCAL_PRESENCE_GOOD[0], _LOCAL_PRESENCE_GOOD[1] = rows, True
+    try:
+        tmp = _PRESENCE_GOOD_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rows))
+        os.replace(tmp, _PRESENCE_GOOD_FILE)     # the disk twin follows every answered read
+    except Exception:
+        pass
+
+
+def _local_presence():
+    """Local agent rows for an exchange payload, blink-honest: an UNANSWERED kernel listing (a
+    mid-restart blink) must never gossip as "nobody lives here" — the far boxes' PEER_STATE flaps
+    empty and their resolvers mint hard no-live refusals for sessions that never died (specimen
+    2026-08-31: three sends refused across a far restart while the target stayed live throughout).
+    Serve the last ANSWERED rows instead (the registry's serve-last-good idiom, 2026-08-31); an
+    ANSWERED-empty listing is the truth — it serves and caches as such. This protects every peer,
+    including ones running older code, because the honesty lands in the payload itself."""
+    rows, answered = local_agents_checked()
+    if answered:
+        _remember_presence(rows)
+        if _PRESENCE_SERVE_WARNED[0]:
+            _PRESENCE_SERVE_WARNED[0] = False
+            sys.stderr.write("postal: the local listing answers again — presence serves live rows\n")
+        return rows
+    _presence_good_load()                            # a fresh bus process primes from the disk twin
+    if _LOCAL_PRESENCE_GOOD[1]:
+        if not _PRESENCE_SERVE_WARNED[0]:
+            _PRESENCE_SERVE_WARNED[0] = True
+            sys.stderr.write("postal: the local listing didn't answer — presence serves the last "
+                             "answered rows until it does\n")
+        return list(_LOCAL_PRESENCE_GOOD[0])
+    return rows                                     # never answered ANYWHERE yet → claim nothing either way
+
 
 def fleet_presence(exclude_host):
     """Presence for an exchange payload: local agents + ONE hop of gossip from our other peers, each
@@ -2037,7 +4474,7 @@ def fleet_presence(exclude_host):
     (`viaBus`): the receiver folds gossip about a box it ALREADY peers with directly, and the id is
     the identity that survives nickname drift — the same machine wears different ssh aliases on
     different hosts, so a name can't say "same box" (the user 2026-08-12; see _via_duplicate)."""
-    out = list(local_agents())
+    out = list(_local_presence())
     for h, st in PEER_STATE.items():
         if h == exclude_host:
             continue
@@ -2054,25 +4491,54 @@ def fleet_presence(exclude_host):
 # cards (fast, bus-down-resilient); mutations go through the bus routes below (delivery is postal's).
 QUARANTINE = STATE / "quarantine"
 
-def _quarantine_put(origin, m, to_id, via=""):
+def _quarantine_put(origin, m, to_id, via="", wire_id=None):
     """Hold one inbound relay from a directed host: quarantine/<mid>.json with everything approve needs
     to replay deliver(). Idempotent by mid (a resend overwrites the same file, never double-holds).
     `via` is the DIRECT peer it arrived from — kept so an approved delivery still carries the
-    read-receipt route (older held records lack it; approve falls back to the origin)."""
+    read-receipt route (older held records lack it; approve falls back to the origin).
+    `wire_id` (2026-09-08) is the sid the WIRE message was addressed to (intake's sanitized toId),
+    stored as `toWireId` so approve knows whether the sender chose a sid or a name: the record used
+    to keep only the RESOLVED local sid, and once that session ended approve re-matched by NAME —
+    handing id-addressed mail to whatever session wore the name, the very swap intake refuses. None
+    reads the wire toId off `m`; either way a malformed shape is dropped (never a path, never a
+    match key), exactly as intake blanks it."""
     mid = m.get("mid") or ""
     if not _safe_id(mid):
         return False
+    wire = str((m.get("toId") if wire_id is None else wire_id) or "")
+    if wire and _ID_FORM_RE.fullmatch(wire) is None:
+        wire = ""
     rec = {"mid": mid, "to": m.get("to") or "", "toId": to_id, "frm": m.get("frm") or "?",
            "frmId": m.get("frm_id") or "", "body": m.get("body") or "", "kind": m.get("kind") or "",
            "origin": origin, "via": via or origin, "at": int(time.time())}
+    if wire:
+        rec["toWireId"] = wire
+    if isinstance(m.get("userAsk"), dict):
+        rec["userAsk"] = m["userAsk"]                # held with its provenance; approve replays it (T126)
+    if m.get("relayed"):
+        rec["relayed"] = True                        # held with its mark; approve replays it (T334)
+        if m.get("relayMarker"):
+            rec["relayMarker"] = str(m.get("relayMarker"))[:64]
     try:
         QUARANTINE.mkdir(parents=True, exist_ok=True)
         tmp = QUARANTINE / (mid + ".tmp")
         tmp.write_text(json.dumps(rec))
         tmp.rename(QUARANTINE / (mid + ".json"))      # atomic publish (the kernel may be reading the dir)
+        _refusal_over("quarantine")                   # a hold landed: the next refusal here is a new episode
         _log("quarantine: held %s from %s -> %s (directed)" % (mid, origin, rec["to"]))
         return True
-    except OSError:
+    except OSError as e:
+        # No card says this (the kernel only reads the dir), so the log says it on every refusal, and
+        # the USER hears it once per episode as a bell row, the way deliver() says a refused publish:
+        # the directed arm answers 'retry', so the sender re-relays the message every exchange while
+        # its receipt reads carried, and a store that stays unwritable would otherwise be a lasting
+        # fault with no surface anyone watches. Keyed on the one store; the next hold that lands re-arms it.
+        text = "quarantine %s from %s: the hold could not be written (%s) — nothing held" % (mid, origin, e)
+        if _REFUSAL_SAID.get("quarantine"):
+            _log(text)
+        else:
+            _REFUSAL_SAID["quarantine"] = True
+            _refused_notice(text + "; the sender holds the text and re-relays until the store can be written")
         return False
 
 def quarantine_list():
@@ -2106,7 +4572,7 @@ def quarantine_del(mid):
     except OSError:
         return False
 
-def quarantine_decide(mid, action, text=None, feedback=None):
+def quarantine_decide(mid, action, text=None, feedback=None, sid=None):
     """Approve (deliver, optionally with human-edited text) or deny (drop) a held message. Returns
     (ok, error). Approve replays the deliver() the gate would have run for a trusted peer, so the
     message lands as normal postal mail (from-attribution intact). The mid was already peer_seen'd at
@@ -2118,9 +4584,15 @@ def quarantine_decide(mid, action, text=None, feedback=None):
     origin host's own trust gate like any inbound mail."""
     rec = quarantine_get(mid)
     if rec is None:
+        if sid:
+            agents, answered = local_agents_checked(threads=True)
+            if answered and not any(str(a.get("id") or "") == str(sid) for a in agents):
+                # the decision names a recipient this bus does not serve: the kernel that asked dialed a bus that is not
+                # its own (a port the two read differently, or a stale legacy forward), so the fault names itself
+                return False, ("this bus holds nothing for session %s, which is not one of this machine's: is the kernel "
+                               "dialing its own bus? (its port record is STATE/postal/postal-port)" % str(sid)[:8])
         return False, "no held message '%s'" % mid
     if action == "deny":
-        quarantine_del(mid)
         note = " ".join(str(feedback or "").split())
         if note and rec.get("origin") and rec.get("frm"):
             gist = " ".join(str(rec.get("body") or "").split())[:60]
@@ -2128,22 +4600,68 @@ def quarantine_decide(mid, action, text=None, feedback=None):
                     "delivered. Note from the reviewer: %s"
                     % (rec.get("to") or "?", gist, "…" if len(gist) == 60 else "", note))
             fb_mid = _unique()
-            outbox_put(rec["origin"], {"mid": fb_mid, "to": rec["frm"], "frm": "Romp Postal Service",
-                                       "frm_id": "", "body": body, "kind": "coordinate"})
+            # The note parks BEFORE the hold is dropped, and a park that fails refuses the deny
+            # (review find, 2026-09-08): outbox_put's False was ignored here, so a deny whose note
+            # the outbox could not take dropped the held message, answered ok, and the reviewer's
+            # words went nowhere with nothing saying so. The hold stands; the user retries, or
+            # denies without a note.
+            if not outbox_put(rec["origin"], {"mid": fb_mid, "to": rec["frm"], "frm": "Romp Postal Service",
+                                              "frm_id": "", "body": body, "kind": "coordinate"}):
+                return False, ("the note to the sender could not be parked for %s (the outbox could not be "
+                               "written), so nothing was done: the held message is untouched; retry, or "
+                               "deny without a note" % rec["origin"])
             _peer_wake(rec["origin"]).set()
+        quarantine_del(mid)
         return True, None
     if action == "approve":
         body = str(text) if (text is not None and str(text).strip()) else (rec.get("body") or "")
         to_id = rec.get("toId") or ""
-        live = {a["id"] for a in local_agents()}
-        if to_id not in live:                         # session renamed/revived since it was held → re-match by name
-            match = [a for a in local_agents() if a["name"] == rec.get("to") and not _postal_off(a["id"])]
+        # ONE checked snapshot (2026-09-01): this arm paid TWO kernel fetches — its own fetch-pair
+        # TOCTOU, and the pair alone (2×6s) could outlast the kernel's client cap on /quarantine/act
+        # (the 830 budget-pair discipline: the halves move together — see _bus_quarantine_act). And
+        # an approve clicked during a kernel restart read the blink as "no longer live": unanswered
+        # is not absence, so it refuses retryably instead (the held message stays put).
+        agents, answered = local_agents_checked()
+        if not answered:
+            return False, ("the liveness source (the romp kernel) didn't answer — likely "
+                           "mid-restart. The held message is untouched; retry the approve shortly.")
+        live = {a["id"] for a in agents}
+        if to_id not in live:                         # the held sid is gone: renamed/revived, or ended
+            wire = str(rec.get("toWireId") or "")
+            if wire:
+                # ID-ADDRESSED mail (2026-09-08): the sender chose a sid, so only that sid may take
+                # it — the same id-strict rule intake applies (_relay_in: "never a name fallback,
+                # which could hand the mail to a same-named sibling"). Before this, approve
+                # re-matched by NAME unconditionally, and id-addressed mail whose recipient had
+                # ended went to whatever session now wore the name. The held sid IS the wire id
+                # (intake matched the wire's toId exactly and held that match), so a held sid the
+                # listing no longer carries means nothing live answers to the id the sender chose:
+                # there is no second candidate to look for (review find, 2026-09-08: a re-match on
+                # the wire id here could never succeed). Refuse loudly; the record stays held (deny
+                # carries a note back to the sender). Worded on what the listing proved, no live
+                # session by that id, never "ended": a dormant session is absent from it too.
+                return False, ("no live session carries the id this message was addressed to ('%s', "
+                               "id %s), and a session that now wears the name is not the one the "
+                               "sender chose, so it was not delivered. It stays held: deny it (with a "
+                               "note, so the sender hears) or leave it."
+                               % (rec.get("to") or "?", wire[:8]))
+            # NAME-addressed (an older sender): the name still rules. A record held BEFORE
+            # 2026-09-08 lands here too even when its wire chose a sid, the hold kept only the
+            # resolved sid then, so nothing on the record can tell the two apart; that name
+            # re-match is a known residual for holds from before the upgrade, and it drains with
+            # their next approve/deny (review find, 2026-09-08).
+            match = [a for a in agents if a["name"] == rec.get("to") and not _postal_off(a["id"])]
             if not match:
                 return False, "recipient '%s' is no longer a live local session" % (rec.get("to") or "?")
             to_id = match[0]["id"]
-        deliver(to_id, rec.get("frm") or "?", rec.get("frmId") or "", body, kind=rec.get("kind") or "",
-                from_host=rec.get("origin") or "",
-                relay_mid=rec.get("mid") or "", relay_via=rec.get("via") or rec.get("origin") or "")
+        try:
+            deliver(to_id, rec.get("frm") or "?", rec.get("frmId") or "", body, kind=rec.get("kind") or "",
+                    from_host=rec.get("origin") or "",
+                    relay_mid=rec.get("mid") or "", relay_via=rec.get("via") or rec.get("origin") or "",
+                    user_ask=rec.get("userAsk"), relayed=bool(rec.get("relayed")),
+                    relay_marker=str(rec.get("relayMarker") or ""))
+        except DeliveryNotRecorded as e:
+            return False, "%s — the held message is untouched" % e
         quarantine_del(mid)
         return True, None
     return False, "unknown action '%s' (approve|deny)" % action
@@ -2172,7 +4690,24 @@ def _relay_in(host, m, token_proven=False):
     if peer_seen_check(mid):
         return "ack", None                           # duplicate → re-ack, deliver nothing
     to = m.get("to") or ""
-    match = [a for a in local_agents() if a["name"] == to and not _postal_off(a["id"])]
+    # ONE listing snapshot for every ruling below. The isolation bounce used to re-fetch the
+    # listing after the match filtered it — and a blink between the two fetches (agent absent,
+    # then healed) minted a FALSE isolation, final by norm, with no flag involved (specimen
+    # 2026-08-30: a delegate bounced "isolation" with no flag set on either kernel and the
+    # maildir delivering minutes either side). Same fetch-pair race the sending resolver's
+    # one-fetch fix killed (2026-08-31); `answered` feeds the death-ruling gate at the tail.
+    agents, listing_answered = local_agents_checked(threads=True)   # thread rows too: a thread recipient must reach the bounce below, not retry forever (the review)
+    to_id = str(m.get("toId") or "")
+    if to_id and _ID_FORM_RE.fullmatch(to_id) is None:
+        to_id = ""            # a malformed wire toId degrades to name matching — it must NEVER reach
+        #                       the durable-registry read below (a crafted "../" would turn that stat
+        #                       into a path-traversal alive-oracle; skeptic find 2026-09-01)
+    # toId (a sender-resolved SID) matches EXACTLY when present — never a name fallback, which
+    # could hand the mail to a same-named sibling, the ambiguity the sid exists to bypass. Mail
+    # from an older sender has no toId and matches by name/id-shape as before.
+    named = ([a for a in agents if str(a.get("id") or "") == to_id] if to_id
+             else [a for a in agents if _addr_matches(a, to)])
+    match = [a for a in named if not _postal_off(a["id"])]
     if match:
         # Trust key = the true ORIGIN (the forwarding host stamps m["origin"]; else the direct peer).
         # Unknown host (a race before the kernel's notify lands) defaults to directed — never auto-inject.
@@ -2194,52 +4729,105 @@ def _relay_in(host, m, token_proven=False):
                 htrust = "trusted"                   # token possession is already full control here (see docstring)
             trust = least_trust(trust, htrust)
         if trust == "trusted":
-            deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
-                    kind=m.get("kind") or "", from_host=origin,
-                    relay_mid=mid, relay_via=host)       # read-receipt route: back through the direct peer
+            try:
+                deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
+                        kind=m.get("kind") or "", from_host=origin,
+                        relay_mid=mid, relay_via=host,       # read-receipt route: back through the direct peer
+                        user_ask=m.get("userAsk"),           # origin-kernel walked record rides through (T126)
+                        relayed=bool(m.get("relayed")),      # romp sent it on the sender's behalf (T334)
+                        relay_marker=str(m.get("relayMarker") or ""))
+            except DeliveryNotRecorded as e:
+                # nothing landed → NOT acked and not marked seen: silence crosses the wire as
+                # 'retry', the sender's outbox keeps it parked and re-relays it next exchange
+                _log("relay %s from %s: local delivery refused (%s) — the sender re-relays" % (mid, host, e))
+                return "retry", None
         elif trust == "directed":
-            _quarantine_put(origin, m, match[0]["id"], via=host)   # HELD for human approve/deny/edit; never injects
+            # HELD for human approve/deny/edit; never injects; remembers whether the wire chose a sid
+            # (approve is id-strict then). The hold is a file named by the mid, so an id that cannot
+            # name one is refused for good: 'retry' would have the sender re-relay it every exchange.
+            if not _safe_id(mid):
+                return "bounce", {"mid": mid, "why": "the message id is malformed; it cannot be held for approval"}
+            if not _quarantine_put(origin, m, match[0]["id"], via=host, wire_id=to_id):
+                # the hold did not land (said by _quarantine_put, with the OSError's cause).
+                # Acking here told the sender 'delivered' for mail nothing holds, and marking the mid
+                # seen deduped its re-relay away: lost on both ends, no record. Silence instead, as
+                # the trusted arm's refused delivery: the sender's outbox keeps it parked and
+                # re-relays it next exchange, and the hold lands once the store writes again.
+                _log("relay %s from %s: the hold could not be written — the sender re-relays" % (mid, host))
+                return "retry", None
         # else isolated → drop: ack so the sender stops resending, but deliver nothing (no communication).
         # An isolated host normally never peers at all (the kernel forces its notify down), so this is a
         # defensive backstop for the checkin-peer path where the mobile dials our /peer-exchange.
         peer_seen_add(mid)
         return "ack", None
-    if any(a["name"] == to for a in local_agents()):
-        return "bounce", {"mid": mid, "why": "recipient '%s' has its mailbox off (postal isolation)" % to}
+    if named:
+        # every live candidate's mailbox flag read TRUE in THIS snapshot — a genuine flag ruling,
+        # the only thing allowed to mint an isolation bounce (finality makes this arm zero-tolerance)
+        return "bounce", {"mid": mid, "why": _isolated_bounce_why(named, to)}
     if not m.get("origin"):                          # one hop MAX: a message that already hopped never re-forwards
-        fh, hit = peer_route(to)
+        # route by the SID when the mail carries one, by name otherwise (skeptic finds
+        # 2026-09-01, both rounds): the hub's name-only forward final-bounced a sid-addressed
+        # message whose session renamed during the park window — gossip rows carry ids, and
+        # _addr_matches routes them. Pinned mail routes by sid OR NOT AT ALL: a name fallback
+        # here forwarded the same mid to a NAMESAKE's host when gossip blinked the sid out
+        # (per-host hold dedupe let both parks stand), and the wrong host's final bounce could
+        # beat the right host's delivery ack back to the sender.
+        fh, hit = (peer_route(to_id) if to_id else peer_route(to))
         if fh and fh != host and not (hit or {}).get("via"):
             if outbox_get(fh, mid) is None:          # a resend while we hold it forwards nothing twice
-                outbox_put(fh, dict(m, origin=host))
+                if not outbox_put(fh, dict(m, origin=host)):
+                    # not parked (said by outbox_put): 'hold' would tell the sender its mail is on
+                    # its way when nothing holds it (review find, 2026-09-08); silence instead, so
+                    # the sender's outbox keeps it and re-relays it next exchange
+                    return "retry", None
             return "hold", None
+    # death-ruling gate — the relay leg's honesty arms (2026-08-31; the sending resolver got these
+    # in the answered-but-absent round, this inbound leg never did): an UNANSWERED listing proves
+    # nothing (a mid-restart kernel yields exactly this), and an answered listing that omits a name
+    # whose durable registry entry stands is a blink, never a death. Both read as 'retry' — a
+    # verdict neither ack'd nor bounced crosses the wire as SILENCE, so the sender's outbox keeps
+    # the mail parked and re-relays it next exchange: the honest retry-shortly, where a bounce is
+    # final. The mid stays out of peer_seen, so the re-relay is processed in full.
+    # …and when the mail PINS a sid, the corroboration is by that id ALONE: the name arm read a
+    # same-named REPLACEMENT session's standing reg as evidence and held a genuinely-gone sid in
+    # never-healing silent retry — the sender parked forever, never told (skeptic repro
+    # 2026-09-01). A pinned sid whose reg is gone everywhere bounces FINAL and honestly: the
+    # session it named no longer exists, however many namesakes live on.
+    if not listing_answered or (_durable_session(to_id, True) if to_id else _durable_session(to, False)):
+        return "retry", None
     return "bounce", {"mid": mid, "why": "no live session named '%s' on %s" % (to, self_host())}
 
 def _ack_arrived(host, mid):
     """An end-to-end ack for outbox/<host>/<mid>: clear it. If we only FORWARDED it, relay the ack
-    backward to the origin host; if it was ours, log the delivered receipt."""
+    backward to the origin host; if it was ours, log the delivered receipt. The receipt (or the
+    backward ack) comes FIRST and the delete last (2026-09-08): a record that leaves the outbox
+    before its receipt exists is a delivery the sender never hears of if the row then fails. A row
+    that does not land keeps the record; the next exchange re-relays it, the peer's dedupe re-acks
+    it, and the receipt is retried."""
     msg = outbox_get(host, mid)
-    outbox_del(host, mid)
     if not msg:
-        return
+        return                                       # nothing parked under that id → nothing to account
     if msg.get("origin"):
         p = _pending(msg["origin"])
         with _peer_lock:
             p["acks"].append(mid)
         _peer_wake(msg["origin"]).set()
-    else:
-        _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "relayed", "id": mid, "host": host})
+    elif not _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "relayed", "id": mid, "host": host}):
+        _log("ack for %s from %s: the delivered receipt did not land — the record stays parked" % (mid, host))
+        return
+    outbox_del(host, mid)
 
 def _bounce_arrived(host, b):
     """A bounce for outbox/<host>/<mid>: relay it backward if we only forwarded the message, else
-    return it to our local sender."""
+    return it to our local sender. The backward bounce is queued BEFORE the delete (2026-09-08)."""
     mid = (b or {}).get("mid") or ""
     msg = outbox_get(host, mid)
     if msg and msg.get("origin"):
-        outbox_del(host, mid)
         p = _pending(msg["origin"])
         with _peer_lock:
             p["bounces"].append(b)
         _peer_wake(msg["origin"]).set()
+        outbox_del(host, mid)
     else:
         _bounce_apply(host, b)
 
@@ -2275,8 +4863,85 @@ def _drop_peer_name_dupes(host, bus_id):
         PEER_STATE.pop(k, None)
 
 
-def peer_exchange_handle(data):
-    """The DIALED side of one exchange. Returns (payload, status)."""
+# The most of one host's outbox a single exchange carries (review find, 2026-09-08). The dialed bus reads
+# the request only up to _POST_MAX_BYTES, and the request also carries presence, holds, reads and acks,
+# so the relays get half of it. build_exchange_request used to send the WHOLE outbox: a backlog past the
+# cap (a dozen 100 KB reports parked through one tunnel outage) was 413'd, and the dialer re-sent the
+# identical request on every backoff, forever: every message to that peer parked on a healthy link,
+# against the parking contract above (a link being DOWN is the only reason to park).
+_RELAY_BUDGET_BYTES = _POST_MAX_BYTES // 2
+
+
+def _budget_relays(host, msgs, budget=None):
+    """The oldest-first prefix of `msgs` that fits `budget` bytes serialized -> the relays for ONE
+    exchange; the rest ride the next round (the dialed side answers at once when it has acks to return,
+    so nothing waits out a long-poll). The first relay that fits always rides, so every round makes
+    progress. A relay that alone exceeds the budget can never cross, so it is bounced through the path a
+    peer's refusal takes (_bounce_arrived: to our local sender, or backward to the origin that forwarded
+    it) as a note naming the size, without the body, and leaves the outbox instead of being retried
+    forever."""
+    budget = _RELAY_BUDGET_BYTES if budget is None else budget
+    out, used = [], 0
+    for m in msgs:
+        m = _wire_form(m)                            # measured and emitted as it rides: the carry mark stays home
+        n = len(json.dumps(m).encode("utf-8"))
+        if n > budget:
+            _log("peer %s: relay %s is %d bytes, over the %d-byte exchange limit; bounced to its sender"
+                 % (host, m.get("mid"), n, budget))
+            _bounce_arrived(host, {"mid": m.get("mid"), "omitBody": True,
+                                   "why": "message of %d bytes exceeds the %d-byte relay limit" % (n, budget)})
+            continue
+        if used + n > budget:
+            break
+        out.append(m)
+        used += n
+    return out
+
+def _relays_for(host, flight=None):
+    """The relays ONE exchange carries for `host`, from either side of it: the outbox's budgeted prefix
+    (_budget_relays), in wire form, registered under _outbox_lock as ONE flight of this exchange's own
+    — a record a recall removed between the listing and here is left out, so nothing rides that the
+    ledger has closed, and from here to the exchange's outcome (_flight_done) a recall meets the
+    on-its-way refusal instead of unlinking a record whose bytes may already be delivered. `flight`
+    is a list the caller passes to receive the flight's id (an out-parameter, so the wire dict gains
+    nothing); the caller ends it at the outcome. A listing that finds nothing registers no flight, and
+    neither does one with no list to hand the id to: a listing with no flight to end is a read, not a
+    departure (the tests' direct build → handle → apply; the fold then marks by mid), and an entry
+    nobody can end must never be left in _inflight. A record another open flight already holds is
+    listed all the same: skipping it would hold a message
+    back for up to a dial timeout when only one direction of the link works. Nothing durable is
+    written here: the carry mark waits for the outcome (_mark_carried)."""
+    rel = _budget_relays(host, outbox_list(host))     # outside the lock: an oversize relay bounces from here
+    out, mids = [], set()
+    with _outbox_lock:
+        for m in rel:
+            mid = m.get("mid") or ""
+            if not mid or outbox_get(host, mid) is None:
+                continue                             # gone since the listing (recalled, acked, bounced)
+            mids.add(mid)
+            out.append(m)
+        if mids and flight is not None:
+            fid = next(_flight_seq)
+            _inflight.setdefault(host, {})[fid] = mids
+            flight.append(fid)
+    return out
+
+
+def _exchange_peer_name(data):
+    """The name the dialed side files a dialer under: its declared host, canonicalized to the alias we
+    already peer with when its busId proves it is that bus (_canon_peer_name). ONE function for the
+    handler and for the route that marks the response's relays carried after the write (2026-09-08):
+    the handler's own canonicalization files the busId row this lookup reads, so the two agree."""
+    host = str((data or {}).get("host") or "").strip()
+    return _canon_peer_name(host, str((data or {}).get("busId") or ""))
+
+def peer_exchange_handle(data, flight=None):
+    """The DIALED side of one exchange. Returns (payload, status). Relays ride under _RELAY_BUDGET_BYTES
+    (_budget_relays), the request side's bound mirrored, so the response is bounded the same way. The
+    relays it hands out are IN FLIGHT from the listing (_relays_for, which appends the flight's id to
+    `flight`, a list the route passes); the departure event is the response write, so the route ends
+    the flight carried once _send returned (2026-09-08), and freed when it raised — nothing here
+    touches the record or the wire form."""
     host = str((data or {}).get("host") or "").strip()
     if not host:
         return {"error": "host required"}, 400
@@ -2286,7 +4951,7 @@ def peer_exchange_handle(data):
     # Canonicalize BEFORE anything keys on the name: presence files under the alias (no duplicate
     # session rows), and the relays below are trust-judged under the alias the user actually tiered.
     bus_id = str((data or {}).get("busId") or "")
-    host = _canon_peer_name(host, bus_id)
+    host = _exchange_peer_name(data)
     if not _safe_id(host):
         # An unkeyable name would HALF-work: presence lands (PEER_STATE is a dict), but outbox_put
         # refuses it as a path component, so every reply parks "unreachable" with no error anywhere
@@ -2298,6 +4963,7 @@ def peer_exchange_handle(data):
                          "hostname (or set ROMP_POSTAL_HOST) and redial" % host}, 400
     PEER_STATE[host] = {"presence": data.get("presence") or [], "epoch": data.get("epoch"),
                         "holds": data.get("holds") or [], "seenAt": int(time.time())}
+    _write_remote_sids()                           # presence changed → refresh the deadness mirror
     if bus_id:
         PEER_STATE[host]["busId"] = bus_id
         _drop_peer_name_dupes(host, bus_id)
@@ -2309,15 +4975,18 @@ def peer_exchange_handle(data):
         _bounce_arrived(host, b)
     for ra in data.get("readAcks") or []:            # the dialer confirmed response-carried receipts
         readbox_del(host, ra)
-    for r in data.get("reads") or []:                # read receipts flowing back — ours or one hop onward
-        _read_arrived(host, r)
-    acks, bounces = [], []
+    reads_kept = []                                  # request-carried receipts we could NOT apply: named in
+    for r in data.get("reads") or []:                # the response so the dialer keeps them for its next
+        if not _read_arrived(host, r):               # request (additive; an older dialer ignores the key
+            reads_kept.append({"mid": (r or {}).get("mid"), "unread": bool((r or {}).get("unread"))})
+    acks, bounces = [], []                           # and drops them, exactly as before)
     for m in data.get("relays") or []:
         verdict, bounce = _relay_in(host, m, token_proven=True)   # past the HTTP gate = showed OUR serve token
         if verdict == "ack":
             acks.append(m.get("mid"))
         elif verdict == "bounce" and bounce:
-            bounces.append(bounce)                   # 'hold': forwarded — its ack comes back later
+            bounces.append(bounce)                   # 'hold': forwarded — its ack comes back later;
+        #                                              'retry': silence on purpose — the sender re-relays
 
     def _drain_backflow():                           # acks/bounces relayed BACK through us for this host
         p = _pending(host)
@@ -2328,46 +4997,70 @@ def peer_exchange_handle(data):
 
     a2, b2 = _drain_backflow()
     acks, bounces = acks + a2, bounces + b2
-    rel, reads = outbox_list(host), readbox_list(host)
+    reads, rel = readbox_list(host), _relays_for(host, flight)   # the listing last: it puts records in flight
     if not rel and not reads and data.get("wait") and not acks and not bounces:
         # nothing to hand back → park on the wake so anything we accept mid-wait crosses instantly
         _peer_wake(host).clear()
         _peer_wake(host).wait(EXCHANGE_WAIT)
-        rel, reads = outbox_list(host), readbox_list(host)
+        reads, rel = readbox_list(host), _relays_for(host, flight)
         a2, b2 = _drain_backflow()
         acks, bounces = acks + a2, bounces + b2
     # `reads` stay parked until the dialer's NEXT request readAcks them — a response can vanish
     # after we send it, so the dialed side never clears on send. Re-applying a duplicate is a no-op.
-    return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO, "busId": BUS_ID,
-            "presence": fleet_presence(host), "holds": holds_payload(host),
-            "tier": my_tier_of(host),                # how WE hold the dialer's mail (display/mirror, never the gate)
-            "relays": rel, "acks": acks, "bounces": bounces, "reads": reads}, 200
+    try:
+        return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO, "busId": BUS_ID,
+                "presence": fleet_presence(host), "holds": holds_payload(host),
+                "tier": my_tier_of(host),            # how WE hold the dialer's mail (display/mirror, never the gate)
+                "relays": rel, "acks": acks, "bounces": bounces, "reads": reads,
+                "readsKept": reads_kept}, 200        # see _read_arrived (2026-09-08)
+    except Exception:
+        for fid in flight or []:
+            _flight_done(host, fid, carried=False)   # no response will carry them: freed, they ride next time
+        raise
 
-def build_exchange_request(host, wait=True):
+def build_exchange_request(host, wait=True, flight=None):
+    """The DIALER's request for one exchange. The relays are the outbox's oldest-first prefix under
+    _RELAY_BUDGET_BYTES (_budget_relays); the rest ride the next round, so a backlog drains over a few
+    exchanges instead of being refused whole."""
     p = _pending(host)
     with _peer_lock:
         acks, bounces, read_acks = list(p["acks"]), list(p["bounces"]), list(p.get("readAcks") or [])
-    return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO, "busId": BUS_ID,
-            "presence": fleet_presence(host), "holds": holds_payload(host),
-            "tier": my_tier_of(host),                # how WE hold the dialed host's mail
-            "relays": outbox_list(host),
-            "acks": acks, "bounces": bounces,
-            "reads": readbox_list(host), "readAcks": read_acks, "wait": bool(wait)}
+    req = {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO, "busId": BUS_ID,
+           "presence": fleet_presence(host), "holds": holds_payload(host),
+           "tier": my_tier_of(host),                 # how WE hold the dialed host's mail
+           "acks": acks, "bounces": bounces,
+           "reads": readbox_list(host), "readAcks": read_acks, "wait": bool(wait)}
+    req["relays"] = _relays_for(host, flight)    # may bounce (a backward bounce joins the origin's pending
+    #                                              queue): after the snapshot. Each relay is IN FLIGHT from
+    #                                              here (a recall is told it is on its way) until the dial's
+    #                                              outcome marks it carried or frees it (_peer_exchange_once,
+    #                                              through the flight id `flight` receives; the wire gains nothing).
+    #                                              The LAST step on purpose: nothing after it can raise and
+    #                                              leave a record in flight with no outcome to free it
+    return req
 
-def peer_exchange_apply(host, req_sent, resp):
+def peer_exchange_apply(host, req_sent, resp, flight=None):
     """The DIALER's half: fold one exchange response in. `req_sent` is the request that produced it —
     its included acks/bounces/readAcks are now delivered and leave the pending queue (kept on send
     failure), and its reads leave the readbox: a response means the dialed side processed the whole
-    request before answering, so request-carried receipts need no explicit ack."""
+    request before answering, so request-carried receipts need no explicit ack, except the ones the
+    dialed side names in `readsKept` (review find, 2026-09-08): those it could not apply, and they
+    stay parked for the next request. Likewise a response-carried read WE could not apply gets no
+    readAck, so the dialed side keeps it and re-sends it."""
     p = _pending(host)
     with _peer_lock:
         p["acks"] = [a for a in p["acks"] if a not in (req_sent.get("acks") or [])]
         p["bounces"] = [b for b in p["bounces"] if b not in (req_sent.get("bounces") or [])]
         p["readAcks"] = [a for a in p.get("readAcks") or [] if a not in (req_sent.get("readAcks") or [])]
+    kept = {(str(k.get("mid") or ""), bool(k.get("unread")))
+            for k in (resp.get("readsKept") or []) if isinstance(k, dict)}
     for r in req_sent.get("reads") or []:
+        if (str((r or {}).get("mid") or ""), bool((r or {}).get("unread"))) in kept:
+            continue                                 # the dialed side could not take it: it rides again
         readbox_del(host, r)
     PEER_STATE[host] = {"presence": resp.get("presence") or [], "epoch": resp.get("epoch"),
                         "holds": resp.get("holds") or [], "seenAt": int(time.time())}
+    _write_remote_sids()                           # presence changed → refresh the deadness mirror
     bus_id = str(resp.get("busId") or "")
     if bus_id:                                       # the dialed alias is canonical for this bus: fold any
         PEER_STATE[host]["busId"] = bus_id           # row it left under its self-declared hostname
@@ -2378,8 +5071,19 @@ def peer_exchange_apply(host, req_sent, resp):
         _ack_arrived(host, mid)
     for b in resp.get("bounces") or []:
         _bounce_arrived(host, b)
+    # A response means the dialed side processed the whole request: the relays it carried have
+    # LEFT (2026-09-08). Marked after the acks and bounces above, so a record they just closed is
+    # simply not there to mark, and no temp is ever written beside a record about to be deleted.
+    # `flight`: the ids the request's build registered (_peer_exchange_once passes them); a caller
+    # without one (build → handle → apply driven directly) still marks the relays it carried.
+    if flight:
+        for fid in flight:
+            _flight_done(host, fid, carried=True)
+    else:
+        _mark_relays_carried(host, req_sent.get("relays") or [])
     for r in resp.get("reads") or []:                # response-carried receipts: apply, ack on the NEXT dial
-        _read_arrived(host, r)
+        if not _read_arrived(host, r):
+            continue                                 # not applied → no readAck: the dialed side re-sends it
         with _peer_lock:
             p["readAcks"].append({"mid": r.get("mid"), "unread": bool(r.get("unread"))})
     for m in resp.get("relays") or []:
@@ -2388,7 +5092,28 @@ def peer_exchange_apply(host, req_sent, resp):
             if verdict == "ack":
                 p["acks"].append(m.get("mid"))
             elif verdict == "bounce" and bounce:
-                p["bounces"].append(bounce)          # 'hold': forwarded — its ack comes back later
+                p["bounces"].append(bounce)          # 'hold': forwarded — its ack comes back later;
+            #                                          'retry': silence on purpose — the sender re-relays
+
+_ID_FORM_RE = re.compile(r"[0-9a-fA-F][0-9a-fA-F-]{7,35}")   # uuid / short-id address shapes
+
+
+def _addr_matches(a, to):
+    """Does agent row `a` answer to address `to` — by name, by full session id, or by the short-id
+    prefix form every list_agents row prints (`· <8-char>`)? Review find 2026-09-01: presence rows
+    have always CARRIED ids, but the route matched names only, so a uuid send to a live far-host
+    session had no route at all — it fell through to the refusal tail and read as deadness (and a
+    first-cut mirror arm here turned that into a never-healing retry; routing is the honest cure).
+    Prefix collisions surface as multiple candidates: peer_route's standing ambiguity machinery
+    refuses multi-hits; _relay_in prefers the exact toId a new-code sender parks (see the relay
+    message), so its name matching is the old-sender compatibility path only."""
+    if a.get("name") == to:
+        return True
+    sid = str(a.get("id") or "")
+    if not sid:
+        return False
+    return sid == to or (_ID_FORM_RE.fullmatch(to) is not None and sid.startswith(to))
+
 
 def peer_route(to):
     """Where a non-local name lives: (host, agent) for exactly ONE peer match; (None, candidates) on
@@ -2407,7 +5132,7 @@ def peer_route(to):
         if want_host and host != want_host:
             continue
         for a in st.get("presence") or []:
-            if a.get("name") != to or _via_duplicate(a, direct_bus):
+            if not _addr_matches(a, to) or _via_duplicate(a, direct_bus):
                 continue
             sid = a.get("id") or ""
             if sid and sid in seen_ids:                # one session, two gossip paths → one candidate;
@@ -2435,50 +5160,98 @@ def _peer_http(port, payload, token=""):
     with urllib.request.urlopen(req, timeout=EXCHANGE_WAIT + 10) as r:
         return json.loads(r.read().decode() or "{}")
 
+def _peer_exchange_once(host, port, token):
+    """One exchange with `host`, from the request to the folded-in response. Returns the OUTCOME, which
+    is also the carry event for the request's relays (2026-09-08; _flight_done):
+    - 'ok': a response. peer_exchange_apply folds it in and marks the relays carried after the acks
+      and bounces; if the fold itself fails the relays are marked here (the far bus answered, so it
+      processed them) and the failure is said.
+    - 'lost': raised AFTER the request went out (a read timeout, an undecodable body, anything else
+      urllib does not wrap): the far bus may have taken the relays and answered into the void, so
+      they are marked carried; the re-relay next round is deduped over there.
+    - 'unsent': urllib.error.URLError — the connect or the send failed (refused, unresolved, a connect
+      timeout, a pipe broken mid-send): the request never arrived; nothing is marked. Also a socket
+      that closed before any status line came back (RemoteDisconnected, a reset): through the ssh
+      forward that is a far bus not listening, not an answer lost (the arm below has the shape).
+    - 'drift': HTTP 409, the protocol handshake refused it before any relay was read; nothing marked.
+    - 'refused': any other HTTP status — the token gate, the unsafe-host check, a bad body — all of
+      which precede relay intake (a handler exception over there yields no response at all, not a
+      status); nothing marked. Each distinct refusal is said once.
+    _peer_loop keys its waits on the return."""
+    flight = []                                  # the id of the flight the build registers (out-parameter)
+    req = build_exchange_request(host, wait=True, flight=flight)
+
+    def _end(carried):
+        for fid in flight:
+            _flight_done(host, fid, carried=carried)
+    try:
+        resp = _peer_http(port, req, token)
+    except urllib.error.HTTPError as e:
+        _end(False)                                  # answered before intake: nothing left
+        if e.code == 409:
+            st = PEER_STATE.setdefault(host, {})
+            if st.get("drift") != "proto":
+                st["drift"] = "proto"
+                _log("peer %s: protocol drift — update romp on one side" % host)
+            return "drift"
+        body = ""
+        try:
+            body = " ".join((e.read() or b"").decode("utf-8", "replace").split())[:200]
+        except Exception:
+            pass
+        st = PEER_STATE.setdefault(host, {})
+        if st.get("refused") != (e.code, body):      # each DISTINCT refusal once, not per retry —
+            st["refused"] = (e.code, body)           # a 4xx (e.g. the unsafe-host gate) otherwise
+            _log("peer %s: exchange refused (HTTP %s) %s" % (host, e.code, body))   # retries silently forever
+        return "refused"
+    except urllib.error.URLError:
+        _end(False)                                  # the request never arrived
+        return "unsent"
+    except (http.client.RemoteDisconnected, http.client.BadStatusLine, ConnectionResetError, BrokenPipeError):
+        # The socket closed before any status line came back. urllib wraps only the connect and the
+        # send (h.request) in URLError; a failure in getresponse propagates raw, and through the
+        # kernel's ssh -L forward that is the shape of a far bus that is not listening (its restart
+        # window, a crash): the LOCAL ssh listener accepts the TCP connection, the request goes out
+        # to it, ssh fails the channel and closes the socket, and no bus ever read a byte. The generic
+        # arm below took that for a lost answer and marked every record in the flight carried, a
+        # durable mark, so through every far-bus restart the sender was refused a recall for messages
+        # still in its own outbox (review find, 2026-09-09). A far handler that died AFTER delivering
+        # also closes without a status line, but the re-relay next round is deduped over there by id:
+        # re-sending is safe where a false carried mark is not, so nothing is marked.
+        _end(False)
+        return "unsent"
+    except Exception:
+        _end(True)                                   # it went out; the answer was lost
+        return "lost"
+    try:
+        peer_exchange_apply(host, req, resp, flight=flight)
+    except Exception as e:
+        _log("peer %s: apply failed: %s" % (host, e))
+        _end(True)                                   # the far bus answered: the relays reached it (a no-op
+        #                                              when the fold got as far as ending the flight itself)
+    return "ok"
+
 def _peer_loop(host):
     """One dialer per up peer: exchange, fold the response in, repeat — the dialed side's long-poll
     sets the pace, so a healthy loop is one parked request, not a poll. Exponential backoff (capped
-    30s) on connection errors only; exits when the kernel marks the peer down or the flag drops."""
+    30s) on connection errors only; exits when the kernel marks the peer down or the flag drops.
+    The body is _peer_exchange_once; this loop only paces it."""
     fails = 0
     while peers_on():
         p = PEERS.get(host)
         if not p or not p.get("up"):
             break
-        req = build_exchange_request(host, wait=True)
-        try:
-            resp = _peer_http(p["port"], req, p.get("token") or "")
-        except urllib.error.HTTPError as e:
-            if e.code == 409:
-                st = PEER_STATE.setdefault(host, {})
-                if st.get("drift") != "proto":
-                    st["drift"] = "proto"
-                    _log("peer %s: protocol drift — update romp on one side" % host)
-                _peer_wake(host).clear()
-                _peer_wake(host).wait(60)
-                continue
-            body = ""
-            try:
-                body = " ".join((e.read() or b"").decode("utf-8", "replace").split())[:200]
-            except Exception:
-                pass
-            st = PEER_STATE.setdefault(host, {})
-            if st.get("refused") != (e.code, body):      # each DISTINCT refusal once, not per retry —
-                st["refused"] = (e.code, body)           # a 4xx (e.g. the unsafe-host gate) otherwise
-                _log("peer %s: exchange refused (HTTP %s) %s" % (host, e.code, body))   # retries silently forever
-            fails += 1
-            _peer_wake(host).clear()
-            _peer_wake(host).wait(min(30, 2 ** min(fails, 5)))
+        outcome = _peer_exchange_once(host, p["port"], p.get("token") or "")
+        if outcome == "ok":
+            fails = 0
             continue
-        except Exception:
-            fails += 1
+        if outcome == "drift":
             _peer_wake(host).clear()
-            _peer_wake(host).wait(min(30, 2 ** min(fails, 5)))
+            _peer_wake(host).wait(60)
             continue
-        fails = 0
-        try:
-            peer_exchange_apply(host, req, resp)
-        except Exception as e:
-            _log("peer %s: apply failed: %s" % (host, e))
+        fails += 1
+        _peer_wake(host).clear()
+        _peer_wake(host).wait(min(30, 2 ** min(fails, 5)))
     with _peer_lock:
         _peer_threads.pop(host, None)
 
@@ -2497,7 +5270,10 @@ def _peer_threads_reconcile(host):
 
 def _seed_peers_from_kernel():
     """A restarted bus starts with an empty peer table (the kernel notifies on TRANSITIONS). Best-effort
-    seed from the kernel's /tunnels so peering resumes without waiting for the next transition."""
+    seed from the kernel's /tunnels so peering resumes without waiting for the next transition. The seed
+    learns each peer's port, up-state and trust; the peer's TOKEN is not in that payload (a page reads it
+    too, 2026-09-08), so a seeded row cannot dial yet. The kernel supplies it: its next supervisor pass
+    sees a new busId/epoch on GET /peers and re-notifies every peer (peer_update fills the token in)."""
     try:
         req = urllib.request.Request(KERNEL_BASE + "/tunnels", headers={"X-Romp-Token": SERVE_TOKEN})
         with urllib.request.urlopen(req, timeout=3) as r:
@@ -2507,8 +5283,8 @@ def _seed_peers_from_kernel():
             port = row.get("busPort")
             if row.get("host") and isinstance(port, int) and port:
                 peer_update({"host": row["host"], "port": port, "up": row.get("status") == "up",
-                             "token": row.get("token") or "",   # the peer's serve token — its bus is gated too
                              "trust": row.get("trust") or "directed"})   # per-host trust for the inbound gate
+                # no "token": /tunnels has not carried one since 2026-09-08; the kernel's re-notify brings it
         # Origin-only trust heals on restart too: the kernel's remembered-hosts list (`known` in the
         # same payload) carries the tier for every UNATTACHED host the user has set one on; without
         # this a bus bounce would silently drop a relayed origin back to `directed` (the user
@@ -2527,7 +5303,9 @@ def looks_remote():
     return bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
 
 def _unreachable_hint():
-    if is_client_only() or looks_remote():
+    # the tunnel hint belongs to the legacy singleton scheme: in peer mode (the default) an SSH'd box runs
+    # its own bus and `romp mail remote` refuses, so pointing at it would be a dead end (review find, 2026-09-08)
+    if not peers_on() and (is_client_only() or looks_remote()):
         return "can't reach your laptop's Romp Postal Service bus — is the SSH tunnel up? run: romp mail remote"
     return "can't reach the Romp Postal Service bus (see ~/.local/state/romp/postal/server.log)"
 
@@ -2549,6 +5327,10 @@ def ensure():
         return True
     if is_client_only():
         return ping()
+    why = _fixed_port_refusal()   # 2026-09-10: a hermetic kernel's ensure never takes the shared port
+    if why:
+        _refuse_loudly(why)
+        return False
     STATE.mkdir(parents=True, exist_ok=True)
     logf = open(LOG, "a")
     subprocess.Popen([sys.executable, os.path.abspath(__file__), "serve"],
@@ -2584,27 +5366,78 @@ def restart():
     return ensure()
 
 def _heartbeat(sid, name):
-    if sid:
-        try:
-            _http("POST", "/heartbeat", {"id": sid, "name": name or "?"})
-        except Exception:
-            pass
+    """POST this session's presence to the bus. Returns the bus's answer ({ok, local}) or None when
+    there was none (bus unreachable, no sid); callers that only want the side effect ignore it."""
+    if not sid:
+        return None
+    try:
+        return _http("POST", "/heartbeat", {"id": sid, "name": name or "?"})
+    except Exception:
+        return None
 
-def _heartbeat_loop():
+_LOCAL_CONFIRMED = [False]   # this MCP's session is local to its bus, per a peer-mode `local: true` answer
+
+def _heartbeat_once():
+    """One beat of _heartbeat_loop: ONE identity resolution (one GET /sessions) and one POST /heartbeat.
+    Returns True iff the bus answered `local: true` — its own answered listing holds this sid, so the
+    kernel already publishes this session's presence. A bus that did not answer, answered without the
+    bit (an older bus), or said local=false (a remote session, or a kernel mid-restart that left the
+    listing unanswered) is False: keep beating.
+
+    In peer mode a true answer also latches _LOCAL_CONFIRMED, which _mcp_call reads to skip its
+    per-call beat: there the bus behind BASE is this box's own for the life of the process, so the
+    verdict cannot go stale. It is never latched from an unanswered or false answer, and never in
+    legacy singleton mode (ROMP_POSTAL_PEERS=0), where `romp mail remote` can replace the local bus
+    with the hub's over an -R tunnel under a running session — the beats are then its only presence.
+    The peer-mode premise, that `romp mail remote` never swaps the bus behind BASE there, is enforced:
+    setup_remote refuses in peer mode, --force included (review find, 2026-09-08: run after the latch
+    it silenced the session on the hub), as _remote_nudge already treated the command as moot."""
+    sid, name = _self_identity()
+    if not sid:
+        return False
+    resp = _heartbeat(sid, name)
+    local = bool(isinstance(resp, dict) and resp.get("local") is True)
+    if local and peers_on():
+        _LOCAL_CONFIRMED[0] = True
+    return local
+
+def _heartbeat_loop(interval=None, stop=None):
     """Keep THIS session present to the bus while it's alive, so an IDLE session that hasn't touched a postal
     tool is still addressable. This is essential for a REMOTE (federated) session: it appears to the laptop's
     bus ONLY via heartbeats over the -R tunnel (a local session is already visible through the kernel's
-    /sessions). Cadence well under HEARTBEAT_TTL. The bus ignores heartbeats from LOCAL sids, so this costs a
-    local session nothing and is the presence mechanism for remote ones. Runs from the stdio MCP server, which
-    lives exactly as long as the Claude session."""
-    while True:
+    /sessions). Cadence well under HEARTBEAT_TTL. Runs from the stdio MCP server, which lives exactly as long
+    as the Claude session.
+
+    The bus ignores heartbeats from LOCAL sids, and since 2026-09-06 says so in its answer. In PEER mode
+    (the default) the loop ends on the first `local: true`: every box runs its own bus, a session stays
+    local to it for the life of the process, and every further beat would be a no-op that cost the kernel
+    GET /sessions calls (about 30 sessions beating every 30 s were 3 requests per second on a saturated
+    kernel). In legacy singleton mode (ROMP_POSTAL_PEERS=0) the loop never ends: `romp mail remote`
+    replaces the local bus with the hub's over an -R tunnel while sessions run, and from then on these
+    beats are the only presence the hub sees. A remote (client-only box) session never hears "local"
+    from the hub's bus in either mode. `interval` and `stop` (a threading.Event) are test seams; the
+    defaults are the production cadence and no external stop.
+
+    What the ended loop changes for a peer's send during a KERNEL BLINK (review find, 2026-09-08): a
+    local session's beat that landed while the listing was unanswered used to be filed as remote
+    presence (the bus could not call it local), so a send to its name during the blink resolved to that
+    row and delivered into its mailbox with no wake, and the mail sat there unannounced until the
+    kernel returned. With the loop ended and the per-call beat skipped no such row appears, and
+    resolve_recipient's standing blink refusal (503, retry shortly, never a death ruling) covers every
+    local peer alike: the mail stays with the sender, who is told so. Pinned by
+    tests/test_postal_heartbeat_fetches.py."""
+    if interval is None:
+        interval = max(15, HEARTBEAT_TTL // 3)
+    while not (stop is not None and stop.is_set()):
         try:
-            sid = my_id()
-            if sid:
-                _heartbeat(sid, my_name())
+            if _heartbeat_once() and peers_on():
+                return
         except Exception:
             pass
-        time.sleep(max(15, HEARTBEAT_TTL // 3))
+        if stop is not None:
+            stop.wait(interval)
+        else:
+            time.sleep(interval)
 
 # ───────────────────────── stdio MCP server ─────────────────────────
 
@@ -2628,7 +5461,7 @@ Addressing is live-only: you can message only currently-live sessions (list_agen
 
 A name is not guaranteed unique. When more than one live session answers to it the send is refused and the candidates are listed as `host:name`: pick one and resend rather than assuming the first. Your OWN name is refused outright, because a message there lands in your own inbox looking exactly like a reply from someone else. Your row in list_agents is the one marked `(you)`.
 
-An isolation refusal is FINAL. A mailbox toggled off is a boundary the user drew: if send_message refuses for isolation, do NOT reroute the content through any other door (the kernel's /send route, tmux keystrokes, shared files, another peer as relay). Report the refusal to the user and stop — only they lift the isolation.
+An isolation refusal is FINAL. A mailbox toggled off is a boundary the user drew: if send_message refuses for isolation, do NOT reroute the content through any other door (the kernel's /send route, shared files, another peer as relay). Report the refusal to the user and stop — only they lift the isolation.
 
 Claude Code ships its own cross-session messaging (SendMessage / ListAgents). For peer romp sessions, use these postal tools instead: postal mail declares a kind, is tracked until answered, respects the user's per-host trust boundaries, and is visible to them; a native cross-session send has none of that, so it is invisible to the user and unaccountable. Native SendMessage remains the right tool for your own subagents and teammates inside this session — just not for peer sessions.
 """
@@ -2653,20 +5486,31 @@ MCP_TOOLS = [
     {"name": "set_working",
      "description": "Publish what you're working on (files/surface) so peers steer clear; your branch shows automatically. Empty text clears it (romp also auto-clears once your work is done and the session idles).",
      "inputSchema": {"type": "object",
-                     "properties": {"text": {"type": "string", "description": "short note, e.g. 'editing scripts/romp-postal + tmux.conf'"}}}},
+                     "properties": {"text": {"type": "string", "description": "short note, e.g. 'editing postal/postal_service.py + the drain hook'"}}}},
     {"name": "check_sent",
      "description": "See your recently sent messages and whether each was read/acted on by the recipient yet, or is still pending — instead of asking 'did you get it?'.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "recall_message",
-     "description": "Unsend a still-unread (queued) message when the ask went moot. Give 'to' to recall your unread message(s) to them, or add 'id' (from check_sent) for one. Only your own unread messages; anything already read is gone.",
+     "description": "Withdraw a message that is still here when the ask went moot: unread mail to a session on this machine, or mail to another machine that has not left for it yet (check_sent shows which). Give 'to' to withdraw your message(s) to them, or add 'id' (from check_sent) for one. Only your own; anything already read, or already on its way to another machine, is gone.",
      "inputSchema": {"type": "object",
                      "properties": {"to": {"type": "string", "description": "recipient session name (or UUID) whose queued message(s) from you to cancel"},
                                     "id": {"type": "string", "description": "optional specific message id (from check_sent) to recall just that one"}}}},
 ]
 
+def _mcp_no_identity():
+    """The tool result for a call that needs THIS session's identity and has none: the Codex lookup's reason and
+    the bug it is when one failed (a Codex session's shell whose thread did not match a live registry row), else
+    the plain sentence for a process that is not a session's. Never a silent refusal for a failed lookup."""
+    why = _identity_refusal()
+    if why:
+        return ("This session's own identity did not resolve (%s). This is a session-identity bug worth "
+                "surfacing to the user." % why)
+    return "Not inside a romp session."
+
 def _mcp_call(name, args):
-    me, mid = my_name(), my_id()
-    _heartbeat(mid, me)
+    mid, me = _self_identity()               # one GET /sessions for both halves, not one each
+    if not _LOCAL_CONFIRMED[0]:              # a confirmed-local session's beat is a no-op the bus pays a fetch for
+        _heartbeat(mid, me)
     if name == "send_message":
         to, body = args.get("to", ""), args.get("body", "")
         kind = str(args.get("kind", "")).strip().lower()
@@ -2677,11 +5521,16 @@ def _mcp_call(name, args):
                     "coordinate (aligning/heads-up), or question (you need an answer).", True)
         if not mid:
             # the bus would refuse this anyway (anonymous mail arrives "from unknown"); say it
-            # HERE with the actionable half — the sender's own identity is what's broken
-            return ("Cannot send: this session's own identity did not resolve (no session id), so "
+            # HERE with the actionable half — the sender's own identity is what's broken, and when a
+            # Codex lookup is what broke, its reason (_identity_refusal) is the half that names the fix
+            return ("Cannot send: this session's own identity did not resolve (%s), so "
                     "the mail would arrive anonymously and the recipient could not place or answer "
-                    "it. This is a session-identity bug worth surfacing to the user.", True)
-        tracked = bool(args.get("tracked")) and kind == "delegate"
+                    "it. This is a session-identity bug worth surfacing to the user."
+                    % (_identity_refusal() or "no session id"), True)
+        tracked, terr = _as_bool(args.get("tracked"), "tracked")
+        if terr:
+            return ("Cannot send: %s. Pass a JSON boolean (tracked: true), not a string." % terr, True)
+        tracked = tracked and kind == "delegate"
         try:
             payload = {"to": to, "from": me or "unknown", "from_id": mid, "body": body, "kind": kind}
             if tracked:
@@ -2718,22 +5567,38 @@ def _mcp_call(name, args):
             return str(e), True
     if name == "check_inbox":
         if not mid:
-            return "Not inside a romp session.", True
-        msgs = _http("GET", "/inbox?id=%s" % urllib.parse.quote(mid)).get("messages", [])
+            return _mcp_no_identity(), True
+        try:
+            msgs = _http("GET", "/inbox?id=%s" % urllib.parse.quote(mid)).get("messages", [])
+        except BusError as e:
+            # an inbox that cannot be listed answers 503 with the reason (2026-09-14): said as what it is, never an
+            # internal error and never "no new messages" where mail sits unread. The person hears a plain sentence; the
+            # reason (a path, an errno) is recorded ONCE: by the bus's own log when it answered the 503, else here (a bus
+            # that could not be reached, another status, a decode fault: the bus never saw it; this process's stderr is
+            # the harness log's), and the sentence names the right thing, the service or the inbox (round five)
+            if _inbox_fault(e):
+                return "Your inbox cannot be read right now; your mail waits unread and the next check retries.", True
+            _log("check_inbox for %s: the mail service gave no answer: %s" % (mid, e))
+            return "The mail service could not be reached just now; your mail waits and the next check retries.", True
         return (format_inbox(msgs, mid) or "No new messages."), False
     if name == "list_agents":
         res = _http("GET", "/agents?me=%s" % urllib.parse.quote(me or ""))
         return format_agents(res.get("agents", []), me, mid), False
     if name == "set_working":
         if not mid:
-            return "Not inside a romp session.", True
+            return _mcp_no_identity(), True
+        if "text" not in args or args.get("text") is None:
+            # a MISSING param is never a clear command (fold-in 2026-08-31: a malformed call
+            # silently wiped the published note); the documented clear stays text=''
+            return ("set_working needs its `text` argument — nothing was changed. "
+                    "Pass text='' if you mean to clear your published note."), True
         text = args.get("text", "")
-        _publish_working(mid, text)        # backend-agnostic kernel store (POST /working), not the @romp-working var
+        _publish_working(mid, text)        # the kernel's working-note store (POST /working)
         return ("Cleared your 'working on' note." if not text.strip()
                 else "Published — others see: working on '%s'." % text), False
     if name == "check_sent":
         if not mid:
-            return "Not inside a romp session.", True
+            return _mcp_no_identity(), True
         recs = _http("GET", "/sent?id=%s" % urllib.parse.quote(mid)).get("sent", [])
         return format_receipts(recs), False
     if name == "recall_message":
@@ -2741,14 +5606,24 @@ def _mcp_call(name, args):
         if not to and not rid:
             return "Give 'to' (the recipient) and/or 'id' to recall.", True
         if not mid:
-            return "Not inside a romp session.", True
-        removed = _http("POST", "/recall", {"from_id": mid, "to": to, "id": rid}).get("removed", [])
-        if not removed:
+            return _mcp_no_identity(), True
+        res = _http("POST", "/recall", {"from_id": mid, "to": to, "id": rid})
+        removed, kept = res.get("removed", []), res.get("kept", [])
+        if not removed and not kept:
             return ("Nothing to recall — no unread message from you matched "
-                    "(it was already read, or nothing's queued there).", False)
-        lines = ["Recalled %d message(s) before they were read:" % len(removed)]
-        for r in removed:
-            lines.append("  ✕ to %s: %s" % (r["to"], r["body"]))
+                    "(it was already read or delivered, or nothing's queued there).", False)
+        lines = []
+        if removed:
+            lines.append("Recalled %d message(s) before they were read:" % len(removed))
+            for r in removed:
+                lines.append("  ✕ to %s: %s" % (r["to"], r["body"]))
+        for k in kept:                           # an outbox item the bus refused to withdraw (2026-09-08): carried
+            #                                      (it left; the tail says what that may mean) or in flight (try
+            #                                      again in a moment — never "too late" in the same breath)
+            why = k.get("why") or (WHY_CARRIED % k.get("host", "?"))
+            tail = "; they may already have read it" if k.get("carried") else ""
+            lines.append('  ✗ NOT recalled — to %s (id %s): it %s%s. "%s"'
+                         % (k.get("to", "?"), k.get("id", "?"), why, tail, k.get("body", "")))
         return "\n".join(lines), False
     return "Unknown tool: %s" % name, True
 
@@ -2757,7 +5632,8 @@ def mcp():
     ONLY protocol messages; everything else goes to stderr."""
     ensure()
     # Heartbeat presence while this session lives, so an idle REMOTE (federated) session stays addressable
-    # over the -R tunnel even before it uses a postal tool. No-op for local sids (the bus ignores those).
+    # over the -R tunnel even before it uses a postal tool. A LOCAL session's loop ends on the bus's first
+    # `local: true` answer (the bus ignores local beats anyway; see _heartbeat_loop).
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
     out = sys.stdout
 
@@ -2805,6 +5681,18 @@ def mcp():
 
 # ───────────────────────── CLI client modes ─────────────────────────
 
+def _refuse_no_identity(short):
+    """stderr for a command that needs THIS session's identity and has none: the Codex lookup's reason and the bug
+    it is when one failed, else `short`, the command's own words for a shell that is not a session's. The reason is
+    printed here, where the missing identity is refused, and nowhere else: a command that never needed one
+    (`agents`) and the resolver itself say nothing about it."""
+    why = _identity_refusal()
+    if why:
+        sys.stderr.write("[romp mail] %s\n[romp mail] this shell belongs to a Codex session whose identity did not "
+                         "resolve (the reason above); surface this to the user as a session-identity bug\n" % why)
+    else:
+        sys.stderr.write("[romp mail] %s\n" % short)
+
 def cli_send(argv):
     kind = frm_label = ""
     tracked = False
@@ -2835,7 +5723,27 @@ def cli_send(argv):
         sys.stderr.write("[romp mail] refusing to send an empty message\n"); return 2
     if not ensure():
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
-    me, mid = my_name(), my_id()
+    mid, me = _self_identity()
+    own = _mail_off_why(mid) if mid else ""
+    if own:
+        # the CALLER's own identity is judged before any --from label substitutes a synthetic one, for every closed
+        # door (the review: --from was a door around the thread's own-send refusal, the incident's shape; then around
+        # a mailbox the user toggled off too)
+        sys.stderr.write("[romp mail] %s\n" % {"thread": THREAD_MAIL_OFF_SENDER, "unreadable": UNREADABLE_REG_SENDER}.get(own, ISOLATION_SENDER))
+        return 1
+    if not mid:
+        why = _identity_refusal()
+        if why:
+            # a Codex session's shell whose identity did not resolve is refused OUTRIGHT, --from included: the label
+            # is a door for a caller that has no session (a script, a bare shell), and a session with a broken
+            # identity walking through it would mail as a script and bury the bug (the 2026-09-15 review: before
+            # this, a shell with an unknown, ambiguous or unreadable CODEX_THREAD_ID could still send under ext:<label>)
+            sys.stderr.write("[romp mail] %s\n[romp mail] cannot send: no session identity resolved (the reason "
+                             "above). This shell belongs to a Codex session, so the mail is refused, --from included: "
+                             "a label would sign a session's mail as a script's and hide the bug. Surface this to the "
+                             "user as a session-identity bug. A Codex session mails through its send_message tool, "
+                             "not this command (inside its sandbox this command is refused by design).\n" % why)
+            return 1
     if frm_label:
         me, mid = frm_label, "ext:" + frm_label
     if not mid:
@@ -2843,7 +5751,9 @@ def cli_send(argv):
         # session identity is a bug to surface, and a deliberate non-session caller has a door
         sys.stderr.write("[romp mail] cannot send: no session identity resolved, and anonymous "
                          "mail is refused (it arrives as an unplaceable ghost). Inside a romp "
-                         "session, surface this to the user as a session-identity bug. From a "
+                         "session, surface this to the user as a session-identity bug (a Claude "
+                         "Code session is known by CLAUDE_CODE_SESSION_ID, a Codex session by "
+                         "CODEX_THREAD_ID; neither is set here). From a "
                          "script or bare shell, pass --from <label> to send under an explicit "
                          "name.\n")
         return 1
@@ -2866,7 +5776,7 @@ def cli_inbox(peek=False):
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
     mid = my_id()
     if not mid:
-        sys.stderr.write("[romp mail] can't tell which session this is (are you in a romp session?)\n"); return 1
+        _refuse_no_identity("can't tell which session this is (are you in a romp session?)"); return 1
     try:
         res = _http("GET", "/inbox?id=%s&peek=%d" % (urllib.parse.quote(mid), 1 if peek else 0))
     except BusError as e:
@@ -2879,7 +5789,7 @@ def cli_inbox(peek=False):
 def cli_agents():
     if not ensure():
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
-    me, mid = my_name(), my_id()
+    mid, me = _self_identity()
     try:
         res = _http("GET", "/agents?me=%s" % urllib.parse.quote(me or ""))
     except BusError as e:
@@ -2890,9 +5800,9 @@ def cli_agents():
 def cli_working(argv):
     sid = my_id()
     if not sid:
-        sys.stderr.write("[romp mail] not in a romp session\n"); return 1
+        _refuse_no_identity("not in a romp session"); return 1
     text = " ".join(argv)
-    _publish_working(sid, text)        # backend-agnostic kernel store (POST /working), not the @romp-working var
+    _publish_working(sid, text)        # the kernel's working-note store (POST /working)
     print("[romp mail] working: %s" % (text or "(cleared)"))
     return 0
 
@@ -2901,7 +5811,7 @@ def cli_sent():
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
     mid = my_id()
     if not mid:
-        sys.stderr.write("[romp mail] not in a romp session\n"); return 1
+        _refuse_no_identity("not in a romp session"); return 1
     try:
         recs = _http("GET", "/sent?id=%s" % urllib.parse.quote(mid)).get("sent", [])
     except BusError as e:
@@ -2915,19 +5825,29 @@ def cli_recall(argv):
     to, rid = argv[0], (argv[1] if len(argv) > 1 else "")
     if not ensure():
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
+    mid = my_id()
+    if not mid:                     # a recall is of the caller's OWN mail, so it needs the sender's identity: the bus
+        #                             answers an empty from_id 400 "missing from_id", which is what a Codex shell whose
+        #                             lookup failed heard, bare, while the recall_message tool already said the reason
+        _refuse_no_identity("not in a romp session"); return 1
     try:
-        removed = _http("POST", "/recall", {"from_id": my_id() or "", "to": to, "id": rid}).get("removed", [])
+        res = _http("POST", "/recall", {"from_id": mid, "to": to, "id": rid})
     except BusError as e:
         sys.stderr.write("[romp mail] %s\n" % e); return 1
-    if not removed:
-        print("[romp mail] nothing to recall (already read, or none queued to '%s')" % to)
-    else:
+    removed, kept = res.get("removed", []), res.get("kept", [])
+    for k in kept:                               # an outbox item the bus refused to withdraw (2026-09-08); the
+        why = k.get("why") or (WHY_CARRIED % k.get("host", "?"))   # "too late" tail only for one that has left
+        tail = "; they may already have read it" if k.get("carried") else ""
+        print("[romp mail] not recalled: the message to '%s' (id %s) %s%s" % (k.get("to", "?"), k.get("id", "?"), why, tail))
+    if removed:
         print("[romp mail] recalled %d message(s) to '%s' before they were read" % (len(removed), to))
+    elif not kept:
+        print("[romp mail] nothing to recall (already read or delivered, or none queued to '%s')" % to)
     return 0
 
 def cli_wake(argv):
     # For the SessionStart revive hook: ask the bus to force-deliver pending mail
-    # once this reviving session's prompt is live. Non-blocking (bus does the wait).
+    # once the kernel lists this reviving session. Non-blocking (bus does the wait).
     sid = None
     if "--id" in argv:
         i = argv.index("--id")
@@ -2947,18 +5867,6 @@ def _argval(argv, flag):
         return argv[i + 1] if i + 1 < len(argv) else None
     return None
 
-def cli_picker_check(argv):
-    """Backgrounded by `romp` on RESUME (romp-postal-service picker-check --name N --id S). Claude's "resume
-    as-is / from summary" PICKER blocks before the session starts, so NO Claude hook fires while it's up — an
-    external watcher is the only way to surface it. Routed through the kernel (POST /picker-check): the kernel
-    polls the pane + @claude-state for up to PICKER_GRACE and, if the picker is confirmed up, marks
-    @claude-state=picker + appends a 'picker' state event so the feed shows NEEDS INPUT. The bus never shells tmux."""
-    sid = _argval(argv, "--id")
-    if not sid:
-        return 0
-    _kernel_post("/picker-check", {"id": sid}, timeout=PICKER_GRACE + 5)
-    return 0
-
 def cli_drain(argv):
     # For the Stop hook. --id is authoritative (from Claude's hook payload).
     sid = None
@@ -2972,6 +5880,19 @@ def cli_drain(argv):
         return 0
     try:
         res = _http("GET", "/drain?id=%s" % urllib.parse.quote(sid))
+    except BusError as e:
+        # the Stop hook wraps this command's STDOUT into the turn-end block and drops its stderr and exit code, so the
+        # one automatic /drain client says the fault where the mail would have appeared; the mail waits unread and the
+        # next drain retries. An unlistable inbox answers 503 with the reason (2026-09-14), which the bus logged once per
+        # spell as it answered. Every other BusError (a bus that could not be reached, another status, a decode fault)
+        # the bus never saw: the reason is written to stderr here, honestly the only channel this client has, read
+        # when the command runs by hand and dropped by the hook; and the sentence names the service, not the inbox
+        if _inbox_fault(e):
+            print("Your mail could not be checked this turn; it waits unread and the next check retries.")
+        else:
+            _log("drain for %s: the mail service gave no answer: %s" % (sid, e))
+            print("The mail service could not be reached this turn; your mail waits and the next check retries.")
+        return 0
     except Exception:
         return 0
     text = format_inbox(res.get("messages", []), sid)
@@ -2982,7 +5903,25 @@ def cli_drain(argv):
 def setup_remote(force=False):
     """Point THIS machine at the laptop's Romp Postal Service over an SSH reverse
     tunnel: configure the client side automatically, then guide + verify the one
-    manual step (the tunnel, which can only be opened from the laptop)."""
+    manual step (the tunnel, which can only be opened from the laptop). Legacy
+    singleton scheme only: peer mode refuses, --force included (see below)."""
+    if peers_on():
+        # Peer mode (the default since 2026-07-20) has no laptop bus to point at, and since the
+        # heartbeat latch (2026-09-06) the command would do harm here: a local session's MCP stops
+        # beating for good once its own bus confirms it local, so a hub's bus swapped in behind the
+        # port would never hear of this box's sessions, and the local bus this command stops is the
+        # one carrying their mail. Refuse before any side effect, --force included, and say why
+        # (review find, 2026-09-08: `romp mail remote --force` after the latch silenced the session
+        # on the hub). _remote_nudge already treats the command as moot in peer mode.
+        print("romp mail remote is off in peer mode (the default): every machine runs its own Romp")
+        print("Postal Service bus and cross-host mail rides the kernel's peer tunnels, so there is no")
+        print("laptop bus to point this machine at. Nothing was changed.")
+        print("")
+        print("--force does not override this: a session's heartbeats end for good once its own bus")
+        print("confirms it local, so a hub's bus swapped in behind the port would never see this box's")
+        print("sessions, and the local bus this command would stop is what carries their mail.")
+        print("This command belongs to the legacy singleton scheme (ROMP_POSTAL_PEERS=0).")
+        return 2
     if not force and not looks_remote():
         print("This looks like your Romp Postal Service host (no SSH session detected);")
         print("the bus runs here automatically, so there's nothing to set up.")
@@ -3036,8 +5975,8 @@ USAGE = """romp-postal-service — the Romp Postal Service
   romp mail working <text>          publish what you're working on (empty to clear)
   romp mail sent                    show your sent messages + whether each was read
   romp mail recall <to> [id]        unsend an unread message you sent to <to>
-  romp mail remote                  connect this (remote) machine to your laptop's bus
-(internal: serve | ensure | restart | mcp | drain --id <id> | wake --id <id> | picker-check --name <n> --id <id>)"""
+  romp mail remote                  connect this (remote) machine to your laptop's bus (legacy scheme, ROMP_POSTAL_PEERS=0)
+(internal: serve | ensure | restart | mcp | drain --id <id> | wake --id <id>)"""
 
 def main(argv):
     if not argv:
@@ -3050,8 +5989,6 @@ def main(argv):
     if cmd == "remote":  return setup_remote(force=("--force" in rest or "-f" in rest))
     if cmd == "drain":   return cli_drain(rest)
     if cmd == "wake":    return cli_wake(rest)        # SessionStart revive hook: force-deliver on resume
-    if cmd == "picker-check": return cli_picker_check(rest)   # romp resume: surface a session stuck on the resume picker
-    if cmd == "prune":   _kernel_post("/reconcile-peers", {}); return 0   # tmux session-closed + after-rename hooks → kernel reconciles the chips
     if cmd == "sweep":   _sweep_orphans(); return 0      # bounce orphaned mail (also runs in the monitor)
     if cmd == "retry":   _retry_pending(); return 0      # re-deliver deferred/stranded mail (also runs every RETRY_INTERVAL)
     if cmd in ("-h", "--help", "help"):

@@ -6,7 +6,7 @@ connects. Source pins on build_session + the SDK backend."""
 import inspect
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -17,7 +17,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_efr", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_efr", os.path.join(BIN, "romp-kernel"))
 BACKEND_SRC = open(os.path.join(BIN, "romp_sdk_backend.py")).read()
 
 
@@ -58,8 +58,7 @@ class EffortReconnect(unittest.TestCase):
         self.assertIn("write_sdk_default(self.state_dir, effort=value)", BACKEND_SRC)
         # …and the seed round-trips through the defaults store (behavioral, hermetic state dir)
         import tempfile as _tf
-        from importlib.machinery import SourceFileLoader as _SFL
-        sb = _SFL("romp_sdk_backend_efr", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+        sb = load_source("romp_sdk_backend_efr", os.path.join(BIN, "romp_sdk_backend.py"))
         td = _tf.mkdtemp()
         sb.write_sdk_default(td, effort="ultracode")
         d = sb.read_sdk_defaults(td)
@@ -74,11 +73,11 @@ class EffortReconnect(unittest.TestCase):
         # whose ultracode sessions seemed to downgrade at random). The whole setter family goes
         # through _update_reg now.
         for pin in ('self._update_reg(sid, effort=value, effortPending=True)',
-                    'self._update_reg(sid, auth=value, authPending=True, apiKeyAuth=None)',
+                    'self._update_reg(sid, auth=side, authLogin=login_id, authPending=True, apiKeyAuth=None)',
                     'self._update_reg(sid, mode=mode)',
-                    'self._update_reg(sid, fast=(value == "on"), liveFast=value)',
+                    'self._update_reg(sid, fast=(value == "on"), fastOff=(value == "off"), fastRuleRefused="", liveFast=value)',   # + the explicit Slow and the switch's refusal memory (2026-09-17)
                     'self._update_reg(sid, name=new_name,',   # + the rename ping rides the same locked RMW when owed (2026-08-24/25)
-                    'self._update_reg(sid, model=value, modelPending=bool(s._model_pending))',
+                    'self._update_reg(sid, model=value, modelPending=pending)',   # the live model write
                     'self._update_reg(sid, model=value, liveModel=_alias_label(value), modelPending=False)'):
             self.assertIn(pin, BACKEND_SRC)
 

@@ -2,12 +2,12 @@
 """Per-session billing (the user 2026-08-08): some sessions on the Claude login, some on the API key.
 
 The mechanics under test:
-  * The manager environment's ANTHROPIC_API_KEY is CLAIMED OUT of os.environ once per process
-    (work_api_key) — the SDK's transport hands the CLI this process's env wholesale, so an ambient
-    key would bill every session regardless of its pick. Injection is explicit per session: _options
-    adds the key only when the session's effective auth says so, and a login session launches with a
-    genuinely clean env (the CLI treats even an EMPTY var as key-mode-without-a-key and refuses with
-    "Not logged in" — verified live 2026-08-08 — so removal is the only correct strip).
+  * romp holds no API key (2026-09-08): the key side of the pick is Claude Code's own apiKeyHelper,
+    read from its settings and never run for a launch. _options injects no key for any pick; a LOGIN
+    pick disables the box's helper for that one process through the per-session settings layer
+    ("apiKeyHelper": "", the value the CLI takes as unset, verified on 2.1.257), because in the CLI's
+    precedence the helper outranks every login form. A launched session's environment never carries
+    ANTHROPIC_API_KEY.
   * set_auth mirrors set_effort: persist + authPending + reconnect to apply (auth is connect-time).
   * The CLI's init apiKeySource is compared against what _options actually launched with — a landing
     on the wrong side is a session billing the wrong account, flagged into the problems ring.
@@ -16,10 +16,13 @@ The mechanics under test:
     cost is dollars nobody is billed.
   * An auth failure ("Not logged in", a 401 key) is an ON-YOU api-error class (authErr): retrying
     re-presents the same dead credential forever, so it blocks visibly and is never auto-retried.
-  * Availability gates every selector: the kernel offers the choice only when BOTH a signed-in login
-    (_claude_account) and a manager-env key exist — one choice is no choice, the control disappears.
+  * Availability is REPORTED, never a gate (the user 2026-09-08: the picker never disappears): the
+    status payload carries authAvail with the reason for any side the box cannot bill, the Billing menu
+    lists both and greys that one, and a pick the box cannot bill falls at launch to the side that
+    exists (a stale login pick on a box with no login launches keyed; a key pick on a helper-less box
+    with a login launches on the login), said once per session, with authPickUnavailable in status.
 
-Synthetic sids/paths only; no real key material (the fixture key is an invented string).
+Synthetic sids/paths only; the fixture helper prints an invented string no validator would take for a key.
 """
 import json
 import os
@@ -27,7 +30,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -37,66 +40,100 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-sb = SourceFileLoader("romp_sdk_backend_auth", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
-km = SourceFileLoader("romp_kernel_auth", os.path.join(BIN, "romp-kernel")).load_module()
+os.environ.pop("ROMP_SUPERVISED", None)  # a romp-managed shell inherits it; these tests stage the unsupervised startup-key case
+# The kernel's boot check reads the manager env file, and the helper lives in Claude Code's settings:
+# floor both, so a bare (non-pytest) run on a configured box reads neither the developer's service.env
+# nor their real settings. conftest.py holds the same floors for pytest.
+os.environ["ROMP_SERVICE_ENV_FILE"] = os.path.join(os.environ["XDG_STATE_HOME"], "no-such-service.env")
+os.environ["ROMP_SERVICE_ENV"] = os.environ["ROMP_SERVICE_ENV_FILE"]
+os.environ["CLAUDE_CONFIG_DIR"] = tempfile.mkdtemp()
+for _n in ("ANTHROPIC_API_KEY", "ROMP_API_KEY_CMD", "ROMP_API_KEY_REF"):
+    os.environ.pop(_n, None)
+sb = load_source("romp_sdk_backend_auth", os.path.join(BIN, "romp_sdk_backend.py"))
+km = load_source("romp_kernel_auth", os.path.join(BIN, "romp-kernel"))
 
-FAKE_KEY = "sk-ant-api03-TESTFIXTUREKEYNOTREAL-wxyz"
+FAKE_KEY = "synthetic-helper-output-auth"           # what the fixture helper prints: not key-shaped on purpose
+
+
+def _stage_helper(cfg, out=FAKE_KEY):
+    """A fixture apiKeyHelper in a synthetic user settings.json under `cfg`: read for availability, run
+    only by the kernel-side probes that ask for the key."""
+    script = Path(cfg) / "helper.sh"
+    script.write_text("#!/bin/sh\necho '%s'\n" % out)
+    script.chmod(0o700)
+    (Path(cfg) / "settings.json").write_text(json.dumps({"apiKeyHelper": str(script)}))
 
 
 class _Keyed(unittest.TestCase):
-    """Base: a backend whose process env carried the fixture key (the stash is module-global and
-    once-per-process, so each test re-arms it explicitly and restores the world after)."""
+    """Base: a backend on a box whose Claude Code settings carry a fixture apiKeyHelper (KEY truthy), or
+    none (KEY ""). The settings live in a per-test CLAUDE_CONFIG_DIR, so no test reads a real one."""
 
     KEY = FAKE_KEY
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        self._env_before = os.environ.pop("ANTHROPIC_API_KEY", None)
+        self.cfg = tempfile.mkdtemp()
+        self._cfg_before = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = self.cfg
         # These classes pin the UNDECLARED launch-intent comparison: a box-wide declaration in the
         # runner's shell (a deployed box exports it, and kernel-spawned sessions inherit it) must
         # not flip the mismatch pins.
         self._exp_auth_before = os.environ.pop("ROMP_EXPECTED_AUTH", None)
-        self._stash_before = sb._WORK_KEY
-        sb._WORK_KEY = None                       # force a fresh claim from the env
         # the key-account fast-mode probe is a real HTTPS GET — never from a test. Cases that
         # exercise the policy arm their own answers (FastOrgPermissionFollowsBilling).
         self._fetch_before = sb._fetch_key_fast_org
         sb._fetch_key_fast_org = lambda key: None
         sb._FAST_ORG_VERDICTS.clear()
+        sb._cred.forget_helper_key()
+        self._managed_before = sb._cred.managed_settings_path         # a bare run must not read the box's managed file
+        sb._cred.managed_settings_path = lambda: os.path.join(self.cfg, "no-managed-settings.json")
+        self._tokens_before = sb._STARTUP_AUTH_ENV
+        sb._STARTUP_AUTH_ENV = {}                                     # no login token claimed unless a test stages one
         if self.KEY:
-            os.environ["ANTHROPIC_API_KEY"] = self.KEY
+            _stage_helper(self.cfg, self.KEY)
         self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
 
     def tearDown(self):
-        sb._WORK_KEY = self._stash_before
         sb._fetch_key_fast_org = self._fetch_before
         sb._FAST_ORG_VERDICTS.clear()
-        os.environ.pop("ANTHROPIC_API_KEY", None)
-        if self._env_before is not None:
-            os.environ["ANTHROPIC_API_KEY"] = self._env_before
+        sb._cred.forget_helper_key()
+        sb._cred.managed_settings_path = self._managed_before
+        sb._STARTUP_AUTH_ENV = self._tokens_before
+        os.environ["CLAUDE_CONFIG_DIR"] = self._cfg_before
         os.environ.pop("ROMP_EXPECTED_AUTH", None)
         if self._exp_auth_before is not None:
             os.environ["ROMP_EXPECTED_AUTH"] = self._exp_auth_before
+
+    def _no_helper(self):
+        """Remove the fixture helper: the box now has no key side."""
+        try:
+            os.unlink(os.path.join(self.cfg, "settings.json"))
+        except OSError:
+            pass
+        sb._cred.forget_helper_key()
+
+    def _settings_of(self, kw):
+        """The per-session settings payload a launch handed the CLI, {} when none."""
+        p = kw.get("settings")
+        return json.loads(Path(p).read_text()) if p else {}
 
     def _sess(self, n=1, **reg):
         return sb.SdkSession(self.be, {"sid": "11111111-2222-3333-4444-%012d" % n,
                                        "name": "s%d" % n, "cwd": "/tmp", **reg})
 
 
-class WorkKeyStash(_Keyed):
-    def test_the_key_is_claimed_out_of_the_environment_exactly_once(self):
-        self.assertEqual(self.be.work_key, FAKE_KEY)
-        self.assertNotIn("ANTHROPIC_API_KEY", os.environ,
-                         "an ambient key would bill EVERY session — the transport merges options.env "
-                         "over this process's env, so the strip must happen here")
-        # a re-constructed backend (the WS handler's lazy construction, tests) still finds it
-        be2 = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
-        self.assertEqual(be2.work_key, FAKE_KEY)
+class HelperAvailability(_Keyed):
+    """The key side exists exactly when Claude Code's settings carry a helper; romp never holds the value."""
 
-    def test_an_empty_var_counts_as_no_key(self):
-        sb._WORK_KEY = None
-        os.environ["ANTHROPIC_API_KEY"] = ""
-        self.assertEqual(sb.work_api_key(), "")
+    def test_a_configured_helper_makes_the_key_side_available_without_running_it(self):
+        self.assertTrue(self.be.key_available)
+        self.assertNotIn("ANTHROPIC_API_KEY", os.environ, "no key ever enters this process's environment")
+        self.assertFalse(hasattr(self.be, "work_key"), "the backend holds no key attribute at all")
+
+    def test_no_helper_means_no_key_side(self):
+        self._no_helper()
+        self.assertFalse(self.be.key_available)
+        self.assertEqual(self.be.default_auth({}), "login")
 
 
 class EffectiveAuth(_Keyed):
@@ -113,10 +150,10 @@ class EffectiveAuth(_Keyed):
 class EffectiveAuthKeyless(_Keyed):
     KEY = ""
 
-    def test_everything_falls_to_login_when_no_key_exists(self):
+    def test_an_explicit_key_pick_never_becomes_login_when_no_key_exists(self):
         self.assertEqual(self._sess(1).effective_auth(), "login")
-        self.assertEqual(self._sess(2, auth="key").effective_auth(), "login",
-                         "'key' with nothing to inject launches on the login — loudly, via _options")
+        self.assertEqual(self._sess(2, auth="key").effective_auth(), "key")
+        self.assertEqual(self.be.default_auth({"auth": "key"}), "key")
 
 
 class _OptionsHarness(_Keyed):
@@ -132,7 +169,9 @@ class _OptionsHarness(_Keyed):
         self._fake_sdk = "claude_agent_sdk" not in sys.modules and not sb.sdk_importable()
         if self._fake_sdk:
             fake = types.ModuleType("claude_agent_sdk")
-            fake.HookMatcher = lambda **kw: kw
+            # an attribute-bearing stand-in, like the SDK's dataclass: with hosts on (the default since T348) the
+            # options loop sets each matcher's `timeout` to the host's hook bound, which a plain dict refused
+            fake.HookMatcher = lambda **kw: types.SimpleNamespace(**kw)
             sys.modules["claude_agent_sdk"] = fake
 
     def tearDown(self):
@@ -146,12 +185,18 @@ class _OptionsHarness(_Keyed):
 
 
 class OptionsInjection(_OptionsHarness):
-    def test_a_key_session_gets_the_key_and_a_login_session_a_clean_env(self):
+    def test_no_pick_ever_puts_a_key_in_the_environment_and_a_login_pick_disables_the_helper(self):
         kw = self._options_kw(self._sess(1, auth="key"))
-        self.assertEqual(kw["env"].get("ANTHROPIC_API_KEY"), FAKE_KEY)
+        self.assertNotIn("ANTHROPIC_API_KEY", kw["env"], "a key pick launches plain: the CLI runs the helper itself")
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw), "and nothing disables it")
         kw2 = self._options_kw(self._sess(2, auth="login"))
-        self.assertNotIn("ANTHROPIC_API_KEY", kw2["env"],
-                         "removal, not blanking: an empty var reads as key-mode-without-a-key")
+        self.assertNotIn("ANTHROPIC_API_KEY", kw2["env"])
+        self.assertEqual(self._settings_of(kw2).get("apiKeyHelper"), "",
+                         "the login pick disables the box's helper for this one process (the CLI's precedence "
+                         "puts the helper above every login form)")
+        kw3 = self._options_kw(self._sess(3))
+        self.assertNotIn("ANTHROPIC_API_KEY", kw3["env"], "unpicked: the CLI decides, romp injects nothing")
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw3))
 
     def test_options_records_what_it_launched_with_for_the_init_check(self):
         s = self._sess(3, auth="key")
@@ -161,10 +206,443 @@ class OptionsInjection(_OptionsHarness):
         self._options_kw(s2)
         self.assertFalse(s2._launched_keyed)
 
-    def test_a_key_pick_with_no_key_is_a_logged_problem_not_a_silent_fall(self):
-        src = open(os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py")).read()
-        self.assertIn("session is set to the API key but the manager environment carries", src)
-        self.assertIn('ANTHROPIC_API_KEY=self.work_key', src)
+    def test_the_claimed_login_tokens_ride_every_launch_that_bills_the_login(self):
+        """The kernel claims ANTHROPIC_AUTH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN out of its environment at boot;
+        they ride a login pick AND an unpicked session on a box with no helper (its billing IS the login, and
+        the judges' login path restores the same tokens), never a key-billed launch (a bearer outranks the
+        helper). Review 2026-09-08: the first cut restored them for the explicit pick only."""
+        sb._STARTUP_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": "synthetic-login-token"}
+        kw = self._options_kw(self._sess(1, auth="login"))
+        self.assertEqual(kw["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), "synthetic-login-token", "a login pick")
+        kw = self._options_kw(self._sess(2))
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kw["env"], "unpicked on a helper box: the key, no bearer beside it")
+        kw = self._options_kw(self._sess(3, auth="key"))
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kw["env"], "a key pick")
+        self._no_helper()
+        kw = self._options_kw(self._sess(4))
+        self.assertEqual(kw["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), "synthetic-login-token",
+                         "unpicked on a helper-less box: the login is what it bills, so its token rides")
+        kw = self._options_kw(self._sess(5, auth="key"))
+        self.assertEqual(kw["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), "synthetic-login-token",
+                         "an explicit key pick with no helper falls to the login this box HAS (2026-09-08), so "
+                         "its token rides like any login launch")
+        self.be.login_ok = lambda: False
+        kw = self._options_kw(self._sess(6, auth="key"))
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kw["env"], "…and with no login either, the CLI decides: no bearer")
+        self.assertNotIn("ANTHROPIC_API_KEY", kw["env"])
+
+    def test_a_login_pick_cannot_apply_under_a_managed_helper_and_says_so(self):
+        """A managed helper outranks the per-session layer in the CLI's precedence, so a login pick could not
+        disable it: set_auth refuses with the reason, and a pick that predates the managed helper launches
+        KEYED (no suppression written, the launch honest about its side) and is said once per session, never
+        billed quietly (review 2026-09-08; per-session since the one-auth picker work the same day)."""
+        managed = os.path.join(self.cfg, "managed.json")
+        Path(managed).write_text(json.dumps({"apiKeyHelper": os.path.join(self.cfg, "helper.sh")}))
+        sb._cred.managed_settings_path = lambda: managed
+        sid = self.be.spawn("n", "/tmp")
+        self.assertFalse(self.be.set_auth(sid, "login"))
+        self.assertEqual(self.be.last_auth_refusal, sb._cred.WHY_MANAGED_HELPER)
+        rows = [p["text"] for p in self.be.problems(10) if "managed settings" in p["text"]]
+        self.assertEqual(len(rows), 1, "refused with the reason, in the problem ring")
+        s6, s7 = self._sess(6, auth="login"), self._sess(7, auth="login")
+        kw = self._options_kw(s6)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw), "the suppression could not apply: none written")
+        self.assertTrue(s6._launched_keyed, "the launch records the side it actually took")
+        self._options_kw(s6)   # a reconnect
+        self._options_kw(s7)
+        rows = [p["text"] for p in self.be.problems(20)
+                if "billing pick 'login' cannot apply" in p["text"] and "billing the API key" in p["text"]]
+        self.assertEqual(len(rows), 2, "said once per SESSION at launch, not per reconnect")
+        self.assertIn("managed settings", rows[0])
+
+    def test_a_key_pick_with_no_helper_anywhere_leaves_the_cli_to_decide(self):
+        """An explicit key pick on a box with no helper AND no login launches plain and records that it MEANT
+        the key (_launched_unkeyed_pick), so a login landing rings in the per-init check as the pick
+        contradicted. (With a login present the pick falls to it instead: PickFallsToTheAvailableSide.)"""
+        self._no_helper()
+        self.be.login_ok = lambda: False
+        s = self._sess(3, auth="key")
+        kw = self._options_kw(s)
+        self.assertNotIn("ANTHROPIC_API_KEY", kw["env"], "nothing injected, not an empty var either")
+        self.assertFalse(s._launched_keyed)
+        self.assertTrue(s._launched_unkeyed_pick)
+        self.assertEqual(s._pick_fell_said, "", "nothing to fall to: no fall, no notice")
+
+
+class UnpickedFollowsTheExplicitDefaultAtLaunch(_OptionsHarness):
+    def test_the_launch_suppresses_the_helper_for_an_unpicked_session_once_the_default_is_login(self):
+        """The round-2 review: the explicit default reached an unpicked session's STATUS but not its LAUNCH (the
+        options read sess.auth, empty when unpicked, so the helper ran and the turn billed the key while the flyout
+        said Login). The launch now resolves the side by the status's rule."""
+        s = self._sess(7)                                        # minted before any default: no pick of its own
+        kw0 = self._options_kw(s)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw0), "no default: the launch stays plain, the CLI decides")
+        self.assertTrue(s._launched_keyed, "…and on a helper box that means the key")
+        self.assertTrue(self.be.set_auth_default("login"))
+        kw = self._options_kw(s)
+        self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), "", "the explicit login default suppresses the helper for the next connect")
+        self.assertFalse(s._launched_keyed, "the launch means the login, as the status says")
+        self.assertEqual(s.effective_auth(), "login")
+        self.assertNotIn("ANTHROPIC_API_KEY", kw["env"])
+        self.assertFalse([p for p in self.be.problems(10) if "cannot apply" in p["text"]], "following a default is no fall: no problem row")
+        self.assertTrue(self.be.set_auth_default("key"))
+        kw2 = self._options_kw(s)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw2), "an explicit key default: the helper runs")
+        self.assertTrue(s._launched_keyed)
+        self.assertTrue(self.be.set_auth_default("auto"))
+        kw3 = self._options_kw(s)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw3), "automatic again: plain")
+        # a session with its own pick is untouched by the default
+        p = self._sess(8, auth="login")
+        self.assertTrue(self.be.set_auth_default("key"))
+        self.assertEqual(self._settings_of(self._options_kw(p)).get("apiKeyHelper"), "", "its own login pick still suppresses the helper")
+
+
+class PickFallsToTheAvailableSide(_OptionsHarness):
+    """The user 2026-09-08: no login on the box means everything bills the key, never a dead login — and
+    the mirror. A pick this box cannot bill launches on the side it can, says so once per session in the
+    problem ring, and stays the PICK in status with authPickUnavailable beside it. A box with both keeps
+    every pre-existing launch shape (the pins in OptionsInjection run on that box)."""
+
+    def test_a_stale_login_pick_on_a_box_with_no_login_launches_keyed_and_says_so_once(self):
+        self.be.login_ok = lambda: False
+        s = self._sess(1, auth="login")
+        kw = self._options_kw(s)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw), "no helper suppression: the helper runs, the key bills")
+        self.assertNotIn("ANTHROPIC_API_KEY", kw["env"])
+        self.assertTrue(s._launched_keyed, "the per-init check expects the keyed landing: no false alarm")
+        self.assertFalse(s._launched_unkeyed_pick)
+        sb._STARTUP_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": "synthetic-login-token"}
+        kw = self._options_kw(s)   # the reconnect
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kw["env"], "a keyed launch carries no login bearer")
+        rows = [p["text"] for p in self.be.problems(20) if "billing pick 'login' cannot apply" in p["text"]]
+        self.assertEqual(len(rows), 1, "once per session, not per reconnect")
+        self.assertIn(sb._cred.WHY_NO_LOGIN, rows[0])
+        self.assertIn("billing the API key", rows[0])
+        self.assertEqual(s.effective_auth(), "login", "the PICK is kept: the menu check-marks it")
+        self.assertEqual(self.be.pick_unavailable("login"), "login")
+        self.assertEqual(self.be.pick_unavailable(""), "", "unpicked is never 'unavailable'")
+        self.assertEqual(self.be.pick_unavailable("key"), "")
+
+    def test_a_key_pick_on_a_helperless_box_with_a_login_launches_on_the_login(self):
+        self._no_helper()
+        sb._STARTUP_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": "synthetic-login-token"}
+        s = self._sess(2, auth="key")
+        kw = self._options_kw(s)
+        self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), "", "a login launch, suppression and all")
+        self.assertEqual(kw["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), "synthetic-login-token", "the login's bearer rides")
+        self.assertFalse(s._launched_keyed)
+        self.assertFalse(s._launched_unkeyed_pick, "not 'the CLI decides': the launch chose the login, so a "
+                                                   "login landing is quiet in the per-init check")
+        self._options_kw(s)
+        rows = [p["text"] for p in self.be.problems(20) if "billing pick 'key' cannot apply" in p["text"]]
+        self.assertEqual(len(rows), 1)
+        self.assertIn(sb._cred.WHY_NO_HELPER, rows[0])
+        self.assertIn("billing the login", rows[0])
+        self.assertEqual(s.effective_auth(), "key", "the PICK is kept")
+        self.assertEqual(self.be.pick_unavailable("key"), "key")
+
+    def test_a_box_with_both_changes_nothing(self):
+        for n, a, keyed, helper in ((1, "login", False, ""), (2, "key", True, None), (3, "", True, None)):
+            s = self._sess(n, auth=a) if a else self._sess(n)
+            kw = self._options_kw(s)
+            self.assertEqual(s._launched_keyed, keyed, a or "unpicked")
+            self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), helper, a or "unpicked")
+            self.assertEqual(s._pick_fell_said, "")
+        self.assertEqual([p for p in self.be.problems(20) if "cannot apply" in p["text"]], [])
+        self.assertEqual(self.be.pick_unavailable("login"), "")
+        self.assertEqual(self.be.pick_unavailable("key"), "")
+
+    def test_the_status_rows_carry_the_unavailable_pick_live_and_dormant(self):
+        self.be.login_ok = lambda: False
+        sid = self.be.spawn("n", "/tmp", auth="login")   # an EXPLICIT picker pick still lands (spawn)
+        s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
+        snap = s.snapshot()
+        self.assertEqual((snap["auth"], snap["authPickUnavailable"]), ("login", "login"))
+        row = self.be.live_sessions()[sid]
+        self.assertEqual((row["auth"], row["authPickUnavailable"]), ("login", "login"), "the dormant twin agrees")
+        self.be.login_ok = lambda: True
+        self.assertEqual(s.snapshot()["authPickUnavailable"], "", "a login signed in later clears it on the next push")
+        self.assertEqual(self.be.live_sessions()[sid]["authPickUnavailable"], "")
+
+
+class CannotTell(_OptionsHarness):
+    """A side whose availability cannot be read just now never moves a launch (review 2026-09-09): an unreadable
+    or non-JSON operator settings file (Claude Code rewrites it) or an unreadable ~/.claude.json reads as
+    cannot-tell on every path that used to raise or to read as the missing side; the launch keeps the pick as
+    is and says so once per session."""
+
+    def _break_settings(self):
+        Path(self.cfg, "settings.json").write_text("{not json")     # mid-rewrite
+        sb._cred.forget_helper_key()
+
+    def test_an_unreadable_settings_file_is_cannot_tell_for_both_sides_and_raises_nowhere(self):
+        self._break_settings()
+        self.assertEqual(self.be.key_state(), "unknown")
+        self.assertFalse(self.be.key_available, "the seed and the judges' default still read it as no helper")
+        self.assertEqual(self.be.auth_unavailable_why("key"), "", "not 'no helper': cannot tell")
+        self.assertEqual(self.be.auth_unavailable_why("login"), "", "not 'managed': cannot tell")
+        self.assertEqual((self.be.pick_unavailable("login"), self.be.pick_unavailable("key")), ("", ""))
+        self.assertEqual((self.be.pick_fall("login"), self.be.pick_fall("key")), ("", ""))
+        snap = self._sess(1, auth="login").snapshot()                 # raised CredentialError out of helper_source before
+        self.assertEqual((snap["authPickUnavailable"], snap["authPickFell"]), ("", ""))
+        sid = self.be.spawn("n", "/tmp", auth="key")
+        row = self.be.live_sessions()[sid]
+        self.assertEqual((row["authPickUnavailable"], row["authPickFell"]), ("", ""))
+        rows = [p["text"] for p in self.be.problems(20) if "cannot tell which side this box bills" in p["text"]]
+        self.assertEqual(len(rows), 1, "the unreadable settings are said once per process")
+
+    def test_a_key_pick_launches_as_picked_and_says_so_once_when_the_settings_cannot_be_read(self):
+        self._break_settings()
+        s = self._sess(2, auth="key")
+        kw = self._options_kw(s)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw), "no login suppression: the pick stands")
+        self.assertEqual(s._pick_fell_said, "", "no fall")
+        self._options_kw(s)                                           # a reconnect
+        rows = [p["text"] for p in self.be.problems(20) if "launching with the pick as is" in p["text"]]
+        self.assertEqual(len(rows), 1, "once per session, not per reconnect")
+        self.assertIn("'key'", rows[0])
+
+    def test_a_login_pick_launches_as_picked_when_the_settings_cannot_be_read(self):
+        self._break_settings()
+        s = self._sess(3, auth="login")
+        kw = self._options_kw(s)
+        self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), "", "the login launch, suppression and all")
+        self.assertFalse(s._launched_keyed)
+        rows = [p["text"] for p in self.be.problems(20) if "launching with the pick as is" in p["text"]]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("'login'", rows[0])
+
+    def test_an_unreadable_account_file_never_falls_a_login_pick(self):
+        self.be.login_ok = lambda: None                               # the kernel's probe: ~/.claude.json mid-rewrite
+        self.assertEqual(self.be.auth_unavailable_why("login"), "")
+        self.assertEqual(self.be.pick_fall("login"), "", "a helper is configured, but cannot-tell never falls")
+        s = self._sess(4, auth="login")
+        kw = self._options_kw(s)
+        self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), "", "launched on the login as picked")
+        self.assertEqual(s._pick_fell_said, "")
+        rows = [p["text"] for p in self.be.problems(20) if "launching with the pick as is" in p["text"]]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("~/.claude.json", rows[0])
+        self.be.login_ok = lambda: False                              # the read heals and says: no account
+        self.assertEqual(self.be.pick_fall("login"), "key", "now the fall")
+
+    def test_a_key_pick_never_falls_onto_a_login_that_cannot_be_read(self):
+        self._no_helper()
+        self.be.login_ok = lambda: None
+        self.assertEqual(self.be.pick_unavailable("key"), "key", "the helper is known missing")
+        self.assertEqual(self.be.pick_fall("key"), "", "but the login is cannot-tell: no fall")
+        s = self._sess(5, auth="key")
+        kw = self._options_kw(s)
+        self.assertNotIn("apiKeyHelper", self._settings_of(kw))
+        self.assertTrue(s._launched_unkeyed_pick, "as picked: the CLI decides, and the per-init check knows the pick")
+
+
+class TheFallIsCarriedInStatus(_OptionsHarness):
+    """authPickFell says which side a pick this box cannot bill actually fell to, "" when nothing did; the tab
+    hover and the Billing sub-line read it instead of inferring a fall from authPickUnavailable alone (review
+    2026-09-09: on a box with neither side the hover claimed a fall that never happened)."""
+
+    def test_a_login_pick_with_a_helper_falls_and_says_key(self):
+        self.be.login_ok = lambda: False
+        snap = self._sess(1, auth="login").snapshot()
+        self.assertEqual((snap["authPickUnavailable"], snap["authPickFell"]), ("login", "key"))
+
+    def test_a_login_pick_on_a_box_with_neither_side_is_unavailable_but_fell_nowhere(self):
+        self._no_helper()
+        self.be.login_ok = lambda: False
+        s = self._sess(2, auth="login")
+        snap = s.snapshot()
+        self.assertEqual((snap["authPickUnavailable"], snap["authPickFell"]), ("login", ""))
+        kw = self._options_kw(s)
+        self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), "", "launched as picked: the CLI decides")
+        self.assertEqual(s._pick_fell_said, "", "no fall, no fall notice")
+        sid = self.be.spawn("n", "/tmp", auth="login")
+        row = self.be.live_sessions()[sid]
+        self.assertEqual((row["authPickUnavailable"], row["authPickFell"]), ("login", ""), "the dormant twin agrees")
+
+    def test_a_key_pick_on_a_helperless_box_with_a_login_says_login(self):
+        self._no_helper()
+        self.be.login_ok = lambda: True
+        self.assertEqual(self._sess(3, auth="key").snapshot()["authPickFell"], "login")
+
+    def test_the_options_and_the_status_decide_the_same_way(self):
+        # the launch's side IS pick_fall's answer: one decision, two readers
+        self.be.login_ok = lambda: False
+        s = self._sess(4, auth="login")
+        self._options_kw(s)
+        self.assertTrue(s._launched_keyed)
+        self.assertEqual(self.be.pick_fall("login"), "key")
+
+    def test_the_webview_reads_the_carried_fall_on_both_surfaces(self):
+        src = (Path(HERE).parent / "ui" / "webview" / "render.ts").read_text()
+        self.assertIn("authPickFell?: string;", src)
+        self.assertIn("function authFellTo(st: Status): string", src)
+        self.assertIn("authFellTo(s.status)", src, "the tab hover")
+        self.assertIn("authFellTo(st)", src, "the Billing sub-line")
+
+
+class AccountReadStates(unittest.TestCase):
+    """~/.claude.json names a signed-in account ("ok"), names none ("none"), or cannot be read just now
+    ("unreadable": a stat error, or bytes that are not JSON during Claude Code's non-atomic rewrite). A failed
+    read is never cached against the mtime, and the backend's probe reads it as cannot-tell (None)."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self._home = os.environ.get("HOME")
+        os.environ["HOME"] = self.home
+        self._saved = dict(km._ACCT_CACHE)
+        km._ACCT_CACHE.update({"mtime": -1.0, "val": "", "label": "", "state": "none"})
+
+    def tearDown(self):
+        if self._home is not None:
+            os.environ["HOME"] = self._home
+        km._ACCT_CACHE.update(self._saved)
+
+    def _write(self, text, t):
+        p = Path(self.home, ".claude.json")
+        p.write_text(text)
+        os.utime(p, (t, t))                                           # a distinct mtime per write, whatever the clock does
+
+    def test_the_three_states_and_no_caching_of_a_failed_read(self):
+        self.assertEqual(km._claude_account_state(), "none", "no file")
+        self._write(json.dumps({"oauthAccount": {"accountUuid": "11111111-2222-3333-4444-555555555555",
+                                                 "emailAddress": "user@example.com"}}), 1_800_000_000)
+        self.assertEqual(km._claude_account_state(), "ok")
+        self.assertTrue(km._claude_account())
+        self.assertEqual(km._claude_account_label(), "user@example.com")
+        self._write('{"oauthAccount": {"accountUu', 1_800_000_001)    # mid-rewrite
+        self.assertEqual(km._claude_account_state(), "unreadable")
+        self.assertEqual((km._claude_account(), km._claude_account_label()), ("", ""))
+        self.assertEqual(km._ACCT_CACHE["mtime"], -1.0, "a failed read is not cached against the mtime: the next read retries")
+        self._write(json.dumps({"oauthAccount": {"accountUuid": "11111111-2222-3333-4444-555555555555"}}), 1_800_000_001)
+        self.assertEqual(km._claude_account_state(), "ok", "the same mtime, re-read: the rewrite completed")
+        self._write(json.dumps({}), 1_800_000_002)
+        self.assertEqual(km._claude_account_state(), "none", "a file with no account")
+
+    def test_the_backends_probe_is_tri_state(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn('_sdk_backend.login_ok = lambda: (None if _claude_account_state() == "unreadable" else bool(_claude_account()))', src)
+
+    def test_the_picker_treats_unreadable_as_available_and_keeps_a_remembered_login_pick(self):
+        saved = (km._sdk, km._claude_account, km._claude_account_label, km._claude_account_state, km.jd._cred.helper_source)
+        p = km.jd.STATE / "sdk-defaults.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            km._sdk = lambda: type("B", (), {"key_available": True})()
+            km._claude_account = lambda: ""
+            km._claude_account_label = lambda: ""
+            km._claude_account_state = lambda: "unreadable"
+            km.jd._cred.helper_source = lambda: "user"
+            a = km._auth_avail()
+            self.assertTrue(a["login"], "cannot tell is not 'no login'")
+            self.assertNotIn("loginWhy", a)
+            p.write_text(json.dumps({"auth": "login"}))
+            self.assertEqual(km._auth_avail()["default"], "login", "a remembered login pick does not fall on a read failure")
+            km._claude_account_state = lambda: "none"
+            self.assertEqual(km._auth_avail()["default"], "key", "…and falls once the read says: no account")
+            self.assertEqual(km._auth_avail()["loginWhy"], km.jd._cred.WHY_NO_LOGIN)
+        finally:
+            (km._sdk, km._claude_account, km._claude_account_label, km._claude_account_state, km.jd._cred.helper_source) = saved
+            p.unlink(missing_ok=True)
+
+    def test_an_unreadable_settings_file_does_not_read_as_managed_in_the_picker(self):
+        saved = (km._sdk, km._claude_account, km._claude_account_label, km._claude_account_state, km.jd._cred.helper_source)
+        try:
+            km._sdk = lambda: type("B", (), {"key_available": False})()
+            km._claude_account = lambda: "aaaaaaaaaaaa"
+            km._claude_account_label = lambda: "user@example.com"
+            km._claude_account_state = lambda: "ok"
+
+            def boom():
+                raise km.jd._cred.CredentialError("Claude Code settings file is not valid JSON: x")
+            km.jd._cred.helper_source = boom
+            a = km._auth_avail()                                      # used to raise out of the picker's reply
+            self.assertTrue(a["login"])
+            self.assertNotIn("loginWhy", a)
+        finally:
+            (km._sdk, km._claude_account, km._claude_account_label, km._claude_account_state, km.jd._cred.helper_source) = saved
+
+
+class AvailabilityOncePerCycle(unittest.TestCase):
+    """build_session asks for the availability half per session per push; inside a pusher cycle it is computed
+    once (the cycle's _live_scope memo), outside one it is fresh (review 2026-09-09: each answer re-read
+    sdk-defaults.json and both operator settings files)."""
+
+    def test_one_compute_per_cycle_fresh_outside(self):
+        calls, real = [], km._auth_avail
+        km._auth_avail = lambda: (calls.append(1), {"login": True, "key": False, "acct": "", "default": "login",
+                                                    "keyWhy": km.jd._cred.WHY_NO_HELPER})[1]
+        try:
+            km._live_scope.auth = {}                                  # a cycle opens
+            a = km._auth_avail_status()
+            b = km._auth_avail_status()
+            self.assertEqual(len(calls), 1, "one compute for the cycle")
+            self.assertEqual(a, b)
+            self.assertEqual(a, {"login": True, "key": False, "keyWhy": km.jd._cred.WHY_NO_HELPER, "default": "login"}, "the status half, with the machine default since T380 (this stub of _auth_avail sends no explicit flag)")
+            a["login"] = False
+            self.assertTrue(km._auth_avail_status()["login"], "a caller's mutation does not leak into the memo")
+            km._live_scope.auth = None                                # the cycle closes
+            km._auth_avail_status()
+            km._auth_avail_status()
+            self.assertEqual(len(calls), 3, "outside a cycle: fresh every time")
+        finally:
+            km._auth_avail = real
+            km._live_scope.auth = None
+
+    def test_the_cycle_opens_and_closes_the_memo(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn("_live_scope.auth = {}", src)
+        i = src.index("_live_scope.auth = {}")
+        self.assertIn("_live_scope.auth = None", src[i:], "reset in the cycle's finally")
+
+
+class FallbackBothWays(_Keyed):
+    """The default and a remembered pick fall to the side that exists, in both directions."""
+
+    def test_default_auth_is_the_side_that_exists(self):
+        self.assertEqual(self.be.default_auth({}), "key", "a helper: the key, whatever the login")
+        self.be.login_ok = lambda: False
+        self.assertEqual(self.be.default_auth({}), "key", "…and with no login, still the key")
+        self.assertEqual(self.be.fallback_auth(), "key")
+        self._no_helper()
+        self.be.login_ok = lambda: True
+        self.assertEqual(self.be.default_auth({}), "login", "no helper: the login")
+        self.assertEqual(self.be.default_auth({"auth": "login"}), "login")
+        self.be.login_ok = lambda: False
+        self.assertEqual(self.be.default_auth({"auth": "login"}), "login",
+                         "an explicit pick reads as picked: pick_unavailable says the launch fell")
+
+    def test_a_remembered_login_default_with_no_login_seeds_nothing_and_says_so_once(self):
+        sb.write_sdk_default(self.be.state_dir, auth="login")
+        self.be.login_ok = lambda: False
+        sid = self.be.spawn("n", "/tmp")
+        self.assertNotIn("auth", sb.read_reg(self.be.state_dir, sid), "unpicked: bills the key by the box's fallback")
+        self.assertEqual(self.be.default_auth(sb.read_reg(self.be.state_dir, sid)), "key")
+        self.be.spawn("m", "/tmp")
+        rows = [p["text"] for p in self.be.problems(20) if "remembered Billing pick is the login" in p["text"]]
+        self.assertEqual(len(rows), 1, "once per process")
+        self.assertIn(sb._cred.WHY_NO_LOGIN, rows[0])
+        # the mirror (review find 2026-09-07) still holds beside it
+        sb.write_sdk_default(self.be.state_dir, auth="key")
+        self._no_helper()
+        self.be.login_ok = lambda: True
+        sid = self.be.spawn("k", "/tmp")
+        self.assertNotIn("auth", sb.read_reg(self.be.state_dir, sid))
+        rows = [p["text"] for p in self.be.problems(20) if "remembered Billing pick is the API key" in p["text"]]
+        self.assertEqual(len(rows), 1)
+
+    def test_availability_names_the_reason_for_each_missing_side(self):
+        self.assertEqual(self.be.auth_avail(), {"login": True, "key": True})
+        self.be.login_ok = lambda: False
+        self.assertEqual(self.be.auth_avail(), {"login": False, "key": True, "loginWhy": sb._cred.WHY_NO_LOGIN})
+        self.be.login_ok = lambda: True
+        self._no_helper()
+        self.assertEqual(self.be.auth_avail(), {"login": True, "key": False, "keyWhy": sb._cred.WHY_NO_HELPER})
+        managed = os.path.join(self.cfg, "managed.json")
+        Path(managed).write_text(json.dumps({"apiKeyHelper": os.path.join(self.cfg, "helper.sh")}))
+        sb._cred.managed_settings_path = lambda: managed
+        self.assertEqual(self.be.auth_avail(), {"login": False, "key": True, "loginWhy": sb._cred.WHY_MANAGED_HELPER})
 
 
 class FastOrgPermissionFollowsBilling(_OptionsHarness):
@@ -175,15 +653,24 @@ class FastOrgPermissionFollowsBilling(_OptionsHarness):
     skips the CLI's wrong-account probe, a disabled one forces fast mode off."""
 
     def _env(self, answer, n=1):
-        sb._fetch_key_fast_org = lambda key: answer
+        self.asked = []
+        sb._fetch_key_fast_org = lambda key: self.asked.append(key) or answer
+        sb._cred.forget_helper_key()
         return self._options_kw(self._sess(n, auth="key"))["env"]
 
     def test_an_enabled_key_account_skips_the_clis_wrong_account_probe(self):
         env = self._env(True)
         self.assertEqual(env.get("CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK"), "1")
         self.assertNotIn("CLAUDE_CODE_DISABLE_FAST_MODE", env)
-        self.assertEqual(env.get("ANTHROPIC_API_KEY"), FAKE_KEY,
-                         "the skip rides WITH the key — same connect, same account")
+        self.assertEqual(self.asked, [FAKE_KEY], "the probe asks with the helper's own output, run in-process")
+        self.assertNotIn("ANTHROPIC_API_KEY", env, "and the value never reaches the session's environment")
+
+    def test_no_helper_means_no_probe_and_the_cli_default(self):
+        self._no_helper()
+        env = self._env(True)
+        self.assertEqual(self.asked, [], "nothing to ask with")
+        self.assertNotIn("CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK", env)
+        self.assertNotIn("CLAUDE_CODE_DISABLE_FAST_MODE", env)
 
     def test_a_disabled_key_account_forces_fast_mode_off(self):
         env = self._env(False)
@@ -245,17 +732,156 @@ class SetAuth(_Keyed):
         sid2 = self.be.spawn("m", "/tmp")
         self.assertEqual(sb.read_reg(self.be.state_dir, sid2).get("auth"), "login")
 
+    def test_the_machine_default_is_set_explicitly_and_a_session_pick_then_moves_it_no_more(self):
+        """T380 (the user 2026-09-12): the Billing flyout's Default group writes the seed every new session and every
+        session with no pick of its own launches on; a session with its own pick keeps it; once set explicitly the
+        per-session pick no longer seeds the default (before, the last pick did)."""
+        picked = self.be.spawn("p", "/tmp", auth="login")
+        self.assertTrue(self.be.set_auth_default("key"))
+        d = sb.read_sdk_defaults(self.be.state_dir)
+        self.assertEqual((d.get("auth"), d.get("authExplicit")), ("key", True))
+        self.assertEqual(sb.read_reg(self.be.state_dir, picked)["auth"], "login", "a session with its own pick is untouched")
+        self.assertEqual(sb.read_reg(self.be.state_dir, self.be.spawn("q", "/tmp")).get("auth"), "key", "a new session follows the default")
+        # a per-session pick is about that session now: the default stays where the user set it
+        sid = self.be.spawn("n", "/tmp")
+        self.assertTrue(self.be.set_auth(sid, "login"))
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("auth"), "key", "the explicit default is not moved by a session pick")
+        self.assertEqual(sb.read_reg(self.be.state_dir, sid)["auth"], "login")
+        self.assertTrue(self.be.set_auth_default("login"))
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("auth"), "login")
+        self.assertFalse(self.be.set_auth_default("credit-card"), "junk is not a side")
+        # Automatic (review): the flag and the seed clear, the helper rule holds again, and a session pick seeds once more
+        self.assertTrue(self.be.set_auth_default("auto"))
+        d = sb.read_sdk_defaults(self.be.state_dir)
+        self.assertEqual((d.get("auth"), d.get("authExplicit")), ("", False))
+        self.assertEqual(self.be.fallback_auth(), "key", "the helper rule again")
+        self.assertTrue(self.be.set_auth(sid, "key"))
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("auth"), "key", "a session pick seeds the default again once it is automatic")
+
+    def test_a_session_with_no_pick_of_its_own_follows_the_explicit_default_at_once(self):
+        """The review of the first cut: the default reached only NEW sessions while the flyout's note promised that
+        sessions with no pick follow it too. default_auth (a dormant reg) and effective_auth (a live session) read
+        the explicit seed when this box can bill it; the launch applies it next time; the marks agree at once."""
+        u = self.be.spawn("u", "/tmp")
+        reg = sb.read_reg(self.be.state_dir, u)
+        self.assertNotIn("auth", reg)
+        self.assertEqual(self.be.default_auth(reg), "key", "the helper rule before any explicit default")
+        live = sb.SdkSession(self.be, reg)
+        self.assertEqual(live.effective_auth(), "key")
+        self.assertTrue(self.be.set_auth_default("login"))
+        self.assertEqual(self.be.default_auth(reg), "login", "a dormant unpicked session follows the explicit default")
+        self.assertEqual(live.effective_auth(), "login", "…and a live one, in its status at once")
+        self.assertEqual(self.be.explicit_default_auth(), "login")
+        # the seed side this box cannot bill is not followed: the helper rule holds and the flyout greys that radio
+        self._no_helper()
+        self.assertTrue(self.be.set_auth_default("login"))
+        sb.write_sdk_default(self.be.state_dir, auth="key", authExplicit=True)   # a stale explicit key on a box that lost its helper
+        self.assertEqual(self.be.default_auth(reg), "login", "an explicit side this box cannot bill is not followed")
+        self.assertEqual(live.effective_auth(), "login")
+        # a session with its own pick is untouched by any of it
+        p = self.be.spawn("p", "/tmp", auth="login")
+        sb.write_sdk_default(self.be.state_dir, auth="key", authExplicit=True)
+        self.assertEqual(self.be.default_auth(sb.read_reg(self.be.state_dir, p)), "login")
+
+    def test_the_kernel_door_refuses_loudly_through_the_drive(self):
+        """The scoped arm's toast (review): a backend without the writer (Codex) is refused by name, a refused side
+        carries the backend's reason; neither raises inside the drive."""
+        sent = []
+        client = {"send": lambda s: sent.append(json.loads(s))}
+        saved = (km.Sessions.backend_for, km._kernel_knows, km._push_soon)
+        try:
+            km._kernel_knows = lambda sid: True
+            km._push_soon = lambda: None
+            class NoWriter:          # a backend that keeps no machine default
+                pass
+            km.Sessions.backend_for = staticmethod(lambda sid: NoWriter())
+            self.assertTrue(km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "login", "scope": "machine"}, client) is not False)
+            self.assertEqual(sent[-1]["type"], "warn")
+            self.assertIn("keeps no machine billing default", sent[-1]["text"])
+            class Refuser:
+                def set_auth_default(self, v): return False
+                def auth_unavailable_why(self, v): return "no apiKeyHelper configured"
+            km.Sessions.backend_for = staticmethod(lambda sid: Refuser())
+            km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "key", "scope": "machine"}, client)
+            self.assertEqual(sent[-1]["text"], "Couldn't set this machine's default billing: no apiKeyHelper configured.")
+            # a session-scoped "auto" (an older remote kernel's flyout would post it) is refused with a toast, never dropped (review)
+            km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "auto"}, client)
+            self.assertEqual(sent[-1]["type"], "warn")
+            self.assertIn("not for one session", sent[-1]["text"])
+            # a scoped STORED login (the user 2026-09-14: the Set default billing submenu offers every pick): the value
+            # reaches the machine-default writer, as a scoped "login" does, and never the per-session pick path
+            calls = []
+            class Recorder:
+                def set_auth_default(self, v): calls.append(("default", v)); return True
+                def set_auth(self, sid, v): calls.append(("session", v)); return True
+            km.Sessions.backend_for = staticmethod(lambda sid: Recorder())
+            parked = []
+            saved_park = km._set_auth_or_park
+            km._set_auth_or_park = lambda be, sid, v: (parked.append(v), True)[1]
+            try:
+                n_before = len(sent)
+                km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "login:0123456789ab", "scope": "machine"}, client)
+                self.assertEqual(calls, [("default", "login:0123456789ab")], "the stored login is written as the machine default")
+                self.assertEqual(len(sent), n_before, "no toast: the writer took it")
+                self.assertEqual(parked, [], "and the value never reaches the per-session pick path")
+                # a scoped value that is no billing choice at all is still said, never dropped, and reaches no writer
+                calls.clear()
+                km._drive({"type": "setAuth", "id": "11111111-2222-3333-4444-555555555555", "value": "credit-card", "scope": "machine"}, client)
+            finally:
+                km._set_auth_or_park = saved_park
+            self.assertEqual(sent[-1]["type"], "warn")
+            self.assertIn("'credit-card' is not a billing choice", sent[-1]["text"])
+            self.assertEqual(calls, [], "no writer is called for a scoped value that is no choice")
+            self.assertEqual(parked, [], "and it never reaches the per-session pick path")
+        finally:
+            km.Sessions.backend_for, km._kernel_knows, km._push_soon = saved
+
+    def test_the_explicit_default_probe_sees_a_same_size_rewrite_with_an_unchanged_mtime(self):
+        """The review's forced probe: (mtime, size) alone kept login while the file said key."""
+        self.assertTrue(self.be.set_auth_default("login"))
+        self.assertEqual(self.be.explicit_default_auth(), "login")
+        p = sb._defaults_path(self.be.state_dir)
+        st = p.stat()
+        raw = p.read_text()
+        self.assertIn('"login"', raw)
+        rewritten = raw.replace('"login"', '"key"')
+        p.write_text(rewritten + " " * (len(raw) - len(rewritten)))   # the same byte length (trailing blanks are JSON's to ignore)
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))       # the mtime held back on purpose
+        self.assertEqual(p.stat().st_size, st.st_size, "same size")
+        self.assertEqual(p.stat().st_mtime_ns, st.st_mtime_ns, "same mtime")
+        self.assertEqual(self.be.explicit_default_auth(), "key", "ctime (or the inode) tells the rewrite apart")
+
+    def test_the_machine_default_refuses_a_side_this_box_cannot_bill_with_the_reason(self):
+        self._no_helper()
+        self.assertFalse(self.be.set_auth_default("key"))
+        self.assertEqual(self.be.last_auth_refusal, sb._cred.WHY_NO_HELPER)
+        self.assertNotEqual(sb.read_sdk_defaults(self.be.state_dir).get("auth"), "key")
+
     def test_the_picker_pick_beats_the_remembered_default(self):
         sb.write_sdk_default(self.be.state_dir, auth="login")
         sid = self.be.spawn("n", "/tmp", auth="key")
         self.assertEqual(sb.read_reg(self.be.state_dir, sid)["auth"], "key")
 
-    def test_refuses_junk_and_a_key_pick_on_a_keyless_manager(self):
+    def test_refuses_junk_and_a_key_pick_on_a_helperless_box(self):
         sid = self.be.spawn("n", "/tmp")
         self.assertFalse(self.be.set_auth(sid, "credit-card"))
-        self.be.work_key = ""
+        self.assertEqual(self.be.last_auth_refusal, "", "junk is not a reason: the value is simply not a side")
+        self._no_helper()
         self.assertFalse(self.be.set_auth(sid, "key"),
-                         "nothing to inject — refuse rather than half-apply; the UI never offers it")
+                         "no helper on this box: refuse rather than half-apply; the UI greys it")
+        self.assertEqual(self.be.last_auth_refusal, sb._cred.WHY_NO_HELPER, "the refusal names its reason")
+        rows = [p["text"] for p in self.be.problems(10) if sb._cred.WHY_NO_HELPER in p["text"]]
+        self.assertEqual(len(rows), 1, "…in the problem ring too")
+        self.assertNotIn("auth", sb.read_reg(self.be.state_dir, sid), "nothing half-applied")
+
+    def test_refuses_a_login_pick_on_a_box_with_no_login_naming_the_reason(self):
+        sid = self.be.spawn("n", "/tmp")
+        self.be.login_ok = lambda: False
+        self.assertFalse(self.be.set_auth(sid, "login"))
+        self.assertEqual(self.be.last_auth_refusal, sb._cred.WHY_NO_LOGIN)
+        self.assertEqual(self.be.auth_unavailable_why("login"), sb._cred.WHY_NO_LOGIN, "the toast reads the same sentence")
+        self.assertEqual(self.be.auth_unavailable_why("key"), "")
+        self.assertTrue(self.be.set_auth(sid, "key"), "the side that exists still takes")
 
     def test_a_live_session_reconnects_and_gets_the_ack_chip(self):
         sid = self.be.spawn("n", "/tmp")
@@ -399,9 +1025,11 @@ class AuthErrorClass(unittest.TestCase):
 
     def test_it_is_an_on_you_class_end_to_end(self):
         import inspect
-        self.assertIn('"authErr": _is_auth_error(text)', inspect.getsource(km._api_error))
+        # the classification lives in _api_error_pass, the one-pass scanner both _api_error and the latched
+        # _api_last_failed read through, so the pin reads that function
+        self.assertIn('"authErr": _is_auth_error(text)', inspect.getsource(km._api_error_pass))
         self.assertIn('"apiAuthErr": bool(aerr and aerr.get("authErr"))', inspect.getsource(km.build_session))
-        feed = inspect.getsource(km.build_feed)
+        feed = inspect.getsource(km._feed_session_entry)
         self.assertIn('aerr.get("authErr") or aerr.get("refusal"))))', feed, "the card floors to needs-you")
         self.assertIn("sign-in or API key isn't working", feed, "the card names the real remedy")
 
@@ -411,14 +1039,24 @@ class Availability(unittest.TestCase):
 
     def setUp(self):
         self.real_sdk, self.real_acct, self.real_label = km._sdk, km._claude_account, km._claude_account_label
+        self.real_state, self.real_source = km._claude_account_state, km.jd._cred.helper_source
 
     def tearDown(self):
         km._sdk, km._claude_account, km._claude_account_label = self.real_sdk, self.real_acct, self.real_label
+        km._claude_account_state, km.jd._cred.helper_source = self.real_state, self.real_source
 
-    def _world(self, key, acct, label="user@example.com"):
-        km._sdk = lambda: type("B", (), {"work_key": key})()
+    def _world(self, key, acct, label="user@example.com", managed=False):
+        km._sdk = lambda: type("B", (), {"key_available": bool(key)})()
         km._claude_account = lambda: acct
         km._claude_account_label = lambda: (label if acct else "")
+        km._claude_account_state = lambda: ("ok" if acct else "none")   # the box's account file, never the runner's
+        km.jd._cred.helper_source = lambda: ("managed" if managed else ("user" if key else None))
+
+    def test_a_managed_helper_removes_the_login_choice(self):
+        self._world(FAKE_KEY, "aaaaaaaaaaaa", managed=True)
+        a = km._auth_avail()
+        self.assertEqual((a["login"], a["key"]), (False, True), "no per-session layer can disable a managed helper")
+        self.assertFalse(km._auth_both())
 
     def test_both_gates_the_selector_and_no_key_material_travels(self):
         self._world(FAKE_KEY, "aaaaaaaaaaaa")
@@ -451,11 +1089,66 @@ class Availability(unittest.TestCase):
         import inspect
         src = inspect.getsource(km.build_session)
         # auth rides ungated (the user 2026-08-09: the tab hover says Billing on one-auth machines
-        # too); authBoth is the separate gate the CONTROLS key on; authAcct names the login.
+        # too); authBoth stays for older clients; authAvail (with reasons) and authPickUnavailable are
+        # what the Billing menu renders from since 2026-09-08; authAcct names the login.
         self.assertIn('"auth": tm.get("auth", "")', src)
         self.assertIn('"authBoth": _auth_both()', src)
+        self.assertIn('"authAvail": _auth_avail_status()', src)
+        self.assertIn('"authPickUnavailable": tm.get("authPickUnavailable", "")', src)
         self.assertIn('"authAcct": _claude_account_label()', src)
         self.assertNotIn("authTail", src, "the status payload carries the choice, never key material")
+        # …and the live map the push reads from carries the backend's per-session fields (authLive was
+        # read off this map from the start and never merged into it — found 2026-09-08)
+        src = inspect.getsource(km.Sessions.live)
+        self.assertIn('"authLive": st.get("authLive", "")', src)
+        self.assertIn('"authPickUnavailable": st.get("authPickUnavailable", "")', src)
+
+    def test_availability_names_the_reason_for_each_missing_side(self):
+        """The user 2026-09-08: the Billing menu lists both choices always and greys the one this box cannot
+        bill, with the reason in its hover — so the reply and the status payload carry the reason."""
+        self._world(FAKE_KEY, "aaaaaaaaaaaa")
+        a = km._auth_avail()
+        self.assertNotIn("loginWhy", a)
+        self.assertNotIn("keyWhy", a)
+        st = km._auth_avail_status()
+        self.assertEqual({k: st[k] for k in ("login", "key", "default", "defaultExplicit")},
+                         {"login": True, "key": True, "default": "key", "defaultExplicit": False},
+                         "the status half carries the machine default since T380 (the Billing flyout's Default group marks it), and whether it is explicit")
+        self.assertEqual(st["logins"][0]["machine"], True, "the login list rides beside (T346), the machine's own first")
+        self._world(FAKE_KEY, "")
+        a = km._auth_avail()
+        self.assertEqual(a["loginWhy"], km.jd._cred.WHY_NO_LOGIN)
+        self.assertEqual({k: v for k, v in km._auth_avail_status().items() if k != "logins"},
+                         {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_NO_LOGIN, "default": "key", "defaultExplicit": False})
+        self._world("", "aaaaaaaaaaaa")
+        self.assertEqual(km._auth_avail()["keyWhy"], km.jd._cred.WHY_NO_HELPER)
+        self._world(FAKE_KEY, "aaaaaaaaaaaa", managed=True)
+        self.assertEqual(km._auth_avail()["loginWhy"], km.jd._cred.WHY_MANAGED_HELPER)
+        self.assertEqual({k: v for k, v in km._auth_avail_status().items() if k != "logins"},
+                         {"login": False, "key": True, "loginWhy": km.jd._cred.WHY_MANAGED_HELPER, "default": "key", "defaultExplicit": False})
+        self.assertNotIn(FAKE_KEY, json.dumps(km._auth_avail()), "the reasons carry no key material either")
+
+    def test_the_default_falls_to_the_side_that_exists_both_ways(self):
+        """A remembered login pick on a box with no login defaults to the key (the user 2026-09-08), exactly
+        as a remembered key pick on a helper-less box already defaulted to the login."""
+        p = km.jd.STATE / "sdk-defaults.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._world(FAKE_KEY, "")
+            self.assertEqual(km._auth_avail()["default"], "key", "unpicked, no login: the key")
+            p.write_text(json.dumps({"auth": "login"}))
+            self.assertEqual(km._auth_avail()["default"], "key", "a remembered login pick with no login: the key")
+            self._world(FAKE_KEY, "aaaaaaaaaaaa")
+            self.assertEqual(km._auth_avail()["default"], "login", "…and with a login, the pick stands")
+            self._world("", "aaaaaaaaaaaa")
+            p.write_text(json.dumps({"auth": "key"}))
+            self.assertEqual(km._auth_avail()["default"], "login", "the mirror: a remembered key pick with no helper")
+            self._world("", "")
+            self.assertEqual(km._auth_avail()["default"], "login", "neither: the login, the CLI's own resolution")
+            p.write_text(json.dumps({"auth": "login"}))
+            self.assertEqual(km._auth_avail()["default"], "login", "…a login pick with nothing to fall to stands")
+        finally:
+            p.unlink(missing_ok=True)
 
     def test_the_label_reads_the_oauth_account_and_misses_quietly(self):
         # The label comes from the CLI's own store (~/.claude.json oauthAccount): emailAddress first,
@@ -488,6 +1181,67 @@ class Availability(unittest.TestCase):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn('"authAvail": _auth_avail()', src)
 
+    def test_the_refusal_toast_names_the_backend_reason(self):
+        # a refused setAuth tells the user WHY (no login signed in / no apiKeyHelper / a managed helper)
+        # from the backend's own sentence, and keeps the generic text for the cases without one
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn('why = str(getattr(be, "auth_unavailable_why", lambda v: "")(str(msg["value"])) or "")', src)
+        self.assertIn('("Couldn\'t switch the account this session bills: %s." % why) if why', src)
+
+
+class SwitchCycleTruthTable(_Keyed):
+    """T124 (2026-08-27, the user's key->login switch where 'the UI is not what is happening'):
+    the full switch cycle, every landing shape, asserted at the session state dict — the exact
+    fields the Billing row renders from (auth/authLive/authPending; the render mapping is pinned
+    in ui/webview/auth-selector.test.ts). The contract: intent shows AS PENDING intent through the
+    reconnect window (never as applied fact), a confirmed contradiction is visible, and a pick the
+    box cannot apply refuses at pick time."""
+
+    def _state(self, s):
+        d = s.snapshot()
+        return (d["auth"], d["authLive"], d["authPending"])
+
+    def test_the_cycle_on_a_logged_in_box(self):
+        self.be.login_ok = lambda: True                      # the simulated logged-in box
+        sid = "11111111-2222-3333-4444-00000000t124"
+        sb.write_reg(Path(self.d), sid, {"sid": sid, "name": "misc", "cwd": "/tmp"})
+        s = self._sess(41, sid=sid)
+        self.be.sessions[sid] = s
+        # rest: keyed (the box's helper), confirmed by an init
+        self.be._note_auth_source(s, "apiKeyHelper")
+        self.assertEqual(self._state(s), ("key", "key", False), "rest: confirmed key, row says API key")
+        # SWITCH key->login: the pending window renders as pending — never applied fact
+        self.assertTrue(self.be.set_auth(sid, "login"))
+        self.assertEqual(self._state(s), ("login", "", True),
+                         "the pick shows as PENDING intent (authLive cleared, authPending up) until an init confirms")
+        # landing shape 1: the CLI confirms the login → truth within one init
+        s._auth_pending = ""                                  # the connect clears the dots (event-based)
+        self.be._note_auth_source(s, "none")
+        self.assertEqual(self._state(s), ("login", "login", False), "confirmed login — plain Login")
+        # SWITCH login->key, landing shape 2: the CLI lands on the WRONG side (an apiKeyHelper world:
+        # picked login again later, but a helper re-injects the key) — the contradiction is VISIBLE
+        self.assertTrue(self.be.set_auth(sid, "key"))
+        s._launched_keyed = True                              # the applying reconnect meant the key (_options)
+        s._auth_pending = ""
+        self.be._note_auth_source(s, "none")                  # picked key; the CLI reports login
+        auth, live, pending = self._state(s)
+        self.assertEqual((auth, pending), ("key", False))
+        self.assertEqual(live, "login", "the wrong-side landing rides authLive → the row's ⚠ shape")
+        self.assertTrue(any("billing the login" in p["text"] for p in self.be.problems(20)),
+                        "…and the problems ring names it")
+
+    def test_the_cycle_on_a_login_less_box(self):
+        self.be.login_ok = lambda: False                     # a helper-only box with no login
+        sid = "11111111-2222-3333-4444-00000000t125"
+        sb.write_reg(Path(self.d), sid, {"sid": sid, "name": "misc2", "cwd": "/tmp"})
+        s = self._sess(42, sid=sid)
+        self.be.sessions[sid] = s
+        self.be._note_auth_source(s, "apiKeyHelper")
+        self.assertFalse(self.be.set_auth(sid, "login"),
+                         "the pick the box cannot apply refuses AT PICK TIME — never accept-then-fail")
+        self.assertEqual(self._state(s), ("key", "key", False),
+                         "nothing moved: no pending window, no intent shown, the row keeps the truth")
+
 
 class DrivePlumbing(unittest.TestCase):
     """setAuth rides the same drive/park path as the other per-session switches (source pins)."""
@@ -495,19 +1249,37 @@ class DrivePlumbing(unittest.TestCase):
     def test_the_op_is_routed_parked_and_replayed(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn('"setAuth", "endSession"', src.replace("\n", " "), "an ID_OPS member")
-        self.assertIn('elif t == "setAuth" and msg.get("value") in ("login", "key"):', src)
+        self.assertIn('elif t == "setAuth" and lg.parse_pick(msg.get("value"))[0]:', src)   # T346: 'login' | 'key' | 'login:<id>'
         self.assertIn("def _set_auth_or_park(be, sid, value):", src)
-        self.assertIn('_park_op(sid, ("auth", value))', src)
+        # the machine's default (T380): the same op with scope "machine" writes the seed on THIS kernel and touches no session
+        self.assertIn('elif t == "setAuth" and msg.get("scope") == "machine" and (msg.get("value") == "auto" or lg.parse_pick(msg.get("value"))[0]):', src)   # a stored login too (2026-09-14)
+        self.assertIn('_set_def = getattr(be, "set_auth_default", None)', src)
+        # the judges ask the same resolver the launch and the status use (round 3 of T380): the kernel wires it
+        ksrc = open(os.path.join(os.path.dirname(HERE), "kernel", "kernel.py")).read()
+        self.assertIn('jd._DEFAULT_AUTH_FN = getattr(_sdk_backend, "default_auth", None)', ksrc, "the one billing resolver, wired into the judges")
+        self.assertIn('jd._DEFAULT_LOGIN_FN = getattr(_sdk_backend, "default_login", None)', ksrc, "and WHICH stored login an unpicked session bills, beside it (2026-09-14)")
+        self.assertIn("keeps no machine billing default", src, "a backend without the writer (Codex) is refused by name, never a raise inside the drive")
+        plain = src.index('elif t == "setAuth" and lg.parse_pick(msg.get("value"))[0]:')
+        self.assertLess(src.index('msg.get("scope") == "machine"'), plain,
+                        "the scoped arm is tried first: the plain arm would otherwise swallow it as a per-session pick")
+        # a scoped value that is no billing choice at all is refused by name from an arm BEFORE the plain one, so it is never
+        # read as a session's own pick either (a stored login is a choice since 2026-09-14: the first scoped arm takes it)
+        refuse = src.index('elif t == "setAuth" and msg.get("scope") == "machine":')
+        self.assertLess(refuse, plain, "the scoped refusal sits before the per-session arm")
+        self.assertIn("is not a billing choice", src)
+        self.assertNotIn("a stored login can't be the machine's default yet", src)
+        self.assertIn('_gate_or_park(sid, ("auth", value))', src)   # parks on the gate, or hands over (2026-09-05)
         self.assertIn('elif op[0] == "auth":', src)
         self.assertIn("be.set_auth(sid, op[1])", src)
 
     def test_create_paths_pass_the_pick_through(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
-        self.assertIn("def _create_sdk_session(nm, cwd, auth=\"\", prefs=None, client=None):", src)
-        self.assertEqual(src.count('auth=(a if a in ("login", "key") else "")'), 2,
+        # (parent + tags joined the signature with tab groups, 2026-09-04 — auth's slot is unchanged)
+        self.assertIn("def _create_sdk_session(nm, cwd, auth=\"\", prefs=None, client=None, env=None, parent=\"\", tags=()):", src)
+        self.assertEqual(src.count('auth=(a if lg.parse_pick(a)[0] else "")'), 2,
                          "the WS op and POST /new both pass it")
 
-    def test_the_abc_names_the_control_and_tmux_refuses(self):
+    def test_the_abc_names_the_control_and_the_default_refuses(self):
         sbc = open(os.path.join(os.path.dirname(HERE), "kernel", "session_backend.py")).read()
         self.assertIn("def set_auth(self, sid: str, value: str) -> bool:", sbc)
         self.assertIn("return False", sbc.split("def set_auth", 1)[1][:900])

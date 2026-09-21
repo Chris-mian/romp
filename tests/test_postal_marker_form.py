@@ -20,7 +20,7 @@ import os
 import re
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 SELF = os.path.basename(os.path.realpath(__file__))
@@ -28,8 +28,8 @@ SELF = os.path.basename(os.path.realpath(__file__))
 # conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_event_model_markerform",
-                      os.path.join(os.path.dirname(HERE), "bin", "romp-event-model")).load_module()
+em = load_source("romp_event_model_markerform",
+                      os.path.join(os.path.dirname(HERE), "bin", "romp-event-model"))
 
 # Assembled rather than written out, so this file is not its own first hit.
 MARKER = re.compile("romp-msg-" + r"(?:id|kind)\s*:")
@@ -38,11 +38,11 @@ MARKER = re.compile("romp-msg-" + r"(?:id|kind)\s*:")
 # fails; a new one here has to be argued for in this table. Counts, not whole-file exemptions, so a
 # genuine postal fixture added to one of these files still trips the guard.
 EXPECTED_BARE = {
-    # kernel.py's _pending_queued / _genuine_queued / _postal_shaped are plain substring tests,
-    # deliberately over-broad: there a false positive only refuses a delivery (safe), while a false
-    # negative is the postal-isolation bypass they were written for on 2026-07-10. Their fixtures
-    # test the substring, so the bare form is the right input.
-    "test_kernel.py": 2,
+    # kernel.py's _genuine_queued / _postal_shaped are plain substring tests, deliberately over-broad:
+    # there a false positive only refuses a delivery (safe), while a false negative is the
+    # postal-isolation bypass they were written for on 2026-07-10. Their fixtures test the substring,
+    # so the bare form is the right input.
+    "test_kernel.py": 1,
     # The mention-is-not-a-delivery case: writing the bare form IS the case.
     "test_teammate_message.py": 3,
     # The neutralizer suite (MarkerNeutralizerVariants) assembles whitespace VARIANTS of the

@@ -12,29 +12,33 @@ import shutil
 import tempfile
 import time
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
+
+from tests.conftest import restore_env
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-pm = SourceFileLoader("romp_postal_undelivered", os.path.join(BIN, "romp-postal-service")).load_module()
+pm = load_source("romp_postal_undelivered", os.path.join(BIN, "romp-postal-service"))
 
 SENDER = "11111111-1111-1111-1111-111111111111"
 RECIP = "22222222-2222-2222-2222-222222222222"
+THREAD = "44444444-4444-4444-4444-444444444444"   # a comment thread of SENDER: live, but off the default listing
 
 
 class StuckMailWarning(unittest.TestCase):
     def setUp(self):
         self._seamfile = os.path.join(tempfile.mkdtemp(), "sessions.json")
+        self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = self._seamfile      # local_agents() reads this instead of a live kernel
         for d in (pm.MAILROOT, pm.WARNED, pm.MAILPENDING):     # isolate each test
             shutil.rmtree(d, ignore_errors=True)
 
     def tearDown(self):
-        os.environ.pop("ROMP_SESSIONS_FILE", None)
+        restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
 
     def _set_recip_state(self, state):
         Path(self._seamfile).write_text(json.dumps(
@@ -87,6 +91,252 @@ class StuckMailWarning(unittest.TestCase):
         pm._warn_stuck_mail()
         self.assertFalse((pm.WARNED / mid).exists(),
                          "the marker is pruned once the message left new/ so WARNED stays bounded")
+
+
+class RefusedNotesKeepTheMail(unittest.TestCase):
+    """deliver() can REFUSE now (2026-09-08: its sent row could not land). The orphan sweep and the
+    stuck-mail warning used to catch every deliver error and carry on — destroy the orphan, touch the
+    one-time marker — so a refused note lost the mail with no notice and no row, and the warning was
+    never retried. A refusal keeps the file and the marker untouched, is said once per episode, and
+    the next pass retries once the log writes again. Mutants killed: the generic `except Exception`
+    arm swallowing the refusal (the orphan is destroyed / the marker touched); the sweep's destroy
+    row written best-effort AFTER the unlink (the file goes with no row)."""
+
+    def setUp(self):
+        self._seamfile = os.path.join(tempfile.mkdtemp(), "sessions.json")
+        self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
+        os.environ["ROMP_SESSIONS_FILE"] = self._seamfile
+        for d in (pm.MAILROOT, pm.WARNED, pm.MAILPENDING):
+            shutil.rmtree(d, ignore_errors=True)
+        self._tl, self._log = pm.TLDIR, pm._log
+        self.logged = []
+        pm._log = lambda m: self.logged.append(m)
+        try:
+            (pm.TLDIR / "messages.jsonl").unlink()
+        except OSError:
+            pass
+        pm._TL_FAULT[0] = False
+        pm._REFUSAL_SAID.clear()
+
+    def tearDown(self):
+        pm.TLDIR, pm._log = self._tl, self._log
+        pm._TL_FAULT[0] = False
+        pm._REFUSAL_SAID.clear()
+        restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
+
+    def _live(self, rows):
+        Path(self._seamfile).write_text(json.dumps(rows))
+
+    def _break_the_log(self):
+        fd, path = tempfile.mkstemp()
+        os.close(fd)
+        self.addCleanup(lambda: os.unlink(path))
+        pm.TLDIR = Path(path) / "timeline"          # under a regular file: the REAL append fails (ENOTDIR)
+
+    def _age(self, secs):
+        old = time.time() - secs
+        for f in (pm.MAILROOT / RECIP / "new").iterdir():
+            os.utime(f, (old, old))
+
+    def _rows(self):
+        p = self._tl / "messages.jsonl"
+        return [json.loads(l) for l in p.read_text().splitlines() if l] if p.exists() else []
+
+    def _said(self):
+        return len([m for m in self.logged if "kept for the next pass" in m])
+
+    def test_the_tidy_keeps_a_box_whose_inbox_cannot_be_read(self):
+        """The orphan sweep's tidy removed a mailbox it read as empty; an unsearchable new/ dropped out of the emptiness check
+        (is_dir() False there on 3.14) and the box, mail and all, went under rmtree. Unknown is never empty."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        self._live([{"id": SENDER, "name": "alice", "state": "idle"}])          # bob is dead → an orphan
+        mid = pm.deliver(RECIP, "alice", SENDER, "please review my PR")
+        box = pm.MAILROOT / RECIP
+        os.chmod(box / "new", 0)
+        try:
+            pm._sweep_orphans()
+        finally:
+            os.chmod(box / "new", 0o755)
+        self.assertTrue((box / "cur").is_dir() and (box / "tmp").is_dir(), "the box stands whole: nothing was tidied away")
+        self.assertTrue((box / "new" / mid).exists(), "the mail stands")
+
+    def test_the_sweep_keeps_an_orphan_whose_bounce_note_was_refused(self):
+        self._live([{"id": SENDER, "name": "alice", "state": "idle"}])          # bob is dead → an orphan
+        mid = pm.deliver(RECIP, "alice", SENDER, "please review my PR")
+        self._age(pm.ORPHAN_GRACE + 60)
+        self._break_the_log()
+        pm._sweep_orphans()
+        self.assertTrue((pm.MAILROOT / RECIP / "new" / mid).exists(),
+                        "a refused bounce note destroys nothing: the orphan waits for the next sweep")
+        self.assertEqual(pm.read_box(SENDER, consume=False), [], "no note was published without its row")
+        pm._sweep_orphans()
+        self.assertTrue((pm.MAILROOT / RECIP / "new" / mid).exists())
+        self.assertEqual(self._said(), 1, "said once per episode, not per pass")
+        pm.TLDIR = self._tl                                                    # the log writes again
+        pm._sweep_orphans()
+        self.assertFalse((pm.MAILROOT / RECIP / "new" / mid).exists(), "the next pass completes the bounce")
+        notes = pm.read_box(SENDER, consume=False)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("UNDELIVERED", notes[0]["body"])
+        self.assertEqual([r["ev"] for r in self._rows() if r.get("id") == mid], ["sent", "bounced"],
+                         "the destroy landed on the ledger")
+
+    def test_the_sweep_records_the_destroy_before_it_destroys(self):
+        # no live sender to bounce to (the sweep still runs: someone is live) → straight to the destroy
+        self._live([{"id": "33333333-4444-5555-6666-777777777777", "name": "carol", "state": "idle"}])
+        mid = pm.deliver(RECIP, "alice", SENDER, "please review my PR")
+        self._age(pm.ORPHAN_GRACE + 60)
+        self._break_the_log()
+        pm._sweep_orphans()
+        self.assertTrue((pm.MAILROOT / RECIP / "new" / mid).exists(),
+                        "a destroy that cannot be recorded does not happen")
+        pm.TLDIR = self._tl
+        pm._sweep_orphans()
+        self.assertFalse((pm.MAILROOT / RECIP / "new" / mid).exists())
+        self.assertEqual([r["ev"] for r in self._rows() if r.get("id") == mid], ["sent", "bounced"])
+
+    def test_the_stuck_warning_is_retried_once_its_note_lands(self):
+        self._live([{"id": SENDER, "name": "alice", "state": "idle"},
+                    {"id": RECIP, "name": "bob", "state": "idle"}])
+        mid = pm.deliver(RECIP, "alice", SENDER, "please review my PR")
+        self._age(pm.STUCK_GRACE + 60)
+        self._break_the_log()
+        pm._warn_stuck_mail()
+        self.assertFalse((pm.WARNED / mid).exists(), "a refused warning leaves the one-time marker untouched")
+        self.assertEqual(pm.read_box(SENDER, consume=False), [])
+        pm._warn_stuck_mail()
+        self.assertFalse((pm.WARNED / mid).exists())
+        self.assertEqual(self._said(), 1, "said once per episode")
+        pm.TLDIR = self._tl
+        pm._warn_stuck_mail()
+        warns = pm.read_box(SENDER, consume=False)
+        self.assertEqual(len(warns), 1, "the warning fires on the first pass whose note lands")
+        self.assertIn("STILL UNDELIVERED", warns[0]["body"])
+        self.assertTrue((pm.WARNED / mid).exists(), "…and only then is it marked one-time")
+        pm._warn_stuck_mail()
+        self.assertEqual(len(pm.read_box(SENDER, consume=False)), 1, "one-time still holds")
+        self.assertTrue((pm.MAILROOT / RECIP / "new" / mid).exists(), "the stuck message itself is left for delivery")
+
+
+class TheSweepMovesAnUnreadableFileAside(unittest.TestCase):
+    """A DEAD recipient's box has no drain to meet an unreadable file, so the orphan sweep moves it
+    aside the way read_box does (review find, 2026-09-08): before, the sweep skipped it on every pass
+    and the pending marker stayed latched for a session that will never read. The sidecar is
+    evidence: the tidy that removes an emptied box leaves a box holding one. Mutants: the sweep's
+    catch-all `except Exception: continue` kept for OSError (the file stays); the tidy guard removed
+    (the sidecar goes with the box)."""
+
+    def setUp(self):
+        self._seamfile = os.path.join(tempfile.mkdtemp(), "sessions.json")
+        self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
+        os.environ["ROMP_SESSIONS_FILE"] = self._seamfile
+        for d in (pm.MAILROOT, pm.WARNED, pm.MAILPENDING):
+            shutil.rmtree(d, ignore_errors=True)
+        self._saved = (pm.TLDIR, pm._log, pm._kernel_post)
+        self.logged, self.told = [], []
+        pm._log = lambda m: self.logged.append(m)
+        pm._kernel_post = lambda path, body, timeout=2: self.told.append((path, body)) or {"ok": True}
+        try:
+            (pm.TLDIR / "messages.jsonl").unlink()
+        except OSError:
+            pass
+        pm._DASHBOARD_MISSED[0] = False
+
+    def tearDown(self):
+        pm.TLDIR, pm._log, pm._kernel_post = self._saved
+        pm._DASHBOARD_MISSED[0] = False
+        restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-0 file; the fault cannot be staged")
+    def test_the_file_is_moved_aside_the_marker_drops_and_the_box_keeps_its_evidence(self):
+        Path(self._seamfile).write_text(json.dumps([{"id": SENDER, "name": "alice", "state": "idle"}]))   # bob is dead
+        mid = pm.deliver(RECIP, "alice", SENDER, "please review my PR", kind="question")
+        f = pm.MAILROOT / RECIP / "new" / mid
+        os.chmod(f, 0)
+        self.assertTrue((pm.MAILPENDING / RECIP).exists())
+        pm._sweep_orphans()
+        self.assertFalse(f.exists(), "the unreadable file leaves new/")
+        aside = [p.name for p in (pm.MAILROOT / RECIP).iterdir() if p.name.startswith(mid + ".corrupt-")]
+        self.assertEqual(len(aside), 1, "moved aside beside new/, never deleted")
+        self.assertFalse((pm.MAILPENDING / RECIP).exists(), "the marker drops: nothing readable is pending")
+        rows = [json.loads(l) for l in (pm.TLDIR / "messages.jsonl").read_text().splitlines() if l]
+        self.assertEqual([r["ev"] for r in rows if r.get("id") == mid], ["sent", "bounced"])
+        self.assertTrue([r for r in rows if r.get("id") == mid][-1]["why"].startswith(pm.WHY_INBOX_UNREADABLE))
+        self.assertEqual(len([p for p, b in self.told if p == "/postal-notice"]), 1, "one bell row")
+        self.assertEqual(pm.read_box(SENDER, consume=False), [], "no bounce note: the sender's receipt carries it")
+        pm._sweep_orphans()
+        self.assertTrue((pm.MAILROOT / RECIP).is_dir(), "the emptied box is not tidied away while it holds evidence")
+        self.assertEqual(len([p for p, b in self.told if p == "/postal-notice"]), 1, "said once")
+
+
+class AThreadsMailWaitsLikeAnyLiveSessions(unittest.TestCase):
+    """A comment thread is a real forked session the kernel serves only behind ?threads=1 (the seam filters
+    the same way); resolve_recipient addresses it with thread rows and deliver() writes MAILROOT/<tsid>/new.
+    The four reads that judge a MAILBOX live or dead read the default listing, so a live thread's box was
+    dead to them: the orphan sweep destroyed its unread mail after ORPHAN_GRACE and told the sender the
+    thread had exited, the retry pass skipped its marker, the revive wake ruled it died during load, and
+    the stuck-mail warning never saw its idle state. Each now reads the listing with thread rows, as
+    _record_heartbeat has since 2026-09-06. Mutants: any one read back on the default listing (its own
+    test fails). _push is the one seam stubbed: under ROMP_SESSIONS_FILE it declines every wake, and
+    the wake is what the retry and revive tests count."""
+
+    def setUp(self):
+        self._seamfile = os.path.join(tempfile.mkdtemp(), "sessions.json")
+        self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
+        os.environ["ROMP_SESSIONS_FILE"] = self._seamfile
+        for d in (pm.MAILROOT, pm.WARNED, pm.MAILPENDING):
+            shutil.rmtree(d, ignore_errors=True)
+        try:
+            (pm.TLDIR / "messages.jsonl").unlink()
+        except OSError:
+            pass
+        Path(self._seamfile).write_text(json.dumps(
+            [{"id": SENDER, "name": "alice", "state": "idle"},
+             {"id": THREAD, "name": "alice-t1", "state": "idle", "thread": True, "parent": SENDER}]))
+        self._push, self.pushed = pm._push, []
+        pm._push = lambda sid, row: self.pushed.append(sid) is None      # records the wake; True = injected
+
+    def tearDown(self):
+        pm._push = self._push
+        restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
+
+    def _age(self, secs):
+        old = time.time() - secs
+        for f in (pm.MAILROOT / THREAD / "new").iterdir():
+            os.utime(f, (old, old))
+
+    def _rows(self):
+        p = pm.TLDIR / "messages.jsonl"
+        return [json.loads(l) for l in p.read_text().splitlines() if l] if p.exists() else []
+
+    def test_the_sweep_leaves_a_live_threads_unread_mail_where_it_is(self):
+        mid = pm.deliver(THREAD, "alice", SENDER, "reply to the thread")
+        self._age(pm.ORPHAN_GRACE + 60)
+        pm._sweep_orphans()
+        self.assertTrue((pm.MAILROOT / THREAD / "new" / mid).exists(),
+                        "the thread is live: its mail waits for it like any live session's")
+        self.assertEqual(pm.read_box(SENDER, consume=False), [], "no 'has exited' note to the sender")
+        self.assertEqual([r["ev"] for r in self._rows() if r.get("id") == mid], ["sent"], "nothing was destroyed")
+
+    def test_the_retry_pass_wakes_a_thread_holding_mail(self):
+        pm.deliver(THREAD, "alice", SENDER, "reply to the thread")
+        pm._retry_pending()
+        self.assertEqual(self.pushed, [THREAD], "the thread's pending marker is retried, not skipped as dead")
+
+    def test_the_revive_wake_finds_the_thread(self):
+        pm.deliver(THREAD, "alice", SENDER, "reply to the thread")
+        pm._wake_when_ready(THREAD)
+        self.assertEqual(self.pushed, [THREAD], "a reviving thread is a live row, not one that died during load")
+
+    def test_a_threads_stuck_mail_warns_the_sender_like_any_idle_recipients(self):
+        mid = pm.deliver(THREAD, "alice", SENDER, "reply to the thread")
+        self._age(pm.STUCK_GRACE + 60)
+        pm._warn_stuck_mail()
+        warns = pm.read_box(SENDER, consume=False)
+        self.assertEqual(len(warns), 1, "an idle thread that never read is as stuck as any idle session")
+        self.assertIn("alice-t1", warns[0]["body"], "and the warning names the thread")
+        self.assertTrue((pm.MAILROOT / THREAD / "new" / mid).exists(), "the mail itself is left for delivery")
 
 
 if __name__ == "__main__":

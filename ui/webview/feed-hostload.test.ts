@@ -57,6 +57,10 @@ test("the hint covers the WHOLE pending window: escalate at 45s, remove only on 
   assert.match(FEED, /if \(!pendingHosts\.length\) \{ strip\?\.remove\(\); return; \}   \/\/ the real events emptied the list — the only way off/);
   assert.match(FEED, /if \(!pendingHosts\.includes\(h\)\) \{   \/\/ the payload landed \(or the host detached\) — the ONLY removals/);
   assert.doesNotMatch(FEED, /hostloadGaveUp/, "no hide-set survives — nothing ever hides a true wait");
+  // placement (the user 2026-08-30): the strip LEADS the feed — first child, above the column chips,
+  // in both board states; re-inserted only when displaced, and non-interactive so the move is safe
+  assert.match(FEED, /if \(list\.firstChild !== strip\) list\.insertBefore\(strip, list\.firstChild\);/);
+  assert.doesNotMatch(FEED, /list\.appendChild\(strip\)/, "the bottom placement retired");
   // the three honest copies: loading → still waiting (45s) → a dead link names itself (fail-loudly)
   assert.match(FEED, /"loading cards from " \+ h \+ "\\u2026"/);
   assert.match(FEED, /"still waiting on " \+ h \+ "\\u2026"/);

@@ -9,12 +9,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // the status line's controls moved here from render.ts (T415 part two)
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("the effort badge shows switching-dots while a reconnect is pending, like the model badge", () => {
   assert.match(RENDER, /effortPending\?: boolean;/);   // status carries it
-  assert.match(RENDER, /\(kind === "effort" && !!st\.effortPending\)/);          // effort feeds `pending`
-  assert.match(RENDER, /const showDots = pending && \(kind === "model" \|\| kind === "effort"\);/);   // dots for both reconnect-style badges (billing moved to the tab menu, 2026-08-09)
+  assert.match(MODULE, /\(kind === "effort" && !!st\.effortPending\)/);          // effort feeds `pending`
+  assert.match(MODULE, /const showDots = pending && \(kind === "model" \|\| kind === "effort"\);/);   // dots for both reconnect-style badges (billing moved to the tab menu, 2026-08-09)
 });
 
 test("a live reconnect has its own ChatEvent kind, dispatched to renderReconnecting", () => {
@@ -26,11 +27,11 @@ test("a live reconnect has its own ChatEvent kind, dispatched to renderReconnect
   assert.ok(recon > 0 && compact > 0 && recon < compact);
 });
 
-test("renderReconnecting draws the accent loader dots + a 'Reloading session' line naming the effort", () => {
+test("renderReconnecting is a slim live SESSION notice: the accent loader dots in its glyph slot, naming the effort", () => {
+  // 2026-09-08 (the notice-vocabulary pass): the ONE builder, romp severity (accent) for an in-flight romp operation
   assert.match(RENDER, /function renderReconnecting\(ev: Extract<ChatEvent, \{ kind: "reconnecting" \}>\)/);
-  assert.match(RENDER, /el\("div", "turn turn-reconnecting"\)/);
-  assert.match(RENDER, /line\.appendChild\(metaDots\(\)\);/);   // the SAME pulsing accent dots as the badge
-  assert.match(RENDER, /Reloading session — applying \$\{ev\.effort\} effort…/);
+  assert.match(RENDER, /notice\(\{ src: "session", glyph: noticeLiveGlyph\(metaDots\(\)\), sev: "romp", gist: reconnectingGist\(ev\.effort\), live: true,/);
+  assert.match(RENDER, /Reloading session — applying \$\{effort\} effort…/);
   assert.match(RENDER, /"Reloading session…"/);                // effort-less fallback
-  assert.match(CSS, /\.turn-reconnecting \.dot \{[^}]*background: var\(--accent\)/);   // accent (loading), not a status color
+  assert.match(CSS, /\.notice-sev-romp\s+\{ --notice-rail: var\(--accent\)/);   // accent (loading), not a status color
 });

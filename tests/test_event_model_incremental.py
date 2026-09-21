@@ -14,7 +14,8 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -22,7 +23,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_event_model_inc", os.path.join(BIN, "romp-event-model")).load_module()
+em = load_source("romp_event_model_inc", os.path.join(BIN, "romp-event-model"))
 
 
 def _rec(i, text="hello"):
@@ -128,8 +129,149 @@ class IncrementalRead(unittest.TestCase):
     def test_file_adapter_reads_incrementally(self):
         import inspect
         src = inspect.getsource(em.FileAdapter.__init__)
-        self.assertIn("_read_jsonl_incremental(fp)", src,
+        self.assertIn("_read_jsonl_entry(fp", src,
                       "the transcript hot path must use the incremental reader")
+
+
+class FoldRecordsReports(unittest.TestCase):
+    """fold_records' `on` callback names the path each call took, so a caller's counters can tell a served
+    fold from a stepped one and a rewrite from a read that failed; the fold itself keeps no counters."""
+
+    def setUp(self):
+        em._JSONL_CACHE.clear()
+        self.td = tempfile.mkdtemp()
+        self.p = os.path.join(self.td, "log.jsonl")
+        self.cache = {}
+        self.kinds = []
+
+    def tearDown(self):
+        em._JSONL_CACHE.clear()
+        if os.path.exists(self.p):
+            os.chmod(self.p, 0o644)
+        import shutil
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    @staticmethod
+    def _step(state, r):
+        state.append(r["message"]["content"])
+        return state
+
+    def _fold(self):
+        return em.fold_records(self.cache, self.p, list, self._step, on=self.kinds.append)
+
+    def test_the_first_fold_reports_refold_and_an_unchanged_read_a_hit(self):
+        _write(self.p, [_rec(0), _rec(1)])
+        self.assertEqual(self._fold(), ["hello 0", "hello 1"])
+        self.assertEqual(self.kinds, ["refold"], "every record stepped: the file's first fold")
+        self.assertEqual(self._fold(), ["hello 0", "hello 1"])
+        self.assertEqual(self.kinds, ["refold", "hit"], "the records were the cached ones: nothing stepped")
+
+    def test_an_appended_record_reports_append(self):
+        _write(self.p, [_rec(0)])
+        self._fold()
+        _append(self.p, [_rec(1)])
+        os.utime(self.p, (os.path.getmtime(self.p) + 5,) * 2)   # a visibly newer mtime on a coarse clock
+        self.assertEqual(self._fold(), ["hello 0", "hello 1"])
+        self.assertEqual(self.kinds, ["refold", "append"], "only the record past the cached prefix stepped")
+
+    def test_a_rewrite_reports_refold(self):
+        _write(self.p, [_rec(0), _rec(1), _rec(2)])
+        self._fold()
+        _write(self.p, [_rec(7)])                                # shrank: a rewrite
+        self.assertEqual(self._fold(), ["hello 7"])
+        self.assertEqual(self.kinds, ["refold", "refold"])
+
+    def test_an_absent_file_folds_to_init_without_a_failure(self):
+        fails = []
+        self.assertEqual(em._read_jsonl_incremental(self.p, on_fail=fails.append), [])
+        self.assertEqual(fails, [], "an absent file is a state, not a failure")
+        self.assertEqual(self._fold(), [])
+        self.assertEqual(self.kinds, ["refold"], "the empty state is folded and memoized like any other")
+        self.assertIn(self.p, self.cache)
+
+    def test_an_unreadable_file_that_exists_reports_fail_answers_init_and_memoizes_nothing(self):
+        _write(self.p, [_rec(0)])
+        self.assertEqual(self._fold(), ["hello 0"])
+        self.assertIn(self.p, self.cache)
+        # the shared reader serves an unchanged file from its cache without opening it, so the file must
+        # change before a permission flip is a read attempt
+        _append(self.p, [_rec(1)])
+        os.utime(self.p, (os.path.getmtime(self.p) + 5,) * 2)
+        os.chmod(self.p, 0)
+        if os.access(self.p, os.R_OK):
+            self.skipTest("this user reads through mode 000 (root)")
+        fails = []
+        self.assertEqual(em._read_jsonl_incremental(self.p, on_fail=fails.append), [])
+        self.assertEqual(len(fails), 1)
+        self.assertIsInstance(fails[0], OSError)
+        self.assertNotIsInstance(fails[0], FileNotFoundError)
+        self.assertEqual(self._fold(), [], "the answer is init()")
+        self.assertEqual(self.kinds, ["refold", "fail"])
+        self.assertNotIn(self.p, self.cache, "a failed read is never memoized: the next call reads again")
+        os.chmod(self.p, 0o644)
+        self.assertEqual(self._fold(), ["hello 0", "hello 1"], "readable again: folded from record 0")
+        self.assertEqual(self.kinds, ["refold", "fail", "refold"])
+
+    def test_a_stat_that_raises_on_a_file_that_exists_reports_fail(self):
+        # The reader's FIRST except branch: the stat itself raises (the file's directory lost its search bit),
+        # not the open or the read. A stat runs on every call, so no growth is needed for this one.
+        d = os.path.join(self.td, "locked")
+        os.mkdir(d)
+        p = os.path.join(d, "log.jsonl")
+        _write(p, [_rec(0), _rec(1)])
+        self.assertEqual(em.fold_records(self.cache, p, list, self._step, on=self.kinds.append), ["hello 0", "hello 1"])
+        self.assertIn(p, self.cache)
+        os.chmod(d, 0)
+        try:
+            try:
+                os.stat(p)
+            except PermissionError:
+                pass
+            else:
+                self.skipTest("this user stats through a mode 000 directory (root)")
+            fails = []
+            self.assertEqual(em._read_jsonl_incremental(p, on_fail=fails.append), [])
+            self.assertEqual(len(fails), 1)
+            self.assertIsInstance(fails[0], PermissionError)
+            self.assertEqual(em.fold_records(self.cache, p, list, self._step, on=self.kinds.append), [],
+                             "the answer is init()")
+            self.assertEqual(self.kinds, ["refold", "fail"])
+            self.assertNotIn(p, self.cache, "a failed stat is a failed read: nothing memoized")
+        finally:
+            os.chmod(d, 0o755)
+        self.assertEqual(em.fold_records(self.cache, p, list, self._step, on=self.kinds.append), ["hello 0", "hello 1"])
+        self.assertEqual(self.kinds, ["refold", "fail", "refold"], "readable again: folded from record 0")
+
+    def test_a_failed_first_read_followed_by_a_clean_re_read_folds_normally(self):
+        # The lost-pin re-read's verdict is the one that counts. The reader pops its entry on a failure; if
+        # another thread re-inserts a good entry before the fold pins, the pin is lost, the fold reads again
+        # and the re-read pins cleanly: the fold then steps the records it read, not init(), and counts no
+        # failure. The stub is that thread: a failure on the first call, the real reader on the second.
+        _write(self.p, [_rec(0), _rec(1), _rec(2)])
+        real = em._read_jsonl_incremental
+        real(self.p)                                                              # the entry another thread left
+        calls = []
+
+        def fail_once(path, on_fail=None):
+            calls.append(path)
+            if len(calls) == 1:
+                if on_fail is not None:
+                    on_fail(PermissionError("a read that raised"))
+                return []
+            return real(path, on_fail=on_fail)
+        with mock.patch.object(em, "_read_jsonl_incremental", fail_once):
+            self.assertEqual(self._fold(), ["hello 0", "hello 1", "hello 2"],
+                             "the re-read's records, not init()")
+        self.assertEqual(len(calls), 2, "one failed read, one re-read on the lost pin")
+        self.assertEqual(self.kinds, ["refold"], "the re-read's verdict: a fold, not a failure")
+        self.assertIn(self.p, self.cache, "and it is memoized like any clean read")
+        self.assertEqual(self.cache[self.p][0], 3)
+
+    def test_without_on_the_fold_is_unchanged(self):
+        _write(self.p, [_rec(0)])
+        self.assertEqual(em.fold_records(self.cache, self.p, list, self._step), ["hello 0"])
+        self.assertEqual(em.fold_records(self.cache, self.p, list, self._step), ["hello 0"])
+        self.assertEqual(self.kinds, [])
 
 
 class ParseSessionEquivalence(unittest.TestCase):
@@ -234,6 +376,113 @@ class ManualCompactAdoptionEquivalence(unittest.TestCase):
         cold = em.parse_session(self.p)
         self.assertEqual(warm, cold, "grown past the compact: warm == cold, adoption included")
         self.assertEqual(len(self._cards(cold)), 1, "exactly one adopted card either way")
+
+
+def _flush_orphan_recs():
+    """A transcript that grows THROUGH an api_error-flush orphaning (synthetic content; shape
+    mirrors the 2026-09-01 incident transcripts): the prefix ends with the streamed reply as the
+    leaf — a perfectly linear chain — and the growth is the CLI's next-turn flush (buffered
+    api_error records parent-chained from the PRE-reply leaf, a stop_hook_summary, the next user
+    record), which bypasses the reply branch on disk. Returns (prefix, growth)."""
+    b = lambda i: "11111111-2222-3333-4444-%012d" % i
+    ts = lambda s: "2026-07-05T10:%02d:%02dZ" % (s // 60, s % 60)
+    prefix = [
+        {"type": "user", "uuid": b(0), "parentUuid": None, "timestamp": ts(0),
+         "promptSource": "typed", "message": {"role": "user", "content": "storm-turn ask"}},
+        {"type": "attachment", "uuid": b(1), "parentUuid": b(0), "timestamp": ts(5),
+         "attachment": {"type": "total_tokens_reminder"}},
+        {"type": "assistant", "uuid": b(2), "parentUuid": b(1), "timestamp": ts(60),
+         "message": {"role": "assistant",
+                     "content": [{"type": "text", "text": "the reply the storm nearly ate"}],
+                     "stop_reason": "end_turn"}},
+    ]
+    growth = [
+        {"type": "system", "subtype": "api_error", "uuid": b(3), "parentUuid": b(1),
+         "timestamp": ts(6), "level": "error", "retryAttempt": 1, "maxRetries": 10,
+         "retryInMs": 1000, "source": "request_retry"},
+        {"type": "system", "subtype": "api_error", "uuid": b(4), "parentUuid": b(3),
+         "timestamp": ts(7), "level": "error", "retryAttempt": 2, "maxRetries": 10,
+         "retryInMs": 1049, "source": "request_retry"},
+        {"type": "system", "subtype": "stop_hook_summary", "uuid": b(5), "parentUuid": b(4),
+         "timestamp": ts(61), "level": "suggestion", "hookCount": 1},
+        {"type": "user", "uuid": b(6), "parentUuid": b(5), "timestamp": ts(120),
+         "promptSource": "typed", "message": {"role": "user", "content": "next ask after the storm"}},
+        {"type": "assistant", "uuid": b(7), "parentUuid": b(6), "timestamp": ts(130),
+         "message": {"role": "assistant",
+                     "content": [{"type": "text", "text": "clean reply on the next turn"}],
+                     "stop_reason": "end_turn"}},
+    ]
+    return prefix, growth
+
+
+class FlushOrphanEclipseEquivalence(unittest.TestCase):
+    """Growth THROUGH an api_error-flush orphaning parses identically warm and cold: before the
+    flush lands the reply is simply the leaf (active); the flush append bypasses it, and the
+    eclipse (fork probe + em._select_eclipsed_chains) must reach the same verdict from the incremental
+    cache's grew-branch reuse as from a byte-zero read — the compactcard precedent
+    (ManualCompactAdoptionEquivalence) extended to the eclipse."""
+
+    def setUp(self):
+        em._JSONL_CACHE.clear()
+        fd, self.p = tempfile.mkstemp(suffix=".jsonl")
+        os.close(fd)
+
+    def tearDown(self):
+        em._JSONL_CACHE.clear()
+        os.unlink(self.p)
+
+    def _reply_uuids(self, out):
+        return [a.get("uuid") for t in out["turns"] for a in t["atoms"]
+                if a.get("type") == "assistant"]
+
+    def test_growth_through_the_flush_eclipses_identically_warm_and_cold(self):
+        reply = "11111111-2222-3333-4444-%012d" % 2
+        prefix, growth = _flush_orphan_recs()
+        _write(self.p, prefix)
+        first = em.parse_session(self.p)                  # cold; primes the cache
+        self.assertIn(reply, self._reply_uuids(first), "pre-flush, the reply is simply the leaf")
+        _append(self.p, growth)
+        warm = em.parse_session(self.p)                   # rides the grew-branch reuse
+        self.assertEqual(em.parse_session(self.p), warm,
+                         "a re-parse from the warm cache is stable — the eclipse mutated no cached record")
+        em._JSONL_CACHE.clear()
+        cold = em.parse_session(self.p)
+        self.assertEqual(warm, cold, "grown through the flush: warm == cold, eclipse included")
+        self.assertIn(reply, self._reply_uuids(cold),
+                      "the bypassed reply survives the flush append")
+
+    def test_late_stub_pair_append_eclipses_identically_warm_and_cold(self):
+        # the write-order-drift append: a parallel tool-stub pair parented at the PRE-reply fork
+        # arrives AFTER the flush growth, so the stub records outrank every reply record in file
+        # order. Selection is by property, not byte order — warm and cold must both splice back
+        # the reply and leave the stubs dropped, in this order too.
+        b = lambda i: "11111111-2222-3333-4444-%012d" % i
+        reply = b(2)
+        prefix, growth = _flush_orphan_recs()
+        stub_pair = [
+            {"type": "assistant", "uuid": b(8), "parentUuid": b(1),
+             "timestamp": "2026-07-05T10:00:10Z",
+             "message": {"role": "assistant", "stop_reason": None,
+                         "content": [{"type": "tool_use", "id": "tu_8_0",
+                                      "name": "Bash", "input": {}}]}},
+            {"type": "user", "uuid": b(9), "parentUuid": b(8),
+             "timestamp": "2026-07-05T10:00:15Z",
+             "message": {"role": "user", "content": [{"type": "tool_result",
+                         "tool_use_id": "tu_8_0", "content": "ok"}]}},
+        ]
+        _write(self.p, prefix)
+        em.parse_session(self.p)                          # cold; primes the cache
+        _append(self.p, growth[:-1])                      # the flush spine, up to the next ask
+        em.parse_session(self.p)                          # warm mid-step: grew-branch reuse
+        _append(self.p, stub_pair + growth[-1:])          # stubs land LAST but before the true leaf
+        warm = em.parse_session(self.p)
+        em._JSONL_CACHE.clear()
+        cold = em.parse_session(self.p)
+        self.assertEqual(warm, cold, "grown through the late-stub append: warm == cold")
+        self.assertIn(reply, self._reply_uuids(cold),
+                      "the reply stays kept even when the stub chain is the newest write")
+        atom_uuids = {a.get("uuid") for t in cold["turns"] for a in t["atoms"]}
+        self.assertFalse({b(8), b(9)} & atom_uuids, "the stub chain stays dropped")
 
 
 if __name__ == "__main__":

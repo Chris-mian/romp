@@ -25,7 +25,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -35,7 +35,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_ownyield", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_ownyield", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-888888888888"
 TOP = SID + ":g1"
@@ -53,11 +53,11 @@ class OwnedYieldAwaiting(unittest.TestCase):
         km.jd.GOALDIR.mkdir(parents=True)
         self.path = str(td / (SID + ".jsonl"))
         Path(self.path).write_text("")
-        self.saved = {k: getattr(km, k) for k in ("_bg_live_norm", "_bg_placed_tops", "_tmux_sessions")}
+        self.saved = {k: getattr(km, k) for k in ("_bg_live_norm", "_bg_placed_tops", "_live_map")}
         # one live background task, attributed by the judge to TOP's subtree
         km._bg_live_norm = lambda sid, path: [{"tid": "t1", "desc": DESC, "t": DISPATCH, "type": ""}]
         km._bg_placed_tops = lambda sid, path, tids: {"t1": TOP}
-        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": DISPATCH, "model": "",
+        km._live_map = lambda: {SID: {"state": "waiting", "since": DISPATCH, "model": "",
                                            "effort": "", "context": None, "compactPct": None,
                                            "color": None}}
         km._SESSION_STAMP_CACHE.clear()
@@ -82,8 +82,25 @@ class OwnedYieldAwaiting(unittest.TestCase):
     def test_a_dispatch_that_outran_the_block_is_the_session_awaiting_why(self):
         self._store()
         why = km._owned_yield_why(SID, self.path)
-        self.assertEqual(why, "waiting on a background task: " + DESC,
+        # "command" since 2026-09-05 (slice 2 vocabulary: agents / commands / watches — "task" retired)
+        self.assertEqual(why, "waiting on a background command: " + DESC,
                          "the same why the card shows — one story, both surfaces")
+
+    def test_owned_yield_why_takes_the_shared_view(self):
+        # the rule's one store read takes the shared read-only view (kernel/judge.py load_goals_shared):
+        # it reads nodes and status and writes nothing
+        self._store()
+        km.jd._shared_clear()
+        private, o_load = [], km.jd.load_goals
+        km.jd.load_goals = lambda fsid: (private.append(fsid), o_load(fsid))[1]
+        stats0 = km.jd.shared_store_stats()
+        try:
+            why = km._owned_yield_why(SID, self.path)
+        finally:
+            km.jd.load_goals = o_load
+        self.assertEqual(why, "waiting on a background command: " + DESC)
+        self.assertEqual(private, [], "the writer's loader is never asked")
+        self.assertEqual(km.jd.shared_store_stats()["miss"] - stats0["miss"], 1)
 
     def test_a_dispatch_that_predates_the_block_proves_nothing(self):
         # the block is the NEWER event: the thread has not moved past it, so this is a genuine needs-you
@@ -113,8 +130,10 @@ class OwnedYieldAwaiting(unittest.TestCase):
     def test_the_session_surfaces_light_from_it_when_idle(self):
         self._store()
         self.assertEqual(km._session_awaiting(SID, self.path, True, stamp=True),
-                         {"kind": "task", "why": "waiting on a background task: " + DESC,
-                          "since": None},   # the owned-yield read has no single event time → no duration
+                         {"kind": "task", "why": "waiting on a background command: " + DESC,   # "command" (slice 2 vocabulary); the kind KEY stays "task"
+                          "since": None,   # the owned-yield read has no single event time → no duration
+                          "count": 1,    # one owned dispatch (T225)
+                          "items": []},  # the yield names no row (slice 2); the tracked task itself lists in the box
                          "the lane/chip say awaiting instead of READY")
 
     def test_the_feed_path_is_unchanged_no_session_wide_floor(self):

@@ -26,8 +26,8 @@ test("the label anchors to whichever stamp owns the top slot, and hands off at t
   assert.match(RENDER, /const realLeads = markerShown && markerTop >= slotLine;/,
     "the handoff threshold moves with the slot, so stamp and label swap on the same pixels");
   assert.match(RENDER, /stamp\.style\.top = slotLine \+ "px";/);
-  assert.match(RENDER, /m\.style\.visibility = top < slotLine \+ g\.height \? "hidden" : "";/,
-    "an incoming stamp hides before it can superimpose the sticky or the label riding above the slot");
+  assert.match(RENDER, /m\.style\.visibility = top < slotLine \+ stampH \? "hidden" : "";/,
+    "an incoming stamp hides before it can superimpose the sticky or the label riding above the slot (the sticky's own band: two lines for a today label, T406)");
   assert.match(RENDER, /if \(slotTop > cBottom\) \{ day\.style\.display = "none"; return; \}/,
     "an off-screen anchor paints nothing");
   assert.match(RENDER, /\} else day\.style\.display = "none";/, "today → the label hides, never lingers stale");
@@ -49,7 +49,7 @@ test("the label rides ABOVE the stamp and never clips at the pane's left edge", 
   // nothing crosses the label's path — and the clamp keeps it off the tab bar in every case.
   assert.match(RENDER, /day\.style\.top = Math\.max\(cTop \+ 1, slotTop - dayH - 4\) \+ "px";/);
   // Natural width, right edge on the gutter's right edge, left edge never past the pane's:
-  // "2 days ago" at 0.68em is wider than the 47px gutter, and the old box pinned to the gutter's
+  // "2 days ago" at 0.66em is wider than the 47px gutter, and the old box pinned to the gutter's
   // left/width clipped its leading digit at the pane edge (the user 2026-08-18, with a screenshot).
   assert.match(RENDER, /day\.style\.left = Math\.max\(3, gRect!\.right - dayW \+ 1\) \+ "px";/);
   assert.doesNotMatch(RENDER, /day\.style\.width/, "no width pin — the box shrinkwraps its text");
@@ -57,7 +57,7 @@ test("the label rides ABOVE the stamp and never clips at the pane's left edge", 
 
 test("the label is passive fixed chrome, smaller and dimmer than the stamp", () => {
   assert.match(CSS, /\.rail-day \{\s*\n\s*position: fixed; z-index: 3; pointer-events: none; white-space: nowrap; line-height: 1;/);
-  assert.match(CSS, /font-size: 0\.68em; letter-spacing: 0\.03em; color: var\(--dim\); opacity: 0\.85;/,
+  assert.match(CSS, /font-size: 0\.66em; letter-spacing: 0\.03em; color: var\(--dim\); opacity: 0\.85;/,
     "context, not the time itself — smaller and dimmer than the stamp");
 });
 
@@ -116,4 +116,28 @@ test("executed: no label (today) leaves the slot line AT the line — today's la
 
 test("executed: an anchor below the pane's bottom paints nothing", () => {
   assert.equal(placeDay({ ...G, label: "Yesterday", dayW: 45, slotTop: 701 }).show, false);
+});
+
+// T342 (the manager's review of T339): the day label read the top row's OWN epoch, so a stale echo at the top line (an
+// undelivered notice the kernel merges into the last turn by its send time) said "2 days ago" between rows the divider
+// walk keeps under one "Yesterday". The label now reads the WALK's day at that row: the high-water mark after the row's
+// unit, stamped on the marker as data-day by the walk itself (appendItem, the normal-mode tail loop); the row's own epoch
+// stays the fallback and the rail's HH:MM stays the row's own. DayWalk.pass returning the mark is executed in
+// time-marker.test.ts on the two reported sequences.
+test("the day label reads the walk's day at the top row (data-day), never the row's own moment (T342)", () => {
+  assert.match(RENDER, /const ep = anchorM \? Number\(anchorM\.dataset\.day \|\| anchorM\.dataset\.epoch \|\| 0\) : 0;/, "the walk's day first, the row's own as the fallback");
+  const st = RENDER.slice(RENDER.indexOf("function stampWalkDay("), RENDER.indexOf("function dayWalkBefore("));
+  assert.match(st, /const m = node\.firstChild as HTMLElement \| null;/);
+  assert.match(st, /if \(walk\.mark != null && m && m\.nodeType === 1 && m\.classList && m\.classList\.contains\("time-marker"\)\) m\.dataset\.day = String\(walk\.mark\);/, "the marker carries the mark; a divider or an untimed row is left alone");
+  // stamped by both walks that paint the chat: the unit path after its exit passed, the tail loop after each row
+  assert.match(RENDER, /walk\.pass\(unitExit\(s, it\)\);[^\n]*\n\s*for \(const n of nodes\) if \(!stamped\.has\(n\)\) stampWalkDay\(n, walk\);/);
+  // an EXPANDED tool run: the head is timed by its first member and each row by its own, so each is stamped as the walk passes
+  // it (a run spanning midnight put today's mark on yesterday's rows otherwise: the review's find); the exit stamp skips them
+  const tg = RENDER.slice(RENDER.indexOf('if (it.kind === "toolgroup") {', RENDER.indexOf("function appendItem(")), RENDER.indexOf('} else if (it.kind === "noticegroup") {', RENDER.indexOf("function appendItem(")));
+  assert.match(tg, /walk\.pass\(eventEpoch\(first\)\); stampWalkDay\(head, walk\); stamped\.add\(head\);/, "the head in the first member's day");
+  assert.match(tg, /v\.el\.appendChild\(tag\(child\)\); adv\(i\);\s*\n\s*walk\.pass\(eventEpoch\(s\.events\[i\]\)\); stampWalkDay\(child, walk\); stamped\.add\(child\);/, "each row in its own");
+  assert.match(RENDER, /const stamped = new Set<HTMLElement>\(\);/);
+  assert.match(RENDER, /walk\.pass\(ep\);\s*\n\s*stampWalkDay\(node, walk\);/);
+  assert.match(RENDER, /const tag = \(node: HTMLElement\): HTMLElement => \{ node\.dataset\.unit = String\(u\); if \(turnOf != null\) node\.dataset\.turn = turnOf; nodes\.push\(node\); return node; \};/, "every node the unit appends is collected for the stamp");
+  assert.match(RENDER, /m\.dataset\.epoch = String\(epoch\);/, "the row's own moment still rides the marker (deep links, hover, the fallback)");
 });

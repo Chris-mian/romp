@@ -11,7 +11,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -22,7 +22,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_wdk", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_wdk", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-888888888888"    # the wait's holder
 PEER = "99999999-aaaa-bbbb-cccc-dddddddddddd"   # the awaited local peer
@@ -92,13 +92,13 @@ class _Base(unittest.TestCase):
             "rompUuid": SID, "seq": 1, "placements": {},
             "status": {self.gid: "working"}, "nodes": {self.gid: nd}}))
 
-    def _wake(self, tmux):
+    def _wake(self, live):
         km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()
         store = km.jd.load_goals(SID)
         stamp = km._goal_awaiting_stamp_full(store.get("nodes", {}), self.gid)
         self.assertIsNotNone(stamp)
         return km._wake_goal(SID, self.gid, stamp, dict(km._auto_nudge_data().get("nudged", {})),
-                             self.turns, store, NOW, self.turns[-1], tmux)
+                             self.turns, store, NOW, self.turns[-1], live)
 
 
 class DeadmanKinds(_Base):
@@ -136,7 +136,7 @@ class PeerDeathConversion(_Base):
         (km.jd.GOALDIR / (PEER + ".json")).write_text(json.dumps(
             {"rompUuid": PEER, "seq": 0, "placements": {}, "status": {}, "nodes": {}}))
         saved = (km._dead_wait_corroborated, km._name_of, getattr(km, "_PREV_ALIVE"))
-        km._dead_wait_corroborated = lambda sid, scan=None, stats=None: True
+        km._dead_wait_corroborated = lambda sid, stats=None, now=None: True   # the sweep passes its clock
         km._name_of = lambda sid: "worker_two"
         km._PREV_ALIVE = {SID, PEER}
         try:

@@ -24,24 +24,63 @@ export interface FeedViewState {
   nodes: string[];               // "askId:nodeId" — COLLAPSED modal tree nodes (inverted sense, see feed.ts)
   logs: string[];                // "askId:nodeId" — expanded per-node log stories
   asks: string[];                // expanded ask itemIds
-  // COLLAPSED session sids (inverted sense, like `nodes`): in grouped mode the thread shows its header
-  // alone. Keyed by SESSION, not by card, because the point is that cards which do not exist yet inherit
-  // it — see the prune exemption below.
+  // COLLAPSED session runs (inverted sense, like `nodes`): in grouped mode the run shows its header alone.
+  // Keyed by (SESSION, COLUMN) — threadKey — never by card, because the point is that cards which do not
+  // exist yet inherit it (see the prune exemption below); per COLUMN (T263c, the user 2026-09-08) so a
+  // session's Blocked run folds while its Working run stays open. A bare sid is the pre-T263c spelling
+  // and reads as every column (threadKeys), so yesterday's folds survive the upgrade.
   threads: string[];
   // Stacked-layout COLUMN state (the user 2026-08-16): collapsed column keys ("asks"/"needsInput"/
-  // "completed") and the user's dragged column order. Both describe the LAYOUT, not any card, so both
-  // are prune-EXEMPT like `threads` and bounded by their three known keys instead.
+  // "completed", and since phase four a data board's `<board>:<category>`) and the user's dragged column
+  // order (the feed's alone: a data board's columns keep their definition's order until phase five). Both
+  // describe the LAYOUT, not any card, so both are prune-EXEMPT like `threads` and bounded by their key grammar.
   cols: string[];
   order: string[];
+  // The feed's FOCUSED SESSION section (T347, the user 2026-09-11, who wanted the focused session's cards
+  // on top): whether the feed shows the chat pane's active session as a miniature above a divider. OFF by
+  // default. A view switch, not a card: prune-EXEMPT like `cols`/`order`, and not counted by the cap.
+  focused: boolean;
+  // The focused-session section's OWN block layout (T410, the user 2026-09-13, who wanted the section's blocks
+  // movable, resizable and collapsible on their own): `focusOrder` is the section's dragged block order ([] =
+  // follow the board's arrangement, as before); `focusW` the blocks' flex weights by column key (a missing key
+  // = 1, the equal split); `focusCols` the collapsed block keys, applied to WHICHEVER session is focused (a
+  // block folded on one focused session is folded for the next). Layout state, not card state: all three are
+  // prune-EXEMPT like `cols`/`order`, bounded by the three known keys, and never counted by the cap.
+  focusOrder: string[];
+  focusW: Record<string, number>;
+  focusCols: string[];
+  // The whole section folded to its label (T410b, the user 2026-09-14): "Current session: <name>" alone, the
+  // blocks and their cards hidden under it. A view switch like `focused`: prune-EXEMPT, not counted by the cap,
+  // false by default, and only the literal `true` folds it.
+  focusFolded: boolean;
+  // The BOARD the feed pane shows (plans/card-boards.md, phase four): "" is the feed, else a data-defined board's id, picked
+  // from the View menu's Board rows. A view switch like `focused`: prune-EXEMPT, not counted by the cap; an id outside the
+  // board grammar reads as the feed. A pick naming a board the frame no longer carries KEEPS its id here (the renderer
+  // shows the feed and says so), so the board comes back on its own when the frame carries it again.
+  board: string;
 }
 
 export const VIEW_STATE_KEY = "romp:feedview";
+
+/** The feed's three columns, as the fold and layout state key them. */
+export const FEED_COLUMNS = ["asks", "needsInput", "completed"] as const;
+export type FeedColumn = typeof FEED_COLUMNS[number];
+const THREAD_SEP = "\u0000";   // a sid is a uuid (or host:uuid) and never carries a NUL
+/** The persisted key for one session's run in one column (T263c). */
+export function threadKey(sid: string, col: string): string { return sid + THREAD_SEP + col; }   // the column key: the feed's three, or a data board's category id (phase four)
+/** The keys a STORED entry stands for: a (sid, column) key is itself; a bare sid — the pre-T263c spelling,
+ *  when a fold covered the session everywhere — is every column, so an old fold keeps folding until the
+ *  user opens a column. */
+export function threadKeys(stored: string): string[] {
+  return stored.includes(THREAD_SEP) ? [stored] : FEED_COLUMNS.map((c) => threadKey(stored, c));
+}
 // Backstop only. The live-set prune below bounds the real size to what is on screen; this exists so a bug in
 // that rule can never grow the entry unboundedly and wedge localStorage.
 export const VIEW_STATE_CAP = 4000;
 
 export function emptyViewState(): FeedViewState {
-  return { v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [], cols: [], order: [] };
+  return { v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [], cols: [], order: [], board: "",
+           focused: false, focusOrder: [], focusW: {}, focusCols: [], focusFolded: false };
 }
 
 /** Parse a stored blob. ANY malformed/foreign/old-version value reads as empty rather than throwing — a
@@ -57,11 +96,35 @@ export function parseViewState(raw: string | null | undefined): FeedViewState {
       for (const [k, v] of Object.entries(o.sec as Record<string, unknown>)) if (typeof v === "string") sec[k] = v;
     }
     // `threads` post-dates v1 blobs, so a stored entry without it reads as "nothing collapsed" rather
-    // than as corrupt — no version bump, and yesterday's saved sections survive the upgrade.
+    // than as corrupt — no version bump, and yesterday's saved sections survive the upgrade. `focused`
+    // (T347) is the same shape: a new key under the same v, so a blob saved before it, or one carrying a
+    // foreign-typed value, reads as the default (OFF) and keeps everything else it stored. Only the
+    // literal `true` switches it on.
+    // known keys only, each ONCE (T410 review): a three-long order of one repeated key read as a complete order and
+    // wedged the section's drag (hand-edited storage is the only writer of such a blob; the widget prefs dedupe the same way)
     const col = (x: unknown): string[] =>
-      arr(x).filter((k) => k === "asks" || k === "needsInput" || k === "completed");
+      Array.from(new Set(arr(x).filter((k) => k === "asks" || k === "needsInput" || k === "completed")));
+    // a data board's column FOLD is keyed `<board>:<category>` (phase four): the feed's three names, or two ids in the board grammar
+    const foldKeys = (x: unknown): string[] =>
+      Array.from(new Set(arr(x).filter((k) => k === "asks" || k === "needsInput" || k === "completed" || /^[a-z][a-z0-9_-]{0,31}:[a-z][a-z0-9_-]{0,31}$/.test(k))));
+    // the section's block weights (T410): the three known keys only, each a finite positive number; anything
+    // else is dropped at the gate and that block reads as weight 1. A blob saved before T410 reads as the
+    // defaults for all three fields (follow the board, equal split, nothing folded), same shape as `focused`.
+    const weights = (x: unknown): Record<string, number> => {
+      const w: Record<string, number> = {};
+      if (x && typeof x === "object") {
+        for (const k of FEED_COLUMNS) {
+          const v = (x as Record<string, unknown>)[k];
+          if (typeof v === "number" && Number.isFinite(v) && v > 0) w[k] = v;
+        }
+      }
+      return w;
+    };
     return { v: 1, sec, tree: arr(o.tree), nodes: arr(o.nodes), logs: arr(o.logs), asks: arr(o.asks),
-             threads: arr(o.threads), cols: col(o.cols), order: col(o.order) };
+             threads: arr(o.threads), cols: foldKeys(o.cols), order: col(o.order), focused: o.focused === true,
+             focusOrder: col(o.focusOrder), focusW: weights(o.focusW), focusCols: col(o.focusCols),
+             focusFolded: o.focusFolded === true,
+             board: typeof o.board === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(o.board) && o.board !== "feed" ? o.board : "" };
   } catch {
     return emptyViewState();
   }
@@ -100,18 +163,26 @@ export function keyIsLive(key: string, liveIds: Set<string>): boolean {
  *  everything the user just restored.
  *
  *  `threads` is EXEMPT, deliberately. Every other entry describes a card, so a card that is gone makes its
- *  entry meaningless; a collapsed thread describes a SESSION, and its whole purpose is to hold while that
- *  session has no cards on the board so the next one arrives collapsed too. Pruning it against the live set
+ *  entry meaningless; a collapsed thread describes a SESSION's run in a column, and its whole purpose is to
+ *  hold while that run has no cards on the board so the next one arrives collapsed too. Pruning it against the live set
  *  would silently re-expand a thread the moment its last card cleared — exactly the "collapse it and it
- *  stays collapsed" the feature is for. It is bounded by the cap instead. */
+ *  stays collapsed" the feature is for. It is bounded by the cap instead.
+ *
+ *  `cols`, `order`, `focused` and the section's `focusOrder`/`focusW`/`focusCols`/`focusFolded` are exempt for
+ *  the plainer reason that they describe the VIEW (the column layout, the focused-session switch, its block
+ *  layout and its fold) and name no card at all; there is nothing to prune them against. */
 export function pruneViewState(s: FeedViewState, liveIds: Set<string>): FeedViewState {
   const sec: Record<string, string> = {};
   for (const [k, v] of Object.entries(s.sec)) if (keyIsLive(k, liveIds)) sec[k] = v;
   const keep = (xs: string[]) => xs.filter((k) => keyIsLive(k, liveIds));
   return capViewState({ v: 1, sec, tree: keep(s.tree), nodes: keep(s.nodes), logs: keep(s.logs),
-                        asks: keep(s.asks), threads: s.threads, cols: s.cols, order: s.order });
+                        asks: keep(s.asks), threads: s.threads, cols: s.cols, order: s.order,
+                        focused: s.focused, focusOrder: s.focusOrder, focusW: s.focusW, focusCols: s.focusCols,
+                        focusFolded: s.focusFolded, board: s.board });
 }
 
+// `cols`/`order`/`focusOrder`/`focusCols` (three known keys each), `focusW` (three weights) and `focused` /
+// `focusFolded` (one boolean each) are fixed-size view state and never count.
 export function viewStateSize(s: FeedViewState): number {
   return Object.keys(s.sec).length + s.tree.length + s.nodes.length + s.logs.length + s.asks.length
     + s.threads.length;
@@ -120,7 +191,9 @@ export function viewStateSize(s: FeedViewState): number {
 /** Backstop trim. Order is deliberate: the per-card SECTION choice is the state the user notices losing, so
  *  it is trimmed last; the per-node tree/log expansions are cheap to re-open and go first. Collapsed
  *  THREADS sit just above sec — they are few (one per session, not per card) and the most durable choice
- *  here, so they are the last thing to give before the sections do. */
+ *  here, so they are the last thing to give before the sections do. The view fields (`cols`, `order`,
+ *  `focused`, `focusOrder`, `focusW`, `focusCols`, `focusFolded`) ride through the spread untouched: they are
+ *  not entries and the cap never trims them. */
 export function capViewState(s: FeedViewState, cap: number = VIEW_STATE_CAP): FeedViewState {
   let over = viewStateSize(s) - cap;
   if (over <= 0) return s;

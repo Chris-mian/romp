@@ -1,0 +1,152 @@
+{
+ "color": "#888888",
+ "dir": "/TESTDIR",
+ "landedTextUuids": [
+  "a1",
+  "a2",
+  "a3"
+ ],
+ "leafFsid": "11111111-2222-3333-4444-555555555555",
+ "name": "impl",
+ "rompUuid": "11111111-2222-3333-4444-555555555555",
+ "skillLoads": {},
+ "turns": [
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "please chart the throughput numbers",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": null,
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096400,
+     "type": "user",
+     "uuid": "u1"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Charting the throughput numbers now.",
+        "type": "text"
+       },
+       {
+        "id": "tu_a1_0",
+        "input": {},
+        "name": "Bash",
+        "type": "tool_use"
+       }
+      ],
+      "role": "assistant"
+     },
+     "parentUuid": "u1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096430,
+     "type": "assistant",
+     "uuid": "a1"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "content": "ok",
+        "tool_use_id": "tu_a1_0",
+        "type": "tool_result"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "a1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096440,
+     "type": "user",
+     "uuid": "tr1"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Throughput rises linearly until the cache saturates.",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "tr1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096460,
+     "type": "assistant",
+     "uuid": "a2"
+    }
+   ],
+   "end": 1781096460,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:7c744a9a",
+   "t": 1781096400,
+   "trigger": {
+    "uuid": "u1"
+   }
+  },
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "thanks - now label the axes",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "sh1",
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096520,
+     "type": "user",
+     "uuid": "u2"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Labeled both axes.",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u2",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096550,
+     "type": "assistant",
+     "uuid": "a3"
+    }
+   ],
+   "end": 1781096550,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096520:a0c6234d",
+   "t": 1781096520,
+   "trigger": {
+    "uuid": "u2"
+   }
+  }
+ ]
+}

@@ -85,6 +85,11 @@ test("the mark goes on the HOST token, never on the session name", () => {
   // (2026-07-30: the cue became the STALE treatment — dim italic, dotted underline — because
   // strikethrough claimed the session was gone when it is the LINK that is down. See host-offline-ux.)
   assert.match(CSS, /\.host-prefix\.off \{[\s\S]*?text-decoration: underline dotted 1px/);
+  // the two rules that both set the token's opacity (T335 review): the at-rest fade (0.5) and this cue (0.75). The fade wins
+  // by SPECIFICITY through its compound selector, whatever their order in the sheet: an at-rest label on a down host fades
+  // with its name and still wears the cue's italic and dotted underline
+  assert.match(CSS, /^\.name-faded \.host-prefix, \.name-faded \.host-prefix\.off \{ opacity: var\(--host-fade, 0\.5\); \}/m, "the fade names the .off token too");
+  assert.match(CSS, /^\.host-prefix\.off \{\s*\n\s*opacity: 0\.75;/m, "the cue keeps its own opacity for an active label's token");
   assert.match(FEEDCSS, /\.host-prefix\.off \{[\s\S]*?text-decoration: underline dotted 1px/,
     "the feed page loads only feed.css");
 });
@@ -125,7 +130,7 @@ test("the note the tab carries on hover is still the one wording of it", () => {
 });
 
 test("both surfaces repaint on the reachability event", () => {
-  assert.match(RENDER, /window\.addEventListener\("romp-hosts", \(\) => \{ renderTabs\(\); \}\)/);
+  assert.match(RENDER, /window\.addEventListener\("romp-hosts", \(\) => \{ renderTabs\(\); syncComposerPh\(\); \}\)/, "the strip and the composer's name overlay (its host span wears the same mark, T328) repaint together");
   assert.match(TL, /window\.addEventListener\('romp-hosts', this\._onHosts\)/);
   assert.match(TL, /window\.removeEventListener\('romp-hosts', this\._onHosts\)/, "and let go on teardown");
 });

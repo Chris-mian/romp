@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""The SessionBackend contract (the user 2026-06-26): tmux + SDK behind ONE clean session API, and NOTHING
-above the backend shells tmux. These tests pin (a) both backends honor the ABC and (b) the no-raw-tmux
-guard — so a future tmux leak into the higher layers fails CI instead of silently rotting the abstraction.
+"""The SessionBackend contract (the user 2026-06-26): every backend behind ONE clean session API, and NOTHING
+above the backend shells a terminal. Written when the backends were tmux and the SDK; since the tmux
+backend's removal (2026-09-11) they are Claude Code (the SDK) and Codex. These tests pin (a) the shipped
+backends honor the ABC and (b) the no-raw-tmux guard — so a tmux call written anywhere fails CI instead of
+re-coupling romp to a backend it no longer has.
 """
 import os
 import re
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -15,7 +17,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-sb = SourceFileLoader("romp_session_backend", os.path.join(BIN, "romp_session_backend.py")).load_module()
+sb = load_source("romp_session_backend", os.path.join(BIN, "romp_session_backend.py"))
 
 ABSTRACT = sorted(sb.SessionBackend.__abstractmethods__)
 
@@ -36,15 +38,71 @@ class AbcContract(unittest.TestCase):
 
     def test_forwards_sends_capability(self):
         # forwards_sends is a CONCRETE default (False) on the ABC — the kernel holds + merges a backend's
-        # sends when it can't forward them itself (tmux inherits this). The SDK overrides it True so the
+        # sends when it can't forward them itself (the removed tmux backend inherited it). The SDK overrides it True so the
         # kernel hands it composer sends mid-turn (the user 2026-07-17). SDK checked at the source level.
         self.assertNotIn("forwards_sends", ABSTRACT,
                          "forwards_sends is a concrete default, not part of the abstract contract")
         self.assertFalse(sb.SessionBackend.forwards_sends(object()),
-                         "the ABC default is False (hold + merge, like tmux)")
+                         "the ABC default is False (hold + merge, as the removed tmux backend did)")
         src = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
         m = re.search(r"def forwards_sends\(self\)[\s\S]*?\n        return (\w+)", src)
         self.assertTrue(m and m.group(1) == "True", "SdkBackend.forwards_sends returns True")
+
+    def test_move_is_a_concrete_default_that_refuses_and_the_sdk_implements_it(self):
+        # move (the user 2026-09-01: a session follows a subproject promoted to its own repo) is a
+        # CONCRETE default on the ABC — a backend with no relocation primitive answers with the reason,
+        # never "" (which would read as success), never "busy" (which would park a retry forever) and
+        # never a raise. The SDK backend implements it over the CLI's set_cwd control request; asserted
+        # at the source level like the abstract set.
+        self.assertNotIn("move", ABSTRACT, "move is a concrete default (a backend without one inherits the refusal)")
+        why = sb.SessionBackend.move(object(), "sid", "/tmp")
+        self.assertIsInstance(why, str)
+        self.assertTrue(why, "the default is a REASON, not an empty success")
+        self.assertNotEqual(why, "busy")
+        self.assertIn("no way to move", why)
+        src = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
+        self.assertIn("\n    def move(self, sid: str, new_cwd: str) -> str:", src,
+                      "SdkBackend implements move")
+
+    def test_clear_is_a_concrete_default_that_refuses_and_codex_implements_it(self):
+        # clear (2026-09-19: a typed /clear on a Codex session starts a fresh conversation for the SAME
+        # session) is a CONCRETE default on the ABC in move()'s idiom — a backend with no way to restart
+        # its conversation answers with the reason, never "" (which would read as success), never "busy"
+        # (which would park a retry forever) and never a raise; worded for no backend in particular, so a
+        # new backend never reads as clearable by omission, and without the word "backend", which reaches a
+        # toast. CodexBackend implements it (a new app-server thread under the same sid); the SDK backend
+        # does not (the CLI executes the text), asserted at the source level like the abstract set.
+        self.assertNotIn("clear", ABSTRACT, "clear is a concrete default (a backend without one inherits the refusal)")
+        why = sb.SessionBackend.clear(object(), "sid")
+        self.assertIsInstance(why, str)
+        self.assertTrue(why, "the default is a REASON, not an empty success")
+        self.assertNotEqual(why, "busy")
+        self.assertIn("fresh conversation", why)
+        self.assertNotIn("backend", why, "a toast in the user's terms")
+        src = open(os.path.join(os.path.dirname(HERE), "kernel", "codex_backend.py"), encoding="utf-8").read()
+        self.assertIn("\n    def clear(self, sid, text=\"/clear\"):", src,
+                      "CodexBackend implements clear, and takes the command as typed for its chip (2026-09-19)")
+        sdk = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
+        self.assertNotIn("\n    def clear(self, sid", sdk, "the SDK backend leaves /clear to the CLI")
+
+    def test_compact_is_a_concrete_default_that_refuses_and_codex_implements_it(self):
+        # compact (2026-09-19: Codex compacts a conversation natively, thread/compact/start) is a CONCRETE default on
+        # the ABC in move()'s and clear()'s idiom — a backend with no compaction verb of its own answers with the
+        # reason, never "" (which would read as a compaction started), never "busy" (which would park a retry
+        # forever) and never a raise; worded for no backend in particular and without the word "backend", which
+        # reaches a toast. CodexBackend implements it; the SDK backend does not (a typed /compact goes to the CLI
+        # as text, which executes it), asserted at the source level like the abstract set.
+        self.assertNotIn("compact", ABSTRACT, "compact is a concrete default (a backend without one inherits the refusal)")
+        why = sb.SessionBackend.compact(object(), "sid")
+        self.assertIsInstance(why, str)
+        self.assertTrue(why, "the default is a REASON, not an empty success")
+        self.assertNotEqual(why, "busy")
+        self.assertIn("compact", why)
+        self.assertNotIn("backend", why, "a toast in the user's terms")
+        src = open(os.path.join(os.path.dirname(HERE), "kernel", "codex_backend.py"), encoding="utf-8").read()
+        self.assertIn("\n    def compact(self, sid):", src, "CodexBackend implements compact")
+        sdk = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
+        self.assertNotIn("\n    def compact(self, sid", sdk, "the SDK backend leaves /compact to the CLI")
 
     def test_sdk_backend_honors_every_abstract_method(self):
         # SdkBackend is SDK-gated so it can't import the ABC when the dep is absent; it conforms by
@@ -54,6 +112,17 @@ class AbcContract(unittest.TestCase):
         defs = set(re.findall(r"\n    def ([a-z_]+)\s*\(", src))
         for m in ABSTRACT:
             self.assertIn(m, defs, "SdkBackend must implement the SessionBackend method %s" % m)
+
+    def test_control_setters_document_their_per_backend_mechanics(self):
+        # set_model, set_effort and set_fast land DIFFERENTLY on the two backends — the SDK switches
+        # model live over its control request but RECONNECTS for effort; Codex persists the value on
+        # its registry row and applies it at the next turn — and the contract is where a reader
+        # learns that, so each carries a docstring naming its mechanism. One distinctive word per
+        # method keeps the pin honest without freezing the prose (or its case: the prose may shout it).
+        for m, word in (("set_model", "control"), ("set_effort", "reconnect"), ("set_fast", "connect")):
+            doc = getattr(sb.SessionBackend, m).__doc__ or ""
+            self.assertTrue(doc.strip(), "SessionBackend.%s carries a docstring" % m)
+            self.assertIn(word, doc.lower(), "SessionBackend.%s's docstring names its mechanism (%r)" % (m, word))
 
 
 # quoted-literal markers — a raw `["tmux"` subprocess list, a tmux SUBCOMMAND string arg, or a tmux @-var
@@ -81,40 +150,49 @@ def _scan_tmux(text, skip_span=None):
     return out
 
 
-class NoRawTmuxOutsideTmuxBackend(unittest.TestCase):
-    """The leak guard (the user 2026-06-26): raw tmux lives ONLY in bin/romp-kernel's TmuxBackend class; the
-    higher layers (build_*, the _drive dispatch, GET /sessions, the postal bus) speak the SessionBackend API.
-    A future tmux call shelled outside the class fails CI instead of silently re-coupling the kernel to tmux."""
+class NoRawTmuxAnywhere(unittest.TestCase):
+    """The leak guard, inverted (the user 2026-06-26 wanted raw tmux confined to one class; since the tmux
+    backend's removal on 2026-09-11 there is no such class): NO kernel module and no bin/ Python entry point
+    holds a raw tmux marker. A tmux call written anywhere fails CI instead of silently re-coupling romp to a
+    backend it no longer has. Quoted literals only (_TMUX_MARKERS), so history in comments and docstrings
+    is not flagged."""
 
-    KERNEL = os.path.join(BIN, "romp-kernel")
+    KERNEL_DIR = os.path.join(os.path.dirname(BIN), "kernel")
 
-    def _span(self, lines):
-        start = next(i for i, l in enumerate(lines) if l.startswith("class TmuxBackend("))
-        end = next((i for i in range(start + 1, len(lines))
-                    if lines[i] and lines[i][0] not in " \t#)"), len(lines))
-        return start, end
+    def _sources(self):
+        out = [os.path.join(self.KERNEL_DIR, f) for f in sorted(os.listdir(self.KERNEL_DIR)) if f.endswith(".py")]
+        out += [os.path.join(os.path.dirname(BIN), "cli", f)
+                for f in sorted(os.listdir(os.path.join(os.path.dirname(BIN), "cli"))) if f.endswith(".py")]
+        return out
 
-    def test_no_raw_tmux_outside_the_class(self):
-        lines = open(self.KERNEL, encoding="utf-8").read().split("\n")
-        leaks = _scan_tmux("\n".join(lines), skip_span=self._span(lines))
-        self.assertEqual(leaks, [], "raw tmux leaked outside TmuxBackend:\n"
-                         + "\n".join("  L%d [%s]: %s" % x for x in leaks))
+    def test_no_raw_tmux_in_any_kernel_or_cli_module(self):
+        leaks = []
+        for path in self._sources():
+            for lineno, desc, line in _scan_tmux(open(path, encoding="utf-8").read()):
+                leaks.append("  %s:%d [%s]: %s" % (os.path.basename(path), lineno, desc, line))
+        self.assertEqual(leaks, [], "raw tmux in a kernel module:\n" + "\n".join(leaks))
 
-    def test_the_class_actually_owns_the_raw_tmux(self):
-        # so the span exclusion above isn't vacuously passing — the raw tmux really IS in the class
-        lines = open(self.KERNEL, encoding="utf-8").read().split("\n")
-        start, end = self._span(lines)
-        body = "\n".join(lines[start:end])
-        self.assertIn('["tmux"]', body, "TmuxBackend holds the raw tmux subprocess primitives")
-        self.assertIn('"send-keys"', body)
-        self.assertIn('"list-sessions"', body)
+    def test_the_backend_class_and_its_module_are_gone(self):
+        src = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
+        self.assertNotIn("class TmuxBackend(", src)
+        self.assertNotIn("_TMUX = ", src)
+        self.assertFalse(os.path.exists(os.path.join(self.KERNEL_DIR, "tmux_socket.py")))
+        self.assertFalse(os.path.exists(os.path.join(self.KERNEL_DIR, "askparse.py")))
+
+    def test_an_unowned_sid_routes_to_a_refusing_backend(self):
+        # Sessions.backend_for used to fall to the tmux backend, whose send accepted anything; the unowned
+        # route refuses by name (decision (c) of the removal)
+        src = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
+        self.assertIn("class _UnownedBackend(sb.SessionBackend):", src)
+        self.assertIn("return _UNOWNED", src)
 
 
 class PostalIsFullyTmuxFree(unittest.TestCase):
-    """P3 complete: the postal bus (a SEPARATE process) reaches tmux ONLY through the kernel's session API —
-    session enumeration, the working-note, mail delivery/wake, the resume-picker check, and the status-bar
-    mail/peer/message chrome all go over HTTP. So bin/romp-postal shells NO tmux at all; a regression fails CI
-    instead of silently re-coupling the bus to tmux. (the user 2026-06-26.)"""
+    """P3 complete: the postal bus (a SEPARATE process) reaches every session ONLY through the kernel's
+    session API — session enumeration, the working-note and mail delivery/wake go over HTTP. So
+    bin/romp-postal shells NO tmux at all; a regression fails CI instead of silently re-coupling the bus to a
+    backend. (the user 2026-06-26.) The status-bar chrome and picker-check routes it once called left with
+    the tmux backend (2026-09-11) and must not come back."""
 
     POSTAL = os.path.join(BIN, "romp-postal-service")
 
@@ -131,9 +209,10 @@ class PostalIsFullyTmuxFree(unittest.TestCase):
 
     def test_the_bus_reaches_the_kernel_for_every_session_op(self):
         src = open(self.POSTAL, encoding="utf-8").read()
-        for ep in ('"/sessions"', '"/working"', '"/deliver"', '"/picker-check"',
-                   '"/mail-badge"', '"/deliver-chrome"', '"/reconcile-peers"'):
+        for ep in ('"/sessions"', '"/working"', '"/deliver"'):
             self.assertIn(ep, src, "the bus reaches the kernel endpoint %s" % ep)
+        for ep in ('"/picker-check"', '"/mail-badge"', '"/deliver-chrome"', '"/reconcile-peers"'):
+            self.assertNotIn(ep, src, "a retired status-bar route is back in the bus: %s" % ep)
 
 
 if __name__ == "__main__":

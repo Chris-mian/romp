@@ -8,6 +8,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { DEFAULT_CHORDS } from "./commands";
+import { loadSettings, OPTIONAL_PANES } from "./settings";
 
 const read = (f: string) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", f), "utf8");
 const PALETTE = read("palette.ts");
@@ -40,10 +41,10 @@ test("running an item closes the palette FIRST so its own modal never lands unde
 
 test("session rows wear the TAB identity language: bold name in the session color, host: prefix dim italic", () => {
   // the user 2026-08-08: visual consistency across surfaces — .tab.colored .tab-label is 600-weight
-  // in the identity color; .host-prefix is dim italic at 0.88em. The switcher copies both, and the
+  // in the identity color; .host-prefix is dim italic at 0.86em. The switcher copies both, and the
   // fuzzy-match marks underline instead of recoloring so the identity color stays intact.
   assert.match(PALETTE, /\.rpal-name\{font-weight:600\}/);
-  assert.match(PALETTE, /\.rpal-host\{color:#9aa0a6;font-weight:400;font-style:italic;font-size:0\.88em\}/);
+  assert.match(PALETTE, /\.rpal-host\{color:#9aa0a6;font-weight:400;font-style:italic;font-size:0\.86em\}/);
   assert.match(PALETTE, /\.rpal-name b,\.rpal-host b\{color:inherit;font-weight:inherit;text-decoration:underline\}/);
   assert.match(PALETTE, /n\.style\.color = item\.color;/);
   assert.match(PALETTE, /\.rpal-dim\{[^}]*font-size:11px/);
@@ -53,7 +54,7 @@ test("session rows wear the TAB identity language: bold name in the session colo
   // …and the same treatment the tabs use, pinned at its source so the two can't drift silently
   const STYLES = read("styles.css");
   assert.match(STYLES, /\.tab\.colored \.tab-label \{ color: var\(--chip-bg\); font-weight: 600; \}/);
-  assert.match(STYLES, /\.host-prefix \{ color: var\(--dim\); font-weight: 400; font-style: italic; font-size: 0\.88em; \}/);
+  assert.match(STYLES, /\.host-prefix \{ color: var\(--dim\); font-weight: 400; font-style: italic; font-size: 0\.86em; \}/);
 });
 
 // ── the shell boot: the bindings dispatcher, wired into every pane ─────────────────────────
@@ -77,12 +78,13 @@ test("the defaults hold — Mod+O jump, Mod+Shift+O picker, Mod+P palette — th
   assert.match(MAIN, /window\.addEventListener\("storage", invalidate\);/);
   // …and the palette chips show the EFFECTIVE binding, never a stale default
   assert.match(MAIN, /kbdFor: \(c\) => \{ const ch = effectiveChord\(c\.id, c\.chord, loadOverrides\(\), mac\); return ch \? displayChord\(ch, mac\) : undefined; \}/);
-  assert.match(PALETTE, /commandList\(\)\.filter\(\(c\) => !c\.hidden\)/);
+  assert.match(PALETTE, /commandList\(\)\.filter\(\(c\) => !c\.hidden && \(!c\.when \|\| c\.when\(\)\)\)/);
 });
 
 test("key wiring mirrors the Alt+Arrow pane nav: capture on the shell doc AND every pane doc, re-wired on load", () => {
   assert.match(MAIN, /document\.addEventListener\("keydown", onKey, true\);/);
-  assert.match(MAIN, /\["f-chat", "f-fleet", "f-feed", "f-timeline"\]\.forEach/);
+  // the hidden settings iframe (the gear's document) is wired with the panes: the hotkey works from inside the open gear
+  assert.match(MAIN, /\["f-chat", "f-fleet", "f-feed", "f-files", "f-timeline", "f-settings"\]\.forEach/);
   assert.match(MAIN, /f\.contentDocument\.addEventListener\("keydown", onKey, true\)/);
   assert.match(MAIN, /f\.addEventListener\("load", wire\);\s*\n\s*wire\(\);/);
 });
@@ -115,12 +117,63 @@ test("the new-session picker opens via the chat pane, revealed first (one code p
   assert.match(MAIN, /chatPost\(\{ type: "openPicker", toggle: true \}\)/);
 });
 
+test("a pane hidden in the gear is not listed: a `when` predicate over the live setting, not a boot-time look at the iframe", () => {
+  // the shell never loads a pane this browser's gear hides (romp:settings.panes, the user 2026-09-10) and the
+  // toggle refuses its key, so its command must not be listed. The first cut read the iframe's src ONCE at boot,
+  // which left a pane enabled later without a command until a reload and a pane hidden later with a dead one;
+  // the predicate reads the store at every open instead (review, 2026-09-10)
+  assert.doesNotMatch(MAIN, /getAttribute\("src"\)\) continue;/, "no boot-time src check");
+  assert.match(MAIN, /import \{ loadSettings, OPTIONAL_PANES, type PaneSet \} from "\.\/settings";/);
+  assert.match(MAIN, /const optional = new Set<string>\(OPTIONAL_PANES\);/);
+  assert.match(MAIN, /: optional\.has\(key\) \? \(\) => loadSettings\(\)\.panes\[key as keyof PaneSet\]\s*\n\s*: undefined,/);
+  // the predicate is registered for every optional pane, the chat (required, never optional) gets none
+  assert.deepEqual([...OPTIONAL_PANES], ["timeline", "fleet", "feed"]);
+  assert.match(MAIN, /\[\["chat", "chat"\], \["timeline", "timeline"\], \["fleet", "outline"\], \["feed", "feed"\], \["files", "files"\]\]/);
+});
+
+test("the pane predicate's read flips with the gear's store: only an explicit false hides, a re-enable shows again", () => {
+  // the same reader (settings.ts loadSettings) the settings page writes through and the shell's reconcile
+  // mirrors, run against a stand-in store, so the palette's list follows a gear save without a reload
+  const store = new Map<string, string>();
+  const g = globalThis as any;
+  const had = "localStorage" in g, prev = g.localStorage;
+  g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } };
+  try {
+    const on = (key: "timeline" | "fleet" | "feed") => loadSettings().panes[key];
+    assert.equal(on("fleet"), true, "an empty store shows every optional pane");
+    store.set("romp:settings", JSON.stringify({ panes: { fleet: false } }));
+    assert.equal(on("fleet"), false, "hidden in the gear: the command drops out at the next open");
+    assert.equal(on("timeline"), true, "a sibling pane keeps its command");
+    store.set("romp:settings", JSON.stringify({ panes: { fleet: true } }));
+    assert.equal(on("fleet"), true, "re-enabled: the command is back without a reload");
+    store.set("romp:settings", JSON.stringify({ panes: { fleet: "no" } }));
+    assert.equal(on("fleet"), true, "a corrupt value reads as shown, the shell's optOn idiom");
+  } finally {
+    if (had) g.localStorage = prev; else delete g.localStorage;
+  }
+});
+
 test("built-in commands call the same globals the rail buttons use", () => {
   for (const g of ["__rompOpenErrs", "__rompOpenNet", "__rompUsagePanel", "__rompRestart", "__rompPaneToggle"]) {
     assert.ok(MAIN.includes(g), g + " missing from palette-main.ts");
   }
   assert.match(MAIN, /id: "session\.jump", title: "Jump to a session"/);
   assert.match(MAIN, /id: "session\.new", title: "New session"/);
+});
+
+test("the session bell is a command (the user 2026-09-11): the palette asks the focused chat column, which flips the active session's flag and says so", () => {
+  assert.match(MAIN, /id: "session\.notify", title: "Toggle notifications for this session",[\s\S]{0,600}?chatPane\(\)!\.contentWindow!\.postMessage\(\{ romp: "notifyToggle" \}, "\*"\)/);
+  // the pane: the same override the tab menu's bell row writes, on the ACTIVE session only, never a placeholder tab
+  assert.match(RENDER, /if \(m\.romp === "notifyToggle"\) \{\s*const s = activeId && !isProvisionalId\(activeId\) \? liveSession\(activeId\) : undefined;/,
+    "the LIVE session only: a skeleton tab's copy is stale, and a placeholder has no session to flag");
+  assert.match(RENDER, /const on = !s\.notify;\s*setSessionFlag\(activeId, "notify", on\);\s*ephemeralNoteToast\(\(on \? "Notifications enabled for " : "Notifications disabled for "\)/,
+    "said on a NOTE toast (review 2026-09-14): a confirmation, not a warning; tab-keys.test.ts pins the dress");
+  // the tab menu's bell row reveals the command's chord once one is bound (keyHint reads the shared bindings store)
+  assert.match(RENDER, /const bellKey = keyHint\("session\.notify"\);[\s\S]{0,400}?\+ \(bellKey \? " · " \+ bellKey : ""\),/);
+  assert.match(RENDER, /\(\) => setSessionFlag\(id, "notify", !onBell\)\);/, "the tab menu's row still writes the same flag");
+  // the other column (or browser) learns on the flip: the flags ride the tail frame and the tail handler applies them
+  const tail = RENDER.split("function chatTail(msg: any) {")[1].split("\n}")[0];
+  assert.match(tail, /applyFrameFlags\(s, msg, pendingFlags, msg\.id\);/, "the tail's flags land under the click's pending guard (flag-pending.ts, review 2026-09-14)");
 });
 
 test("palette-main is bundled for the shell page", () => {
@@ -192,7 +245,8 @@ test("settings lift does the same via rs-lifted / rs-pane-gone", () => {
 
 test("overlay dims are the one standard 0.55", () => {
   assert.match(CSS, /\.picker-overlay \{[\s\S]*?background: var\(--overlay-dim\);/);
-  assert.match(GEAR_CSS, /#rsettings \{ position: fixed; inset: 0; z-index: 60; background: rgba\(0, 0, 0, 0\.55\);/);
+  // gear.css loads standalone, so the dim resolves through the token with the standard as fallback
+  assert.match(GEAR_CSS, /#rsettings \{ position: fixed; inset: 0; z-index: 60; background: var\(--overlay-dim, rgba\(0, 0, 0, 0\.55\)\);/);
 });
 
 // ── discoverability: the settings section links the shortcuts dialog (the static list is gone) ──
@@ -201,4 +255,13 @@ test("the gear links the shortcuts dialog instead of carrying its own stale list
   assert.match(GEAR, /\{ romp: 'openKeys' \}/);
   assert.doesNotMatch(GEAR, /quick switcher/);
   assert.doesNotMatch(GEAR, /<kbd>⌘\/Ctrl<\/kbd>/);
+});
+
+// The Files control hidden by its gear setting (T317): the shell's body wears no-files-control and __rompPaneToggle
+// refuses 'files', so the palette's "Show or hide the files pane" entry is not listed either — a `when` predicate on
+// the command, re-read at every open (the gear's change in the feed iframe reaches the body class through the
+// shell's storage listener), so the list never offers a visible no-op.
+test("the Files pane command is listed only while its control shows: a `when` predicate the list re-reads at every open", () => {
+  assert.match(MAIN, /when: key === "files" \? \(\) => !document\.body\.classList\.contains\("no-files-control"\)\s*\n\s*: optional\.has\(key\)/);
+  assert.match(PALETTE, /filter\(\(c\) => !c\.hidden && \(!c\.when \|\| c\.when\(\)\)\)/, "the list filters on it beside `hidden`");
 });

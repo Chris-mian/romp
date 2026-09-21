@@ -20,7 +20,7 @@ import inspect
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -28,8 +28,8 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-jd = SourceFileLoader("romp_judge_jactive", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_jactive", os.path.join(BIN, "romp-kernel")).load_module()
+jd = load_source("romp_judge_jactive", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_jactive", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -52,25 +52,30 @@ class BuildFeedWiring(unittest.TestCase):
         self.assertIn('_jactive = {r.get("fsid") for r in jd.active_runs()}', src)
 
     def test_either_prong_lights_the_swirl_and_the_active_prong_needs_no_warm_parse(self):
-        src = inspect.getsource(km.build_feed)
+        # T368: the loop body is _feed_session_entry; the settle-gap prong is computed once per build by the
+        # memo key (_feed_session_key, the `closer` component) and the body reads it from ctx
+        src = inspect.getsource(km._feed_session_entry)
         # the active prong stands alone — no `live`, no `ps`: a fresh kernel's caches are cold at
         # exactly the moment a backlog drain runs, and the registry is an in-process fact
         self.assertIn("sess_judging = bool(not who_working", src)
         self.assertIn("and (fsid in _jactive", src)
         # the settle-gap prong keeps its cache-warm gates — it needs the parse
-        self.assertIn('or (live and ps and _closer_pending(fsid, s["path"], now, store))', src)
+        key = inspect.getsource(km._feed_session_key)
+        self.assertIn("closer = bool(live and ps and not who_working and not jactive", key)
+        self.assertIn("and _closer_pending(fsid, path, now, st", key)
 
     def test_an_open_turn_still_reads_working_not_analyzing(self):
         # who_working guards BOTH prongs: a session actively mid-turn is Working — a captioner call
         # running beside an open turn must not re-dress the card as Analyzing…
-        src = inspect.getsource(km.build_feed)
-        self.assertIn("bool(not who_working\n", src)
+        src = inspect.getsource(km._feed_session_entry)   # T368: the loop body; the settle prong sits in the key
+        self.assertIn('sess_judging = bool(not who_working and (fsid in _jactive or ctx["closer"]))', src)
+        self.assertIn("closer = bool(live and ps and not who_working and not jactive", inspect.getsource(km._feed_session_key))
 
     def test_the_card_key_is_unchanged(self):
         # feed.ts + spin-caption.ts key on `judging` as before — the kernel broadened WHEN it is
         # true (active calls 2026-08-12; in-flight-class stall holds 2026-08-13), not the contract
         self.assertIn('"judging": bool((sess_judging or _stall_inflight) and column == "working")',
-                      inspect.getsource(km.build_feed))
+                      inspect.getsource(km._feed_session_entry))   # T368: build_feed's per-session loop body
 
 
 if __name__ == "__main__":

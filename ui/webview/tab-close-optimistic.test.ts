@@ -13,6 +13,8 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { hostOf } from "./host-prefix";
+
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 
 const CLOSE_ACK_MS = 15_000;
@@ -32,11 +34,15 @@ function model(now = 0) {
     session(id: string) { known.add(id); if (!kernelList.includes(id)) kernelList.push(id); },
     // the ✕: post closeTab, record it, drop the session locally (dismissSession)
     close(id: string) { closing.set(id, clock); known.delete(id); },
-    // a kernel tabOrder push — `list` is what the kernel currently believes is open
-    push(list: string[]) {
+    // a kernel tabOrder push — `list` is what the kernel currently believes is open. `report` is the
+    // frame's provenance under federation (T233): a synthetic re-emit (`reemit`) or the one host whose
+    // own push drove a fresh emission (`freshHost`); a frame straight from the kernel carries neither.
+    push(list: string[], report?: { reemit?: boolean; freshHost?: string }) {
       for (const [id, ts] of Array.from(closing)) {
         if (!list.includes(id)) { closing.delete(id); continue; }        // kernel agreed → confirmed
         if (clock - ts < CLOSE_ACK_MS) continue;                          // still in flight
+        // only a FRESH report from the OWNING kernel may call the close refused
+        if (report && (report.reemit || (typeof report.freshHost === "string" && hostOf(id) !== report.freshHost))) continue;
         closing.delete(id);
         warned.push(id);                                                  // the close plainly didn't take
       }
@@ -108,6 +114,53 @@ test("a session dying on its OWN is not recorded as a close of ours", () => {
   assert.deepEqual(m.warned, []);
 });
 
+// ---- T233 (the user 2026-09-03): the false "Couldn't close X" toast ------------------------------------
+// The kernel had killed the session within the same second; the toast fired anyway, because the ONLY
+// confirmation the client accepts is a tabOrder without the id, and a STALE order still listing it
+// reached the client past 15s: federation.ts re-emits a synthetic tabOrder from its STORED per-host
+// slices on any view-order storage event / host attach or drop, and nothing updated that store between
+// the kill and the host's next cycle push (20-40s on a loaded box). Now the kernel confirms off-cycle on
+// the kill itself, the `closed` frame folds the id out of the store, and a re-emit can confirm a close
+// (absence) but never call one refused.
+test("a synthetic re-emit still listing the id past the backstop does NOT toast and does NOT restore the tab", () => {
+  const m = model();
+  m.session("web"); m.session("api");
+  m.close("api");
+  m.tick(CLOSE_ACK_MS + 1000);
+  m.push(["web", "api"], { reemit: true });          // a stored slice re-served — not the kernel's word
+  assert.deepEqual(m.warned, [], "a re-emit is never evidence that the kernel still has the tab");
+  assert.deepEqual(m.tabs(), ["web"], "the suppression holds until the owner's own report");
+  // …and the honest failure path stays: the owning kernel's FRESH order still listing it past the backstop
+  m.push(["web", "api"], { freshHost: "" });
+  assert.deepEqual(m.warned, ["api"], "the kernel's own fresh word past the backstop = the close did not take");
+  assert.deepEqual(m.tabs(), ["web", "api"]);
+});
+
+test("another host's fresh push says nothing about this id's kernel; a re-emit still CONFIRMS by absence", () => {
+  const m = model();
+  m.session("web"); m.session("TESTHOST:api");
+  m.close("TESTHOST:api");
+  m.tick(CLOSE_ACK_MS + 1000);
+  m.push(["web", "TESTHOST:api"], { freshHost: "" });   // the LOCAL kernel's push, TESTHOST's slice riding along from the store
+  assert.deepEqual(m.warned, [], "not the owning host's report");
+  assert.deepEqual(m.tabs(), ["web"]);
+  m.push(["web"], { reemit: true });                    // the `closed` fold's re-emit: the id is gone from the store
+  assert.deepEqual(m.tabs(), ["web"]);
+  m.tick(CLOSE_ACK_MS * 10);
+  m.push(["web", "TESTHOST:api"], { freshHost: "TESTHOST" });   // a genuine revive on TESTHOST later shows again
+  assert.deepEqual(m.warned, [], "the suppression was retired by the absence, not by time — no false alarm");
+  assert.deepEqual(m.tabs(), ["web", "TESTHOST:api"]);
+});
+
+test("the wiring: applyTabOrder hands the frame's provenance to the backstop, which toasts only on the owner's fresh word", () => {
+  assert.match(RENDER, /type OrderReport = \{ reemit\?: boolean; freshHost\?: string \} \| undefined;/);
+  assert.match(RENDER, /function ackClosingTabs\(kernelOrder: readonly string\[\], report\?: OrderReport\): void/);
+  assert.match(RENDER, /if \(report && \(report\.reemit \|\| \(typeof report\.freshHost === "string" && hostOf\(id\) !== report\.freshHost\)\)\) continue;/);
+  assert.match(RENDER, /applyTabOrder\(m\.order, m\.tabs, \{ reemit: m\.reemit === true, freshHost: typeof m\.freshHost === "string" \? m\.freshHost : undefined \}, m\.live\);/);   // + the frame\'s live set (T258)
+  // confirm-on-absence is untouched: it acts BEFORE the provenance gate, on any order
+  assert.match(RENDER, /if \(!live\.has\(id\)\) \{ closingTabs\.delete\(id\); continue; \}[\s\S]{0,120}?if \(now - ts < CLOSE_ACK_MS\) continue;[\s\S]{0,900}?if \(report && /);
+});
+
 // ---- the wiring in render.ts -------------------------------------------------------------------------
 
 test("closeTabLocally drops the tab, THEN records the close — in that order", () => {
@@ -118,18 +171,21 @@ test("closeTabLocally drops the tab, THEN records the close — in that order", 
   // this shipped as set-then-dismiss while dismissSession opened with closingTabs.delete(id), so the
   // record was erased the instant it was written — the executed model above passed while the composed
   // wiring was a no-op. Hence these pins hold the ORDER, and the next test holds dismissSession's hands.
-  assert.match(RENDER, /return;\s*\n\s*\}\s*\n\s*dismissSession\(id\);\s*\n\s*closingTabs\.set\(id, Date\.now\(\)\);/,
+  assert.match(RENDER, /return;\s*\n\s*\}\s*\n\s*dismissSession\(id, "close"\);\s*\n\s*closingTabs\.set\(id, Date\.now\(\)\);/,
     "the provisional short-circuit returns above; a real tab still dismisses THEN records");
   // declared beside tabMeta, NOT down by dismissSession: renderTabs reads it and can run before the module
   // finishes evaluating, which would make a `const` down there a temporal-dead-zone throw.
   assert.match(RENDER, /const tabMeta = new Map[\s\S]{0,900}?const closingTabs = new Map<string, number>\(\);/);
-  assert.match(RENDER, /const CLOSE_ACK_MS = 15_000;/);
+  // fifteen seconds by default, read through tab-order.ts readCloseAckMs so a lab can shorten the backstop (the served split
+  // test waits past it in seconds); tab-order.test.ts pins the default and the knob
+  assert.match(RENDER, /const CLOSE_ACK_MS = readCloseAckMs\(\(k\) => \{ try \{ return localStorage\.getItem\(k\); \} catch \{ return null; \} \}\);/);
 });
 
 test("the strip skips a just-closed tab on BOTH passes (order AND the tabMeta placeholder pass)", () => {
   // the tabMeta pass is the one that drew the swirl: an id the kernel still lists with no session behind it
-  assert.match(RENDER, /for \(const id of order\) \{ if \(!seen\.has\(id\) && !closingTabs\.has\(id\)\)/);
-  assert.match(RENDER, /for \(const id of tabMeta\.keys\(\)\) \{ if \(!seen\.has\(id\) && !closingTabs\.has\(id\)\)/);
+  assert.match(RENDER, /for \(const id of order\) \{ if \(!seen\.has\(id\) && stripLists\(id\)\)/);
+  assert.match(RENDER, /for \(const id of tabMeta\.keys\(\)\) \{ if \(!seen\.has\(id\) && stripLists\(id\)\)/);
+  assert.match(RENDER, /function stripLists\(id: string\): boolean \{\s*\n\s*return !closingTabs\.has\(id\) && \(order\.includes\(id\) \|\| tabMeta\.has\(id\)\);/, "the closing set is read through the strip's one membership rule (T357 fix)");
 });
 
 test("every close path is optimistic — the in-page ✕, a dead read-only tab, and the kernel's confirmClose", () => {
@@ -142,8 +198,8 @@ test("every close path is optimistic — the in-page ✕, a dead read-only tab, 
 });
 
 test("ackClosingTabs settles against the kernel's list on every tabOrder push", () => {
-  assert.match(RENDER, /ackClosingTabs\(kernelOrder\);/);
-  assert.match(RENDER, /function ackClosingTabs\(kernelOrder: readonly string\[\]\): void/);
+  assert.match(RENDER, /ackClosingTabs\(kernelOrder, report\);/);
+  assert.match(RENDER, /function ackClosingTabs\(kernelOrder: readonly string\[\], report\?: OrderReport\): void/);
   assert.match(RENDER, /if \(!live\.has\(id\)\) \{ closingTabs\.delete\(id\); continue; \}/, "gone from the kernel = confirmed");
   assert.match(RENDER, /if \(now - ts < CLOSE_ACK_MS\) continue;/, "inside the window a slow kernel is not a failure");
   assert.match(RENDER, /warnToast\(`Couldn't close/);
@@ -153,7 +209,7 @@ test("dismissSession never touches the suppression — retiring belongs to ack, 
   // dismissSession is the shared drop path: the ✕ runs through it microseconds after recording the close,
   // and under federation the kernel's `closed` event can predate stale merged frames that still list the
   // id. A closingTabs.delete in its body is what disarmed the whole optimistic close (see above).
-  const body = RENDER.match(/function dismissSession\(id: string\): void \{[\s\S]*?\n\}/);
+  const body = RENDER.match(/function dismissSession\(id: string, why: DismissWhy, doomed\?: ReadonlySet<string>\): void \{[\s\S]*?\n\}/);
   assert.ok(body, "dismissSession not found");
   assert.doesNotMatch(body![0], /closingTabs\./, "dismissSession must not read or write closingTabs");
   // …and the one legitimate early retire: an explicit reveal (reopen from the picker inside the ack

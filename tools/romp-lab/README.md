@@ -40,7 +40,39 @@ Screenshots land in the temp root's `shots/` per phase; the script exits non-zer
 on the first divergence with the phase named, so it loops cleanly in a
 fix → re-run cycle.
 
+## Phases
+
+The default run drives TWO phases, banner first (it spends no model turns):
+
+- **banner-loop.mjs** (T119) — the reload-banner contract on the real stack: a fresh
+  page shows no banner; a dist rebuild (an mtime bump on the lab's own dist copy —
+  `ROMP_DIST_DIR`, so live viewers never see it) raises the shell's `#rstale` within
+  one heartbeat via the shim's keepalive dv-compare; the prompt latches across live
+  pushes (`wsFresh` never retires a build prompt); Reload answers it; and after a
+  real kernel kill + relaunch the reconnected page still banners on the next drift.
+  `--banner-only` runs just this phase.
+- **highlight-loop.mjs** (T102/T106) — the comment-mark contract described above; its
+  permanent tail phases: 4c full-text (the rendered thread converges to the complete
+  reply), 4d clear-timing (the mark may never read settled while the final answer is
+  not visible — T112), and 4e thread-interrupt (T138: the popover's working state
+  offers the stop square, it targets the THREAD's own session, the ack is instant,
+  the pulse clears on the gesture — no reply record is coming — and the turn ends), and
+  6 relay (T145: the Relay button acks instantly, the WHOLE exchange arrives in the main
+  thread machine-dressed, the thread keeps its ↩ sent-back marker and stays talkable).
+  `--highlight-only` skips the banner phase.
+
 ## Cost
 
 A lab run spends a handful of short turns on the configured model (default Haiku)
 against the machine's own key — the same key live sessions bill.
+
+## rail-drift.mjs — the scroll-marks invariance assertion (T129)
+
+Under pure scrolling, the transcript rail's notches must never move relative to each other (the
+user filmed exactly that, 2026-08-27). `node rail-drift.mjs [--dist <dir>]` renders a synthetic
+long mixed transcript over the built bundle (no kernel needed — file:// page, placeholder UUIDs),
+scrolls two full round trips sampling every notch per frame, and asserts the second round trip —
+the learned regime, after the height cache primes — shows zero pairwise drift (tolerance 1.5px for
+style rounding; the pre-fix map drifted 5.7px, endlessly). The first round trip's remaps are
+event-keyed cache learning and are reported but not gated. Run it after any change to
+contentOffsetFrame, the virtualization window, or the scroll-marks/comment-rail painters.

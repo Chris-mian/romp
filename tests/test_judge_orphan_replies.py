@@ -14,7 +14,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -23,8 +23,8 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_em_orphan", os.path.join(BIN, "romp-event-model")).load_module()
-jd = SourceFileLoader("romp_judge_orphan", os.path.join(BIN, "romp-judge")).load_module()
+em = load_source("romp_em_orphan", os.path.join(BIN, "romp-event-model"))
+jd = load_source("romp_judge_orphan", os.path.join(BIN, "romp-judge"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 NOW = 1781100000
@@ -132,7 +132,7 @@ class JudgeSeesSalvagedWork(unittest.TestCase):
             jd.plan_llm = jd.opener_llm = fake
             jd._group_store = lambda *a, **k: None
             try:
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd._plan_session(SID, str(tpath), NOW)
                 store = jd.load_goals(SID)
             finally:

@@ -12,7 +12,10 @@
 
 ROMP_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
+load git-hermetic
+
 setup() {
+    git_hermetic
     TEST_DIR="$(mktemp -d)"
     REPO="$TEST_DIR/repo"
     mkdir -p "$REPO/scripts"
@@ -41,6 +44,8 @@ teardown() { rm -rf "$TEST_DIR"; }
 # STUB_FLAKY_VIEWS = report nothing for the first N `run view` calls, as a transient API
 # error looks to the poll loop, then the real conclusion.
 # STUB_PR_STATE = what `gh pr view` reports (default MERGED).
+# STUB_MERGE_REMOTE = the remote the simulated merge lands on (default origin; a fork layout
+# names its canonical remote `upstream`).
 _stub_gh() {
     cat > "$TEST_DIR/gh" <<STUB
 #!/usr/bin/env bash
@@ -59,9 +64,18 @@ case "\$1 \$2" in
   # the merge as a no-op would let the bump path "pass" while proving nothing.
   # `gh pr create` prints the PR URL; the script reads the NUMBER off its tail and addresses
   # every later call by that number (a fork-headed branch is unresolvable by name — see below).
+  # STUB_RELEASE_422 = refuse the first N \`release create\` calls the way GitHub refuses a body over
+  # its ceiling (HTTP 422 "body is too long"), then accept; the script's short-body fallback rides it.
+  "release create")
+      n=\$(( \$(cat "$TEST_DIR/creates" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$TEST_DIR/creates"
+      if [ "\$n" -le "\${STUB_RELEASE_422:-0}" ]; then
+          echo "HTTP 422: Validation Failed (https://api.github.com/repos/romp-on/romp/releases)" >&2
+          echo "body is too long (maximum is 125000 characters)" >&2
+          exit 1
+      fi ;;
   "pr create")  echo "https://github.com/romp-on/romp/pull/4242" ;;
   "pr merge")   if [ "\${STUB_PR_STATE:-MERGED}" = "MERGED" ]; then
-                    git -C "$REPO" push -q origin HEAD:main
+                    git -C "$REPO" push -q "\${STUB_MERGE_REMOTE:-origin}" HEAD:main
                 fi ;;
   "pr view")    echo "\${STUB_PR_STATE:-MERGED}" ;;
 esac
@@ -108,6 +122,15 @@ STUB
     [[ "$output" == *"0.1.0 → 0.2.0"* ]]
     grep -q "pr create" "$GH_LOG"
     grep -q "pr merge" "$GH_LOG"
+    # The version PR carries its tier label at creation: a required upstream check holds an
+    # unlabeled PR red. The label is `docs`, tier 0 as the repository names it (docs and fix are one
+    # tier that merges on green; the pre-rename spelling `tests-only` exists only as a body alias, and
+    # `gh` resolves the label name on the server, so naming a label the repository lacks fails the
+    # cut one step after the version branch is pushed, as v0.16.0's first cut did on 2026-09-16).
+    grep -q "pr create .*--label docs" "$GH_LOG"
+    # And the body says the tier too, the road a contributor who cannot label uses, so the tier
+    # workflow can re-apply the label should its name move again.
+    grep -q "Tier: docs" "$GH_LOG"
     # BY NUMBER, never by branch name (the user 2026-08-01): every PR here is fork-headed, because
     # rulesets block branch pushes upstream — and `gh pr merge <branch> --repo <upstream>` cannot
     # resolve a branch that lives on the fork. It failed with "no pull requests found for branch
@@ -163,6 +186,8 @@ STUB
     STUB_PR_STATE=OPEN run "$REPO/scripts/release.sh" minor --skip-tests
     [ "$status" -ne 0 ]
     [[ "$output" == *"did not merge"* ]]
+    # it dies on the release branch, so it says how to converge: local main is behind the merge
+    [[ "$output" == *"switch to main and pull"* ]]
     run git -C "$REPO" tag -l
     [ -z "$output" ]
 }
@@ -172,6 +197,54 @@ STUB
     STUB_PR_STATE=CLOSED run "$REPO/scripts/release.sh" minor --skip-tests
     [ "$status" -ne 0 ]
     [[ "$output" == *"closed without merging"* ]]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
+}
+
+@test "release: a re-run while the version PR is still open refuses — it never tags the release branch" {
+    # A bump run whose PR has not landed when the wait runs out dies still checked out on the
+    # release branch, where VERSION already reads the target. The script advertises re-running to
+    # resume; unchecked, that re-run saw VERSION at the target, skipped the bump, and tagged HEAD —
+    # the release branch — then pushed the tag, so bootstrap.sh installed a commit that is not on
+    # main while main's VERSION lagged. The re-run must refuse, by name, and before spending CI.
+    _stub_gh
+    STUB_PR_STATE=OPEN run "$REPO/scripts/release.sh" minor --skip-tests
+    [ "$status" -ne 0 ]
+    [ "$(git -C "$REPO" rev-parse --abbrev-ref HEAD)" = "release-0.2.0" ]
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"on branch release-0.2.0, not main"* ]]
+    [[ "$output" == *"switch to main and pull"* ]]     # the same way forward as the run that left it here
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
+    run git -C "$TEST_DIR/origin.git" tag -l
+    [ -z "$output" ]
+    run grep -q "workflow run" "$GH_LOG"      # refused before any CI was dispatched
+    [ "$status" -ne 0 ]
+}
+
+@test "release: a release branch that already exists refuses before VERSION is touched — main stays clean" {
+    # The bump used to write VERSION first and branch second, so a branch that already existed
+    # died with a modified VERSION sitting on main, which then failed the next run's dirty-tree
+    # check for no reason the user had caused.
+    _stub_gh
+    git -C "$REPO" branch release-0.2.0
+    run "$REPO/scripts/release.sh" minor --skip-tests
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"could not create branch release-0.2.0"* ]]
+    [ "$(git -C "$REPO" rev-parse --abbrev-ref HEAD)" = "main" ]
+    [ -z "$(git -C "$REPO" status --porcelain)" ]
+    [ "$(cat "$REPO/VERSION")" = "0.1.0" ]
+}
+
+@test "release: a detached HEAD refuses by that name — there is no branch to blame" {
+    # `git rev-parse --abbrev-ref HEAD` prints the word HEAD when detached, which would have made the
+    # refusal name a branch that cannot exist and offer the open-PR diagnosis that does not fit.
+    _stub_gh
+    git -C "$REPO" switch -q --detach main
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"detached HEAD, not on main"* ]]
     run git -C "$REPO" tag -l
     [ -z "$output" ]
 }
@@ -221,6 +294,43 @@ STUB
 
 # ── publishing ────────────────────────────────────────────────────────
 
+@test "release: a generated-notes body GitHub refuses falls back to a short body, never a tag without a release" {
+    # v0.16.0 (2026-09-16): about nine hundred pull requests in the range, GitHub's generated notes
+    # ran past its 125000-character ceiling (HTTP 422), the tag was pushed and the release was not created.
+    git -C "$REPO" tag v0.0.9                          # a previous release, so the notes have a range
+    _stub_gh
+    STUB_RELEASE_422=1 run "$REPO/scripts/release.sh" --skip-macos --skip-tests
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"generated notes were refused"* ]]
+    [[ "$output" == *"published."* ]]
+    [ "$(grep -c "release create v0.1.0" "$GH_LOG")" -eq 2 ]
+    grep -q -- "release create v0.1.0 .*--generate-notes --notes-start-tag v0.0.9" "$GH_LOG"
+    grep -q -- "release create v0.1.0 .*--notes romp v0.1.0" "$GH_LOG"
+    grep -q -- "pull requests merged since v0.0.9. The full list: https://github.com/romp-on/romp/compare/v0.0.9...v0.1.0" "$GH_LOG"
+    run git -C "$TEST_DIR/origin.git" tag -l
+    [ "$output" = "v0.1.0" ]
+}
+
+@test "release: a range with more merged pull requests than the ceiling allows skips the generated notes" {
+    git -C "$REPO" tag v0.0.9
+    # two merged pull requests since the previous tag, simulated as first-parent merge commits
+    for i in 1 2; do
+        git -C "$REPO" switch -q -c "pr-$i"
+        echo "$i" > "$REPO/pr-$i.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm "pr $i"
+        git -C "$REPO" switch -q main
+        git -C "$REPO" merge -q --no-ff -m "Merge pull request #$i" "pr-$i"
+    done
+    git -C "$REPO" push -q origin main
+    _stub_gh
+    ROMP_RELEASE_NOTES_MAX_PRS=1 run "$REPO/scripts/release.sh" --skip-macos --skip-tests
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"2 pull requests since v0.0.9, more than 1"* ]]
+    [ "$(grep -c "release create v0.1.0" "$GH_LOG")" -eq 1 ]
+    run grep -q -- "--generate-notes" "$GH_LOG"
+    [ "$status" -ne 0 ]
+    grep -q -- "2 pull requests merged since v0.0.9" "$GH_LOG"
+}
+
 @test "release: pushes the tag and publishes the release" {
     _stub_gh
     run "$REPO/scripts/release.sh" --skip-tests
@@ -229,6 +339,28 @@ STUB
     # the tag really reached the remote — a local-only tag installs for nobody
     run git -C "$TEST_DIR/origin.git" tag -l
     [ "$output" = "v0.1.0" ]
+}
+
+@test "release: a fork layout pushes the branch to origin, and reads main + pushes the tag at upstream" {
+    # The remote convention (the user 2026-09-06): `origin` is the fork, `upstream` the canonical
+    # repo. The version PR merges on the canonical repo, so the post-merge fast-forward must read
+    # upstream/main: origin/main is the fork's stale main, and fast-forwarding onto it silently
+    # tags a commit that never got the bump. And the tag must land where installs look for it.
+    _stub_gh
+    git init -q --bare "$TEST_DIR/upstream.git"
+    git -C "$REPO" remote add upstream "$TEST_DIR/upstream.git"
+    git -C "$REPO" push -q upstream main
+    export STUB_MERGE_REMOTE=upstream
+    run "$REPO/scripts/release.sh" minor --skip-tests
+    [ "$status" -eq 0 ]
+    # the version branch went to the fork (origin: no pushDefault set here)
+    run git -C "$TEST_DIR/origin.git" branch --list release-0.2.0
+    [[ "$output" == *"release-0.2.0"* ]]
+    # local main was fast-forwarded from the canonical repo, so the tagged tree carries the bump
+    [ "$(cat "$REPO/VERSION")" = "0.2.0" ]
+    # the tag reached the canonical repo, and never the fork
+    [ "$(git -C "$TEST_DIR/upstream.git" tag -l)" = "v0.2.0" ]
+    [ -z "$(git -C "$TEST_DIR/origin.git" tag -l)" ]
 }
 
 @test "release: notes start at the PREVIOUS tag, never at the one being cut" {
@@ -305,15 +437,97 @@ STUB
     [ "$output" = "0.1.0" ]
 }
 
-@test "release: a failing suite stops the release before any tag" {
-    _stub_gh
-    # a fixture 'suite' that fails collection, so the gate is exercised for real
-    mkdir -p "$REPO/tests"
-    echo "raise SystemExit(1)" > "$REPO/tests/conftest.py"
-    git -C "$REPO" add -A && git -C "$REPO" commit -qm suite
-    run "$REPO/scripts/release.sh"
+@test "release: a failing suite stops the release before any tag — and never reroutes" {
+    # The runner is PRESENT (the probe is presence-only: --version answers) and the SUITE fails —
+    # the safety semantics the resolver must never soften: this stops the release with the suite
+    # message, and it must NOT fall through to uv (a failing suite is not a missing runner). The
+    # old shape ran the real ambient python3 against a failing fixture conftest, which proved the
+    # same gate only on machines that HAPPENED to have pytest — on a pytest-less shell the die
+    # fired with the resolver's missing-runner wording instead and the message assertion broke
+    # (CI, 2026-08-31). Stubbed present-but-failing, the case is hermetic on every shell.
+    _stub_gh; _stub_python3 suite-fails; _stub_uvx
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"Python suite failed"* ]]
+    [ ! -s "$UVX_LOG" ]                 # present ambient + failing suite → never rerouted to uv
     run git -C "$REPO" tag -l
     [ -z "$output" ]
+}
+
+# ── the suite-environment resolver (the v0.13.0 lesson) ───────────────
+# release.sh died mid-release on a bare ModuleNotFoundError on a box with only a repo venv.
+# It now resolves its own suite runner: a WORKING ambient `python3 -m pytest` first, else uv's
+# throwaway env with CI's exact dep set, else a LOUD failure naming both remedies — before any
+# release state is at stake. PATH is narrowed per test so the resolver sees exactly the world
+# each case describes; the stubbed runners record their argv so the invocation shape is pinned.
+
+_stub_python3() {                       # $1 = "with-pytest" | "no-pytest" | "suite-fails"
+    cat > "$TEST_DIR/python3" <<PYSTUB
+#!/bin/sh
+echo "python3 \$*" >> "$TEST_DIR/py.log"
+if [ "\$1" = "-m" ] && [ "\$2" = "pytest" ]; then
+    case "$1" in
+        with-pytest) exit 0 ;;                          # present, and every run succeeds
+        suite-fails) [ "\$3" = "--version" ] && exit 0; exit 1 ;;   # PRESENT (probe ok), the suite run fails
+        *) exit 1 ;;                                    # no pytest at all — probe and runs alike
+    esac
+fi
+exit 0
+PYSTUB
+    chmod +x "$TEST_DIR/python3"
+}
+
+_stub_uvx() {
+    cat > "$TEST_DIR/uvx" <<'UVSTUB'
+#!/bin/sh
+echo "uvx $*" >> "$UVX_LOG"
+exit 0
+UVSTUB
+    chmod +x "$TEST_DIR/uvx"
+    export UVX_LOG="$TEST_DIR/uvx.log"
+}
+
+_env_path() {                           # a narrowed PATH: the stubs + the bare essentials
+    echo "$TEST_DIR:/usr/bin:/bin"
+}
+
+@test "release: a working ambient pytest is preferred — no provisioning" {
+    _stub_gh; _stub_python3 with-pytest; _stub_uvx
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    grep -q "python3 -m pytest tests/ -q" "$TEST_DIR/py.log"
+    [ ! -s "$UVX_LOG" ]
+}
+
+@test "release: no ambient pytest + uv present → the suite runs through uv's throwaway env" {
+    _stub_gh; _stub_python3 no-pytest; _stub_uvx
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"throwaway env"* ]]
+    grep -q -- "uvx --with pytest --with cryptography pytest tests/ -q" "$UVX_LOG"
+}
+
+@test "release: neither pytest nor uv → a LOUD refusal naming both remedies, before any release work" {
+    _stub_gh; _stub_python3 no-pytest
+    rm -f "$TEST_DIR/uvx"
+    run env PATH="$(_env_path)" "$REPO/scripts/release.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no way to run the Python suite"* ]]
+    [[ "$output" == *"astral.sh/uv/install.sh"* ]]
+    [[ "$output" == *"pip install --upgrade pytest cryptography"* ]]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]                    # nothing was tagged — the refusal came first
+}
+
+@test "release: ROMP_RELEASE_PYTEST overrides the resolver entirely (the test seam)" {
+    _stub_gh; _stub_python3 no-pytest
+    cat > "$TEST_DIR/myrunner" <<RSTUB
+#!/bin/sh
+echo "myrunner \$*" >> "$TEST_DIR/my.log"
+exit 0
+RSTUB
+    chmod +x "$TEST_DIR/myrunner"
+    run env PATH="$(_env_path)" ROMP_RELEASE_PYTEST="$TEST_DIR/myrunner" "$REPO/scripts/release.sh"
+    [ "$status" -eq 0 ]
+    grep -q "myrunner tests/ -q" "$TEST_DIR/my.log"
 }

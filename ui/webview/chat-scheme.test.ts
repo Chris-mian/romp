@@ -82,16 +82,18 @@ test("the scheme applies live as a body class, at startup and on every settings 
   assert.match(UI, /classList\.toggle\("scheme-high-contrast", s\.chatScheme === "high-contrast"\);/);
   assert.match(UI, /classList\.toggle\("scheme-solarized-dark", s\.chatScheme === "solarized-dark"\);/);
   assert.match(UI, /applyChatScheme\(settings\);   \/\/ the persisted pick applies at startup — it survives reloads/);
-  assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\);/);
+  assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); updateStatusline\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\);/);
 });
 
-test("the gear picker is PREVIEW CARDS: each row painted with its own tiers, current \u2713-marked, click applies", () => {
+test("the gear picker previews each scheme's own tiers, current \u2713-marked, click applies", () => {
   // the user 2026-08-24, on the live check: "I need to see a preview of the solarized stuff in the
-  // selection" — a native <select> can't paint options, so each scheme is a card sampling its own
-  // prose/tool/code tiers; the current pick wears the menu vocabulary's ✓ (#1EA1EB)
-  assert.match(GEAR, /<div id=rs-chatscheme style='margin-top:5px;display:flex;flex-direction:column;gap:4px'><\/div>/);
+  // selection" — a native <select> can't paint options, so each scheme row samples its own
+  // prose/tool/code tiers; the current pick wears the menu vocabulary's ✓ (#1EA1EB). Since T117
+  // the rows live INSIDE a dropdown (settings-dropdown.test.ts pins that shape); the preview and
+  // the pick handler are unchanged in kind.
+  assert.match(GEAR, /<div id=rs-chatscheme style='position:relative;margin-top:5px'><\/div>/);
   assert.match(GEAR, /var SCHEMES = \[/);
-  assert.match(GEAR, /row\.addEventListener\('click', function \(\) \{ var s = load\(\); s\.chatScheme = sc\.id; save\(s\); csPaint\(\); \}\);/,
+  assert.match(GEAR, /housePick\(cs, 'scheme', schemeRowHTML, function \(id\) \{ var s = load\(\); s\.chatScheme = id; save\(s\); csPaint\(\); \}\);/,
     "save() dispatches romp:settings + settingsSync — the chat re-applies live, event-based");
   assert.match(GEAR, /#1EA1EB/);
   assert.match(GEAR, /csPaint\(\);/);

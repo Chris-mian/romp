@@ -2,8 +2,8 @@
 """The opening chip's deciding event is per-backend, and it covers ONLY a spawn in flight.
 
 A session whose transcript doesn't exist yet reads "opening" (2026-08-05: a just-spawned tab said
-"Working" over a clock with no honest base). For tmux the transcript's first record is the only
-observable, so the file IS the event. For an SDK session it isn't: a fresh SDK session writes NO
+"Working" over a clock with no honest base). Once the transcript's first record was the only
+observable, so the file was the event. For an SDK session it isn't: a fresh SDK session writes NO
 transcript until its first turn, so keying the chip on the file left a fully-up, idle session wearing
 the animated opening dots until the user's first message — indefinitely (the user 2026-08-08, who read
 minutes of dots as creation still running). The SDK backend knows the earlier designed event — the
@@ -24,7 +24,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -34,8 +34,8 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_openchip", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_openchip", os.path.join(BIN, "romp-kernel")).load_module()
+jd = load_source("romp_judge_openchip", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_openchip", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 NOW = 1781100000
@@ -56,18 +56,27 @@ class OpeningChipDecidingEvent(unittest.TestCase):
         # _sessions()/discover() reads km.jd. Patching only the test's jd leaves discovery scanning the
         # real ~/.claude/projects, and the fixture transcript is never found (chip stuck "opening").
         self.saved = [(m, k, getattr(m, k)) for m in (jd, km.jd)
-                      for k in ("NAMES", "PROJECTS", "CAPDIR", "ARCHDIR", "GOALDIR", "STATE")]
-        self.saved += [(km, "NAMES", km.NAMES), (km, "_tmux_sessions", km._tmux_sessions),
+                      for k in ("NAMES", "PROJECTS", "CAPDIR", "ARCHDIR", "GOALDIR", "STATE", "SDKDIR")]
+        self.saved += [(km, "NAMES", km.NAMES), (km, "_live_map", km._live_map),
                        (km, "_GLOBAL_CLAUDE_MD", km._GLOBAL_CLAUDE_MD)]
         for m in (jd, km.jd):
             m.NAMES, m.PROJECTS = names, proj
             m.CAPDIR, m.ARCHDIR, m.GOALDIR = td / "captions", td / "archive", td / "goals"
             m.STATE = td
+            m.SDKDIR = td / "sdk"
+        # The SDK registry directory moves with the state and exists, empty: the kernel's boot pass
+        # creates sdk/ (_death_boot_pass), so a running kernel never lacks it, and a missing sdk/ beside
+        # a names entry reads to _sdk_records_blind as blindness (a registry moved aside), on which
+        # Sessions.live() serves its previous rows instead of the backend's. Left at the import-bound
+        # root, the directory exists only when an earlier test in the same process created it, and the
+        # live-merge case below failed when run alone (the same fixture as the dormant case in
+        # tests/test_kernel_awaiting_stamp.py).
+        (td / "sdk").mkdir()
         km.NAMES = names
         km._GLOBAL_CLAUDE_MD = td / "no-global-claude.md"
         self.tm = {"state": "waiting", "since": NOW - 5, "model": "Opus 5", "effort": "xhigh",
                    "context": None, "compactPct": None, "color": None, "backend": "sdk"}
-        km._tmux_sessions = lambda: {SID: dict(self.tm)}
+        km._live_map = lambda: {SID: dict(self.tm)}
 
     def tearDown(self):
         for m, k, v in self.saved:
@@ -118,7 +127,7 @@ class OpeningChipDecidingEvent(unittest.TestCase):
                          "connected + idle = ready to take a message; the dots would be a lie")
 
     def test_the_transcripts_first_record_still_ends_opening(self):
-        # the tmux path (no `connected` signal): the file landing remains the deciding event. A
+        # no `connected` signal yet: the file landing still ends the opening on its own. A
         # COMPLETED turn, so the chip settles to ready rather than working (an open turn).
         def iso(t):
             return datetime.fromtimestamp(t, timezone.utc).isoformat().replace("+00:00", "Z")
@@ -130,3 +139,27 @@ class OpeningChipDecidingEvent(unittest.TestCase):
                          "stop_reason": "end_turn"}},
         ]) + "\n")
         self.assertEqual(self._state(), "ready")
+
+
+class FixtureRestore(unittest.TestCase):
+    """The fixture above rebinds seven directories on two judge module objects, and tearDown puts every
+    one back. km.jd is the kernel's own judge, loaded under the fixed name romp_judge and shared by
+    every kernel copy in the process, so a rebind that outlived tearDown would leave that directory
+    (the registry directory among them) under a removed temporary directory for every later test in
+    the same worker."""
+
+    def test_setup_and_teardown_leave_both_judge_modules_as_they_found_them(self):
+        keys = ("NAMES", "PROJECTS", "CAPDIR", "ARCHDIR", "GOALDIR", "STATE", "SDKDIR")
+        before = [(m.__name__, k, getattr(m, k)) for m in (jd, km.jd) for k in keys]
+        case = OpeningChipDecidingEvent("test_a_dormant_created_session_is_ready_not_opening")
+        case.setUp()
+        try:
+            root = Path(case.td.name)
+            self.assertEqual([m.SDKDIR for m in (jd, km.jd)], [root / "sdk"] * 2,
+                             "the registry directory moves with the state on both judge module objects")
+            self.assertTrue(km.jd.SDKDIR.is_dir(), "and exists, empty: the booted kernel's shape")
+            self.assertEqual(list(km.jd.SDKDIR.iterdir()), [])
+        finally:
+            case.tearDown()
+        self.assertEqual([(m.__name__, k, getattr(m, k)) for m in (jd, km.jd) for k in keys], before,
+                         "every rebound directory is back where the fixture found it")

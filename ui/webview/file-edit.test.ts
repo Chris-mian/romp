@@ -49,7 +49,12 @@ test("no exit path can silently eat an edited buffer", () => {
 });
 
 test("a conflict keeps the buffer, says why, and Reload asks before discarding", () => {
-  assert.match(VIEW, /body\.prepend\(bar2\);/, "the error bar sits ABOVE the textarea — the buffer survives");
+  // a child of the CARD between the title bar and the body (noteBar), never the body's first child: inside
+  // the body it sat above an editor that is 100% of that same body, so the editor's bottom was cut off by
+  // the bar's height and the body's scroll carried the bar away (file-view-notice.test.ts runs the mount)
+  assert.match(VIEW, /box\.insertBefore\(bar2, body\);/, "the error bar sits ABOVE the body that holds the textarea, so the buffer survives");
+  assert.doesNotMatch(VIEW, /body\.prepend\(bar2\);/, "never inside the body, where the editor's 100% height leaves it no room");
+  assert.match(VIEW, /const bar2 = noteBar\(err\);/, "the refused-save notice goes through the one helper that mounts there");
   assert.match(VIEW, /if \(\/changed on disk\/\.test\(err\)\) \{/);
   assert.match(VIEW, /dirty = false;\s*\/\/ confirmed once — the replace guard must not ask twice/);
 });
@@ -89,7 +94,7 @@ test("a lost save reply cannot wedge 'Saving…' forever", () => {
   // re-arm Save with honest wording (a save that DID land refuses the retry as changed-on-disk)
   // the warn arm and the drop arm are SHARED with the comment box, which needs the same verdict for the
   // same reason; Save keeps first claim on the warn, since a save in flight is the narrower state
-  assert.match(VIEW, /m\.type === "warn" && \(editHooks \|\| cmtHooks\)/);
+  assert.match(VIEW, /m\.type === "warn" && typeof m\.sid !== "string" && \(editHooks \|\| cmtHooks\)/, "only a warn naming NO session fails the save or the comment: one that names a session answers a send into that session (a Codex slash refusal broadcast to every chat pane), never this save");
   assert.match(VIEW, /if \(editHooks\) \{\n        const h = editHooks; editHooks = null;/);
   assert.match(VIEW, /window\.addEventListener\("romp:wsdown", \(\) => \{[\s\S]*?if \(!editHooks\) return;/);
   assert.match(VIEW, /it may or may not have landed/);

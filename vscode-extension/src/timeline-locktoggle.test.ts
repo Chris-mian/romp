@@ -23,7 +23,7 @@ test("draw() reserves a now-edge slot then draws the lock toggle there", () => {
 
 test("_drawLockToggle is accent-blue when locked and gray when unlocked", () => {
   assert.match(SRC, /_drawLockToggle\(svg, cx, axisY\)/);
-  assert.match(SRC, /const color = on \? ROMP_BLUE : '#6e7681';/);
+  assert.match(SRC, /const color = on \? ACCENT : PAL\(\)\.faintFg;/);   // dark: ROMP_BLUE / #6e7681, via the theme palette
   // seated shackle when locked, swung-out when unlocked (reuses the toolbar lock geometry)
   assert.match(SRC, /on \? 'M4\.8 6\.2 V4\.4 a2\.2 2\.2 0 0 1 4\.4 0 V6\.2'/);
 });

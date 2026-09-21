@@ -10,6 +10,7 @@ export type PaletteCommand = {
                     // actually answers to is effectiveChord(), and the palette's hotkey chip shows
                     // that, so a rebound command never advertises a stale default (the user 2026-08-09).
   hidden?: boolean; // bindable but not listed in the palette (palette.toggle: running "toggle the
+  when?: () => boolean;   // listed only while true, re-read at every open (a pane whose control the gear hid; T317)
                     // palette" FROM the palette would just blink it)
   run: () => void;
 };
@@ -26,6 +27,10 @@ export const DEFAULT_CHORDS: Record<string, string> = {
   // hotkeys.json, verified 2026-08-14), where "Ctrl" is the Control key on every platform.
   "chat.navBack": "Ctrl+M",
   "chat.navForward": "Ctrl+,",
+  // the editor convention for a split (VS Code's Cmd/Ctrl+\); closing a split stays unbound — Cmd+W is
+  // the browser's tab close, and a mis-aimed close of a column costs a re-split, so the palette owns it
+  "chat.split": "Mod+\\",
+  "chat.splitDown": "Mod+Shift+\\",
 };
 
 const commands = new Map<string, PaletteCommand>();
@@ -34,6 +39,12 @@ export function registerCommand(cmd: PaletteCommand): void {
   // re-registering an id replaces it, so a re-boot never duplicates; the default chord comes from the
   // one table above unless the caller carries its own
   commands.set(cmd.id, cmd.chord === undefined ? { ...cmd, chord: DEFAULT_CHORDS[cmd.id] } : cmd);
+}
+
+// A command leaves the registry (the per-tab hot keys, 2026-09-10: a session whose hot key was removed, or whose
+// tab is gone, has no "Switch to" command any more — the dialog and the dispatcher forget it together).
+export function unregisterCommand(id: string): boolean {
+  return commands.delete(id);
 }
 
 export function commandList(): PaletteCommand[] {

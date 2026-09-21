@@ -50,8 +50,8 @@ test("the drift prompt's buttons are resolved LOCALLY and never dead-end in an e
     "shows driftNotice's message and its actions, in order");
   assert.ok(notice.includes("choice === UPDATE_ACTION") && notice.includes("void updateExtension()"),
     "the Update action runs the self-update");
-  assert.ok(notice.includes("choice === COPY_ACTION") && notice.includes("clipboard.writeText(INSTALL_COMMAND)"),
-    "the Copy action puts the install command on the clipboard — a client-side action that cannot fail");
+  assert.ok(notice.includes("choice === COPY_ACTION") && notice.includes("void copyInstallCommand()"),
+    "the Copy action goes through the one client-side copy helper");
   // The notice itself must NOT reload — the drift toast never auto-anything (the reload is gated later).
   assert.ok(!notice.includes("reloadWindow"), "maybeBuildNotice must not reload the window");
 });
@@ -73,14 +73,42 @@ test("updateExtension rebuilds+reinstalls the VSIX, then offers a USER-gated rel
   assert.ok(upd.includes('"Reload window"') && upd.includes('choice === "Reload window"') &&
     upd.includes('executeCommand("workbench.action.reloadWindow")'),
     "reload only fires when the user clicks Reload window");
-  assert.ok(upd.includes("showErrorMessage") && upd.includes("install.sh in a terminal"),
+  assert.ok(upd.includes("showErrorMessage") && upd.includes("MANUAL_REMEDY"),
     "a failed/skipped update fails loudly with the manual remedy");
+  // A copy that can't rebuild itself (installed from a .vsix, no ROMP_DIR) says so and stops — never
+  // some other directory's install.sh. Same words as the toast (the constants update-target.ts already
+  // exports) and the same clipboard action, so the palette command, the menu's Update row and the
+  // toast read as one message with one remedy.
+  assert.ok(upd.includes("if (!target)") && upd.includes("CANT_REBUILD") && upd.includes("MANUAL_REMEDY"),
+    "no resolvable checkout → the toast's own wording, not a second one");
+  assert.ok(upd.includes("COPY_ACTION") && upd.includes("void copyInstallCommand()"),
+    "both dead ends hand over the command to run");
+  assert.ok(!upd.includes("packaged VSIX") && !upd.includes("install.sh in a terminal"),
+    "no hand-written remedy text survives in updateExtension");
 });
 
 test("runInstall shells out with the host's resolved env so node/npm/code resolve", () => {
   const run = slice("function runInstall", "function updateHint");
   assert.ok(run.includes('execFile("bash"') && run.includes("env: process.env"),
     "install.sh runs under bash with the extension host's PATH");
+});
+
+test("copying the install command is client-side, so the offered action cannot fail", () => {
+  const copy = slice("function copyInstallCommand", "// Ports are CONFIGURABLE");
+  assert.ok(copy.includes("vscode.env.clipboard.writeText(INSTALL_COMMAND)"), "the clipboard, not a shell-out");
+  assert.ok(!/execFile|runInstall/.test(copy), "nothing is executed on this path");
+  assert.ok(copy.includes("setStatusBarMessage"), "the click is acknowledged");
+  assert.ok(copy.includes("MANUAL_REMEDY"), "a clipboard failure still states the remedy");
+});
+
+test("every copy entry point is the one helper", () => {
+  // The drift toast's Copy button, the status-bar item's command and both error toasts copy the same
+  // command; routing them through one helper is what makes the acknowledgment and the failure warning
+  // hold everywhere — so the clipboard write itself appears exactly once.
+  assert.ok(EXT.includes('registerCommand("rompChat.copyInstallCommand", copyInstallCommand)'),
+    "the status-bar item's command copies through the helper, acknowledged like the toast's button");
+  assert.equal((EXT.match(/clipboard\.writeText\(INSTALL_COMMAND\)/g) || []).length, 1,
+    "one clipboard write, inside the helper");
 });
 
 test("a palette command exposes the update anytime a faded toast can't be clicked", () => {

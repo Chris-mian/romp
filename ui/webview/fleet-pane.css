@@ -4,14 +4,17 @@
    chat's styles.css (linked before this file on both hosts); these rules own the page
    layout so the chat rules don't fight the fleet page. */
 html,body{margin:0;height:100%;background:var(--vscode-editor-background,#1e1e1e);
-color:var(--vscode-foreground,#cccccc);font-family:var(--vscode-font-family,system-ui,-apple-system,'Segoe UI',sans-serif);
+color:var(--vscode-foreground,#cccccc);font-family:'Inter',var(--vscode-font-family,system-ui,-apple-system,'Segoe UI',sans-serif);
+/* Inter leads HERE, not only inside the var: in VS Code --vscode-font-family is the editor's real
+   font, so a var-only lead never reached this pane (PR-730 review, 2026-08-27; the document's
+   @font-face rides in via styles.css, linked before this file on both hosts). */
 font-size:13px;display:flex;flex-direction:column;overflow:hidden}
 /* docked search bar at the TOP (the user 2026-06-29): filter the fleet to sessions whose NAME matches. */
 #fleet-search-bar{flex:0 0 auto;display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12))}
 #fleet-search-wrap{position:relative;flex:1 1 140px;min-width:140px}
 #fleet-search{width:100%;box-sizing:border-box;background:var(--vscode-input-background,#3c3c3c);
 color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,#3c3c3c);
-border-radius:6px;padding:5px 28px 5px 10px;font:inherit;font-size:12.5px;outline:none}
+border-radius:6px;padding:5px 28px 5px 10px;font:inherit;font-size:12px;outline:none}
 #fleet-search:focus{border-color:var(--accent,#9cd2ff)}
 #fleet-search::placeholder{color:var(--vscode-descriptionForeground,#9a9a9a)}
 /* hide the engine's native search-cancel button — we draw our own clear button so it behaves the same everywhere */
@@ -20,13 +23,13 @@ border-radius:6px;padding:5px 28px 5px 10px;font:inherit;font-size:12.5px;outlin
 display:flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;
 border-radius:50%;background:transparent;color:var(--vscode-descriptionForeground,#9a9a9a);
 font-size:15px;line-height:1;cursor:pointer}
-#fleet-search-clear:hover{color:var(--vscode-foreground,#ccc);background:rgba(255,255,255,0.10)}
+#fleet-search-clear:hover{color:var(--vscode-foreground,#ccc);background:var(--overlay-10, rgba(255,255,255,0.10))}
 #fleet-search-clear[hidden]{display:none}
 #fleet-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:6px 0}
 .fl-empty{opacity:.6;text-align:center;padding:26px 14px;line-height:1.5}
 .fl-session{padding:4px 0 10px}
 .fl-head{display:flex;align-items:center;gap:7px;padding:5px 14px 4px;cursor:pointer;font-weight:650}
-.fl-head:hover{background:rgba(255,255,255,0.05)}
+.fl-head:hover{background:var(--overlay-05, rgba(255,255,255,0.05))}
 .fl-workdot{width:7px;height:7px;border-radius:50%;background:#e0b020;flex:0 0 auto}
 /* the same pip language the feed's .fwork-dot speaks: await-green = awaiting dispatched background work
    (--st-awaitbg-bg), gray ring = the live state could not be read (the network strip's down-host
@@ -54,14 +57,14 @@ color:var(--vscode-descriptionForeground,#9a9a9a)}
 .fl-foot-left,.fl-foot-right{display:flex;align-items:center;flex-wrap:wrap;gap:7px}
 .fl-foot-toggle{display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}
 .fl-foot-toggle input{cursor:pointer;margin:0;width:13px;height:13px}
-.fl-foot-btn{background:rgba(255,255,255,0.06);color:var(--vscode-foreground,#ccc);
+.fl-foot-btn{background:var(--overlay-05, rgba(255,255,255,0.06));color:var(--vscode-foreground,#ccc);
 border:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.14));border-radius:5px;cursor:pointer;
 font:inherit;font-size:10.5px;padding:2px 8px;white-space:nowrap}
-.fl-foot-btn:hover{background:rgba(255,255,255,0.12)}
+.fl-foot-btn:hover{background:var(--overlay-10, rgba(255,255,255,0.12))}
 /* a toggled-ON Collapse/Expand button "stays clicked" — accent fill (the romp blue), per CLAUDE.md */
 .fl-foot-btn.on{background:var(--accent,#9cd2ff);color:var(--accent-fg,#0c1a2e);border-color:var(--accent,#9cd2ff)}
 .fl-foot-btn.on:hover{background:var(--accent,#9cd2ff)}
-.fl-back{background:#1d3a52;color:#9cd2ff;border:1px solid #2b6088;border-radius:6px;cursor:pointer;
+.fl-back{background:#1d3a52;color:var(--accent,#9cd2ff);border:1px solid #2b6088;border-radius:6px;cursor:pointer;
 font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:4px 11px}
 .fl-back:hover{background:#234a6a;color:#fff}
 .fl-toggle{display:inline-flex;align-items:center;gap:7px;cursor:pointer;
@@ -71,9 +74,12 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
    goal text, Background + Key takeaway (or Decision brief), sub-goal checklist. Lives on document.body
    (render() wipes #fleet-list every push, which would kill anything mounted inside it mid-hover).
    Sizes reuse the pane's ranks: 12px body (.fl-toggle rank), 10.5px labels (the footer-control rank). */
+/* Surface/border/radius/shadow ride the ONE tooltip dress's tokens (.romp-tip, 2026-08-28) —
+   styles.css is linked before this file on both hosts, so the tokens resolve here. The card keeps
+   its own size ranks (12px body) and scroll cap; only the dress is shared. */
 .fl-hover{position:fixed;z-index:60;max-width:380px;min-width:220px;max-height:60vh;overflow-y:auto;
-  background:var(--vscode-editorWidget-background,#252526);border:1px solid rgba(255,255,255,0.16);
-  border-radius:8px;padding:9px 11px;box-shadow:0 6px 22px rgba(0,0,0,0.45);
+  background:var(--vscode-editorWidget-background,var(--surface-raised));border:1px solid var(--box-border);
+  border-radius:var(--radius-toast);padding:7px 10px;box-shadow:var(--shadow-toast);
   font-size:12px;line-height:1.45;pointer-events:auto}
 .fl-hover-state{color:var(--vscode-descriptionForeground,#9a9a9a);margin-bottom:3px}
 .fl-hover-title{font-weight:600;margin-bottom:2px;white-space:normal}
@@ -88,7 +94,7 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
 .fl-hover-sub .t{min-width:0}
 .fl-hover-sub.done{opacity:0.6}
 .fl-hover-sub.done .m{color:#54b204}
-.fl-hover-sub.blocked .m{color:#e5484d}
+.fl-hover-sub.blocked .m{color:var(--st-needs-bg,#d946ef)}   /* the hover card's Needs you mark: the category's colour (plans/needs-you.md), the fallback for a page without the token */
 .fl-hover-more{color:var(--vscode-descriptionForeground,#9a9a9a);margin-top:2px}
 
 /* ── the per-goal PR chip (the user 2026-08-17) ─────────────────────────────────────────────────────
@@ -101,7 +107,7 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
   background:rgba(255,255,255,0.04);color:var(--vscode-descriptionForeground,#9a9a9a);
   font-size:0.82em;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
 .fl-pr:hover{background:rgba(255,255,255,0.09);color:var(--vscode-foreground,#cccccc)}
-.fl-pr-num{color:#9cd2ff;font-weight:500}                       /* the romp accent */
+.fl-pr-num{color:var(--accent);font-weight:500}
 .fl-pr.st-open .fl-pr-state{color:#54b204}                      /* the pane's own done/green */
 .fl-pr.st-draft .fl-pr-state{color:var(--vscode-descriptionForeground,#9a9a9a)}
 .fl-pr.st-merged .fl-pr-state{color:#b48ce0}                    /* matches the done-time purple */
@@ -115,8 +121,8 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
 .fl-pr.roll.w-fail .fl-pr-ck{color:#e5484d}
 .fl-pr.err{color:#e5484d;border-color:rgba(229,72,77,0.45);cursor:help}
 /* live = this session's branch AND unpushed work: the romp accent, same blue as the in-progress dots */
-.fl-pr.live{border-color:#9cd2ff;background:rgba(156,210,255,0.10);color:var(--vscode-foreground,#cccccc)}
-.fl-pr-pulse{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:#9cd2ff;
+.fl-pr.live{border-color:var(--accent);background:var(--accent-wash);color:var(--vscode-foreground,#cccccc)}
+.fl-pr-pulse{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:var(--accent);
   animation:fl-pr-pulse 1.4s ease-in-out infinite}
 @keyframes fl-pr-pulse{0%,100%{opacity:0.35}50%{opacity:1}}
 /* the goal title yields to the chip, never the other way round */
@@ -127,10 +133,27 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
   border-left:2px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));
   background:rgba(255,255,255,0.03);border-radius:0 4px 4px 0;
   color:var(--vscode-descriptionForeground,#9a9a9a)}
-.fl-prdet-num{color:#9cd2ff;font-weight:500;cursor:pointer;margin-top:4px}
+.fl-prdet-num{color:var(--accent);font-weight:500;cursor:pointer;margin-top:4px}
 .fl-prdet-line:first-child{color:var(--vscode-foreground,#cccccc)}
 .fl-prdet-acts{margin-top:5px;display:flex;gap:7px}
 .fl-prdet-acts button{background:#2a2a2a;color:var(--vscode-foreground,#cccccc);border-radius:4px;
   border:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));
   font:inherit;font-size:0.9em;padding:1px 8px;cursor:pointer}
 .fl-prdet-acts button:hover{background:#333}
+/* .fl-back's navy chip reads clay-on-navy at ~2.3:1 in light (PR #763 item 10) — a light chip */
+body.theme-light .fl-back{background:#F3E0D5;color:#8A3A10;border-color:#E0C4B0}
+body.theme-light .fl-back:hover{background:#EBD2C2;color:#6E2D0A}
+/* The per-host loading strip (the user 2026-09-02): a host the kernel lists that this pane has not heard
+   from yet — one quiet line per host, the shared reverse-spin swirl glyph LEFT of the text, at the feed
+   strip's own scale (feed.css #feed-hostload / .hostload-line / .fask-awaiting-swirl, mirrored here
+   because this page loads styles.css + this sheet, never feed.css). Retired only by that host's first
+   payload or its detach — never a timer. */
+#fleet-hostload{display:flex;flex-direction:column;gap:4px;padding:8px 14px}
+.hostload-line{display:flex;align-items:center;gap:7px;color:var(--dim,#9a9a9a);font-size:0.82em}
+.fask-awaiting-swirl{width:14px;height:14px;flex:0 0 auto;background:url(../media/romp-swirl-glyph.svg) center / contain no-repeat;
+animation:fask-swirl-spin 2.4s linear infinite}
+@keyframes fask-swirl-spin{to{transform:rotate(-360deg)}}
+@media (prefers-reduced-motion: reduce){.fask-awaiting-swirl{animation:none}}
+
+/* the in-place rename on a session's head (the row's menu, 2026-09-16): the strip's .tab-rename shape, in the pane's type */
+.fl-rename { font: inherit; color: inherit; background: var(--vscode-input-background, rgba(255,255,255,0.06)); border: 1px solid var(--box-border, rgba(255,255,255,0.18)); border-radius: 3px; padding: 0 4px; min-width: 4ch; }

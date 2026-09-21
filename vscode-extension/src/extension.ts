@@ -1,13 +1,13 @@
 // The romp VS Code extension — a THIN CLIENT of the romp web kernel.
 //
-// All host logic (transcript parsing, session mirroring, the feed fold, tmux
+// All host logic (transcript parsing, session mirroring, the feed fold,
 // driving, record-file IO) lives in the kernel (bin/romp-kernel, spawned via
 // bin/romp-serve). This extension only:
 //   1. ensures a kernel is running (spawn-or-attach on the default port,
 //      restarting a stale one once after a VSIX update),
 //   2. hosts the four webview surfaces — chat, feed, and outline/fleet
 //      (editor panels) plus the timeline (a native bottom-panel view) — and
-//      pipes their postMessage traffic over the kernel's WS protocol verbatim,
+//      reassembles feed/timeline deltas and pipes complete frames to their webviews,
 //   3. supplies the few genuinely CLIENT-side capabilities: opening files in
 //      the editor, the OS file picker, the clipboard, external links, and
 //      panel reveal/focus orchestration.
@@ -23,13 +23,16 @@ import { execFile } from "child_process";
 import WebSocket from "ws";
 import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
 import { ensureThenAttach, parseHealthz, warnAfter } from "./kernel-attach";
-import { intentOp } from "./pipe-intent";
+import { intentOp, ReloadHold } from "./pipe-intent";
+import { ViewDeltas } from "./view-deltas";
 import { routeViewMessage } from "./view-routing";
 import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, FleetStatus } from "./fleet-status";
 import { citeText, sessionsForWorkspace, SessionInfo } from "./workspace-sessions";
 import { parsePorcelain } from "./session-diff";
 import { buildMenu, usageSummary } from "./romp-menu";
-import { resolveInstallScript, driftNotice, UPDATE_ACTION, COPY_ACTION, INSTALL_COMMAND } from "./update-target";
+import {
+  resolveInstallScript, driftNotice, UPDATE_ACTION, COPY_ACTION, INSTALL_COMMAND, CANT_REBUILD, MANUAL_REMEDY,
+} from "./update-target";
 
 const HOST = "127.0.0.1";
 
@@ -96,7 +99,7 @@ function maybeBuildNotice(dv: unknown): void {
   showDriftStatusItem(!!target);
   void vscode.window.showInformationMessage(notice.message, ...notice.actions).then((choice) => {
     if (choice === UPDATE_ACTION) void updateExtension();
-    else if (choice === COPY_ACTION) void vscode.env.clipboard.writeText(INSTALL_COMMAND);
+    else if (choice === COPY_ACTION) void copyInstallCommand();
   });
 }
 
@@ -112,15 +115,20 @@ function maybeBuildNotice(dv: unknown): void {
 // AUTH-EXEMPT route: anything answering on the kernel port could then choose the directory we ran a
 // shell command from, and drive the prompt that invites the click besides. When this copy isn't a
 // checkout it can't rebuild anything, so we say so and point at the terminal rather than running some
-// other install.sh. Reload stays a user click, never automatic (prefer-reload-banner-not-auto).
+// other install.sh. Reload stays a user click here under every ruling: the served dashboard reloaded ITSELF on a
+// kernel restart or a newer bundle from 2026-09-08 (T265, superseding the 2026-07-13 banner preference), and since
+// 2026-09-16 it OFFERS the reload instead (a same-build restart is invisible; a newer build is one line with Reload
+// and Not now; the design block above kernel.py _RELOAD_CORE_JS). A VS Code webview reload cannot fix bundled-code
+// drift either way — the bundle comes from the installed VSIX, so only a reinstall plus the editor's own reload lands
+// new code, and that is the user's click.
 let updating = false;
 async function updateExtension(): Promise<void> {
   if (updating) return;                                    // one run per host (double-click, or toast + palette)
   const target = resolveInstallScript(ctx?.extensionPath || "", process.env.ROMP_DIR, (p) => fs.existsSync(p));
   if (!target) {
-    void vscode.window.showErrorMessage(
-      "romp: this copy of the extension can't rebuild itself — it runs from a packaged VSIX, not a romp checkout. " +
-      "Run vscode-extension/install.sh in your romp checkout from a terminal, then reload this window.");
+    // Same wording and the same always-works action as the toast — one voice, one remedy.
+    void vscode.window.showErrorMessage(`romp: ${CANT_REBUILD} ${MANUAL_REMEDY}`, COPY_ACTION)
+      .then((choice) => { if (choice === COPY_ACTION) void copyInstallCommand(); });
     return;
   }
   const extDir = target.dir;
@@ -145,8 +153,8 @@ async function updateExtension(): Promise<void> {
         });
     } else {
       void vscode.window.showErrorMessage(
-        "romp: the extension update didn't complete — " + updateHint(out) +
-        " You can run vscode-extension/install.sh in a terminal.");
+        "romp: the extension update didn't complete — " + updateHint(out) + " " + MANUAL_REMEDY,
+        COPY_ACTION).then((choice) => { if (choice === COPY_ACTION) void copyInstallCommand(); });
     }
   } finally {
     updating = false;
@@ -175,6 +183,17 @@ function updateHint(out: { code: number; text: string }): string {
   if (/No VS Code-family editor CLI found/.test(t)) return "no editor CLI was found to install into.";
   const last = t.trim().split(/\r?\n/).filter((l) => l.trim()).slice(-1)[0] || "";
   return last ? "the build reported: " + last.slice(0, 200) : "see the terminal for details.";
+}
+
+// The action a copy that can't rebuild itself gets instead of a doomed Update button: the exact
+// command on the clipboard, so the remedy is a paste rather than something to retype from a toast
+// that has already faded. Purely client-side (the clipboard is one of the few capabilities this host
+// owns outright), so unlike the update it cannot fail — and it acknowledges immediately. Every copy
+// entry point (the drift toast, the status-bar item's command, the two error toasts) goes through here.
+function copyInstallCommand(): void {
+  void vscode.env.clipboard.writeText(INSTALL_COMMAND).then(
+    () => vscode.window.setStatusBarMessage(`romp: copied "${INSTALL_COMMAND}" — run it in your romp checkout.`, 6000),
+    () => vscode.window.showWarningMessage(`romp: couldn't reach the clipboard. ${MANUAL_REMEDY}`));
 }
 
 // Ports are CONFIGURABLE so different VS Code windows can attach to different kernels (each kernel
@@ -247,8 +266,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Rebuild + reinstall the VSIX from source, then offer a reload — the clickable form of the
     // drift toast's remedy, always reachable (a faded toast leaves nothing to click). See updateExtension.
     vscode.commands.registerCommand("rompChat.updateExtension", updateExtension),
-    vscode.commands.registerCommand("rompChat.copyInstallCommand",
-      () => vscode.env.clipboard.writeText(INSTALL_COMMAND)),
+    vscode.commands.registerCommand("rompChat.copyInstallCommand", copyInstallCommand),
     // The webviews scale to the editor font (uiZoom) — re-render them when it changes.
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("editor.fontSize")) refreshWebviewHtml();
@@ -451,9 +469,10 @@ function askManagerEnsure(port: number): Promise<boolean> {
 class KernelPipe {
   private ws: WebSocket | null = null;
   private queue: { s: string; intent: boolean }[] = [];
+  private hold = new ReloadHold();   // refusals that arrived while the webview was reloading; see webviewReady
   private alive = true;
   private everConnected = false;
-  webviewReady = false;
+  private _webviewReady = false;
   constructor(
     private app: "chat" | "feed" | "timeline" | "fleet",
     private onDown: (m: any) => void,
@@ -468,6 +487,16 @@ class KernelPipe {
   }
   queuedIntents(): number {
     return this.queue.reduce((n, q) => n + (q.intent ? 1 : 0), 0);
+  }
+  // Set by the panel on its webview's "ready". The rising edge is the event a HELD frame waits for: a
+  // frame posted to a webview between its reload and its "ready" is gone, and the kernel's refusal of a
+  // replayed intent arrives in exactly that window: the reconnect below replays and then reloads in one
+  // tick. A remote-tag ADD replayed right after a kernel restart is refused (the home kernel's tunnel is
+  // not up yet, and an add never queues), and its tagEditFailed was never seen (review find, 2026-09-08).
+  get webviewReady(): boolean { return this._webviewReady; }
+  set webviewReady(v: boolean) {
+    this._webviewReady = v;
+    if (v) for (const m of this.hold.release()) this.onDown(m);
   }
   send(m: any) {
     const s = JSON.stringify(m);
@@ -487,10 +516,17 @@ class KernelPipe {
     // One window-group id per VS Code window: the kernel routes a feed click's
     // focus to THIS window's chat panel (same mechanism as the combined
     // browser page's panes).
-    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}&token=${encodeURIComponent(serveToken())}`);
+    // the Outline panel declares the provisional-row capability on its dial (plans/outline-pane-provisional-row.md): without the
+    // term it would be a permanently unflagged Outline that disables the cold-tab gate for the whole kernel while open.
+    // client=ext states what dials: Node's ws client sends no Origin and no User-Agent, so without the term the kernel
+    // could not tell this host's panes from another kernel's relay dials (kernel.py _dial_kind, the wsopen row, 2026-09-15).
+    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}&token=${encodeURIComponent(serveToken())}${this.app === "fleet" ? "&provrows=1" : ""}&client=ext&delta=1`);
+    // Bases belong to this socket, including the passive status pipe (2026-09-16). A reconnect starts with no
+    // base; recovery goes only to the socket whose delta missed, never into the intent replay queue.
+    const views = new ViewDeltas((slot) => ws.send(JSON.stringify({ type: "needSlot", slot })));
     this.ws = ws;
     ws.on("open", () => {
-      if (!this.alive) { ws.close(); return; }
+      if (!this.alive || this.ws !== ws) { ws.close(); return; }
       this.onState?.(true);
       if (this.everConnected) {
         // A reconnect after a kernel restart: the kernel lost this client's
@@ -511,12 +547,17 @@ class KernelPipe {
       }
     });
     ws.on("message", (data) => {
-      if (!this.alive) return;
+      if (!this.alive || this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
       let m: any;
       try { m = JSON.parse(String(data)); } catch { return; }
+      m = views.receive(m);
+      if (m === null) return;
       // keepalive carries the kernel's dist build token — drift vs this bundle's stamp → one banner.
       // Panel pipes only: the passive status pipe observes and never toasts.
       if (m && m.type === "ka" && !this.passive) maybeBuildNotice(m.dv);
+      // a refusal for a webview that is mid-reload waits for its "ready" (webviewReady above); the passive
+      // status pipe has no webview and posts no intent, so nothing of its is ever held
+      if (!this.passive && !this.hold.offer(m, this._webviewReady)) return;
       this.onDown(m);
     });
     const reconnect = () => {
@@ -530,6 +571,7 @@ class KernelPipe {
   }
   dispose() {
     this.alive = false;
+    this.hold.release();   // the panel is gone; nothing is waiting for its ready any more
     try { this.ws?.close(); } catch { /* ignore */ }
     this.ws = null;
   }
@@ -670,7 +712,8 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     // opens/focuses the tab itself. The rules live in view-routing.ts.
     const r = routeViewMessage("feed", m);
     if (r.revealChat) openPanel(r.revealChat.preserveFocus);
-    pipe.send(m);
+    if (r.openLinkLocally) openLink(r.openLinkLocally);   // a PR link in a card (pr-links.ts): the host opens it; the kernel has no handler
+    if (r.forward) pipe.send(m);
   });
   p.onDidChangeViewState(() => updateStrips());
   p.onDidDispose(() => {
@@ -839,6 +882,7 @@ function wireFleetPanel(p: vscode.WebviewPanel) {
     if (m.type === "ready") pipe.webviewReady = true;
     const r = routeViewMessage("fleet", m);
     if (r.revealChat) openPanel(r.revealChat.preserveFocus);
+    if (r.openLinkLocally) openLink(r.openLinkLocally);   // a PR link in an outline row (pr-links.ts): the host opens it
     if (r.forward) pipe.send(m);
   });
   p.onDidChangeViewState(() => updateStrips());
@@ -1021,7 +1065,12 @@ async function diffSessionChanges() {
   if (!s || !s.dir) return;
   let files;
   try {
-    files = parsePorcelain(await gitIn(s.dir, ["status", "--porcelain"]));
+    // -z: NUL-separated records with raw paths (no C-quoting), a rename's source after its
+    // destination — the one shape session-diff.ts parses.
+    // `=v1` names that format explicitly; bare `--porcelain` is the same v1 on every git, and
+    // the explicit spelling needs git 2.11 (2016), the oldest git this command runs against.
+    // (review find, 2026-09-08)
+    files = parsePorcelain(await gitIn(s.dir, ["status", "--porcelain=v1", "-z"]));
   } catch {
     vscode.window.showWarningMessage(`romp: ${s.dir} is not a git repository (or git failed).`);
     return;

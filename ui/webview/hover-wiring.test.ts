@@ -35,7 +35,7 @@ test("the rail dot keeps the click (open the feed card), separate from turn hove
 test("the feed modal title hover lights the originating chat message", () => {
   assert.match(FEED, /ttlEl\.onmouseenter = titleHoverId \? \(\) => hoverEmit\(titleHoverId\) : null/);
   assert.match(FEED, /ttlEl\.onmouseleave = titleHoverId \? \(\) => hoverEmit\(null\) : null/);
-  assert.match(FEED, /titleHoverId = it\.turnId/);
+  assert.match(FEED, /titleHoverId = nt \? null : it\.turnId;/);
   assert.match(FEED, /titleHoverId = grp\.turnId/);
 });
 
@@ -44,13 +44,13 @@ test("the feed modal title hover lights the originating chat message", () => {
 test("landOn top-aligns the target (block:'start'), never centers", () => {
   const landOn = RENDER.slice(RENDER.indexOf("function landOn("));
   const body = landOn.slice(0, landOn.indexOf("\n}\n"));
-  assert.match(body, /scrollIntoView\(\{ block: "start"/, "lands at the top");
+  assert.match(body, /scrollElInto\(c, at, "start", writer\)/, "lands at the top — through the write helper, attributed (T262j); `at` is the aligned element, the turn or the words in it (T386)");
   assert.doesNotMatch(body, /block: "center"/, "must not center the landing");
 });
 
 // Ask preview — the live picker card reproduces the FOCUSED option's side-by-side TUI box (the user
 // 2026-06-13), now FOCUS-AWARE so ↑/↓ swaps it (the user 2026-06-22): the focused option's OWN preview
-// (SDK per-option) or ParsedAsk.preview (the single tmux scrape). Rendered as a monospace <pre> via
+// (per option; ParsedAsk.preview only from an older kernel). Rendered as a monospace <pre> via
 // textContent (NEVER innerHTML: the pane text is untrusted terminal output), and REPLACED not appended.
 test("the live ask card renders the focused option's preview as a monospace pre via textContent", () => {
   assert.match(RENDER, /renderAskPreview\(\);/);

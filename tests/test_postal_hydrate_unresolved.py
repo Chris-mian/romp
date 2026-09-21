@@ -16,7 +16,7 @@ import io
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -24,9 +24,9 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-SourceFileLoader("romp_event_model_ph", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge_ph", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_ph", os.path.join(BIN, "romp-kernel")).load_module()
+load_source("romp_event_model_ph", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge_ph", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_ph", os.path.join(BIN, "romp-kernel"))
 
 KNOWN = "1700000000.11111_22222.TESTHOST"
 UNKNOWN = "1700000001.33333_44444.TESTHOST"
@@ -44,6 +44,9 @@ def turn(*mids):
 
 
 class HydrateUnresolved(unittest.TestCase):
+    def setUp(self):
+        km._POSTAL_UNRESOLVED_RESET()                   # T234: each test is a fresh kernel life
+
     def _run(self, events, index):
         err = io.StringIO()
         real, km.sys.stderr = km.sys.stderr, err
@@ -80,6 +83,23 @@ class HydrateUnresolved(unittest.TestCase):
         out, warned = self._run([plain], {})
         self.assertEqual(out, [plain], "no mid keys invented on ordinary turns")
         self.assertEqual(warned, "")
+
+    # ── T234 (the user 2026-09-03): the warning is a fact stated ONCE per (session, id) per kernel life ──
+    # The same unresolved ids re-warned on EVERY build — 20k to 116k journal lines per hour for 30+ hours,
+    # the same pairs every pusher cycle — burying real signal. Fail-loud stays: the FIRST sighting of a
+    # pair logs; repeats are counted, not printed; a NEW pair logs again.
+    def test_the_same_unresolved_id_warns_once_across_builds_and_a_new_id_warns_again(self):
+        _, w1 = self._run([turn(UNKNOWN)], {})
+        _, w2 = self._run([turn(UNKNOWN)], {})           # the next build, same unresolved id
+        self.assertEqual(w1.count("unresolved"), 1, "the first sighting logs")
+        self.assertEqual(w2.count("unresolved"), 0,
+                         "the same (session, id) pair on the next build is a repeat, not news")
+        other = "22222222-3333-4444-5555-666666666666"
+        _, w3 = self._run([turn(other)], {})
+        self.assertEqual(w3.count("unresolved"), 1, "a NEW unresolved id is new information — it logs")
+        facts = km._POSTAL_UNRESOLVED
+        self.assertEqual(facts["warned"], 2, "two distinct pairs warned")
+        self.assertEqual(facts["suppressed"], 1, "one repeat suppressed — the counter is exact")
 
     def test_the_original_event_is_not_mutated_in_place(self):
         # build_session hands these dicts around; stamping the caller's object would leak the ids into

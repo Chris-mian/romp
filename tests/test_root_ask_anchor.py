@@ -16,7 +16,7 @@ import re
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -27,7 +27,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_rootask", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge_rootask", os.path.join(BIN, "romp-judge"))
 
 NOW = 1_787_500_000
 T0 = NOW - 3600
@@ -207,7 +207,7 @@ class CourierStoresTheAsk(unittest.TestCase):
         self._llm = jd.courier_llm
         jd.courier_llm = lambda text, menu, declared=None: \
             '{"verdict": "delegating", "goal": 0, "text": "factor the layout engine"}'
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
 
     def tearDown(self):
         jd._delegate_user_rooted = self._rooted
@@ -246,6 +246,40 @@ class CourierStoresTheAsk(unittest.TestCase):
         nd = self._planted()
         self.assertIsNotNone(nd)
         self.assertNotIn("userAsk", nd)
+
+    def test_a_walked_at_relay_record_licenses_the_mint_when_the_local_walk_resolves_nothing(self):
+        # the cross-host shape (T126): the local walk rightly refuses foreign hops — the ORIGIN
+        # kernel walked the chain at relay time and the bus stamped the proof onto the ledger row;
+        # kernel-proved, it licenses the mint exactly like a local root
+        jd._delegate_user_rooted = lambda *a, **k: None
+        jd.MESSAGES.write_text(json.dumps(
+            {"t": T0, "ev": "sent", "id": MID, "from": "web", "from_id": MGR,
+             "to_id": WKR, "kind": "delegate", "body": BODY, "from_host": "TESTHOST",
+             "userAsk": {"text": DICTATION, "sid": MGR, "host": "TESTHOST"}}) + "\n")
+        jd.run_courier(now=NOW)
+        nd = self._planted()
+        self.assertIsNotNone(nd, "the walked-at-relay record licenses the mint")
+        self.assertEqual(nd["userAsk"]["text"], DICTATION)
+        self.assertEqual(nd["userAsk"]["host"], "TESTHOST", "provenance names the proving kernel")
+        self.assertNotIn("carried", nd["userAsk"], "kernel-proved needs no trust asterisk")
+
+    def test_without_the_record_an_unresolvable_delegate_still_files_quiet(self):
+        jd._delegate_user_rooted = lambda *a, **k: None
+        jd.run_courier(now=NOW)
+        self.assertIsNone(self._planted(), "T101's quiet-on-uncertainty stands")
+
+    def test_a_local_walk_resolved_root_outranks_the_wire_record(self):
+        jd._delegate_user_rooted = lambda *a, **k: {"text": DICTATION, "sid": MGR}
+        jd.MESSAGES.write_text(json.dumps(
+            {"t": T0, "ev": "sent", "id": MID, "from": "web", "from_id": MGR,
+             "to_id": WKR, "kind": "delegate", "body": BODY,
+             "userAsk": {"text": "an older claim from the wire", "sid": MGR,
+                         "host": "TESTHOST"}}) + "\n")
+        jd.run_courier(now=NOW)
+        nd = self._planted()
+        self.assertEqual(nd["userAsk"]["text"], DICTATION,
+                         "the fresher local proof wins")
+        self.assertNotIn("host", nd["userAsk"])
 
 
 class UserAskText(unittest.TestCase):
@@ -343,6 +377,55 @@ class BuildersCarryTheAsk(unittest.TestCase):
                          "nothing of it in the unmarked (romp-authored) half")
 
 
+class WalkedAtRelay(unittest.TestCase):
+    """Kernel-walked-at-relay provenance (the user 2026-08-27, T126): the local walk rightly
+    refuses foreign-kernel hops because the EVIDENCE lives on the origin machine's disk — but at
+    send time the origin kernel holds everything, so it walks its own chain and the proof rides
+    the wire ({text, sid, host}, kernel-written, never agent prose). Stored on the minted top, it
+    is ALSO how re-delegation continues the chain: the planted node's own promptUuid is the mail
+    segment (refused as a human record) and its origin hop is cross-host (refused as a foreign
+    read), so the stored proof is the surviving evidence the walk resolves."""
+
+    def test_the_walked_record_stores_with_its_host(self):
+        st = {"rompUuid": MGR, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+        nid = jd.apply_courier(st, "s1", NOW, "factor the engine",
+                               {"peer": WKR, "goalId": "t1", "msgId": MID},
+                               user_ask={"text": DICTATION, "sid": WKR, "host": "TESTHOST"})
+        ua = st["nodes"][nid]["userAsk"]
+        self.assertEqual(ua["text"], DICTATION)
+        self.assertEqual(ua["host"], "TESTHOST")
+        self.assertNotIn("carried", ua)
+
+    def test_a_node_wearing_the_proof_resolves_the_walk_for_re_delegation(self):
+        saved = jd.parsed_session
+        jd.parsed_session = lambda sid, files, now: {"turns": []}
+        try:
+            st = {"rompUuid": MGR, "nodes": {
+                "top": _node("top", "the planted cross-host ask", None,
+                             origin={"peer": WKR, "goalId": "t1", "msgId": MID,
+                                     "peerHost": "TESTHOST"},
+                             promptUuid="mail-seg",
+                             userAsk={"text": DICTATION, "sid": WKR, "host": "TESTHOST"}),
+                "kid": _node("kid", "a step under it", "top")},
+                  "placements": {}, "status": {}}
+            jd.save_goals(MGR, st)
+            rec = jd._delegate_user_rooted(MGR, "kid", {MGR: "/dev/null"}, NOW)
+            self.assertEqual(rec["text"], DICTATION,
+                             "the stored kernel proof is the surviving evidence")
+            self.assertEqual(rec["host"], "TESTHOST")
+        finally:
+            jd.parsed_session = saved
+            for d in (jd.GOALDIR, jd.GOALARCHDIR):
+                try:
+                    (d / (MGR + ".json")).unlink()
+                except OSError:
+                    pass
+            try:
+                (jd._overrides_dir() / (MGR + ".jsonl")).unlink()
+            except OSError:
+                pass
+
+
 class PromptGates(unittest.TestCase):
     """The jargon gate rides every prose/title writer, and the source preference names its order:
     the session's own report to the person outranks everything, then the root ask, then the
@@ -359,6 +442,28 @@ class PromptGates(unittest.TestCase):
                       "<delegating-request>, then the rest of <work>.", jd.DISTILL_SYS)
         self.assertIn("Prefer sources in this order: that message, then the <user-ask>, then "
                       "the <delegating-request>, then the rest of <work>.", jd.BLOCK_BRIEF_SYS)
+
+    def test_tracking_ids_are_jargon_in_every_writer_that_titles_or_opens(self):
+        for name in ("DISTILL_SYS", "BLOCK_BRIEF_SYS", "PLAN_SYS", "GIST_SYS", "COURIER_SYS"):
+            with self.subTest(prompt=name):
+                self.assertIn("ticket", getattr(jd, name).lower(),
+                              "a tracking id is jargon-gated like any coined name (T126)")
+
+    def test_delegation_mechanics_are_gated_in_every_mail_echo_surface(self):
+        for name in ("DISTILL_SYS", "BLOCK_BRIEF_SYS", "PLAN_SYS", "GIST_SYS", "COURIER_SYS"):
+            with self.subTest(prompt=name):
+                self.assertIn("parcel, lane, dispatch", getattr(jd, name),
+                              "the shipping ceremony is jargon like any coined name (T135)")
+
+    def test_the_prose_writers_fix_all_three_persons(self):
+        for name in ("DISTILL_SYS", "BLOCK_BRIEF_SYS"):
+            with self.subTest(prompt=name):
+                self.assertIn("'you' is the READER alone", getattr(jd, name),
+                              "the person contract, complete (T135 + its amendment)")
+                self.assertIn("including the one whose card this is", getattr(jd, name),
+                              "the card's own session is a third-person actor, never 'I'")
+                self.assertIn("is the SESSION speaking, never the reader", getattr(jd, name))
+                self.assertIn("survives only inside the reader's own quoted ask", getattr(jd, name))
 
     def test_the_prose_gates_key_on_the_user_ask_section(self):
         for name in ("DISTILL_SYS", "BLOCK_BRIEF_SYS"):

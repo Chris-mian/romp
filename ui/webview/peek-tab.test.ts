@@ -16,7 +16,16 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("peek OPEN: every activation routes the peek decision — setActive derives peek-vs-normal from the CURRENT views", () => {
   // the single entry: setActive (tab clicks, the focus handler, jumpSession, cycleTab and
   // nav-history's apply all land here), before its already-active early-return
-  assert.match(RENDER, /function setActive\(id: string[\s\S]{0,500}?assertPeekFor\(id\);[\s\S]{0,400}?if \(activeId === id && anchor == null && anchorT == null\) return;/);
+  // the window between the derivation and the early return widened on 2026-09-05: the subagent viewer's
+  // two lines sit there (pruneSubViews — an activation is the event that closes an unpinned viewer — and the
+  // reopen of a viewer id whose tab is gone), both BEFORE the return by design, see plans/subagent-transcripts.md;
+  // the section-at-a-glance view's clear and the folded-away tab's unfold sit there too, and the early return
+  // grew a body (a pick of the tab already active puts its transcript back over the view: tab-snapshot-pane.test.ts).
+  // Ahead of the derivation, by design, sits the chat split's guard (2026-09-11): a pick of a session another column
+  // holds is handed to that column and returns before any peek is derived here (chat-split.test.ts pins the order)
+  assert.match(RENDER, /function setActive\(id: string[\s\S]{0,1400}?assertPeekFor\(id\);[\s\S]{0,900}?if \(activeId === id && anchor == null && anchorT == null\) \{/);
+  const head = RENDER.slice(RENDER.indexOf("function setActive(id: string"), RENDER.indexOf("assertPeekFor(id);", RENDER.indexOf("function setActive(id: string")));
+  assert.equal((head.match(/\n/g) || []).length <= 12, true, "the head before the derivation stays short: noteMru, the column guard and their comments");
   // the derivation: in-view → no peek; out-of-view → THIS session is the peek
   assert.match(RENDER, /const next = chatVisible\(id\) \? null : id;\s*\n\s*if \(next !== peekId\) \{ peekId = next; renderTabs\(\); \}/);
 });
@@ -32,20 +41,33 @@ test("peek AUTO-CLOSE: activating any other tab drops it — same derivation, no
   assert.match(RENDER, /let peekId: string \| null = null;/);
   // …and the DERIVATION call sites, each named (the census, extended 2026-08-24 with the two
   // views-arrival paths): setActive (every activation), the focus fast path (already-active),
-  // captureViews (kernel-pushed views), postViews (local optimistic edit). Nothing else derives.
+  // captureViews (kernel-pushed views), holdViews (local optimistic edit — postViews/postTagEdit),
+  // onViewsAck (the kernel's answer to a write, 2026-09-05), onKernelCaps (a reconnect dropping the
+  // in-flight copy — a views arrival in effect). Nothing else derives.
   const sites = RENDER.match(/assertPeekFor\(/g) || [];
-  assert.equal(sites.length, 6, "definition + 5 call sites: setActive, focus fast path, captureViews, postViews, and the feed click echo (2026-08-24 — the instant ack derives the peek before the kernel frame)");
+  // 6 → 7 on 2026-09-05: the subagent viewer's PIN control re-derives its own tab (pinned → in the chat
+  // lens → sheds the peek dress; unpinned → back to a peek) through the same derivation — no second
+  // peek mechanism (plans/subagent-transcripts.md; chatVisible() answers pinnedSubs for a viewer id).
+  // 7 → 8 with the acknowledged views writes: holdViews, onViewsAck and onKernelCaps replace the
+  // single postViews site.
+  assert.equal(sites.length, 10, "definition + 9 call sites: setActive, focus fast path, captureViews, holdViews, onViewsAck, onKernelCaps, the feed click echo (2026-08-24 — the instant ack derives the peek before the kernel frame), the subagent viewer's pin toggle (2026-09-05), and the ADOPTION of a first-arriving session (2026-09-11: a view-hidden first arrival has a tab, like a pick)");
 });
 
 test("a view change that excludes the ACTIVE session converts it into the peek — never a bounce (the user 2026-08-24)", () => {
   // both views-arrival paths re-derive the active session's peek: the kernel-pushed blob…
-  assert.match(RENDER, /pendingSessionViews = null; pendingViewsAge = 0;\s*\n\s*\}[\s\S]{0,700}?if \(activeId\) assertPeekFor\(activeId\);\s*\n\}/);
-  // …and the local optimistic edit, BEFORE its renderTabs so the repaint sees the fresh peek state
-  assert.match(RENDER, /pendingSessionViews = v; pendingViewsAge = 0;\s*\n\s*if \(activeId\) assertPeekFor\(activeId\);[\s\S]{0,200}?renderTabs\(\);/);
+  assert.match(RENDER, /pendingSessionViews = null; viewsWrites = \[\]; legacyViewsAge = 0;\s*\n\s*\}[\s\S]{0,700}?if \(activeId\) assertPeekFor\(activeId\);\s*\n\}/);
+  // …and the local optimistic edit (holdViews, shared by postViews/postTagEdit), BEFORE the
+  // renderTabs that follows in either poster so the repaint sees the fresh peek state
+  assert.match(RENDER, /pendingSessionViews = v; legacyViewsAge = 0;\s*\n\s*if \(activeId\) assertPeekFor\(activeId\);[\s\S]{0,900}?renderTabs\(\);/);
+  // …and the kernel's ack, a views arrival like the pushed frame
+  assert.match(RENDER, /if \(out\.clearPending\) pendingSessionViews = null;[\s\S]{0,300}?if \(activeId\) assertPeekFor\(activeId\);[\s\S]{0,200}?renderTabs\(\);/);
   // the derivation is symmetric, so a view that now INCLUDES the active peek sheds the dress — the
   // same next-null branch the auto-close pin above holds; and the fallback's fire-time revalidation
   // (below) re-checks tabInView, so a converted peek can never be bounced by an in-flight timeout
-  assert.match(RENDER, /setTimeout\(\(\) => \{ if \(activeId !== next && activeId && !tabInView\(activeId\)\) setActive\(next\); \}, 0\);/);
+  // (T357: a VIEW excluding the active tab never reaches renderTabs's check, since captureViews asserts the peek before
+  // applyTabOrder on every tabOrder frame and visibility is a pure function of the views blob; the #only= filter is
+  // no peek input, so an only-filtered active tab does reach it and goes UNFOCUSED, never re-pointed)
+  assert.match(RENDER, /setTimeout\(\(\) => \{ if \(activeId === hid && !stripShows\(hid\)\) unfocusHiddenByView\(hid\); \}, 0\);/);
 });
 
 test("peek is FIRST-CLASS in nav history by storing only the sid — apply lands in setActive, re-deriving peek", () => {
@@ -55,13 +77,16 @@ test("peek is FIRST-CLASS in nav history by storing only the sid — apply lands
 });
 
 test("the first-tab fallback never fires on an active peek: tabInView counts the peek as visible", () => {
-  assert.match(RENDER, /function tabInView\(id: string\): boolean \{ return id === peekId \|\| chatVisible\(id\); \}/);
+  assert.match(RENDER, /function tabInView\(id: string\): boolean \{ return \(id === peekId \|\| chatVisible\(id\)\) && heldHere\(id\); \}/);   // …and held by this column (the chat split, 2026-09-11; chat-columns.ts)
   // the #only=-era bounce reads visibleIds, which is built from tabInView — an active peek is in it
-  assert.match(RENDER, /const inViewIds = ids\.filter\(tabInView\);/);
-  assert.match(RENDER, /if \(activeId && ids\.includes\(activeId\) && !visibleIds\.includes\(activeId\) && visibleIds\.length\) \{/);
+  assert.match(RENDER, /const visibleIds = ids\.filter\(\(id\) => stripShows\(id, only\)\);/, "the view (tabInView, a peek counts) and the #only= filter through ONE predicate, stripShows (T357 later lows)");
+  assert.match(RENDER, /if \(activeId && ids\.includes\(activeId\) && !visibleIds\.includes\(activeId\)\) \{/, "the only-filter's check on the active tab (unfocus, not a re-point)");
   // …and the DEFERRED bounce re-validates at fire time: an activation between schedule and fire
   // (the feed click that just opened this peek) makes the active tab visible — no bounce then
-  assert.match(RENDER, /setTimeout\(\(\) => \{ if \(activeId !== next && activeId && !tabInView\(activeId\)\) setActive\(next\); \}, 0\);/);
+  // (T357: a VIEW excluding the active tab never reaches renderTabs's check, since captureViews asserts the peek before
+  // applyTabOrder on every tabOrder frame and visibility is a pure function of the views blob; the #only= filter is
+  // no peek input, so an only-filtered active tab does reach it and goes UNFOCUSED, never re-pointed)
+  assert.match(RENDER, /setTimeout\(\(\) => \{ if \(activeId === hid && !stripShows\(hid\)\) unfocusHiddenByView\(hid\); \}, 0\);/);
 });
 
 test("the focus fast path (already-active live jump) still re-asserts the peek — setActive is skipped there", () => {
@@ -80,7 +105,7 @@ test("the strip dresses the peek: .tab-peek on the tab, ghost treatment in CSS, 
 
 test("CASCADE: the peek outline is declared BEFORE the state outlines, so a real state wins at equal specificity", () => {
   const peekAt = CSS.indexOf(".tab.tab-peek {");
-  const stateAt = CSS.indexOf(".tab.tab-awaiting, .tab.tab-blocked, .tab.tab-retrying { outline:");
+  const stateAt = CSS.indexOf(".tab.ring-needs-you, .tab.ring-retrying { outline:");   // the rings are widgets since 2026-09-14: the outline keys on the ring class the strip composes
   assert.ok(peekAt >= 0 && stateAt >= 0, "both rules present");
   assert.ok(peekAt < stateAt, "peek before states — order IS the tiebreak (competing `outline` at equal specificity)");
 });
@@ -91,5 +116,6 @@ test("the peek is a PEEK, not a view edit: the client never posts a views change
   const focusBlock = (RENDER.match(/else if \(m\.type === "focus"\) \{[\s\S]*?\n  \}/) || [""])[0];
   assert.ok(focusBlock.length > 100, "found the focus handler");
   assert.doesNotMatch(focusBlock, /postViews|setTimelineViews|revealSession/);
-  assert.match(RENDER, /function revealSession\(id: string\) \{ postViews\(revealIn\(effViews\(\), id\)\); \}/);
+  assert.match(RENDER, /function revealSession\(id: string\) \{ const r = revealIn\(effViews\(\), id\); postLens\(\{ active: r\.active, actives: r\.actives \}\); \}/,
+    "the reveal is a LENS write: its fields ride on the store's blob, never the pending copy (the 2026-09-05 review)");
 });

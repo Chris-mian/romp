@@ -22,15 +22,28 @@ test("upsert tells append from fork by transcript OVERLAP, not the first uuid (s
 test("a content refresh appends (preserves scroll); only a fork drops the DOM", () => {
   assert.match(RENDER, /if \(forked\) \{[\s\S]{0,120}?v\.el\.remove\(\)/,
     "the cached DOM is dropped only on a fork, not on every push");
-  assert.match(RENDER, /if \(existed && !forked\) \{\s*appendActive\(\);/,
+  assert.match(RENDER, /if \(existed && !forked && !firstBuild && !adopted\) \{\s*appendActive\(\);/,   // !adopted: T236 — an adoption is a first show
     "a refresh of the active tab appends instead of snapping to the bottom");
+});
+
+test("a placeholder's first content-bearing build LANDS (bottom), it does not append (top)", () => {
+  // A fork's provisional tab and a revive's stub hold zero events; the payload that fills them used
+  // to route down the append path, whose overflow gate read the one-line placeholder as "not at
+  // bottom" and left the whole arriving history at scrollTop 0 — with the never-yank rule then
+  // holding the top forever (the user 2026-09-02: an opened/forked session sat at the top after its
+  // context loaded). First build = prev had NO events and the payload brings some → showActive →
+  // landActive pins the bottom exactly like a brand-new tab.
+  assert.match(RENDER, /const firstBuild = !!\(existed && prev && !prev\.events\.length && msg\.events && msg\.events\.length\);/,
+    "first build = the view's zero-event placeholder filling with its first real events");
+  assert.match(RENDER, /if \(msg\.id === activeId && !\(existed && !forked && !firstBuild\)\) \{/,
+    "the land branch's scroll capture covers the first build too");
 });
 
 test("a rebuild NEVER snaps a scrolled-up reader to the bottom — it captures + restores their anchor", () => {
   // even a genuine rebuild (new tab / fork / slid tail-window) preserves position for a scrolled-up reader:
-  // capture nearBottom + the anchor BEFORE dropping the DOM, restore after (the user 2026-07-06). A true
+  // capture atBottom + the anchor BEFORE dropping the DOM, restore after (the user 2026-07-06). A true
   // fork's anchor uuid isn't in the new transcript, so restoreScrollAnchor no-ops → it stays at the bottom.
-  assert.match(RENDER, /_wasNear = !_scrollContent \|\| !_v0 \|\| !_v0\.shown \|\| nearBottom\(_scrollContent\);/);
+  assert.match(RENDER, /_wasNear = !_scrollContent \|\| !_v0 \|\| !_v0\.shown \|\| atBottom\(_scrollContent\);/);
   assert.match(RENDER, /_scrollAnchor = \(!_wasNear && _scrollContent && _v0\) \? captureScrollAnchor\(_scrollContent, _v0\) : null;/);
   assert.match(RENDER, /if \(!_wasNear && _scrollAnchor && _scrollContent\) \{[\s\S]*?restoreScrollAnchor\(_scrollContent, v1, _scrollAnchor\)/);
 });
@@ -51,10 +64,10 @@ test("sharesAnyUuid: a continuation shares a uuid, a wholesale fork shares none"
 });
 
 test("appendActive snaps only when the user is already near the bottom of OVERFLOWING content", () => {
-  // the slack rule (the user 2026-08-25): while nothing overflows, nearBottom is trivially true —
+  // the slack rule (the user 2026-08-25): while nothing overflows, atBottom is trivially true —
   // ungated, the very append crossing the overflow boundary yanked the view; now streaming into
   // slack writes in place and grows the scrollbar, and the stick engages only once overflowing
-  assert.match(RENDER, /const stick = content\.scrollHeight > content\.clientHeight \+ 2 && nearBottom\(content\);[\s\S]*?if \(stick\) content\.scrollTop = content\.scrollHeight/,
+  assert.match(RENDER, /const stick = content\.scrollHeight > content\.clientHeight \+ 2 && atBottom\(content\);[\s\S]*?if \(stick && followTail\(distBefore, heightBefore, content\.scrollHeight\)\) writeScroll\(content, content\.scrollHeight, "append-stick", true, before\)/,   // …and only when there is new content to follow (T262 followTail)
     "tail-append follows the live edge only if content overflows AND the reader was at the bottom");
   // the popover's thread list speaks the same rule
   assert.match(RENDER, /const overflowed = list\.scrollHeight > list\.clientHeight \+ 2;/);
@@ -70,13 +83,13 @@ test("a scrolled-up append restores by turn ANCHOR (data-uuid), raw scrollTop on
   const fn = RENDER.slice(RENDER.indexOf("function appendActive"), RENDER.indexOf("window.addEventListener(\"resize\", scheduleRestamp)"));
   assert.match(fn, /const anchor = !stick && v \? captureScrollAnchor\(content, v\) : null;/,
     "the anchor is captured BEFORE the rebuild, only when scrolled up");
-  assert.match(fn, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor\)\)\) content\.scrollTop = before;/,
+  assert.match(fn, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor, before\)\)\) writeScroll\(content, before, "append-raw", false, before\);/,
     "anchor-relative restore first; the raw pixel offset only when the anchor was evicted");
   assert.match(RENDER, /function captureScrollAnchor\(content: HTMLElement, v: View\)/);
   assert.match(RENDER, /r\.bottom > cTop \+ 1/, "the anchor is the first turn still visible at the viewport top");
   assert.match(RENDER, /querySelector\(`\[data-uuid="\$\{cssEscape\(a\.uuid\)\}"\]`\)/,
     "the anchor re-resolves by its stable uuid after the rebuild");
-  assert.match(RENDER, /content\.scrollTop = yNow - a\.y;/, "the anchor turn keeps its exact on-screen offset");
+  assert.match(RENDER, /writeScroll\(content, yNow - a\.y, "anchor-restore", false, from\);/, "the anchor turn keeps its exact on-screen offset, the write's origin the caller's pre-change read (round three, medium)");
 });
 
 // BY-ID landing only — NO time-based fallback anywhere (the user 2026-06-20, who wanted to shrink the 29%, then remove
@@ -118,6 +131,15 @@ test("the kind guard accepts a peer's postal card as a valid PROMPT target (reco
   assert.match(RENDER, /pendingAnchorIntent === "user"\s+&& !target\.classList\.contains\("turn-user"\) && !target\.classList\.contains\("turn-postal-service"\)/);
 });
 
+test("the kind guard accepts a harness-injected record's notice card as a valid PROMPT target (a turn opened by a stamped prompt)", () => {
+  // a scheduled task's fired prompt is origin-stamped, so its turn renders as a sourced notice (renderInjected →
+  // notice()'s standalone .turn-notice), not .turn-user; a prompt-intent deep link into that turn was refused as
+  // the wrong kind and died silently (review find, 2026-09-09, on #1099). An assistant turn is still refused.
+  assert.match(RENDER, /pendingAnchorIntent === "user"\s+&& !target\.classList\.contains\("turn-user"\) && !target\.classList\.contains\("turn-postal-service"\)\s+&& !target\.classList\.contains\("turn-notice"\)\) \{/);
+  // 2026-09-08 (the notice-vocabulary pass): the one builder mints the standalone turn, severity-classed
+  assert.match(RENDER, /el\("div", "turn turn-notice notice-sev-" \+ sev \+ \(boxed \? " notice-boxed" : ""\)/, "the standalone notice turn wears the class the guard reads");
+});
+
 test("honest-fail fires whenever the deep-link can't resolve by id (the turn is genuinely gone)", () => {
   // now gated on !anchorPendingOlder so it doesn't fire while we're fetching older history for the anchor —
   // and on !att.keep, since a scroll-back position restore is nobody's navigation (chat-older-restore.test.ts)
@@ -140,7 +162,7 @@ test("a deep-link to an anchor OLDER than the resident tail fetches older histor
   // the helper stashes the TARGET uuid (not the current top row) so chatHead lands on it
   assert.match(RENDER, /function fetchOlderForAnchor\(sid: string, uuid: string\): boolean/);
   assert.match(RENDER, /pendingOlderAnchor\.set\(sid, uuid\)/);
-  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "loadOlder", id: sid, before: s\.headFrom \}\)/);
+  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "loadOlder", id: sid, before: s\.proto === 2 \? s\.firstUuid : s\.headFrom \}\)/);   // proto 2 anchors by uuid (T323 stage 4b)
   // the flag is reset at the start of each attempt so it can't leak a stale "fetching" state
   assert.match(RENDER, /anchorPendingOlder = false;\s+\/\/ fresh attempt/);
 });
@@ -151,8 +173,9 @@ test("a deep-link to an anchor OLDER than the resident tail fetches older histor
 test("timeline→chat glow matches turns BY UUID, not a ±2s time window (the user 2026-06-19)", () => {
   // applyGlow lights .turn[data-uuid] against the segment's atom uuids the kernel sends (kernel
   // _segment_atom_uuids); the old data-t range match was a flaky time heuristic and is gone.
-  assert.match(RENDER, /function applyGlow\(groups: Array<\{ sid: string; uuids: string\[\] \}>/);
-  assert.match(RENDER, /uset\.has\(n\.dataset\.uuid \|\| ""\)/, "glow matches by uuid set");
+  // (the group also carries idx/total since T318b, for the ruler's history strip; the uuid match is unchanged)
+  assert.match(RENDER, /function applyGlow\(groups: Array<\{ sid: string; uuids: string\[\]; idx\?: Record<string, number>; total\?: number \}>/);
+  assert.match(RENDER, /const u = n\.dataset\.uuid \|\| "";\s*if \(uset\.has\(u\)\)/, "glow matches by uuid set");
   assert.doesNotMatch(RENDER, /t >= s - 2 && t <= e \+ 2/, "the old ±2s data-t window match is gone");
 });
 
@@ -184,9 +207,9 @@ test("ResizeObservers on #tabbar AND #ledger compensate #content.scrollTop by th
   assert.match(RENDER, /for \(const boxId of \["tabbar", "ledger"\]\)/, "both boxes above the transcript are observed");
   assert.match(RENDER, /const tro = new ResizeObserver/, "via a dedicated per-box ResizeObserver");
   // shift scrollTop by (new - old) box height — only when not stuck to bottom and the pane is visible
-  assert.match(RENDER, /content\.clientHeight > 0 && !nearBottom\(content\)/,
+  assert.match(RENDER, /content\.clientHeight > 0 && !atBottom\(content\)/,
     "skipped when stuck to the bottom or the pane is hidden");
-  assert.match(RENDER, /content\.scrollTop \+= h - lastH/, "compensates by the exact height delta");
+  assert.match(RENDER, /writeScroll\(content, content\.scrollTop \+ \(h - lastH\), "box-resize"\)/, "compensates by the exact height delta");
   assert.match(RENDER, /if \(v\) v\.scrollTop = content\.scrollTop/, "keeps the per-view saved scroll in sync");
 });
 
@@ -196,5 +219,5 @@ test("a focus with `live` lands on the live tail — a blocked card's picker/per
   // cover the ALREADY-ACTIVE case, where setActive early-returns (activeId === id, no anchor) → jump to
   // bottom ONE FRAME later (the user 2026-08-13): when this focus is what un-hid a closed pane, the
   // synchronous scroll ran at display:none (scrollHeight 0) and the jump read as a no-op
-  assert.match(RENDER, /if \(m\.live && activeId === m\.id\) \{[\s\S]{0,700}?window\.requestAnimationFrame\(\(\) => \{\s*\n\s*const c = document\.getElementById\("content"\); if \(c\) c\.scrollTop = c\.scrollHeight;/);
+  assert.match(RENDER, /if \(m\.live && activeId === m\.id\) \{[\s\S]{0,700}?window\.requestAnimationFrame\(\(\) => \{\s*\n\s*const c = document\.getElementById\("content"\); if \(c\) writeScroll\(c, c\.scrollHeight, "focus-live", true\);/);
 });

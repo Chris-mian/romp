@@ -15,7 +15,7 @@ import re
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -32,8 +32,8 @@ _SESS = os.path.join(os.environ["XDG_STATE_HOME"], "sessions.json")
 Path(_SESS).write_text(json.dumps([{"id": "sess-web", "name": "web", "dir": "/tmp/notes-api",
                                     "state": "waiting", "working": ""}]))
 os.environ["ROMP_SESSIONS_FILE"] = _SESS
-ps = SourceFileLoader("romp_postal_tracked", os.path.join(BIN, "romp-postal-service")).load_module()
-jd = SourceFileLoader("romp_judge_tracked", os.path.join(BIN, "romp-judge")).load_module()
+ps = load_source("romp_postal_tracked", os.path.join(BIN, "romp-postal-service"))
+jd = load_source("romp_judge_tracked", os.path.join(BIN, "romp-judge"))
 
 RECIP = "11111111-2222-3333-4444-555555555555"   # the worker (web)
 SENDER = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"  # the delegator (api)
@@ -88,9 +88,12 @@ class PostalTrackedWire(unittest.TestCase):
         # source pins on the /send route: coordinate/question can never carry it, and the
         # cross-host relay branch deliberately drops it (a satellite with an unreachable primary
         # would hide work)
-        self.assertIn('tracked = bool(data.get("tracked")) and kind == "delegate"', PSRC)
+        self.assertIn('tracked, terr = _as_bool(data.get("tracked"), "tracked")', PSRC,
+                      "a checked boolean: the string \"false\" used to arm tracking")
+        self.assertIn('tracked = tracked and kind == "delegate"', PSRC)
         self.assertIn("`tracked` deliberately does NOT ride the relay", PSRC)
-        self.assertIn('mid = deliver(a0["id"], frm, frm_id, body, kind=kind, tracked=tracked)', PSRC)
+        self.assertIn('mid = deliver(a0["id"], frm, frm_id, body, kind=kind, tracked=tracked, relayed=relayed,\n'
+                      '                              relay_marker=relay_marker)', PSRC)   # T334: relayed and its marker ride too
 
     def test_mcp_and_cli_expose_the_flag(self):
         self.assertIn('"tracked": {"type": "boolean"', PSRC, "the send_message schema offers it")
@@ -129,7 +132,7 @@ class CourierTracked(unittest.TestCase):
         jd.ERRORS = td / "judge-errors.jsonl"
         jd.courier_llm = lambda *a, **k: self.reply
         self.reply = DELEGATING
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd._discover_cache["fp"] = None
         jd._discover_cache["result"] = None
         jd._postal_from_memo["key"] = None
@@ -153,7 +156,7 @@ class CourierTracked(unittest.TestCase):
             # the sender must be a DISCOVERED local session for tracked to qualify
             (self.dirs[SENDER] / (SENDER + ".jsonl")).write_text(
                 json.dumps(uline(T0 - 60, "kick off the exporter", "s1")) + "\n")
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd._discover_cache["fp"] = None
         jd._postal_from_memo["key"] = None
         jd.run_courier(now=T0 + 100)
@@ -227,7 +230,7 @@ class FeedPayloadPins(unittest.TestCase):
         # review 2026-08-24: a needs-you block always surfaces, and a closed/cleared primary
         # un-hides the copy — a pair divergence self-heals to a visible card, never work in secret
         self.assertIn('**({"satellite": True} if isinstance(o, dict) and o.get("tracked")\n'
-                      '                   and origin and origin.get("live") and column != "needs_input" else {}),', KSRC)
+                      '               and origin and origin.get("live") and column != "needs_input" else {}),', KSRC)   # T368: the body's indent
 
     def test_completed_and_cleared_handoffs_drop_off_the_primary(self):
         self.assertIn('and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")]', KSRC)

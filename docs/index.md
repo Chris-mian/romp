@@ -2,6 +2,8 @@
 title: Romp
 ---
 
+<!-- Front page: keep it short and human. Rules in CLAUDE.md, "The documentation front pages". -->
+
 # ![Romp](assets/brand/romp-wordmark.png){ .romp-wordmark }
 
 Agents like Claude Code can work autonomously for long stretches, allowing
@@ -30,7 +32,8 @@ Its key features:
 
 ## Every session, one view { .feature-h }
 
-The timeline shows every session: what's running, what's idle, and what needs you.
+The Sessions pane shows every session on a timeline: what's running, what's
+idle, and what needs you.
 
 <video src="assets/guide/every-session-timeline.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
 
@@ -61,7 +64,7 @@ to, then open it for the full detail.
 ## Every machine, one place { .feature-h }
 
 Sessions on your server appear alongside your laptop's, agents hand off work
-across [machines](guide.md#linking-kernels-on-other-machines), and you can view
-everything from a laptop or [a phone](guide.md#from-your-phone).
+across [machines](guide.md#linking-kernels-on-other-machines), and
+[a phone](guide.md#from-your-phone) shows the same dashboard as the laptop.
 
 ![Sessions on two machines, gathered into one dashboard and the same view on a phone](assets/guide/every-machine.png){ width="100%" }

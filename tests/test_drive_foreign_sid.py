@@ -2,16 +2,23 @@
 """A drive op naming a session this kernel doesn't have must FAIL LOUDLY, never degrade into a no-op.
 
 The user 2026-07-29: on a board merging two kernels, a reply addressed to the wrong one reached a kernel
-that owns no such session. Sessions.backend_for() falls through to tmux for any unrecognized sid, and
-TmuxBackend.send then types at a pane named after the sid — with no such pane, the keystrokes evaporate
-with nothing raised and nothing logged, so typed messages simply ceased to exist. Per the repo's
-fail-loudly rule, an op we cannot deliver has to say so: a modal in the pane that fired it, the text kept
-verbatim on disk so nothing typed is lost, and a line in the kernel log.
+that owns no such session. Sessions.backend_for() then fell through to the tmux backend for any
+unrecognized sid, and that backend's send typed at a terminal pane named after the sid — with no such pane,
+the keystrokes evaporated with nothing raised and nothing logged, so typed messages simply ceased to exist.
+Per the repo's fail-loudly rule, an op we cannot deliver has to say so: a modal in the dashboard pane that
+fired it, the text kept verbatim on disk so nothing typed is lost, and a line in the kernel log.
+
+The fall-through itself is gone with that backend (removed 2026-09-11): a sid neither the Claude Code
+("sdk") nor the Codex backend owns now routes to _UNOWNED (kernel/kernel.py, _UnownedBackend), whose every
+op is an explicit refusal — send() returns False and says why on stderr, nothing is typed anywhere. The
+check pinned here still matters on its own: _drive asks _kernel_knows before the op is routed to a backend
+(Sessions.backend_for), and that is what produces the modal, the on-disk copy and the log line rather than
+a bare refusal.
 """
 import json
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -21,7 +28,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_foreign", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_foreign", os.path.join(BIN, "romp-kernel"))
 
 OURS = "11111111-2222-3333-4444-555555555555"
 THEIRS = "99999999-8888-7777-6666-555555555555"   # lives on another machine's kernel
@@ -92,6 +99,10 @@ class RefusesForeignDriveOps(unittest.TestCase):
         self.assertEqual(msg["copy"], "did you get this?")
         # …and the sid rides along, so the shell's error-center entry says WHICH session it was meant for
         self.assertEqual(msg["sid"], THEIRS)
+        # …and the REQUEST it answers (review find, 2026-09-08): the feed latches a button on the click (Retry →
+        # "Retrying…", Continue → "Sent") and re-arms it on the kernel's reply for THAT post, never every latch
+        # the session holds, and never on a clock, so the reply names the op and the card it was for
+        self.assertEqual((msg["op"], msg["itemId"]), ("sendMessage", ""))
 
     def test_a_card_reply_is_refused_the_same_way(self):
         # the exact shape that lost real messages: askFollowUp derives its sid from the itemId
@@ -100,6 +111,8 @@ class RefusesForeignDriveOps(unittest.TestCase):
         self.assertEqual(self.sent[0]["type"], "err")
         self.assertEqual(self.sent[0]["copy"], "and the fix?")
         self.assertIn("reply", self.sent[0]["title"])
+        self.assertEqual((self.sent[0]["op"], self.sent[0]["itemId"]), ("askFollowUp", THEIRS + ":g4"),
+                         "the card's own latch is the one this refusal releases")
 
     def test_our_own_session_is_untouched(self):
         km._drive({"type": "sendMessage", "id": OURS, "text": "hello"}, self.client)

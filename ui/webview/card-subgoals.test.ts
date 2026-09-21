@@ -20,8 +20,8 @@ test("ask cards render the goal's WHOLE sub-goal tree (the 'subgoals' section), 
   assert.match(FEED, /const walk = \(nid: string, depth: number\) =>/);
   assert.match(FEED, /for \(const c of freshKids\) walk\(c, 0\);/);
   // …and the reviewed-earlier kids still walk the SAME whole-tree recursion when expanded
-  // (the user 2026-08-19: collapsed behind one row, never dropped)
-  assert.match(FEED, /if \(revOpen\) for \(const c of revKids\) walk\(c, 0\);/);
+  // (the user 2026-08-19: collapsed behind one row, never dropped), one level UNDER the fold row (2026-09-18)
+  assert.match(FEED, /if \(revOpen\) for \(const c of revKids\) walk\(c, 1\);/);
   assert.match(FEED, /for \(const c of n\.children \|\| \[\]\) walk\(c, depth \+ 1\)/);
   assert.doesNotMatch(FEED, /root\.children\.map/, "no longer capped at the direct children");
   assert.match(FEED, /s\.status === "done" \? "✓"/);         // ✓ done / ⏸ question(blocked) / empty-ring open mark
@@ -58,7 +58,7 @@ test("the not-done OPEN mark is a 13px hollow ring the same size as the done ✓
   assert.match(CSS, /\.fcheck\.open \.fcheck-mark \{[^}]*border-radius: 50%; border: 1\.5px solid var\(--dim\)/);
 });
 
-test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT struck; question = red ⏸)", () => {
+test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT struck; question = ⏸ in the Needs you colour)", () => {
   assert.match(CSS, /\.fask-checklist \{/);
   // done mark = the chat view's blue ✓ disc (--check-bg + round), matching .todo-completed .todo-mark
   assert.match(CSS, /\.fcheck\.done \.fcheck-mark \{[^}]*var\(--check-bg\)/);
@@ -66,12 +66,17 @@ test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT str
   // the sub-goal text dims to recede but is NOT struck through (the user 2026-06-16)
   assert.match(CSS, /\.fcheck\.done \.fcheck-text \{[^}]*var\(--dim\)/);
   assert.doesNotMatch(CSS, /\.fcheck\.done \.fcheck-text \{[^}]*line-through/);
-  // question(blocked) mark = the red ⏸ (var(--err)), not the old amber #d8a657 (the user 2026-06-24)
-  assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*var\(--err\)/);
+  // question (needs you) mark = the ⏸ in the Needs you colour (var(--st-needs-bg); plans/needs-you.md: red is the hard stop's
+  // alone since 2026-09-20; red from 2026-06-24 until then), not the old amber #d8a657
+  assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*var\(--st-needs-bg\)/);
   assert.doesNotMatch(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*#d8a657/);
-  // ...AND a RED RING around it (the user 2026-06-25): the same 13px hollow circle as the done ✓ disc and
-  // the modal's .st-question ⏸-ring, so the card's blocked mark isn't a bare glyph missing its ring.
-  assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*border: 1\.5px solid var\(--err\)/);
+  assert.doesNotMatch(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*var\(--err\)/, "no red on a question mark: red is the hard stop's");
+  // the group card's member dot for a question (the same mark, one level up): the token, never the red
+  assert.match(CSS, /\.fgroup-member\.st-question \.fgroup-dot \{ color: var\(--st-needs-bg\); \}/);
+  assert.doesNotMatch(CSS, /\.fgroup-member\.st-question \.fgroup-dot \{[^}]*(var\(--err\)|#e5484d|#c0392b)/, "no red on the group dot either");
+  // ...AND a RING around it in the same colour (the user 2026-06-25): the same 13px hollow circle as the done ✓ disc and
+  // the modal's .st-question ⏸-ring, so the card's mark isn't a bare glyph missing its ring.
+  assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*border: 1\.5px solid var\(--st-needs-bg\)/);
   assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*border-radius: 50%/);
 });
 

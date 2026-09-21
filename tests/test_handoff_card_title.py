@@ -14,7 +14,7 @@ de-arrowed label. Nested handoff rows are untouched. SYNTHETIC fixtures only."""
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from inspect import getsource
 from pathlib import Path
 
@@ -26,7 +26,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_hocard", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_hocard", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 SID = "11111111-2222-3333-4444-555555555555"    # the delegating session
@@ -139,13 +139,13 @@ class BuildFeedWiring(_Base):
     never was the problem there)."""
 
     def test_the_item_ships_the_derived_title_and_badge(self):
-        src = getsource(km.build_feed)
+        src = getsource(km._feed_session_entry)
         self.assertIn("handoff_to, card_text = _handoff_card_fields(nodes, nid)", src)
         self.assertIn('"text": card_text', src)
         self.assertIn('**({"handoffTo": handoff_to} if handoff_to else {})', src)
 
     def test_nested_tree_rows_keep_their_raw_text(self):
-        src = getsource(km.build_feed)
+        src = getsource(km._feed_session_entry)
         self.assertIn('"kind": "handoff" if _ho_sid else "ask", "text": nd["text"]', src,
                       "flatten's rows are untouched — nested handoff rows render as before")
 

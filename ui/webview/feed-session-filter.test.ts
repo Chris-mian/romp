@@ -20,8 +20,11 @@ const U = "11111111-2222-3333-4444-555555555555";
 const V = "99999999-8888-7777-6666-555555555555";
 
 test("the kernel's feed payload carries the chat tab strip's sessions, tab_meta-shaped", () => {
-  assert.ok(KERNEL.includes('"sessions": [{"sid": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])}'));
-  assert.ok(KERNEL.includes("for s in _chat_tab_sessions(now, tmux)]"), "the SAME list the tabs render, in ITS order");
+  assert.ok(KERNEL.includes('"sessions": [{"sid": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"]),'));
+  // …plus the session's GitHub repo (owner/repo or null), for the card text's PR links (pr-links.ts, 2026-09-06),
+  // derived from the SAME cwd the chat frame uses (_session_cwd: the registry's, else the transcript's stamp)
+  assert.ok(KERNEL.includes('"githubRepo": _github_repo_of(_session_cwd(s["sid"], s.get("path")))}'));
+  assert.ok(KERNEL.includes("for s in _chat_tab_sessions(now, live_map)]"), "the SAME list the tabs render, in ITS order");
 });
 
 test("federation prefixes each sessions[] entry's sid AND name, and the merge concatenates local-first", () => {
@@ -46,7 +49,7 @@ test("the filter defaults to NOTHING selected and only ever narrows the RENDER, 
   // the feed shows every session's cards (the user's 2026-08-25 ruling — the 2026-08-24 view gate
   // retired); the session filter / satellite split is the board's own first stage
   assert.ok(FEED.includes("let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list.filter((a) => !a.satellite);"));
-  assert.ok(FEED.includes("let shown = viewFiltered(asks);"), "render reads the shared view");
+  assert.ok(FEED.includes("let shown = onActiveBoard(viewFiltered(asks));"), "render reads the shared view (then keeps the active board's cards, phase four)");
   // (`let`, since 2026-08-23: the SEARCH filter composes onto the same render-side view — see feed-search.test.ts)
   assert.ok(FEED.includes("for (const a of shown) {"), "the group-fold loop reads the filtered view");
   assert.ok(FEED.includes("for (const a of shown) { if (grouped.has(a.itemId)) continue;"), "…and the singles loop");
@@ -81,12 +84,13 @@ test("session rows carry their tag chips — grouping visible, the pick untouche
   // non-interactive, ellipsizing in the row's leftover space
   assert.match(FEED, /if \(!g\.members\.includes\(pick\)\) continue;/);
   assert.match(FEED, /if \(chips\.childElementCount\) r\.appendChild\(chips\);/);
-  assert.match(FEED, /if \(g\.color\) \{ c\.style\.color = g\.color; c\.style\.borderColor = g\.color; \}/,
-    "the tag's own colour, outline-pill like the dialog");
+  assert.match(FEED, /const c = tagChip\(g\.name, g\.color \|\| null\);/,
+    "the tag's own colour on the one tag chip every surface draws (T321)");
+  assert.match(FEED, /c\.classList\.add\("fsm-chip-tag"\);/, "the dialog's layout hook stays on it");
   const CSS2 = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.css"), "utf8");
   assert.match(CSS2, /\.fsm-chips \{ flex: 1 1 auto; min-width: 0; margin-left: 8px; text-align: right;\s*\n\s*overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; \}/,
     "ellipsizes, never wraps the row; never a click target — the pick stays byte-identical");
-  assert.match(CSS2, /\.fsm-chip-tag \{ display: inline-block; font-style: normal; padding: 0 6px; margin-left: 4px;/,
+  assert.match(CSS2, /\.fsm-chip-tag \{ margin-left: 4px; \}/,
     "compact at the row's scale");
 });
 

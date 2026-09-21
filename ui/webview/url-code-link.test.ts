@@ -25,6 +25,6 @@ test("a whole-backtick http(s) URL becomes a tappable link that still looks like
     "inline spans only, never inside a block or an existing anchor");
   assert.match(RENDER, /a\.className = "url-code-link";/);
   assert.match(RENDER, /code\.replaceWith\(a\);\s*\n\s*a\.appendChild\(code\);/, "the code keeps its dress inside the link");
-  assert.match(CSS, /\.url-code-link code \{ text-decoration: underline dotted;/);
+  assert.match(CSS, /\.url-code-link code \{ text-decoration: underline solid;/);
   assert.match(CSS, /\.url-code-link:hover code \{ color: var\(--accent\); \}/);
 });

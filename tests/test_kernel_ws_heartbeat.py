@@ -10,7 +10,7 @@ Synthetic only — no real session data.
 import json
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -21,7 +21,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 KSRC = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
 
@@ -41,8 +41,9 @@ class Keepalive(unittest.TestCase):
         ]
         km._keepalive_all()
         dv = km._dist_ver()
-        self.assertEqual([json.loads(x) for x in got_a], [{"type": "ka", "dv": dv}], "feed client got one keepalive")
-        self.assertEqual([json.loads(x) for x in got_b], [{"type": "ka", "dv": dv}], "timeline client too — every app, not just one")
+        pv = km._panes_rev()   # the pane set's revision rides beside dv (plans/panes-as-data.md)
+        self.assertEqual([json.loads(x) for x in got_a], [{"type": "ka", "dv": dv, "pv": pv}], "feed client got one keepalive")
+        self.assertEqual([json.loads(x) for x in got_b], [{"type": "ka", "dv": dv, "pv": pv}], "timeline client too — every app, not just one")
 
     def test_keepalive_marks_a_broken_client_not_alive(self):
         def boom(_s):
@@ -74,24 +75,48 @@ class ShimWatchdogSourcePins(unittest.TestCase):
         # watchdog wiring in the shared shim AND that no second copy has crept back in.
         self.assertEqual(KSRC.count("var lastRecv=0;var STALE_MS=30000;"), 1,
                          "still ONE shim — the anti-duplicate guard (no second hand-rolled copy)")
-        self.assertGreaterEqual(KSRC.count("lastRecv=Date.now()"), 2)   # onopen + onmessage
+        # onopen + onmessage + the Page Lifecycle `resume` stamp (2026-09-07): a thawed tab's lastRecv only
+        # said "JS did not run", so a healthy OPEN socket read as dead and was redialed on every return
+        self.assertGreaterEqual(KSRC.count("lastRecv=Date.now()"), 3)
+        self.assertIn('document.addEventListener("resume",function(){resumedAt=Date.now();', KSRC)
+        self.assertIn("if(ws&&ws.readyState===1&&!(frozeAt&&frozeAt-lastRecv>STALE_MS)){lastRecv=Date.now();resumeProvisional=lastRecv;}});", KSRC,
+                      "only an OPEN socket that was in time at the freeze earns the stamp, and only provisionally (review find, 2026-09-08)")
         # the staleness threshold is used TWICE within the one shim: the 5s interval watchdog AND the
-        # visibilitychange fast-path (a foregrounded tab checks freshness at once). Both live in _shim, so the
-        # single-shim guard above still holds.
-        self.assertEqual(KSRC.count("Date.now()-lastRecv>STALE_MS"), 2)
+        # visibilitychange fast-path (a foregrounded tab checks freshness at once — since 2026-09-07 it
+        # names that verdict `stale` and files it as the return row's decision, still one test). Both live
+        # in _shim, so the single-shim guard above still holds. Since 2026-09-08 the watchdog reads its bound
+        # through `bound`: PROVISIONAL_MS (1.5 keepalive periods) while a resumed keep awaits a confirming frame,
+        # STALE_MS otherwise, so the literal appears once and the watchdog's line once.
+        self.assertEqual(KSRC.count("Date.now()-lastRecv>STALE_MS"), 1)
+        self.assertEqual(KSRC.count("var bound=resumeProvisional?PROVISIONAL_MS:STALE_MS;if(everConnected&&Date.now()-lastRecv>bound)"), 1)
+        self.assertEqual(KSRC.count("var PROVISIONAL_MS=15000,resumeProvisional=0;"), 1)
         self.assertNotIn("new WebSocket", km._TIMELINE_BOOT, "the timeline boot owns no socket of its own")
 
     def test_shim_ignores_the_keepalive_frame(self):
-        # the ka frame never reaches the bundles: the shim consumes it (build-drift check, then return)
-        self.assertIn('if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();return;}', KSRC)
+        # the ka frame never reaches the bundles: the shim consumes it (build-drift check, the stale rule,
+        # then RETURN). Pinned as the exact branch text INCLUDING its return: a slice-to-the-next-`return;}`
+        # pin would stay green with the return deleted (the slice runs on to the next branch's return) while
+        # keepalives fell through to the resync retire and to the bundle. pane-shim-stale.test.ts RUNS the
+        # same rule and asserts no ka reaches the bundle.
+        head = ('if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild(msg.dv);\n'
+                'if(stalePending&&++staleKa>=2){var sw=stalePending;stalePending="";raiseStale(sw);}')
+        i = KSRC.index(head)
+        rest = KSRC[i + len(head):]
+        nl = rest.index("\n")                              # the rule line's trailing comment
+        third = rest[nl + 1:rest.index("\n", nl + 1)]
+        self.assertTrue(third.startswith("return;}"), "the ka branch RETURNS: %r" % third)
+        self.assertNotIn("dispatchEvent", head + rest[:nl + 1 + len(third)])
 
 
 class BuildDriftBanner(unittest.TestCase):
-    """Build drift always shows a banner (the user 2026-07-13): the keepalive carries the kernel's current
-    dist token (dv); every kernel-served page bakes its own load-time token (LOADEDV) into the shim and
-    raises the reload prompt when dv passes it — so a standalone pane (no dashboard shell, previously NO
-    check at all) prompts too, and within one heartbeat instead of a 30s poll. Reload stays the user's
-    click, never automatic ([[prefer-reload-banner-not-auto]])."""
+    """Build drift is noticed on every page (the user 2026-07-13): the keepalive carries the kernel's current
+    dist token (dv); every kernel-served page bakes its own load-time token (LOADEDV) into the shim and acts
+    when dv passes it — so a standalone pane (no dashboard shell, previously NO check at all) notices too,
+    and within one heartbeat instead of a 30s poll. What the raise DOES changed on 2026-09-08 (T265: the reload
+    core reloads the page itself, never mid-gesture, superseding the 2026-07-13 "prompt, never automatic" rule)
+    and again on 2026-09-16: the raise hands the dv to the core, which OFFERS the reload (the shell's banner, or a
+    standalone page's own bar, with Reload and Not now) and never takes it; the self-injected build bar stands
+    only where the core is absent (tests/test_dashboard_auto_reload.py runs the core and the offer)."""
 
     def test_keepalive_frame_carries_the_dist_token(self):
         got = []
@@ -108,13 +133,17 @@ class BuildDriftBanner(unittest.TestCase):
         # that doesn't know its build can never false-positive
         self.assertIn("var LOADEDV=0;", km._shim("feed"))
 
-    def test_shim_raises_the_build_banner_once_shell_or_self(self):
+    def test_shim_hands_build_drift_to_the_reload_core_with_the_bar_where_the_core_is_absent(self):
+        # 2026-09-16: the raise hands the keepalive's dv to the reload core, which offers (deduped by build: every keepalive
+        # may hand it in); the self-injected bar stands only where the core is absent, once per page life
         js = km._shim("chat", 7)
-        self.assertIn('window.parent.postMessage({romp:"wsStale",build:1}', js,
-                      "embedded pane routes build drift to the shell banner, tagged so it words it as a BUILD")
-        self.assertIn('selfBar("A newer romp build is available.","build")', js,
-                      "standalone page self-injects the same reload bar")
-        self.assertIn("var buildRaised=false,freshPending=false;", js)   # latched: one prompt per page life
+        self.assertIn('function raiseBuild(dv){var R=window.__rompReload;if(R){R.noteDv(dv);return;}', js,
+                      "build drift is a proposal to the core, never a request")
+        self.assertNotIn('R.request("build"', js); self.assertNotIn("R.refused=", js)
+        self.assertNotIn('postMessage({romp:"wsStale",build:1}', js, "the hand-off to the shell banner is gone")
+        self.assertIn('if(buildRaised)return;buildRaised=true;selfBar("A newer romp build is available.","build");}', js,
+                      "standalone page self-injects the bar when the core is absent, once")
+        self.assertIn("var buildRaised=false,freshPending=false,restartAnnounced=0;", js)   # the no-core bar's latch (T217 added the announced-restart latch to the line)
         #                                    (freshPending rides along: the CONN prompt's self-retire, 2026-08-01)
 
     def test_every_pane_page_passes_its_version_to_the_shim(self):

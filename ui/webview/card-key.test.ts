@@ -106,7 +106,12 @@ test("a cross-pane hover bolds the card's own session colour, sharing the .focus
   const i = FEEDCSS.indexOf(".fitem.ask.focused, .fitem.ask.dot-hl");
   const rule = FEEDCSS.slice(i, FEEDCSS.indexOf("}", i));
   assert.match(rule, /border-color: rgb\(var\(--card-r/, "full-opacity session colour, as on mouse hover");
-  assert.match(rule, /box-shadow: 0 0 0 1px rgb\(var\(--card-r/, "and the same 1px same-colour ring");
+  // T270 (the user 2026-09-08): the bolding is PAINT ONLY — colour and shadow. The T221 cut grew the
+  // border 2→3px with a compensating margin -1px, which kept the CSS boxes still but moved the RENDERED
+  // text a device pixel on the user's display; no layout property may change with the hover.
+  assert.doesNotMatch(rule, /border-width|margin|padding/, "no layout property changes with the hover");
+  assert.match(rule, /box-shadow: 0 2px 7px/, "the lift shadow is the other half of the bolding");
+  assert.doesNotMatch(rule, /box-shadow: 0 0 0 1px/, "…never a second ring paint laid against the border (T221's seam)");
 });
 
 test("the white outline no longer lands on a card, only on the modal rows that have no colour", () => {
@@ -119,4 +124,15 @@ test("a pinned card still bolds to full when another pane hovers it", () => {
   // shared rule has to stay BELOW it or a pinned card would ignore the hover entirely.
   assert.ok(FEEDCSS.indexOf(".fitem.ask.pinned") < FEEDCSS.indexOf(".fitem.ask.focused, .fitem.ask.dot-hl"),
     "the shared highlight must come after .pinned");
+});
+
+test("a focused-section copy (T347) answers to its board key and to the bare domain id, like the card below", () => {
+  // the section renders a second element per card under "f:a:<itemId>" / "f:g:<turnId>": one more prefix over
+  // the board's key, the same identity; a cross-pane hover or a reveal must reach the copy too
+  assert.equal(extHoverMatches("f:a:" + GOAL, new Set([GOAL])), true, "the host's bare goal id lights the copy");
+  assert.equal(extHoverMatches("f:a:" + GOAL, new Set(["a:" + GOAL])), true, "a host speaking DOM keys lights it too");
+  assert.equal(extHoverMatches("f:g:" + TURN, new Set([TURN])), true, "a group copy matches on its turn id");
+  assert.equal(extHoverMatches("f:a:" + GOAL, new Set([SID + ":g228"])), false, "exact after the prefixes, never a substring");
+  assert.deepEqual(cardKeyAliases("f:a:" + GOAL), ["f:a:" + GOAL, "a:" + GOAL, GOAL], "most-specific first: the copy, the board's key, the bare id");
+  assert.deepEqual(cardKeyAliases("a:" + GOAL), ["a:" + GOAL, GOAL], "a board key is unchanged by the bridge");
 });

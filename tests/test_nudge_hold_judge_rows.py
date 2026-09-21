@@ -17,14 +17,14 @@ the route the awaiting-lift writer still leaves open. Synthetic fixtures only.
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-km = SourceFileLoader("romp_kernel_nhjr", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_nhjr", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 SID = "11111111-2222-3333-4444-888888888888"
@@ -131,7 +131,7 @@ class TheExemptionSetIsWhatTheCodeUses(unittest.TestCase):
         self.assertNotIn(jd.WHY_TURN_IN_FLIGHT,
                          [w for w in (jd.WHY_JUDGING,) if False] or [],)  # tuple membership is the one definition
         import inspect
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('_stall_rec.get("why") in jd.WHY_IN_FLIGHT', src,
                       "the feed routes in-flight-class holds to the judging swirl")
 

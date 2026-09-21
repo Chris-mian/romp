@@ -16,7 +16,7 @@ import shutil
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -25,8 +25,8 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_event_model_dedup", os.path.join(BIN, "romp-event-model")).load_module()
-jd = SourceFileLoader("romp_judge_dedup", os.path.join(BIN, "romp-judge")).load_module()
+em = load_source("romp_event_model_dedup", os.path.join(BIN, "romp-event-model"))
+jd = load_source("romp_judge_dedup", os.path.join(BIN, "romp-judge"))
 
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
@@ -294,7 +294,7 @@ class OpenerExtend(unittest.TestCase):
         shutil.rmtree(self._state_td, ignore_errors=True)
         if hasattr(self, "_saved"):
             (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.opener_llm, jd.group_llm) = self._saved
-            jd._PARSE_CACHE.clear()
+            jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
 
     # ── parse gating ──
     def test_extend_parses_only_when_offered(self):
@@ -394,7 +394,7 @@ class OpenerExtend(unittest.TestCase):
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.opener_llm, jd.group_llm)
         jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         offered = []
         jd.plan_llm = (lambda text, menu, **kw:
                        '{"ops":[{"why":"x","do":"mint","text":"Fix mobile chat width"}]}')

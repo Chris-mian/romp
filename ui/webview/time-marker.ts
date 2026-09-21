@@ -49,6 +49,34 @@ export function markerLabel(epoch: number, prevEpoch: number | null, nowMs: numb
   return { text: time, day: false, hm: time, date: "" };
 }
 
+/** The date a day divider shows above a row, or "" for none: the boundary rule markerLabel applies (the first row of a
+ *  PAST day), with one more condition (T339, the user 2026-09-11): the crossing must be FORWARD. A row stamped earlier
+ *  than the row before it (a notice that kept the moment it was queued and landed at delivery, a clock skew) is not a
+ *  day opening: reading the step back as a boundary drew "Yesterday" inside today, above a row whose neighbours were all
+ *  today's. Such a row keeps its own time and draws no divider. */
+export function dayOpens(epoch: number, prevEpoch: number | null, nowMs: number): string {
+  if (prevEpoch != null && epoch < prevEpoch) return "";
+  const { day, date } = markerLabel(epoch, prevEpoch, nowMs);
+  return day && date ? date : "";
+}
+
+/** The day walk's state (T339 review): the reference a divider is decided against is a HIGH-WATER MARK, the latest
+ *  epoch the walk has passed, never the row just before. A row stamped earlier than the rows around it (a live echo the
+ *  kernel merges into the last turn at its send time) opens no day (dayOpens) and must not become the reference either:
+ *  the next in-sequence row would cross "forward" out of the stale day and open a SECOND divider for a day already open,
+ *  whenever that day is not today (today never opens, which is the one case a previous-row rule got right). `open` asks
+ *  whether a row opens a day against the mark; `pass` moves the mark over a row (or a unit's exit epoch) and never
+ *  rewinds. The rail's own HH:MM chain is separate (it reads the raw previous row), so a row after a stale one still
+ *  shows its time. */
+export class DayWalk {
+  mark: number | null = null;
+  open(epoch: number, nowMs: number): string { return dayOpens(epoch, this.mark, nowMs); }
+  /** Moves the mark over a row (or a unit's exit) and returns the mark after it: the day the walk is IN at that row,
+   *  which is what the top-of-view day-context label names for it (render.ts stampWalkDay / paintRailSticky, T342);
+   *  a stale row keeps its own HH:MM in the rail but sits under the walk's day, as the dividers already say. */
+  pass(epoch: number | null): number | null { if (epoch != null && (this.mark == null || epoch > this.mark)) this.mark = epoch; return this.mark; }
+}
+
 // (A chooseStamps() spacing pass used to live here: it re-revealed a suppressed same-minute stamp every
 // ~6 rows so the gutter never went long without a time. The sticky rail stamp now guarantees a time at the
 // top of the view at all times, which made those repeats pure noise — so the pass is gone and a stamp means
@@ -71,4 +99,39 @@ export function dayContext(epoch: number, nowMs: number): string {
   if (days < 28) return Math.floor(days / 7) + " weeks ago";
   const md = MONTH[d.getMonth()] + " " + d.getDate();
   return d.getFullYear() === now.getFullYear() ? md : md + " " + d.getFullYear();
+}
+
+/** TODAY's rail label (T406, the user 2026-09-13, the wording theirs): how long ago the row was, in place of the clock
+ *  time: "now" under a minute, "1 min ago", "N min ago" up to 59, "1 hour ago" from 60 to 119 minutes, "N hours ago"
+ *  after. Digits throughout; "min" is the user's own abbreviation and stands; hour and hours spelled out. "" for a row
+ *  of any other day: its day divider names the day at the top, so its marker keeps the HH:MM exactly as before. The day
+ *  is the viewer's LOCAL day, the one dayContext keys on. The distance is in CALENDAR minutes (the clock's minute of the
+ *  row against the clock's minute now, whatever the seconds), the grain of the HH:MM it replaces: every label on the
+ *  page turns over together the moment the clock's minute does (the rail's minute tick in render.ts fires just past
+ *  each boundary) and two rows of one minute always read alike, so the rail's same-minute rule holds at the label's
+ *  grain. The grain has a face worth knowing: a row that landed a second before the clock's minute turned reads "1 min
+ *  ago" at the tick, and a row 61 seconds old can read "2 min ago", exactly as a 14:03:59 row is stamped 14:03 at
+ *  14:04:00; every label on the page turns together, which is why it stands (the user can overturn it). A row stamped
+ *  ahead of the clock (skew) reads "now". */
+export function relativeLabel(epoch: number, nowMs: number): string {
+  const d = new Date(epoch * 1000), now = new Date(nowMs);
+  if (d.getFullYear() !== now.getFullYear() || d.getMonth() !== now.getMonth() || d.getDate() !== now.getDate()) return "";
+  const mins = Math.max(0, Math.floor(nowMs / 60000) - Math.floor(epoch / 60));
+  if (mins < 1) return "now";
+  if (mins < 60) return mins + " min ago";
+  const h = Math.floor(mins / 60);
+  return h === 1 ? "1 hour ago" : h + " hours ago";
+}
+
+/** The label as the rail sets it. The marker's slot is the gutter's 56px; measured on the served page, where the rail
+ *  renders in Inter in both themes, at the default 13px chat font every minutes form and "1 hour ago" fit one line
+ *  ("59 min ago", the widest, 55.9px; "1 hour ago" 51.9px; "now" 19.6px) and no plural-hours form does ("2 hours ago"
+ *  58.1px, "23 hours ago" 64.3px), so "N hours ago" alone takes "ago" on a line of its own ("23 hours" 43.5px). At a
+ *  14px chat font (the VS Code webview's --fs road; the served page pins the body at 13px) the two-digit minute forms
+ *  are wider than the slot ("59 min ago" 58.0px) and white-space: pre-line wraps such a line at its space ("59 min" over
+ *  "ago"), as it would any label the slot cannot hold at a larger font: nothing overhangs toward the dot at any size;
+ *  "1 hour ago" 55.0px still fits one line. The marker is absolutely positioned, so a second line costs the transcript
+ *  nothing (styles.css .time-marker.rel). */
+export function relativeLines(label: string): string {
+  return /^\d+ hours ago$/.test(label) ? label.replace(/ ago$/, "\nago") : label;
 }

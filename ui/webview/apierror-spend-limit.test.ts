@@ -24,8 +24,12 @@ test("the auto-retry tick SKIPS a spend-capped thread (retrying can't fix a bill
 });
 
 test("a spend cap paints the tab alarm-red (on-you), not amber retrying", () => {
-  // a safeguards refusal is the fifth on-you class (the user 2026-08-15) — see apierror-refusal.test.ts
-  assert.match(R, /\(s\.status\.apiTooLong \|\| s\.status\.apiSpendLimit \|\| s\.status\.apiModelLimit \|\| s\.status\.apiAuthErr \|\| s\.status\.apiRefusal\) \? "tab-blocked" : "tab-retrying"/);
+  // a safeguards refusal is the fifth on-you class (the user 2026-08-15) — see apierror-refusal.test.ts.
+  // The rule lives in tab-state.ts since tab groups (2026-09-04): one function for the tab and the
+  // folded section header's pip (tab-state.test.ts executes it); render.ts wears its result
+  const S = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-state.ts"), "utf8");
+  assert.match(S, /\(s!\.apiTooLong \|\| s!\.apiSpendLimit \|\| s!\.apiModelLimit \|\| s!\.apiAuthErr \|\| s!\.apiRefusal\) \? "tab-blocked" : "tab-retrying"/);
+  assert.match(R, /const stateCls = tabStateClass\(s\.status\);/);
 });
 
 test("the paused line names the spend cap and points at the settings page (no fake countdown)", () => {
@@ -50,4 +54,17 @@ test("the feed card badges a spent model allowance and HIDES Retry too", () => {
   assert.match(F, /const modelLimit = !!\(it\.blocked && it\.blocked\.modelLimit\)/);
   assert.match(F, /modelLimit \? "⚠ Model limit"/);
   assert.match(F, /modelLimit\?: boolean/);
+});
+
+// The kernel latches a usage-limit pause as reason "limit" in the pause file (the bottom bar's API health cell
+// names the pause from it). The chat card's paused line is unchanged by that: retryPausedText branches on
+// === "spend" first and otherwise falls to the resumeAt countdown, so a "limit" reason renders the countdown
+// exactly as an unlabeled limit pause did. The kernel half (the frame still carries `reason`, the engage writes
+// "limit") is pinned in tests/test_api_health_rail.py's Wiring class.
+test("retryPausedText: spend first, then the resumeAt countdown (a 'limit' reason renders the countdown)", () => {
+  const fn = R.slice(R.indexOf("function retryPausedText()"), R.indexOf("function apiRetryTick()"));
+  assert.match(fn, /if \(globalRetryReason === "spend"\) return/);
+  assert.match(fn, /if \(globalRetryResumeAt\) \{/);
+  assert.ok(fn.indexOf('=== "spend"') < fn.indexOf("if (globalRetryResumeAt)"), "spend is checked before the countdown");
+  assert.doesNotMatch(fn, /"limit"/, "no reason-specific branch: the countdown IS the limit's rendering");
 });

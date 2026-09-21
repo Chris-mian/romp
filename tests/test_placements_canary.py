@@ -24,7 +24,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -33,8 +33,8 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_canary", os.path.join(BIN, "romp-judge")).load_module()
-em = SourceFileLoader("romp_em_canary", os.path.join(BIN, "romp-event-model")).load_module()
+jd = load_source("romp_judge_canary", os.path.join(BIN, "romp-judge"))
+em = load_source("romp_em_canary", os.path.join(BIN, "romp-event-model"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 T0 = 1780000000
@@ -74,7 +74,14 @@ RECORDS = [
      "attachment": {"type": "queued_command", "commandMode": "prompt",
                     "prompt": [{"type": "text", "text": "also gzip the exported CSV"}]}},
     {"type": "queue-operation", "timestamp": iso(T0 + 335), "operation": "remove", "content": None},
-    aline(T0 + 360, "Renamed the columns, updated the importer tests, gzipped the export.", "a4", "att1"),
+    # a second splice whose LANDING differs from its send (T252d, 2026-09-08): sent at T0+340, taken at the
+    # T0+350 boundary (its file-order predecessor a3b). Its atom is placed at T0+350 — the read position —
+    # so its seg id's t is the landing, not the send; att1 above clamps (its witness a3 predates the send).
+    aline(T0 + 350, "Still renaming; one more file.", "a3b", "att1", stop=None),
+    {"type": "attachment", "timestamp": iso(T0 + 340), "uuid": "att2", "parentUuid": "a3b",
+     "attachment": {"type": "queued_command", "commandMode": "prompt",
+                    "prompt": [{"type": "text", "text": "and bump the export's version"}]}},
+    aline(T0 + 360, "Renamed the columns, updated the importer tests, gzipped the export.", "a4", "att2"),
     # a COMPACTION much later (2026-07-13): the boundary opens its OWN turn (the phantom pre-compaction
     # work-bar fix) — pinned here so the compact-turn split is part of placement identity too.
     {"type": "system", "subtype": "compact_boundary", "timestamp": iso(T0 + 4000), "uuid": "cb1",
@@ -109,6 +116,9 @@ RECORDS = [
     aline(T0 + 5560, "Renamed them again on the new export page.", "a7", "u7"),
 ]
 
+# v12 (2026-09-08, T252d): an absorbed atom is placed at its LANDING time, so a splice whose landing differs
+# from its send (att2 below, sent T0+340, taken T0+350) keys on the landing; att1's witness predates its send,
+# so it clamps and its id is unchanged. Both dimensions moved: att2 and its witness a3b join the atom set.
 # The pinned derivation, recorded under PLACEMENTS_V = 7 (2026-08-01; the derivation itself is unchanged
 # since v6 — v7 seals for a GROWN atom set, the replay-guard scoping. The LAST id of the first five — a
 # text-less segment — moved off the shared sha1('') hash da39a3ee onto its anchor atom's uuid, so text-less
@@ -119,9 +129,10 @@ RECORDS = [
 # boundary does not arm the replay dedup).
 EXPECTED_SEG_IDS = [
     SID + ":1780000000:ca8d36fd",
-    SID + ":1780000120:f03c5f4f",
+    SID + ":1780000120:b9c69e54",
     SID + ":1780000240:686c9d66",
     SID + ":1780000330:f3320ed1",
+    SID + ":1780000350:26e8f145",   # att2: sent at T0+340, placed at its T0+350 landing (v12, T252d)
     SID + ":1780004000:d780b71b",
     SID + ":1780005000:d105998b",
     SID + ":1780005300:9b15c581",
@@ -133,7 +144,7 @@ EXPECTED_SEG_IDS = [
 # atom that changes segments without changing any id — the detached compact's stdout (so2) belongs to
 # the /compact COMMAND turn (cb2 sorts after it), and u7 must be in the set at all.
 EXPECTED_ATOM_UUIDS = [
-    "u1", "a1", "u2", "a2", "u3", "a3", "att1", "a4", "cb1", "a5",
+    "u1", "a1", "u2", "a2", "u3", "a3", "att1", "a3b", "att2", "a4", "cb1", "a5",
     "u6", "a6", "cw2", "so2", "cb2", "u7", "a7",
 ]
 
@@ -143,9 +154,10 @@ EXPECTED_ATOM_UUIDS = [
 # continuation work — a5 chains through the boundary — and predates this block.)
 EXPECTED_UNITS = [
     (SID + ":1780000000:ca8d36fd", "work", True),
-    (SID + ":1780000120:f03c5f4f", "nudge", False),
+    (SID + ":1780000120:b9c69e54", "nudge", False),
     (SID + ":1780000240:686c9d66", "work", True),
     (SID + ":1780000330:f3320ed1", "work", True),
+    (SID + ":1780000350:26e8f145", "work", True),
     (SID + ":1780004000:d780b71b", "work", False),
     (SID + ":1780005000:d105998b", "work", True),
     (SID + ":1780005500:686c9d66", "work", True),
@@ -200,8 +212,63 @@ class PlacementIdentityCanary(unittest.TestCase):
         # every pinned id is UNCHANGED — the bump seals sessions whose machine-cut resumes forked
         # fresh-headed transcripts, whose previously-dropped pre-cut atoms rejoin the set
         # (tests/test_kernel_resume_fork_lineage.py covers the stitch itself).
-        self.assertEqual(jd.PLACEMENTS_V, 9, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=9 — "
+        # v10 (2026-09-01, the eclipsed-branch keep, T209): this fixture carries no api_error spur,
+        # so every pinned id is UNCHANGED — the bump seals transcripts whose retry-storm flush
+        # knocked a turn's output off the spine; those atoms rejoin the set
+        # (tests/test_romp_events_golden.py's eclipsed fixture covers the keep itself).
+        # v11 (2026-09-01, the eclipsed-chain selection): this fixture still carries no api_error
+        # spur, so every pinned id is UNCHANGED — the bump seals transcripts whose eclipsed fork
+        # held SIBLING chains (stub twins, error bursts, older attempts), whose atoms leave the
+        # set again (tests/test_event_model_golden.py EclipsedChainSelection covers the pick).
+        # v12 (2026-09-08, T252d): absorbed atoms placed at their landing time — att2's id and the atom set
+        # above re-pinned with the bump.
+        # v13 (2026-09-10, T318): a segment opened by a machine-written trigger (a romp injection: restart or
+        # crash notice, auto-nudge, retry, compaction suggestion, Nudge-button follow-up; the CLI's stop record; a
+        # scheduled task's fired prompt)
+        # keys on its anchor atom's uuid, not its (identical every time) text; this fixture's u2 is romp-injected
+        # but its id is pinned as it now derives, and the rest carry no such trigger — the bump seals sessions
+        # whose restart-notice and stop-record segments aliased under one key (tests/test_restart_notice_segments.py
+        # covers the derivation and the card anchors it protects).
+        # v14 (2026-09-11, T333, the harness skill-load wrapper skip): this fixture carries no such
+        # wrapper, so every pinned id is UNCHANGED; the bump seals transcripts that DO carry it, whose
+        # command atom drops out and whose prompt segment grows to hold the work.
+        self.assertEqual(jd.PLACEMENTS_V, 14, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=14: "
                          "re-pin the ids and this version together, in the same commit")
+
+
+class MovedAtomsDoNotReplay(unittest.TestCase):
+    """The contract behind the bump (T252d): a store recorded under an older PLACEMENTS_V has untrustworthy
+    keys, so its currently-ready unplaced units are SEALED (placements[key] = None) at the next pass rather
+    than planned — a dormant session whose absorbed atoms moved to their landing time mints no new goals
+    for them. Proven here on the fixture: a v11 store with recorded history goes through _plan_session
+    under v12, the planner is never called, no node is minted, and every unit key is sealed."""
+
+    def test_a_dormant_older_store_seals_instead_of_replaying(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tp = td / (SID + ".jsonl")
+            tp.write_text("\n".join(json.dumps(r) for r in RECORDS) + "\n")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.plan_llm = jd.opener_llm = lambda text, *a, **k: (calls.append(text) or '{"ops":[{"why":"x","do":"skip"}]}')
+            jd._group_store = lambda *a, **k: None
+            try:
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
+                store = jd.load_goals(SID)
+                store["placementsV"] = jd.PLACEMENTS_V - 1        # recorded under the previous derivation…
+                store["placements"] = {SID + ":1780000000:ca8d36fd#p": {"goal": 1}}   # …with history
+                jd.save_goals(SID, store)
+                jd._plan_session(SID, str(tp), T0 + 6000)
+                store = jd.load_goals(SID)
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store) = saved
+        self.assertEqual(calls, [], "no unit of the moved history reached the planner")
+        self.assertEqual(store.get("nodes"), {}, "no goal minted for a moved atom")
+        self.assertEqual(store["placementsV"], jd.PLACEMENTS_V, "stamped current after the seal")
+        sealed = [k for k, v in store["placements"].items() if v is None]
+        self.assertTrue(any(k.startswith(SID + ":1780000350:") for k in sealed),
+                        "the moved splice's unit is sealed under its new key: %r" % sorted(store["placements"]))
 
 
 if __name__ == "__main__":

@@ -124,13 +124,17 @@ test("the popover is aligned, styled in the feed's own vocabulary, and can never
   assert.match(CSS, /\.age-tip-when \{ flex: 0 0 auto; min-width: 118px; text-align: right; color: var\(--dim\);/,
     "one right-aligned dim time column — the alignment the title tooltip couldn't give");
   assert.match(CSS, /font-variant-numeric: tabular-nums/, "digits line up down the column");
-  assert.match(CSS, /#age-tip \{[^}]*pointer-events: none/s, "hover chrome, never a click target");
+  // the popover rides the SHARED styled-tip node now (tip.ts, 2026-08-28): non-hoverable tips get
+  // pointer-events:none at show time, so hover chrome can never eat a click
+  const TIP = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tip.ts"), "utf8");
+  assert.match(TIP, /tip\.style\.pointerEvents = opts\?\.hoverable \? "auto" : "none";/,
+    "hover chrome, never a click target");
   assert.match(CSS, /\.age-tip-row\.stamp \{ margin-top: 4px; padding-top: 4px; border-top:/,
     "the closing stamp line is its own section under a hairline");
   // the tip survives ordinary re-renders (cards update in place; unconditional hiding made it vanish
   // ~a second into every hover — the feed re-renders on every kernel push, the user 2026-07-27) and
-  // hides only when the render actually tore its hovered stamp out of the DOM
-  assert.match(FEED, /function pruneAgeTip\(\): void \{ if \(ageTipAnchor && !ageTipAnchor\.isConnected\) hideAgeTip\(\); \}/);
-  assert.match(FEED, /pruneAgeTip\(\);   \/\/ drop the tip only if the render tore its hovered stamp out/);
+  // hides only when the render actually tore its hovered stamp out of the DOM (tip.ts pruneTip)
+  assert.match(TIP, /export function pruneTip\(\): void \{ if \(tipAnchor && !tipAnchor\.isConnected\) hideTip\(\); \}/);
+  assert.match(FEED, /pruneTip\(\);   \/\/ drop the styled tip only if the render tore its hovered anchor out/);
   assert.doesNotMatch(FEED, /\n\s*hideAgeTip\(\);\s*\/\/ a re-render/, "the unconditional hide is gone");
 });

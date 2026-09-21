@@ -13,7 +13,7 @@ import os
 import stat
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -22,9 +22,9 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 def _mode(p):
@@ -33,6 +33,11 @@ def _mode(p):
 
 class RemotesFilePermissions(unittest.TestCase):
     def setUp(self):
+        # the kernel module is ONE object per process for every test file that loads it under this
+        # name (a peer file's km IS this km), so the row planted here leaves with the test: under
+        # xdist a whole-map reader elsewhere (test_kernel_trust's PairsSnapshot) found it (2026-09-02)
+        saved = dict(km._remotes)
+        self.addCleanup(lambda: (km._remotes.clear(), km._remotes.update(saved)))
         km._remotes.clear()
         km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 8801,
                                    "bus_port": 8802, "token": "REMOTE-SECRET-TOKEN", "proc": None,

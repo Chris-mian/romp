@@ -16,7 +16,7 @@ import os
 import tempfile
 import time
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -25,10 +25,11 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_sdkhuman", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge_sdkhuman", os.path.join(BIN, "romp-judge"))
 
 SDK_SID = "11111111-2222-3333-4444-555555555555"
-TMUX_SID = "99999999-8888-7777-6666-555555555555"
+# a session with no SDK registry file: a transcript romp does not own (someone's own claude in a terminal)
+TERMINAL_SID = "99999999-8888-7777-6666-555555555555"
 
 
 def _iso(ep):
@@ -40,7 +41,7 @@ class SdkHumanPromptRun(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.mkdtemp()
         jd._rebind_state(Path(self.td))
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
 
     def _open_human_turn(self, sid):
         """A transcript with ONE in-progress human prompt over the SDK channel (promptSource 'sdk'), no
@@ -71,11 +72,12 @@ class SdkHumanPromptRun(unittest.TestCase):
         self.assertTrue(units[0][4], "the prompt unit is flagged human")
 
     def test_regression_without_sdk_registry_no_prompt_run(self):
-        # The same promptSource-"sdk" prompt in a NON-SDK session is a genuine programmatic injection, not the
-        # human → no prompt-run (and the kernel shows no provisional for it either, so they stay consistent).
-        self.assertFalse(jd._sdk_owned(TMUX_SID))
-        path, now = self._open_human_turn(TMUX_SID)
-        units = self._prompt_units(TMUX_SID, path, now)
+        # The same promptSource-"sdk" prompt in a session romp does not own (no SDK registry file: someone's own
+        # claude in a terminal) is a genuine programmatic injection, not the human → no prompt-run (and the kernel
+        # shows no provisional for it either, so they stay consistent).
+        self.assertFalse(jd._sdk_owned(TERMINAL_SID))
+        path, now = self._open_human_turn(TERMINAL_SID)
+        units = self._prompt_units(TERMINAL_SID, path, now)
         self.assertEqual(units, [], "a non-SDK promptSource-'sdk' prompt is not the human → no PROMPT-run unit")
 
 

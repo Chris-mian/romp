@@ -1,0 +1,33 @@
+<!-- Synthetic strip fixture (notes-api demo domain, no real data): the VS Code bottom rail —
+     usage bar-pairs, API spend cell, pane quick-opens, gear/refresh/net buttons, and the remotes
+     popover with trust rows. Static markup only; strip.ts not loaded. -->
+<div id="romp-strip">
+  <div id="strip-usage">
+    <div class="ru-w"><span class="ru-name"><span class="ru-name-full">Session</span><span class="ru-name-short">S</span></span>
+      <span class="ru-bars"><span class="ru-track"><span class="ru-fill" style="width:62%;background:#e0b020"></span></span>
+      <span class="ru-track"><span class="ru-fill" style="width:31%;background:#2b7fb8"></span></span></span>
+      <span class="ru-pct">62%</span></div>
+    <div class="ru-w ru-api"><span class="ru-name">API</span>
+      <span class="ru-apiv">$4.20</span><span class="ru-apiv ru-apitok">1.2M</span></div>
+  </div>
+  <div id="strip-panes"><button class="strip-pane">Feed</button><button class="strip-pane">Timeline</button></div>
+  <div class="strip-acts">
+    <button id="strip-net" class="on">⇄</button>
+    <button id="strip-refresh">↻</button>
+    <button id="strip-gear">⚙</button>
+  </div>
+</div>
+<div id="strip-net-pop">
+  <div class="sn-attach"><select><option>TESTHOST</option></select><button>Attach</button></div>
+  <div class="sn-row"><span class="sn-dot" style="background:#54B204"></span><span class="sn-name">web</span>
+    <span class="sn-pend">applying…</span><button class="sn-trust sn-applying">trusted</button></div>
+  <div class="sn-ap">pushing update…</div>
+  <div class="sn-ap bad">update failed</div>
+  <div class="sn-row sn-sub"><span class="sn-dot" style="background:#8a8a8a"></span><span class="sn-name">api</span>
+    <button class="sn-trust sn-actfail">retry</button></div>
+  <div class="sn-khead">Previously attached</div>
+  <div class="sn-row sn-known"><span class="sn-dot" style="background:#8a8a8a"></span><span class="sn-name">tests</span>
+    <button class="sn-trust">forget</button></div>
+  <div class="sn-empty">No other machines right now</div>
+  <label class="sn-auto"><input type="checkbox"> Automatically update</label>
+</div>

@@ -27,9 +27,10 @@
 # to get wrong in public:
 #
 #   * The tag MUST be v-prefixed. bootstrap.sh picks the release with
-#     `git tag -l 'v*' --sort=-v:refname | head -n1`. A tag like "0.1.0" matches NOTHING, so
-#     the one-line installer silently falls back to main instead of installing the release —
-#     no error, just the wrong thing. Deriving the tag guarantees the prefix.
+#     `git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1`.
+#     A tag like "0.1.0" matches NOTHING, so the one-line installer silently falls back to
+#     main instead of installing the release — no error, just the wrong thing. Deriving the
+#     tag guarantees the prefix.
 #   * macOS CI does not run on pushes (it is billed even on public repos, ~10x, so it is
 #     workflow_dispatch-only). A macOS-only breakage can therefore sit undetected until a
 #     user hits it. Releasing is exactly when that matters, so this triggers the macOS run
@@ -40,9 +41,24 @@
 set -euo pipefail
 
 GH="${ROMP_GH:-gh}"                       # overridable so tests can stub the GitHub CLI
+PYTEST="${ROMP_RELEASE_PYTEST:-}"         # overridable suite runner (tests); empty → resolve below
 POLL="${ROMP_RELEASE_POLL:-5}"            # seconds between checks while the run starts
 REF="${ROMP_RELEASE_REF:-main}"
 UPSTREAM="${ROMP_RELEASE_UPSTREAM:-romp-on/romp}"
+
+# Which git remote is the canonical repo, and which one takes the branch push. The convention
+# (the user 2026-09-06): in a clone with a fork, `origin` is the fork and `upstream` is the
+# canonical repo; a plain clone has only `origin`, which is then both. So the canonical remote
+# is `upstream` when the clone has one, else `origin`; the branch push goes to
+# `remote.pushDefault` when set, else `origin`.
+canonical_remote() {
+    if git remote get-url upstream >/dev/null 2>&1; then echo upstream; else echo origin; fi
+}
+publish_remote() {
+    local p
+    p="$(git config --get remote.pushDefault || true)"
+    printf '%s\n' "${p:-origin}"
+}
 skip_macos=0
 skip_tests=0
 dry_run=0
@@ -125,6 +141,18 @@ say "releasing $tag (VERSION currently reads $current)."
 
 # ── 2. the tree must be releasable ────────────────────────────────────
 [ -z "$(git status --porcelain)" ] || die "working tree is dirty — commit or stash first."
+# And checked out on $REF: the tag goes on whatever HEAD is, bootstrap.sh installs the newest
+# v* tag, so a tag cut anywhere else ships a commit that is not on $REF. The way to be here
+# off $REF is a bump run that died with its version PR unmerged — the PR could not be opened,
+# or the wait for it ran out — still on release-X.Y.Z, where VERSION already reads the target,
+# so the advertised re-run would skip the bump and tag that branch. Checked once, here: the
+# bump path below either ends back on $REF or dies, so it still holds at the tag step, and
+# refusing now spends no suite run and no macOS wait on a release that cannot be cut. A detached
+# HEAD is named as such: `symbolic-ref` prints nothing for it (and exits 1, hence `|| true`
+# under set -e), where `rev-parse --abbrev-ref` would have blamed a branch called HEAD.
+on_branch="$(git symbolic-ref -q --short HEAD || true)"
+[ -n "$on_branch" ] || die "detached HEAD, not on $REF — a release is cut from $REF only; switch to it and pull first."
+[ "$on_branch" = "$REF" ] || die "on branch $on_branch, not $REF — the version PR may still be open; switch to $REF and pull once it lands."
 
 # ── 3. land the version bump, if there is one ─────────────────────────
 # Skipped entirely when VERSION already carries the target, which is the normal case when a
@@ -133,17 +161,16 @@ say "releasing $tag (VERSION currently reads $current)."
 if [ "$current" != "$target" ]; then
     # Branch pushes to the upstream are blocked by rulesets, so publishing is always
     # push-to-a-fork then PR. remote.pushDefault is the configured answer when there is one.
-    publish="$(git config --get remote.pushDefault || true)"
-    if [ -z "$publish" ]; then
-        if git remote get-url fork >/dev/null 2>&1; then publish=fork; else publish=origin; fi
-    fi
+    publish="$(publish_remote)"
     branch="release-$target"
     say "VERSION $current → $target, via a PR on $branch (pushing to '$publish')."
     if [ "$dry_run" -eq 1 ]; then
         say "[dry-run] would branch, commit VERSION=$target, open a PR, and auto-merge it."
     else
-        printf '%s\n' "$target" > VERSION
+        # Branch FIRST, then write: a branch that already exists dies here, and main is left as it
+        # was rather than holding a modified VERSION nobody asked for.
         git switch -c "$branch" >/dev/null 2>&1 || die "could not create branch $branch."
+        printf '%s\n' "$target" > VERSION
         git add VERSION
         git commit -qm "VERSION $target" || die "nothing to commit for the version bump."
         git push -q -u "$publish" "$branch" || die "could not push $branch to $publish."
@@ -153,8 +180,22 @@ if [ "$current" != "$target" ]; then
         # "no pull requests found for branch release-0.3.0" and the release died one step after
         # opening the PR, leaving VERSION merged-but-untagged, exactly the half-finished state this
         # script exists to prevent. A number is unambiguous in any repo.
+        # Every PR on the upstream carries exactly one tier label (docs / fix / feature /
+        # major-feature), and a required check holds an unlabeled PR red, so auto-merge would
+        # never fire and the release would stall one step after opening it. A version bump is
+        # repo plumbing with no behavior change, so it wears tier 0, `docs`: the tier policy treats
+        # docs and fix as ONE tier that merges on green for every author, with no rule on which
+        # files a docs PR may touch (scripts/ci/tier_policy.py, ON_GREEN). The label is resolved on
+        # the server by `gh pr create --label`, so it must be a label the repository HAS: the
+        # pre-rename spelling `tests-only` is now only a body alias, and naming it here failed the
+        # cut of v0.16.0 one step after the version branch was pushed (2026-09-16). The body carries
+        # the same tier as a `Tier:` line, the road a contributor who cannot label uses, so the tier
+        # workflow can apply the label itself should the label name move again.
         pr_url="$("$GH" pr create --repo "$UPSTREAM" --title "VERSION $target" \
-            --body "Version bump for \`$tag\`, opened by scripts/release.sh.")" \
+            --label docs \
+            --body "Version bump for \`$tag\`, opened by scripts/release.sh.
+
+Tier: docs")" \
             || die "could not open the version PR."
         pr="${pr_url##*/}"
         case "$pr" in
@@ -172,10 +213,16 @@ if [ "$current" != "$target" ]; then
             if [ "$POLL" = "0" ]; then break; fi
             sleep "$POLL"
         done
-        [ "$state" = "MERGED" ] || die "the version PR did not merge — check $UPSTREAM."
+        # Still on the release branch here, so the way forward is spelled out: local $REF is behind
+        # the merge until it is pulled, and a re-run on this branch is refused (step 2).
+        [ "$state" = "MERGED" ] || die "the version PR did not merge — check $UPSTREAM; once it lands, switch to $REF and pull, then re-run."
         git switch "$REF" >/dev/null 2>&1 || die "could not switch back to $REF."
-        git fetch -q origin
-        git merge --ff-only "origin/$REF" >/dev/null || die "could not fast-forward $REF after the merge."
+        # The merge landed on the CANONICAL repo. With a fork layout that is `upstream`, not
+        # `origin`: reading `origin/main` there would fast-forward onto the fork's stale main
+        # (a no-op) and then tag a commit that never got the bump.
+        canonical="$(canonical_remote)"
+        git fetch -q "$canonical"
+        git merge --ff-only "$canonical/$REF" >/dev/null || die "could not fast-forward $REF after the merge."
         say "version PR merged; $REF now carries $target."
     fi
 else
@@ -193,7 +240,25 @@ if [ "$skip_tests" -eq 1 ]; then
     echo "release: !! skipping the local suites at your explicit request (--skip-tests)."
 else
     say "running the Python suite..."
-    step python3 -m pytest tests/ -q || die "the Python suite failed — NOT releasing."
+    # Resolve a suite environment instead of assuming a system-wide pytest (the v0.13.0 run died
+    # on a bare ModuleNotFoundError mid-release on a box with only a repo venv). Prefer a WORKING
+    # ambient `python3 -m pytest`; else run through uv's throwaway env with CI's exact dep set
+    # (pytest + cryptography — .github/workflows/ci.yml's install step: cryptography is the Web
+    # Push soft dependency, without it the webpush tests silently skip); neither → die LOUDLY
+    # naming both remedies BEFORE any release state is at stake.
+    if [ -z "$PYTEST" ]; then
+        if python3 -m pytest --version >/dev/null 2>&1; then
+            PYTEST="python3 -m pytest"
+        elif command -v uvx >/dev/null 2>&1; then
+            say "no ambient pytest — running the suite through uv's throwaway env (pytest + cryptography, CI's dep set)"
+            PYTEST="uvx --with pytest --with cryptography pytest"
+        else
+            die "no way to run the Python suite: python3 has no pytest and uv is not installed.
+  Either:  curl -LsSf https://astral.sh/uv/install.sh | sh     (then re-run — the script provisions itself)
+      or:  python3 -m pip install --upgrade pytest cryptography"
+        fi
+    fi
+    step $PYTEST tests/ -q || die "the Python suite failed — NOT releasing."
     if [ -d vscode-extension/node_modules ]; then
         say "running the webview suite..."
         step sh -c 'cd vscode-extension && npm test' || die "the webview suite failed — NOT releasing."
@@ -258,18 +323,53 @@ prev="$(git tag -l 'v*' --sort=-v:refname | head -n1 || true)"
 step git tag -a "$tag" -m "romp $tag"
 say "created tag $tag."
 
-# The tag goes to the UPSTREAM: rulesets block branch pushes there, but a tag is how a
-# release is published, and a tag that exists only locally installs for nobody.
-step git push -q origin "$tag" || die "could not push $tag to origin."
+# The tag goes to the CANONICAL repo (`upstream` in a fork layout, else `origin`): rulesets
+# block branch pushes there, but a tag is how a release is published, and a tag that lands
+# only on the fork, or only locally, installs for nobody.
+canonical="$(canonical_remote)"
+step git push -q "$canonical" "$tag" || die "could not push $tag to $canonical."
 say "pushed $tag."
 
-if [ -n "$prev" ]; then
-    step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" \
-        --generate-notes --notes-start-tag "$prev" \
+# GitHub's generated notes list every merged pull request in the range, and its release body has a
+# ceiling of 125000 characters: the v0.16.0 cut (2026-09-16) held about nine hundred pull requests,
+# the API answered HTTP 422 "body is too long", and the tag was pushed with no release behind it.
+# A cut never ends half-finished now: a range with more merged pull requests than
+# ROMP_RELEASE_NOTES_MAX_PRS (500, well under the ceiling at GitHub's line lengths) goes straight to
+# a short body, and a generated-notes attempt that fails for any reason falls back to the same
+# short body: the range, the count and the compare view, where the full list lives.
+notes_max="${ROMP_RELEASE_NOTES_MAX_PRS:-500}"
+publish_short() {
+    # $1 = the previous tag ('' when none); the short body names the range and the count
+    local body
+    if [ -n "$1" ]; then
+        local n
+        n="$(git rev-list --merges --first-parent --count "$1..$tag" 2>/dev/null || echo 0)"
+        body="romp $tag
+
+$n pull requests merged since $1. The full list: https://github.com/$UPSTREAM/compare/$1...$tag"
+    else
+        body="romp $tag
+
+The first tagged release: https://github.com/$UPSTREAM/commits/$tag"
+    fi
+    step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" --notes "$body" \
         || die "$tag is pushed, but publishing the release failed — finish with:
-  gh release create $tag --repo $UPSTREAM --generate-notes"
+  gh release create $tag --repo $UPSTREAM --title 'romp $tag' --notes '<a short body>'"
+}
+if [ -n "$prev" ]; then
+    n_prs="$(git rev-list --merges --first-parent --count "$prev..$tag" 2>/dev/null || echo 0)"
+    if [ "$n_prs" -gt "$notes_max" ]; then
+        say "$n_prs pull requests since $prev, more than $notes_max: publishing with a short body (GitHub's generated notes would exceed its ceiling)."
+        publish_short "$prev"
+    elif ! step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" \
+            --generate-notes --notes-start-tag "$prev"; then
+        say "the generated notes were refused (a body over GitHub's ceiling, or a transient error): publishing with a short body instead."
+        publish_short "$prev"
+    fi
 else
-    step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" --generate-notes \
-        || die "$tag is pushed, but publishing the release failed."
+    if ! step "$GH" release create "$tag" --repo "$UPSTREAM" --title "romp $tag" --generate-notes; then
+        say "the generated notes were refused: publishing with a short body instead."
+        publish_short ""
+    fi
 fi
 say "published. $tag is live — bootstrap.sh will install it."

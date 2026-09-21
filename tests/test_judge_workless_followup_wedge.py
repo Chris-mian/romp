@@ -24,7 +24,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -33,7 +33,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_workless_fu", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge_workless_fu", os.path.join(BIN, "romp-judge"))
 
 NOW = 1781200000
 SID = "11111111-2222-3333-4444-777777777777"
@@ -69,7 +69,7 @@ class WorklessFollowupWedge(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.mkdtemp()
         jd._rebind_state(Path(self.td))
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         # an OPEN top the user just replied to: the optimistic msg-reopen is the latch
         self.store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V,
                       "nodes": {GID: {"id": GID, "text": "Ship the notes-api deploy", "parentId": None,
@@ -116,7 +116,7 @@ class WorklessFollowupWedge(unittest.TestCase):
         ]
         path = os.path.join(self.td, SID + ".jsonl")
         open(path, "w").write("\n".join(json.dumps(r) for r in recs) + "\n")
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         return path
 
     def _fold(self):
@@ -187,7 +187,7 @@ class WorklessFollowupWedge(unittest.TestCase):
         ]
         path = os.path.join(self.td, SID + ".jsonl")
         open(path, "w").write("\n".join(json.dumps(r) for r in recs) + "\n")
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd._plan_session(SID, path, NOW)
         self.assertFalse(self.fu_calls, "a nudge is never a follow-up unit")
         store = jd.load_goals(SID)

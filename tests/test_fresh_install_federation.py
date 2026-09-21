@@ -13,7 +13,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -23,12 +23,12 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_freshfed", os.path.join(BIN, "romp-kernel")).load_module()
-sb = SourceFileLoader("romp_sdk_backend_freshfed",
-                      os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py")).load_module()
-ps = SourceFileLoader("romp_postal_freshfed", os.path.join(BIN, "romp-postal-service")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_freshfed", os.path.join(BIN, "romp-kernel"))
+sb = load_source("romp_sdk_backend_freshfed",
+                      os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py"))
+ps = load_source("romp_postal_freshfed", os.path.join(BIN, "romp-postal-service"))
 
 
 class KernelEnsuresBus(unittest.TestCase):
@@ -84,24 +84,24 @@ class SpawnedSessionPath(unittest.TestCase):
 
 
 class CliSendEchoesRouting(unittest.TestCase):
-    def _send(self, resp):
+    def _send(self, resp, argv=None, http=None):
         saved_http, saved_ensure = ps._http, ps.ensure
-        saved_name, saved_id = ps.my_name, ps.my_id
+        saved_identity = ps._self_identity
         # the sender must be IDENTIFIED (2026-08-18: an anonymous send is refused before _http —
         # the guard these routing tests would otherwise trip in CI, where no session env exists);
         # this class tests echo ROUTING, and its scenario always implied an identified sender
-        ps.my_name, ps.my_id = (lambda: "alpha"), (lambda: "uuid-a")
+        ps._self_identity = lambda: ("uuid-a", "alpha")     # cli_send resolves both halves in one call (2026-09-06)
         ps.ensure = lambda: True
-        ps._http = lambda method, path, payload=None: resp
+        ps._http = http or (lambda method, path, payload=None: resp)
         out = io.StringIO()
         saved_out = ps.sys.stdout
         ps.sys.stdout = out
         try:
-            rc = ps.cli_send(["--kind", "coordinate", "web", "synthetic test body"])
+            rc = ps.cli_send(argv or ["--kind", "coordinate", "web", "synthetic test body"])
         finally:
             ps.sys.stdout = saved_out
             ps._http, ps.ensure = saved_http, saved_ensure
-            ps.my_name, ps.my_id = saved_name, saved_id
+            ps._self_identity = saved_identity
         return rc, out.getvalue()
 
     def test_local_delivery_still_reads_delivered(self):
@@ -121,6 +121,40 @@ class CliSendEchoesRouting(unittest.TestCase):
                                       "or bounces back to you"})
         self.assertEqual(rc, 0)
         self.assertIn("parked for boxalias", out)
+
+    def test_a_parked_send_from_a_from_label_says_where_a_refusal_is_recorded_not_that_it_returns(self):
+        # `--from cron` mails under ext:cron (cli_send), an id _safe_id refuses: that sender has no mailbox,
+        # so a peer's refusal of the parked message is recorded (one bus-log line; a bounced row nothing
+        # reads back for that id) and never returned — yet the parked note promised every sender "or
+        # bounces back to you". The REAL /send route answers here, driven the way the relay tests drive
+        # it (a Handler over a fake request); only the resolver, the kernel poke and `ensure` are stubbed.
+        def route(method, path, payload=None):
+            h = object.__new__(ps.Handler)
+            raw = json.dumps(payload).encode()
+            h.path = path
+            h.headers = {"Content-Length": str(len(raw)), "X-Romp-Token": ps.SERVE_TOKEN}
+            h.rfile = io.BytesIO(raw)
+            answered = []
+            h._send = lambda obj, code=200: answered.append((obj, code))
+            h.do_POST()
+            self.assertEqual(answered[0][1], 200, answered[0][0])
+            return answered[0][0]
+        saved = ps.resolve_recipient, ps._kernel_post
+        ps.resolve_recipient = lambda to, frm_id="": {"kind": "relay", "host": "boxalias",
+                                                       "agent": {"name": to, "id": ""}}
+        ps._kernel_post = lambda path, body, timeout=2: None       # the redial poke: no kernel here
+        try:
+            rc, out = self._send(None, argv=["--from", "cron", "web", "synthetic test body"], http=route)
+            rc2, out2 = self._send(None, http=route)                 # the same park, from a session sender
+        finally:
+            ps.resolve_recipient, ps._kernel_post = saved
+        self.assertEqual((rc, rc2), (0, 0))
+        self.assertIn("parked for boxalias (unreachable) — delivers on reconnect", out)
+        self.assertNotIn("bounces back to you", out, "no note can come back to a --from sender")
+        self.assertIn(str(ps.LOG), out, "the echo says where the refusal will be recorded")
+        self.assertIn("--from sender has no mailbox", out)
+        self.assertIn("parked for boxalias (unreachable) — delivers on reconnect, or bounces back to you", out2,
+                      "a session sender's note is unchanged")
 
 
 if __name__ == "__main__":

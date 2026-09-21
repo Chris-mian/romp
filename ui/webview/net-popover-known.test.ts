@@ -80,8 +80,8 @@ test("a down row says romp is still dialing, when next, and offers to try now", 
     assert.doesNotMatch(src, /no longer dialing it in the background/, `${name}: and its copy with it`);
   }
   assert.match(KERNEL, /next try in /, "the row counts down to the next dial");
-  assert.match(KERNEL, /romp keeps dialing '\+t\.host\+' on its own/, "and says it is unconditional");
-  assert.match(KERNEL, /data-ra=\\"'\+t\.host\+'\\" title=/, "the web row offers the re-dial action");
+  assert.match(KERNEL, /romp keeps dialing '\+th\+' on its own/, "and says it is unconditional");
+  assert.match(KERNEL, /data-ra=\\"'\+th\+'\\" title=/, "the web row offers the re-dial action");
   // per-state name (the user 2026-08-23): beside the countdown it reads as skip-the-wait (Try now);
   // on a no-kernel row there is no countdown and it sat beside Start as a lookalike — there it is
   // named for what it does (Re-dial). Same button, same action, one wording rule.
@@ -100,7 +100,7 @@ test("the check-in control is named for what it does, not for what it is not", (
   assert.doesNotMatch(KERNEL, /this attach auto-reconnects/);
   assert.doesNotMatch(KERNEL, /keep connected<\/label>/, "the misleading label is gone");
   assert.match(KERNEL, /Share my sessions there<\/label>/, "it says which way the sharing goes");
-  assert.match(KERNEL, /Publish this machine to '\+t\.host/, "and the tooltip leads with that");
+  assert.match(KERNEL, /Publish this machine to '\+th/, "and the tooltip leads with that");
 });
 
 test("the panel opens on the host list, with adding a host one click away", () => {
@@ -172,5 +172,5 @@ test("the fold stays folded: the panel still opens on one gist line", () => {
   // Progressive disclosure (CLAUDE.md) — the explanation got longer, so this matters more, not less.
   assert.match(KERNEL, /<div class=rnet-sub id=rnet-sub hidden>/, "hidden until asked for");
   assert.match(KERNEL, /<div class=rnet-gist>Another machine's romp sessions, in your tabs and timeline\./);
-  assert.match(KERNEL, /\.rnet-sub p\{margin:0 0 7px\}/, "and its paragraphs are spaced for 11.5px text");
+  assert.match(KERNEL, /\.rnet-sub p\{margin:0 0 7px\}/, "and its paragraphs are spaced for 11px text");
 });

@@ -5,7 +5,7 @@
 // own order tests never reached, which is why the jumping survived every "fix".
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { reconcileTabOrder } from "./tab-order";
+import { reconcileTabOrder, retainLiveOmitted, adoptArrival } from "./tab-order";
 
 // A tiny stand-in for the client's tab state: the order array + the set of ids whose session is known. The
 // real render.ts drives the SAME three ops (append on a session push, remove on close, reconcile on a kernel
@@ -143,4 +143,76 @@ test("a revived session (same sid re-listed after a drop) is adopted back cleanl
   assert.deepEqual(m.list(), ["A"]);
   m.onKernelOrder(["A", "B"]);            // B revived (dead sessions revive with their history)
   assert.deepEqual(m.list(), ["A", "B"]);
+});
+
+// T258 (the user 2026-09-08): a live session the kernel STILL affirms live but whose tabOrder push omits it
+// (its transcript file was briefly unreadable) is kept at its slot, never dropped or moved. The kernel-side
+// fix keeps it in `order`; this is the pane's second line of defense.
+test("retainLiveOmitted keeps a live-but-omitted local id at its slot; drops nothing else; a no-op without a marker", () => {
+  // B is live per the marker but missing from the kernel order → spliced back after A (its local predecessor)
+  assert.deepEqual(retainLiveOmitted(["A", "C"], ["A", "B", "C"], new Set(["B"])), ["A", "B", "C"]);
+  // a genuinely gone id (NOT in live) is not retained — the omission stands
+  assert.deepEqual(retainLiveOmitted(["A", "C"], ["A", "B", "C"], new Set()), ["A", "C"]);
+  // the kernel order otherwise wins verbatim (a drag/reorder is honored); a retained id sits at its local slot
+  assert.deepEqual(retainLiveOmitted(["C", "A"], ["A", "B", "C"], new Set(["B"])), ["C", "A", "B"]);
+  // first-position live-omitted id lands at the front (no surviving predecessor)
+  assert.deepEqual(retainLiveOmitted(["C"], ["B", "C"], new Set(["B"])), ["B", "C"]);
+  // an id already in the kernel order is never duplicated even if the marker also names it
+  assert.deepEqual(retainLiveOmitted(["A", "B"], ["A", "B"], new Set(["A", "B"])), ["A", "B"]);
+});
+
+// End to end through reconcileTabOrder: a push that omits a live id must not tear the tab down (the property
+// render.ts's applyTabOrder relies on — omitted excludes live, and the retained order feeds reconcile).
+test("a kernel push omitting a LIVE id keeps its tab; omitting a non-live id removes it", () => {
+  const kernelSeen = new Set(["A", "B"]);
+  const seen = (id: string) => kernelSeen.has(id);
+  // B live but omitted → retained order lists it → reconcile keeps it (kernel-owned, so it would otherwise drop)
+  const keptOrder = retainLiveOmitted(["A"], ["A", "B"], new Set(["B"]));
+  assert.deepEqual(reconcileTabOrder(keptOrder, ["A", "B"], (id) => id === "A" || id === "B", seen), ["A", "B"]);
+  // B NOT live and omitted → not retained → reconcile drops it (the genuine close)
+  const goneOrder = retainLiveOmitted(["A"], ["A", "B"], new Set());
+  assert.deepEqual(reconcileTabOrder(goneOrder, ["A", "B"], (id) => id === "A" || id === "B", seen), ["A"]);
+});
+
+test("a session frame's id joins the order once: not when its tabOrder frame already carried it, not when the session existed, once when it is new", () => {
+  const order = ["a", "b", "c"];   // c came in a tabOrder frame (tabs-first) before its session frame
+  assert.equal(adoptArrival(order, "c", false), false, "the order already carries it: nothing added");
+  assert.deepEqual(order, ["a", "b", "c"], "…and no duplicate, which a drag's commit would have written into the arrangement");
+  assert.equal(adoptArrival(order, "d", false), true, "a session the order has never seen appends");
+  assert.deepEqual(order, ["a", "b", "c", "d"]);
+  assert.equal(adoptArrival(order, "d", false), false, "a second frame for it adds nothing");
+  assert.equal(adoptArrival(order, "a", true), false, "an existing session's frame never pushes");
+  assert.deepEqual(order, ["a", "b", "c", "d"]);
+});
+
+// ── the strip's provenance and the close backstop's knob (the vanishing tab, the user 2026-09-12) ──
+import { localStrip, stripHost, readCloseAckMs, CLOSE_ACK_KEY, CLOSE_ACK_DEFAULT_MS } from "./tab-order";
+
+test("localStrip: the local kernel's own strip, or a frame with no provenance, is the board; a synthetic re-emission or another host's fresh push is not", () => {
+  assert.equal(localStrip(undefined), true, "a frame the kernel sent directly (VS Code, no federation manager)");
+  assert.equal(localStrip({ reemit: false, freshHost: undefined }), true, "the dispatch's shape for that frame");
+  assert.equal(localStrip({ freshHost: "" }), true, "the LOCAL kernel's push under federation (host key '')");
+  assert.equal(localStrip({ reemit: true }), false, "a re-emission from the store: on a fresh page an EMPTY order, never the board");
+  assert.equal(localStrip({ reemit: true, freshHost: "" }), false, "reemit wins over any host named");
+  assert.equal(localStrip({ freshHost: "TESTHOST" }), false, "another kernel's push says nothing about this kernel's sessions");
+});
+
+test("stripHost: the one host a merged strip is fresh evidence about — '' for the local kernel or a frame with no provenance, the named remote host for its fresh push, null for a re-emission", () => {
+  assert.equal(stripHost(undefined), "", "a frame the kernel sent directly (VS Code, no federation manager) is the local kernel's own");
+  assert.equal(stripHost({ reemit: false, freshHost: undefined }), "", "the dispatch's shape for that frame");
+  assert.equal(stripHost({ freshHost: "" }), "", "the LOCAL kernel's push under federation");
+  assert.equal(stripHost({ freshHost: "TESTHOST" }), "TESTHOST", "a remote kernel's own push: that host has now reported on this socket");
+  assert.equal(stripHost({ reemit: true }), null, "a re-emission from the store is nobody's fresh word");
+  assert.equal(stripHost({ reemit: true, freshHost: "TESTHOST" }), null, "reemit wins over any host named");
+  for (const r of [undefined, { freshHost: "" }, { reemit: true }, { freshHost: "TESTHOST" }] as const) {
+    assert.equal(localStrip(r), stripHost(r) === "", "localStrip is stripHost === '' for " + JSON.stringify(r ?? null));
+  }
+});
+
+test("readCloseAckMs: fifteen seconds unless the page's localStorage holds a positive integer of ms under the knob", () => {
+  assert.equal(CLOSE_ACK_DEFAULT_MS, 15_000);
+  assert.equal(readCloseAckMs(() => null), 15_000);
+  assert.equal(readCloseAckMs((k) => (k === CLOSE_ACK_KEY ? "1500" : null)), 1500, "the lab's knob");
+  for (const junk of ["0", "-5", "1.5", "soon", ""]) assert.equal(readCloseAckMs(() => junk), 15_000, "junk keeps the default: " + JSON.stringify(junk));
+  assert.equal(readCloseAckMs(() => { throw new Error("no storage"); }), 15_000, "a storage that throws (a sandboxed frame) keeps the default");
 });

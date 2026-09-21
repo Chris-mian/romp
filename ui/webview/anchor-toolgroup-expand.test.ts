@@ -17,7 +17,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 
 test("scrollToAnchor's recovery lookup matches resultUuid (the answered-ask anchor) too", () => {
   assert.match(RENDER,
-    /findIndex\(\(e\) => e\.uuid === uuid \|\| \(e as \{ mid\?: string \}\)\.mid === uuid\s*\|\| \(e as \{ resultUuid\?: string \}\)\.resultUuid === uuid\s*\|\| \(\(\(e as \{ settleUuids\?: string\[\] \}\)\.settleUuids \|\| \[\]\)\.includes\(uuid\)\)\)/,
+    /findIndex\(\(e\) => e\.uuid === uuid \|\| \(e as \{ mid\?: string \}\)\.mid === uuid\s*\|\| \(e as \{ orphanOf\?: string \}\)\.orphanOf === uuid\s*\|\| \(e as \{ resultUuid\?: string \}\)\.resultUuid === uuid\s*\|\| \(\(\(e as \{ settleUuids\?: string\[\] \}\)\.settleUuids \|\| \[\]\)\.includes\(uuid\)\)\)/,
     "the events lookup must resolve every uuid renderEvent can stamp as data-uuid or data-uuids");
 });
 
@@ -25,9 +25,9 @@ test("an anchor inside a collapsed tool run expands the run before the window re
   // the expansion must key on the EXACT item that contains the event index — a nearest-unit
   // fallback hit is a different unit and must not pop a stranger's fold open
   assert.match(RENDER,
-    /if \(hit && hit\.kind === "toolgroup" && hit\.indices\.includes\(idx\)\)\s*\n\s*expandedGroups\.add\(toolGroupKey\(s\.events\[hit\.indices\[0\]\]\)\);/,
-    "scrollToAnchor expands the collapsed run holding the anchor, keyed like toggleToolGroup");
-  const expandAt = RENDER.indexOf("expandedGroups.add(toolGroupKey(s.events[hit.indices[0]]));");
+    /if \(hit && hit\.kind === "toolgroup" && hit\.indices\.includes\(idx\)\)\s*\n\s*openFolds\.add\(toolGroupKey\(s\.events\[hit\.indices\[0\]\]\)\);/,
+    "scrollToAnchor expands the collapsed run holding the anchor, keyed like toggleToolGroup (openFolds since 2026-09-08)");
+  const expandAt = RENDER.indexOf("openFolds.add(toolGroupKey(s.events[hit.indices[0]]));");
   const rerenderAt = RENDER.indexOf("renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS)");
   assert.ok(expandAt >= 0 && rerenderAt >= 0 && expandAt < rerenderAt,
     "the expansion lands BEFORE the window re-render, so the re-query can find the member's turn");
@@ -54,4 +54,21 @@ test("expand decision: exact toolgroup hit expands, nearest-unit fallback does n
   assert.deepEqual(decide(items, 1), { u: 1, expand: true }, "the first member expands too (its line uuid may be an answer resultUuid)");
   assert.deepEqual(decide(items, 0), { u: 0, expand: false }, "a plain turn never expands anything");
   assert.deepEqual(decide(items, 4), { u: 2, expand: false }, "a gap index resolves by nearest unit and must NOT pop a stranger's fold");
+});
+
+
+test("T418: the group head speaks by action (actionHead) with the edits' totals in the diff colours, and a tool row's label is the model's description or the derived phrase (toolRowLabel)", () => {
+  const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+  assert.match(RENDER, /const parts = actionParts\(tools\);\s*\n\s*line\.appendChild\(document\.createTextNode\(" "\)\);\s*\n\s*const w = el\("span", "toolgroup-head"\); w\.textContent = parts\.text; line\.appendChild\(w\);[^\n]*\n\s*appendTotals\(line, parts\.add, parts\.del\);/,
+    "the collapsed group head is the action phrases, the summed totals appended once");
+  assert.match(RENDER, /if \(ev\.file\) head\.appendChild\(fileLink\(ev\.file\)\);/, "every event with a file keeps its link (round two, medium 2)");
+  assert.doesNotMatch(RENDER, /lbl\.totals/, "the head carries no totals span: an edit's totals are the diff fold's toggle, once per row, and a failed edit prints none (round three, low a and d)");
+  assert.match(RENDER, /a FAILED edit's error fold\s*\n\s*\/\/ replaces that fold and prints no totals: a failed edit changed nothing/, "the rule for a failed edit is stated where the head is built");
+  assert.match(RENDER, /inlineFold\(head, turn, diffTotals\(add, del\), pre, fkey\);/, "the fold's toggle in the approved shape (+A -R, a hyphen minus), dressed in the diff colours like the folded summary (2026-09-18)");
+  assert.match(RENDER, /const lbl = toolRowLabel\(ev\);\s*\n\s*const name = el\("span", "tool-label" \+ \(lbl\.code \? " tool-label-code" : ""\)\); name\.textContent = lbl\.text;/,
+    "the row's label is the description or the derived phrase; a bare command wears the code face");
+  assert.match(RENDER, /if \(lbl\.secondary\) \{ const c = el\("span", "tool-name tool-secondary"\); c\.textContent = lbl\.secondary; head\.appendChild\(c\); \}/, "the tool's name is secondary, only where no phrase names the action");
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
+  assert.match(CSS, /\.tool-plus \{ color: var\(--green\); \}\s*\n\.tool-minus \{ color: var\(--err\); \}/, "the totals wear the diff colours");
+  assert.match(CSS, /\.tool-err \.tool-name, \.tool-err \.tool-label \{ color: var\(--err\); \}/, "a failed row's label stays red");
 });

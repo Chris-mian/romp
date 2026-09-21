@@ -14,7 +14,7 @@ import shutil
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -23,7 +23,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 NOW = 1781100000
@@ -51,7 +51,7 @@ class UnblockerBase(unittest.TestCase):
         self._td = tempfile.mkdtemp()
         jd._rebind_state(Path(self._td))
         jd.GOALDIR.mkdir(parents=True, exist_ok=True)
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         self._saved_llm = jd.unblock_llm
         self.calls = []
 
@@ -190,7 +190,7 @@ class Unblocker(UnblockerBase):
         path2 = self._transcript([(T0 + 200, "unrelated other work", "done that"),
                                   (T0 + 900, "more talk", "more replies"),
                                   (T0 + 950, "tail", "tail reply")])
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         jd._unblock_session(SID, path2, NOW)
         self.assertEqual(len(self.calls), 2, "new evidence → examined again")
 
@@ -369,7 +369,7 @@ class UnblockerCompletedSince(UnblockerBase):
         # and when a real turn arms the examine, the synth row still doesn't ride as evidence
         path2 = self._transcript([(T0 + 40, "please size the pool", "asking and idling"),
                                   (T0 + 400, "unrelated talk", "unrelated reply")])
-        jd._PARSE_CACHE.clear()
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
         self._stub('{"verdicts": [{"n": 1, "do": "hold", "why": ""}]}')
         jd._unblock_session(SID, path2, NOW)
         self.assertEqual(self.calls[-1][2], "", "the synth completion is excluded from the section")

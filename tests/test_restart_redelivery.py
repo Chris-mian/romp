@@ -4,12 +4,17 @@ a HUMAN send whose CLI died holding it — provably lost (not in the surviving q
 never-landed by a direct transcript scan — is RE-DELIVERED through the persisted queue in send
 order, recreating the pre-restart state, instead of parking as a never-delivered bubble waiting on
 a manual restore. romp-authored echoes keep the flag path (re-delivering a nudge double-nudges),
-and a landed-but-unpruned echo never re-delivers (the scan is the duplicate guard). SYNTHETIC."""
+and a landed-but-unpruned echo never re-delivers (the scan is the duplicate guard) — nor is it flagged
+lost: it landed, the next build's by-text prune retires it (2026-09-06; the scan also reads the
+queued_command attachment an absorbed send leaves — tests/test_sdk_echo_durability.py). SYNTHETIC."""
 import json
 import os
 import tempfile
+import threading
 import unittest
-from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from unittest import mock
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -18,10 +23,20 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-sb = SourceFileLoader("romp_sdk_backend_redeliver", os.path.join(BIN, "romp-event-model")).load_module()
-sb = SourceFileLoader("romp_sdk_backend_redeliver2", os.path.join(HERE, "..", "kernel", "sdk_backend.py")).load_module()
+sb = load_source("romp_sdk_backend_redeliver", os.path.join(BIN, "romp-event-model"))
+sb = load_source("romp_sdk_backend_redeliver2", os.path.join(HERE, "..", "kernel", "sdk_backend.py"))
 
 SID = "11111111-2222-3333-4444-555555555555"
+
+
+def _recent(offset=0):
+    """A send stamp ten minutes before NOW, taken when the test RUNS, never at import (2026-09-16). Re-delivery has an age
+    line (REDELIVER_MAX_AGE_S, thirty minutes): a stamp of 100 (1970) would read as a stale send and take the flag path
+    instead of the re-feed under test, and a module-level stamp did the same under a whole suite, which collects every
+    module first and reaches this one past the twenty-minute mark, so the import-time stamp had aged past the line (four
+    reds on the devbox under two suites at once, green alone and on CI's faster legs). tests/test_restart_redelivery_order.py
+    runs this module the way the suite does, imported and then run with the clock ahead, and pins the fix."""
+    return int(__import__("time").time()) - 600 + offset
 
 
 class Redelivery(unittest.TestCase):
@@ -40,6 +55,7 @@ class Redelivery(unittest.TestCase):
             state_dir = None
             _live = {}
             _reg_lock = __import__("threading").RLock()
+            _live_lock = __import__("threading").RLock()   # the live tail's lock (_mark_dropped_echoes selects under it)
             _persisted = []
             _logs = []
 
@@ -51,6 +67,9 @@ class Redelivery(unittest.TestCase):
 
             def _wake_push(self):
                 pass
+
+            def _touch_live(self, sid):
+                pass                      # the live-tail revision hook (2026-09-03): a stub needs no counter
             _text_landed = sb.SdkBackend._text_landed if hasattr(sb, "SdkBackend") else None
         self.be = BE()
         # bind the real methods under test onto the stub
@@ -61,9 +80,9 @@ class Redelivery(unittest.TestCase):
         sb.write_reg(self.be.state_dir, SID, {"sid": SID, "alive": True, "cwd": self.cwd,
                                               "lastSid": SID, "queue": []})
 
-    def _echo(self, text, author="human", t=100):
+    def _echo(self, text, author="human", t=None):
         self.be._live.setdefault(SID, {})["echo:" + text[:8]] = {
-            "_echo_text": text, "author": author, "t": t}
+            "_echo_text": text, "author": author, "t": _recent() if t is None else t}
 
     def _reg_queue(self):
         return (sb.read_reg(self.be.state_dir, SID) or {}).get("queue") or []
@@ -73,8 +92,8 @@ class Redelivery(unittest.TestCase):
         os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
     def test_lost_human_send_re_enters_the_queue_in_send_order(self):
-        self._echo("first typed message", t=100)
-        self._echo("second typed message", t=200)
+        self._echo("first typed message")
+        self._echo("second typed message", t=_recent(100))
         self.be._mark_dropped_echoes(SID, [])
         self.assertEqual(self._reg_queue(), ["first typed message", "second typed message"])
         for a in self.be._live[SID].values():
@@ -88,8 +107,8 @@ class Redelivery(unittest.TestCase):
         self._echo("already landed words")
         self.be._mark_dropped_echoes(SID, [])
         self.assertEqual(self._reg_queue(), [], "the transcript scan is the duplicate guard")
-        self.assertTrue(any(a.get("dropped") for a in self.be._live[SID].values()),
-                        "…so it takes the flag path (self-correcting on the next build)")
+        self.assertFalse(any(a.get("dropped") for a in self.be._live[SID].values()),
+                         "…and a found text is not flagged either: it landed, the by-text prune retires it")
 
     def test_romp_authored_echoes_keep_the_flag_path(self):
         self._echo("a nudge body", author="romp")
@@ -99,12 +118,80 @@ class Redelivery(unittest.TestCase):
 
     def test_surviving_queue_texts_stay_ahead_and_undropped(self):
         self._echo("still queued text")
-        self._echo("lost text", t=300)
+        self._echo("lost text", t=_recent(200))
         sb.write_reg(self.be.state_dir, SID, {"sid": SID, "alive": True, "cwd": self.cwd,
                                               "lastSid": SID, "queue": ["still queued text"]})
         self.be._mark_dropped_echoes(SID, ["still queued text"])
         self.assertEqual(self._reg_queue(), ["still queued text", "lost text"],
                          "the surviving queue keeps its place; the re-delivery lands behind it")
+
+
+class BootDeliversARefedSend(unittest.TestCase):
+    """The boot half, end to end. SdkBackend.__init__ lists the registries ONCE, runs the echo
+    reseed — whose re-delivery arm above puts a lost human send back into a registry's queue ON
+    DISK — and then hands the SAME listing to _boot_reconcile. A row listed before that write
+    still shows the old queue, so a session whose only reason to resume was the re-queued text
+    read an empty queue in the sweep and stayed dormant: re-queued, but delivered only at the next
+    spawn or boot. The sweep must decide from the registry as it is on disk. SYNTHETIC; no SDK."""
+
+    def setUp(self):
+        self.td = tempfile.mkdtemp()
+        self.state = Path(self.td)
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.td, "claude")
+        self.cwd = os.path.join(self.td, "proj")
+        os.makedirs(self.cwd, exist_ok=True)
+        tp = sb.transcript_path(self.cwd, SID)
+        os.makedirs(os.path.dirname(tp), exist_ok=True)
+        open(tp, "w").close()                          # an empty transcript: the text never landed
+
+    def tearDown(self):
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+
+    def _boot(self, echoes, queue=(), **reg_extra):
+        """Construct the backend the way the kernel does (reconcile=True) over one alive registry
+        whose turn FINISHED ('waiting' tail — not a cut), and wait for the sweep to end. Returns the
+        sids the sweep resumed. Waits on the sweep's own completion, never on a sleep."""
+        sb.write_reg(self.state, SID, {"sid": SID, "alive": True, "cwd": self.cwd, "lastSid": SID,
+                                       "queue": list(queue), "echoes": echoes, **reg_extra})
+        sb.append_state(self.state, SID, "waiting")
+        ensured, done = [], threading.Event()
+        real = sb.SdkBackend._boot_reconcile
+
+        def swept(be, regs):
+            try:
+                real(be, regs)
+            finally:
+                done.set()
+
+        with mock.patch.object(sb.SdkBackend, "_boot_reconcile", swept), \
+             mock.patch.object(sb.SdkBackend, "_ensure",
+                               lambda be, sid, on_boot_settled=None:
+                               (ensured.append(sid), on_boot_settled and on_boot_settled())[0]), \
+             mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(stdout="")):
+            sb.SdkBackend(self.td, "/bin/true", lambda *a, **k: None, reconcile=True)
+            self.assertTrue(done.wait(10), "the boot sweep ran to its end")
+        return ensured
+
+    def _reg_queue(self):
+        return (sb.read_reg(self.state, SID) or {}).get("queue") or []
+
+    def test_a_re_queued_send_earns_the_resume_the_same_boot(self):
+        ensured = self._boot([{"t": _recent(), "text": "typed just before the restart", "author": "human"}])
+        self.assertEqual(self._reg_queue(), ["typed just before the restart"],
+                         "the reseed re-queued the lost send (the half that already worked)")
+        self.assertEqual(ensured, [SID], "…and the same boot's sweep resumes the session to deliver it")
+
+    def test_a_dormant_threads_re_queued_reply_earns_the_resume_too(self):
+        # a comment thread is never auto-resumed at boot EXCEPT for a queued reply of the user's own
+        # — and a re-queued reply is exactly that
+        ensured = self._boot([{"t": _recent(), "text": "a reply the thread never started", "author": "human"}],
+                             threadOf="11111111-2222-3333-4444-000000000000")
+        self.assertEqual(self._reg_queue(), ["a reply the thread never started"])
+        self.assertEqual(ensured, [SID])
+
+    def test_a_finished_session_with_nothing_re_queued_stays_lazy(self):
+        # the resume is keyed on the re-queued text, not on every alive registry
+        self.assertEqual(self._boot([]), [])
 
 
 if __name__ == "__main__":

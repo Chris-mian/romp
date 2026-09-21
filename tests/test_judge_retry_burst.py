@@ -12,7 +12,7 @@ import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 import os
 
@@ -22,7 +22,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_retry_burst", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge_retry_burst", os.path.join(BIN, "romp-judge"))
 
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
@@ -56,7 +56,7 @@ class RetryBurstPlansOnce(unittest.TestCase):
             jd.plan_llm = jd.opener_llm = lambda *a, **k: (calls.append(1), llm())[1]
             jd._group_store = lambda *a, **k: None    # don't fire the real grouper model after a placement
             try:
-                jd._PARSE_CACHE.clear()
+                jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
                 jd._plan_session(SID, str(tpath), NOW)
                 store = jd.load_goals(SID)
             finally:

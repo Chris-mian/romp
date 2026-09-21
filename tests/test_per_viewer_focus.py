@@ -16,7 +16,7 @@ import os
 import re
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -26,7 +26,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_pvf", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_pvf", os.path.join(BIN, "romp-kernel"))
 
 
 def _client(app, wid, sink):
@@ -79,6 +79,18 @@ class Wiring(unittest.TestCase):
         self.assertIn('get("wid")', shim)
         self.assertIn('window.sessionStorage.getItem("romp:wid")', shim)
 
+    def test_the_id_is_minted_before_any_pane_can_connect(self):
+        # 2026-09-09 (the served tap test, tests/test_notification_tap_resume_browser.py, two runs in
+        # three on localhost): the mint sat in the BODY script, after the iframes, and the chat pane's shim read
+        # sessionStorage and connected first — its socket carried no wid, so a reveal the kernel aimed at this
+        # dashboard's wid found no chat socket to deliver to and parked for a ready that never comes on a live
+        # page. A phone's first-ever load runs the same race. The mint lives in the head, ahead of <body> and
+        # so of the first <iframe>: no pane can connect before the id exists.
+        html = km._landing()
+        mint = html.index("sessionStorage.setItem('romp:wid'")
+        self.assertLess(mint, html.index("<body"), "minted in the head")
+        self.assertLess(mint, html.index("<iframe"), "…before any pane is even parsed")
+
     def test_an_empty_wid_falls_through_to_the_broadcast(self):
         self.assertIn("if not wid:\n        return _send_to_app(app, msg)",
                       inspect.getsource(km._send_to_view))
@@ -90,7 +102,9 @@ class Wiring(unittest.TestCase):
         # it was written to replace. The tests above all hand-build clients WITH a wid, so none saw it.
         src = inspect.getsource(km.Handler)
         self.assertIn('wid = (q.get("wid") or [""])[0]', src, "the connect query is where a dashboard names itself")
-        self.assertIn('client = {"app": app, "wid": wid,', src, "…and it has to reach the client dict")
+        self.assertIn('client, sendq, lock = _new_ws_client(app, wid, self.connection', src, "…and it has to reach the client dict")
+        self.assertIn('client = {"app": app, "wid": wid,', inspect.getsource(km._new_ws_client),
+                      "…which the factory builds with it (the liveness change of 2026-09-03 moved the construction there)")
 
     def test_a_federated_pane_names_its_dashboard_to_the_REMOTE_kernel_too(self):
         # A remote kernel sees one anonymous client per federated pane unless the wid rides the relay
@@ -148,45 +162,53 @@ class CreateOpenReviveAreAimedToo(unittest.TestCase):
         km._clients[:] = self._saved_clients
 
     def test_opening_a_session_moves_the_asking_window_alone(self):
-        saved = (km._tmux_sessions, km._sdk, km._push_all)
-        km._tmux_sessions = lambda: {"s1": "web"}
+        saved = (km._live_map, km._sdk, km._push_all)
+        km._live_map = lambda: {"s1": "web"}
         km._sdk = lambda: None
         km._push_all = lambda: None
         try:
             km._open_or_revive("s1", client=self.win_a)
         finally:
-            (km._tmux_sessions, km._sdk, km._push_all) = saved
+            (km._live_map, km._sdk, km._push_all) = saved
         self.assertEqual([w for w, _ in self.sink], ["win-A"], "win-B keeps the tab it was reading")
 
     def test_a_create_with_no_asking_dashboard_moves_nobody(self):
         class _BE:
-            def spawn(self, nm, cwd, bg, fg, auth=""):
+            def spawn(self, nm, cwd, bg, fg, auth="", env=None):
                 return "sid-new"
 
             def connect(self, sid):
                 pass
-        saved = (km._sdk, km._pick_identity_color, km._mark_views_dirty, km._push_session_now)
+        saved = (km._sdk, km._pick_identity_color, km._mark_views_dirty, km._push_session_now, km._live_map)
         km._sdk = lambda: _BE()
         km._pick_identity_color = lambda: ("#123456", "#ffffff")
         km._mark_views_dirty = lambda: None
         km._push_session_now = lambda sid: None
+        km._live_map = lambda: {}   # the create door's live snapshot (names reserved atomically) — never the machine's live sessions
         try:
             km._create_sdk_session("web", "/tmp")                     # the CLI's POST /new: no dashboard in hand
             self.assertEqual(self.sink, [], "a terminal/script create yanks no window's chat")
             km._create_sdk_session("api", "/tmp", client=self.win_a)  # the picker's create: the asker follows it
         finally:
-            (km._sdk, km._pick_identity_color, km._mark_views_dirty, km._push_session_now) = saved
+            (km._sdk, km._pick_identity_color, km._mark_views_dirty, km._push_session_now, km._live_map) = saved
         self.assertEqual([w for w, _ in self.sink], ["win-A"], "…and only the asker")
 
     def test_the_ops_that_make_or_wake_sessions_name_their_asker(self):
         src = inspect.getsource(km.Handler)
         self.assertIn('_open_or_revive(msg["id"], live=bool(msg.get("live")), client=client)', src,
                       "openSession — the click-op the 2026-07-29 fix missed")
-        self.assertIn('_create_sdk_session(nm, cwd, auth=(a if a in ("login", "key") else ""), client=client)',
-                      src, "the picker's createSession follows on the asking window")
-        flat = re.sub(r"\s+", "", src)   # the POST /new call wraps; pin it whitespace-blind
-        self.assertIn('sid,extra=_create_sdk_session(nm,cwd,auth=(aifain("login","key")else""),prefs=b)', flat,
+        flat = re.sub(r"\s+", "", src)   # the create calls wrap; pin them whitespace-blind
+        # the picker's create wraps too since tab groups (parent/tags ride the same call); the PROPERTY
+        # is unchanged: the asker's client is named
+        self.assertIn('_sid,extra=_create_sdk_session(nm,cwd,auth=(aiflg.parse_pick(a)[0]else""),client=client,', flat,
+                      "the picker's createSession follows on the asking window")
+        # POST /new threads env=env_req through the same call (its args carry inline comments, so the
+        # pin walks the span rather than matching one literal); the PROPERTY is unchanged: no client
+        self.assertIn('sid,extra=_create_sdk_session(nm,cwd,auth=(aiflg.parse_pick(a)[0]else""),prefs=b,', flat,
                       "POST /new (the CLI) has no dashboard in hand, and so names none")
+        start = flat.index('sid,extra=_create_sdk_session(nm,cwd,auth=(aiflg.parse_pick(a)[0]else""),prefs=b,')
+        call = flat[start:flat.index('tags=tags_req)', start) + len('tags=tags_req)')]   # the call's last arg since tab groups
+        self.assertNotIn('client', call, "POST /new (the CLI) has no dashboard in hand, and so names none")
         self.assertIn('threading.Thread(target=_revive_session, args=(msg["id"], client), daemon=True)', src,
                       "the revive thread carries its asker across to the focus that clears the loader")
         self.assertIn('_fork_session(sid, str(msg.get("uuid") or ""), str(msg["name"]), client=client)',

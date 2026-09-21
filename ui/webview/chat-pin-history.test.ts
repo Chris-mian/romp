@@ -16,9 +16,9 @@ const PREVIEW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 
 test("pathPins ride the chat events as a sibling map and thread into every linkify pass", () => {
-  assert.match(RENDER, /pathLinks\?: Record<string, string>; pathPins\?: Record<string, string> \}\n  \| \{ kind: "assistant";/);
-  assert.match(RENDER, /pathLinks\?: Record<string, string>, pathPins\?: Record<string, string>\): void/);
-  const uses = RENDER.match(/linkifyFileUris\((?:body|bubble|full), [^)]*ev\.pathPins\)/g) || [];
+  assert.match(RENDER, /pathLinks\?: Record<string, string>; pathPins\?: Record<string, string>; pathPreview\?: Record<string, string>; pathPreviewWhy\?: Record<string, string> \}\n  \| \{ kind: "assistant";/);
+  assert.match(RENDER, /pathLinks\?: Record<string, string>, pathPins\?: Record<string, string>, pathPreview\?: Record<string, string>,\s*\n\s*pathPreviewWhy\?: Record<string, string>\): void/);
+  const uses = RENDER.match(/linkifyFileUris\((?:body|bubble|full), [^)]*ev\.pathPins, ev\.pathPreview, ev\.pathPreviewWhy\)/g) || [];
   assert.equal(uses.length, 3, "all three chat bodies thread the pins");
 });
 
@@ -27,12 +27,15 @@ test("the embed and its lightbox request the pinned bytes; unpinned surfaces sta
   assert.match(PREVIEW, /previewFull\(path: string, sid\?: string \| null, verified = false, pin\?: string\)/);
   assert.match(PREVIEW, /const url = fileUrl\(path, sid\) \+ \(pin \? "&pin=" \+ encodeURIComponent\(pin\) : ""\);/);
   assert.match(PREVIEW, /openLightbox\(path, sid, pin\); \};/, "the big view shows the same pixels the embed did");
-  assert.match(PREVIEW, /img\.src = fileUrl\(path, sid\) \+ \(pin \? "&pin=" \+ encodeURIComponent\(pin\) : ""\);/);
+  assert.match(PREVIEW, /im\.src = fileUrl\(e\.path, e\.sid\) \+ \(e\.pin \? "&pin=" \+ encodeURIComponent\(e\.pin\) : ""\);/);
 });
 
 test("the kernel pins at the resolve latch and serves pins shape-gated with live fallback", () => {
   assert.match(KERNEL, /def _pin_mention\(fp\):/);
-  assert.match(KERNEL, /pin = _pin_for\(r, sid\)\s+# the resolve moment IS the mention-time snapshot/);
+  // durable-first since 2026-08-28 (the restart-rewrite hole): the latch CONSULTS the per-sid
+  // assoc sidecar before ever re-pinning — the first-ever resolve wins forever
+  assert.match(KERNEL, /pin = _pin_assoc\(sid, uuid\)\.get\(r\) or _pin_for\(r, sid\)/);
+  assert.match(KERNEL, /def _pin_assoc_append\(sid, uuid, target, pid\):/);
   assert.match(KERNEL, /ev\["pathPins"\] = pp/, "attached on both user and assistant events");
   assert.match(KERNEL, /_PIN_ID_RE = re\.compile\(r"\^\[0-9a-f\]\{64\}\\\.\[a-z0-9\]\{1,8\}\$"\)/);
   assert.match(KERNEL, /if pin and _PIN_ID_RE\.match\(pin\):/);

@@ -16,14 +16,22 @@ test("the session Status type carries the backend the kernel publishes", () => {
 
 test("the tab tooltip is a custom DOM tooltip shown on hover, not a native title", () => {
   assert.match(RENDER, /function showTabTip\(tab: HTMLElement, s: Session\)/);
-  assert.match(RENDER, /tab\.addEventListener\("mouseenter", \(\) => showTabTip\(tab, s\)\)/);
+  // the session is looked up fresh at hover time: an unchanged strip is no longer rebuilt (tab-strip-skip), so
+  // the tab node can outlive a frame that replaced the session object it was built from
+  assert.match(RENDER, /tab\.addEventListener\("mouseenter", \(\) => showTabTip\(tab, sessions\.get\(id\) \?\? s\)\)/);
   assert.match(RENDER, /tab\.addEventListener\("mouseleave", hideTabTip\)/);
+  // T327: a strip REBUILD discards the hovered tab's node, and a discarded node never fires the mouseleave that closes
+  // the tip, so renderTabs hides it the moment it commits to rebuilding (after the unchanged-strip skip, before the nodes go)
+  const tabs = RENDER.slice(RENDER.indexOf("function renderTabs() {"), RENDER.indexOf("function stripAftermath("));
+  assert.match(tabs, /tabStripSig = stripSig;\s*\n(\s*\/\/[^\n]*\n)*\s*hideTabTip\(\);/, "the rebuild is the event that hides the tip");
+  assert.doesNotMatch(tabs.slice(0, tabs.indexOf("tabStripSig = stripSig;")), /hideTabTip\(\)/, "…not the unchanged-strip skip above it, which keeps the hovered node and its tip");
   assert.doesNotMatch(RENDER, /tab\.title = s\.name \+ " · " \+ beLabel/);
 });
 
 test("backend is a plain labelled FIELD ROW under the others — no coloured top badge (the user 2026-07-08)", () => {
-  // it's just another "Backend: SDK|tmux" row alongside Branch/Mode/Model/Effort, not a bold coloured badge
-  assert.match(RENDER, /rows\.push\(\["Backend", be === "sdk" \? "SDK" : "tmux"\]\)/);
+  // it's just another "Backend: Claude Code | Codex" row alongside Branch/Mode/Model/Effort, not a
+  // bold coloured badge; the names come from backend-names.ts (T288)
+  assert.match(RENDER, /if \(be\) rows\.push\(\["Backend", backendLabel\(be\)\]\);/, "every backend the kernel names gets its row: a session still running on the retired terminal backend reads its id (T331 review)");
   assert.doesNotMatch(RENDER, /"tab-tip-be"/, "no dedicated backend-badge element");
   assert.doesNotMatch(RENDER, /be === "tmux" \? "#54B204" : "#1EA1EB"/, "no per-backend colour on the tooltip");
   assert.doesNotMatch(CSS, /\.tab-tip-be \b/, "the badge's CSS rule is gone");
@@ -84,6 +92,8 @@ test("the tooltip still shows the full path + mode/model/effort — path and bra
   assert.match(RENDER, /rows\.push\(\["Worktree", s\.workTree\.dir/);
   assert.doesNotMatch(RENDER, /tab-tip-path/, "the naked top path line is gone — the grid row replaced it");
   assert.match(RENDER, /rows\.push\(\["Mode", prettyMode\(s\.status\.mode\)\]\)/);
-  assert.match(RENDER, /rows\.push\(\["Model", s\.status\.model\]\)/);
-  assert.match(RENDER, /rows\.push\(\["Effort", s\.status\.effort\]\)/);
+  // T372 (the user 2026-09-12): the model and effort VALUES wear the footer chip's colour, from the one helper the
+  // footer calls (metaColor), as the row's third member; the labels stay dim
+  assert.match(RENDER, /rows\.push\(\["Model", s\.status\.model, metaColor\("model", s\.status\)\]\)/);
+  assert.match(RENDER, /rows\.push\(\["Effort", s\.status\.effort, metaColor\("effort", s\.status\)\]\)/);
 });

@@ -10,7 +10,20 @@ export function isClearCmd(text: string): boolean {
   return t === "/clear" || t.startsWith("/clear ");
 }
 
+// Codex's own word for the same operation (its TUI's /new): the kernel runs it as a clear on a Codex session
+// (2026-09-19), so the composer gives it the same confirm there — and only there (sendComposer reads the
+// session's backend; a Claude session never sees a confirm for a command its CLI refuses as unknown).
+export function isNewCmd(text: string): boolean {
+  const t = text.trim();
+  return t === "/new" || t.startsWith("/new ");
+}
+
 export interface OpenCardNode { depth: number; done: boolean; cleared?: boolean; text: string; }
+
+// The two sentences every surface that renames or ends a session shows (the chat's tab strip and its close button, the
+// Sessions pane's row menu): one copy, so the surfaces never drift apart (the Sessions pane review, 2026-09-16).
+export const RENAME_SUBLINE = "the name is a label: mail, goals and history follow the session";
+export const END_SESSION_STANDING = "The session shuts down. Its history stays on disk; revive it any time from the picker or the timeline.";
 
 // The open TOP-level cards a /clear would drop — the same population the kernel's boundary settle
 // takes (open tops only; completed stay, already-cleared are gone). Blocked tops count: they are

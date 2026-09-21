@@ -8,6 +8,12 @@
 export type CommentMsg = { who: "you" | "agent"; text: string; t: number };
 
 export type CommentThread = {
+  /** the thread's mail is off (T356): a comment thread neither sends nor receives peer mail until broken out */
+  mailOff?: boolean;
+  /** why, when it is off: "thread" (not yet broken out), "isolation" (the lane's mailbox toggle), "unreadable" (its record cannot be read) */
+  mailOffWhy?: string;
+  /** messages waiting in its postal box (they land when it is broken out) */
+  heldMail?: number;
   tid: string;
   name?: string;              // the thread's editable name (<session>-comment-<N> by default)
   color?: string;             // the comment's identity color — picked distinct from its parent's
@@ -17,13 +23,20 @@ export type CommentThread = {
   createdT: number;
   state: string;              // the thread session's live state ("working"/"waiting"/…, "" when dormant)
   error?: string;             // the thread CLI's launch error, when it could not start
-  unread: boolean;            // an agent reply newer than the read watermark
+  unread: boolean;            // a FINISHED agent reply newer than the read watermark — yellow (kernel truth, T237)
+  replyOwed?: boolean;        // a reply is still owed (no exchange yet / user's message newest / turn in progress / a send held) — the green wash (kernel truth, T237; absent on an older kernel)
+  queued?: number;            // sends the backend holds or has fed for this thread, not yet in the transcript (T237)
+  lastUuid?: string;          // the newest record shown/held — "did the transcript move?" without the projection caps (T237)
+  unreachable?: boolean | null;   // a broken thread (missing transcript / lost cut): the kernel owes nothing and says so (T237)
   sinceEpoch?: number;        // ms epoch the thread's current state began — the popover chip's timer
   mode?: string;              // the thread's permission mode — the popover statusline's Auto badge
   fast?: string;              // fast-mode state ("on"/"off"/"cooldown"; "" = unknown → no badge)
+  modelFallback?: { pick: string; pickValue: string; live: string; cause: string; category?: string;
+                    retry: { on: boolean; everyMin: number; armed: boolean; nextIn: number | null; attempts: number } } | null;   // the requested-model mark (render.ts ModelFallback)
   modelColor?: number[];      // the chat statusline's rank tints, so metaColor paints the popover
   effortColor?: number[];     //   badges exactly as the chat's (the 2026-08-25 color rider)
   promotedName: string;       // the board session it became, when status === "promoted"
+  relayedT?: number;          // when the discussion was last sent back to the session (T145) — 0/absent = never
   model?: string;             // the thread's live/chosen model (the popover's switchable chip)
   effort?: string;            // the thread's effort level (ditto)
   msgs: CommentMsg[];
@@ -40,6 +53,21 @@ export function threadsByAnchor(threads: CommentThread[]): Map<string, CommentTh
     if (list) list.push(th); else by.set(th.anchorUuid, [th]);
   }
   return by;
+}
+
+/** Which thread a click on a comment mark opens, given the mark CHAIN under the pointer — the clicked
+ *  mark first, then each enclosing mark outward. Marks nest when two threads anchor to the same passage
+ *  (the user 2026-09-10, who commented on one selection twice within seconds): ensureCommentMark re-finds
+ *  the identical range for the second thread and wraps its <mark> inside the first's, and the store's
+ *  order makes the EARLIER thread the outer one. The delegate hands the click to the innermost mark, so
+ *  the outer thread's needs-you ring could never be opened from its own ring: its unread never cleared
+ *  and the reply-ready chip stayed lit. The rule: the innermost UNREAD mark when any is (the ring under
+ *  the pointer belongs to it; two rings, the newest is the one under the finger), else the innermost,
+ *  as before. Null for an empty chain. */
+export function pickMarkToOpen(chain: { tid: string; unread: boolean }[]): string | null {
+  if (!chain.length) return null;
+  const ring = chain.find((m) => m.unread);
+  return (ring || chain[0]).tid;
 }
 
 /** The thread session is mid-turn — the popover shows its thinking dots. */
@@ -67,7 +95,10 @@ export function replyOwed(th: CommentThread): boolean {
 // the exchange's own records: never wall clocks (cross-host transcripts skew) and never push counts
 // (the banned proxy — the old two-quiet-pushes settle counter killed the create-window green
 // while the fork booted, and any stall in its 0→1→2 stepping parked green forever with no event to
-// clear it). agentCount is the reply-arrived detector's datum; render.ts holds the per-send base.
+// clear it). agentCount is that reply-arrived detector's datum; render.ts holds the per-send base.
+// Since T237 the KERNEL ships replyOwed (read from the thread's transcript with the event model's own
+// turn-end), and the latch covers only the pre-round-trip instant against such a kernel; the
+// agentCount clear stays the contract for an older kernel that ships no bit.
 export function agentCount(th: CommentThread): number {
   return (th.msgs || []).filter((m) => m.who === "agent").length;
 }
@@ -137,6 +168,15 @@ export function findAnchorRange(hay: string, exact: string):
   return { start: best.start, end: best.end, partial: true };
 }
 
+/** A text node the mark pass must leave alone (T349, the user 2026-09-11: a comment on a table's row broke the table):
+ *  the whitespace text between a table's cells and rows sits directly under TABLE / THEAD / TBODY / TFOOT / TR, and an
+ *  inline <mark> placed there gets its own anonymous table cell, so the columns shift. Those nodes carry no visible
+ *  text; skipping them lets the mark ride the row cell by cell while the table's boxes stay. `parentTag` is the text
+ *  node's parent element's tagName (upper-case in an HTML document). */
+export function markSkipsParent(parentTag: string | null | undefined): boolean {
+  return /^(TABLE|THEAD|TBODY|TFOOT|TR)$/.test(parentTag || "");
+}
+
 /** Split a global [start, end) character range over consecutive text-node lengths into per-node
  *  slices — what the DOM pass wraps in <mark> elements. */
 export function sliceRanges(nodeLens: number[], start: number, end: number):
@@ -174,4 +214,38 @@ export function prunePending(pending: { text: string; t: number }[], msgs: Comme
     }
     return true;
   });
+}
+
+/** A comment create as the client holds it from the send gesture until the kernel answers it: the
+ *  anchor, the words, the dialog's picks, the gesture's own id and how many times a transient refusal
+ *  has had it re-posted. The kernel answers a repeat of a create it completed with the same thread's
+ *  ack (a lost ack, a lag-parked copy that landed before the client's re-post reached it), and it tells
+ *  a repeat from a fresh comment by this id: two gestures in the same words on the same passage are
+ *  two comments, and a memo keyed on the words alone answered the second with the first thread and
+ *  wrote its name nowhere (review, 2026-09-09). */
+export type CommentCreate = { sid: string; uuid: string; exact: string; text: string; name: string;
+  model: string; effort: string; fast: string; color: string; src: string; createId: string; tries: number };
+
+/** One id per send gesture: the moment and a random tail, in the same shape as a provisional tab's id.
+ *  Random, not a counter: a reloaded viewer starts its counters over, and the kernel's memo outlives it. */
+export function mintCreateId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+/** The create a send gesture holds: stamped with a fresh id, picks defaulted to "" (the kernel's
+ *  default-comment settings, then the parent's), the retry count at zero. */
+export function newCommentCreate(anchor: { sid: string; uuid: string; exact: string; model?: string; effort?: string;
+                                           fast?: string; color?: string; src?: string },
+                                 text: string, name: string): CommentCreate {
+  return { sid: anchor.sid, uuid: anchor.uuid, exact: anchor.exact, text, name, model: anchor.model || "",
+           effort: anchor.effort || "", fast: anchor.fast || "", color: anchor.color || "", src: anchor.src || "",
+           createId: mintCreateId(), tries: 0 };
+}
+
+/** The commentCreate frame for a held create: the send and every re-post of it build the same one, so
+ *  the kernel sees one id for one gesture. */
+export function commentCreateFrame(c: CommentCreate): { type: "commentCreate"; id: string; uuid: string; exact: string;
+    text: string; name: string; model: string; effort: string; fast: string; color: string; src: string; createId: string } {
+  return { type: "commentCreate", id: c.sid, uuid: c.uuid, exact: c.exact, text: c.text, name: c.name,
+           model: c.model, effort: c.effort, fast: c.fast, color: c.color, src: c.src, createId: c.createId };
 }

@@ -18,10 +18,10 @@ repos with fixture identities.
 """
 import json
 import os
-import subprocess
+import shutil
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -29,12 +29,18 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-km = SourceFileLoader("romp_kernel_worktree", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_worktree", os.path.join(BIN, "romp-kernel"))
+from git_fixture import git, init_repo, forbid_background
+
+_IDENT = ("t@TESTHOST", "t")
 
 
 def _git(*args, cwd=None):
-    return subprocess.run(["git", "-c", "user.email=t@TESTHOST", "-c", "user.name=t", *args],
-                          cwd=cwd, capture_output=True, text=True, check=True)
+    # Delegates to the shared runner (tests/git_fixture.py): `git commit`, fetch and merge spawn
+    # `git maintenance run --auto`, which on recent git detaches from its parent and can still be writing
+    # into .git while the fixture's tmp dir is removed (the CI flake "Directory not empty: '.git'",
+    # tests/test_restart_classifier.py, 2026-09-10); the runner forbids that work on every invocation.
+    return git(cwd or ".", *args, ident=_IDENT)
 
 
 class NormBranch(unittest.TestCase):
@@ -84,13 +90,18 @@ class TreeOf(unittest.TestCase):
         cls.root = tempfile.mkdtemp()
         cls.main = os.path.join(cls.root, "repo")
         os.makedirs(cls.main)
-        _git("init", "-q", "-b", "main", cwd=cls.main)
+        init_repo(cls.main, "-q", "-b", "main", ident=_IDENT)
         open(os.path.join(cls.main, "f.txt"), "w").write("x\n")
         _git("add", "f.txt", cwd=cls.main)
         _git("commit", "-q", "-m", "seed", cwd=cls.main)
         cls.wt = os.path.join(cls.root, "repo-feature")
         _git("worktree", "add", "-q", "-b", "feature", cls.wt, "HEAD", cwd=cls.main)
+        forbid_background(cls.wt)   # the kernel's own subprocess runs git here (_tree_of)
         os.makedirs(os.path.join(cls.wt, "sub"))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
 
     def test_a_worktree_path_resolves_to_its_own_tree_and_branch(self):
         top, br = km._tree_of(os.path.join(self.wt, "sub"))
@@ -103,8 +114,16 @@ class TreeOf(unittest.TestCase):
         self.assertEqual(br, "main")
 
     def test_a_non_repo_dir_is_no_tree(self):
-        self.assertEqual(km._tree_of(tempfile.mkdtemp()), ("", ""))
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(km._tree_of(d), ("", ""))
         self.assertEqual(km._tree_of(""), ("", ""))
+
+    def test_the_fixture_repos_forbid_background_git_work(self):
+        """The kernel runs git against both trees through its own subprocess, so the no-background keys
+        must sit in the repo's own config, not only on the fixture runner's command line."""
+        for repo in (self.main, self.wt):
+            self.assertEqual(git(repo, "config", "--local", "--get", "maintenance.auto").stdout.strip(),
+                             "false", repo)
 
 
 class PayloadWiring(unittest.TestCase):

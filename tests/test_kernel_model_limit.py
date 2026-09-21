@@ -31,7 +31,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -41,7 +41,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_modellimit", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_modellimit", os.path.join(BIN, "romp-kernel"))
 
 T0 = 1781100000
 # The CLI's own words for a spent model allowance, model name neutralised.
@@ -134,14 +134,14 @@ class SurfacesPinTheOnYouTreatment(unittest.TestCase):
     card moves while the tab still says romp is handling it."""
 
     def test_the_card_floors_to_needs_you(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('or aerr.get("modelLimit")', src,
                       "api_block must include the model limit — otherwise the card sits in Working "
                       "with the nudge suppressed and nothing able to move it")
         self.assertIn('or aerr.get("authErr") or aerr.get("refusal"))))', src)
 
     def test_the_card_names_the_real_remedy(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('"modelLimit": bool(aerr.get("modelLimit"))', src)
         self.assertIn("switch its model or add credits to continue", src)
         self.assertIn("this session stopped on an API error — Retry to resume", src,
@@ -155,7 +155,8 @@ class SurfacesPinTheOnYouTreatment(unittest.TestCase):
         # the 2026-07-03 flap: pausing the fleet on a model-scoped limit starved the judges, because
         # the account keeps serving and _auto_resume_retry cleared the pause every tick
         src = inspect.getsource(km._auto_pause_on_limit)
-        self.assertIn('k != "fable"', src, "account-wide windows only still gate the global pause")
+        self.assertIn("_account_limited()", src, "the engage reads the shared account-wide filter")
+        self.assertIn('k != "fable"', inspect.getsource(km._account_limited), "account-wide windows only still gate the global pause")
         self.assertNotIn("modelLimit", src)
 
 

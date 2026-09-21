@@ -59,13 +59,19 @@ test("executed: the canonical key ignores list order AND which key the kernel us
 });
 
 test("the tabOrder frame carries the blob and the strip filters on it, composing with #only", () => {
-  assert.match(RENDER, /else if \(m\.type === "tabOrder"\) \{ captureViews\(m\.views \|\| null\); applyTabOrder\(m\.order, m\.tabs\); \}/,
+  // the frame's provenance rides along since T233 (captureViews still runs before the strip is applied; the
+  // kernel's own name, selfHost, is adopted first of all — pr-links.test.ts pins that line)
+  assert.match(RENDER, /else if \(m\.type === "tabOrder"\) \{\s*\n\s*if \(typeof m\.selfHost === "string" && m\.selfHost\) adoptSelfHost\(m\.selfHost\);[^\n]*\n\s*captureViews\(m\.views \|\| null\);\s*\n\s*applyTabOrder\(m\.order, m\.tabs, \{ reemit: m\.reemit === true, freshHost: typeof m\.freshHost === "string" \? m\.freshHost : undefined \}, m\.live\);\s*\n\s*\}/,
     "echo-less frames still reach captureViews — an older kernel must age out a pending edit");
-  assert.match(RENDER, /const inViewIds = ids\.filter\(tabInView\);/);
-  assert.match(RENDER, /const visibleIds = only \? inViewIds\.filter\(\(id\) => matchesOnly\(nameOf\(id\), only\)\) : inViewIds;/);
-  // the active-tab re-point covers BOTH filters — but only for a session that still EXISTS: a
-  // torn-down session's reselect belongs to the teardown path's MRU logic, not to us
-  assert.match(RENDER, /if \(activeId && ids\.includes\(activeId\) && !visibleIds\.includes\(activeId\) && visibleIds\.length\) \{/);
+  assert.match(RENDER, /const visibleIds = ids\.filter\(\(id\) => stripShows\(id, only\)\);/, "the view (tabInView, a peek counts) and the #only= filter through ONE predicate, stripShows (T357 later lows)");
+  assert.match(RENDER, /function stripShows\(id: string, only: string \| null = onlyTag\(\)\): boolean \{\s*\n\s*if \(!tabInView\(id\)\) return false;\s*\n\s*return !only \|\| matchesOnly\(sessions\.get\(id\)\?\.name \?\? tabMeta\.get\(id\)\?\.name \?\? "", only\);/, "the predicate's body: the view first (a peek counts), then the #only= filter over the name ladder (T357 later lows)");
+  // the active tab under BOTH filters (T357): a VIEW that excludes it is covered by the peek, asserted by
+  // captureViews before applyTabOrder on every tabOrder frame (visibility is a pure function of the views blob); the
+  // #only= filter is applied on top of tabInView and is no peek input, so an only-filtered active tab reaches the
+  // check below and the pane goes UNFOCUSED naming it, never re-pointed at another session
+  assert.match(RENDER, /if \(activeId && ids\.includes\(activeId\) && !visibleIds\.includes\(activeId\)\) \{/);
+  assert.match(RENDER, /function tabInView\(id: string\): boolean \{ return \(id === peekId \|\| chatVisible\(id\)\) && heldHere\(id\); \}/);   // …and held by this column (the chat split, 2026-09-11; chat-columns.ts)
+  assert.match(RENDER, /captureViews\(m\.views \|\| null\);\s*\n\s*applyTabOrder\(/, "the peek is asserted before the strip is applied, on every tabOrder frame");
 });
 
 test("every cycling path walks the VISIBLE order — keyboard can never land on a hidden session", () => {
@@ -73,11 +79,17 @@ test("every cycling path walks the VISIBLE order — keyboard can never land on 
   assert.equal(hits.length, 3, "focused-tab arrows, window arrows, and the shell's cycleTab");
   assert.doesNotMatch(RENDER, /setActive\(order\[\(i \+ dir \+ order\.length\) % order\.length\]\)/,
     "no raw-order cycle survives");
+  // …and a tab folded away under a collapsed section header (tab groups, 2026-09-04) is not visible
+  // either: the visible order drops the folded ids, so ←/→ never land on a hidden node
+  assert.match(RENDER, /function visibleOrder\(\): string\[\] \{ return order\.filter\(\(id\) => tabInView\(id\) && !collapsedTabIds\.has\(id\)\); \}/);
 });
 
-test("optimistic edits hold sticky and yield to the kernel after three silent pushes", () => {
-  assert.match(RENDER, /function captureViews\(v: SessionViews \| null\) \{[\s\S]{0,600}\+\+pendingViewsAge >= 3/);
-  assert.match(RENDER, /function postViews\(v: SessionViews\) \{[\s\S]{0,300}setTimelineViews/);
+test("optimistic edits hold until the kernel echoes them exactly or acks the write — never a frame count (2026-09-05)", () => {
+  // the three-frame yield that lived here dropped good edits and kept refused ones alike; the
+  // write's ack (views-writes.test.ts) is the event that settles the copy
+  assert.match(RENDER, /function captureViews\(v: SessionViews \| null\) \{[\s\S]{0,1300}viewsKey\(v\) === viewsKey\(pendingSessionViews\)/);
+  assert.doesNotMatch(RENDER, /pendingViewsAge/);
+  assert.match(RENDER, /function postViews\(v: SessionViews, edited: string\[\] = \[\]\) \{[\s\S]{0,600}setTimelineViews", views: v, writeId, edited/);
 });
 
 test("a view-filtered session keeps one visible home: the picker's other-view section, and picking jumps views", () => {
@@ -92,13 +104,19 @@ test("a view-filtered session keeps one visible home: the picker's other-view se
 test("the hide MECHANISM is fully retired (the user 2026-08-24) — reveal survives as the view jump", () => {
   assert.doesNotMatch(RENDER, /Hide from chat & timeline/);
   assert.doesNotMatch(RENDER, /hideIn\(/, "no hide gesture anywhere");
-  assert.match(RENDER, /function revealSession\(id: string\) \{ postViews\(revealIn\(effViews\(\), id\)\); \}/);
+  assert.match(RENDER, /function revealSession\(id: string\) \{ const r = revealIn\(effViews\(\), id\); postLens\(\{ active: r\.active, actives: r\.actives \}\); \}/,
+    "the reveal is a lens write on the store's blob (the 2026-09-05 review)");
 });
 
 test("federation carries the LOCAL kernel's views blob through merged tabOrder re-emits", () => {
   const FED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
-  assert.match(FED, /if \(host === LOCAL && m\.views && typeof m\.views === "object"\) this\.localViews = m\.views;/);
-  assert.match(FED, /\{ type: "tabOrder", order, tabs, views: this\.localViews \?\? undefined \}/,
+  // stored only when its write sequence is at least the stored one (or the one the local kernel's caps frame
+  // announced), the last blob turned away is kept for that caps frame to adopt, and the announced slot is
+  // re-derived from the stored blob before it moves — cleared only when the adoption changes it
+  // (federation-views-seq.test.ts executes all four rules)
+  assert.match(FED, /if \(host === LOCAL && m\.views && typeof m\.views === "object"\) \{\s*\n\s*if \(adoptViews\(this\.localViews, m\.views, this\.localViewsAnnounced\)\) \{ this\.localViewsAnnounced = announcedAfter\(this\.localViews, m\.views, this\.localViewsAnnounced\); this\.localViews = m\.views; this\.localViewsRejected = null; \}\s*\n\s*else this\.localViewsRejected = m\.views;\s*\n\s*\}/);
+  // the merged frame also carries the LOCAL kernel's own name (selfHost), read from its tabOrder frame (pr-links)
+  assert.match(FED, /\{ type: "tabOrder", order, tabs, live, views: this\.localViews \?\? undefined, selfHost: this\.localSelfHost \|\| undefined \}/,
     "without this the browser dashboard's chat never receives the blob at all");
 });
 
@@ -169,4 +187,21 @@ test("executed: the union renders in the USER'S order — tagOrder governs, remo
   // builder crashed on {}["constructor"] resolving to Function — null-prototype lookups now
   assert.deepEqual(viewTagUnion({ tags: [{ id: "p1", name: "constructor", members: [] }], tagOrder: ["constructor"] })
     .map((u) => u.name), ["constructor"], "a prototype-key tag name builds and orders cleanly");
+});
+
+test("executed: a union whose local tag wears a create's placeholder id is marked pending — it renders and takes no gesture (the 2026-09-05 review)", () => {
+  const A = "11111111-2222-3333-4444-555555555501", B = "11111111-2222-3333-4444-555555555502";
+  const v: any = { active: "all", tags: [{ id: "gA", name: "web", color: "#3b82f6", members: [A] }, { id: "pending-abc", name: "api", color: "#54B204", members: [B] }] };
+  const u = viewTagUnion(v);
+  assert.equal(u.find((g) => g.name === "web")!.pending, undefined);
+  assert.equal(u.find((g) => g.name === "api")!.pending, true);
+  assert.equal(u.find((g) => g.name === "api")!.localId, "pending-abc", "the placeholder still rides for rendering");
+  assert.deepEqual(u.find((g) => g.name === "api")!.members, [B], "…and the row shows its members");
+  // the ack's blob replaces the row with the kernel's id: no longer pending
+  const after = viewTagUnion({ ...v, tags: [v.tags[0], { id: "g9", name: "api", color: "#54B204", members: [B] }] });
+  assert.equal(after.find((g) => g.name === "api")!.pending, undefined);
+  // a same-named REAL tag ahead of the placeholder owns the union: not pending
+  const twin = viewTagUnion({ ...v, tags: [{ id: "g9", name: "api", color: "", members: [] }, v.tags[1]] });
+  assert.equal(twin.find((g) => g.name === "api")!.pending, undefined);
+  assert.equal(twin.find((g) => g.name === "api")!.localId, "g9");
 });

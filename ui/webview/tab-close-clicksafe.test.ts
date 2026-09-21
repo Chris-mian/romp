@@ -16,15 +16,20 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 test("renderTabs defers its rebuild while a pointer is pressed on the tab strip", () => {
   assert.match(RENDER, /let tabPointerHeld = false;/);
   assert.match(RENDER, /let renderPendingWhilePressed = false;/);
-  // the guard sits at the TOP of renderTabs, alongside the rename guard, so no push rebuilds mid-press
-  assert.match(RENDER, /function renderTabs\(\) \{\s*\n\s*if \(renameActive\)[\s\S]*?\n\s*if \(tabPointerHeld\) \{ renderPendingWhilePressed = true; return; \}/);
+  // the guard sits at the TOP of renderTabs, alongside the rename guard, so no push rebuilds mid-press (the
+  // @-mention roster hook ahead of both touches no strip DOM: composer-mention-pane.test.ts)
+  assert.match(RENDER, /function renderTabs\(\) \{\s*\n\s*mentionRosterChanged\(\);[^\n]*\n\s*if \(renameActive\)[\s\S]*?\n\s*if \(tabPointerHeld\) \{ renderPendingWhilePressed = true; return; \}/);
 });
 
 test("the press guard is armed on #tabs pointerdown and released on pointerup/cancel/blur", () => {
   assert.match(RENDER, /tabs\.addEventListener\("pointerdown", \(\) => \{ tabPointerHeld = true; \}\)/);
-  assert.match(RENDER, /window\.addEventListener\("pointerup", releaseTabs\)/);
-  assert.match(RENDER, /window\.addEventListener\("pointercancel", releaseTabs\)/);
-  assert.match(RENDER, /window\.addEventListener\("blur", releaseTabs\)/);   // press may end off-strip / in another frame
+  assert.match(RENDER, /window\.addEventListener\("pointerup", releaseTabStrip\)/);
+  // pointercancel releases only when no drag of ours is in flight: the browser fires it the moment a drag starts, and the
+  // drag IS the press — its dragend handlers release the hold (2026-09-11: a kernel push mid-drag rebuilt #tabs under the
+  // gesture, detaching the dragged node, because this release had already let it)
+  assert.match(RENDER, /window\.addEventListener\("pointercancel", \(\) => \{ if \(draggedId \|\| draggedGroup\) return; releaseTabStrip\(\); \}\);/);
+  assert.doesNotMatch(RENDER, /window\.addEventListener\("pointercancel", releaseTabStrip\)/, "never the bare release: it would end the hold at dragstart");
+  assert.match(RENDER, /window\.addEventListener\("blur", releaseTabStrip\)/);   // press may end off-strip / in another frame
 });
 
 test("release flushes a pending rebuild a tick LATER so the click fires against the live node first", () => {

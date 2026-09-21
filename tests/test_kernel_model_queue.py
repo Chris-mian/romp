@@ -8,7 +8,7 @@ the 180s optimistic cap), so a park can never stick forever. SYNTHETIC fixtures 
 import os
 import time
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -19,7 +19,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_modelq", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_modelq", os.path.join(BIN, "romp-kernel"))
 
 # The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
 # tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
@@ -27,6 +27,13 @@ km = SourceFileLoader("romp_kernel_modelq", os.path.join(BIN, "romp-kernel")).lo
 # start parking — correctly, but for a reason none of them is about — the moment that account hit a
 # limit. Pinning it off keeps them hermetic.
 km._limit_hold = lambda sid: None
+
+# The PROMPT HOLD (_hold_drain: a turn-opening delivery whose backend did not read busy() True inside
+# send() holds the sid until the flip is observed or _PROMPT_HOLD_S runs out — built for the tmux backend,
+# removed 2026-09-11, and kept as a defensive arm for any backend without a synchronous busy gate; tested
+# in tests/test_kernel_parked_ops_liveness.py) is a separate axis: off here, so
+# back-to-back _apply_pending_ops calls stand for successive cycles.
+km._PROMPT_HOLD_S = 0.0
 
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -95,26 +102,32 @@ class ParkOrApply(unittest.TestCase):
         km._apply_pending_ops()                         # must not raise
         self.assertNotIn(SID, km._pending_ops, "a dead session's park is dropped, never retried forever")
 
-    def test_producer_ticks_the_apply(self):
+    def test_the_pusher_cycle_delivers_the_parked_queue_not_the_producer(self):
+        # 2026-09-03: delivery moved OFF the judge producer's tail — a pass can run for hours (one session's
+        # closer sweep, alarm-killed turn after turn) and held every parked op hostage. It rides the pusher
+        # cycle now, woken by the settle itself, and runs FIRST so the delivered op's echo rides the push.
         import inspect
-        src = inspect.getsource(km._producer)
-        self.assertIn("_apply_pending_ops()", src, "the producer tick fires parked ops")
+        self.assertNotIn("_apply_pending_ops()", inspect.getsource(km._producer),
+                         "the judge pass no longer gates delivery")
+        src = inspect.getsource(km._pusher_cycle_jobs)
+        self.assertIn("_apply_pending_ops()", src, "the pusher cycle delivers the parked queue")
+        self.assertLess(src.index("_apply_pending_ops()"), src.index("_push_all("), "…ahead of the push")
 
 
 class CompactingNowGate(unittest.TestCase):
     """_compacting_now composes the REAL _compacting corroboration from cheap parts (cached parse only)."""
 
     def setUp(self):
-        self._saved = (km._tmux_sessions, km._path_of, km._parse_cached)
+        self._saved = (km._live_map, km._path_of, km._parse_cached)
         km._path_of = lambda sid: "/tmp/x.jsonl"
         km._compact_clicked.clear()
 
     def tearDown(self):
-        (km._tmux_sessions, km._path_of, km._parse_cached) = self._saved
+        (km._live_map, km._path_of, km._parse_cached) = self._saved
         km._compact_clicked.clear()
 
     def test_optimistic_click_reads_compacting_until_the_boundary_lands(self):
-        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": None}}
+        km._live_map = lambda: {SID: {"state": "waiting", "since": None}}
         km._parse_cached = lambda p: {"turns": []}
         km._compact_clicked[SID] = time.time()          # the kernel itself just sent /compact
         self.assertTrue(km._compacting_now(SID), "the optimistic click reads compacting at once")
@@ -124,7 +137,7 @@ class CompactingNowGate(unittest.TestCase):
         self.assertFalse(km._compacting_now(SID), "the compact_boundary event ends it — the parked switch can fire")
 
     def test_no_signal_reads_not_compacting(self):
-        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": None}}
+        km._live_map = lambda: {SID: {"state": "waiting", "since": None}}
         km._parse_cached = lambda p: {"turns": []}
         self.assertFalse(km._compacting_now(SID))
 
@@ -134,7 +147,7 @@ class QueuedBubble(unittest.TestCase):
         import inspect
         src = inspect.getsource(km.build_session)
         self.assertIn("pending_ops = _pending_ops.get(sid) or []", src)
-        self.assertIn('{"md": _parked_md(op), "park": j, "cancelable": True}', src,
+        self.assertIn('{"md": _parked_md(op), "park": j, "cancelable": True, **(_queued_romp_flags(op[1]) if op[0] == "send" else {})}', src,
                       "a parked model/effort renders as its slash-command chip, in park order — "
                       "cancelable since 2026-07-08 (_parked_md is the shared body renderer)")
         self.assertIn("if queued or pending_ops:", src,

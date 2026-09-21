@@ -14,7 +14,7 @@ import inspect
 import json
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -25,8 +25,8 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_cmdg", os.path.join(BIN, "romp-kernel")).load_module()
-sb = SourceFileLoader("romp_sdk_backend_cmdg", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+km = load_source("romp_kernel_cmdg", os.path.join(BIN, "romp-kernel"))
+sb = load_source("romp_sdk_backend_cmdg", os.path.join(BIN, "romp_sdk_backend.py"))
 BACKEND_SRC = open(os.path.join(BIN, "romp_sdk_backend.py")).read()
 
 
@@ -69,17 +69,23 @@ class CmdGestureSourcePins(unittest.TestCase):
     def test_backend_writes_the_marker_beside_each_synthesized_live_chip(self):
         # every setter that synthesizes a live command chip (set_model / set_effort / set_auth) writes the
         # durable twin with the SAME t and disp, so build_session's (t, text) dedup holds while the chip is
-        # live and the durable event takes over seamlessly once stale_cmd retires it.
-        self.assertEqual(BACKEND_SRC.count("append_cmd_gesture(self.state_dir, sid, disp, t=t)"), 3)
-        for uid_tag in ('"cmd:%d:model"', '"cmd:%d:effort"', '"cmd:%d:auth"'):
-            i = BACKEND_SRC.index(uid_tag)
-            j = BACKEND_SRC.index("append_cmd_gesture(self.state_dir, sid, disp, t=t)", i)
-            k = BACKEND_SRC.index("self._wake_push()", i)
-            self.assertLess(j, k, "the marker is on disk before the push that rebuilds the chat")
+        # live and the durable event takes over seamlessly once stale_cmd retires it. The three share ONE
+        # builder (_ack_cmd_chip — so the chip fires on a dormant session too); the property is pinned on
+        # the builder, and every setter must go through it.
+        for cmd in ("/model", "/effort", "/auth"):
+            self.assertEqual(BACKEND_SRC.count('self._ack_cmd_chip(sid, "%s", "%s " + value, ' % (cmd, cmd)), 1, cmd)
+        i = BACKEND_SRC.index("def _ack_cmd_chip(")
+        self.assertIn('uid = "cmd:%d:%s" % (t, command.lstrip("/"))', BACKEND_SRC[i:i + 3000])
+        j = BACKEND_SRC.index("append_cmd_gesture(self.state_dir, sid, disp, t=t)", i)
+        k = BACKEND_SRC.index("self._wake_push()", i)
+        self.assertLess(j, k, "the marker is on disk before the push that rebuilds the chat")
+        self.assertEqual(BACKEND_SRC.count("append_cmd_gesture(self.state_dir, sid, disp, t=t)"), 1, "one builder, no stray copies")
 
     def test_build_session_interleaves_and_dedups_against_the_live_chip(self):
         src = inspect.getsource(km.build_session)
-        self.assertIn("gestures = _cmd_gestures(sid)", src)
+        # the durable store is still the source; since T131 the live render floors it at the last
+        # episode boundary so a /clear's fresh thread doesn't inherit the old episode's gestures
+        self.assertIn("gestures = _past_floor(_cmd_gestures(sid))", src)
         self.assertIn('if (_cg["t"], _cg["cmd"]) in _live_cmd_keys:', src)
         self.assertIn('events.append({"kind": "cmdGesture", "cmd": _cg["cmd"], "ts": iso(_cg["t"]),', src)
         # flushed by the SAME time-gate as the other durable notes, and BEFORE the efforts loop, so a

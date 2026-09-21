@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const CHIP = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-chip.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("the stop button acknowledges its click instantly: chip flips, button + timer vanish", () => {
@@ -28,20 +29,22 @@ test("the stop button acknowledges its click instantly: chip flips, button + tim
 });
 
 test("INTERRUPTING is a first-class chip state: labeled, styled, timerless, buttonless", () => {
-  assert.match(SRC, /"interrupting" \| "opening";/, "in the ChipState union (opening joined it 2026-08-05)");
-  assert.match(SRC, /interrupting: "Interrupting…",/);
+  assert.match(CHIP, /"interrupting" \| "opening";/, "in the ChipState union (opening joined it 2026-08-05; the union lives in status-chip.ts since T322b)");
+  assert.match(CHIP, /interrupting: "Interrupting…",/);   // CHIP_LABEL lives in status-chip.ts since T322b
   // the generic chip branch renders it; the stop button is drawn for working/compacting AND the stuck
   // retrying/blocked states — but NEVER for interrupting (the stop is already in flight)
-  assert.match(SRC, /state === "working" \|\| s\.status\.state === "compacting"\s*\n\s*\|\| s\.status\.state === "retrying" \|\| s\.status\.state === "blocked"\) sl\.appendChild\(stopButton\(s\.status\.state\)\)/);
-  assert.doesNotMatch(SRC, /=== "interrupting"\) sl\.appendChild\(stopButton/, "no stop button while interrupting");
+  assert.match(SRC, /state === "working" \|\| s\.status\.state === "compacting"\s*\n\s*\|\| s\.status\.state === "retrying" \|\| s\.status\.state === "blocked"\) left\.appendChild\(stopButton\(s\.status\.state\)\)/);
+  assert.doesNotMatch(SRC, /=== "interrupting"\) left\.appendChild\(stopButton/, "no stop button while interrupting");
   assert.match(CSS, /\.chip-interrupting \{ background: var\(--st-working-bg\);[^}]*opacity: 0\.75; \}/,
                "busy-yellow but dimmed + static — in flight, not still grinding");
 });
 
-test("the stop record renders as a rail marker, not a message bubble", () => {
+test("the stop record renders as a slim SESSION notice, not a message bubble", () => {
+  // 2026-09-08 (the notice-vocabulary pass): the ONE builder; the stop square is the notice's glyph (cause tied to
+  // effect), the italic dropped — one information type, one weight
   assert.match(SRC, /if \(\(ev as any\)\.interruptMarker\) \{/);
-  assert.match(SRC, /const turn = el\("div", "turn turn-interrupt"\);/);
-  assert.match(SRC, /line\.appendChild\(el\("span", "interrupt-square"\)\);/, "the stop button's own glyph ties cause to effect");
-  assert.match(CSS, /\.interrupt-line \{[^}]*font-style: italic/);
-  assert.match(CSS, /\.interrupt-square \{ width: 8px; height: 8px;/);
+  assert.match(SRC, /return notice\(\{ src: "session", glyph: "session", gist: interruptGist\(cause\), cls: "turn-interrupt",/);
+  assert.match(SRC, /session: '<rect x="4" y="4" width="8" height="8" rx="1\.3"\/>'/, "the stop button's own glyph");
+  assert.doesNotMatch(CSS, /\.interrupt-line|\.interrupt-square/);
+  assert.match(CSS, /\.notice\.notice-slim \{/);
 });

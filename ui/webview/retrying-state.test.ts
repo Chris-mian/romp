@@ -11,14 +11,19 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
 test("chat: 'retrying' is a ChipState with an 'API retrying…' label, an amber chip, and a tab ring", () => {
-  assert.match(RENDER, /type ChipState =[^;]*\| "retrying"/);
-  assert.match(RENDER, /retrying: "API retrying…"/);
-  assert.match(RENDER, /else if \(st === "retrying"\) tab\.classList\.add\("tab-retrying"\)/);
+  assert.match(fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-chip.ts"), "utf8"), /type ChipState =[^;]*\| "retrying"/);   // the union lives in status-chip.ts since T322b
+  assert.match(fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-chip.ts"), "utf8"), /retrying: "API retrying…"/);   // CHIP_LABEL lives in status-chip.ts since T322b
+  // the state → class rule lives in tab-state.ts since tab groups (2026-09-04); render.ts wears its result
+  const S = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-state.ts"), "utf8");
+  assert.match(S, /if \(st === "retrying"\) return "tab-retrying";/);
+  assert.match(RENDER, /const stateCls = tabStateClass\(s\.status\);\s*\n\s*if \(stateCls\) tab\.classList\.add\(stateCls\);/);
   // amber chip, distinct from working-yellow / blocked-red
-  assert.match(CSS, /\.chip-retrying \{ background: #e67e22/);
+  // 2026-09-08: the amber is a TOKEN now (--st-retrying-bg/-fg, both themes) — it sat raw in seven rules
+  assert.match(CSS, /--st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;/);
+  assert.match(CSS, /\.chip-retrying \{ background: var\(--st-retrying-bg\); color: var\(--st-retrying-fg\); \}/);
   // amber dashed tab ring (same dashed treatment as awaiting, but amber, no fill)
-  assert.match(CSS, /\.tab\.tab-retrying \{ --state: #e67e22; \}/);
-  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed/);
+  assert.match(CSS, /\.tab\.tab-retrying \{ --state: var\(--st-retrying-bg\); \}/);
+  assert.match(CSS, /\.tab\.ring-needs-you, \.tab\.ring-retrying \{ outline: 2px dashed/);   // the amber ring keys on the ring class the strip composes (widgets since 2026-09-14)
 });
 
 test("timeline: a retrying lane shows an amber Retrying badge (its own BADGE kind, not red attention)", () => {

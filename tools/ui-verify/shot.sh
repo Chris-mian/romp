@@ -12,7 +12,7 @@
 # committed (CLAUDE.md privacy), and fixture screenshots don't need to be either — render, look, delete.
 set -euo pipefail
 
-CSS="" BODY="" OUT="" SIZE="760x420" EXTRA=""
+CSS="" BODY="" OUT="" SIZE="760x420" EXTRA="" BODYCLASS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --css)   CSS="$2"; shift 2 ;;
@@ -20,6 +20,7 @@ while [ $# -gt 0 ]; do
     --out)   OUT="$2"; shift 2 ;;
     --size)  SIZE="$2"; shift 2 ;;
     --extra-css) EXTRA="$2"; shift 2 ;;
+    --body-class) BODYCLASS="$2"; shift 2 ;;   # e.g. "theme-light chat-theme-yatharth" — render the same fixture in a theme
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -51,7 +52,7 @@ cp "$CSS" "$TMP/page.css"
 {
   printf '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">\n'
   printf '<link href="page.css" rel="stylesheet">\n'
-  printf '<style>body { margin: 0; } %s</style></head><body>\n' "$EXTRA"
+  printf '<style>body { margin: 0; } %s</style></head><body class="%s">\n' "$EXTRA" "$BODYCLASS"
   cat "$BODY"
   printf '\n</body></html>\n'
 } > "$TMP/page.html"

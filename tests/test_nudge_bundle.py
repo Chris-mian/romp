@@ -25,7 +25,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -36,7 +36,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_bundle", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_bundle", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 SID = "11111111-2222-3333-4444-555555555555"
@@ -259,13 +259,14 @@ class AutoNudgeBundlesSameTick(unittest.TestCase):
             "_interrupt_suppresses_nudge", "_backend_queued", "_backend_rewind_pending",
             "_last_state", "_session_awaiting", "_turn_romp_injected", "_closer_settled",
             "_revivers_pending", "_pending_ops")}
-        self._orig_jd = {n: getattr(jd, n) for n in ("parsed_session", "load_goals", "_segs", "plan_units")}
+        self._orig_jd = {n: getattr(jd, n) for n in ("parsed_session", "load_goals", "load_goals_shared_or_fault",
+                                                     "_segs", "plan_units")}
         self._orig_backend = km.Sessions.backend_for
         km._session_flag = lambda sid, flag: False
         km._compacting_now = lambda sid: False
         km._api_error = lambda path: None
         km._session_working = lambda turns: False
-        km._interrupt_suppresses_nudge = lambda turns, sid="": False
+        km._interrupt_suppresses_nudge = lambda turns, sid="", **k: False
         km._backend_queued = lambda sid: False
         km._backend_rewind_pending = lambda sid: False
         km._last_state = lambda sid: ("", 0)
@@ -275,12 +276,17 @@ class AutoNudgeBundlesSameTick(unittest.TestCase):
         km._revivers_pending = lambda *a: None
         km._pending_ops = {}
         jd._segs = lambda tn, store: []
-        jd.plan_units = lambda session, store: []
+        jd.plan_units = lambda session, store, **kw: []   # the callers pass lazy_text (T396)
         self.turns = [{"id": "t1", "t": T0, "end": T0 + 10, "ended": True, "atoms": [{}, {}, {}]}]
         jd.parsed_session = lambda sid, paths, now: {"turns": self.turns}
         self.store = _store({G1: _node(G1, "Ship the auth refactor"),
                              G2: _node(G2, "Write the migration guide")})
+        # The walk's SNAPSHOT is the shared read-only view (2026-09-09); its writers and the fire list reload
+        # fresh through load_goals. Both are stubbed: with only load_goals stubbed, the shared read found no
+        # store file in a fresh process (and delegated to the stub), but under the parallel runner it read a
+        # store an earlier module had left at the shared placeholder sid, and nothing was due.
         jd.load_goals = lambda sid: self.store
+        jd.load_goals_shared_or_fault = lambda sid: (self.store, None)
         self.sent = []
         test = self
 
@@ -336,12 +342,8 @@ class AutoNudgeBundlesSameTick(unittest.TestCase):
         done = _store({G1: _node(G1, "Ship the auth refactor"),
                        G2: _node(G2, "Write the migration guide", nodeComplete=True)},
                       status={G1: "working", G2: "completed"})
-        calls = {"n": 0}
-
-        def load(sid):
-            calls["n"] += 1
-            return snap if calls["n"] == 1 else done
-        jd.load_goals = load
+        jd.load_goals_shared_or_fault = lambda sid: (snap, None)   # the tick's snapshot
+        jd.load_goals = lambda sid: done                            # the send-moment re-read
         self._tick()
         self.assertEqual(len(self.sent), 1)
         self.assertIn("<!-- romp-goal-id: %s -->" % G1, self.sent[0])
@@ -350,6 +352,20 @@ class AutoNudgeBundlesSameTick(unittest.TestCase):
         recs = km._auto_nudge_data().get("nudged", {})
         self.assertIn(G1, recs)
         self.assertNotIn(G2, recs, "a dropped goal gets no record — it never fired")
+
+    def test_the_bundle_body_renders_the_send_moment_world(self):
+        # T120 (the user 2026-08-27): the card body used to render the tick's snapshot while the
+        # redundancy judge deliberated for seconds — a retitle landing in that gap shipped stale.
+        # The send-moment re-read that drops resolved items also hands the body the fresh nodes.
+        snap = self.store
+        fresh = _store({G1: _node(G1, "Ship the auth refactor, retitled by the planner"),
+                        G2: _node(G2, "Write the migration guide")})
+        jd.load_goals_shared_or_fault = lambda sid: (snap, None)   # the tick's snapshot
+        jd.load_goals = lambda sid: fresh                           # the send-moment re-read
+        self._tick()
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("retitled by the planner", self.sent[0],
+                      "the delivered card speaks the send-moment world, not the snapshot")
 
 
 class PromptPins(unittest.TestCase):

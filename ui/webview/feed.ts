@@ -5,27 +5,47 @@
 //
 // Rendering is KEYED + INCREMENTAL: cards are kept alive across the host's live
 // pushes and updated in place — never torn down — so hovering one doesn't flicker
-// when the fleet streams new deliverables in.
+// when the sessions stream new deliverables in. A kept card is REPAINTED only when
+// its inputs changed (feed-card-gate.ts): the kernel re-sent it, a board-level input
+// it reads moved, a gesture touched it, or the 15 s live pass aged it. Its column and
+// order are re-applied on every render regardless.
 import { distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote } from "./distiller-line";
-import { spinFor, KIND_WORD, waitedSuffix } from "./spin-caption";
+import { openContextMenu, CtxItem } from "./ctx-menu";   // the one menu builder (the v0.16.0 tidy): the card menu's card, dismissal and keys
+import { flipNeeded } from "./feed-flip";
+import { delegate } from "./actions";
+import { paintHeld, paintReleased, publishPaneHidden } from "./paint-gate";
+import { linkifyPrRefs, setLinkedText, installPrLinkOpener } from "./pr-links";
+import { cardInputsKey, cardNeedsUpdate, type GateEnv } from "./feed-card-gate";
+import { spinFor, awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, type AwaitRow } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { searchMatches, searchSids } from "./feed-search";
 import { TagLens, lensAll, lensLabel, lensVisible, lensUnions } from "./tag-lens";
-import { openTagMenu, tagMenuButton, syncTagFilter } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter, tagChip } from "./tag-menu";
 import { SessionViews } from "./session-views";
 import { freezeDiff, contentSig } from "./feed-freeze";
-import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
+import { hostNameNodes, hostPartsNodes, hostIsDown, hostOf, bareId } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
-import { badgeNotices, clearBoundaryNotices, sdkProblemNotices, syncNotices,
+import { liveNow, liveRefresher, refreshAges, stampAge } from "./feed-age";
+import { badgeCardHalf, clearBoundaryNotices, frameCardsUnknown, sdkProblemNotices, syncNotices, type CardsUnknown,
   type ClearNoticeRow, type SdkNoticeRow, type SyncNoticeRow } from "./badge-mirror";
 import { initStrip } from "./strip";
-import { installSettingsSync } from "./settings";
+import { installSettingsSync, loadSettings, onExternalSettingsChange } from "./settings";
+import { applyTheme } from "./theme";
+import { hostsGear, openGear } from "./gear-host";
 import { previewThumb, previewKind, canPreview } from "./preview";
-import { initFileView } from "./file-view";
+import { sanitizeMd } from "./md-sanitize";
+import { noticeBodyNodes, noticeAttachmentNodes } from "./notice-face";   // the one face the feed card, its modal and the chat box share
+import { initFileView, setFileViewIdentity, hostStub } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
-import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState } from "./feed-view-state";
+import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState, threadKey, threadKeys } from "./feed-view-state";
+import { inInputEvent } from "./input-event";
+import { focusedEntries, focusedCardCount } from "./feed-focus";   // the focused-session section's pure pick (T347)
+import { FEED_BOARD, columnOf, columnTable, feedColumns, isNeedsYou, adoptBoards, boardOf, boardById, knownBoards, type Board, type FeedCategory } from "./board-def";   // the feed as one board definition (plans/card-boards.md, phase one)
+import { wireTip, setTip, pruneTip } from "./tip";
+import { perfFrameHandler } from "./perf-telemetry";
+import { listenForFrames } from "./frame-listener";
 
 // (The standalone-deliverable "FeedItem" subsystem was REMOVED 2026-07-07: the kernel had emitted
 // items: [] permanently — goal cards are the only feed unit — so its types, renderers, expand/detail
@@ -40,6 +60,8 @@ interface AskQuestion { reply_id: string; sid: string; name: string; t: number; 
 // One node of the ask's request DAG (flat list, root first; nest via children ids;
 // a node under two parents appears in both → render twice, dim the repeat).
 interface AskTreeNode {
+  born?: { kind: string; via: string; why: string; healed?: boolean } | null;   // T319: a step the session started on its own
+                                                                                //   (via: workflow | agent | work); why it sits under this goal
   id: string; kind: "ask" | "handoff"; text: string; who: string;
   whoSid: string; whoColor: { bg: string; fg: string } | null;   // agent → colored session link
   whoWorking?: boolean;                                          // that agent is currently WORKING → yellow dot before its name
@@ -53,6 +75,9 @@ interface AskTreeNode {
   followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
   summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → the modal's auto-line for a DONE node (kernel flatten 78fc97b)
   blockSummary?: string | null;                                  // the BLOCK-distiller's decision brief for a blocked goal → the modal's auto-line for a BLOCKED node (kernel 466393c); null until produced
+  summaryAnchorUuid?: string | null;                            // the brief/summary line's own landing (kernel T388): the text atom that carries it
+  summaryAnchorQuote?: string | null;                           // …and its located span, sent as the click's quote
+  relayNote?: string | null;   // a far host still holds a relayed question after its wait ended (kernel relayCarried) → its own dim line under the brief, never a brief paragraph
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
   cleared?: boolean;                                             // user-cleared sub (nodeOverride op:clear) → struck-through faded row + "cleared" chip; the mark stays tied to status (box = done, the user 2026-07-26)
   reviewedEarlier?: boolean;                                     // this done sub predates the top's review boundary (kernel flatten ↔ jd.review_boundary, the distiller's own scoping) → collapsed behind one "N reviewed earlier" row (the user 2026-08-19)
@@ -67,12 +92,18 @@ interface NodeLogRow {
   at?: number | null; evT?: number | null; anchorUuid?: string | null;
 }
 interface AskItem {
+  sessionStarted?: { why: string; parent: string | null } | null;   // T319: the root is work the SESSION started (a workflow, an
+                                                                    //   agent, its own thread) with no request of the user's to nest
+                                                                    //   under; the face says so in one line instead of posing as an ask
   itemId: string; sid: string; name: string; color: { bg: string; fg: string } | null;
   text: string; t: number; live: boolean;
   turnId: string;
   trgb: [number, number, number];
-  column: "working" | "needs_input" | "completed";   // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks" — that was a stale lie that silently broke `it.column === "asks"` checks.
+  board?: string;                                  // the board model (plans/card-boards.md, phase two): the kernel writes "feed" on every card it builds
+  category?: string;                               // the board's category id, the kernel's raw column value for the feed; absent from an older kernel's frame
+  column: FeedCategory;                            // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks": that was a stale lie that silently broke `it.column === "asks"` checks.
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
+  followupAt?: number | null;                      // when that follow-up/continue went — the latched button's honest age (T150)
   doneConfirming?: boolean;                        // the done verdict is in, only the settle event is pending → steady "done, confirming" chip on the Working card; placement deliberately does NOT move early (no working↔done flicker) (kernel build_feed ← judge rollup confirming export; the user 2026-07-24)
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → moves to WORKING while the reply is in flight (echo/open turn), with a "Re-judging…" swirl; returns to Needs-You on its own if the judge leaves it blocked (kernel build_feed; the user 2026-07-02, immediate)
@@ -91,18 +122,29 @@ interface AskItem {
               spendLimit?: boolean;   // apiError: a monthly spend cap (on you → raise it, never auto-retried; the user 2026-07-14)
               modelLimit?: boolean;   // apiError: this session's MODEL is out of allowance (on you → switch model or add credits; the user 2026-08-01)
               refusal?: boolean;   // apiError: the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — deterministic on the same input, the user 2026-08-15)
-              mode?: string; since?: number;   // judgeAuth adds these: which billing its judges ride ('key'|'login') + the first refusal time — romp can't analyze the session until the credential is fixed (the user 2026-08-12)
-              toName?: string; toSid?: string;    // parkedHandoff adds to*
-              mid?: string; frm?: string; to?: string; origin?: string; body?: string; gist?: string };   // quarantine (held peer mail) adds these; gist = the bus's 90-char collapse for the compact card line
+              mode?: string; login?: string; since?: number;   // judgeAuth adds these: which billing its judges ride ('key'|'login') + the first refusal time — romp can't analyze the session until the credential is fixed (the user 2026-08-12)
+              capOffer?: { resetsAt: number; window?: string };   // apiError: login-billed session dead on the account's cap + a key on hand → the explicit switch OFFER; the pick is yours alone, both directions (2026-08-30)
+              toName?: string; toSid?: string };  // parkedHandoff adds to* (the held-mail flavour left 2026-09-19: a notice card now)
+  // a NOTICE CARD (T370, plans/notice-cards.md): a producer's card the kernel made without a judge; the flavour object
+  // discriminates the family the way blocked.state does the kernel-made ones. The face shows the title (text), the producer
+  // beside the session, the body (markdown through the sanitizer), the attachment (an image inline, pinned as posted), and
+  // the action buttons the kernel executes against its allowlist; Clear dismisses it through cleared.jsonl like every card
+  notice?: { producer: string; key: string; rev: number; body: string;
+             attachment: { path: string; kind: string | null; allowed: boolean; why: string; pin: string | null } | null;
+             actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[];   // of a KIND the kernel defines (send, quarantine); route: an older frame's spelling of send
+             expiresAt: number | null; dismissOnAction: boolean; acted?: boolean } | null;   // acted: the one-shot action ran (a card back from Undo carries no actions)
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
   artifacts?: string[] | null;                     // files the work PRODUCED (distiller ARTIFACTS line, kernel existence-filtered at build): "N artifacts" under the summary; previewed in the modal (the user 2026-07-08)
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
+  relayNote?: string | null;   // a far host still holds a relayed question after its wait ended (kernel relayCarried) → its own dim line under the brief, never a brief paragraph
   briefParts?: { id?: string; since: number }[] | null;   // MULTI-item brief: one {id, since} per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null/absent = single ask, the card header's age is the stamp (the user 2026-07-24)
   summaryParts?: { id?: string; since: number }[] | null;   // the DONE twin: per-paragraph done-event stamps for a takeaway the distiller split by <completed-items> (the user 2026-07-24)
   summaryStale?: boolean;                          // the user followed up AFTER the shown takeaway (kernel: followupAt > distilledMt) → the summary section carries the stale note until the re-distill lands (the user 2026-08-19)
   background?: string | null;                      // distiller's BACKGROUND section: re-orientation for a reader who forgot the thread → the card's collapsed-by-default section above the takeaway (the user 2026-07-02)
   summaryAnchorUuid?: string | null;               // click the summary line → the completion turn's wrap-up block (kernel build_feed completed pin; cited/latest-prose fallbacks — the user 2026-07-14)
+  summaryAnchorQuote?: string | null;              // the distiller's verbatim supporting sentence, pre-located in the cited atom (T218) — the landing scrolls to and highlights it; null keeps the whole-message landing
+  summaryAnchorsPara?: ({ u: string; q?: string } | null)[] | null;   // per-paragraph landings (T220, the user's ruling): aligned to the takeaway's paragraphs; null entry = that paragraph falls back to the whole-summary landing
   warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies (judge _node_warn → kernel build_feed): yellow "warning" chip; click opens the detail modal (the user 2026-07-02)
   failLog?: { t: number; line: string; model: string; note: string }[] | null;   // the summarizer's failed ATTEMPTS on this card (judge _fail_log): when, which line, which MODEL, the literal error — the chip's hover history + the modal's "What was tried" (the user 2026-08-18, who needed to SEE "tried opus — 529" ×3 to know switching the model would fix it)
   nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
@@ -112,7 +154,8 @@ interface AskItem {
   satellite?: boolean | null;                        // tracked delegation (the user 2026-08-24): this card is the recipient-side copy of a delegator-homed primary — off the default board; the session filter still reaches it (nothing runs in secret)
   delegTracked?: { name: string; host?: string; sid: string; color?: { bg: string; fg: string } | null }[] | null;  // tracked delegation PRIMARY: the recipient identities whose live status this one card carries  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders). live = the sender's linked entry is still OPEN; false → the badge is PROVENANCE, dimmed (the completed-column merge, the user 2026-08-16)
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string; since?: number } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25). since = when the unanswered ask was sent → the chip's elapsed readout (the user 2026-08-23)
-  awaiting?: { why?: string | null; kind?: string | null; since?: number | null; tasks?: string[] | null;
+  awaiting?: { why?: string | null; kind?: string | null; since?: number | null; count?: number | null; tasks?: string[] | null;
+               items?: AwaitRow[] | null;   // the awaited ROWS grouped by kind (slice 2, 2026-09-05) — the pill lists them; count = how many (T225)
                peers?: { name: string; host?: string; sid?: string; color?: { bg: string; fg: string } | null }[] | null } | null;   // peers: delegation wait → the box names them in identity colour (the user 2026-08-23)   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Awaiting task" pill (expands the list, like Sub-goals) replaces the boxed why. since = the wait's own event time → the box/pill elapsed readout (the user 2026-08-23)
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
@@ -165,8 +208,32 @@ function applyFocus() {
   const eff = hoverAskId ?? pinnedAskId;
   for (const [id, card] of askEls) card.classList.toggle("focused", id === eff);
   for (const [tid, card] of groupEls) card.classList.toggle("focused", "g:" + tid === eff);
+  // the focused-session section's copies (T347) light with the card below — one card, two elements
+  for (const [id, card] of fsAskEls) card.classList.toggle("focused", id === eff);
+  for (const [tid, card] of fsGroupEls) card.classList.toggle("focused", "g:" + tid === eff);
 }
 const askEls = new Map<string, HTMLElement>();
+// The FOCUSED SESSION section's own element caches (T347): the section duplicates the focused session's
+// cards above the board, so each card there is a SECOND element, keyed "f:a:<itemId>" / "f:g:<turnId>" and
+// cached here, never in askEls/groupEls — the board's reconcile, its FLIP capture and every lookup by a
+// card's bare key see only the copy below, so nothing below moves because the section did.
+const fsAskEls = new Map<string, HTMLElement>();
+const fsGroupEls = new Map<string, HTMLElement>();
+/** Every element on the page that renders this card: the board's, and the focused section's copy when the
+ *  section shows it. Clear, its 180 ms finish and Undo resolve by ITEM through these, never by one element,
+ *  so a gesture on either copy reaches both (the review of T347: Clear on a copy left the card below). */
+function cardTwins(itemId: string): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  const a = askEls.get(itemId); if (a) out.push(a);
+  const f = fsAskEls.get(itemId); if (f) out.push(f);
+  return out;
+}
+function groupTwins(turnId: string): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  const g = groupEls.get(turnId); if (g) out.push(g);
+  const f = fsGroupEls.get(turnId); if (f) out.push(f);
+  return out;
+}
 // Optimistically-cleared item ids: Clear animates a card out + posts askClear, but a feed push that
 // arrives BEFORE the kernel processes the clear still lists the card — re-rendering it strips the
 // `.dismissing` class (updateAskCard resets className) so it pops back, then a later push drops it. We
@@ -227,19 +294,23 @@ const pendingMoveAck = new Map<string, { host: string; buildId: number }>();
 // (the user 2026-07-23). An entry survives until the authoritative tree agrees, or until the kernel says
 // it disagrees — nodeOverrideResult, whose failure path reverts it and says why out loud.
 const pendingDone = new Set<string>();
-function reconcilePendingDone(asks: AskItem[]) {
+function reconcilePendingDone(asks: AskItem[], cardsUnknown = false) {
   if (!pendingDone.size) return;
   const seen = new Map<string, string>();               // nodeId -> its status in this payload
   for (const a of asks) for (const n of a.tree || []) seen.set(n.id, n.status);
   for (const id of Array.from(pendingDone)) {
     const st = seen.get(id);
     // done → the kernel caught up, drop the optimistic flag. Absent → the node is gone from the tree
-    // entirely, so there is nothing left to paint and holding the flag would leak it forever.
-    if (st === "done" || st === undefined) pendingDone.delete(id);
+    // entirely, so there is nothing left to paint and holding the flag would leak it forever — unless this
+    // payload cannot vouch for every host's cards (the gate in applyFeedPayload, T404 round seven).
+    if (st === "done" || (st === undefined && !cardsUnknown)) pendingDone.delete(id);
   }
 }
 type MoveKind = "followup" | "answer";
 const pendingMoveKind = new Map<string, MoveKind>();
+// card itemId → the payload's own object the predicted copy replaced in `asks` (applyFollowMove), so the
+// kernel's refusal of the post can put it back (revertFollowMove) instead of waiting for the next frame
+const predictedFrom = new Map<string, AskItem>();
 // COLUMN-FLIP TRIPWIRE (the user 2026-07-28, who watched a just-replied card bounce Working →
 // Completed → Working and could not be told afterwards WHICH layer bounced it — every candidate
 // mechanism checked out sound post-hoc, and no surface records what the view actually SHOWED).
@@ -248,6 +319,7 @@ const pendingMoveKind = new Map<string, MoveKind>();
 // trail instead of unreproducible archaeology. Ids only, no card text.
 const shownCol = new Map<string, string>();            // itemId → column as last RENDERED (post-prediction)
 let lastFeedEvent = "init";                            // the input change the next render reflects
+let feedAnnounced = false;                             // {romp:'ready'} posted to the shell once, on the first payload's render
 let lastPayloadBuildId = 0;
 function auditShownColumns(list: AskItem[]) {
   const seen = new Set<string>();
@@ -279,7 +351,19 @@ function auditShownColumns(list: AskItem[]) {
 function clearFollowMove(itemId: string, why = "") {
   const t = pendingFollowMove.get(itemId); if (t) clearTimeout(t);
   pendingFollowMove.delete(itemId); pendingMoveKind.delete(itemId); pendingMoveAck.delete(itemId);
+  predictedFrom.delete(itemId);
   if (why) lastFeedEvent = "clear:" + why;             // tripwire attribution only; behavior unchanged
+}
+// The kernel REFUSED the post a prediction rode on (an `err` naming the card's askFollowUp; review find,
+// 2026-09-08): the card goes back to what the payload says NOW, on that reply, rather than sitting in Working
+// until the next frame. The refusal is the event the no-answer backstop only approximated; the backstop's own
+// toast blamed silence, and here the kernel has spoken. Puts the payload's object back in the slot the copy
+// took, so the render shows the kernel's state and the gate repaints that card alone (a new identity).
+function revertFollowMove(itemId: string): void {
+  const orig = predictedFrom.get(itemId);
+  clearFollowMove(itemId, "refused");
+  if (orig) { const i = asks.findIndex((a) => a.itemId === itemId); if (i >= 0 && asks[i] !== orig) asks[i] = orig; }
+  render();
 }
 function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
   const prev = pendingFollowMove.get(itemId); if (prev) clearTimeout(prev);
@@ -325,11 +409,14 @@ function ackFollowMove(itemId: string, ok: boolean, buildId: number, host: strin
 // right after retiring the picker (answerAsk → _mark_views_dirty), so a payload that still shows the card out
 // of Working is post-answer truth — a real remaining/renewed block (e.g. the next permission prompt of a
 // burst). Holding the prediction there would MASK a genuine "needs you"; dropping it re-shows the ⏸ card.
-function reconcileFollowMove(incoming: AskItem[], buildId: number, buildIds?: Record<string, number>) {
+function reconcileFollowMove(incoming: AskItem[], buildId: number, buildIds?: Record<string, number>, cardsUnknown = false) {
   for (const id of Array.from(pendingFollowMove.keys())) {
     const a = incoming.find((x) => x.itemId === id);
-    if (!a || a.column === "working" || pendingMoveKind.get(id) === "answer") {
-      clearFollowMove(id, !a ? "gone" : a.column === "working" ? "confirmed" : "answer-yield");
+    // absent → gone, unless this payload cannot vouch for every host's cards (the gate in applyFeedPayload, T404 round
+    // seven): then the prediction waits for a payload that can, with the MOVE_ACK_MS backstop standing behind it
+    if (!a && cardsUnknown) continue;
+    if (!a || askColumn(a) === "asks" || pendingMoveKind.get(id) === "answer") {
+      clearFollowMove(id, !a ? "gone" : askColumn(a) === "asks" ? "confirmed" : "answer-yield");   // Working by the kernel's category (askColumn, the boards' phase two)
       continue;
     }
     // ACKED, yet this payload still shows the card elsewhere. Trust it ONLY if it was built after the kernel
@@ -376,10 +463,14 @@ function applyFollowMove(list: AskItem[]) {
   const nowSec = Math.floor(Date.now() / 1000);
   for (let i = 0; i < list.length; i++) {
     const a = list[i];
-    if (!pendingFollowMove.has(a.itemId) || a.column === "working") continue;
-    const c: AskItem = { ...a, column: "working" };
+    if (!pendingFollowMove.has(a.itemId) || askColumn(a) === "asks") continue;   // already in Working by its category (its column from an older kernel)
+    // the prediction names the feed's Working under BOTH keys: askColumn reads the category first since phase two of the
+    // boards (plans/card-boards.md), so a copy predicting the column alone stayed in Blocked until the kernel re-filed it
+    // (the 1837 read); the frame's own object keeps its category, as it keeps its column
+    const c: AskItem = { ...a, column: "working", category: "working" };
     if ((pendingMoveKind.get(a.itemId) ?? "followup") === "followup") { c.recheck = true; c.followupPending = true; }   // plain move / answer: no chip
     if (c.t < nowSec) c.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
+    predictedFrom.set(a.itemId, a);   // what a refusal of the post puts back (revertFollowMove)
     list[i] = c;
   }
 }
@@ -396,7 +487,7 @@ const groupEls = new Map<string, HTMLElement>();
 
 // The three columns. The HOST decides each ask's column by DAG path accounting
 // (completed only when every subgraph node is DONE); we just map its snake_case.
-type Column = "asks" | "needsInput" | "completed";
+type Column = string;   // the ACTIVE board's local column keys: the feed's three CSS names, a data board's category ids (plans/card-boards.md, phase four)
 function askColumn(it: AskItem): Column {
   // it.column is AUTHORITATIVE — the kernel already floors a live permission/picker block to needs_input (and
   // parked handoffs / placeholders set it too), so the client just maps its snake_case. We no longer re-route
@@ -404,7 +495,7 @@ function askColumn(it: AskItem): Column {
   // "working" while showing it under Blocked — it now reports needs_input directly (the user 2026-06-29). An
   // API-error card stays in its natural column (working): the kernel keeps column=working for it (a transient
   // stall, not a block), so it lands in "asks" with just the "⚠ API error" chip + Retry.
-  return it.column === "needs_input" ? "needsInput" : it.column === "completed" ? "completed" : "asks";
+  return columnOf(boardOf(it), it.category ?? it.column);   // the card's OWN board's table (the category since phase two; column from an older kernel): a feed card keeps its feed key whatever board is shown
 }
 
 // How opaque the recency tint is over the (black) page — low = a faint, very
@@ -429,30 +520,61 @@ function setCardChannels(card: HTMLElement, rgb: [number, number, number]) {
   card.style.setProperty("--card-b", String(rgb[2]));
   card.style.borderColor = "";   // CSS owns border-color now (rgba(var(--card-*), …)); clear any stale inline
 }
-const vscodeApi =
+const hostApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
+// every post this pane makes passes here, so a jump into a session (openSession, showOnTimeline, whichever click
+// made it) is noted in ONE place and the focused-session section follows at once (T416, noteOwnJump)
+const vscodeApi = hostApi ? { postMessage: (m: any) => { noteOwnJump(m); hostApi.postMessage(m); } } : undefined;
+// PR links inside cards open the PR and nothing else: capture-phase on the document, so the card's own
+// click (modal / pin) under the link never fires. Web → the viewer's browser; VS Code → the host's
+// openExternal via `openLink` (view-routing.ts; extension.ts opens it for the feed panel). Once, on the
+// stable document, keyed off the anchor's href across the press (the click-safety rule: the anchors
+// themselves are rebuilt by pushes).
 
-// The settings gear (the ⛭ modal + analytics) is part of THIS bundle now —
-// gear.js builds its DOM here and rides our one kernel channel, so both hosts
-// (the kernel's /feed page and the VS Code feed panel) get the same modal.
-// Opened by a {romp:'openSettings'} window message (web shell rail / VS Code menu).
+installPrLinkOpener(document, vscodeApi ? (m) => vscodeApi.postMessage(m) : undefined);
+
+// The settings gear (the ⛭ modal + analytics) rides THIS bundle for VS Code's feed panel: gear.js
+// builds its DOM here and rides our one kernel channel, opened by a {romp:'openSettings'} window
+// message (the VS Code menu). The kernel's dashboard serves the gear on its own /settings page
+// instead (settings-page.ts; the user 2026-09-10, so the Feed pane is no longer required for
+// settings) and flags its feed page so no second gear is mounted here — an opener in this document
+// (the login card below) then goes up to the shell, which forwards it there (gear-host.ts).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { initGear } = require("./gear.js");
-initGear((m: Record<string, unknown>) => vscodeApi?.postMessage(m));
+if (hostsGear(window)) initGear((m: Record<string, unknown>) => vscodeApi?.postMessage(m));
+// the gesture clock the gear stamps its settings posts with — one module graph per document, so
+// the gear's learning (each store's stamp from /version on open) serves the banner below too
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const gclock = require("./gesture-clock.js");
 
 // The romp strip (VS Code only — the host opts in via __rompShowStrip): usage
 // bars + the gear button, docked below #feed-foot. The gear raises the modal
 // in THIS document (the gear listener above).
-initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
+initStrip(() => openGear(window),
   (m: Record<string, unknown>) => vscodeApi?.postMessage(m));
 installSettingsSync();   // a gear save in ANOTHER VS Code pane lands here via the host
+// the overall theme applies to THIS document too (2026-08-28): at boot and on every settings
+// write — before this only the chat pane wore the body classes, so a light theme could never
+// reach the feed
+applyTheme(document, loadSettings());
+onExternalSettingsChange((s) => { applyTheme(document, s); render(); });
 
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
-function feedPrefs(): { newestFirst: boolean; collapsed: boolean; grouped: boolean; stacked: boolean } {
+// Memoised on the RAW settings string: called per card per render, and each call parsed the blob. Keyed on
+// the raw string, the memo is exact and needs no invalidation. `colormap` rides along for the per-card
+// update gate (feed-card-gate.ts): a colormap pick repaints every card once, as the settings epoch did.
+type FeedPrefs = { newestFirst: boolean; collapsed: boolean; grouped: boolean; stacked: boolean; colormap: string };
+const PREFS_DEFAULT: FeedPrefs = { newestFirst: false, collapsed: false, grouped: true, stacked: false, colormap: "aurora" };
+let prefsRaw: string | null | undefined;
+let prefsMemo: FeedPrefs = PREFS_DEFAULT;
+function feedPrefs(): FeedPrefs {
+  let raw: string | null = null;
+  try { raw = localStorage.getItem("romp:settings"); } catch { return PREFS_DEFAULT; }
+  if (raw === prefsRaw) return prefsMemo;
   try {
-    const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
+    const s = JSON.parse(raw || "{}");
     // newestFirst + collapsed default OFF (=== true): the feed's natural order is oldest-first, and cards
     // arrive with their summary open (the user 2026-07-07). collapsed is the DEFAULT section state new cards
     // inherit — a per-card expand overrides just that card without turning the mode off. (Sub-goals is now one
@@ -460,18 +582,34 @@ function feedPrefs(): { newestFirst: boolean; collapsed: boolean; grouped: boole
     // grouped (the user 2026-07-13): each column groups its cards by SESSION (tab/lane order), a session-name
     // header on the backdrop between runs, the per-card name dropped — the compact by-session read.
     // Default ON (!== false, same day): grouping is the feed's normal reading mode; the toggle opts OUT.
-    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true, grouped: s.grouped !== false,
-             stacked: s.stacked === true };
-  } catch { return { newestFirst: false, collapsed: false, grouped: true, stacked: false }; }
+    prefsMemo = { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true, grouped: s.grouped !== false,
+                  stacked: s.stacked === true, colormap: String(s.colormap || "aurora").toLowerCase() };
+  } catch { prefsMemo = PREFS_DEFAULT; }
+  prefsRaw = raw;
+  return prefsMemo;
 }
 // The kernel's session order (session-order.json — the SAME order the chat tabs + timeline lanes hold; the
 // user 2026-07-13: grouped-mode sessions must match it). Rides every feed push; federation concatenates
 // per-host orders local-first, ids pre-prefixed.
 let sessionOrder: string[] = [];
+// The owner-less notice cards' owner key (kernel.py NOTICE_OWNERLESS_SID; the user 2026-09-18: a card with no session at the
+// top of the feed). The feed board's SORT RULE, never a card field or a timestamp trick (plans/notice-cards.md, "Owner-less
+// cards"): within a column, the owner-less run ranks before every session run, then the session order, then time.
+const NOTICE_OWNERLESS_SID = "notes";
+// A remote host's owner-less card arrives with its sid host-prefixed (federation prefixInbound: "host:notes"), so the test
+// strips the prefix the way federation adds it: one helper for the rank, the chip and the header (round two of PR 1831)
+const isOwnerless = (sid: string | null | undefined): boolean => !!sid && bareId(sid) === NOTICE_OWNERLESS_SID;
+const ownerRank = (sid: string): number => isOwnerless(sid) ? 0 : 1;
 // The chat tab strip's sessions (sid+name+color), riding every feed push: the footer's session-filter
 // menu lists exactly the tabs (the user 2026-08-08) — a session with no cards still appears, and
 // filtering to it shows an empty board. Federation prefixes sid+name per host and concatenates.
-let sessionsMeta: { sid: string; name: string; color: { bg: string; fg: string } | null }[] = [];
+let sessionsMeta: { sid: string; name: string; color: { bg: string; fg: string } | null; githubRepo?: string | null }[] = [];
+// The GitHub repository a card's session works in (owner/repo, or null) — the kernel ships it on the
+// session rows above, derived from the session tree's origin remote; a `#123` in the card's text links
+// to that repository's PR page (pr-links.ts; the user 2026-09-06). Null → the text stays plain.
+function prRepoOf(sid: string | undefined): string | null {
+  return (sid && sessionsMeta.find((s) => s.sid === sid)?.githubRepo) || null;
+}
 // Attached hosts whose CARD payload hasn't merged yet (the user 2026-08-25: sessions land via the
 // faster channels, cards trail with no cue) — the federation merge names them (pendingHosts), the
 // board hints per host, and the hint retires ONLY on the real events: that host's first contribution
@@ -550,6 +688,10 @@ function setFeedSearch(q: string): void {
 // same pair settings sync rides): the browser's same-origin iframes hear the localStorage write
 // (`storage` fires cross-document), and VS Code's extension fans {colorSync} to its other panels.
 // Apply it to every copy this pane holds and re-render; the kernel's own re-broadcast reconciles.
+// IN PLACE, deliberately: these objects are federation's held frame, so the write lands in the cache too
+// and a re-emit before the kernel's own rebuild keeps the new colour (copies in this pane's list alone
+// would hand the old colour back on the next merged emission). The per-card update gate cannot see an
+// in-place write through object identity, so the colour rides the card key instead (feed-card-gate.ts).
 function applyColorEcho(sid: string, bg: string): void {
   if (!sid || !bg) return;
   const color = { bg, fg: "#ffffff" };   // fg fixed white, matching the kernel's _name_color
@@ -582,9 +724,9 @@ function focusEcho(sid: string): void {
 }
 let workingSet = new Set<string>();
 // This machine's own name (kernel _self_host, on every feed payload) and the identity colour of every
-// session the feed knows, keyed "host:name" for a remote one and plain for a local one. Held mail names
-// BOTH ends of the exchange, and a session's colour is its identity everywhere else, so the card has to
-// be able to look one up by name — the quarantine record carries names, not sids (the user 2026-07-29).
+// session the feed knows, keyed "host:name" for a remote one and plain for a local one: a session's colour is
+// its identity everywhere else, so a renderer holding only a name can look one up (first built for the held
+// mail's route line, the user 2026-07-29; that line is a notice card's body since 2026-09-19).
 let feedSelfHost = "";
 const sessionColors = new Map<string, string>();
 // session name -> live background-process descriptions the JUDGE classified as services (kernel bgServices:
@@ -636,6 +778,12 @@ function setWorkDot(nameEl: HTMLElement | null, state: DotState | boolean) {
 }
 
 let hostNow = Math.floor(Date.now() / 1000);
+// …and WHEN that clock was read (ms, the browser's clock): the frame's `nowAt` when federation stamped one,
+// else the handling. Every age and duration on a card reads the kernel's clock through nowSec() (feed-age.ts
+// liveNow): the frame's `now` plus the local time since it landed, so the browser's skew from the kernel
+// never enters an age, and a quiet board's ages keep moving between frames.
+let hostNowAt = Date.now();
+function nowSec(): number { return liveNow(hostNow, hostNowAt, Date.now()); }
 let showDismissed = false;
 let dismissedCount = 0;
 let canUndoClear = false;   // host: cleared.jsonl has rows → the UndoClear button shows
@@ -646,11 +794,26 @@ let canUndoClear = false;   // host: cleared.jsonl has rows → the UndoClear bu
 // from there instead of appearing from nowhere. Rebuilt every render.
 let prevItemKey = new Map<string, string>();
 
+// ONE builder for every Clear on the feed (the user 2026-09-08): the card's, the turn-group's and the
+// session header's wear the same element, class set, label and hover, so they cannot drift apart. Callers
+// add behaviour (an onclick, a data-act) and, for the header, a layout-only positional class.
+function clearButton(title: string, label = "Clear"): HTMLElement {
+  const b = el("button", "fdismiss");
+  b.textContent = label;   // "Clear" on a card; the session header's says "Clear all" (T271, the user 2026-09-08) — same chrome, same builder
+  b.title = title;
+  return b;
+}
+
 function el(tag: string, cls?: string): HTMLElement {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
   return e;
 }
+// A text write that compares first. In a document that has created a MutationObserver — gear.js creates
+// several at boot — Blink treats an identical textContent write as a real Text-node replacement and dirties
+// layout (feed-age.ts has the mechanism). The grouped-mode session headers repaint on every render (they are
+// not behind the per-card update gate), so their labels write through here.
+function setText(e: HTMLElement, s: string): void { if (e.textContent !== s) e.textContent = s; }
 
 // A lightweight yes/no overlay for the feed. Separate from the ask #feed-modal
 // (a different state machine); Esc or a backdrop click cancels.
@@ -773,6 +936,20 @@ function clockHM(t: number): string {
   return new Date(t * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
+// The latched Continue/Check-status button explains itself (T150, the user 2026-08-28: a card read
+// 'Sent' and clicking did nothing — the latch was honest, the silence was not). One title writer for
+// both states of both buttons: while held, it names WHAT was sent, WHEN, and the exact event that
+// re-arms it; enabled, it says what a click does. The hover title is the minimum honest surface for
+// a disabled control (the buttons rule) — the label itself stays one word.
+function contTitle(latched: boolean, verb: string, at?: number | null): string {
+  return latched
+    ? verb + " sent" + (at ? " " + relAge(nowSec() - at) : "") +
+      " — waiting for the session's reply to be judged; this re-arms then, and the card moves on its own"
+    : verb === "a continue"
+      ? "nothing needed from you — asks the session to keep going"
+      : "asks the session where each open item stands";
+}
+
 function relAge(sec: number): string {
   const s = Math.max(0, sec);
   // Sub-minute ages all read "<1m ago" (the user 2026-07-20): a card the user just acted on stamps t=now,
@@ -781,6 +958,22 @@ function relAge(sec: number): string {
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400) return `${Math.round(s / 3600)}h ago`;
   return `${Math.round(s / 86400)}d ago`;
+}
+
+// A RUNNING duration as its own stamped element (feed-age.ts fmt "dur"): "42m" / "1h 5m" since an event
+// time, repainted by the 15 s live pass like every other age. Every elapsed label on a card renders through
+// here — the awaiting box, the Awaiting-task pill, the waiting-on chip, the working narration — because the
+// per-card update gate repaints a card only when its inputs change, and a duration baked into a caption
+// string would freeze on a card the kernel has no reason to re-send (a long wait whose record does not
+// change). On the kernel's clock (nowSec), like every other age here; these read Date.now() before.
+function durSpan(since: number): HTMLElement {
+  const d = el("span", "fask-dur");
+  stampAge(d, since, "dur", false, nowSec(), relAge, ageColorReadable);
+  return d;
+}
+/** waitedSuffix's live twin: [" · ", <duration>] for a known start, [] otherwise — no since, no duration, never a guess. */
+function durNodes(since: number | null | undefined): (string | HTMLElement)[] {
+  return since && since > 0 ? [" · ", durSpan(since)] : [];
 }
 
 function dayLabel(t: number, now: number): string {
@@ -825,13 +1018,8 @@ function ensureHeader() {
 // clicked value sticky across pushes until the kernel's payload agrees, so the bell never flickers
 // back while the rebuild lands.
 const pendingNotify = new Map<string, boolean>();   // itemId -> clicked value, until the payload confirms
-let cardMenuEl: HTMLElement | null = null;
-
-function dismissCardMenu(): void { if (cardMenuEl) { cardMenuEl.remove(); cardMenuEl = null; } }
-window.addEventListener("mousedown", (e) => { if (cardMenuEl && !cardMenuEl.contains(e.target as Node)) dismissCardMenu(); }, true);
-window.addEventListener("keydown", (e) => { if (e.key === "Escape") dismissCardMenu(); }, true);
-window.addEventListener("scroll", dismissCardMenu, true);
-window.addEventListener("blur", () => dismissCardMenu());
+// (the menu's card, its dismissal on a press outside, Escape, a scroll or the window's blur, and its keys are the shared
+// builder's: ctx-menu.ts openContextMenu)
 
 // the same drawn bell as the chat tab menu's toggle icon (16-unit viewBox, currentColor, slash = off)
 function cardBellSvg(off: boolean): string {
@@ -842,7 +1030,7 @@ function cardBellSvg(off: boolean): string {
     + '<path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>' + slash + "</svg>";
 }
 
-function cardNotifyOn(it: AskItem): boolean {
+function cardNotifyOn(it: { itemId: string; notify?: boolean | null }): boolean {
   return pendingNotify.has(it.itemId) ? !!pendingNotify.get(it.itemId) : !!it.notify;
 }
 
@@ -855,8 +1043,10 @@ function paintCardBell(card: HTMLElement, on: boolean): void {
   (btn as any)._bellOn = on;
   btn.classList.toggle("on", on);
   btn.innerHTML = cardBellSvg(!on);
-  btn.title = on ? "system notifications on for this task — click to stop"
+  const say = on ? "system notifications on for this task — click to stop"
     : "notify me when this task blocks on you or completes";
+  setTip(btn, say);                                    // styled tip (tip.ts), not a native title
+  btn.setAttribute("aria-label", say);                 // the icon-only button keeps an accessible name
 }
 
 // the ONE toggle path — the corner bell click and the right-click menu both land here
@@ -866,47 +1056,63 @@ function setCardNotify(card: HTMLElement, it: AskItem, value: boolean): void {
   vscodeApi?.postMessage({ type: "cardNotify", itemId: it.itemId, sid: it.sid, value });
 }
 
+// The kernel's reply to a latched click re-arms THAT button (review find, 2026-09-08). Each card-face latch
+// (Retry → "Retrying…", Revive → "Reviving…", Approve/Deny → "Delivering…", Continue → "Sent") holds the
+// acknowledgement until the kernel answers its own post (the click-safe rule), and since the per-card update
+// gate repaints a card only when the kernel re-sends it, the reply IS the event on a refusal (a success
+// re-sends the card, and that repaint re-arms it). Every refusal names the request it answers, and only the
+// latch that made that request lets go: `reviveFailed` names the revived id (the parked card's sid IS that id,
+// and its blocked.toSid), `retryRefused` and an `err` whose op is apiRetry name the session
+// names the held message's mid, an `err` whose op is askFollowUp names the card. A reply that names a session
+// but no request (an `err` from a kernel older than the op field) releases the session's Retry and Revive, as
+// it did before; one that names neither releases nothing: it answers no request, so every latch stays a
+// request the kernel has not answered. No clock anywhere. Returns how many buttons let go, so a caller can
+// speak only when this page's own click was the one answered (the chat pane voices its own).
+type LatchReply =
+  | { kind: "revive"; id: string }
+  | { kind: "retry"; sid: string }
+  | { kind: "followup"; itemId: string }
+  | { kind: "session"; sid: string };
+function rearmLatches(reply: LatchReply): number {
+  let n = 0;
+  const arm = (b: HTMLButtonElement | undefined, label: string) => {
+    if (b && b.disabled) { b.disabled = false; b.textContent = label; n++; }
+  };
+  for (const card of [...askEls.values(), ...fsAskEls.values()]) {   // the focused section's copies hold the same latches (T347)
+    const a = card as any;
+    const it = a._it as AskItem | undefined;
+    if (!it) continue;
+    const reviveIdle = () => (a._revive && (a._revive as any)._idle) || "Revive";
+    switch (reply.kind) {
+      case "revive": if ((it.blocked?.toSid || it.sid) === reply.id) arm(a._revive, reviveIdle()); break;
+      case "retry": if (it.sid === reply.sid) arm(a._apiRetry, "Retry"); break;
+      case "followup":
+        if (it.itemId === reply.itemId && a._cont && (a._cont as HTMLButtonElement).disabled) {
+          arm(a._cont, "Continue");
+          (a._cont as HTMLButtonElement).title = contTitle(false, "a continue", it.followupAt);
+        }
+        break;
+      case "session": if (it.sid === reply.sid) { arm(a._apiRetry, "Retry"); arm(a._revive, reviveIdle()); } break;
+    }
+  }
+  return n;
+}
+
 function showCardMenu(e: MouseEvent, card: HTMLElement): void {
-  dismissCardMenu();
   const it = (card as any)._it as AskItem | undefined;   // the freshest payload copy (updateAskCard stashes it)
   if (!it) return;
   const on = cardNotifyOn(it);
-  const menu = el("div", "ctx-menu");
-  const item = el("div", "ctx-item ctx-item-toggle");
   const icon = el("span", "ctx-icon" + (on ? "" : " off"));
   icon.innerHTML = cardBellSvg(!on);
-  const body = el("span", "ctx-item-body");
-  const lab = el("span", "ctx-item-label"); lab.textContent = on ? "Stop notifying" : "Notify me";
-  const sub = el("span", "ctx-item-sub");
-  sub.textContent = on ? "no more system notifications for this card"
-    : "system notification when this card blocks on you or completes";
-  body.append(lab, sub);
-  item.append(icon, body);
-  item.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    dismissCardMenu();
-    setCardNotify(card, it, !on);
-  });
-  menu.appendChild(item);
+  const items: CtxItem[] = [{ icon, label: on ? "Stop notifying" : "Notify me",
+    sub: on ? "no more system notifications for this card" : "system notification when this card blocks on you or completes",
+    pick: () => setCardNotify(card, it, !on) }];
   // Browse the session's working tree. Only the sid rides: the feed payload doesn't carry cwd, and
   // "." lets the OWNING kernel resolve it authoritatively (_resolve_open_path) rather than this pane
   // scraping another pane's state. Gated on canPreview() (web only): the VS Code webview can't reach
   // the kernel origin, and the editor has its own explorer.
-  if (canPreview()) {
-    const browse = el("div", "ctx-item");
-    browse.textContent = "Browse files";
-    browse.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      dismissCardMenu();
-      openFileBrowse(".", it.sid);
-    });
-    menu.appendChild(browse);
-  }
-  document.body.appendChild(menu);
-  cardMenuEl = menu;
-  const r = menu.getBoundingClientRect();   // at the cursor, clamped inside the pane
-  menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
-  menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
+  if (canPreview()) items.push({ label: "Browse files", pick: () => openFileBrowse(".", it.sid) });
+  openContextMenu(e.clientX, e.clientY, items);   // at the cursor, clamped inside the pane (the shared card)
 }
 
 function makeAskCard(it: AskItem): HTMLElement {
@@ -967,7 +1173,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // past-tense "interrupted" badge. Working-yellow + faded (matches the chat chip's chip-interrupting), so
   // it reads as "still winding down" rather than a done state.
   const intingBadge = el("span", "fask-interrupting"); intingBadge.textContent = "interrupting…";
-  intingBadge.title = "stop sent — waiting for this session to reach a stopping point";
+  setTip(intingBadge, "stop sent — waiting for this session to reach a stopping point");   // styled tip (tip.ts), not a native title
   intingBadge.style.display = "none";
   // yellow "warning" chip (the user 2026-07-02): a judge stamped an anomaly on this goal (kernel `warns`,
   // judge _node_warn — e.g. a distiller cite-miss). Click → the warn-detail overlay: what happened and why
@@ -997,18 +1203,29 @@ function makeAskCard(it: AskItem): HTMLElement {
   // auto-retry is already doing that.
   const retryBadge = el("span", "fask-retrying"); retryBadge.style.display = "none";
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
+  // the auth-expired card offers THE FIX, not just the problem (T157, the user: watch it, log in,
+  // it works again): opens the gear's Billing login — the paste-code flow that works from the phone
+  const apiLogin = el("button", "fdismiss ffollow"); apiLogin.textContent = "Log in…";
+  apiLogin.title = "open Billing login — sign in from any browser (your phone works) and this session recovers on its next turn";
+  apiLogin.style.display = "none";
+  // CAP-SWITCH OFFER (the user's binding ruling, 2026-08-30: a session must NEVER silently switch
+  // billing in either direction): a login-billed session dead on the account's usage cap gets an
+  // explicit offer to bill the key for the rest of the window — the pick is the user's alone, and
+  // switching back is equally manual. Declining is just Clear; the kernel stops minting the offer
+  // the moment the window resets (the deciding event), and the post-reset auto-retry runs either way.
+  const capLine = el("span", "fask-capoffer"); capLine.style.display = "none";
+  const capBtn = el("button", "fdismiss fcapswitch") as HTMLButtonElement;
+  capBtn.textContent = "Switch to the key"; capBtn.style.display = "none";
   const revive = el("button", "fdismiss frevive"); revive.textContent = "Revive"; revive.title = "bring this offline session back so the parked hand-off is delivered"; revive.style.display = "none";
   // RESUME-GATE buttons (the user 2026-07-21): a boot-deferred high-context session — Proceed reloads it now,
   // Compact on resume /compacts first so future turns shrink (still one reload now), Skip leaves it dormant.
   // QUARANTINE buttons (per-host trust): a held message from a DIRECTED peer — Approve delivers it,
   // Edit opens the modal to change the text before delivering, Deny drops it. Human-in-the-loop is the
   // whole point of directed trust, so nothing reaches the session until one of these is clicked.
-  const qApprove = el("button", "fdismiss fq fq-ok") as HTMLButtonElement; qApprove.textContent = "Approve"; qApprove.title = "deliver this message to the recipient session"; qApprove.style.display = "none";
-  const qDeny = el("button", "fdismiss fq fq-no") as HTMLButtonElement; qDeny.textContent = "Deny"; qDeny.title = "drop this message — with the option of a note back to the sender"; qDeny.style.display = "none";
   // The header "awaiting" chip was REMOVED (the user 2026-07-04): it duplicated the "Awaiting background
   // agents" box in the card body, which says the same thing with room for the full "why" — so the chip was
   // pure redundancy. The awaiting state now reads only from that body box (see the awaitSpin block below).
-  const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this task";   // plain-spoken (the user 2026-07-13, over the inbox-zero jargon)
+  const clr = clearButton("clear this task");   // plain-spoken (the user 2026-07-13, over the inbox-zero jargon)
   // "Continue" (the user 2026-08-08): the needs-you card's one-click "nothing needed from me, keep
   // going" — a REPLY with a kernel-canned body (askFollowUp cont:true), never a bare column move (the
   // removed cardMove is the cautionary tale: a move with no message adds no information). The card
@@ -1045,7 +1262,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // COMPACTNESS (the user 2026-07-07): Clear rides the NAME row (right side, after the chips) and the
   // Background/Summary toggles ride the TIME row — freeing a whole action row. So the action row holds only
   // Retry / Revive (rare states); both rows flex-WRAP so nothing overflows or overlaps on a narrow card.
-  actions.append(revive, qApprove, qDeny);
+  actions.append(revive);   // (the held-mail Approve and Deny left this row 2026-09-19: a notice card's stored actions now)
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
@@ -1057,7 +1274,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // direct children they render in BOTH modes, count toward row2's grouped-mode liveness, and the
   // API badge stays immediately before its Retry button — one visual unit. idwrap keeps only the
   // name. Placement only; every badge's mint/retire semantics are untouched.
-  row2.append(idwrap, retryBadge, apiBadge, apiRetry, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
+  row2.append(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
   // the bell BUTTON (the user 2026-07-28): INLINE in row1's metadata cluster, right after the
   // timestamp (the last line's tail), the one spot that never shoves the title — and in-flow, so it
   // cannot overlap the floated Clear. It hides with VISIBILITY, so its slot is reserved whether or
@@ -1140,12 +1357,15 @@ function makeAskCard(it: AskItem): HTMLElement {
   const awaitGlyph = el("span", "fask-awaiting-swirl"); awaitGlyph.setAttribute("aria-hidden", "true");
   const awaitWhy = el("span", "fask-awaiting-why");
   awaitSpin.append(awaitGlyph, awaitWhy);
-  // QUARANTINE body: a held message from a DIRECTED peer, shown IN FULL, read-only (peer content, never
-  // auto-run; the human is deciding on it, so clipping it works against the decision — the user
-  // 2026-07-26). Editing happens in the Edit modal, never inline. Only on a quarantine card.
-  const qbody = el("div", "fask-qbody");
-  qbody.style.display = "none";
-  main.append(row1, row2, row3, secs, qbody, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
+  // NOTICE CARD (T370): the producer label beside the session name, then the body, the attachment and the actions, all
+  // hidden until updateAskCard finds it.notice. The body is the sanitizer's inert DOM adopted (never innerHTML), the
+  // attachment an image the kernel already judged and pinned, the actions buttons the kernel executes (noticeAction).
+  const nprod = el("span", "fask-nprod"); nprod.style.display = "none";
+  row2.appendChild(nprod);
+  const nbody = el("div", "fask-nbody"); nbody.style.display = "none";
+  const nattach = el("div", "fask-nattach"); nattach.style.display = "none";
+  const nactions = el("div", "fask-nactions"); nactions.style.display = "none";
+  main.append(row1, row2, row3, secs, nbody, nattach, nactions, awaitSpin, checklist, delegations);   // no expand button: body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -1176,7 +1396,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   if (titleAnchor === "prompt" && !titleUuid && cardAnchorUuid) { titleAnchor = "work"; titleUuid = cardAnchorUuid; }
   // A PROVISIONAL placeholder has no goal node / timeline anchor — clicking anywhere just opens the live
   // session (go see what it's working on); the modal, timeline deep-link, and path-hover are all skipped.
-  title.onclick = (ev) => { ev.stopPropagation(); if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
+  title.onclick = (ev) => { ev.stopPropagation(); if (isOwnerless(it.sid)) { fullscreenAskId = it.itemId; renderModal(); return; } if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };   // an owner-less card: the title opens the card, never a session gesture (round three of PR 1831)
   // (The auto-line is plain text now — no deep-link — so no onclick here; its hover tooltip = the planner's
   // why, set in updateAskCard. The inline sub-goal checkmarks remain clickable via wireNodeZones.)
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
@@ -1186,12 +1406,21 @@ function makeAskCard(it: AskItem): HTMLElement {
     // never fires and the timeline/chat highlight stuck until you moved the mouse (the user 2026-07-03). The
     // synthetic mouseleave runs the exact leave logic (clears the highlight, or restores a pinned card's).
     card.dispatchEvent(new MouseEvent("mouseleave"));
-    dressHeaderIfLast(card, it.sid);   // the run's last card takes its header with it — one motion (2026-08-24)
+    dressHeaderIfLast(askEls.get(it.itemId) ?? card, it.sid);   // the run's last card takes its header with it — one motion (2026-08-24); the BOARD's element when Clear came from the section's copy (T347)
     pendingCleared.add(it.itemId);   // suppress from incoming pushes until the kernel confirms the clear
-    clearedStack.push([it]);         // cache for an instant optimistic Undo
-    card.classList.add("dismissing");
+    clearedStack.push([(card as any)._it ?? it]);   // cache the FRESHEST payload copy for an instant optimistic Undo (the closure's `it` is the card's creation-time object)
+    // BY ITEM, not by this element (T347): the focused-session section holds a second element for the same
+    // card, and Clear on either copy clears the card, so both wear .dismissing now and both leave together.
+    // The stale-timeout guard is per element: a render inside the window that revived the card (its update
+    // resets the class) or replaced its element leaves that copy alone.
+    for (const c of cardTwins(it.itemId)) c.classList.add("dismissing");
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid });
-    setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); dropDismissed([it.itemId]); } }, 180);
+    setTimeout(() => {
+      const twins = cardTwins(it.itemId).filter((c) => c.classList.contains("dismissing"));
+      if (!twins.length) return;
+      for (const c of twins) { c.remove(); if (askEls.get(it.itemId) === c) askEls.delete(it.itemId); if (fsAskEls.get(it.itemId) === c) fsAskEls.delete(it.itemId); }
+      dropDismissed([it.itemId]);
+    }, 180);
   };
   cont.onclick = (ev) => {
     ev.stopPropagation();
@@ -1200,6 +1429,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     // same optimistic move a typed reply gets; updateAskCard re-arms the label once the judge has ruled.
     vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, sid: it.sid, cont: true });
     cont.disabled = true; cont.textContent = "Sent";
+    cont.title = contTitle(true, "a continue", null);
     optimisticFollowMove(it.itemId);
     render();
   };
@@ -1208,7 +1438,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // clear if none pinned.
   let hoverTimer: number | undefined;
   card.addEventListener("mouseenter", () => {
-    freezeEnter(it.itemId);                            // hover-freeze: pointer truth, no debounce
+    freezeEnter(it.itemId, isFocusCopy(card));         // hover-freeze: pointer truth, no debounce; which twin holds it (T410)
     if (it.provisional) return;                        // no timeline path for a placeholder
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined;
@@ -1217,7 +1447,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     }, 120);
   });
   card.addEventListener("mouseleave", () => {
-    freezeLeave(it.itemId);                            // hover-freeze: leaving the card flushes queued payloads
+    freezeLeave(it.itemId, isFocusCopy(card));         // hover-freeze: leaving the card flushes queued payloads
     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = undefined; }
     if (hoverAskId === it.itemId) {
       hoverAskId = null; applyFocus();
@@ -1271,10 +1501,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._warnChip = warnChip;
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge;
-  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._retryBadge = retryBadge; a._revive = revive; a._clr = clr;
+  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._apiLogin = apiLogin; a._retryBadge = retryBadge; a._revive = revive; a._clr = clr;
+  a._capLine = capLine; a._capBtn = capBtn;
   a._jauthBadge = jauthBadge;
   a._cont = cont;
-  a._qApprove = qApprove; a._qDeny = qDeny; a._qBody = qbody;
+  a._nProd = nprod; a._nBody = nbody; a._nAttach = nattach; a._nActions = nactions;
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill; a._artline = artline;
@@ -1326,6 +1557,142 @@ const cardTreeExpanded = new Set<string>();
 // arrangement dragged before the merge survives it).
 const collapsedCols = new Set<string>();
 let colOrder: string[] = [];                         // [] = each layout's own CSS default
+// THE FOCUSED SESSION section (T347, the user 2026-09-11, who wanted the focused session's cards on top): the
+// chat pane's active tab, relayed by the kernel as {type:"activeChat", id} to the feed clients of the same
+// window (on every tab switch, and once when this client registers), and the View menu's switch that puts
+// that session's cards above a divider. The switch is view state (persisted with the rest, prune-exempt,
+// OFF by default); the sid is not persisted — a reloaded feed registers and is told again.
+let focusedSid: string | null = null;
+let showFocused = false;
+// THE SWITCH ON THE LOCAL SIGNAL (T416, the user 2026-09-14, whose chat tab moved at once on a feed click while this
+// section took long to follow). Measured on the served dashboard page: the kernel relays activeChat within 4 to 22 ms
+// of the chat's activeTab post and the rebuild here takes 2 to 6 ms, one to two frames end to end; the lag was this
+// pane's hover-freeze parking the frame as focusStale while the pointer rested on the header or card the reader had
+// just clicked, for as long as it rested there. The section now moves on the LOCAL signal, at once and through the
+// freeze when the signal is the reader's own gesture (never a push): this pane's own jump into a session (every
+// openSession and showOnTimeline post, noted in the ONE place they all pass, the host api's postMessage above, and
+// only when the post runs inside the reader's input event and outside a render) and the chat's active-tab change
+// handed across the page by the shell ({romp: "activeChat", id, nonce, gesture}: the chat posts its tab to the parent
+// on every switch, the shell hands it to the feed pane; a kernel-driven switch, a focus frame or a re-activation,
+// arrives with gesture false and defers under a held card exactly as a push does). The kernel's frame then
+// reconciles: focusPending holds the locally applied session against a frame built before the kernel took the
+// switch (the strip's pending rule, tab-meta.ts): only the ECHO clears it, the frame carrying the pending session
+// and, when both sides know it, the chat's announcement number (a burst of switches faster than the round trip
+// returns the same session under different numbers), or the kernel's marked reaffirm (its answer when a jump
+// reached a closed session and the chat got its confirmRevive instead of a tab change); a disagreeing frame yields
+// and never wins by count (an event, never a count: the round-two review). A standalone /feed page has no shell: its
+// own clicks still switch at once, and a strip click reaches it on the kernel's frame as before. An open card menu
+// (tabScopeKey) still defers the paint to its release: its anchor must stand.
+// THE JUMP SCROLL (T414, folded in here): with the section on, this pane's own Summary or card jump into a session (a
+// showOnTimeline post) scrolls the feed's box to the top with the same switch, so the section, now showing that
+// session's cards, is in view; a session name or a peer chip (an openSession post) only switches. The click is the
+// event and nothing waits on a frame, so a jump that changes no tab leaves nothing standing. A jump into a session
+// this pane knows to be closed switches and scrolls nothing (the kernel answers the chat's confirmRevive; no tab
+// changes). A plain scroll, no animated chase: the reader's own gesture's consequence.
+let focusPending: { sid: string | null; nonce: number | null } | null = null;
+// render time (T416 round two): render() and renderModal() hold these while they run, so a post a render makes (a
+// handler assignment once missing its braces posted a jump on every push) can never read as the reader's jump
+let inRender = false;
+let inModalRender = false;
+// a reader's gesture arriving THROUGH a frame (the shell's revealCard for a bell click or a notification tap, marked
+// gesture on the frame): honoured for the post that frame makes (round three)
+let frameGesture = false;
+function scrollFeedTop(): void {
+  const list = document.getElementById("feed-list");
+  if (list) list.scrollTop = 0;
+}
+/** This pane's own jump into a session, read off the post every jump makes: the section follows at once. Only a post
+ *  made inside the reader's input event (a click, a key) and outside a render counts; a showOnTimeline (a Summary or
+ *  card jump) also scrolls the feed's box to the top (T414), an openSession (a session name, a peer chip) only switches. */
+function noteOwnJump(m: any): void {
+  if (!m || (m.type !== "openSession" && m.type !== "showOnTimeline")) return;
+  if (inRender || inModalRender || !(inInputEvent() || frameGesture)) return;   // a render-time or unprompted post is no gesture of the reader's
+  const sid = typeof m.id === "string" && m.id ? m.id : typeof m.sid === "string" && m.sid ? m.sid : "";
+  if (!sid || !focusedIdentity(sid).live) return;   // a closed session's jump changes no tab, so it moves nothing here
+  applyLocalFocus(sid, m.type === "showOnTimeline", true, null);
+}
+/** The section follows a local signal: `jump` scrolls the box to the top (this pane's own Summary or card jump, T414);
+ *  `gesture` says the switch is the reader's own, which passes the hover-freeze (a kernel-driven switch relayed by the
+ *  shell defers under a held card like a push); `nonce` is the chat's announcement number the kernel echoes. */
+function applyLocalFocus(sid: string | null, jump: boolean, gesture: boolean, nonce: number | null): void {
+  const changed = sid !== focusedSid;
+  focusedSid = sid;
+  if (changed) focusPending = { sid, nonce };   // held until the kernel's echo of this very switch, or its marked answer
+  else if (focusPending && focusPending.sid === sid && nonce != null) focusPending.nonce = nonce;   // the chat announcing the switch this pane made: its echo is the one to wait for
+  if (!showFocused) return;
+  // the reader's gesture paints whether or not it changed the record: when the kernel's frame beat the shell's relay for
+  // the same switch under a held card, the frame parked the paint (focusStale) and the relay finds nothing changed; the
+  // gesture releases that park and paints now (the round-three review: the original lag, restored by a coin-flip order)
+  if (changed || (gesture && focusStale)) {
+    if (tabScopeKey || (!gesture && freezeKey)) focusStale = true;   // an open card menu, or a held card under a switch the reader did not make: the paint waits for the release (T347)
+    else { render(); focusStale = false; }
+  }
+  if (jump) scrollFeedTop();   // the reader asked to look at this session's cards, the one already focused included (T414)
+}
+// The section's OWN block layout (T410, the user 2026-09-13, who wanted the section's blocks movable, resizable
+// and collapsible on their own, none leaving the section): its dragged block order ([] = follow the board's
+// arrangement, as the section did from T347), the blocks' flex weights by column key (a missing key = 1, the
+// equal split) and the collapsed block keys, applied to WHICHEVER session is focused. Layout state like
+// collapsedCols/colOrder: persisted with the rest, prune-exempt, painted by applyFocusLayout.
+let focusOrder: string[] = [];
+let focusW: Record<string, number> = {};
+// PROVENANCE of the stored focusOrder (T410 review): true while it was minted by the arrow keys out of a FOLLOWING
+// state (a key sequence the user can walk back), false once a drag pinned it or the board's own order moved (the
+// arrangement the section follows changed under it). The keys' no-trace rule clears the stored order only under
+// this flag: an arrow press that happens to land on the followed arrangement must never clear an order the user
+// pinned by DRAG (one press cleared a drag-pinned section, and a board drag then rearranged it). Not persisted: a
+// reload reads any stored order as pinned, the conservative side.
+let focusOrderByKeys = false;
+const collapsedFocusCols = new Set<string>();
+// The whole section folded to its LABEL (T410b, the user 2026-09-14): "Current session: <name>" alone, the blocks,
+// their cards and the quiet line hidden under it, the divider standing. A view switch like showFocused: persisted
+// with the rest, prune-exempt; painted by paintFocusFold.
+let focusFolded = false;
+
+// ── the board view switch (plans/card-boards.md, phase four, section 8) ─────────────────────────────────────────
+// ONE board shows at a time: the feed, or a data-defined board the frame carries. The pick is the feed pane's own view
+// state (FeedViewState.board, prune-exempt) from the View menu's Board rows, or the page's ?board= query (the docking
+// kit's hook: that pick is the page's, never written to the view state, and the Board rows hide). A pick naming a board
+// the frame does not carry (removed, a remote host gone) shows the feed and says so once, never a blank pane; the pick
+// stands, so the board comes back on its own when the frame carries it again.
+let activeBoardId = "";
+let boardQuery = "";
+try { boardQuery = new URLSearchParams(window.location.search).get("board") || ""; } catch { boardQuery = ""; }
+let boardFallbackSaid = "";
+function activeBoard(): Board {
+  const want = boardQuery || activeBoardId;
+  if (!want || want === FEED_BOARD.id) return FEED_BOARD;
+  const b = boardById(want);
+  if (b) return b;
+  if (boardFallbackSaid !== want) { boardFallbackSaid = want; try { feedToast("Board " + want + " is not on this frame: showing the feed"); } catch { /* before the footer exists */ } }
+  return FEED_BOARD;
+}
+const activeCols = (): readonly Column[] => feedColumns(activeBoard());
+/** The ACTIVE board's cards out of a list: the render pass and the hover-freeze hint read the same filter, so the hint counts
+ *  what is on screen and nothing else (a card naming an unknown board is the feed's, boardOf). */
+const onActiveBoard = (list: AskItem[]): AskItem[] => { const b = activeBoard(); return list.filter((a) => boardOf(a) === b); };
+/** A column fold's key in the view state: the feed's columns by their names (as always), a data board's as `<board>:<category>`
+ *  so a fold on one board never folds a same-named category on another (the 1886 read, medium 2). */
+const foldKey = (key: string): string => (activeBoard() === FEED_BOARD ? key : activeBoard().id + ":" + key);
+/** An order the user dragged applies only when it names every column of the ACTIVE board once (the feed's stored order
+ *  means nothing on a data board's columns, and a board's order nothing on the feed). */
+const orderComplete = (o: readonly string[]): boolean => { const cols = activeCols(); return o.length === cols.length && cols.every((k) => o.includes(k)); };
+/** The side-by-side default order: the feed's literal (the build order, pinned), a data board's categories in its order. */
+const rowDefault = (): string[] => (activeBoard() === FEED_BOARD ? ROW_DEFAULT : [...activeCols()]);
+/** Beside a card's producer: "on an unknown board (<id>)" for a card naming a board this renderer does not know (it renders on
+ *  the feed under the default category: the loud fallback, never a silent drop); nothing otherwise. A data board's cards render
+ *  on their own board since phase four, so a known board's title never needs saying here (phase three's "on <title>" went). */
+function boardLabelOf(it: { board?: string | null }): string {
+  return it.board && it.board !== FEED_BOARD.id && boardOf(it) === FEED_BOARD ? "an unknown board (" + it.board + ")" : "";
+}
+function setActiveBoard(id: string): void {
+  const next = id === FEED_BOARD.id ? "" : id;
+  if (next === activeBoardId) return;
+  activeBoardId = next;
+  skipFlipOnce = true; prevCols = new Map();   // a switch is a new board, not cards moving: nothing glides
+  persistViewState();
+  render();
+}
 
 (function hydrateViewState() {
   let st;
@@ -1335,9 +1702,15 @@ let colOrder: string[] = [];                         // [] = each layout's own C
   for (const k of st.nodes) collapsedNodes.add(k);
   for (const k of st.logs) nodeLogOpen.add(k);
   for (const k of st.asks) expandedAsks.add(k);
-  for (const k of st.threads) collapsedThreads.add(k);
+  for (const k of st.threads) for (const key of threadKeys(k)) collapsedThreads.add(key);   // a pre-T263c bare sid = every column
   for (const k of st.cols) collapsedCols.add(k);
   colOrder = st.order.slice();
+  showFocused = st.focused;   // the focused-session section's switch (T347); a blob saved before it reads OFF
+  focusOrder = st.focusOrder.slice();   // the section's own block layout (T410); a blob saved before it reads as the defaults
+  focusW = { ...st.focusW };
+  for (const k of st.focusCols) collapsedFocusCols.add(k);
+  focusFolded = st.focusFolded;   // the section's fold (T410b); a blob saved before it reads unfolded
+  activeBoardId = st.board;   // the board pick (phase four); a blob saved before it, or naming the feed, reads as the feed
 })();
 
 function currentViewState(): FeedViewState {
@@ -1345,7 +1718,8 @@ function currentViewState(): FeedViewState {
   secChoice.forEach((v, k) => { sec[k] = v; });
   return { v: 1, sec, tree: [...cardTreeExpanded], nodes: [...collapsedNodes], logs: [...nodeLogOpen],
            asks: [...expandedAsks], threads: [...collapsedThreads], cols: [...collapsedCols],
-           order: colOrder.slice() };
+           order: colOrder.slice(), focused: showFocused,
+           focusOrder: focusOrder.slice(), focusW: { ...focusW }, focusCols: [...collapsedFocusCols], focusFolded, board: activeBoardId };
 }
 
 // Written at the END of every render rather than from each toggle handler: the feed re-renders on every
@@ -1407,7 +1781,15 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   // live background tasks (the user 2026-07-13): when the card is AWAITING on tasks, the compact
   // "Awaiting task" pill joins the section toggles and expands this list (the old boxed caption is gone)
   const taskList = ((it.awaiting && it.awaiting.tasks) || []).filter(Boolean);
-  const hasTasks = taskList.length > 0;
+  // …and since slice 2 (2026-09-05) the awaited ROWS, grouped by kind — agents, commands, watches,
+  // peers — so the pill shows for ANY wait the kernel can enumerate, not only a bg-task one (a wait on
+  // live subagents had no clickable affordance on the card). An older kernel ships descriptions only;
+  // they read as rows of the legacy kind's group, so the list never goes blank on a mixed deployment.
+  const awKind = (it.awaiting && it.awaiting.kind) || "";
+  const awItems: AwaitRow[] = ((it.awaiting && it.awaiting.items) || []).filter((r) => r && r.kind);
+  const taskRows: AwaitRow[] = awItems.length ? awItems
+    : taskList.map((d) => ({ kind: ROW_KIND_OF_LEGACY[awKind] || "commands", label: d }));
+  const hasTasks = taskRows.length > 0;
   // resolve the selection (default = summary open), falling back to "none" if the chosen section is empty
   // the stall note (the user 2026-07-23) — shown whenever the kernel says romp is holding this card, with
   // or without a judge-written note, since `why` alone already answers "why is nothing happening"
@@ -1421,7 +1803,11 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   const pick = (want: "bg" | "summary" | "subgoals" | "tasks" | "stall") => (ev: Event) => {
     ev.stopPropagation();
     secChoice.set(id, choice === want ? "none" : want);   // click the showing one → off; else switch to it
-    applySections(a, it, distillShown);
+    // both elements of the card (T347): the disclosure is the CARD's, so the board's element and the focused
+    // section's copy show the same section after a pick on either
+    const twins = cardTwins(id);
+    if (twins.length) { for (const c of twins) applySections(c as any, (c as any)._it ?? it, distillShown); }
+    else applySections(a, it, distillShown);
   };
   // Background toggle — visible only when there IS background; pressed (.on) when its body is showing
   a._bgBtn.style.display = bg ? "" : "none";
@@ -1496,16 +1882,24 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   // Awaiting, and two words for one state read as two states (the user 2026-08-13).
   const taskBtn = a._taskBtn as HTMLElement;
   taskBtn.style.display = hasTasks ? "" : "none";
-  // the KIND words the pill (the user 2026-08-15): "Awaiting job", "Awaiting 3 agents" — the wait's
-  // class in the visible label (tooltips are dead on the touch PWA); kindless keeps the classic "task"
-  const kw = KIND_WORD[(it.awaiting && it.awaiting.kind) || ""] || "task";
-  const one = kw === "agents" ? "agent" : kw;   // singular form: "Awaiting agent", plural "N agents"
+  // the KIND words the pill (the user 2026-08-15): "Awaiting watch", "Awaiting 3 agents" — the wait's
+  // class in the visible label (tooltips are dead on the touch PWA). ONE rule with the chat chip and
+  // the awaiting box (awaitWord, slice 2): one row → its word, several of a kind → count + word, mixed
+  // kinds → the number alone ("Awaiting 4"); a single named peer → its name in identity colour.
+  const pillPeers = (it.awaiting && it.awaiting.peers) || [];
+  const pillWord = awaitWord(awKind, (it.awaiting && it.awaiting.count) ?? taskRows.length, taskRows);
+  const pillLbl = a._taskLbl as HTMLElement;
+  pillLbl.replaceChildren("Awaiting ");
+  if (pillPeers.length === 1 && taskRows.every((r) => r.kind === "peer")) {
+    const nm = el("span", "fask-waiton-name");
+    nm.replaceChildren(...hostPartsNodes(pillPeers[0].host, pillPeers[0].name));
+    if (pillPeers[0].color && pillPeers[0].color.bg) nm.style.color = pillPeers[0].color.bg;
+    pillLbl.appendChild(nm);
+  } else pillLbl.append(pillWord);
   // the wait's elapsed time rides the pill exactly as it rides the awaiting box and the working
-  // narration — a stuck wait must be glanceable everywhere the state shows (the user 2026-08-23)
-  const pillWaited = waitedSuffix(it.awaiting && it.awaiting.since, Date.now() / 1000);
-  (a._taskLbl as HTMLElement).textContent =
-    (taskList.length === 1 ? "Awaiting " + one
-                           : "Awaiting " + taskList.length + " " + (one === kw ? kw + "s" : kw)) + pillWaited;
+  // narration — a stuck wait must be glanceable everywhere the state shows (the user 2026-08-23) —
+  // as a stamped duration the 15 s live pass keeps moving (durNodes, the live twin of waitedSuffix)
+  pillLbl.append(...durNodes(it.awaiting && it.awaiting.since));   // the waited time, live (durSpan)
   taskBtn.classList.toggle("on", choice === "tasks");
   taskBtn.setAttribute("aria-pressed", choice === "tasks" ? "true" : "false");
   taskBtn.title = choice === "tasks" ? "hide the tasks" : "show the tasks";
@@ -1526,14 +1920,45 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
     // the TASK list (the user 2026-07-13): same view/spot as the sub-goal checklist — one row per live
     // background task, a small spinning swirl as its mark (in flight), the task's own description as text
     if (choice === "tasks") {
-      for (const d of taskList) {
-        const row = el("div", "fcheck ftask");
+      // …grouped by KIND since slice 2 (2026-09-05): a small dim header per group when more than one
+      // shows (agents / commands / watches / peers), labels only — the chat's box carries the controls
+      const groups = groupRows(taskRows);
+      const peerByName = new Map(pillPeers.map((p) => [p.name, p]));
+      // one row; `sub` = a NESTED row (what the agent above it is itself waiting on, kernel `waits`,
+      // 2026-09-10): indented, the first under its agent led by a small dim "waiting on", the rest by its
+      // blank twin so the marks align; a nested row with waits of its own says their count in its label —
+      // one level drawn, like the chat's box. Labels only here; the chat box carries the controls.
+      const taskRow = (r: AwaitRow, sub: "first" | "rest" | null): HTMLElement => {
+        const row = el("div", "fcheck ftask" + (sub ? " ftask-sub" : ""));
+        if (sub) { const on = el("span", "ftask-waits-on" + (sub === "first" ? "" : " ftask-waits-blank")); on.textContent = sub === "first" ? "waiting on" : ""; row.appendChild(on); }
         const tri = el("span", "fcheck-tri empty");
         const mark = el("span", "fcheck-mark");
         mark.appendChild(el("span", "fask-awaiting-swirl ftask-swirl"));
-        const txt = el("span", "fcheck-text"); txt.textContent = d;
+        const txt = el("span", "fcheck-text");
+        const p = r.kind === "peer" ? peerByName.get(r.label || "") : undefined;
+        if (p) {
+          // a peer row names the session the way the awaiting box does: identity colour, quiet host prefix,
+          // click opens the session (the standard session-chip gesture)
+          txt.replaceChildren(...hostPartsNodes(p.host, p.name));
+          if (p.color && p.color.bg) txt.style.color = p.color.bg;
+          if (p.sid) {
+            const sid = p.sid;
+            txt.title = "waiting on " + p.name + " — click opens the session";
+            txt.style.cursor = "pointer";
+            txt.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: sid }); };
+          }
+        } else txt.textContent = r.label || r.kind;
+        const deeper = sub ? waitsNote(r) : "";
+        if (deeper) { const dp = el("span", "ftask-deeper"); dp.textContent = " · waiting on " + deeper; txt.appendChild(dp); }
         row.append(tri, mark, txt);
-        cl.appendChild(row);
+        return row;
+      };
+      for (const g of groups) {
+        if (groups.length > 1) { const gh = el("div", "ftask-group"); gh.textContent = GROUP_TITLE[g.kind] || "Other"; cl.appendChild(gh); }
+        for (const r of g.rows) {
+          cl.appendChild(taskRow(r, null));
+          ((r.waits || []).filter((w) => w && w.kind)).forEach((w, i) => cl.appendChild(taskRow(w, i === 0 ? "first" : "rest")));
+        }
       }
       cl.style.display = cl.children.length ? "" : "none";
       return;
@@ -1558,12 +1983,18 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
     // reviewed (kernel reviewedEarlier, from the SAME boundary the distiller scopes the takeaway with)
     // collapse behind one row, so a re-completed card presents only the new work — the old material is
     // one click away, never gone. Fresh rows first; the fold row sits below them.
-    const revKids = (root.children || []).filter((c) => !!byId.get(c)?.reviewedEarlier);
-    const freshKids = (root.children || []).filter((c) => !byId.get(c)?.reviewedEarlier);
+    // …counting what the walk RENDERS: a handoff child is skipped by walk (delegations live in their own section), so a
+    // reviewed handoff counted in the label made "3 reviewed earlier" open to two rows (the 2026-09-18 read)
+    const shown = (c: string) => { const n = byId.get(c); return !!n && n.kind !== "handoff"; };
+    const revKids = (root.children || []).filter((c) => shown(c) && !!byId.get(c)?.reviewedEarlier);
+    const freshKids = (root.children || []).filter((c) => shown(c) && !byId.get(c)?.reviewedEarlier);
     const revOpen = cardTreeExpanded.has(id + ":reviewed");
     for (const c of freshKids) walk(c, 0);
     const freshEnd = rows.length;
-    if (revOpen) for (const c of revKids) walk(c, 0);
+    // the fold's kids sit ONE level under the fold row, their visual parent (depth 1, the modal outline's indent), never
+    // flush with the fresh rows above it (the user's 2026-09-18 screenshot: the reviewed rows read as a second batch of
+    // fresh ones); their own children indent from there
+    if (revOpen) for (const c of revKids) walk(c, 1);
     const paintRow = ({ node: s, depth, repeat, expandable, collapsed }: typeof rows[number]) => {
       const row = el("div", "fcheck " + nodeStatusClass(s) + (s.auth ? " auth-" + s.auth : "") + (repeat ? " repeat" : ""));
       if (depth) row.style.paddingLeft = (depth * TREE_INDENT_EM) + "em";   // same per-level indent as the modal outline
@@ -1585,8 +2016,8 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
       // 2026-07-11): an ancestor of a blocked sub wears the ⏸ too, so the block is visible even while the
       // branch is collapsed — its tooltip points DOWN to the real ask.
       mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "";
-      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside is blocked — expand to find it" : "blocked — needs you";
-      const txt = el("span", "fcheck-text"); txt.textContent = s.text;
+      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside it needs you: expand to find it" : "needs you";
+      const txt = el("span", "fcheck-text"); txt.textContent = s.text; linkifyPrRefs(txt, prRepoOf(it.sid));
       row.append(tri, mark, txt);
       if (s.cleared) row.appendChild(clearedTag());   // the strike alone doesn't say WHY — see CLEARED_TIP
       if (s.parked && s.parked.n && !s.cleared) row.appendChild(parkedTag(s.parked.n));   // leapfrogged — see parkedTag
@@ -1598,8 +2029,11 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
     rows.slice(0, freshEnd).forEach(paintRow);
     if (revKids.length) {
       // the fold row: same gesture grammar as a branch triangle — click toggles, state survives
-      // re-renders via cardTreeExpanded (keyed per card), and the label carries the count
-      const row = el("div", "fcheck freviewed" + (revOpen ? " open" : ""));
+      // re-renders via cardTreeExpanded (keyed per card), and the label carries the count. Its expanded state
+      // is "expanded", NEVER "open": "open" is the not-done STATUS class (.fcheck.open .fcheck-mark draws the
+      // hollow 13px ring), so the open fold wore the ring and its ✓ glyph sat low inside it, a checkmark that
+      // moved down in its box the moment the fold was opened (the user's 2026-09-18 screenshot)
+      const row = el("div", "fcheck freviewed" + (revOpen ? " expanded" : ""));
       const tri = el("span", "fcheck-tri nav"); tri.textContent = revOpen ? "▼" : "▶";
       const mark = el("span", "fcheck-mark"); mark.textContent = "✓";
       const txt = el("span", "fcheck-text");
@@ -1620,9 +2054,78 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   renderTree();
 }
 
+// Paints a card's face from its payload copy. Whether to call it at all is reconcileCol's decision (the
+// per-card update gate, feed-card-gate.ts): a card is repainted when its object is a new one or a
+// board-level input it reads changed, and left alone otherwise. Everything this function reads outside
+// `it` is therefore in that key — an input added here is added there.
+// A notice card's body (T370): markdown through the chat's renderer and the one sanitizer, remote loads stripped on the
+// inert DOM BEFORE adoption (no request ever starts). Should the sanitizer itself fail (no DOM to build it on, as in a
+// document stand-in), the body falls to PLAIN TEXT: nothing unsanitized ever reaches the page, and the card still says its
+// words; the served lab reads the rendered form.
+
+// The notice FACE, one body for the card and the card's modal (round four of PR 1831): the producer line (and the board the
+// card belongs to when it is not the feed's), the body through the sanitizer, the attachment (the pinned picture where the page
+// can reach the kernel, else its name) and the actions as buttons that post noticeAction with the card's sid and latch on the
+// click; the kernel's noticeActionDone or the next push re-arms them (the card's rule, PR 1757).
+function fillNoticeFace(it: AskItem, nt: NonNullable<AskItem["notice"]>, onBoard: string, nProd: HTMLElement, nBody: HTMLElement, nAttach: HTMLElement, nActions: HTMLElement): void {
+  nProd.textContent = (nt.producer ? "via " + nt.producer : "") + (onBoard ? (nt.producer ? " · " : "") + "on " + onBoard : "");
+  nProd.title = (nt.producer ? "posted by " + nt.producer + " (revision " + nt.rev + ")" : "") + (onBoard ? (nt.producer ? "; " : "") + "on the " + onBoard + " board" : "");
+  nProd.style.display = nProd.textContent ? "" : "none";
+  nBody.replaceChildren();
+  if (nt.body && nt.body.trim()) nBody.append(...noticeBodyNodes(nt.body));
+  nBody.style.display = nt.body && nt.body.trim() ? "" : "none";
+  nAttach.replaceChildren(...noticeAttachmentNodes(nt.attachment as any, it.sid));
+  nAttach.style.display = nAttach.childNodes.length ? "" : "none";
+  nActions.replaceChildren();
+  for (const act of nt.actions || []) {
+    const b = el("button", "fdismiss fnact") as HTMLButtonElement;
+    b.textContent = act.label; (b as any)._idle = act.label;
+    b.onclick = (ev: Event) => {
+      ev.stopPropagation();
+      // the action's KIND rides the wire (an older frame's route reads as send); the click may add only the input the kind
+      // names: a held-mail Deny asks for the optional note first, every other action goes at once
+      const kind = act.kind || (act.route === "/send" ? "send" : "");
+      const go = (input?: Record<string, unknown>) => {
+        vscodeApi?.postMessage({ type: "noticeAction", itemId: it.itemId, sid: it.sid, kind, body: act.body, ...(input ? { input } : {}) });
+        b.disabled = true; b.textContent = act.label + "…";
+        // a card that dismisses on its action resolves on ONE of them (a held message's Approve or Deny): its other buttons
+        // latch too until the kernel answers, so a second decision cannot race the first; rearmNoticeButtons lets every one go
+        if (nt.dismissOnAction) for (const o of Array.from(nActions.querySelectorAll("button")) as HTMLButtonElement[]) o.disabled = true;
+      };
+      if (kind === "quarantine" && act.body && (act.body as any).verdict === "deny") showDenyNoteDialog((note) => go(note ? { note } : undefined));
+      else go();
+    };
+    nActions.appendChild(b);
+  }
+  nActions.style.display = (nt.actions || []).length ? "" : "none";
+}
+
+// The modal of a NOTICE card shows the notice (round four of PR 1831, medium 2): the same face as the card, in place of the goal
+// tree a notice never has (the tree body read "No work yet." and the title hid, so an owner-less card's title opened an overlay
+// with nothing of the card). Rebuilt on every modal render, which is what re-arms a latched button on a push (the card's rule).
+function renderNoticeModalBody(host: HTMLElement, it: AskItem, nt: NonNullable<AskItem["notice"]>): void {
+  host.innerHTML = ""; (host as any)._sig = "";
+  const wrap = el("div", "feed-modal-notice");
+  const prod = el("div", "fask-nprod feed-modal-nprod"), nb = el("div", "fask-nbody"), na = el("div", "fask-nattach"), nac = el("div", "fask-nactions");
+  fillNoticeFace(it, nt, boardLabelOf(it), prod, nb, na, nac);
+  wrap.append(prod, nb, na, nac);
+  host.appendChild(wrap);
+  (host as any)._nActions = nac;   // the answer handler re-arms or closes through the modal's own buttons
+}
+
+// A notice card's action buttons let go on EVERY push, gated or not (the review of PR 1757, medium 2): a click on a down
+// socket is dropped and never answered (a kernel restart), and the card gate skips an unchanged card's update, so a latch
+// that waited for the card's own update or the kernel's answer read "Send again…" for good. The kernel's noticeActionDone
+// and the next push both re-arm; a success on a dismissing card takes the card off at once (the noticeActionDone handler).
+function rearmNoticeButtons(card: any): void {
+  const acts = card._nActions as HTMLElement | undefined;
+  if (!acts || !card._it?.notice) return;
+  for (const b of Array.from(acts.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
+}
+
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
-  a._it = it;   // the freshest payload copy — the right-click bell menu reads this, never a stale closure
+  a._it = it;   // the freshest payload copy — the right-click bell menu reads this, never a stale closure; and the gate's identity
   // per-card bell: retire the optimistic value once the kernel's payload agrees (event-based, no timer),
   // then render whichever stands. Same sticky-optimism shape as the timeline lane's _pendingFlags.
   if (pendingNotify.has(it.itemId) && !!it.notify === pendingNotify.get(it.itemId)) pendingNotify.delete(it.itemId);
@@ -1659,10 +2162,16 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   // a re-check card dims slightly (between a normal card and a provisional ghost) so it reads as "handled, pending"
   if (!it.provisional) card.style.opacity = it.recheck ? ".8" : "";
-  a._title.textContent = it.text;
-  a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
-  if (it.color) a._name.style.color = it.color.bg;
-  setWorkDot(a._name, dotFor(it.name));   // working/awaiting dot before the session name
+  setLinkedText(a._title, it.text, prRepoOf(it.sid));   // `#123` in the goal text → its PR page; keyed, so an unchanged title keeps its anchors across pushes (pr-links.ts)
+  // an OWNER-LESS notice card has no session chip: no session stands behind it, so no name to open and no dot to paint; the
+  // run header above it says Notes (the user 2026-09-18)
+  const ownerless = isOwnerless(it.sid);
+  a._name.style.display = ownerless ? "none" : "";
+  if (!ownerless) {
+    a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
+    if (it.color) a._name.style.color = it.color.bg;
+    setWorkDot(a._name, dotFor(it.name));   // working/awaiting dot before the session name
+  }
   // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender
   const og = a._origin as HTMLElement;
   if (it.origin && it.origin.peer) {
@@ -1743,7 +2252,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       og.append(peer);
     });
   }
-  a._time.textContent = relAge(hostNow - it.t);
+  stampAge(a._time, it.t, "plain", false, nowSec(), relAge, ageColorReadable);   // stamped: the 15 s live pass moves it
   // hover the stamp for provenance (the user 2026-07-27): the age marks the NEWEST event (a done card's
   // age is its completion), so the popover tells where the thread came from — started when, each sub +
   // its time, what the stamp marks.
@@ -1821,10 +2330,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._waitOn.append(woPre, woName);
     // elapsed since the unanswered ask went out (kernel _wait_for_graph's since) — the same readout the
     // working narration and awaiting box wear, so a wait stuck for hours is glanceable (the user 2026-08-23)
-    const woWaited = waitedSuffix(wo.since, Date.now() / 1000);
-    if (woWaited) {
-      const woDur = el("span", "fask-waiton-dur"); woDur.textContent = woWaited;
-      a._waitOn.append(woDur);
+    const woDur = durNodes(wo.since);
+    if (woDur.length) {
+      const woWrap = el("span", "fask-waiton-dur"); woWrap.append(...woDur);
+      a._waitOn.append(woWrap);
     }
     a._waitOn.title = wo.inCycle
       ? "MUTUAL WAIT — this session and " + wo.name + " are each waiting on the other (a deadlock); auto-nudge surfaces it instead of nudging"
@@ -1853,8 +2362,11 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const { completed: dCompleted, blocked: dBlocked } = distillInputs(it.distillState, it.column);
   // The card is not left mute in that window: the Working displacement only happens under recheck/rejudging,
   // and both raise the "Analyzing…" swirl below, which says the judge is looking at it again.
-  const spin = spinFor(it, distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked),
-                       dCompleted, Date.now() / 1000);
+  // A NOTICE card never wears the distiller's placeholder (the user 2026-09-19: an empty card posted from the command line has
+  // nothing to distill): its body IS its text and no judge ever reads it, so a null summary on a completed notice (the row
+  // stamps summary and blockSummary null) is not a takeaway on its way; the spinner is the goal kind's.
+  const spin = spinFor(it, !it.notice && distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked),
+                       dCompleted, nowSec());
   const spinCaption = spin.caption, spinTip = spin.tip, awaitingBg = spin.awaitingBg;
   a._awaitSpin.style.display = spinCaption ? "" : "none";
   // The AWAITING case gets a rounded box (its distinct read); the swirl spins in every case now —
@@ -1883,8 +2395,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
         }
         a._awaitWhy.appendChild(nm);
       });
-      a._awaitWhy.append(waitedSuffix(it.awaiting && it.awaiting.since, Date.now() / 1000));
-    } else a._awaitWhy.textContent = spinCaption;
+      a._awaitWhy.append(...durNodes(it.awaiting && it.awaiting.since));
+    } else if (spin.dur) a._awaitWhy.replaceChildren(spin.dur.text, durSpan(spin.dur.since));   // the caption's running duration, live
+    else a._awaitWhy.textContent = spinCaption;
     a._awaitSpin.title = spinTip || spinCaption;
     // HONEST fallback (the user 2026-08-26): a peer-kind wait with no named session says WHY the
     // name is missing, instead of presenting "peer" as a style — identity is only truly unknowable
@@ -1902,14 +2415,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const isJudgeAuth = it.blocked?.state === "judgeAuth";
   // the resume-gate card carries its own explanatory text + Proceed/Compact/Skip buttons, so the ⏸ chip
   // (which only speaks permission/picker) would just misread — suppress it there (the user 2026-07-21).
-  const showBlk = !!it.blocked && !isApiErr && !isJudgeAuth && it.blocked.state !== "quarantine";
+  const showBlk = !!it.blocked && !isApiErr && !isJudgeAuth;
   a._blocked.style.display = showBlk ? "" : "none";
   if (showBlk && it.blocked) {
     // live prompts only — the paused-stall badge retired with the floor (2026-07-07; a failed nudge now
     // records a real block and the follow-up-failed CHIP carries that story)
     a._blocked.textContent = it.blocked.state === "permission" ? "⏸ approval"
       : "⏸ picker";
-    a._blocked.title = it.blocked.what + " — click to jump to the prompt in the chat";
+    setTip(a._blocked as HTMLElement, it.blocked.what + " — click to jump to the prompt in the chat");
     // the prompt (a picker / permission approval) is the session's LIVE bottom → `live` lands the chat right
     // on it, not wherever it was last scrolled (the user 2026-07-08).
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid, live: true }); };
@@ -1918,8 +2431,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // brief (it.blockSummary), shown ONLY when produced; never a generating placeholder, never the planner's why.
   // The rule lives in ./distiller-line so distiller-line.test.ts can EXECUTE it (a regex pin let it silently
   // turn off once — the user 2026-06-29). updateAskCard runs every push, so this re-applies on every refresh.
-  const distillShown = applyDistillLine(a._distill as HTMLElement, dCompleted, dBlocked,
-                   it.summary, it.blockSummary);
+  const distillShown = it.notice ? (((a._distill as HTMLElement).style.display = "none"), "")   // a notice has no distiller line: its body is the text
+    : applyDistillLine(a._distill as HTMLElement, dCompleted, dBlocked, it.summary, it.blockSummary);
+  if (distillShown) linkifyPrRefs(a._distill as HTMLElement, prRepoOf(it.sid));   // the takeaway's `#123` links too
   // A judge-auth card explains itself ON THE CARD FACE (the user 2026-08-12: a message, not just a
   // chip): no decision brief can exist here — the distiller is one of the very judges that are down —
   // so the distill line carries blocked.what instead of sitting empty. applyDistillLine re-runs every
@@ -1948,19 +2462,48 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // last: a bigger surplus means the model split some other way and the mapping can no longer be trusted,
   // so the gate falls through to the plain text as before.
   const bp = dCompleted ? it.summaryParts : dBlocked ? it.briefParts : null;
-  if (distillShown && bp && bp.length > 1) {
+  // Paragraph SPLIT fires for a stamped parts-takeaway (T153) OR for per-paragraph citations (T220,
+  // the user's ruling: each paragraph of a multi-topic summary is independently clickable, hover
+  // highlighting exactly the paragraph under the pointer). Anchor precedence per paragraph: the
+  // model's OWN citation (it names what the paragraph was written from) beats the T153 tree-row
+  // mapping; a paragraph with neither keeps the whole-summary landing via the card-level link.
+  const pAnchors = (distillShown && it.summaryAnchorsPara) || null;
+  if (distillShown && ((bp && bp.length > 1) || (pAnchors && pAnchors.some(Boolean)))) {
     const paras = distillShown.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
-    if (paras.length === bp.length || paras.length === bp.length + 1) {
+    const stampOk = !!(bp && bp.length > 1 && (paras.length === bp.length || paras.length === bp.length + 1));
+    const anchOk = !!(pAnchors && paras.length === pAnchors.length);   // count drift → drop, never mis-map
+    if (stampOk || anchOk) {
       const dle = a._distill as HTMLElement;
       dle.textContent = "";
-      const nowS = Date.now() / 1000;
+      const nowS = nowSec();
       paras.forEach((p, i) => {
         const para = el("div", "fask-para");
         para.textContent = p;
-        if (i < bp.length) {
+        if (stampOk && i < bp!.length) {
           const age = el("span", "fask-para-age");
-          age.textContent = relAge(nowS - (bp[i].since || nowS));
+          if (bp![i].since) stampAge(age, bp![i].since, "plain", false, nowS, relAge, ageColorReadable);   // stamped: the live pass moves it
+          else age.textContent = relAge(0);   // no event time → the static "<1m ago" this chip always showed; nothing to count from
           para.append(" ", age);
+        }
+        // T220 first: the paragraph's own citation, with its located span riding the landing
+        const cited = anchOk ? pAnchors![i] : null;
+        let au: string | null = null, aq: string | undefined;
+        if (cited && cited.u) { au = cited.u; aq = cited.q; }
+        else if (stampOk && i < bp!.length) {
+          // T153: the item's tree row carries its WORK anchor
+          const pid = bp![i].id;
+          const prow = pid ? (it.tree || []).find((r) => r.id === pid) : undefined;
+          if (prow && prow.anchorUuid) au = prow.anchorUuid;
+        }
+        if (au) {
+          const u = au;
+          para.classList.add("fask-para-link");
+          para.title = "jump to where this piece resolved";
+          para.onclick = (ev: Event) => {
+            ev.stopPropagation(); focusEcho(it.sid);
+            vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid,
+                                     t: it.t, anchor: "work", anchorUuid: u, quote: aq });
+          };
         }
         dle.append(para);
       });
@@ -1983,7 +2526,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (distillShown && it.summaryAnchorUuid) {
     dl.classList.add("fask-distill-link");
     dl.title = "jump to where this was written";
-    dl.onclick = (ev: Event) => { ev.stopPropagation(); focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: it.summaryAnchorUuid }); };
+    dl.onclick = (ev: Event) => { ev.stopPropagation(); focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: it.summaryAnchorUuid, quote: it.summaryAnchorQuote || undefined }); };
   } else if (distillShown) {
     // No anchor recorded (a card minted from a postal delegate, a completion turn not yet landed) — the
     // line must still ACKNOWLEDGE the click instead of rendering as silently dead text (the user
@@ -2011,12 +2554,57 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (re-orientation for a reader who
   // forgot the thread, collapsed by default) above the takeaway (expanded by default), each with a +/−.
   applySections(a, it, !!distillShown);   // bg/summary/sub-goals (mutually exclusive) — applyDistillLine returns the line's TEXT (string), coerce to "has content"
+  // A SESSION-STARTED root (T319): work the session began on its own (a Workflow run, an agent, a thread of
+  // its own) that stands as a card only because its parent is gone, no request could host it, or it is
+  // blocked (needs-you breaks through). The face says what it is and why in one line, so it never reads as
+  // something the user asked for. Its OWN line, created once beside the sections and kept outside them: the
+  // distill line lives inside the collapsible sections, whose logic hides it without a takeaway and whose
+  // decision brief would otherwise displace the face; both show.
+  {
+    let fe = a._face as HTMLElement | undefined;
+    if (!fe) {
+      fe = el("div", "fask-distill fask-face");
+      const secs = a._secs as HTMLElement;
+      secs.parentNode!.insertBefore(fe, secs.nextSibling);
+      a._face = fe;
+    }
+    const ss = it.sessionStarted;
+    if (ss) {
+      fe.textContent = (ss.parent ? "Started by the session while working on \u201c" + ss.parent + "\u201d: " : "Started by the session on its own: ") + (ss.why || "");
+      fe.style.display = "";
+    } else {
+      fe.textContent = "";
+      fe.style.display = "none";
+    }
+  }
+  // A far host still holds a relayed question after its wait ended (it.relayNote, kernel relayCarried: the
+  // question went on before it could be withdrawn, or the host could not be reached to withdraw it). Its OWN
+  // line like the face above, created once beside the sections, kept OUTSIDE them and set AFTER the section
+  // logic: appended inside the distill element it was hidden with that line (no brief yet → the sections
+  // choose none and set the element's display to none; likewise in collapsed mode, on a card whose open
+  // section is not the summary, and on a working-column card, where the brief is withheld). Never a
+  // paragraph OF the brief either: the per-paragraph stamps map briefParts onto the brief's paragraphs and
+  // allow exactly one extra, so a note paragraph dropped every stamp and citation on a briefed top node.
+  // The effect is RUN in feed-render-incremental.test.ts (no brief, collapsed mode, a working card).
+  {
+    let rn = a._relayNote as HTMLElement | undefined;
+    if (!rn) {
+      rn = el("div", "fask-distill fask-relaynote");
+      const anchor = (a._face as HTMLElement | undefined) || (a._secs as HTMLElement);
+      anchor.parentNode!.insertBefore(rn, anchor.nextSibling);
+      a._relayNote = rn;
+    }
+    const note = (it.relayNote || "").trim();
+    rn.textContent = note;
+    rn.style.display = note ? "" : "none";
+  }
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
   // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.
   const spendLimit = !!(it.blocked && it.blocked.spendLimit);
   const modelLimit = !!(it.blocked && it.blocked.modelLimit);
   const refusal = !!(it.blocked && it.blocked.refusal);
+  const authErr = !!(it.blocked && (it.blocked as { authErr?: boolean }).authErr);
   // …and the whole unit RETIRES the moment the session recovers (the user 2026-08-24, screenshot: a
   // GREEN awaiting dot beside a lone red Retry — the control read as arbitrary): visibility keys on
   // the session's LIVE state from this very payload — a session working again, or awaiting the
@@ -2033,6 +2621,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // A safeguards REFUSAL is the same shape again (the user 2026-08-15): deterministic on the same input,
   // so Retry re-collects the same refusal — the badge names the real fix (rewrite it or drop the thread).
   a._apiRetry.style.display = (showApiErr && !spendLimit && !modelLimit && !refusal) ? "" : "none";
+  // a dead credential's card carries THE FIX (T157): the gear's Billing login — phone-workable
+  const loginBtn = a._apiLogin as HTMLButtonElement;
+  loginBtn.style.display = (showApiErr && authErr) ? "" : "none";
+  if (showApiErr && authErr) loginBtn.onclick = (ev: Event) => {
+    ev.stopPropagation();
+    openGear(window);   // the login flow lives in the gear's Billing block (here, or on the shell's settings page)
+  };
   // "Continue" shows on a LIVE needs-you card with no live ask attached: the gesture claims "you're not
   // waiting on me", which means nothing in Working/Completed, can't answer a real permission prompt or
   // picker (it.blocked — text sent there would just queue behind the ask), and has no one to tell on a
@@ -2044,6 +2639,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (contBtn.disabled && !it.followupPending && !it.recheck && !it.rejudging) {
     contBtn.disabled = false; contBtn.textContent = "Continue";
   }
+  contBtn.title = contTitle(contBtn.disabled, "a continue", it.followupAt);
   if (showApiErr && it.blocked) {
     // on-you errors name themselves: a spend cap (raise it), "prompt too long" (compact), or a spent model
     // allowance (switch model); other API errors are transient and auto-retrying (2026-06-29 / 07-14 / 08-01).
@@ -2052,24 +2648,55 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       : modelLimit ? "⚠ Model limit"
       : refusal ? "⚠ Safeguards refused"
       : it.blocked.status ? `⚠ API error · ${it.blocked.status}` : "⚠ API error";
-    // a refusal's raw CLI text buries the remedy — the kernel's `what` states it plainly, so title with that
-    a._apiBadge.title = (spendLimit || refusal) ? it.blocked.what : (it.blocked.text || it.blocked.what);
+    // a refusal's raw CLI text buries the remedy — the kernel's `what` states it plainly, so tip with that
+    setTip(a._apiBadge as HTMLElement, (spendLimit || refusal) ? it.blocked.what : (it.blocked.text || it.blocked.what));
+    // The latched "Retrying…" re-arms on any repaint of this card — a new object or a key flip; the expected
+    // path is the session resuming, which moves the working set (the key) and hides the whole unit — and on
+    // the kernel's reply to THIS click (rearmLatches): `retryRefused` when the backend could not take the
+    // send, or an `err` naming this session's apiRetry when the kernel has no such session. Before the
+    // per-card update gate it re-armed on the next push of any card. The click is a MANUAL retry (the chat
+    // pane sends the same): the kernel fires it past every auto gate, so the button is never a dead no-op on
+    // a paused or suppressed thread. Revive below latches the same way and re-arms on `reviveFailed`.
     a._apiRetry.disabled = false; a._apiRetry.textContent = "Retry";
     a._apiRetry.onclick = (ev: Event) => {
       ev.stopPropagation();
-      vscodeApi?.postMessage({ type: "apiRetry", id: it.sid });
+      vscodeApi?.postMessage({ type: "apiRetry", id: it.sid, manual: true });
       a._apiRetry.disabled = true; a._apiRetry.textContent = "Retrying…";
     };
   }
+  // CAP-SWITCH OFFER (2026-08-30): the tradeoff stated plainly, the pick the user's alone. The
+  // latched "Switching…" survives pushes (the T150 idiom — the payload still says login until the
+  // reconnect applies the pick) and self-resolves: once authLive flips to key, the kernel stops
+  // minting the offer and both elements hide.
+  const cap = (showApiErr && it.blocked && it.blocked.capOffer) || null;
+  (a._capLine as HTMLElement).style.display = cap ? "" : "none";
+  (a._capBtn as HTMLButtonElement).style.display = cap ? "" : "none";
+  if (cap) {
+    a._capLine.textContent = "This session bills the subscription, whose usage window is full — it can "
+      + "bill your API key instead until the window resets at " + clockHM(cap.resetsAt)
+      + ". It switches back only if you switch it.";
+    if (!(a._capBtn as HTMLButtonElement).disabled) {
+      a._capBtn.title = "bills THIS session to the API key — only your pick switches billing, in either "
+        + "direction, and the auto-retry at the reset runs whether or not you switch";
+      a._capBtn.onclick = (ev: Event) => {
+        ev.stopPropagation();
+        vscodeApi?.postMessage({ type: "setAuth", id: it.sid, value: "key" });
+        a._capBtn.disabled = true; a._capBtn.textContent = "Switching…";   // ack before the round-trip
+        a._capBtn.title = "the switch is applying — it lands the way a gear billing pick does, and this offer clears itself";
+      };
+    }
+  } else { (a._capBtn as HTMLButtonElement).disabled = false; a._capBtn.textContent = "Switch to the key"; }
   // JUDGE-AUTH (the user 2026-08-12): romp's own analysis of this session is refused on its credential —
   // the judges bill what the session bills (kernel _judge_auth), that credential is failing, and no card
   // here can move until the user fixes it. The chip names which credential; no Retry (nothing in-session
   // to resume — the latch clears itself on the judges' next successful call once the credential works).
   (a._jauthBadge as HTMLElement).style.display = isJudgeAuth ? "" : "none";
   if (isJudgeAuth && it.blocked) {
-    a._jauthBadge.textContent = it.blocked.mode === "key" ? "⚠ Can't analyze · API key" : "⚠ Can't analyze · login";
-    a._jauthBadge.title = (it.blocked.what || "")
-      + (it.blocked.text ? ` — the CLI said: ${it.blocked.text}` : "");
+    // a STORED login's refusal names the login (T346); the machine's own and the key keep their plain words
+    a._jauthBadge.textContent = it.blocked.login ? `⚠ Can't analyze · ${it.blocked.login}`
+      : it.blocked.mode === "key" ? "⚠ Can't analyze · API key" : "⚠ Can't analyze · login";
+    setTip(a._jauthBadge as HTMLElement, (it.blocked.what || "")
+      + (it.blocked.text ? ` — the CLI said: ${it.blocked.text}` : ""));
   }
   // "⚠ retrying since HH:MM" — the OPEN turn is inside an api-retry storm (kernel `retrying`: the live
   // backend state, with the storm's start from the states log). The card stays in Working — the storm is
@@ -2080,9 +2707,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   (a._retryBadge as HTMLElement).style.display = (rt && !isApiErr) ? "" : "none";
   if (rt && !isApiErr) {
     a._retryBadge.textContent = rt.since ? `⚠ retrying since ${clockHM(rt.since)}` : "⚠ retrying";
-    a._retryBadge.title = "this session's turn keeps hitting API errors and is auto-retrying"
+    setTip(a._retryBadge as HTMLElement, "this session's turn keeps hitting API errors and is auto-retrying"
       + (rt.count ? ` (attempt ${rt.count})` : "")
-      + " — still in motion, not stalled; it resumes on its own when the API recovers";
+      + " — still in motion, not stalled; it resumes on its own when the API recovers");
   }
   // PARKED HANDOFF → a "Revive" button that brings the offline recipient back so the parked message is
   // delivered; the existing Clear button dismisses it (rides cleared.jsonl). (the user 2026-06-22.)
@@ -2091,6 +2718,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (isParked && it.blocked) {
     const toSid = it.blocked.toSid || it.sid;
     a._revive.disabled = false; a._revive.textContent = `Revive ${it.blocked.toName || it.name}`;
+    (a._revive as any)._idle = a._revive.textContent;   // the label rearmLatches restores on the kernel's reviveFailed for toSid
     a._revive.onclick = (ev: Event) => {
       ev.stopPropagation();
       vscodeApi?.postMessage({ type: "reviveSession", id: toSid });
@@ -2108,39 +2736,30 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // clear — the next kernel push removes the card on success, or re-renders it (buttons re-enabled)
   // if the bus refused (e.g. the recipient is no longer live; the warn toast says why).
   // Human-in-the-loop is the whole point of directed trust.
-  const isQuar = it.blocked?.state === "quarantine";
-  const qBody = a._qBody as HTMLElement;
-  qBody.style.display = isQuar ? "" : "none";
-  for (const b of [a._qApprove, a._qDeny] as HTMLButtonElement[]) b.style.display = isQuar ? "" : "none";
-  if (isQuar && it.blocked) {
-    const mid = it.blocked.mid || "";
-    // WHO to WHO, then what it says (the user 2026-07-29). Held mail is a delivery between two named
-    // sessions on two named machines, and the card used to render that as one grey run of text with the
-    // recipient missing entirely — you could not tell which of your sessions was about to receive it.
-    // Hosts stay quiet metadata (the same .host-prefix every surface uses), session names wear their
-    // identity colours, and the gist gets its own line under the route.
-    const toHost = (it.sid && it.sid.indexOf(":") > 0) ? it.sid.slice(0, it.sid.indexOf(":")) : feedSelfHost;
-    qBody.replaceChildren(
-      quarWho(it.blocked.origin || "", it.blocked.frm || "?"),
-      Object.assign(el("span", "fq-arrow"), { textContent: "\u2192" }),
-      quarWho(toHost, it.blocked.to || it.name || "?", it.color?.bg),
-      Object.assign(el("div", "fq-gist"), { textContent: it.blocked.gist || it.blocked.body || "" }));
-    qBody.title = "click to read the whole message and decide";
-    a._qApprove.disabled = false; a._qApprove.textContent = "Approve";
-    a._qDeny.disabled = false; a._qDeny.textContent = "Deny";
-    const decide = (action: string, busy: string, text: string, feedback?: string) => {
-      vscodeApi?.postMessage({ type: "quarantineDecision", mid, action, text, sid: it.sid, feedback });
-      for (const b of [a._qApprove, a._qDeny] as HTMLButtonElement[]) b.disabled = true;
-      (action === "deny" ? a._qDeny : a._qApprove).textContent = busy;
-    };
-    const ends = (): [QuarEnd, QuarEnd] => [
-      { host: it.blocked!.origin || "", name: it.blocked!.frm || "?" },
-      { host: toHost, name: it.blocked!.to || it.name || "?", color: it.color?.bg }];
-    qBody.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(...ends(), it.blocked!.body || "", decide, false); };
-    a._qApprove.onclick = (ev: Event) => { ev.stopPropagation(); decide("approve", "Delivering…", it.blocked!.body || ""); };
-    a._qDeny.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(...ends(), it.blocked!.body || "", decide, true); };
+  // NOTICE CARD (T370, plans/notice-cards.md): the producer beside the name; the body through the markdown sanitizer with
+  // remote loads stripped BEFORE adoption; an image attachment inline from the file route with its pin (the picture as
+  // posted), only where the page can reach the kernel (canPreview) and only when the kernel allowed it; the actions as
+  // buttons that latch on the click and re-arm on the kernel's noticeActionDone (a refusal is toasted; a success with
+  // dismissOnAction leaves at once on the answer). A card back from Undo with its action spent carries no actions and
+  // `acted`, so no button shows. Rebuilt only when the notice's own fields change (the rev key).
+  const nt = it.notice || null;
+  const nProd = a._nProd as HTMLElement, nBody = a._nBody as HTMLElement, nAttach = a._nAttach as HTMLElement, nActions = a._nActions as HTMLElement;
+  for (const e of [nProd, nBody, nAttach, nActions]) e.style.display = nt ? "" : "none";   // the face fill below refines each block
+  if (nt) {
+    // a card on a data-defined board shows on the feed under the feed's default column until the board has a view of its own
+    // (phase four's switch); its board's title rides the producer label so the reader knows where it belongs
+    const onBoard = boardLabelOf(it);
+    const nkey = JSON.stringify([nt.key, nt.rev, nt.producer, nt.body, nt.attachment, nt.actions, it.sid, onBoard]);
+    if ((a._nKey as string | undefined) !== nkey) {
+      a._nKey = nkey;
+      fillNoticeFace(it, nt, onBoard, nProd, nBody, nAttach, nActions);
+    }
+    // re-armed from the payload on EVERY update (the review of PR 1757, medium 2): a click on a down socket is dropped and
+        // shape, disabled = false on every update, and the kernel's answer or the next push both let go
+  } else {
+    a._nKey = undefined;
   }
-  (a._clr as HTMLElement).style.display = isQuar ? "none" : "";
+  (a._clr as HTMLElement).style.display = "";   // (a held message is a notice card since 2026-09-19: its Approve and Deny are stored actions, its Clear as every card's)
 
   // (Follow-up is modal-only now — no card button; the body click opens the modal. the user 2026-06-16.)
   // the user's handoff spec (2026-06-10): every session this ask was handed to,
@@ -2184,22 +2803,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
 // One end of a held message's route: "host:" as quiet metadata, the session name in its identity
 // colour. The colour is looked up by the name a peer addresses (sessionColors, filled per payload) and
 // simply absent when that session has no cards here — an invented colour would be a lie about identity.
-// A host romp cannot currently reach wears the same struck mark its tabs and lanes do.
-function quarWho(host: string, name: string, known?: string): HTMLElement {
-  const who = el("span", "fq-who");
-  if (host) {
-    const h = el("span", "host-prefix");
-    h.textContent = host + ":";
-    if (hostIsDown(host + ":x")) { h.classList.add("off"); h.title = hostDownNote(host + ":x"); }
-    who.appendChild(h);
-  }
-  const n = el("span", "fq-name");
-  n.textContent = name;
-  const color = known || sessionColors.get(host ? host + ":" + name : name) || sessionColors.get(name);
-  if (color) n.style.color = color;
-  who.appendChild(n);
-  return who;
-}
 
 // Resolve a focus key (set on hoverAskId/pinnedAskId) to the itemId the timeline
 // path-preview understands: a raw ask id maps to itself; a group key "g:<turnId>"
@@ -2260,6 +2863,18 @@ function memberMark(m: AskItem): string {
 // Fold N sibling asks (shared turnId) into one AskGroup. Column = WORST member
 // (any needs-input → needsInput; else any open → asks; else completed). Identity
 // (name/color/sid) is the shared asking session; age/tint follow the newest member.
+// The typed-turn GROUPS a card list forms — the render's rule, shared with the jump-unfold (T263e) so the two
+// can never disagree: host-flagged asks (groupTitle) gather by turnId, and a turn folds only with ≥2 current
+// members — a lone survivor (siblings cleared) renders as a single card.
+function turnGroups(list: AskItem[]): Map<string, AskItem[]> {
+  const byTurn = new Map<string, AskItem[]>();
+  for (const a of list) {
+    if (!a.groupTitle || !a.turnId) continue;
+    const arr = byTurn.get(a.turnId) || []; arr.push(a); byTurn.set(a.turnId, arr);
+  }
+  for (const [tid, ms] of Array.from(byTurn)) if (ms.length < 2) byTurn.delete(tid);
+  return byTurn;
+}
 function buildGroup(turnId: string, members: AskItem[]): AskGroup {
   const ms = members.slice().sort((a, b) => a.t - b.t);                       // chronological
   const repr = ms.reduce((x, y) => (y.t > x.t ? y : x), ms[0]);               // most-recent → freshest age/tint
@@ -2291,7 +2906,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   const idwrap = el("div", "fask-id");
   const name = el("a", "fname"); name.title = "open this session";
   idwrap.append(name);   // no "· N parts" label — the member checklist below already shows the count
-  const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear ALL sub-asks of this request (inbox-zero)";
+  const clr = clearButton("clear ALL sub-asks of this request (inbox-zero)");
   // Clear rides row1's action corner in every mode (the user 2026-08-08) — matches the ask card. Same
   // fask-btns wrapper so the float/wrap CSS is shared; no Continue here (a group is a multi-ask turn —
   // its members carry their own).
@@ -2310,19 +2925,27 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     ev.stopPropagation();
     card.dispatchEvent(new MouseEvent("mouseleave"));   // flush the group's stuck hover highlight (see the ask card's clear)
     const cur = (card as any)._g as AskGroup;
-    dressHeaderIfLast(card, cur.sid);   // a group is one session's turn — same one-motion rule (2026-08-24)
-    card.classList.add("dismissing");
+    dressHeaderIfLast(groupEls.get(cur.turnId) ?? card, cur.sid);   // a group is one session's turn — same one-motion rule (2026-08-24); the board's element from a copy (T347)
+    for (const c of groupTwins(cur.turnId)) c.classList.add("dismissing");   // both copies of the group (T347), see the ask card's Clear
     clearedStack.push(cur.members.slice());   // cache the whole batch for an instant optimistic Undo
-    for (const m of cur.members) { pendingCleared.add(m.itemId); vscodeApi?.postMessage({ type: "askClear", itemId: m.itemId, sid: m.sid }); }   // clear every member
+    for (const m of cur.members) pendingCleared.add(m.itemId);
+    // ONE kernel batch for every member (askClearMany): the kernel's Undo restores a batch by its one
+    // stamp, so per-member posts left N-1 members archived after an Undo the client had shown whole
+    vscodeApi?.postMessage({ type: "askClearMany", itemIds: cur.members.map((m) => m.itemId), sid: cur.sid });
     // only finalize if a render in the 180ms window didn't revive (re-render clears
     // .dismissing) or replace this card — else a stale timeout yanks the wrong one
-    setTimeout(() => { if (groupEls.get(cur.turnId) === card && card.classList.contains("dismissing")) { card.remove(); groupEls.delete(cur.turnId); dropDismissed(cur.members.map((m) => m.itemId)); } }, 180);
+    setTimeout(() => {
+      const twins = groupTwins(cur.turnId).filter((c) => c.classList.contains("dismissing"));
+      if (!twins.length) return;
+      for (const c of twins) { c.remove(); if (groupEls.get(cur.turnId) === c) groupEls.delete(cur.turnId); if (fsGroupEls.get(cur.turnId) === c) fsGroupEls.delete(cur.turnId); }
+      dropDismissed(cur.members.map((m) => m.itemId));
+    }, 180);
   };
   // hover (120ms intent) → white border + preview the group's timeline journey
   // (first member). leave → restore the pin (ask OR group) or clear.
   let hoverTimer: number | undefined;
   card.addEventListener("mouseenter", () => {
-    freezeEnter(fkey);                                 // hover-freeze: pointer truth, no debounce
+    freezeEnter(fkey, isFocusCopy(card));              // hover-freeze: pointer truth, no debounce; which twin holds it (T410)
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined;
       hoverAskId = fkey; applyFocus();
@@ -2330,7 +2953,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     }, 120);
   });
   card.addEventListener("mouseleave", () => {
-    freezeLeave(fkey);                                 // hover-freeze: leaving the card flushes queued payloads
+    freezeLeave(fkey, isFocusCopy(card));              // hover-freeze: leaving the card flushes queued payloads
     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = undefined; }
     if (hoverAskId === fkey) {
       hoverAskId = null; applyFocus();
@@ -2378,11 +3001,11 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   card.style.background = `rgba(${r}, ${gg}, ${b}, ${TINT_ALPHA})`;
   // outline in the group's session identity colour (the user 2026-07-15) — CSS: 0.5α rest, bolded on hover/pin
   setCardChannels(card, (g.color && hexToRgb(g.color.bg)) || [r, gg, b]);
-  a._title.textContent = g.title;
+  setLinkedText(a._title, g.title, prRepoOf(g.sid));   // keyed like the ask card's title
   a._name.replaceChildren(...hostNameNodes(g.name, g.sid));
   if (g.color) a._name.style.color = g.color.bg;
   setWorkDot(a._name, dotFor(g.name));   // working/awaiting dot before the session name
-  a._time.textContent = relAge(hostNow - g.t);
+  stampAge(a._time, g.t, "plain", false, nowSec(), relAge, ageColorReadable);
   wireAgeTip(a._time, () => provenanceGroupRows(g.members.map(rootStart), g.t, hostNow, PROV_FMT));
   // member lines — rebuilt only when the member set or any member's status changes
   const memSig = g.members.map((m) => m.itemId + ":" + memberStatus(m)).join("|");
@@ -2392,7 +3015,7 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
     for (const m of g.members) {
       const line = el("div", "fgroup-member st-" + memberStatus(m));
       const dot = el("span", "fgroup-dot"); dot.textContent = memberMark(m); line.appendChild(dot);
-      const txt = el("span", "fgroup-mtext"); txt.textContent = m.text; line.appendChild(txt);
+      const txt = el("span", "fgroup-mtext"); txt.textContent = m.text; linkifyPrRefs(txt, prRepoOf(m.sid || g.sid)); line.appendChild(txt);
       host.appendChild(line);
     }
   }
@@ -2474,43 +3097,27 @@ function logPhrase(r: NodeLogRow): string {
 const logRowT = (r: NodeLogRow): number => r.at || r.evT || 0;
 // the provenance popover (hover the card's age stamp) borrows the same vocabulary the card renders with
 const PROV_FMT: ProvFmt = { rel: relAge, clock: clockHM, phrase: logPhrase };
-// One shared popover element for every age stamp (the user 2026-07-27: the native title tooltip was
-// dense and unaligned). Times sit in their own right-aligned column, rows wear the modal history-row
-// look (#age-tip in feed.css). pointer-events:none + rebuilt per hover, so it is click-safe; a lazy
-// rows thunk keeps the assembly off the render path entirely.
-let ageTipEl: HTMLElement | null = null;
-let ageTipAnchor: HTMLElement | null = null;   // the stamp the tip is up for — pruneAgeTip checks it survived the render
-function showAgeTip(anchor: HTMLElement, rows: ProvRow[]): void {
-  if (!ageTipEl) { ageTipEl = el("div", ""); ageTipEl.id = "age-tip"; document.body.appendChild(ageTipEl); }
-  ageTipAnchor = anchor;
-  const tip = ageTipEl;
-  tip.replaceChildren();
-  for (const r of rows) {
-    const row = el("div", "age-tip-row" + (r.kind === "stamp" ? " stamp" : ""));
-    const w = el("span", "age-tip-when"); w.textContent = r.when;
-    const x = el("span", "age-tip-what"); x.textContent = r.what;
-    // each line wears its own recency colour — time AND text, the chat tab-tip treatment (the user
-    // 2026-07-27); the un-timed remainder row keeps the panel's dim default
-    if (r.t > 0) { const c = ageColorReadable(hostNow - r.t); row.style.color = c; w.style.color = c; }
-    row.append(w, x); tip.appendChild(row);
-  }
-  tip.style.display = "block";
-  // above the stamp, clamped to the viewport; below it when there is no headroom
-  const rc = anchor.getBoundingClientRect();
-  const left = Math.max(8, Math.min(rc.left, window.innerWidth - tip.offsetWidth - 8));
-  const top = rc.top - tip.offsetHeight - 6;
-  tip.style.left = left + "px";
-  tip.style.top = (top < 8 ? rc.bottom + 6 : top) + "px";
-}
-function hideAgeTip(): void { ageTipAnchor = null; if (ageTipEl) ageTipEl.style.display = "none"; }
-// Cards are keyed + updated IN PLACE across pushes, so the hovered stamp usually survives a re-render —
-// unconditionally hiding here made the tip vanish ~a second into every hover (the feed re-renders on
-// every kernel push; the user 2026-07-27). Hide only when the anchor was actually torn out of the DOM
-// (a card rebuilt/removed), where its mouseleave can never fire.
-function pruneAgeTip(): void { if (ageTipAnchor && !ageTipAnchor.isConnected) hideAgeTip(); }
+// The shared styled tooltip (tip.ts) carries every age stamp's provenance (the user 2026-07-27: the
+// native title tooltip was dense and unaligned). Times sit in their own right-aligned column, rows
+// wear the modal history-row look (.age-tip-row in feed.css). Rebuilt per hover, so it is click-safe;
+// a lazy rows thunk keeps the assembly off the render path entirely. Placed ABOVE the stamp (it sits
+// at a card's bottom edge), flipping below when there is no headroom. Cards are keyed + updated IN
+// PLACE across pushes, so the hovered stamp usually survives a re-render — unconditionally hiding on
+// render made the tip vanish ~a second into every hover (the feed re-renders on every kernel push;
+// the user 2026-07-27): pruneTip (called after each render) hides only when the anchor was actually
+// torn out of the DOM, where its mouseleave can never fire.
 function wireAgeTip(elm: HTMLElement, rows: () => ProvRow[]): void {
-  elm.onmouseenter = () => showAgeTip(elm, rows());
-  elm.onmouseleave = hideAgeTip;
+  wireTip(elm, (tip) => {
+    for (const r of rows()) {
+      const row = el("div", "age-tip-row" + (r.kind === "stamp" ? " stamp" : ""));
+      const w = el("span", "age-tip-when"); w.textContent = r.when;
+      const x = el("span", "age-tip-what"); x.textContent = r.what;
+      // each line wears its own recency colour — time AND text, the chat tab-tip treatment (the user
+      // 2026-07-27); the un-timed remainder row keeps the panel's dim default
+      if (r.t > 0) { const c = ageColorReadable(hostNow - r.t); row.style.color = c; w.style.color = c; }
+      row.append(w, x); tip.appendChild(row);
+    }
+  }, { place: "above" });
 }
 // the node's owning session for navigation (a handoff node lives in the recipient's transcript) —
 // the same resolution wireNodeZones uses for its zones
@@ -2706,7 +3313,7 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   // "jump to where this got checked off" on an item the agent hasn't crossed off (the user 2026-07-01).
   // Defense-in-depth for the kernel's _agent_open_set fix: correct even if a stale build serves status:"done".
   // ...and a rolled-UP question ancestor (qderived) is not itself resolved: the block landed on a
-  // descendant, so its own anchor is its mint, and the hover must not claim "marked blocked" here.
+  // descendant, so its own anchor is its mint, and the hover must not claim "filed under Needs you" here.
   const resolved = (node.status === "done" || (node.status === "question" && !node.qderived)) && node.auth !== "open";
   // time-nav fallback for the work jump: where it resolved (mt) for resolved nodes, the newest
   // activity (last) for open ones — matching the newest-seg work anchor (the user 2026-07-20)
@@ -2723,8 +3330,8 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
     ev.stopPropagation(); focusEcho(navSid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: node.promptAnchorUuid ?? null });
   };
   if (!wire) return goWork;
-  // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
-  const workTitle = node.status === "question" && !node.qderived ? "jump to where this got marked blocked"
+  // tooltip names the destination by status: a node that needs you was "filed under Needs you", a done node "checked off"
+  const workTitle = node.status === "question" && !node.qderived ? "jump to where this was filed under Needs you"
                   : resolved ? "jump to where this got checked off" : "jump to the latest work on this";
   const linkHover = (group: HTMLElement[]) => {
     const on = () => group.forEach((g) => g.classList.add("lz-hl"));
@@ -2761,7 +3368,7 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
 function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: Map<string, AskTreeNode>, briefs: Map<string, AskQuestion>, seen: Set<string>, depth: number, parentWho: string) {
   const repeat = seen.has(node.id);
   // An optimistically-done sub-goal reads as done for this whole render, by rewriting the node rather
-  // than patching the DOM after the fact: the mark, the strike-through class, the "Blocked" label and
+  // than patching the DOM after the fact: the mark, the strike-through class, the "Needs you" label and
   // the action buttons all derive from status, so one substitution keeps them agreeing instead of three
   // separate edits that can drift from how a genuinely-done node draws (see pendingDone).
   if (!repeat && pendingDone.has(node.id) && node.status !== "done") node = { ...node, status: "done" };
@@ -2781,8 +3388,8 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   line.appendChild(tri);
   const mark = el("span", "ftree-mark"); mark.textContent = nodeMark(node); line.appendChild(mark);
   // blocked rolls UP (kernel flatten, the user 2026-07-11): a rolled-up ancestor's ⏸ says the block is below
-  if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside is blocked — the ⏸ below is the ask" : "blocked — needs you";
-  const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; line.appendChild(txt);
+  if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside it needs you: the ⏸ below is the ask" : "needs you";
+  const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; linkifyPrRefs(txt, prRepoOf(it.sid)); line.appendChild(txt);
   if (node.cleared) line.appendChild(clearedTag());   // same one-word story as the card checklist
   if (node.parked && node.parked.n && !node.cleared) line.appendChild(parkedTag(node.parked.n));   // and the parked hint
   // (The node's why/blocked/done rationale hover tooltip was removed 2026-06-27 — just the goal text now.)
@@ -2798,9 +3405,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     line.appendChild(who);
   }
   const meta = el("span", "ftree-meta");
-  // a node needing the user reads as "Blocked" (red) — the marker + this label are the block
+  // a node needing the user reads as "Needs you" (the category's colour): the marker + this label are the block
   // signal, distinct from a recency-tinted age (the user 2026-06-17). Other states show "(Xm ago)".
-  meta.textContent = node.status === "question" ? (node.qderived ? "Blocked inside" : "Blocked") : "(" + relAge(hostNow - node.last) + ")";
+  meta.textContent = node.status === "question" ? (node.qderived ? "Needs you inside" : "Needs you") : "(" + relAge(hostNow - node.last) + ")";   // the category's word (plans/needs-you.md)
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
   // Whole-line click NAVIGATES into the chat. PREFERRED: node.anchorUuid (kernel 996ebd7) deep-links to
@@ -2881,7 +3488,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     // "Follow up": re-target the footer composer at THIS sub so the answer files under it and unblocks just
     // this branch (the judge reopens + force-files under any node id — no kernel change).
     const fu = el("button", "ftree-act-btn ftree-act-fup"); fu.textContent = "Follow up";
-    fu.title = node.status === "question" ? "follow up on this specific blocked sub-goal" : "follow up on this specific sub-goal";
+    fu.title = node.status === "question" ? "follow up on this sub-goal that needs you" : "follow up on this specific sub-goal";
     fu.onclick = (ev) => { ev.stopPropagation(); openSubFollowUp?.(node.id, node.text || "(sub-goal)"); };
     acts.append(fu);
     line.appendChild(acts);
@@ -2918,7 +3525,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   if (modalBg) {
     const bl = el("div", "ftree-seclabel"); bl.textContent = "background";
     bl.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
-    const bb = el("div", "ftree-summary"); bb.textContent = modalBg;
+    const bb = el("div", "ftree-summary"); bb.textContent = modalBg; linkifyPrRefs(bb, prRepoOf(it.sid));
     bb.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
     const sl = el("div", "ftree-seclabel"); sl.textContent = "summary";
     sl.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
@@ -2928,16 +3535,35 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     const sum = el("div", "ftree-summary");
     sum.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
     sum.textContent = nodeDistill;
+    linkifyPrRefs(sum, prRepoOf(it.sid));
     // parity with the card's distiller line (the user 2026-06-29): the modal summary is also a LINK — clicking
     // it follows to where the node resolved (its work anchor, the SAME target as the node's mark/time zones).
     // Wired on EITHER anchor: goWork itself falls to the prompt anchor when the work one is cold-null, so
     // gating on anchorUuid alone dead-ended the line during a cold beat (the user 2026-07-20).
-    if (!repeat && (node.anchorUuid || node.promptAnchorUuid)) {
+    // The brief's OWN landing first (T388): the kernel resolves the text atom that carries the line (a validated
+    // citation, else the opening sentence located in the newest segment's turn) and its span, so the click never
+    // lands on the node's work anchor, which for a long turn can be a tool call inside a collapsed group.
+    if (!repeat && node.summaryAnchorUuid) {
+      sum.classList.add("ftree-summary-link");
+      sum.title = "jump to where this was written";
+      // the ROW's own session, never the card's (navSidOf, the same resolver goWork uses): a serving-folded worker
+      // row inside the sender's card resolved its landing in the worker's parse, and the worker's atom sent to
+      // the sender's chat could only honest-fail (the verifier's first round)
+      const su = node.summaryAnchorUuid, sq = node.summaryAnchorQuote || undefined, ss = navSidOf(it, node);
+      sum.onclick = (ev: Event) => { ev.stopPropagation(); focusEcho(ss); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: node.id || it.turnId, sid: ss, t: node.mt ?? node.t, anchor: "work", anchorUuid: su, quote: sq }); };
+    } else if (!repeat && (node.anchorUuid || node.promptAnchorUuid)) {
       sum.classList.add("ftree-summary-link");
       sum.title = "jump to where this was written";
       sum.onclick = goWork;
     }
     box.appendChild(sum);
+  }
+  // The same note in the modal tree (node.relayNote): its own line under the node's brief, never part of it.
+  if (node.relayNote) {
+    const rn = el("div", "ftree-relaynote");
+    rn.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
+    rn.textContent = node.relayNote;
+    box.appendChild(rn);
   }
   // The per-item STORY (the user 2026-07-20: 'I don't know if they're still active'): a non-done node
   // with verdict history shows a one-line gist — its newest event in outcome words + how long ago —
@@ -3008,6 +3634,10 @@ function growFollowUp(ta: HTMLTextAreaElement) {
 // Header credits the ask (title · agent · age · Clear); body = the state tree with
 // progressive per-node history. Driven by fullscreenAskId; re-rendered each push.
 function renderModal() {
+  inModalRender = true;   // the modal's paint is render time: a post it makes is no jump of the reader's (T416 round two)
+  try { renderModalNow(); } finally { inModalRender = false; }
+}
+function renderModalNow() {
   let m = document.getElementById("feed-modal");
   // The open target is EITHER a single ask (itemId) OR a group ("g:<turnId>" key).
   const isGroup = !!fullscreenAskId && fullscreenAskId.startsWith("g:");
@@ -3183,13 +3813,13 @@ function renderModal() {
     titleHoverId = grp.turnId;
     const gm0 = grp.members[0];   // prompt-intent title → the first member's MINTING message (resolves by id, kernel 92e23ff)
     const gm0Prompt = gm0.tree?.find((n) => n.id === gm0.itemId)?.promptAnchorUuid ?? null;
-    ttlEl.onclick = () => focusEcho(grp.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: gm0.itemId, sid: grp.sid, t: grp.t, anchor: "prompt", anchorUuid: gm0Prompt });
+    ttlEl.onclick = () => { focusEcho(grp.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: gm0.itemId, sid: grp.sid, t: grp.t, anchor: "prompt", anchorUuid: gm0Prompt }); };   // braced (T416 round two): without them the post ran on every paint of the modal, a jump nobody made
     agent.replaceChildren(...hostNameNodes(grp.name, grp.sid)); if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, dotFor(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
     wireAgeTip(ageEl, () => provenanceGroupRows(grp.members.map(rootStart), grp.t, hostNow, PROV_FMT));
     ageEl.style.color = "rgb(" + grp.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
-    clrEl.onclick = () => { for (const mem of grp.members) vscodeApi?.postMessage({ type: "askClear", itemId: mem.itemId, sid: mem.sid }); fullscreenAskId = null; renderModal(); };
+    clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClearMany", itemIds: grp.members.map((mem) => mem.itemId), sid: grp.sid }); fullscreenAskId = null; renderModal(); };   // one batch, one Undo
     // follow-up on a group goes to the session that took the typed prompt — one
     // message prefixed with the GROUP title, filed under the first member's ask
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, grp.members[0].itemId, grp.members[0].sid, grp.title));
@@ -3199,25 +3829,45 @@ function renderModal() {
     // title), so a goal with no sub-work is just one list line carrying its own done/blocked state, and
     // any sub-goals render beneath it as the rest of the list (the user 2026-06-16). The header above the
     // tree is only the session name + a recency-tinted age; Follow up moved to the footer below the tree.
-    ttlEl.style.display = "none";
-    titleHoverId = it.turnId;
-    agent.replaceChildren(...hostNameNodes(it.name, it.sid)); if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, dotFor(it.name)); agent.classList.toggle("dead", !it.live);
-    agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
+    // a NOTICE card's modal shows the notice (round four of PR 1831): its title heads the overlay (a notice has no tree whose
+    // first line could stand in), the title locates nothing and lights no chat turn (a notice has none), and an OWNER-LESS
+    // card's header name is plain text: no session to open, none to revive (the card header's rule since round two)
+    const nt = it.notice || null;
+    const ownerless = isOwnerless(it.sid);
+    ttlEl.style.display = nt ? "" : "none";
+    if (nt) { ttlEl.textContent = it.text; ttlEl.classList.remove("nav"); ttlEl.title = ""; ttlEl.onclick = null; }
+    titleHoverId = nt ? null : it.turnId;
+    agent.replaceChildren(...hostNameNodes(it.name, it.sid)); agent.style.color = it.color ? it.color.bg : "";
+    agent.classList.toggle("fname-plain", ownerless);
+    if (ownerless) { setWorkDot(agent, false); agent.classList.remove("dead"); agent.title = ""; agent.onclick = null; }
+    else { setWorkDot(agent, dotFor(it.name)); agent.classList.toggle("dead", !it.live); agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid }); }
     ageEl.textContent = relAge(hostNow - it.t);
     wireAgeTip(ageEl, () => provenanceRows(it, hostNow, PROV_FMT));
     ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid }); fullscreenAskId = null; renderModal(); };
+    if (nt) {
+      // no session gesture on a notice card's modal: the kernel's follow-up road reads the session out of a GOAL id
+      // ("sid:gN"), so Follow up, Check status and Continue on a notice id ("notice:<sid>:<key>:<rev>") are refused as a
+      // session no kernel has ("the pane addressed the wrong kernel"), and for an owner-less card there is no session at all;
+      // Clear stays (the ordinary askClear with the card's sid, the ledger's road). Round four of PR 1831, medium 2.
+      fupEl.style.display = "none"; fuboxEl.style.display = "none";
+      if (csEl) csEl.style.display = "none";
+      if (contEl) contEl.style.display = "none";
+      renderNoticeModalBody(body, it, nt);
+    } else {
     // "Check status" (the user 2026-07-20): shown when the card has open/blocked subs to sweep and the
     // session is live to answer. Same ack + re-arm contract as the card button (event-based: the judge's
     // re-file clears the asked state via the fresh modal render).
     if (csEl && it.live && statusSweepText(it).n > 0) {
       csEl.style.display = "";
       if (csEl.disabled && !it.followupPending && !it.recheck && !it.rejudging) { csEl.disabled = false; csEl.textContent = "Check status"; }
+      csEl.title = contTitle(csEl.disabled, "a status ask", it.followupAt);
       csEl.onclick = () => {
         const sweep = statusSweepText(it);
         if (!sweep.n) return;
         vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: sweep.text, sid: it.sid });
         csEl.disabled = true; csEl.textContent = "Asked";
+        csEl.title = contTitle(true, "a status ask", null);
         optimisticFollowMove(it.itemId);
         render();
       };
@@ -3226,9 +3876,11 @@ function renderModal() {
     if (contEl && askColumn(it) === "needsInput" && it.live && !it.provisional && !it.blocked) {
       contEl.style.display = "";
       if (contEl.disabled && !it.followupPending && !it.recheck && !it.rejudging) { contEl.disabled = false; contEl.textContent = "Continue"; }
+      contEl.title = contTitle(contEl.disabled, "a continue", it.followupAt);
       contEl.onclick = () => {
         vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, sid: it.sid, cont: true });
         contEl.disabled = true; contEl.textContent = "Sent";
+        contEl.title = contTitle(true, "a continue", null);
         optimisticFollowMove(it.itemId);
         render();
       };
@@ -3239,6 +3891,7 @@ function renderModal() {
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
     applyModalArtifacts(body, it);     // produced-file previews below the tree (the user 2026-07-08)
     applyModalWarnings(body, it);      // debug mode: this card's judge failures, input+reply expandable (the user 2026-07-09)
+    }
   }
   // The bottom bar always shows (every modal has an age + Clear); the Follow-up button inside it hides
   // itself for standalone deliverables (no follow-up), and the composer stays collapsed until toggled.
@@ -3276,7 +3929,8 @@ type Entry =
   // a SESSION HEADER row in grouped mode (the user 2026-07-13): the session's name + working dot on the
   // column backdrop, heading that session's run of cards. Only emitted for runs that exist.
   // `folded` = how many of this run's cards the header is standing in for (0 when the thread is expanded)
-  | { kind: "sess"; t: number; sid: string; name: string; color: { bg: string; fg: string } | null; live: boolean; folded: number };
+  // `col` = the column this header heads: the fold is per (session, column) — T263c, the user 2026-09-08
+  | { kind: "sess"; t: number; sid: string; col: Column; name: string; color: { bg: string; fg: string } | null; live: boolean; folded: number };
 
 // ONE counting rule (the user 2026-08-26): every number on the board counts CARDS, never rows — a
 // turn-group entry is worth its members, a folded session header is worth the cards it stands in for.
@@ -3284,6 +3938,10 @@ type Entry =
 // disagree (the traced bug: the chip counted a group as 1 row while the fold header said "cards").
 function entryCards(e: Entry): number {
   return e.kind === "sess" ? e.folded : e.kind === "group" ? e.group.members.length : 1;
+}
+/** The session an entry belongs to: a card's or a turn-group's owner, a run header's own sid. */
+function entrySid(e: Entry): string {
+  return e.kind === "ask" ? e.ask.sid : e.kind === "group" ? e.group.sid : e.sid;
 }
 
 // Grouped-mode session headers, one reused element per (column, sid) — same keyed-incremental treatment as
@@ -3305,41 +3963,98 @@ function makeSessHead(): HTMLElement {
   // most. The count beside it is what keeps the folded row from dead-ending — you can see what is under it.
   const fold = el("button", "feed-sess-fold");
   const cnt = el("span", "feed-sess-foldn"); cnt.style.display = "none";
-  h.append(nm, fold, cnt, svc, svcList);
+  // CLEAR for the whole session (the user 2026-09-08): far right of the header row, the header's own size,
+  // as quiet as the caret — the card's Clear in the same chrome, reading "Clear all" (T271, the user 2026-09-08:
+  // it clears the whole session, so its label says so). One click clears every card this
+  // session has in the current view (every column, folded ones included), with the same optimistic Undo
+  // the group clear uses instead of a confirm dialog. The action is DELEGATED on the stable columns root
+  // (data-act, installed once where the root is built) — never bound to this header node, which grouped
+  // mode re-homes and re-renders; the header only says which session it stands for (data-fsid).
+  // THE card's Clear, built by the same builder (the user 2026-09-08: same size, the outline, blue on hover),
+  // plus one positional class that carries layout only (far right of the row) — never a lookalike
+  const clr = clearButton("clear every card for this session", "Clear all");
+  clr.classList.add("feed-sess-clear"); clr.dataset.act = "sess-clear"; clr.style.display = "none";
+  h.append(nm, fold, cnt, svc, clr, svcList);
   (h as any)._name = nm; (h as any)._fold = fold; (h as any)._foldn = cnt;
-  (h as any)._svc = svc; (h as any)._svcList = svcList;
+  (h as any)._svc = svc; (h as any)._svcList = svcList; (h as any)._clear = clr;
+  // HOVER-FREEZE for the header row too (the user 2026-09-09, T285): a push while the pointer rests on the
+  // row — its name, its caret, its Clear all — must not rebuild the row under the pointer (the click-safety
+  // rule; a rebuilt Clear all lost the click). The row holds the same payload gate a card holds, keyed by
+  // the session it stands for, and releases it on mouseleave exactly like a card; entering the row's own
+  // buttons is entering the row (mouseenter/leave do not fire between a row and its children).
+  h.addEventListener("mouseenter", () => freezeEnter(sessFreezeKey(h)));
+  h.addEventListener("mouseleave", () => freezeLeave(sessFreezeKey(h)));
   return h;
 }
+/** The hover-freeze key a session header holds: "h:<column>:<sid>", read from the data-fcol and data-fsid stamps at
+ *  event time (grouped mode re-homes and re-stamps headers across renders; the stamps are the row's identity). The
+ *  key names the (column, session) ROW, the identity reconcileCol keys the element by, not the session alone: a
+ *  session heads a run in every column it has cards in, and the badge painter must tell the hovered row from that
+ *  session's headers in the other columns. */
+function sessFreezeKey(h: HTMLElement): string {
+  return "h:" + (h.getAttribute("data-fcol") || "") + ":" + (h.getAttribute("data-fsid") || "");
+}
 function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
-  h.setAttribute("data-fsid", e.sid);   // the hover-freeze badge painter finds headers by sid
-  const nm = (h as any)._name as HTMLElement;
-  nm.replaceChildren(...hostNameNodes(e.name, e.sid));
+  // the hover-freeze key and its badge painter read the row's session and column from these stamps (sessFreezeKey);
+  // compare first, like the labels below: the DOM's change-an-attribute steps queue a mutation record for a
+  // same-value write too
+  if (h.getAttribute("data-fsid") !== e.sid) h.setAttribute("data-fsid", e.sid);
+  if (h.getAttribute("data-fcol") !== e.col) h.setAttribute("data-fcol", e.col);
+  let nm = (h as any)._name as HTMLElement;
+  // the owner-less run's header name is a SPAN, no anchor at all (round two of PR 1831: an anchor offered to open or revive a
+  // session named notes that never existed); a header is keyed per (column, sid), so the swap happens once per header
+  if (isOwnerless(e.sid) !== (nm.tagName === "SPAN")) {
+    const sw = el(isOwnerless(e.sid) ? "span" : "a", isOwnerless(e.sid) ? "fname-plain" : "fname");
+    nm.replaceWith(sw); (h as any)._name = sw; (h as any)._nmSig = undefined; nm = sw;
+  }
+  // the name nodes are minted only when what they show changes: headers repaint every render (they are not
+  // behind the per-card update gate), and each mint is a Text-node replacement — the same reason cards are
+  // gated. hostNameNodes reads the name, the sid's host prefix and whether that host's link is down.
+  const nmSig = e.name + "\u0000" + e.sid + "\u0000" + (hostIsDown(e.sid) ? "d" : "");
+  if ((h as any)._nmSig !== nmSig) { (h as any)._nmSig = nmSig; nm.replaceChildren(...hostNameNodes(e.name, e.sid)); }
   if (e.color) nm.style.color = e.color.bg;
-  nm.classList.toggle("dead", !e.live);
-  nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
-  setWorkDot(nm, dotFor(e.name));   // the working/awaiting dot rides the header, not the cards
+  if (isOwnerless(e.sid)) {
+    // the owner-less run's header (Notes, or a remote host's host:Notes) is PLAIN TEXT: no session stands behind it, so no
+    // anchor to open, no title, no dead class, no revive offer, no dot
+    nm.classList.remove("dead"); nm.removeAttribute("title"); nm.onclick = null;
+  } else {
+    nm.title = "open this session";
+    nm.classList.toggle("dead", !e.live);
+    nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
+    setWorkDot(nm, dotFor(e.name));   // the working/awaiting dot rides the header, not the cards
+  }
   // the fold caret + the "n cards" stand-in for what it hides
   const fold = (h as any)._fold as HTMLElement, foldn = (h as any)._foldn as HTMLElement;
-  const shut = collapsedThreads.has(e.sid);
+  // per (session, COLUMN) — T263c, the user 2026-09-08: the same session folds in Blocked and stays open in
+  // Working; a card that lands in this column later inherits this column's fold
+  const tkey = threadKey(e.sid, e.col);
+  const shut = collapsedThreads.has(tkey);
   h.classList.toggle("folded", shut);
-  fold.textContent = shut ? "▸" : "▾";           // ▸ folded / ▾ open
-  fold.title = shut ? "show this session's cards" : "collapse this session to its name — new cards stay folded too";
+  setText(fold, shut ? "▸" : "▾");               // ▸ folded / ▾ open
+  fold.title = shut ? "show this session's cards in this column" : "collapse this session's cards in this column to its name — new cards here stay folded too";
   fold.setAttribute("aria-expanded", shut ? "false" : "true");
   fold.setAttribute("aria-label", (shut ? "expand " : "collapse ") + e.name);
   foldn.style.display = shut && e.folded ? "" : "none";
   // just the number (the user 2026-08-26) — the section chips' own vocabulary; the words live on hover
-  foldn.textContent = String(e.folded);
+  setText(foldn, String(e.folded));
   foldn.title = e.folded === 1 ? "1 card folded under this session" : e.folded + " cards folded under this session";
   fold.onclick = (ev) => {
     ev.stopPropagation();   // the fold IS the acknowledgement: local state + an immediate re-render
-    if (collapsedThreads.has(e.sid)) collapsedThreads.delete(e.sid); else collapsedThreads.add(e.sid);
+    if (collapsedThreads.has(tkey)) collapsedThreads.delete(tkey); else collapsedThreads.add(tkey);
     render();
   };
+  // the session-wide Clear: which session, and only while it has cards in the current view (a header
+  // exists only for a run, so this is a guard against a stale header, not a common state)
+  const sclr = (h as any)._clear as HTMLElement;
+  sclr.dataset.fsid = e.sid;
+  const ncards = sessionCards(e.sid).length;
+  sclr.style.display = ncards ? "" : "none";
+  sclr.setAttribute("aria-label", "clear every card for " + e.name);
   const svc = (h as any)._svc as HTMLElement, svcList = (h as any)._svcList as HTMLElement;
   const procs = e.live ? bgServicesMap[e.name] || [] : [];
   const open = procs.length > 0 && openBgSvc.has(e.sid);
   svc.style.display = procs.length ? "" : "none";
-  svc.textContent = procs.length === 1 ? "background process" : procs.length + " background processes";
+  setText(svc, procs.length === 1 ? "background process" : procs.length + " background processes");
   svc.title = open ? "hide the processes" : "processes this session keeps running — click to list";
   svc.classList.toggle("on", open);
   svc.setAttribute("aria-pressed", open ? "true" : "false");
@@ -3376,6 +4091,10 @@ function makeUndoClearBtn(): HTMLElement {
       for (const it of batch) {
         pendingCleared.delete(it.itemId);
         pendingRestored.set(it.itemId, it);                                  // stay sticky until the kernel push carries it
+        // a card still inside its 180 ms collapse keeps its element AND its object, so the per-card update
+        // gate would leave `.dismissing` on it and the collapse timer would then remove the restored card:
+        // the Undo gesture is the event that takes the class off
+        for (const c of cardTwins(it.itemId)) c.classList.remove("dismissing");   // the board's element and the focused section's copy (T347)
         if (!asks.some((a) => a.itemId === it.itemId)) asks.push(it);        // show it NOW
       }
       render();
@@ -3552,12 +4271,36 @@ function buildViewMenu(menu: HTMLElement): void {
   mk(false, () => setViewPref("newestFirst", !feedPrefs().newestFirst));
   mk(true, () => setViewPref("stacked", !feedPrefs().stacked, applyStacked));
   mk(true, () => setViewPref("grouped", !feedPrefs().grouped));
+  // "Show focused session" (T347, the user 2026-09-11): the chat's focused session's cards on top of the
+  // feed, above a divider. View state of the feed itself, not a shared pref: it rides the feed's persisted
+  // view state (FeedViewState.focused, OFF by default), never romp:settings, so the gear and the other panes
+  // have nothing to read — and the click re-renders directly, the way the fold carets do.
+  mk(true, () => { showFocused = !showFocused; persistViewState(); render(); });
+  // the BOARD rows (plans/card-boards.md, phase four): one menuitemradio per board the frame carries, the feed first,
+  // shown once a second board exists (with the feed alone the menu is exactly what it was); hidden under a ?board= page
+  // (that pick is the page's). A board created by `romp card -b` is a row on the next open, no reload.
+  const boards = knownBoards();
+  if (!boardQuery && boards.length > 1) {
+    const cur = activeBoard();
+    for (const b of boards) {
+      const r = el("button", "ctx-item ctx-board");
+      (r as HTMLButtonElement).type = "button";
+      r.setAttribute("role", "menuitemradio");
+      r.setAttribute("aria-checked", b === cur ? "true" : "false");
+      r.classList.toggle("current", b === cur);
+      r.dataset.board = b.id;
+      r.textContent = "Board: " + b.title;
+      r.title = b === cur ? "the board shown now" : "show the " + b.title + " board (its cards under its own categories)";
+      r.onclick = (ev) => { ev.stopPropagation(); setActiveBoard(b.id); closeViewMenu(); };
+      menu.appendChild(r);
+    }
+  }
 }
-// Sync the three rows to the CURRENT prefs — labels, ✓s, the forced state — without rebuilding them.
+// Sync the four rows to the CURRENT prefs — labels, ✓s, the forced state — without rebuilding them.
 function paintViewMenu(menu: HTMLElement): void {
   const p = feedPrefs();
-  const rows = menu.querySelectorAll(".ctx-item");
-  if (rows.length !== 3) return;
+  const rows = Array.from(menu.querySelectorAll(".ctx-item")).filter((r) => !r.classList.contains("ctx-board"));   // the four view rows; the Board radios below them paint at build (a pick closes the menu)
+  if (rows.length !== 4) return;
   const set = (i: number, label: string, opts: { current: boolean; forced?: boolean; title: string }) => {
     const r = rows[i] as HTMLElement;
     r.textContent = label;
@@ -3581,6 +4324,11 @@ function paintViewMenu(menu: HTMLElement): void {
     current: p.grouped,
     title: p.grouped ? "grouped by session — click for the flat column order"
       : "group each column's cards by session (tab order), a session header between runs",
+  });
+  set(3, "Show focused session", {
+    current: showFocused,
+    title: showFocused ? "the chat's focused session has its cards on top — click to hide the section"
+      : "put the chat's focused session's cards on top of the feed, above a divider",
   });
 }
 function openViewMenu(btn: HTMLElement): void {
@@ -3610,7 +4358,7 @@ function ensureViewMenuBtn(): HTMLElement {
     b = el("button", "fdismiss ffollow feed-modetoggle");
     b.id = "feed-viewbtn";
     b.textContent = "View \u25b4";
-    b.title = "view options — sort direction, single column, group by session";
+    b.title = "view options — sort direction, single column, group by session, the focused session on top";
     b.setAttribute("aria-haspopup", "menu");
     b.onclick = (ev) => {   // opening the menu IS the acknowledgement (same as the session filter)
       ev.stopPropagation();
@@ -3705,9 +4453,8 @@ function openSessList(): void {
       const chips = el("span", "fsm-chips");
       for (const g of lensUnions(feedTagViews)) {
         if (!g.members.includes(pick)) continue;
-        const c = el("i", "fsm-chip-tag");
-        c.textContent = g.name;
-        if (g.color) { c.style.color = g.color; c.style.borderColor = g.color; }
+        const c = tagChip(g.name, g.color || null);   // the one tag chip (T321); the class is the dialog's layout hook
+        c.classList.add("fsm-chip-tag");
         chips.appendChild(c);
       }
       if (chips.childElementCount) r.appendChild(chips);
@@ -3856,11 +4603,14 @@ const ROW_DEFAULT = ["asks", "needsInput", "completed"];     // the side-by-side
 // by side: Working→Blocked→Completed, the build order). Also each section's fold (stacked-only CSS).
 // Idempotent; runs at build, per toggle, and per drag re-slot.
 function applyColStack(): void {
-  const custom = colOrder.length === 3 ? colOrder : null;
-  for (const key of ["asks", "needsInput", "completed"]) {
-    const col = document.querySelector<HTMLElement>(".feed-col.col-" + key);
+  const custom = orderComplete(colOrder) ? colOrder : null;
+  for (const key of activeCols()) {
+    // the BOARD's column, under #feed-cols: the focused-session section above it carries the same column
+    // classes (T347), and a bare query would land on that copy first. The fold is the board's alone; the
+    // section's blocks take their order from applyFocusLayout below (the board's, until the user drags THERE).
+    const col = document.querySelector<HTMLElement>("#feed-cols .feed-col.col-" + key);
     if (!col) continue;
-    const folded = collapsedCols.has(key);
+    const folded = collapsedCols.has(foldKey(key));
     col.classList.toggle("col-collapsed", folded);
     if (custom) col.style.setProperty("--col-order", String(custom.indexOf(key) + 1));
     else col.style.removeProperty("--col-order");
@@ -3870,6 +4620,121 @@ function applyColStack(): void {
       fold.setAttribute("aria-expanded", String(!folded));
     }
   }
+  applyFocusLayout();   // the section mirrors the board's arrangement until it has an order of its own (T410)
+}
+
+// The focused-session section's BLOCK LAYOUT (T410, the user 2026-09-13, who wanted the section's blocks
+// movable, resizable and collapsible on their own, none leaving the section). ORDER: the section's own
+// focusOrder once it holds three keys, else the board's arrangement exactly as before (colOrder, or each
+// layout's CSS default with the var off) — so nothing changes for anyone who never drags in the section.
+// WIDTH: each block's weight (focusW, 1 = the equal split) as its flex-grow; the blocks' flex-basis is 0, so the
+// weights ARE the split. FOLD: a collapsed block wears col-collapsed (its list hidden, the block shrunk to its
+// head — the inline weight cleared so the class's flex: 0 0 auto stands — and the others take the room). The
+// gutter is hidden on a collapsed block and on the last expanded block in visual order (nothing to its right
+// to trade width with; in the stacked layout the CSS hides every gutter). HEIGHT is never resized: the section
+// grows with what the focused session holds. Idempotent; runs at build, per fold, per drag re-slot, per resize.
+function applyFocusLayout(): void {
+  if (!document.getElementById("feed-focus")) return;
+  const order = orderComplete(focusOrder) ? focusOrder : orderComplete(colOrder) ? colOrder : null;
+  const visual = (order || rowDefault()).filter((k) => !collapsedFocusCols.has(k));
+  for (const key of activeCols()) {
+    const twin = document.querySelector<HTMLElement>("#feed-focus .feed-col.col-" + key);
+    if (!twin) continue;
+    if (order) twin.style.setProperty("--col-order", String(order.indexOf(key) + 1));
+    else twin.style.removeProperty("--col-order");
+    const folded = collapsedFocusCols.has(key);
+    twin.classList.toggle("col-collapsed", folded);
+    twin.style.flexGrow = folded ? "" : String(focusW[key] ?? 1);
+    const fold = twin.querySelector<HTMLElement>(".fcol-fold");
+    if (fold) {
+      fold.textContent = folded ? "▸" : "▾";
+      fold.setAttribute("aria-expanded", String(!folded));
+      fold.setAttribute("aria-label", (folded ? "Expand " : "Collapse ") + (fold.dataset.label || ""));
+    }
+    const gutter = twin.querySelector<HTMLElement>(".focus-gutter");
+    if (gutter) gutter.hidden = folded || visual[visual.length - 1] === key;
+  }
+}
+
+// The GUTTER on a section block's right edge (T410): dragging it trades width between this block and the next
+// expanded block in visual order. The two weights move as a pair — sum preserved, floor 0.35 each — so a drag
+// can never empty a block or spill past its neighbour; the weights paint live as flex-grow and persist on
+// release. Pointer capture, like the block drag, so the drag survives leaving the 8px zone. Width only: the
+// section's height follows its content and is never resized (see applyFocusLayout).
+function wireFocusGutter(gutter: HTMLElement, key: string): void {
+  gutter.addEventListener("pointerdown", (down) => {
+    const col = FOCUS_SLOTS.col(key);
+    const order = orderComplete(focusOrder) ? focusOrder : orderComplete(colOrder) ? colOrder : rowDefault();
+    const visual = order.filter((k) => !collapsedFocusCols.has(k));
+    const next = visual[visual.indexOf(key) + 1];
+    const other = next ? FOCUS_SLOTS.col(next) : null;
+    if (!col || !next || !other) return;
+    down.preventDefault();
+    down.stopPropagation();
+    gutter.setPointerCapture(down.pointerId);
+    gutter.classList.add("active");
+    const w0 = focusW[key] ?? 1, sum = w0 + (focusW[next] ?? 1);
+    const px = col.getBoundingClientRect().width + other.getBoundingClientRect().width;   // the pair's pixels = the pair's weights
+    const startX = down.clientX;
+    const MIN_W = 0.35;
+    const move = (ev: PointerEvent) => {
+      if (!px) return;
+      const w = Math.min(sum - MIN_W, Math.max(MIN_W, w0 + (ev.clientX - startX) * sum / px));
+      focusW = { ...focusW, [key]: w, [next]: sum - w };
+      applyFocusLayout();
+    };
+    const up = () => {
+      gutter.removeEventListener("pointermove", move);
+      gutter.removeEventListener("pointerup", up);
+      gutter.removeEventListener("pointercancel", up);
+      gutter.classList.remove("active");
+      for (const k of Object.keys(focusW)) focusW[k] = Math.round(focusW[k] * 1000) / 1000;   // three decimals in the blob
+      persistViewState();
+    };
+    gutter.addEventListener("pointermove", move);
+    gutter.addEventListener("pointerup", up);
+    gutter.addEventListener("pointercancel", up);
+  });
+}
+
+// The BLOCK's KEYS (T410b): ArrowLeft / ArrowRight on the section's focused chip move its block one slot within
+// the section (ArrowUp / ArrowDown the same, the stacked layout's axis), persisted at once — the keyboard's road to
+// the drag. The order it moves from is the one on screen: the section's own, else what the section follows (the
+// board's, or the layout's default), exactly as the drag seeds itself.
+function wireBlockKeys(chip: HTMLElement, key: string): void {
+  chip.addEventListener("keydown", (e) => {
+    const delta = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : 0;
+    if (!delta) return;
+    const colsEl = FOCUS_SLOTS.container();
+    if (!colsEl) return;
+    e.preventDefault();
+    e.stopPropagation();   // the chip's key, not the card cursor's (kbMode listens on the document for the same arrows)
+    const vertical = getComputedStyle(colsEl).flexDirection === "column";
+    const cur = FOCUS_SLOTS.get();
+    const fallback = FOCUS_SLOTS.fallback(vertical ? STACK_DEFAULT : ROW_DEFAULT);
+    const hadCustom = orderComplete(cur);
+    const order = (hadCustom ? cur : fallback).slice();
+    // one slot among the blocks ON SCREEN (visibleKeys): a hidden neighbour is skipped, never swapped behind
+    const visible = visibleKeys(order, FOCUS_SLOTS.col);
+    const from = visible.indexOf(key), to = from + delta;
+    if (from < 0 || to < 0 || to >= visible.length) return;
+    const nv = visible.slice();
+    nv.splice(from, 1);
+    nv.splice(to, 0, key);
+    const next = placeVisible(order, visible, nv);
+    // the no-trace rule per PROVENANCE (T410 review): an order the keys minted out of a following state
+    // (focusOrderByKeys) is walked back to nothing stored when a press lands on the arrangement the section follows;
+    // an order the user pinned by DRAG is never cleared by a key that happens to land there. (From a following state
+    // itself the order IS the fallback and a one-slot move always leaves it, so the clear rests on the flag alone.)
+    if (next.join() === fallback.join() && focusOrderByKeys) {
+      FOCUS_SLOTS.set([]);
+      focusOrderByKeys = false;
+    } else {
+      FOCUS_SLOTS.set(next);
+      if (!hadCustom) focusOrderByKeys = true;   // minted by the keys out of a following state: walkable back
+    }
+    persistViewState();
+  });
 }
 
 // Drag a section by its CATEGORY CHIP — in BOTH layouts now (the user 2026-08-24, reversing the
@@ -3880,33 +4745,86 @@ function applyColStack(): void {
 // section FOLLOWS the pointer along the drag axis (a transform, so nothing reflows under the hand)
 // and the displaced sections FLIP-animate into their provisional slots — the arrangement you see
 // mid-drag is the arrangement you get on drop.
-function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
+//
+// ONE implementation for two containers (T410): the BOARD (the chip drags a column of #feed-cols; colOrder,
+// the default `slots`) and the focused-session SECTION (its chip drags a block of #feed-focus; focusOrder). A
+// SlotDrag names the container (the drag axis is read from it), the order it reads and writes, the element per
+// key and the order a drag starts from when none is stored — so the BOUND is the container: a section drag
+// never touches a board column, and a board drag never reaches the section.
+type SlotDrag = {
+  container: () => HTMLElement | null;
+  col: (key: string) => HTMLElement | null;
+  get: () => string[];
+  set: (order: string[]) => void;
+  fallback: (layoutDefault: string[]) => string[];   // the seed order with nothing stored
+};
+const BOARD_SLOTS: SlotDrag = {
+  container: () => document.getElementById("feed-cols"),
+  col: (k) => document.querySelector<HTMLElement>("#feed-cols .feed-col.col-" + k),   // the board's, not the focused section's copy (T347)
+  get: () => colOrder,
+  set: (o) => { colOrder = o; applyColStack(); },
+  fallback: (d) => d,   // each layout's own CSS default
+};
+const FOCUS_SLOTS: SlotDrag = {
+  container: () => document.querySelector<HTMLElement>("#feed-focus .feed-focus-cols"),
+  col: (k) => document.querySelector<HTMLElement>("#feed-focus .feed-col.col-" + k),
+  get: () => focusOrder,
+  set: (o) => { focusOrder = o; applyFocusLayout(); },
+  fallback: (d) => (orderComplete(colOrder) ? colOrder : d),   // the section follows the board until it has an order of its own
+};
+// A re-slot walks VISIBLE blocks only (T410 review round two): in the single-column layout a focused block whose
+// category has no cards is display: none (col-empty), and its rect is all zeros, so a midpoint walk over every key
+// read 0 for each hidden block after the dragged one and jumped the target to the LAST slot on the first move
+// (a 14 px jiggle on the one visible chip stored an order the user never chose; a one-slot drag past a visible
+// neighbour landed behind a hidden one, surfacing only when that block's first card arrived). The dragged block
+// moves among the blocks on screen; hidden blocks keep their relative places in the stored order.
+function visibleKeys(order: string[], colOf: (k: string) => HTMLElement | null): string[] {
+  return order.filter((k) => {
+    const e = colOf(k);
+    if (!e) return false;
+    const r = e.getBoundingClientRect();
+    return r.width > 0 || r.height > 0;   // display: none (a hidden block) is the zero rect; a folded block still has its head
+  });
+}
+function placeVisible(order: string[], visible: string[], newVisible: string[]): string[] {
+  const out = order.slice();
+  const slotsIdx = order.map((k, i) => (visible.includes(k) ? i : -1)).filter((i) => i >= 0);
+  newVisible.forEach((k, i) => { out[slotsIdx[i]] = k; });
+  return out;
+}
+const DRAG_SLOP_PX = 4;   // a pointer that moved past this from the press is a DRAG; under it the gesture is a click (T410 review)
+function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: SlotDrag = BOARD_SLOTS): void {
   chip.addEventListener("pointerdown", (down) => {
-    const colsEl = document.getElementById("feed-cols");
+    if (down.button !== 0) return;   // the primary button (or a touch, a pen) arms the drag; a right press never did anything useful
+    const colsEl = slots.container();
     if (!colsEl) return;
+    const startOrder = slots.get().slice();   // what the press started from: a gesture that ends elsewhere CHANGED an order
     const vertical = getComputedStyle(colsEl).flexDirection === "column";   // the drag AXIS, per layout
-    down.preventDefault();
+    // the pointerdown's default STANDS (T410 review): the browser focuses a focusable chip natively, pointer-initiated,
+    // so a mouse click arms the arrow keys without a Tab and without the keyboard's :focus-visible ring or a
+    // scroll-into-view (a scripted focus() inside a prevented pointerdown painted the ring on every click and lurched
+    // a clipped chip into view); selection and touch are held by the chip's CSS (user-select: none, touch-action: none)
     down.stopPropagation();
     chip.setPointerCapture(down.pointerId);
     col.classList.add("col-dragging");
+    let dragged = false;   // a pointer that moved past the slop: the chip gives focus back when the drag ends (a click keeps it)
     const pos = (ev: PointerEvent) => (vertical ? ev.clientY : ev.clientX);
     const edge = (r: DOMRect) => (vertical ? r.top : r.left);
     const midOf = (r: DOMRect) => (vertical ? r.top + r.height / 2 : r.left + r.width / 2);
     const translate = (d: number) => (vertical ? "translateY(" + d + "px)" : "translateX(" + d + "px)");
-    const fallback = vertical ? STACK_DEFAULT : ROW_DEFAULT;
-    const hadCustom = colOrder.length === 3;   // for the no-trace rule in up()
+    const fallback = slots.fallback(vertical ? STACK_DEFAULT : ROW_DEFAULT);   // each layout's own default, or what the container follows
+    const hadCustom = orderComplete(slots.get());   // for the no-trace rule in up()
     const start = pos(down);
     let slotShift = 0;   // the dragged section's own accumulated slot movement — folded into its
     //                      follow-transform so a re-slot never yanks it out from under the pointer
     const applyOrderFlip = (order: string[]) => {
       const els: Array<[string, HTMLElement]> = [];
-      for (const k of ["asks", "needsInput", "completed"]) {
-        const e = document.querySelector<HTMLElement>(".feed-col.col-" + k);
+      for (const k of activeCols()) {
+        const e = slots.col(k);   // this container's element for the key, never the other container's
         if (e) els.push([k, e]);
       }
       const before = new Map(els.map(([k, e]) => [k, edge(e.getBoundingClientRect())]));
-      colOrder = order;
-      applyColStack();
+      slots.set(order);
       for (const [k, e] of els) {
         const d = (before.get(k) || 0) - edge(e.getBoundingClientRect());
         if (!d) continue;
@@ -3916,30 +4834,40 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
       }
     };
     const move = (ev: PointerEvent) => {
-      const order = (colOrder.length === 3 ? colOrder : fallback).slice();
-      const from = order.indexOf(key);
-      // the slot whose axis midpoint the pointer is past — walk the OTHER two sections' rects
+      const cur = slots.get();
+      const order = (orderComplete(cur) ? cur : fallback).slice();
+      // the slot whose axis midpoint the pointer is past — walk the OTHER VISIBLE sections' rects (visibleKeys: a
+      // block the single-column layout hides has a zero rect and no slot to offer)
+      const visible = visibleKeys(order, slots.col);
+      const from = visible.indexOf(key);
       let to = from;
-      for (const other of order) {
-        if (other === key) continue;
-        const oc = document.querySelector<HTMLElement>(".feed-col.col-" + other);
-        if (!oc) continue;
-        const m = midOf(oc.getBoundingClientRect());
-        const oi = order.indexOf(other);
-        if (oi < from && pos(ev) < m) { to = Math.min(to, oi); }
-        if (oi > from && pos(ev) > m) { to = Math.max(to, oi); }
+      if (from >= 0) {
+        for (const other of visible) {
+          if (other === key) continue;
+          const oc = slots.col(other);
+          if (!oc) continue;
+          const m = midOf(oc.getBoundingClientRect());
+          const oi = visible.indexOf(other);
+          if (oi < from && pos(ev) < m) { to = Math.min(to, oi); }
+          if (oi > from && pos(ev) > m) { to = Math.max(to, oi); }
+        }
       }
       if (to !== from) {
-        order.splice(from, 1);
-        order.splice(to, 0, key);
-        applyOrderFlip(order);
+        const nv = visible.slice();
+        nv.splice(from, 1);
+        nv.splice(to, 0, key);
+        applyOrderFlip(placeVisible(order, visible, nv));   // hidden blocks keep their relative places
       }
       col.style.transform = translate(pos(ev) - start - slotShift);
+      if (Math.abs(pos(ev) - start) > DRAG_SLOP_PX) dragged = true;   // a trackpad tap or a slipping click stays a click
     };
     const up = () => {
       chip.removeEventListener("pointermove", move);
       chip.removeEventListener("pointerup", up);
       chip.removeEventListener("pointercancel", up);
+      // a DRAG ends with the chip no longer holding focus, so the arrow keys go back to the card cursor (a click that
+      // never moved keeps the focus it took: that is how the keys arm)
+      if (dragged && chip.tabIndex >= 0 && document.activeElement === chip) chip.blur();
       // settle: animate from wherever the hand left it into its slot, then drop the transform
       const hang = col.style.transform;
       col.style.transform = "";
@@ -3950,11 +4878,14 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
       col.classList.remove("col-dragging");
       // a drag dropped back where it started leaves NO trace (review 2026-08-24): without a
       // pre-existing custom order, ending on this layout's own default must not mint an EXPLICIT
-      // order — that would silently re-arrange the OTHER layout, which keeps a different default
-      if (!hadCustom && colOrder.length === 3 && colOrder.join() === fallback.join()) {
-        colOrder = [];
-        applyColStack();
-      }
+      // order — that would silently re-arrange the OTHER layout, which keeps a different default (and in
+      // the section, dropping back on the board's arrangement keeps FOLLOWING the board rather than pinning it)
+      const cur = slots.get();
+      if (!hadCustom && orderComplete(cur) && cur.join() === fallback.join()) slots.set([]);
+      // the keys' provenance flag drops only when this gesture CHANGED a stored order (T410 review round three): a
+      // section drag that landed elsewhere pinned its order by drag, a board drag that landed elsewhere changed what
+      // the section follows; a click, and a there-and-back drag, leave a key-minted order walkable back
+      if (slots.get().join() !== startOrder.join()) focusOrderByKeys = false;
       persistViewState();
     };
     chip.addEventListener("pointermove", move);
@@ -3964,14 +4895,23 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
 }
 
 function ensureCols(list: HTMLElement) {
+  const board = activeBoard();
+  const stale = document.getElementById("feed-cols");
+  if (stale && stale.dataset.board !== board.id) { stale.remove(); removeFocusSection(); }   // the view switch (phase four): another board's columns come down whole
   if (!document.getElementById("feed-cols")) {
     list.innerHTML = "";
-    const cols = el("div", "feed-cols"); cols.id = "feed-cols";
+    const cols = el("div", "feed-cols"); cols.id = "feed-cols"; cols.dataset.board = board.id;
+    // Header actions ride the STABLE columns root (the click-safety rule): the header nodes under it are
+    // re-homed and re-rendered on every push, and a native click needs mousedown and mouseup on one element.
+    // delegate() also flashes the pressed control (.romp-acted), the instant acknowledgement.
+    delegate(cols, {
+      "sess-clear": (b, ev) => { ev.stopPropagation(); const sid = b.dataset.fsid; if (sid) clearSessionCards(sid); },
+    });
     // "Working" (the user's rename, 2026-06-11): every card is an ASK; the left
     // column holds the ones being worked — internal keys keep the old names
     // each header is a filled state chip reproducing the chat status chips
     // (styles.css .chip): working=yellow, blocked=awaiting-red, completed=ready-blue.
-    for (const [key, label, chip] of [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]] as const) {
+    for (const [key, label, chip] of columnTable(activeBoard())) {   // the board's categories, in its order (board-def.ts)
       const col = el("div", "feed-col col-" + key);
       const head = el("div", "feed-col-head");
       // header furniture (the user 2026-08-16): a caret LEFT of the chip folds the whole category to
@@ -3982,13 +4922,13 @@ function ensureCols(list: HTMLElement) {
       fold.setAttribute("aria-label", "Collapse " + label);
       fold.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        if (collapsedCols.has(key)) collapsedCols.delete(key); else collapsedCols.add(key);
+        if (collapsedCols.has(foldKey(key))) collapsedCols.delete(foldKey(key)); else collapsedCols.add(foldKey(key));
         applyColStack();
         persistViewState();
       });
       const name = el("span", "feed-col-name fcol-chip fcol-chip-" + chip); name.textContent = label;
-      name.title = "drag to reorder";
-      wireColDrag(name, col, key);            // the chip ITSELF drags (the user 2026-08-16) — the grab
+      if (board === FEED_BOARD) { name.title = "drag to reorder"; wireColDrag(name, col, key); }   // the chip ITSELF drags (the user 2026-08-16), the grab
+      else name.classList.add("fcol-static");   // a data board's columns keep their definition's order: no drag, no grab cursor, no title (a no-op affordance lies; per-board order is phase five's)
       //                                         cursor it wears in the stacked layout is the affordance
       const count = el("span", "feed-col-count"); count.id = "col-" + key + "-count";
       head.append(name, fold, count);         // caret RIGHT of the chip — the same side as the
@@ -4000,14 +4940,9 @@ function ensureCols(list: HTMLElement) {
     list.appendChild(cols);
     applyColStack();
   }
-  return {
-    asks: document.getElementById("col-asks-list")!,
-    needsInput: document.getElementById("col-needsInput-list")!,
-    completed: document.getElementById("col-completed-list")!,
-    asksCount: document.getElementById("col-asks-count")!,
-    needsInputCount: document.getElementById("col-needsInput-count")!,
-    completedCount: document.getElementById("col-completed-count")!,
-  };
+  const lists: Record<Column, HTMLElement> = {}, counts: Record<Column, HTMLElement> = {};
+  for (const key of activeCols()) { lists[key] = document.getElementById("col-" + key + "-list")!; counts[key] = document.getElementById("col-" + key + "-count")!; }
+  return { lists, counts };
 }
 
 // Keyed in-place reconcile of ONE column (mixes ask + standalone cards; a card
@@ -4051,7 +4986,66 @@ function dressHeaderIfLast(card: HTMLElement, sid: string): void {
   startSessHeadExit(key, head);
 }
 
-function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<string>) {
+// What a Clear may take: not a PLACEHOLDER (provisional / awaiting / blocked stand-ins carry no goal to
+// curate: the kernel keeps listing them, so a clear would only suppress them on this page until reload).
+// The card-level Clear hides itself for those; the session Clear must not reach around that (the review of
+// the session Clear, 2026-09-08). A held message's card is a notice card since 2026-09-19: Clear dismisses
+// it as any card's, and the held file stays the bus's to decide.
+function clearable(it: AskItem): boolean {
+  return !it.provisional;   // (a held message's card is a notice card since 2026-09-19: Clear dismisses it as any card, the held file stays)
+}
+// Every CLEARABLE card a session has in the CURRENT view (the same filters render reads: scope, lens,
+// `#only=`), across every column, folded-under-the-header ones included — the set the header's Clear removes.
+function sessionCards(sid: string): AskItem[] {
+  return viewFiltered(asks).filter((a) => a.sid === sid && clearable(a));
+}
+// The session header's Clear (the user 2026-09-08): one click, every card of that session in the current
+// view, as ONE motion and ONE Undo batch. The same optimistic path the ask-group clear takes, applied to
+// every card and turn-group of the session in every column: flush each card's cross-surface hover
+// highlight, mark it .dismissing, start every column's header for this session on its exit at the same
+// moment (the one-motion rule), cache the whole batch on clearedStack so Undo restores the session in one
+// click, suppress the ids from incoming pushes (pendingCleared) and post ONE askClearMany — one kernel
+// batch, one cleared.jsonl stamp, so the kernel's UndoClear restores the whole gesture the way the client's
+// does (N single posts stamped N batches, and Undo brought back only the last-posted card while the
+// client restored all N: phantom cards). Finalize after the 180ms exit only what is STILL ours and still
+// dismissing — a render inside the window that revived a card (re-render resets its class) or replaced
+// its element must not be yanked by a stale timeout — and drop from the model only ids still pending
+// (an Undo inside the window deleted its ids from pendingCleared; a kernel-confirmed clear already left).
+function clearSessionCards(sid: string): void {
+  const members = sessionCards(sid);
+  if (!members.length) return;
+  const ids = members.map((m) => m.itemId);
+  const turns = new Set(members.map((m) => m.turnId).filter(Boolean));
+  const leaving: [HTMLElement, () => boolean, () => void][] = [];
+  for (const m of members) {
+    const c = askEls.get(m.itemId);
+    if (c) leaving.push([c, () => askEls.get(m.itemId) === c, () => askEls.delete(m.itemId)]);
+    const f = fsAskEls.get(m.itemId);   // the focused section's copy leaves with its card (T347)
+    if (f) leaving.push([f, () => fsAskEls.get(m.itemId) === f, () => fsAskEls.delete(m.itemId)]);
+  }
+  for (const [tid, g] of Array.from(groupEls)) {
+    if (turns.has(tid) && ((g as any)._g as AskGroup | undefined)?.sid === sid) leaving.push([g, () => groupEls.get(tid) === g, () => groupEls.delete(tid)]);
+  }
+  for (const [tid, g] of Array.from(fsGroupEls)) {
+    if (turns.has(tid) && ((g as any)._g as AskGroup | undefined)?.sid === sid) leaving.push([g, () => fsGroupEls.get(tid) === g, () => fsGroupEls.delete(tid)]);
+  }
+  for (const [c] of leaving) { c.dispatchEvent(new MouseEvent("mouseleave")); c.classList.add("dismissing"); }
+  // The header row holds the hover-freeze gate too, and its Clear all sits on the row: the pointer that clicked it
+  // is resting on the row by construction. The ghost is pointer-inert (and reduced motion removes the row outright),
+  // so no mouseleave of its own ever fires; dispatch the synthetic one, as the card loop above does, so the release
+  // comes from the click and the kernel's confirmation of the clear applies at once instead of queueing behind
+  // the hold. freezeLeave ignores a key it does not hold, so the session's headers in the other columns are safe.
+  for (const [key, head] of Array.from(sessHeadEls)) if (head.getAttribute("data-fsid") === sid) { head.dispatchEvent(new MouseEvent("mouseleave")); startSessHeadExit(key, head); }
+  clearedStack.push(members.slice());   // one batch: one Undo brings the whole session back
+  for (const m of members) pendingCleared.add(m.itemId);
+  vscodeApi?.postMessage({ type: "askClearMany", itemIds: ids, sid });   // ONE kernel batch (see above)
+  setTimeout(() => {
+    for (const [c, stillOurs, forget] of leaving) if (stillOurs() && c.classList.contains("dismissing")) { c.remove(); forget(); }
+    dropDismissed(ids.filter((id) => pendingCleared.has(id)));
+  }, 180);
+}
+
+function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<string>, gate: GateEnv) {
   const existing = new Map<string, HTMLElement>();
   for (const c of Array.from(listEl.children) as HTMLElement[]) {
     const k = c.dataset.key;
@@ -4065,7 +5059,15 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
       key = "a:" + e.ask.itemId;
       card = askEls.get(e.ask.itemId) || makeAskCard(e.ask);
       askEls.set(e.ask.itemId, card);
-      updateAskCard(card, e.ask);
+      // THE UPDATE GATE (feed-card-gate.ts): repaint only a card the kernel re-sent (a new object — the pane
+      // shim's delta reassembly and federation's merge keep an unchanged card's object by reference) or whose
+      // board-level inputs changed (the key). Everything below — placement, the insertBefore order walk, the
+      // cross-column removal — stays unconditional, so a card whose column or sort changed still moves. The
+      // key is stored only after updateAskCard returns: a throw mid-update leaves the card marked for another
+      // try, not recorded as painted.
+      const ik = cardInputsKey(e.ask, gate);
+      if (cardNeedsUpdate(card as any, e.ask, ik)) { updateAskCard(card, e.ask); (card as any)._ik = ik; }
+      rearmNoticeButtons(card as any);   // outside the gate: an identical push (the same card object) still lets a latched action go (T370)
     } else if (e.kind === "sess") {
       // grouped-mode session header — keyed per (column, sid): one session can head a run in EVERY column
       key = "s:" + listEl.id + ":" + e.sid;
@@ -4097,6 +5099,215 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
   // including an old placeholder, is already removed at the top of this reconcile.)
 }
 
+// ── THE FOCUSED SESSION SECTION (T347, the user 2026-09-11, who wanted the focused session's cards on top) ──
+// When a tab has focus in the chat pane, the feed puts that session's cards ABOVE the board: the session's
+// name as the head, the board's three columns (Working / Needs you / Completed, the same chips), a horizontal
+// rule under it. The board below stays exactly as it is, so those cards appear twice. A VIEW, not a move:
+// the section has its own elements and caches (fsAskEls / fsGroupEls, keys "f:a:…" / "f:g:…"), and
+// nothing below is touched by it — the FLIP capture reads #feed-cols, the modal's and the keyboard scope's
+// lookups match the bare keys, applyFocus lights both copies. EVENT-based: it rebuilds inside render(),
+// which the kernel's activeChat frame (a tab switch) and the feed's own frames drive; no timer anywhere.
+// Built once and synced in place: the head's name link and the column heads are stable nodes
+// (click-safety), only the card lists reconcile — with the same builders and the same update gate the
+// board uses, so a copy repaints exactly when the card below would.
+function ensureFocusSection(list: HTMLElement): HTMLElement {
+  let sec = document.getElementById("feed-focus");
+  if (!sec) {
+    sec = el("section", "");
+    sec.id = "feed-focus";
+    sec.setAttribute("aria-label", "the chat's focused session");
+    // the LABEL (T410b, the user 2026-09-14): "Current session: <name>", the section's own fold control. The label
+    // text is a button carrying the accessible name and aria-expanded; the NAME keeps the session headers' click
+    // (open, or offer to revive) and its hover title; a click anywhere else on the row folds the whole section to
+    // this row (the blocks, their cards and the quiet line hidden, the divider standing) and back. The caret is the
+    // block carets' vocabulary (▾ open, ▸ folded) and sits at the END of the label line (the user's word); folded,
+    // the focused session's card count follows the name in the column count's dress, before the caret (paintFocusFold).
+    const head = el("div", "feed-focus-head");
+    const fold = el("button", "feed-focus-fold") as HTMLButtonElement; fold.type = "button"; fold.textContent = "Current session:";
+    fold.setAttribute("aria-expanded", "true"); fold.setAttribute("aria-controls", "feed-focus-cols");
+    const nm = el("a", "fname"); nm.title = "open this session";
+    const caret = el("span", "feed-focus-caret"); caret.textContent = "▾"; caret.setAttribute("aria-hidden", "true");
+    const ncount = el("span", "feed-col-count feed-focus-count");
+    head.append(fold, nm, ncount, caret);
+    head.addEventListener("click", (ev) => {
+      if ((ev.target as HTMLElement).closest(".fname")) return;   // the name's own click (it stops propagation too)
+      focusFolded = !focusFolded;
+      paintFocusFold();
+      persistViewState();
+    });
+    const empty = el("div", "feed-focus-empty");
+    const cols = el("div", "feed-cols feed-focus-cols"); cols.id = "feed-focus-cols";   // what the label's aria-controls names
+    const lists: Partial<Record<Column, HTMLElement>> = {}, counts: Partial<Record<Column, HTMLElement>> = {};
+    // the board's own column chips and labels (ensureCols), with the section's OWN furniture (T410): the CHIP drags
+    // the block within the section exactly as the board's chips drag its columns (the user 2026-09-14, who wanted no
+    // grip: the heads above and below the divider read the same), and, focused, its arrow keys move the block a slot;
+    // a fold caret folds the block to its head in BOTH layouts; a gutter on the block's right edge resizes it
+    // against its neighbour. Order, widths and folds are the section's own state (applyFocusLayout), never the
+    // board's; a block never crosses the divider. Build-once nodes, click-safe across renders.
+    for (const [key, label, chip] of columnTable(activeBoard())) {   // the board's categories, in its order (board-def.ts)
+      const col = el("div", "feed-col col-" + key);
+      const h = el("div", "feed-col-head");
+      // the chip: the drag handle (the board's own affordance, the grab cursor) and the keyboard's handle too, so it
+      // takes focus and its title promises the keys (wireBlockKeys)
+      const name = el("span", "feed-col-name fcol-chip fcol-chip-" + chip); name.textContent = label;
+      name.tabIndex = 0; name.title = "Drag to reorder, or press the arrow keys"; name.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight");
+      const fold = el("button", "fcol-fold"); fold.dataset.label = label;
+      fold.setAttribute("aria-label", "Collapse " + label);
+      fold.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (collapsedFocusCols.has(key)) collapsedFocusCols.delete(key); else collapsedFocusCols.add(key);
+        applyFocusLayout();
+        persistViewState();
+      });
+      const count = el("span", "feed-col-count");
+      h.append(name, fold, count);
+      wireColDrag(name, col, key, FOCUS_SLOTS);   // the chip drags, within the section only
+      wireBlockKeys(name, key);                   // …and, focused, the arrow keys move the block a slot
+      const body = el("div", "feed-col-list");
+      const gutter = el("div", "focus-gutter"); gutter.title = "drag to resize";
+      wireFocusGutter(gutter, key);
+      col.append(h, body, gutter);
+      cols.appendChild(col);
+      lists[key] = body; counts[key] = count;
+    }
+    // the rule is the section's SIBLING, placed right after it below (the user 2026-09-19: the divider under the tinted
+    // box, not inside it, so the box's rounded bottom edge closes above the rule); it leaves with the section
+    const rule = el("hr", "feed-focus-divider");
+    sec.append(head, empty, cols);
+    (sec as any)._rule = rule;
+    (sec as any)._head = head; (sec as any)._name = nm; (sec as any)._empty = empty; (sec as any)._cols = cols;
+    (sec as any)._fold = fold; (sec as any)._caret = caret; (sec as any)._count = ncount;
+    (sec as any)._lists = lists; (sec as any)._counts = counts;
+  }
+  // directly above the board, every render: the section, then its rule, right before #feed-cols (the host loading
+  // strip, which announces what is coming, keeps the very top while it shows). A fresh section takes the board's
+  // column order at once.
+  const board = document.getElementById("feed-cols"), rule = (sec as any)._rule as HTMLElement;
+  if (board && (sec.nextSibling !== rule || rule.nextSibling !== board)) { list.insertBefore(sec, board); list.insertBefore(rule, board); applyColStack(); }
+  return sec;
+}
+/** How the section names the focused session: this pane's session list (the chat's tab set, relayed per
+ *  frame), else a card of that session, else the kernel's 8-character stub — the same resolution the file
+ *  viewer's identity uses (setFileViewIdentity). Liveness is a card's word when there is one; a tab with no
+ *  cards is taken as live (the chat is showing it). */
+function focusedIdentity(sid: string): { name: string; color: { bg: string; fg: string } | null; live: boolean } {
+  const s = sessionsMeta.find((x) => x.sid === sid);
+  const a = asks.find((x) => x.sid === sid);
+  if (s) return { name: s.name, color: s.color ?? a?.color ?? null, live: a ? !!a.live : true };
+  if (a) return { name: a.name, color: a.color ?? null, live: !!a.live };
+  return { name: hostStub(sid)?.name || sid.slice(0, 8), color: null, live: true };
+}
+function renderFocusSection(list: HTMLElement, buckets: Record<Column, Entry[]>, gate: GateEnv): void {
+  const sec = ensureFocusSection(list) as any;
+  const head = sec._head as HTMLElement, nm = sec._name as HTMLElement, empty = sec._empty as HTMLElement;
+  const lists = sec._lists as Record<Column, HTMLElement>, counts = sec._counts as Record<Column, HTMLElement>;
+  const total = focusedCardCount(buckets, entryCards);
+  const sid = focusedSid;
+  if (sid) {
+    const who = focusedIdentity(sid);
+    // the name nodes are minted only when what they show changes (the session headers' rule): a Text-node
+    // replacement per render is the churn the card gate exists to avoid
+    const sig = who.name + "\u0000" + sid + "\u0000" + (hostIsDown(sid) ? "d" : "");
+    if (sec._nmSig !== sig) {
+      sec._nmSig = sig; nm.replaceChildren(...hostNameNodes(who.name, sid));
+      (sec._fold as HTMLElement).setAttribute("aria-label", "Current session: " + who.name);   // the label's accessible name (T410b)
+    }
+    nm.style.color = who.color ? who.color.bg : "";
+    nm.classList.toggle("dead", !who.live);
+    nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(sid, who.live, who.name); };   // the session headers' click: open, or offer to revive
+    setWorkDot(nm, dotFor(who.name));   // the same working / awaiting dot the session headers wear
+  } else {
+    setText(empty, "No session is focused in the chat");
+  }
+  // the two quiet states: no tab focused → the line stands in for the head; a focused session with no cards →
+  // the head stays and the line says so. The rule stays in both, so the section still reads as a section. The
+  // fold (T410b) hides the blocks and the line under the label: paintFocusFold owns those two displays.
+  head.style.display = sid ? "" : "none";
+  sec._total = total;
+  paintFocusFold();
+  const desired = new Set<string>();
+  for (const k of Object.keys(buckets) as Column[]) {
+    reconcileFocusCol(lists[k], buckets[k], gate, desired);
+    const n = buckets[k].reduce((acc, e) => acc + entryCards(e), 0);   // the board's counting rule: CARDS, and a number only when there are some
+    setText(counts[k], n ? String(n) : "");
+    counts[k].style.display = n ? "" : "none";
+    // a block with no cards (T410, the user 2026-09-14): single column, it hides whole, head and all, until a card
+    // arrives (the CSS under the stacked query); side by side its head stands as the board's do
+    lists[k].parentElement?.classList.toggle("col-empty", n === 0);
+  }
+  // a copy whose card left the focused session's view — cleared, folded into another turn, or the focus
+  // moved on — goes now; the board's copy below has its own cache and its own exit
+  for (const id of Array.from(fsAskEls.keys())) if (!desired.has("f:a:" + id)) { fsAskEls.get(id)?.remove(); fsAskEls.delete(id); }
+  for (const tid of Array.from(fsGroupEls.keys())) if (!desired.has("f:g:" + tid)) { fsGroupEls.get(tid)?.remove(); fsGroupEls.delete(tid); }
+}
+// reconcileCol's twin for ONE of the section's columns: the same keyed in-place reconcile (a card whose
+// column changed is MOVED, not rebuilt), over the section's own caches, under the section's own keys —
+// "f:a:<itemId>" / "f:g:<turnId>" in data-key, so the board's FLIP capture, the reveal jump and the modal's
+// lookups (all by the bare key) never take a copy for the card. Entries never include a run header
+// (focusedEntries drops them); one that did would be skipped, not built.
+function reconcileFocusCol(listEl: HTMLElement, entries: Entry[], gate: GateEnv, desired: Set<string>): void {
+  const existing = new Map<string, HTMLElement>();
+  for (const c of Array.from(listEl.children) as HTMLElement[]) {
+    const k = c.dataset.key;
+    if (k) existing.set(k, c); else c.remove();
+  }
+  const ordered: HTMLElement[] = [];
+  const colDesired = new Set<string>();
+  for (const e of entries) {
+    let key: string, card: HTMLElement;
+    if (e.kind === "ask") {
+      key = "f:a:" + e.ask.itemId;
+      card = fsAskEls.get(e.ask.itemId) || makeAskCard(e.ask);
+      card.dataset.key = key;   // the builder stamps the bare key; the copy wears the section's
+      fsAskEls.set(e.ask.itemId, card);
+      // THE UPDATE GATE (feed-card-gate.ts), as the board applies it: repaint a copy only when the kernel
+      // re-sent the card or a board-level input it reads changed
+      const ik = cardInputsKey(e.ask, gate);
+      if (cardNeedsUpdate(card as any, e.ask, ik)) { updateAskCard(card, e.ask); (card as any)._ik = ik; }
+      rearmNoticeButtons(card as any);   // outside the gate: an identical push (the same card object) still lets a latched action go (T370)
+    } else if (e.kind === "group") {
+      key = "f:g:" + e.group.turnId;
+      card = fsGroupEls.get(e.group.turnId) || makeGroupCard(e.group);
+      card.dataset.key = key;
+      fsGroupEls.set(e.group.turnId, card);
+      updateGroupCard(card, e.group);
+    } else continue;
+    desired.add(key); colDesired.add(key);
+    ordered.push(card);
+  }
+  for (const [k, c] of existing) if (!colDesired.has(k)) c.remove();
+  let cur: ChildNode | null = listEl.firstChild;
+  for (const node of ordered) {
+    if (cur === node) { cur = cur.nextSibling; continue; }
+    listEl.insertBefore(node, cur);
+  }
+}
+// The section's FOLD (T410b): folded, the label row stands alone — the blocks (and their cards) and the quiet line
+// hidden, the divider standing — with the focused session's card count after the name; the caret reads the state
+// and the label button says it to assistive tech. Only while a session is focused (no focus: the quiet line, as
+// ever). Idempotent; runs per render (the count follows the cards) and per click on the label.
+function paintFocusFold(): void {
+  const sec = document.getElementById("feed-focus") as any;
+  if (!sec) return;
+  const total: number = sec._total || 0;
+  const folded = !!focusedSid && focusFolded;
+  sec.classList.toggle("folded", folded);
+  // the quiet line is the NO-FOCUS state alone (the user 2026-09-14: a focused session with no cards shows its label
+  // and its blocks, nothing said under a head); folded, the blocks go under the label
+  (sec._empty as HTMLElement).style.display = focusedSid ? "none" : "";
+  (sec._cols as HTMLElement).style.display = focusedSid && !folded ? "" : "none";
+  (sec._caret as HTMLElement).textContent = folded ? "▸" : "▾";
+  (sec._fold as HTMLElement).setAttribute("aria-expanded", String(!folded));
+  const count = sec._count as HTMLElement;
+  setText(count, folded && total ? String(total) : "");   // the board's rule: a number only when there are cards
+  count.style.display = folded && total ? "" : "none";
+}
+function removeFocusSection(): void {
+  const sec = document.getElementById("feed-focus") as any;
+  if (sec) { (sec._rule as HTMLElement | undefined)?.remove(); sec.remove(); }   // the rule is the section's sibling
+  fsAskEls.clear(); fsGroupEls.clear();
+}
+
 // ── FLIP: animate a card FLYING to its new column when its status changes (the user 2026-06-27) ──
 // Cards are reused DOM nodes that reconcileCol MOVES between columns, so a status change relocates the same
 // element — perfect for FLIP (First-Last-Invert-Play): record each card's screen rect + column BEFORE the
@@ -4104,11 +5315,25 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
 // its new home. The flying card sits in the BACK layer (position:relative; z-index:-1 → behind sibling cards
 // but above the column background) so it never flies OVER other content. Respects prefers-reduced-motion.
 type FlipState = { rect: DOMRect; col: string };
-const FLY_COLS: ("asks" | "needsInput" | "completed")[] = ["asks", "needsInput", "completed"];
+// column id per card key as of the LAST render — the flip gate compares the next render against it
+let prevCols: Map<string, string> = new Map();
+// the card keys of a render's buckets, mapped to the column each lands in (the same keys reconcileCol mints)
+function columnsOf(buckets: Record<Column, Entry[]>): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const col of Object.keys(buckets) as Column[]) {
+    buckets[col].forEach((e, i) => {
+      const key = e.kind === "ask" ? "a:" + e.ask.itemId : e.kind === "group" ? "g:" + e.group.turnId : "s:" + col + ":" + e.sid;
+      m.set(key, col + ":" + i);   // column AND position: a card that moved within its column glides too (the user 2026-06-29)
+    });
+  }
+  return m;
+}
+// the fly walks the ACTIVE board's columns (activeCols); the constant that named the feed's three went with phase four
+let flySeq = 0;   // the fly token: the element remembers the newest fly's number (see the write phase)
 function captureCardRects(cols: ReturnType<typeof ensureCols>): Map<string, FlipState> {
   const m = new Map<string, FlipState>();
-  for (const key of FLY_COLS) {
-    const colEl = cols[key];
+  for (const key of activeCols()) {
+    const colEl = cols.lists[key];
     for (const c of Array.from(colEl.children) as HTMLElement[]) {
       if (c.dataset.key) m.set(c.dataset.key, { rect: c.getBoundingClientRect(), col: colEl.id });
     }
@@ -4118,37 +5343,74 @@ function captureCardRects(cols: ReturnType<typeof ensureCols>): Map<string, Flip
 function flyColumnChanges(first: Map<string, FlipState>, cols: ReturnType<typeof ensureCols>): void {
   if (!first.size) return;
   try { if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch { /* no matchMedia */ }
-  for (const key of FLY_COLS) {
-    const colEl = cols[key];
+  // READ every card's new position first, then WRITE: a transform written between two rect reads dirties
+  // layout, so the next read forces a fresh layout of the whole document — one per card, 155 times per
+  // feed frame (measured 2026-09-04: the largest single cost on the main thread the chat pane's clicks share).
+  const moves: { c: HTMLElement; dx: number; dy: number; crossed: boolean }[] = [];
+  for (const key of activeCols()) {
+    const colEl = cols.lists[key];
     for (const c of Array.from(colEl.children) as HTMLElement[]) {
       const k = c.dataset.key; if (!k) continue;
       const prev = first.get(k);
       if (!prev) continue;                                 // brand-new card → no FLIP (nothing to glide from)
+      // a card nobody could see — its column folded to the header (display:none) — has a zero First rect:
+      // nothing to glide from, and a fly from (0,0) zooms in from the pane's corner
+      if (!prev.rect.width && !prev.rect.height) continue;
       const now = c.getBoundingClientRect();
+      // …and a target nobody can see has a zero Last rect and no transition to run, so a fly written to it
+      // would never end: the class it wears, pointer-events:none, stayed until the card's next repaint, and
+      // the per-card update gate no longer rewrites className every render. Nothing to glide to; leave it.
+      if (!now.width && !now.height) continue;
       const dx = prev.rect.left - now.left, dy = prev.rect.top - now.top;
       if (!dx && !dy) continue;                            // didn't move → leave it alone
-      // Two flavors of move, ONE FLIP (the user 2026-06-29): a card that CHANGED COLUMN flies in the BACK
-      // layer (z-index:-1 → behind the other cards, so it never sails over them); a card that STAYED in its
-      // column but shifted — because the card that left it vacated a slot — glides IN PLACE in normal flow, so
-      // the remaining cards reflow smoothly to their new spots instead of snapping there in a discrete jump.
-      const crossed = prev.col !== colEl.id;
-      if (crossed) c.classList.add("fitem-flying");
-      // Invert: jump the card back to its old spot, instantly.
-      c.style.transition = "none";
-      c.style.transform = `translate(${dx}px, ${dy}px)`;
-      // Play: next frame, release the offset with a transition → it glides to its new home.
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        c.style.transition = "transform .42s cubic-bezier(.22, .61, .36, 1)";
-        c.style.transform = "translate(0, 0)";
-      }));
-      const done = (ev: TransitionEvent) => {
-        if (ev.propertyName !== "transform") return;
-        c.removeEventListener("transitionend", done);
-        if (crossed) c.classList.remove("fitem-flying");
-        c.style.transition = ""; c.style.transform = "";   // back to normal flow + stacking
-      };
-      c.addEventListener("transitionend", done);
+      moves.push({ c, dx, dy, crossed: prev.col !== colEl.id });
     }
+  }
+  for (const { c, dx, dy, crossed } of moves) {
+    // Two flavors of move, ONE FLIP (the user 2026-06-29): a card that CHANGED COLUMN flies in the BACK
+    // layer (z-index:-1 → behind the other cards, so it never sails over them); a card that STAYED in its
+    // column but shifted — because the card that left it vacated a slot — glides IN PLACE in normal flow, so
+    // the remaining cards reflow smoothly to their new spots instead of snapping there in a discrete jump.
+    // ONE fly owns an element at a time: a second render can fly the same card while the first fly's 420 ms
+    // transition still runs — two deltas within half a second on an active board. The second Invert cancels
+    // the first transition, and the browser delivers that transitioncancel to EVERY listener on the element
+    // before the second fly's Play frame. Two guards: a per-element token, so a superseded fly's
+    // end/cancel/backstop removes its own listeners and touches nothing else; and `played`, so a fly ignores
+    // transition events that arrive before its own Play wrote the transition — those belong to the fly it
+    // cancelled. Without them the older fly's cancel handler wiped the newer Invert and the card snapped
+    // where it should have glided (reproduced in Chromium).
+    const mine = ++flySeq;
+    (c as any)._flySeq = mine;
+    if (crossed) c.classList.add("fitem-flying");
+    // Invert: jump the card back to its old spot, instantly.
+    c.style.transition = "none";
+    c.style.transform = `translate(${dx}px, ${dy}px)`;
+    // the fly ends on its own event — end OR cancel (a card re-inserted or hidden mid-flight gets
+    // transitioncancel, never transitionend) — with a backstop so a lost event can never leave the card in
+    // the back layer, pointer-events off (absorbIntoParent's idiom). Idempotent: whichever fires first.
+    let flown = false, played = false;
+    const done = (ev?: TransitionEvent) => {
+      if (flown) return;
+      if (ev && (ev.propertyName !== "transform" || !played)) return;   // not this fly's transition
+      flown = true;
+      c.removeEventListener("transitionend", done);
+      c.removeEventListener("transitioncancel", done);
+      if ((c as any)._flySeq !== mine) return;             // superseded: the newer fly owns the element's styles
+      c.classList.remove("fitem-flying");                  // whichever fly added it — the element is settled now
+      c.style.transition = ""; c.style.transform = "";     // back to normal flow + stacking
+    };
+    c.addEventListener("transitionend", done);
+    c.addEventListener("transitioncancel", done);
+    window.setTimeout(done, 650);
+    // Play: next frame, release the offset with a transition → it glides to its new home. Unless the fly
+    // already ended or was superseded (a hidden tab pauses animation frames while the backstop's timer
+    // still runs): a release after that would leave an inline identity transform on a settled card.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (flown || (c as any)._flySeq !== mine) return;
+      played = true;
+      c.style.transition = "transform .42s cubic-bezier(.22, .61, .36, 1)";
+      c.style.transform = "translate(0, 0)";
+    }));
   }
 }
 
@@ -4203,7 +5465,15 @@ function feedToast(text: string) {
 // payload (self-expiring at the window reset, cleared by the next successful call). Built ONCE and
 // updated in place — the button must survive re-renders (the click-safety rule), and it
 // acknowledges immediately, then the latch clearing hides the banner on a later payload.
-let judgeLimit: { bucket?: string; resets_at?: number; model?: string } | null = null;
+type JlIdent = { name: string; host?: string; sid?: string; color?: { bg: string; fg: string } | null };
+let judgeLimit: { bucket?: string; resets_at?: number; model?: string;
+                  loginSessions?: JlIdent[]; billingUnknown?: JlIdent[] } | null = null;
+// The dismiss latches to THIS episode's identity — a NEW episode (different bucket or reset time)
+// is new information and re-shows the banner; nothing else does (event-based, no timers). Stored
+// in localStorage so the dismissal survives re-renders and reloads for the episode's lifetime.
+const jlEpisodeKey = (j: { bucket?: string; resets_at?: number } | null) =>
+  (j?.bucket || "") + ":" + (j?.resets_at || 0);
+let jlSessOpen = false;   // the session list's keyed expand — module state, survives re-renders
 function ensureJudgeLimit(): HTMLElement {
   let b = document.getElementById("judge-limit-banner");
   if (b) return b;
@@ -4217,9 +5487,30 @@ function ensureJudgeLimit(): HTMLElement {
   btn.onclick = () => {
     btn.disabled = true;
     btn.textContent = "Switching…";                      // acknowledge before the round-trip
-    vscodeApi?.postMessage({ type: "setJudgeModel", model: "opus" });
+    // gt: a settings gesture like any gear pick — stamped at the click, through the gesture clock, so
+    // the kernel can order it (with the gear never opened in this document the clock has learned
+    // nothing and this is the wall clock; a refusal then offers Apply anyway)
+    vscodeApi?.postMessage({ type: "setJudgeModel", model: "opus", gt: gclock.stamp("judge-model") });
   };
   b.appendChild(btn);
+  const sess = el("span", "jl-sess"); b.appendChild(sess);   // who the window actually touches (2026-08-28)
+  const x = el("button", "jl-dismiss") as HTMLButtonElement;
+  x.type = "button";
+  x.textContent = "✕";
+  x.title = "dismiss this notice — it returns only if a new limit episode starts";
+  x.onclick = () => {
+    // the hide IS the acknowledgment, immediate and local; the latch key makes it stick (build-once
+    // button — the listener survives every re-render, per the click-safety rule)
+    try { localStorage.setItem("romp:jlDismiss", jlEpisodeKey(judgeLimit)); } catch { /* storage blocked */ }
+    paintJudgeLimit();
+  };
+  b.appendChild(x);
+  // the "+N more" toggle is REBUILT per paint, so its action rides the build-once banner root
+  // (delegation to the stable ancestor — the same rule the tab strip follows)
+  b.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement;
+    if (t && t.dataset && t.dataset.act === "jl-more") { jlSessOpen = !jlSessOpen; paintJudgeLimit(); }
+  });
   const list = document.getElementById("feed-list")!;
   list.parentElement!.insertBefore(b, list);
   return b;
@@ -4227,14 +5518,60 @@ function ensureJudgeLimit(): HTMLElement {
 function paintJudgeLimit(): void {
   const b = ensureJudgeLimit();
   if (!judgeLimit) { b.style.display = "none"; return; }
+  let dismissed = "";
+  try { dismissed = localStorage.getItem("romp:jlDismiss") || ""; } catch { /* storage blocked */ }
+  if (dismissed === jlEpisodeKey(judgeLimit)) { b.style.display = "none"; return; }
   const ra = judgeLimit.resets_at;
   const when = typeof ra === "number" && ra > 0
     ? new Date(ra * 1000).toTimeString().slice(0, 5) : "";
   const fable = judgeLimit.bucket === "fable";
   const txt = b.querySelector(".jl-text")!;
+  // the HONEST scope (the user 2026-08-28, correction round — the everything-is-paused framing was
+  // wrong: a judge call bills the JUDGED session's account, so key-billed analysis keeps flowing):
+  // the window is the login account's; only the sessions billing it pause.
   txt.textContent = fable
-    ? "Analysis is paused — the Fable usage window is full" + (when ? " (resets " + when + ")." : ".")
-    : "Analysis is paused — the account's usage window is full" + (when ? "; it resumes at " + when + "." : ".");
+    ? "The account's Fable usage window is full" + (when ? " (resets " + when + ")." : ".")
+    : "The account's usage window is full" + (when ? "; it resumes at " + when + "." : ".");
+  // WHO it touches: the sessions billing this account lose BOTH their turns (rate-limited) and
+  // their card analysis until the reset; everyone else's analysis continues on their own billing.
+  // Names wear the standard session chip — bold, identity colour, quiet host: prefix (the user's
+  // ask). Inline when few; a keyed "+N more" expand when many; unknown billing said, never omitted.
+  const sessEl = b.querySelector(".jl-sess") as HTMLElement;
+  sessEl.replaceChildren();
+  const names = judgeLimit.loginSessions || [];
+  const unk = judgeLimit.billingUnknown || [];
+  const chip = (p: JlIdent) => {
+    const c = el("b", "jl-chip");
+    c.replaceChildren(...hostPartsNodes(p.host, p.name));
+    if (p.color && p.color.bg) c.style.color = p.color.bg;
+    return c;
+  };
+  const appendChips = (list: JlIdent[]) => list.forEach((p, i) => { if (i) sessEl.append(", "); sessEl.appendChild(chip(p)); });
+  if (names.length) {
+    const many = names.length > 3;
+    const shown = many && !jlSessOpen ? names.slice(0, 2) : names;
+    sessEl.append("Analysis and turns pause for the sessions billing it: ");
+    appendChips(shown);
+    if (many) {
+      const more = el("span", "jl-more");
+      more.dataset.act = "jl-more";
+      more.textContent = jlSessOpen ? " · fewer" : " +" + (names.length - shown.length) + " more";
+      more.title = jlSessOpen ? "collapse the list" : "show every affected session";
+      sessEl.appendChild(more);
+    }
+    sessEl.append(". Other sessions' analysis continues on their own billing.");
+  } else {
+    sessEl.append("No live session bills this account — every session's analysis continues on its own billing.");
+  }
+  if (unk.length) {
+    const u = el("span", "jl-unknown");
+    u.textContent = " · billing unknown for ";
+    sessEl.appendChild(u);
+    appendChips(unk);
+    const u2 = el("span", "jl-unknown");
+    u2.textContent = " (their CLI doesn't report it)";
+    sessEl.appendChild(u2);
+  }
   const btn = b.querySelector(".jl-switch") as HTMLButtonElement;
   btn.style.display = fable ? "" : "none";
   if (!judgeLimit || !fable) { btn.disabled = false; btn.textContent = "Run analysis on Opus until then"; }
@@ -4269,7 +5606,7 @@ function viewBase(list: AskItem[]): AskItem[] {
   const s = viewScope(list);
   if (lensAll(feedLens)) return s;   // default All = today's board, byte-identical
   const u = lensUnions(feedTagViews);
-  return s.filter((a) => lensVisible(feedLens, u, a.sid) || a.column === "needs_input");
+  return s.filter((a) => lensVisible(feedLens, u, a.sid) || isNeedsYou(boardOf(a), a.category ?? a.column));   // the card's OWN board's badge category passes every lens (the 1861 read: a data board's needs-you card was dropped while the badge counted it)
 }
 
 // The disclosure count: what the TAG LENS alone hides (breakthroughs already show; counting them
@@ -4300,7 +5637,11 @@ function ensureHostLoad(list: HTMLElement): void {
     strip = el("div", "");
     strip.id = "feed-hostload";
   }
-  list.appendChild(strip);   // last child in either board state (cards or the empty wordmark)
+  // FIRST child in either board state (the user 2026-08-30: the reconnect strip sits at the TOP of
+  // the feed, above the first column chip — it announces what is COMING, so it leads). Re-inserted
+  // only when displaced (a fresh empty-state paint replaces children); non-interactive, so the move
+  // is click-safe by construction.
+  if (list.firstChild !== strip) list.insertBefore(strip, list.firstChild);
   strip.replaceChildren(...pendingHosts.map((h) => {
     const line = el("div", "hostload-line");
     const swirl = el("span", "fask-awaiting-swirl");   // the shared reverse-spin glyph, LEFT of the text
@@ -4315,10 +5656,55 @@ function ensureHostLoad(list: HTMLElement): void {
   }));
 }
 
+// ── HIDDEN-PAINT HOLD (the user 2026-09-07, whose dashboard froze on the return to its browser tab) ──
+// Every payload is APPLIED the moment it arrives — applyFeedPayload's bookkeeping (mirrorBadges feeds the
+// shell's bell, clearUndoBusy, pendingCleared/pendingRestored, reconcileFollowMove and the follow-move
+// backstops it retires) never waits — but the PAINT is owed while nobody can see it, and settled once,
+// synchronously, on the event that makes the pane visible again: the tab's visibilitychange, or the
+// observer's callback for a display:none pane (each is blind to the other's case; paint-gate.ts). Before
+// this, a hidden tab rendered every payload in full — the FLIP pass pinned two forced layouts and a
+// double rAF per moved card onto the return frame — and the hidden-tab pile-up was the freeze. NOT the
+// hover-freeze queue below: that holder withholds the payload itself, and a confirming payload held back
+// lets the follow-move backstop revert a move the kernel had already confirmed.
+// The same two measures are this pane's hidden word for the kernel's pane shim (paint-gate.ts publishPaneHidden):
+// the shim's zero-viewport probe misses a pane hidden after a first show in Chromium, so the release path and the
+// hidden arm of visibilitychange publish document.hidden OR the observer's last word as window.__rompPaneHidden,
+// on the same events, and nothing until the observer has spoken.
+let feedIntersecting: boolean | null = null;   // #feed-list on screen by the observer's last word; null until it speaks (the gate reads null as on screen; nothing is published for it)
+let paintDirty = false;        // a render was withheld while the pane could not be seen
+let skipFlipOnce = false;      // the release paint snaps: cards that moved while away have no old spot to glide from
+let feedWatching = false;
+function watchFeedVisibility(list: HTMLElement): void {
+  if (typeof IntersectionObserver === "undefined") return;   // no observer → the tab's visibility alone gates
+  new IntersectionObserver((entries) => {
+    feedIntersecting = entries.some((e) => e.isIntersecting);
+    releasePaint();
+    live.catchUp();   // the 15 s age pass skipped while off screen (feed-age.ts liveRefresher); one pass, same measure
+  }).observe(list);
+}
+// The owed paint, settled the moment both measures say the pane can be seen. Synchronous on purpose (no
+// requestAnimationFrame hop): on a tab switch the compositor shows the cached frame until the page paints,
+// so a paint inside the event handler is the earliest fresh frame.
+function releasePaint(): void {
+  publishPaneHidden(document.hidden, feedIntersecting);
+  if (!paintReleased(paintDirty, document.hidden, feedIntersecting)) return;
+  paintDirty = false;
+  skipFlipOnce = true;
+  render();
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) releasePaint(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) publishPaneHidden(true, feedIntersecting); });   // the hidden arm releases nothing, so the release path never publishes it
+
 function render() {
   const list = document.getElementById("feed-list")!;
-  pruneAgeTip();   // drop the tip only if the render tore its hovered stamp out (see pruneAgeTip)
+  if (!feedWatching) { feedWatching = true; watchFeedVisibility(list); }
+  if (paintHeld(document.hidden, feedIntersecting, list.childElementCount > 0)) { paintDirty = true; return; }
+  pruneTip();   // drop the styled tip only if the render tore its hovered anchor out (tip.ts pruneTip)
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
+  inRender = true;   // the body is render time: a post it makes is never the reader's jump (noteOwnJump, T416 round two)
+  try { renderBody(list); } finally { inRender = false; }   // a throw inside the body must not leave the mark set (round three)
+}
+function renderBody(list: HTMLElement) {
   paintJudgeLimit();   // the usage-limit banner above the columns (build-once; hidden when unlatched)
   auditShownColumns(asks); // tripwire: what this render SHOWS is the record a bounce report needs
   const prevScroll = list.scrollTop;
@@ -4327,6 +5713,9 @@ function render() {
   ensureViewMenuBtn().style.display = showCA ? "" : "none";       // sort + layout menu (the user 2026-08-24)
   ensureTagLensBtn().style.display = showCA ? "" : "none";        // the feed-local tag lens (the user 2026-08-25, T70)
   ensureSessionBox().style.display = showCA ? "" : "none";        // session combobox: type-or-pick filter (the user 2026-08-24)
+  { const b = activeBoard(); const want = boardQuery || activeBoardId;   // the board shown, and a pick the frame cannot honour, said on the View button (phase four)
+    ensureViewMenuBtn().title = "view options: sort direction, single column, group by session, the focused session on top"
+      + (b !== FEED_BOARD ? "; showing the " + b.title + " board" : want && want !== FEED_BOARD.id ? "; board " + want + " is not on this frame, so the feed shows" : ""); }
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
@@ -4338,6 +5727,8 @@ function render() {
     //                     wordmark never rendered (the user 2026-07-08; payload-audit fallout). Goal cards are
     //                     the only feed unit now, so an empty asks list IS an empty feed.
     askEls.clear(); groupEls.clear();
+    skipFlipOnce = false;   // this IS the release paint when the board emptied while away — the snap is spent
+    removeFocusSection();   // an empty board is the wordmark alone; the section returns with the cards (T347)
     // inbox zero → the romp wordmark (a CSS background). role/aria-label + title keep the meaning for hover /
     // screen readers, since a background image carries no accessible text. Created ONCE (idempotent): on the
     // transition from cards→empty we mint it (its CSS fade-in plays once, the user 2026-06-25), and every
@@ -4353,21 +5744,19 @@ function render() {
   }
 
   const cols = ensureCols(list);
-  const buckets: Record<Column, Entry[]> = { asks: [], needsInput: [], completed: [] };
+  const board = activeBoard();
+  const buckets: Record<Column, Entry[]> = {};
+  for (const k of activeCols()) buckets[k] = [];
   // The display-side view filters (session filter + search), shared with the hover-freeze badge
   // painter so the deferred-churn hint counts exactly what the user would see move (viewFiltered).
-  let shown = viewFiltered(asks);
-  // Derive sibling GROUPS at render time, keyed by the shared typed turn (turnId).
-  // Only host-flagged asks (groupTitle) participate, and a turn needs ≥2 current
-  // members to fold — a lone survivor (siblings cleared) renders as a single card.
-  const byTurn = new Map<string, AskItem[]>();
-  for (const a of shown) {
-    if (!a.groupTitle || !a.turnId) continue;
-    const arr = byTurn.get(a.turnId) || []; arr.push(a); byTurn.set(a.turnId, arr);
-  }
+  // The ACTIVE board's cards alone (phase four): a card names its board; one naming an id this renderer does not know
+  // is the feed's, under the feed's default category with its producer line saying so (boardLabelOf).
+  let shown = onActiveBoard(viewFiltered(asks));
+  // Derive sibling GROUPS at render time, keyed by the shared typed turn (turnId) — turnGroups, the rule the
+  // jump-unfold reads too, so what renders as a group and what unfolds as one can never disagree (T263e).
+  const byTurn = turnGroups(shown);
   const grouped = new Set<string>();   // itemIds folded into a group → excluded from single ask cards
   for (const [tid, members] of byTurn) {
-    if (members.length < 2) continue;
     members.forEach((m) => grouped.add(m.itemId));
     const g = buildGroup(tid, members);
     buckets[g.column].push({ kind: "group", t: g.t, group: g });
@@ -4376,19 +5765,26 @@ function render() {
   // Oldest-at-top by default (the user 2026-06-27): the newest work sits at the BOTTOM of each column, and
   // new/moved cards stack onto the bottom (matches the fly animation). The footer "Newest first" toggle
   // (default off, the user 2026-07-07) reverses each column to newest-at-top.
-  const newestFirst = feedPrefs().newestFirst;
+  // the feed: the user's direction preference; a data board: its definition's sort direction (its key is time until phase five's sub-sorts)
+  const newestFirst = board === FEED_BOARD ? feedPrefs().newestFirst : board.sort.dir === "desc";
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => newestFirst ? y.t - x.t : x.t - y.t);
+  // the board's owner rule (stable, so each run keeps the column's time order): the owner-less cards first in every mode, on a board whose order names it
+  if (board.order.includes("ownerRank")) for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => ownerRank(entrySid(x)) - ownerRank(entrySid(y)));
+  // THE FOCUSED SESSION's view of these buckets (T347), taken HERE, before grouping: the section shows one
+  // session, so it carries no run headers, and a thread folded below must not empty it — the fold hides
+  // cards behind a caret the section does not have, and a compact view never dead-ends (ui/CLAUDE.md).
+  const focusBuckets = showFocused && board === FEED_BOARD ? focusedEntries(buckets, focusedSid, entrySid) : null;   // the focused section is the FEED's (the goal kind's road, plans/card-boards.md section 4); a board opting in is phase five's (the 1886 read, high: on a session-grouped data board the section read the feed's three keys and threw on every render)
   // GROUPED mode (the user 2026-07-13): within each column, cards gather by SESSION — session order = the
   // kernel's session-order list (the same order the chat tabs + timeline lanes hold; sessions the list
   // doesn't know keep their time order after it) — with a name+dot header entry opening each run. The sort
   // is stable, so per-session cards keep the column's newest/oldest order. Headers only where a run exists.
-  if (feedPrefs().grouped) {
+  if (feedPrefs().grouped && board.groupBy === "session") {   // grouping is the BOARD's to offer (phase four: the notes board groups nothing)
     const rank = new Map(sessionOrder.map((s, i) => [s, i] as const));
     const eSid = (e: Entry) => e.kind === "ask" ? e.ask.sid : e.kind === "group" ? e.group.sid : e.sid;
     for (const k of Object.keys(buckets) as Column[]) {
       const extra = new Map<string, number>();   // sids the order list doesn't know → after it, first-seen order
       for (const e of buckets[k]) { const s = eSid(e); if (!rank.has(s) && !extra.has(s)) extra.set(s, extra.size); }
-      const rk = (e: Entry) => { const s = eSid(e); return rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };
+      const rk = (e: Entry) => { const s = eSid(e); return isOwnerless(s) ? -1 : rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };   // the owner-less run heads the column (a remote host's too)
       buckets[k].sort((x, y) => rk(x) - rk(y));
       const withHeads: Entry[] = [];
       let cur: string | null = null;
@@ -4398,13 +5794,13 @@ function render() {
         if (s !== cur) {
           cur = s;
           const src: any = e.kind === "ask" ? e.ask : e.kind === "group" ? e.group : e;
-          head = { kind: "sess", t: e.t, sid: s, name: src.name, color: src.color || null, live: !!src.live, folded: 0 };
+          head = { kind: "sess", t: e.t, sid: s, col: k, name: src.name, color: src.color || null, live: !!src.live, folded: 0 };
           withHeads.push(head);
         }
         // A COLLAPSED thread contributes its header and nothing else — the run's cards are counted onto the
         // header instead of rendered, so the folded row still says how much is under it. CARDS, not rows
         // (entryCards): a turn-group folds as its member count, the same rule the section chip reads.
-        if (collapsedThreads.has(s)) { if (head) head.folded += entryCards(e); continue; }
+        if (collapsedThreads.has(threadKey(s, k))) { if (head) head.folded += entryCards(e); continue; }
         withHeads.push(e);
       }
       buckets[k] = withHeads;
@@ -4423,14 +5819,42 @@ function render() {
     // (the "item"/standalone bucket kind was removed with the FeedItem subsystem — no third branch)
   }
 
+  // The per-card update gate's inputs, resolved ONCE for this render (feed-card-gate.ts cardInputsKey):
+  // everything updateAskCard reads outside the ask object. A card is repainted when its object or this key
+  // changed, so a frame's cost scales with the cards the kernel re-sent and the cards a changed input
+  // reaches, not with the board.
+  const gprefs = feedPrefs();
+  const gate: GateEnv = {
+    dot: dotFor, working: (n) => workingSet.has(n),
+    focusId: hoverAskId ?? pinnedAskId, pinnedId: pinnedAskId, notifyOn: cardNotifyOn,
+    prefs: { grouped: gprefs.grouped, collapsed: gprefs.collapsed, colormap: gprefs.colormap },
+    hostDown: hostIsDown, selfHost: feedSelfHost, repo: prRepoOf,
+    boardTitle: (it) => boardLabelOf(it),   // a card on a data-defined board: its label reads the title
+  };
+  // The focused session's section above the board (T347): its own elements and caches, the same builders and
+  // the same update gate. Painted BEFORE the board's FLIP capture below: the section sits above the board, so
+  // its height is part of where every board card rests, and a First rect read before the section settled would
+  // have every card below glide by the section's change on top of its own move (a card moving column on a
+  // frame that also changes the section's card count). The capture itself reads #feed-cols alone, so no copy
+  // in the section is ever a First or a Last rect, and the board's reconcile after it is what it always was.
+  if (focusBuckets) renderFocusSection(list, focusBuckets, gate); else removeFocusSection();
+
   // FLIP step 1 (the user 2026-06-27): record every visible card's position + column BEFORE the reconcile, so
-  // a card that changes column can FLY from its old spot to the new one instead of teleporting.
-  const flipFirst = captureCardRects(cols);
+  // a card that changes column can FLY from its old spot to the new one instead of teleporting. Only when
+  // something CAN move: the capture and the fly each force a layout of the whole document, and most frames
+  // change a card in place (text, tint, status chip) with every card staying where it was (2026-09-04).
+  const nextCols = columnsOf(buckets);
+  // The release paint after a hidden stretch SNAPS (skipFlipOnce, 2026-09-07): a card that moved while nobody
+  // watched has no old spot in the user's eye to glide from — motion on return is motion without new
+  // information (the 2026-07-29 rule) — and the two forced layouts plus a double rAF per moved card are what
+  // the return frame cannot afford. prevCols still records the painted columns, so the NEXT move glides.
+  const needFlip = !skipFlipOnce && flipNeeded(prevCols, nextCols);
+  skipFlipOnce = false;
+  prevCols = nextCols;
+  const flipFirst = needFlip ? captureCardRects(cols) : new Map<string, FlipState>();
 
   const desired = new Set<string>();
-  reconcileCol(cols.asks, buckets.asks, desired);
-  reconcileCol(cols.needsInput, buckets.needsInput, desired);
-  reconcileCol(cols.completed, buckets.completed, desired);
+  for (const k of activeCols()) reconcileCol(cols.lists[k], buckets[k], desired, gate);
   // the count chip shows the number only when there ARE cards; an empty column shows nothing — not "0"
   // (the user 2026-06-25). Empty string collapses the chip (it has no padding/background of its own).
   const setCount = (elc: HTMLElement, n: number) => { elc.textContent = n ? String(n) : ""; elc.style.display = n ? "" : "none"; };
@@ -4441,9 +5865,7 @@ function render() {
   // (entryCards, which the fold accumulator uses too) — so a section's number cannot move on any fold or
   // grouping, only when cards actually enter or leave the column.
   const nCards = (es: Entry[]) => es.reduce((n, e) => n + entryCards(e), 0);
-  setCount(cols.asksCount, nCards(buckets.asks));
-  setCount(cols.needsInputCount, nCards(buckets.needsInput));
-  setCount(cols.completedCount, nCards(buckets.completed));
+  for (const k of activeCols()) setCount(cols.counts[k], nCards(buckets[k]));
 
   // Remove cards no longer in the payload — EXCEPT one mid-dismiss (.dismissing): let its own 180ms timer
   // finish the collapse animation instead of yanking it instantly on a push (the user 2026-06-19).
@@ -4499,9 +5921,10 @@ function render() {
   // is stale, clear it and flush the queue; a DIFFERENT card under the pointer (re-keyed in place,
   // so no enter event ever fired) → re-arm to the element actually being hovered.
   if (freezeKey) {
-    const hov = document.querySelector<HTMLElement>(".feed-cols .fitem:hover");
+    // a card OR a session header under the pointer (T285): both hold the gate
+    const hov = document.querySelector<HTMLElement>(".feed-cols .fitem:hover, .feed-sess-head:hover");
     if (!hov) { freezeKey = null; flushFreeze(); }
-    else { const k = kbHoverId(hov); if (k && k !== freezeKey) freezeKey = k; }
+    else { const k = hov.classList.contains("feed-sess-head") ? sessFreezeKey(hov) : kbHoverId(hov); if (k && k !== freezeKey) freezeKey = k; freezeCopy = isFocusCopy(hov); }
   }
   paintFreezeBadges();   // hover-freeze: local renders while frozen re-sync the +N/-N hints (no-op unfrozen)
   // stale-ring heal: releaseTabScope sweeps the DOCUMENT, but a card DETACHED at release (filtered
@@ -4512,7 +5935,7 @@ function render() {
   // control's element, and a rebuild must not eat keyboard focus (click-safety, applied to the
   // keyboard). Find the control again by LOGICAL identity — class + label, then the old slot.
   if (tabScopeKey && tabScopeSig) {
-    const card = cardElByKey(tabScopeKey);
+    const card = cardElByKey(tabScopeKey, tabScopeCopy);
     const ae = document.activeElement;
     if (!card) releaseTabScope();
     else if (!ae || ae === document.body || !card.contains(ae)) {
@@ -4533,7 +5956,7 @@ function render() {
     if (prevKey && prevKey !== curKey && flipFirst.has(prevKey)) flipFirst.set(curKey, flipFirst.get(prevKey)!);
   }
   // FLIP step 2: any card whose column changed flies from its recorded spot to the new one (in the back layer).
-  flyColumnChanges(flipFirst, cols);
+  if (needFlip) flyColumnChanges(flipFirst, cols);
   prevItemKey = curItemKey;   // remember this render's identity map for the next FLIP-across-identity
   renderModal();   // keep the ⛶ full-screen tree (if open) in sync with this push
   applyExtHover(); // reconcile/renderModal may have rebuilt nodes — re-apply the rail-dot outlines (cards AND modal rows)
@@ -4583,7 +6006,10 @@ function kbCardEls(): HTMLElement[] {
   // VISUAL order, not DOM order (review 2026-08-24): the columns re-sequence via --col-order — in
   // both layouts since the drag extended — so the arrow cursor sorts cards by their column's
   // effective `order` (getComputedStyle resolves the var), DOM order within a column.
-  const els = Array.from(document.querySelectorAll<HTMLElement>(".feed-cols .fitem:not(.dismissing)"));
+  // the BOARD's cards, under #feed-cols: the focused-session section (T347) above it carries the same column
+  // classes, and a walk over both would interleave a copy with its card below by column order — the section is
+  // a view of the board, and the cursor's field stays the board
+  const els = Array.from(document.querySelectorAll<HTMLElement>("#feed-cols .fitem:not(.dismissing)"));
   const slot = new Map<HTMLElement, number>();
   for (const e of els) {
     const col = e.closest<HTMLElement>(".feed-col");
@@ -4594,7 +6020,8 @@ function kbCardEls(): HTMLElement[] {
     .map((x) => x.e);
 }
 function kbHoverId(el: HTMLElement): string {
-  const key = el.dataset.key || "";
+  let key = el.dataset.key || "";
+  if (key.startsWith("f:")) key = key.slice(2);         // a focused-section copy (T347) IS the card below: the same identity under an "f:" prefix
   return key.startsWith("g:") ? key : key.slice(2);   // group card → "g:<tid>" (applyFocus key); ask/deliverable → itemId
 }
 function kbSelectCard(el: HTMLElement | null): void {
@@ -4693,11 +6120,15 @@ function pipeBanner(up: boolean, queued: number): void {
 // the {romp:'notify'} post the shell's bell listens for. Storing only the ACTIVE set is what re-arms a
 // cleared badge and keeps the store from growing: a card that left the payload takes its sigs with it.
 const BADGE_SEEN_KEY = "romp:cardNotified";
-function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNoticeRow[], sync: SyncNoticeRow[]): void {
+function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNoticeRow[], sync: SyncNoticeRow[], opts?: { cardsUnknown?: CardsUnknown }): void {
   let seen: string[] = [];
   try { seen = JSON.parse(localStorage.getItem(BADGE_SEEN_KEY) || "[]"); } catch { /* fresh */ }
   const seenSet = new Set(seen);
-  const badges = badgeNotices(items, seenSet);
+  // cardsUnknown (the Task tracking switch, T404 rounds five and six): not every card in the frame was built (the frame is
+  // the switch's own off frame, or a merged frame naming an off host), so an absent card may sit behind a stand-in rather
+  // than have left; the card half then keeps the stored card marks, and mints the on hosts' notices either way
+  // (badge-mirror.ts). A stand-in frame never feeds a writer that prunes by absence
+  const badges = badgeCardHalf(items, seenSet, opts?.cardsUnknown ?? false);
   // /clear boundary settles share the same seen-set + bell (the user 2026-07-27): a clear that
   // dropped open cards logs one durable entry naming them, so the drop is never silent.
   const boundary = clearBoundaryNotices(clears, seenSet);
@@ -4717,19 +6148,24 @@ function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNotice
 }
 
 // ── HOVER-FREEZE (the user 2026-08-24) ──────────────────────────────────────────────────────────
-// While the pointer rests on a card, the board must not move under it: incoming feed payloads QUEUE
-// (newest wins — intermediate states were never on screen, so nothing owes them an animation)
-// instead of rendering, and the deferred churn shows as a subtle +N/-N beside the column pills and,
-// in grouped mode, the session headers. Only the PAYLOAD path defers: the hovered card's own
+// While the pointer rests on a card — or on a session header row and its buttons (T285) — the board
+// must not move under it: incoming feed payloads QUEUE (newest wins — intermediate states were never
+// on screen, so nothing owes them an animation) instead of rendering, and the deferred churn shows
+// as a subtle +N/-N beside the column pills and, in grouped mode, the session headers. Only the PAYLOAD path defers: the hovered card's own
 // controls and every local gesture still render live from the displayed model. Flush is event-based
 // (repo rule, no timers): the hovered card's mouseleave applies everything at once — a card CLEARED
 // under the pointer flushes too, via its synthetic mouseleave — and window blur is the backstop.
 let freezeKey: string | null = null;     // the hovered card's focus key, or null — pointer truth, no debounce
+let freezeCopy = false;                  // which twin holds it: the focused section's copy or the board's element (T410)
 let pendingFeedPayload: any = null;      // newest queued payload; older ones are superseded unseen
-function freezeEnter(key: string): void { freezeKey = key; }
-function freezeLeave(key: string): void {
-  if (tabScopeKey === key) releaseTabScope();   // hover-away releases the keyboard scope too
-  if (freezeKey !== key) return;
+let focusStale = false;                  // an activeChat frame landed while the gate was held: the section repaints on release (T347)
+function freezeEnter(key: string, copy = false): void { freezeKey = key; freezeCopy = copy; }
+function freezeLeave(key: string, copy = false): void {
+  if (tabScopeKey === key && tabScopeCopy === copy) releaseTabScope();   // hover-away releases the keyboard scope too, and
+  //                                                                        only the scope held on THIS twin (T347b low, T410)
+  // both twins of a card share the bare key (T347), so the pair (key, copy) is the hold: leaving one twin never
+  // releases a hold taken on the other (the pointer crossing from the board's card to its copy above)
+  if (freezeKey !== key || freezeCopy !== copy) return;
   freezeKey = null;
   flushFreeze();
 }
@@ -4748,6 +6184,8 @@ function flushFreeze(): void {
     const m = pendingFeedPayload;
     pendingFeedPayload = null;
     if (m) applyFeedPayload(m);          // render() repaints the badges away (nothing pending)
+    else if (focusStale) render();       // a tab switch that landed while a card was held paints now (T347)
+    focusStale = false;                  // either way the section is current: applyFeedPayload renders too
   });
 }
 window.addEventListener("blur", () => { releaseTabScope(); freezeKey = null; flushFreeze(); });   // backstop:
@@ -4808,11 +6246,11 @@ function pendingSelfChanged(key: string): boolean {
 }
 function paintFreezeBadges(): void {
   if (!pendingFeedPayload) {
-    document.querySelectorAll(".freeze-badge").forEach((n) => n.remove());
+    document.querySelectorAll(".freeze-badge").forEach((n) => n.remove());   // the floating header note is one too
     document.getElementById("freeze-selfnote")?.remove();
     return;
   }
-  const toItems = (list: AskItem[]) => viewFiltered(list).map((a) => ({ id: a.itemId, col: askColumn(a) as string, sid: a.sid }));
+  const toItems = (list: AskItem[]) => onActiveBoard(viewFiltered(list)).map((a) => ({ id: a.itemId, col: askColumn(a) as string, sid: a.sid }));   // the render pass's own board filter: the hint counts what is on screen (the 1886 read, medium 1)
   const d = freezeDiff(toItems(asks), toItems(payloadView(pendingFeedPayload)));
   const put = (host: Element | null, c: { add: number; del: number } | undefined) => {
     if (!host) return;
@@ -4821,18 +6259,38 @@ function paintFreezeBadges(): void {
     if (!b) { b = el("span", "freeze-badge"); host.appendChild(b); }
     paintFreezeParts(b, c);
   };
-  for (const key of ["asks", "needsInput", "completed"]) {
-    put(document.querySelector(".feed-col.col-" + key + " .feed-col-head"), d.cols[key]);
+  for (const key of activeCols()) {
+    put(document.querySelector("#feed-cols .feed-col.col-" + key + " .feed-col-head"), d.cols[key]);   // the board's heads, never the focused section's (T347)
   }
   const groupedNow = feedPrefs().grouped;
+  // The HOVERED header row must not change shape (T285 review): a badge appended inside it lands after the
+  // auto-margin Clear all and slides that button out from under the pointer — the click loss the header
+  // hold exists to prevent, caused by the hold's own hint. That row's badge floats instead: body-mounted,
+  // pointer-inert, right-aligned just under the row (the self-note idiom), so the row's rect stands.
+  // The hovered row is ONE (column, session) header, matched by its whole key: a session with cards in two
+  // columns heads a run in each, and the other column's header keeps its in-row badge and never gets the float.
+  const hoveredHead = freezeKey && freezeKey.startsWith("h:") ? freezeKey : null;
+  let headNote = document.getElementById("freeze-headnote") as HTMLElement | null;
+  let floated = false;
   document.querySelectorAll<HTMLElement>(".feed-sess-head").forEach((h) => {
-    put(h, groupedNow ? d.sess[h.getAttribute("data-fsid") || ""] : undefined);
+    const sid = h.getAttribute("data-fsid") || "";
+    const c = groupedNow ? d.sess[sid] : undefined;
+    if (sessFreezeKey(h) !== hoveredHead) { put(h, c); return; }
+    put(h, undefined);                                   // never inside the hovered row
+    if (!c || (!c.add && !c.del)) return;
+    if (!headNote) { headNote = el("div", "freeze-badge"); headNote.id = "freeze-headnote"; document.body.appendChild(headNote); }
+    paintFreezeParts(headNote, c);
+    const r = h.getBoundingClientRect();
+    headNote.style.top = Math.round(r.bottom + 2) + "px";
+    headNote.style.right = Math.max(0, Math.round(window.innerWidth - r.right)) + "px";
+    floated = true;
   });
+  if (!floated) headNote?.remove();
   // the hovered/keyed card's OWN pending update — its own line, independent of the churn badges
   // (both show when both are true). Body-mounted and pointer-inert: it must never affect hover,
   // and the frozen card's rect is stable by construction (that is the freeze's whole contract).
   const selfKey = freezeKey || tabScopeKey;
-  const selfCard = selfKey ? cardElByKey(selfKey) : null;
+  const selfCard = selfKey ? cardElByKey(selfKey, freezeKey ? freezeCopy : tabScopeCopy) : null;   // the HELD twin's rect (T410)
   let selfNote = document.getElementById("freeze-selfnote");
   if (!selfKey || !selfCard || !pendingSelfChanged(selfKey)) {
     selfNote?.remove();
@@ -4859,10 +6317,17 @@ function paintFreezeBadges(): void {
 // is inside, the card holds the payload gate hover-freeze uses, so the board cannot move the card
 // being keyed (same gate as the pointer).
 let tabScopeKey: string | null = null;
+let tabScopeCopy = false;   // the scope holds the focused section's copy, not the board's element (T347)
 let tabScopeSig: { sig: string; idx: number } | null = null;
-function cardElByKey(key: string): HTMLElement | null {
-  return document.querySelector<HTMLElement>('[data-key="' + (key.startsWith("g:") ? key : "a:" + key) + '"]');
+function cardElByKey(key: string, copy = false): HTMLElement | null {
+  // `copy`: the focused-session section's element for the card (T347), keyed one prefix over the board's;
+  // the keyboard scope re-finds the element it holds, never the other twin (a Tab from a hovered copy used to
+  // resolve to the board's card and scroll away from the pointer)
+  const k = key.startsWith("g:") ? key : "a:" + key;
+  return document.querySelector<HTMLElement>('[data-key="' + (copy ? "f:" + k : k) + '"]');
 }
+/** Is this card element the focused section's copy (T347)? Its key wears the section's prefix. */
+function isFocusCopy(card: HTMLElement | null): boolean { return !!card && (card.dataset.key || "").startsWith("f:"); }
 function cardControls(card: HTMLElement): HTMLElement[] {
   // the card's own DOM order IS its visual reading order — title row, pills, tail controls
   return Array.from(card.querySelectorAll<HTMLElement>(KB_EL_SEL)).filter((e) => e.offsetParent !== null);
@@ -4875,6 +6340,7 @@ function tabScopeFocus(card: HTMLElement, els: HTMLElement[], i: number): void {
   const el2 = els[i];
   if (!el2) return;
   tabScopeKey = kbHoverId(card);
+  tabScopeCopy = isFocusCopy(card);   // which twin the scope holds (T347)
   tabScopeSig = { sig: ctrlSig(el2), idx: i };
   if (el2.tabIndex < 0 && !el2.matches("button, a, input")) el2.tabIndex = -1;   // focusable, outside page order
   el2.classList.add("kbd-focus");
@@ -4883,6 +6349,7 @@ function tabScopeFocus(card: HTMLElement, els: HTMLElement[], i: number): void {
 function releaseTabScope(): void {
   if (!tabScopeKey) return;
   tabScopeKey = null;
+  tabScopeCopy = false;
   tabScopeSig = null;
   document.querySelectorAll(".kbd-focus").forEach((n) => n.classList.remove("kbd-focus"));
   const ae = document.activeElement as HTMLElement | null;
@@ -4897,8 +6364,10 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Tab") {
-    let card = tabScopeKey ? cardElByKey(tabScopeKey) : null;
-    if (!card) card = (freezeKey ? cardElByKey(freezeKey) : null) || kbCardEl;   // hover/click, else the kb cursor
+    let card = tabScopeKey ? cardElByKey(tabScopeKey, tabScopeCopy) : null;
+    // the HOVERED element itself, copy or board (T347): the freeze key names the card, not which twin the
+    // pointer rests on, and Tab must land where the pointer is
+    if (!card) card = document.querySelector<HTMLElement>(".fitem:hover") || (freezeKey ? cardElByKey(freezeKey) : null) || kbCardEl;
     if (!card || !card.isConnected) return;
     const ae = document.activeElement as HTMLElement | null;
     if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && !card.contains(ae)) return;   // typing elsewhere
@@ -4923,7 +6392,7 @@ window.addEventListener("keydown", (e) => {
   }
   if ((e.key === "Enter" || e.key === " ") && tabScopeKey) {
     const ae = document.activeElement as HTMLElement | null;
-    const card = cardElByKey(tabScopeKey);
+    const card = cardElByKey(tabScopeKey, tabScopeCopy);
     if (!ae || !card || !card.contains(ae)) return;
     if (ae.matches("button, a, input")) return;   // native activation already fires the click
     e.preventDefault();
@@ -4938,16 +6407,30 @@ function applyFeedPayload(m: any): void {
   judgeLimit = m.judgeLimit && typeof m.judgeLimit === "object"
     ? m.judgeLimit as { bucket?: string; resets_at?: number; model?: string } : null;
   const incomingAsks: AskItem[] = Array.isArray(m.asks) ? m.asks : [];
+  // THE GATE for absence (T404 round seven). A card absent from this payload is the event every writer below acts on:
+  // a clear confirmed, a card's disclosure state pruned, a predicted move given up as gone, an optimistic tick retired,
+  // a badge mark pruned. That reading holds only when the payload was BUILT over every host's cards. The Task tracking
+  // switch's off frame is a stand-in with no cards (the single-kernel one returns before this function; a merged frame
+  // carries an off host's stand-in beside the others' frames and names that host in offHosts), a host attached but
+  // yet to send a frame is named in pendingHosts, and a page load's very first merged frame, built before the first
+  // /tunnels answer has said which remote hosts exist at all, is marked hostsUnread (round nine), so while any host's
+  // cards are unknown, every absence-driven writer stands down: nothing is confirmed, pruned, retired or forgotten
+  // by a card not being here, and presence-driven work goes on. The store bounds hold: the badge mirror keeps only the
+  // off hosts' marks, and the view state grows by gestures alone (feed-view-state.ts), so a long mixed state (an
+  // attached ISOLATED peer never adopts the switch: _converge_peer_settings stands down for it) costs stale entries
+  // for cards that left, never growth without a gesture. The frame's own `off` stays the local kernel's word.
+  const cardsUnknown = frameCardsUnknown(m);
   // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
   // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
-  for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
+  if (!cardsUnknown) for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
   // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name cards; the
   // clear/follow bookkeeping above still runs against the FULL payload, so hidden cards stay consistent.
   // Self-clean the persisted disclosure state against the AUTHORITATIVE live set (the user 2026-07-24).
   // incomingAsks, deliberately — not `visible` below: `#only=` hides cards without ending them, and
   // pruning against the filtered list would throw away the hidden cards' sections. Event-based: a card
-  // leaving the payload (cleared, archived) IS the signal, so nothing ages out on a timer.
-  pruneViewStateTo(new Set(incomingAsks.map((a) => a.itemId)));
+  // leaving the payload (cleared, archived) IS the signal, so nothing ages out on a timer. Not while a host's
+  // cards are unknown (the gate above): a card of an off host has not left, it was not built.
+  if (!cardsUnknown) pruneViewStateTo(new Set(incomingAsks.map((a) => a.itemId)));
   const only = onlyTag();
   const visible = only ? incomingAsks.filter((a) => matchesOnly(a.name, only)) : incomingAsks;
   asks = pendingCleared.size ? visible.filter((a) => !pendingCleared.has(a.itemId)) : visible;
@@ -4961,8 +6444,8 @@ function applyFeedPayload(m: any): void {
   // absent on a single-kernel payload, where the top-level buildId is the one counter there is
   const perHostBuildIds = m.buildIds && typeof m.buildIds === "object" && !Array.isArray(m.buildIds)
     ? m.buildIds as Record<string, number> : undefined;
-  reconcileFollowMove(incomingAsks, lastPayloadBuildId, perHostBuildIds);
-  reconcilePendingDone(incomingAsks);   // retire an optimistic tick once the real tree carries it
+  reconcileFollowMove(incomingAsks, lastPayloadBuildId, perHostBuildIds, !!cardsUnknown);
+  reconcilePendingDone(incomingAsks, !!cardsUnknown);   // retire an optimistic tick once the real tree carries it
   // An optimistic Undo is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
   // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
   if (pendingRestored.size) {
@@ -4988,6 +6471,7 @@ function applyFeedPayload(m: any): void {
   pendingHosts = Array.isArray(m.pendingHosts) ? m.pendingHosts.filter((h: any) => typeof h === "string") : [];
   pendingDead = Array.isArray(m.pendingDead) ? m.pendingDead.filter((h: any) => typeof h === "string") : [];
   syncHostloadBackstops();
+  adoptBoards(m.boards);   // the data-defined boards the kernel ships (plans/card-boards.md, phase three), the frame's whole word: a frame without the field (an older kernel's) holds none
   if (m.views && typeof m.views === "object") feedTagViews = m.views as SessionViews;   // tag DEFINITIONS only — never `active`
   if (Array.isArray(m.sessions)) {
     sessionsMeta = m.sessions.filter((s: any) => s && typeof s.sid === "string" && typeof s.name === "string");
@@ -4995,43 +6479,121 @@ function applyFeedPayload(m: any): void {
     // event: the session left the tab list), rather than leaving the board silently pinned to nothing
     if (feedOnlySid && !sessionsMeta.some((s) => s.sid === feedOnlySid)) setFeedOnly(null);
   }
-  hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
+  if (typeof m.now === "number") {
+    hostNow = m.now;
+    hostNowAt = typeof m.nowAt === "number" ? m.nowAt : Date.now();   // the pair travels together: the frame's clock, and when THAT frame arrived (federation stamps it, so a re-emit of a held frame does not re-anchor)
+  } else {
+    hostNow = Math.floor(Date.now() / 1000);   // an older kernel's frame carries no clock: the browser's own, from here
+    hostNowAt = Date.now();
+  }
   mirrorBadges(incomingAsks, Array.isArray(m.clearNotices) ? m.clearNotices : [],
     Array.isArray(m.sdkNotices) ? m.sdkNotices : [],
-    Array.isArray(m.syncNotices) ? m.syncNotices : []);   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
+    Array.isArray(m.syncNotices) ? m.syncNotices : [], { cardsUnknown });   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
   if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
   clearUndoBusy();   // the push the undo was waiting on has landed (or any fresher one) — cue off
   if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
   if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
   render();
+  if (!feedAnnounced) {
+    feedAnnounced = true;
+    // First content is on screen → tell the shell, the way the timeline does: the boot splash's cue, and the
+    // exact event a notification tap's card reveal waits for — the shell holds its {romp:'revealCard'} until
+    // the feed has cards to scroll to (kernel.py _LANDING_REVEAL_JS). Standalone page: no parent, nothing to say.
+    try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "ready", app: "feed" }, "*"); } catch { /* no shell */ }
+  }
 }
 
 
-window.addEventListener("message", (e: MessageEvent) => {
+// every frame's synchronous handling time is measured (perf-telemetry.ts: one clientDiag row a
+// minute, read by `romp perf client`); the handler itself is unchanged
+// …and handed the merged frames by direct call from federation.js when this page has it (frame-listener.ts)
+listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: MessageEvent) => {
   const m = e.data;
   if (!m) return;
   if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }
   if (m.romp === "paneFocus") { kbEnterCards(); return; }   // the shell handed us keyboard focus → arm card nav
+  if (m.romp === "activeChat") { applyLocalFocus(typeof m.id === "string" && m.id ? m.id : null, false, !!m.gesture, typeof m.nonce === "number" ? m.nonce : null); return; }   // the chat pane's tab change, handed across the page by the shell (T416): the reader's own passes the hover-freeze, a kernel-driven one defers under a held card; no jump scroll
   if (m.romp === "revealCard") {
-    // a bell-entry click jumps back to the card it was minted from (the user 2026-07-28): scroll it
-    // into view and pulse it accent so the eye lands on the right card. A card that no longer exists
-    // under its own key (cleared, or folded into a group) falls back to opening the session.
-    const target = document.querySelector(`[data-key="a:${String(m.itemId || "")}"]`) as HTMLElement | null;
+    // a bell-entry click (the user 2026-07-28) or a notification tap (2026-09-06) jumps to the card it was
+    // minted from: scroll it into view and pulse it accent so the eye lands on the right card. A card in a
+    // FOLDED thread has no element yet — unfold first (the same rule revealCards follows: the navigation wins
+    // over the disclosure). A card that no longer exists under its own key (cleared, or folded into a group)
+    // falls back to opening the session.
+    // The shell shows this pane and posts the jump in the SAME task, before the observer has re-measured
+    // the list (its callback waits for a rendering step): a paint owed from a hidden stretch is settled
+    // here on the shell's word, or a card added while away is not there to find (2026-09-07). The
+    // observer's next callback re-measures, so a wrong word costs one unseen paint, never a stale pane.
+    if (paintDirty) { feedIntersecting = true; releasePaint(); }
+    const key = "a:" + String(m.itemId || "");
+    unfoldThreadsFor(new Set([key]));
+    // Match the key STRUCTURALLY, never an interpolated attribute selector: a crafted push-card value
+    // with a quote or bracket would throw a SyntaxError inside querySelector and abort this handler,
+    // dropping the openSession fallback too (review find on #940, 2026-09-07).
+    const target = (Array.from(document.querySelectorAll("[data-key]")) as HTMLElement[])
+      .find((c) => c.dataset.key === key) || null;
     if (target) {
       target.scrollIntoView({ block: "center", behavior: "smooth" });
       target.classList.remove("reveal-pulse"); void target.offsetWidth;   // restart the animation on a repeat jump
       target.classList.add("reveal-pulse");
       target.addEventListener("animationend", () => target.classList.remove("reveal-pulse"), { once: true });
     } else if (m.sid) {
-      vscodeApi?.postMessage({ type: "openSession", id: String(m.sid) });
+      frameGesture = !!m.gesture;   // the bell click or the notification tap behind this frame is the reader's gesture (round three)
+      try { vscodeApi?.postMessage({ type: "openSession", id: String(m.sid) }); } finally { frameGesture = false; }
     }
     return;
   }
   if (m.type === "feed") {
+    // the Task tracking switch off (T404): the kernel builds no feed and sends this flag; the page shows its notice in
+    // place of the list (rendered by the kernel, hidden while on) and applies nothing; the next real frame swaps back
+    const ttOff = document.getElementById("tt-off"), ttList = document.getElementById("feed-list");
+    if (ttOff) ttOff.hidden = !m.off;
+    if (ttList) ttList.hidden = !!m.off;
+    if (m.off) {
+      // the notice IS this frame's content: the romp loader, whose observer watches the list the off frame leaves empty,
+      // would otherwise sit over the notice to its 30 s failsafe (T404 round two, medium 1)
+      document.getElementById("pane-spin")?.classList.add("gone");
+      // the error center is not task tracking (round four, the ruling): the off frame carries the notice rings, and the
+      // shell's bell is fed from here as from a built frame, so a failed sync, a refused write or a session that cannot
+      // start is told while off; the frame stays loaded hidden while the shell closes the pane, so this runs
+      mirrorBadges([], Array.isArray(m.clearNotices) ? m.clearNotices : [], Array.isArray(m.sdkNotices) ? m.sdkNotices : [], Array.isArray(m.syncNotices) ? m.syncNotices : [], { cardsUnknown: true });
+      if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
+      if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
+      return;
+    }
     // HOVER-FREEZE: a hovered card must not move on screen — queue the payload (newest wins) and
     // hint the deferred churn on the headers instead; mouseleave/blur flush it (see freezeEnter).
     if (freezeKey || tabScopeKey) { pendingFeedPayload = m; paintFreezeBadges(); return; }
     applyFeedPayload(m);
+  } else if (m.type === "activeChat") {
+    // THE FOCUSED SESSION (T347): the kernel relays the chat pane's active tab to the feed clients of the same
+    // window — on every tab switch, and once when this client registers, so a reloaded feed learns the focus
+    // without waiting for one. The frame IS the event: the section repaints here, never on a clock. While a
+    // card is held under the pointer (hover-freeze) the repaint waits for the release, like a payload does:
+    // the held card's rect standing still is that gate's whole contract, and the section's height sits above it.
+    // Since T416 the local signal has usually moved the section already (applyLocalFocus): the frame carrying the
+    // pending session settles the record and changes nothing; one that disagrees is a push built before the kernel
+    // took the switch and yields; only the ECHO (the pending session, and the chat's announcement number when both
+    // sides know it) or the kernel's marked reaffirm answer clears the record, never a count of disagreeing frames
+    // (a burst of switches faster than the round trip would otherwise land a stale one for a whole round trip: the
+    // round-two review). An unchanged session is no event.
+    const id = typeof m.id === "string" && m.id ? m.id : null;
+    const nonce = typeof m.nonce === "number" ? m.nonce : null;
+    if (focusPending) {
+      // the echo is an agreeing frame whose number is at or above the record's (a watermark): the record's own echo, or
+      // a later announcement of the same session (the chat re-announcing after a socket flap, with a new number) that
+      // would otherwise leave the record standing for the page's life; a burst back to the same session is still
+      // protected, since its earlier announcement's frame carries a lower number. One caveat for a SECOND delivery path:
+      // the frames ride one ordered socket, so an echo can never overtake an earlier frame; a path that could reorder
+      // them would let the stale frame land after the echo cleared the record (the round-three review).
+      const echo = id === focusPending.sid && (focusPending.nonce == null || nonce == null || nonce >= focusPending.nonce);
+      if (!m.reaffirm && !echo) return;
+      focusPending = null;
+    }
+    if (id === focusedSid) return;
+    focusedSid = id;
+    if (!showFocused) return;
+    if (freezeKey || tabScopeKey) { focusStale = true; return; }
+    render();
   } else if (m.type === "hoverCards") {
     // rail-dot hover in the CHAT panel → white-outline the card(s) built from
     // that turn, plus the matching ROWS inside an open modal (eid). The host
@@ -5075,6 +6637,53 @@ window.addEventListener("message", (e: MessageEvent) => {
     renderModal();
     applyExtHover();
     if (extHoverEid) document.querySelector(".dot-hl[data-eid]")?.scrollIntoView({ block: "center" });
+  } else if (m.type === "settingRefused" && typeof m.text === "string" && m.text) {
+    // the kernel refused a bell toggle this page posted (its store could not be read): end the optimistic
+    // state ON THIS EVENT — the card's sticky latch drops and the bell repaints to what the payload holds
+    // (the card gate's key reads the latch through cardNotifyOn) — and say why. A SOFT refusal: nothing typed was lost, so the fading
+    // toast (the chat's weight for the same class), never the must-dismiss dialog; the shell's bell keeps the
+    // durable record under its own `refused` kind, so muting judge warnings never mutes these. A `warn`
+    // frame had no handler on this page, so the bell stayed painted as if the click had landed until a reload.
+    if (m.gesture === "bell" && typeof m.itemId === "string" && m.itemId) pendingNotify.delete(m.itemId);
+    render();
+    window.parent?.postMessage({ romp: "notify", kind: "refused", text: m.text,
+                                 sid: typeof m.sid === "string" ? m.sid : "",
+                                 itemId: typeof m.itemId === "string" ? m.itemId : "" }, "*");
+    feedToast(m.text);
+  } else if (m.type === "reviveFailed" && typeof m.id === "string" && m.id) {
+    // the kernel's reply to a Revive (review find, 2026-09-08): the parked card whose button this page latched
+    // lets go, and the reason rides the fading toast, only when a latch here was the one answered; the chat
+    // pane of the same dashboard shows the failure in the revived session's own pane either way, so a revive
+    // clicked there says nothing twice.
+    if (rearmLatches({ kind: "revive", id: m.id })) {
+      feedToast("Couldn't revive " + String(m.name || m.id) + ": " + String(m.text || "unknown error"));
+    }
+  } else if (m.type === "noticeActionDone" && typeof m.itemId === "string" && m.itemId) {
+    // the kernel's answer to a notice card's action (T370). A refusal: the latched buttons let go and the reason is said
+    // (the card stays). A success on a card that dismisses on its action: the kernel cleared it, so the card leaves NOW and
+    // no button re-arms (round four, high: re-armed, it invited a second click that delivered the words again before the
+    // push that removes the card landed). A success on a card that stays: its buttons let go.
+    const twins = cardTwins(m.itemId);
+    const dismisses = twins.some((c) => !!((c as any)._it?.notice?.dismissOnAction)) || !!asks.find((a) => a.itemId === m.itemId)?.notice?.dismissOnAction;
+    // the card's modal, when it shows this card (round four of PR 1831): a success on a dismissing card closes it with the card;
+    // any other answer re-renders it, which rebuilds the notice face and so re-arms its buttons (the same rule as the card's)
+    if (fullscreenAskId === m.itemId) { if (m.ok && dismisses) fullscreenAskId = null; renderModal(); }
+    if (m.ok && dismisses) {
+      pendingCleared.add(m.itemId);   // a push already in flight must not paint it back before the kernel's rebuild lands
+      for (const c of twins) c.dispatchEvent(new MouseEvent("mouseleave"));   // removed under the pointer: the card's own leave logic (freezeLeave, the hover highlight off or back to the pin), as the clear paths dispatch it (round six, low)
+      for (const c of twins) { c.remove(); if (askEls.get(m.itemId) === c) askEls.delete(m.itemId); if (fsAskEls.get(m.itemId) === c) fsAskEls.delete(m.itemId); }
+      dropDismissed([m.itemId]);
+    } else {
+      for (const c of twins) {
+        for (const b of Array.from(((c as any)._nActions as HTMLElement | undefined)?.querySelectorAll("button") || []) as HTMLButtonElement[]) {
+          b.disabled = false; b.textContent = (b as any)._idle || b.textContent;
+        }
+      }
+    }
+    if (!m.ok) feedToast("The card's action was refused: " + String(m.error || "unknown error"));
+  } else if (m.type === "retryRefused" && typeof m.sid === "string" && m.sid) {
+    // the backend could not take the manual retry's send: the Retry this page latched lets go, and says why
+    if (rearmLatches({ kind: "retry", sid: m.sid })) feedToast(String(m.text || "Couldn't retry: the kernel refused it."));
   } else if (m.type === "err" && typeof m.text === "string" && m.text) {
     // the dialog interrupts; the bell KEEPS it (the user 2026-07-29) — dismissing the modal must not erase
     // the fact that a message never landed. Same {romp:'notify'} bridge the card-badge mirror below uses.
@@ -5084,6 +6693,19 @@ window.addEventListener("message", (e: MessageEvent) => {
                                  text: copy ? title + ": " + copy : title,
                                  sid: typeof m.sid === "string" ? m.sid : "" }, "*");
     showErrDialog(title, m.text, copy);
+    const sid = typeof m.sid === "string" ? m.sid : typeof m.id === "string" ? m.id : "";
+    // the kernel's reply IS the event, for the request it names (rearmLatches): a refused apiRetry releases
+    // that session's Retry; a refused askFollowUp releases that card's Continue, and its predicted move yields
+    // to the kernel's answer (revertFollowMove; the no-answer backstop would have bounced it later with a toast
+    // that blamed silence). A reply naming a session and no request is an older kernel's: the session's Retry
+    // and Revive, as before. One naming neither answers no request here.
+    const op = typeof m.op === "string" ? m.op : "";
+    const itemId = typeof m.itemId === "string" ? m.itemId : "";
+    if (op === "apiRetry" && sid) rearmLatches({ kind: "retry", sid });
+    else if (op === "askFollowUp" && itemId) {
+      rearmLatches({ kind: "followup", itemId });
+      if (pendingFollowMove.has(itemId)) revertFollowMove(itemId);
+    } else if (!op && sid) rearmLatches({ kind: "session", sid });
   } else if (m.type === "pickerOptions" && typeof m.name === "string") {
     // the host read the blocked session's live resume-picker screen — show the
     // same options in-page; a choice goes back as keystrokes (transport only,
@@ -5104,7 +6726,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     let moved = false;
     for (const raw of m.ids.map(String)) {
       const top = asks.find((a) => a.itemId === raw) ?? asks.find((a) => a.tree?.some((n) => n.id === raw));
-      if (top && top.column !== "working") { optimisticFollowMove(top.itemId, kind); moved = true; }
+      if (top && askColumn(top) !== "asks") { optimisticFollowMove(top.itemId, kind); moved = true; }   // Working through askColumn: the category first (the 1837 round-two read, low 1)
     }
     if (moved) render();
   } else if (m.type === "cardMoveAck" && Array.isArray(m.ids)) {
@@ -5120,69 +6742,33 @@ window.addEventListener("message", (e: MessageEvent) => {
       ackFollowMove(top ? top.itemId : raw, !!m.ok, bid, ackHost);
     }
   }
-});
+}));
 
-// ---- quarantine decision dialog (the user 2026-07-26): the card is compact, so THIS is where the
-// whole held message is read and decided. Step 1: the full body, read-only (peer content, never
-// auto-run; editing was cut from the flow), with Approve / Deny / Cancel. Deny flips the SAME dialog
-// to step 2: an optional note back to the sender ("Deny & send note" / "Deny" / Cancel) — the bus
-// mails it to the origin host so the sender's agent learns why instead of waiting forever. Lives on
-// document.body OUTSIDE the re-rendered feed root, so a kernel push mid-decision can't eat the note.
-// `decide` is the owning card's decision closure — it carries the mid + sid and flips the card buttons.
-interface QuarEnd { host: string; name: string; color?: string }
-
-function showQuarantineDialog(from: QuarEnd, to: QuarEnd, body: string,
-                              decide: (action: string, busy: string, text: string, feedback?: string) => void,
-                              denyFirst: boolean) {
+// ---- the deny-note prompt (the held-mail card's Deny, a notice action of kind quarantine): the one click-time input any
+// action kind takes (plans/notice-cards.md, "Action kinds"): an optional note back to the sender, which the bus mails to
+// the origin host so the sender's agent learns why instead of waiting forever (the user 2026-07-26). No Cancel button
+// (the user: two choices, deny with a note or without); the backdrop closes without deciding and the message stays held.
+// Lives on document.body outside the re-rendered feed root, so a kernel push mid-decision cannot eat the note.
+function showDenyNoteDialog(onDeny: (note?: string) => void): void {
   document.getElementById("quar-dialog")?.remove();
   const overlay = el("div", "pickdlg-overlay"); overlay.id = "quar-dialog";
   const box = el("div", "pickdlg-box qdlg-box");
-  const title = el("div", "pickdlg-title");
-  // the SAME route the card shows, so opening the message doesn't re-word who it is between
-  const sender = `${from.host}:${from.name}`;
-  const route = () => title.replaceChildren(
-    Object.assign(el("span", "qdlg-lead"), { textContent: "New message" }),
-    quarWho(from.host, from.name, from.color),
-    Object.assign(el("span", "fq-arrow"), { textContent: "\u2192" }),
-    quarWho(to.host, to.name, to.color));
-  route();
-  const view = el("div", "qdlg-view");
-  view.textContent = body;
+  const title = el("div", "pickdlg-title"); title.textContent = "Deny this message. Send a note back to the sender?";
+  const ta = el("textarea", "qdlg-text qdlg-feedback") as HTMLTextAreaElement;
+  ta.placeholder = "optional: tell the sender why (delivered to them as postal mail)";
   const row = el("div", "qdlg-actions");
-  box.append(title, view, row);
-
-  // No Cancel button (the user 2026-07-26: two choices, approve or deny — this gate is only there to
-  // catch something malicious). Clicking the backdrop still closes without deciding; the message
-  // stays held either way.
-  const denyStep = () => {
-    title.replaceChildren(document.createTextNode(`Deny the message from ${sender}. Send a note back?`));
-    const ta = el("textarea", "qdlg-text qdlg-feedback") as HTMLTextAreaElement;
-    ta.placeholder = "optional: tell the sender why (delivered to them as postal mail)";
-    row.replaceChildren();
-    const withNote = el("button", "fdismiss fq fq-no") as HTMLButtonElement; withNote.textContent = "Deny & send note";
-    withNote.title = "drop the message and mail your note back to the sender";
-    withNote.onclick = () => { decide("deny", "Denying…", body, ta.value.trim() || undefined); overlay.remove(); };
-    const bare = el("button", "fdismiss fq") as HTMLButtonElement; bare.textContent = "Deny without note";
-    bare.title = "drop the message — nothing is sent back";
-    bare.onclick = () => { decide("deny", "Denying…", body); overlay.remove(); };
-    row.append(withNote, bare);
-    box.insertBefore(ta, row);
-    ta.focus();
-  };
-
-  if (denyFirst) {
-    denyStep();
-  } else {
-    const ok = el("button", "fdismiss fq fq-ok") as HTMLButtonElement; ok.textContent = "Approve";
-    ok.title = "deliver this message to the recipient session";
-    ok.onclick = () => { decide("approve", "Delivering…", body); overlay.remove(); };
-    const no = el("button", "fdismiss fq fq-no") as HTMLButtonElement; no.textContent = "Deny";
-    no.title = "drop this message — with the option of a note back to the sender";
-    no.onclick = () => denyStep();
-    row.append(ok, no);
-  }
+  const withNote = el("button", "fdismiss fq fq-no") as HTMLButtonElement; withNote.textContent = "Deny & send note";
+  withNote.title = "drop the message and mail your note back to the sender";
+  withNote.onclick = () => { const note = ta.value.trim(); overlay.remove(); onDeny(note || undefined); };
+  const bare = el("button", "fdismiss fq") as HTMLButtonElement; bare.textContent = "Deny without note";
+  bare.title = "drop the message; nothing is sent back";
+  bare.onclick = () => { overlay.remove(); onDeny(undefined); };
+  row.append(withNote, bare);
+  box.append(title, ta, row);
+  overlay.appendChild(box);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   document.body.appendChild(overlay);
+  ta.focus();
 }
 
 // ---- in-page resume-picker dialog (the answerPicker flow, no native QuickPick) ----
@@ -5260,20 +6846,30 @@ function applyExtHover() {
 // exactly the cards a hover would have outlined. The class is removed and re-added across a forced
 // reflow, or a second click on the same card would re-add a class it already has and CSS would replay
 // nothing — the "clicked again and it didn't flash" bug this shape avoids.
-function revealCards(keys: Set<string>) {
-  // A target inside a FOLDED thread has no element to scroll to, and a jump that lands on nothing is the
-  // silent no-op a collapse must never cause (the user 2026-07-31). Unfold the owning thread(s) and render
-  // before looking: the navigation wins over the disclosure, and the thread stays open afterwards so you
-  // can see where you were taken.
-  if (collapsedThreads.size) {
-    let opened = false;
-    for (const a of asks) {
-      if (collapsedThreads.has(a.sid) && extHoverMatches("a:" + a.itemId, keys)) {
-        collapsedThreads.delete(a.sid); opened = true;
-      }
+// A target inside a FOLDED thread has no element to scroll to, and a jump that lands on nothing is the
+// silent no-op a collapse must never cause (the user 2026-07-31). Unfold the owning thread(s) and render
+// before looking: the navigation wins over the disclosure, and the thread stays open afterwards so you
+// can see where you were taken. Shared by every "take me to this card" entry (revealCards, revealCard).
+function unfoldThreadsFor(keys: Set<string>): void {
+  if (!collapsedThreads.size) return;
+  let opened = false;
+  // the run each card RENDERS in — per (session, column), T263c — read from the MODEL, never a memo of the last
+  // paint (T263e, review of T263d: a memo went stale in flat mode and under a held paint): a member of a typed
+  // turn with ≥2 current members renders in the group's column (buildGroup: the worst member's), else in its
+  // own — the render's own rule, shared (turnGroups)
+  const colOf = new Map<string, Column>();
+  for (const [tid, ms] of turnGroups(viewFiltered(asks))) { const c = buildGroup(tid, ms).column; for (const m of ms) colOf.set(m.itemId, c); }
+  for (const a of asks) {
+    const tkey = threadKey(a.sid, colOf.get(a.itemId) ?? askColumn(a));
+    if (collapsedThreads.has(tkey) && extHoverMatches("a:" + a.itemId, keys)) {
+      collapsedThreads.delete(tkey); opened = true;
     }
-    if (opened) render();
   }
+  if (opened) render();
+}
+
+function revealCards(keys: Set<string>) {
+  unfoldThreadsFor(keys);
   const hits = Array.from(document.querySelectorAll<HTMLElement>("[data-key]"))
     .filter((c) => extHoverMatches(c.dataset.key, keys));
   if (!hits.length) return;
@@ -5282,20 +6878,79 @@ function revealCards(keys: Set<string>) {
     c.classList.remove("card-pulse");
     void c.offsetWidth;
     c.classList.add("card-pulse");
+    // and off again when the animation ends (the per-card update gate no longer rewrites className every
+    // render, which used to strip it); under reduced motion no animation runs and the class paints a steady
+    // accent ring, so a backstop a little past the animation's 1.4 s takes it off. animationend bubbles, so
+    // only the pulse's own end counts — a button's acted flash inside the card must not end it. One pulse per
+    // element at a time: a second reveal inside the window re-arms the same handle, so the first reveal's
+    // backstop cannot cut the second's animation short.
+    const prev = (c as any)._pulse as { off: (ev?: AnimationEvent) => void; t: number } | undefined;
+    if (prev) { window.clearTimeout(prev.t); c.removeEventListener("animationend", prev.off); }
+    const off = (ev?: AnimationEvent) => {
+      if (ev && ev.animationName !== "romp-card-pulse") return;
+      c.removeEventListener("animationend", off); window.clearTimeout(cur.t); (c as any)._pulse = undefined; c.classList.remove("card-pulse");
+    };
+    const cur = { off, t: window.setTimeout(off, 1500) };
+    (c as any)._pulse = cur;
+    c.addEventListener("animationend", off);
   }
 }
 
-// Keep "Xm ago" honest between host pushes (host reposts ~1×/min for color fade).
-setInterval(() => {
-  const now = Math.floor(Date.now() / 1000);
-  for (const [id, card] of askEls) {
-    const it = asks.find((a) => a.itemId === id);
-    const t = (card as any)._time as HTMLElement | undefined;
-    if (it && t) t.textContent = relAge(now - it.t);
+// ── the 15 s LIVE PASS ────────────────────────────────────────────────────────────────────────────
+// Keep every "Xm ago" and every running duration honest between host pushes, on the kernel's clock (nowSec):
+// on the delta path a quiet board sends a pane nothing between the 60 s reposts, and the per-card update gate
+// (feed-card-gate.ts) repaints a card only when its inputs change, so this pass is what moves time on every
+// card the kernel does not re-send. Every age-bearing label on a card face is stamped (feed-age.ts stampAge)
+// and the pass repaints them all from one clock, rather than each render path owning a copy of the
+// formatting.
+//
+// The pass WRITES ONLY WHAT CHANGED: relAge rounds to the minute and then the hour, so a handful of labels
+// move per tick on a board of hundreds, and in a document that has ever created a MutationObserver — gear.js
+// creates several at boot — Blink treats an identical textContent write as a real Text-node replacement that
+// dirties layout (paintAge compares first). A pane nobody can see skips the pass and catches up once when
+// shown (liveRefresher, the Outline pane's pattern), by the paint gate's own two measures (paint-gate.ts):
+// the tab hidden, or #feed-list off screen by the observer's word, which is how a pane the shell has
+// display:none'd reads. The two events that release an owed paint catch the pass up, so the feed has one
+// definition of "hidden".
+function livePass(): void {
+  const now = nowSec();
+  for (const card of [...askEls.values(), ...fsAskEls.values()]) {   // …and the focused section's copies (T347)
+    const it = (card as any)._it as AskItem | undefined;
+    if (!it) continue;
+    // the latched Continue's hover title names how long ago it was sent (contTitle, T150): a title, so it
+    // cannot be stamped — refreshed here for the few latched buttons, compare-then-write like the rest, and
+    // only once the payload itself carries the latch (the same test updateAskCard re-arms on): a click
+    // latches the button before any frame lands, and the stale object's followupAt would name an older
+    // follow-up
+    const cont = (card as any)._cont as HTMLButtonElement | undefined;
+    if (cont && cont.disabled && (it.followupPending || it.recheck || it.rejudging)) {
+      const ct = contTitle(true, "a continue", it.followupAt);
+      if (cont.title !== ct) cont.title = ct;
+    }
   }
-}, 15000);
+  refreshAges(document.querySelectorAll<HTMLElement>("[data-age-t]"), now, relAge, ageColorReadable);
+}
+const live = liveRefresher({ hidden: () => paintHeld(document.hidden, feedIntersecting, true), pass: livePass });
+setInterval(live.tick, 15000);
+document.addEventListener("visibilitychange", live.catchUp);
 
 initFileView((m) => vscodeApi?.postMessage(m));   // the file browser opens the viewer in this pane (and saves ride the poster)
+// …and how the viewer names the session a file was opened from: this pane's session list (the same tab
+// set the chat has, relayed per frame, dormant sessions included), else a card carrying the session's
+// name and colour — never sessionColors, which is keyed by NAME; a sid neither knows falls to the
+// kernel's 8-character stub.
+setFileViewIdentity((id) => {
+  const s = sessionsMeta.find((x) => x.sid === id) ?? asks.find((a) => a.sid === id);
+  return s && s.name ? { name: s.name, color: s.color ?? null } : hostStub(id);
+});
 initFileBrowse((m) => vscodeApi?.postMessage(m));   // …and a Browse files ask lands its sibling overlay
 
 vscodeApi?.postMessage({ type: "ready" });
+
+// the notice's button while the Task tracking switch is off (T404): the settings on Task tracking
+document.getElementById("tt-off-btn")?.addEventListener("click", () => {
+  // through gear-host's one road (the shell forwards it into the settings iframe at the Task tracking tab); a standalone
+  // /feed or /fleet page has no shell to ask and hosts no gear, so it goes to the dashboard with the tab named in the hash,
+  // which the landing opens (T404 round two, medium 2: the bare post reached nothing on the only page where the notice shows)
+  if (!openGear(window, { tab: "tasks" })) window.location.assign("/" + window.location.search + "#settings=tasks");
+});

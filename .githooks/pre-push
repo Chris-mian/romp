@@ -1,63 +1,420 @@
 #!/usr/bin/env bash
-# romp pre-push hook: refuse to publish a commit that carries a personal identifier.
+# romp pre-push hook: refuse to publish a commit that carries a personal
+# identifier or a credential.
 #
-# The repo may go public and history is permanent, so this scans the COMMITS
-# BEING PUSHED (every new commit's full tree, not the working tree) for the
-# strings in ~/.config/romp/private-strings.txt — one banned string per line,
-# `#` comments and blank lines ignored, matched case-insensitively. With no such
-# file it exits 0 and stays out of your way, so on a clone that never set one up
-# (any contributor's machine) it is a no-op.
+# The repo may go public and history is permanent, so both scans read the
+# COMMITS BEING PUSHED (not the working tree). Two scanners, because they catch
+# opposite kinds of thing:
 #
-# Why pushed trees rather than a working-tree scan: the hook is symlinked into
+#   identifiers   strings only YOU can enumerate (names, hostnames, vault
+#                 names), read from ~/.config/romp/private-strings.txt: one
+#                 banned string per line, `#` comments and blank lines ignored,
+#                 matched case-insensitively. With no such file the scan stays
+#                 out of your way, so on a clone that never set one up (any
+#                 contributor's machine) it is a no-op.
+#   credentials   strings NOBODY can enumerate in advance (a token's text is
+#                 unknown until it leaks), matched by gitleaks' rules, tuned by
+#                 the repo's .gitleaks.toml. With no gitleaks binary the scan
+#                 prints a notice and stands down; CI runs the same scan over
+#                 the full history, so nothing goes unscanned for long.
+#
+# The identifier scan makes four checks per pushed ref, all about what THIS
+# push changes on the remote:
+#
+#   the tip's tree    the content the push exposes. A banned string anywhere in
+#                     it, in a regular file or a symlink's target, refuses the
+#                     push.
+#   each new commit   the lines it ADDS: against its parent, or for a merge the
+#                     lines in none of its parents. A string introduced in an
+#                     intermediate commit and removed by a later one is still
+#                     caught, and the commit named; a commit whose tree merely
+#                     INHERITS a string an older commit put there is not, and
+#                     neither is a merge that brought one in from a parent the
+#                     remote already has. Every commit on every branch cut from
+#                     main between a string landing there and its redaction
+#                     inherits it that way, and a per-commit TREE scan refuses
+#                     them all, over files the branch never touched, when the
+#                     only exposure any of them could add is its tip.
+#   each new commit   the ADDRESSES it is authored and committed under: the part
+#                     after the @, grepped like a line of content. A commit is
+#                     published with its metadata, and the two checks above read
+#                     none of it. A clone with no user.email set in any scope has
+#                     git stamp <login>@<hostname -f> on every commit it makes,
+#                     and a machine's name and its domain suffix are exactly the
+#                     strings a denylist holds: such an address rode a branch's
+#                     commits and a pushed merge through both content checks and
+#                     gitleaks (2026-09-09). The domain only: the login and the
+#                     names are the author's own, on the denylist too (a FILE
+#                     must not carry them) and on every commit they make. And
+#                     only for an address the clone is NOT configured to publish
+#                     under (user.email in any scope, or GIT_AUTHOR_EMAIL,
+#                     GIT_COMMITTER_EMAIL or EMAIL in the environment): the
+#                     chosen address is the author's to publish whatever it says,
+#                     and its domain may well be their own name. An unset
+#                     user.email chooses nothing, which is the case this check
+#                     is for.
+#   each new commit   its MESSAGE, subject and body, grepped like lines of
+#                     content. Metadata too, and the place a commit describing a
+#                     fix names the path that failed or the machine it failed
+#                     on. A string a FILE carries has a forward remedy once it
+#                     is out (redact it in a later commit, push); a string a
+#                     message carries has none, only a rewrite of the commit
+#                     takes it back, so the push is the last check before it is
+#                     out for good. The whole denylist, the author's own name
+#                     included: the message is text they typed, and a file
+#                     naming them is refused on the same ground. Only what THIS
+#                     push publishes, like the other per-commit checks: a message
+#                     a remote already holds is refused to no purpose.
+#   an annotated tag  its OWN tagger and message, under the two checks above.
+#                     Every other read here peels a tag to the commit it names
+#                     (git grep, rev-list and log take a tag as that commit), so
+#                     the tag object's metadata was read by nothing, and a
+#                     `git push --tags` from a clone with no user.email stamps
+#                     the tagger the way it stamps a committer. The tag object
+#                     is read whenever its ref is pushed: a remote holding it at
+#                     this sha would not be updating the ref, and one holding it
+#                     at another sha is receiving a new object. A tag of a tag
+#                     is peeled one object at a time.
+#
+# The credential scan reads the same new commits, each merge by its
+# first-parent diff, and refuses the push on a hit. A range this clone cannot
+# resolve (a force-push over a remote tip nobody fetched) sends both scans over
+# everything the pushed tip reaches.
+#
+# Why pushed commits rather than a working-tree scan: the hook is symlinked into
 # the SHARED git hooks dir (by install.sh), so it fires from every worktree —
 # but a working-tree scan is only as good as the tree you happen to push from,
 # and an untracked scanner script exists in only one worktree. Reading the
-# denylist from $HOME and grepping the pushed shas arms every worktree equally,
-# and catches a string buried in an intermediate commit whose tip is clean.
+# denylist from $HOME and reading the pushed shas arms every worktree equally.
 #
-# Bypass a false positive with `git push --no-verify`.
+# Env: ROMP_PRIVATE_STRINGS (denylist path), ROMP_GITLEAKS (scanner binary),
+# ROMP_NO_GITLEAKS=1 (skip the credential scan and its notice).
+# Bypass a false positive from either scan with `git push --no-verify`.
 set -euo pipefail
 
-strings_file="${ROMP_PRIVATE_STRINGS:-${XDG_CONFIG_HOME:-$HOME/.config}/romp/private-strings.txt}"
-[ -f "$strings_file" ] || exit 0
-
-# Banned strings: strip comments and surrounding whitespace, drop blanks.
-grep_args=()
-while IFS= read -r line; do
-    line="${line%%#*}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -n "$line" ] && grep_args+=(-e "$line")
-done < "$strings_file"
-[ ${#grep_args[@]} -gt 0 ] || exit 0
-
+# git feeds the ref list on stdin and both scans need it, so read it once.
+refs="$(cat)"
 zero=0000000000000000000000000000000000000000
-blocked=0
-while read -r _local_ref local_sha _remote_ref remote_sha; do
-    [ -n "${local_sha:-}" ] || continue
-    [ "$local_sha" = "$zero" ] && continue          # deleting a remote ref pushes nothing
-    # Only the commits this push actually publishes: what the remote ref lacks,
-    # or (for a new ref) what no remote-tracking ref already has.
-    if [ "$remote_sha" = "$zero" ]; then
-        revs=$(git rev-list "$local_sha" --not --remotes 2>/dev/null || git rev-list "$local_sha")
-    else
-        revs=$(git rev-list "$remote_sha..$local_sha")
-    fi
-    for rev in $revs; do
-        # -I skips binaries; -l lists files; the tree at $rev is what ships.
-        if hits=$(git grep -i -I -l -F "${grep_args[@]}" "$rev" -- 2>/dev/null) && [ -n "$hits" ]; then
-            echo "romp pre-push: commit ${rev:0:10} would publish a personal identifier in:" >&2
-            echo "$hits" | sed "s/^$rev:/  /" >&2
-            blocked=1
-        fi
-    done
-done
+blocked_ids=0
+blocked_addresses=0     # a subset of blocked_ids, with a remedy of its own
+blocked_messages=0      # likewise a subset of blocked_ids, with a remedy of its own
+blocked_tags=0          # an annotated tag's own tagger or message: one of the two above, with a remedy of its own
+blocked_creds=0
+failed_scan=0
 
-if [ "$blocked" -ne 0 ]; then
-    echo "" >&2
-    echo "romp pre-push: BLOCKED — a banned string from $strings_file is in a pushed commit." >&2
-    echo "  Replace it with synthetic data (see CONTRIBUTING.md), then push again." >&2
-    echo "  If the string is only in an INTERMEDIATE commit, squash or rewrite the branch." >&2
+# The commits THIS push publishes for one ref: what no remote already has.
+# "Already has" means reachable from the remote ref's current value or from ANY
+# remote-tracking ref this clone holds (refs/remotes/*, as last fetched) — every
+# remote's, not only the pushed-to remote's or the ref being pushed. The
+# difference from the ref's plain update range is a branch that merged main: its
+# range holds main's commits, every one of them published already through main.
+# Scanning those refuses the push over a string that main itself published, and a
+# string already on a remote is fixed FORWARD, on main (redact, push main) — not
+# by blocking every branch that merged main before the redaction. Every remote
+# counts because that remedy exists only for a commit no remote has yet: in a
+# clone with a fork and the project it forked from, a clean branch cut from the
+# project's main is pushed to the fork as a new ref, and an exclusion scoped to
+# the fork left the project's own commits in the range — one named as adding a
+# string the project had since redacted, which no rewrite of the branch could
+# fix (the #968 review). With no remote-tracking refs at all (never fetched) the
+# exclusion matches nothing and the range falls back to everything the remote
+# ref lacks — for a new ref, the whole history.
+rev_range() {   # <local_sha> <remote_sha> → a rev-list argument list
+    local args="$1 --not --remotes"
+    [ "$2" = "$zero" ] || args="$args $2"
+    printf '%s' "$args"
+}
+
+# The lines a commit adds, one per line as "<path>\t<text>". A commit with one
+# parent: its diff against that parent (a root commit, against the empty tree).
+# A merge: the combined diff against ALL its parents (-c), keeping only the lines
+# in NONE of them — a conflict resolution, a line typed into the merge — which is
+# what the merge itself adds. A diff against the first parent alone named a merge
+# of main, taken while main carried a string, as adding it: the content came in
+# through the second parent, which the remote already had, and the branch's tip
+# was clean (the #968 review). In a combined diff every content line carries one
+# column per parent, and a line in no parent has a `+` in each; -c also omits a
+# file that matches any parent outright, which holds no such line. -M keeps a
+# rename from re-adding every line of the file. A new symlink shows up here too:
+# a link's target is its blob content, so it is an added line. The path comes
+# from the `+++ b/<path>` header, read only between a `diff --git` or
+# `diff --combined` line and the first hunk: inside a hunk, a line that begins
+# with `+++ ` is added content (`++ b/x` as written) and belongs to the current
+# file.
+added_lines() {   # <rev>
+    local n
+    n=$(git rev-list --parents -n 1 "$1" | awk '{ print NF - 1 }')
+    git diff-tree -p -r -M -c --root --no-commit-id --no-color "$1" | awk -v n="$n" '
+        BEGIN { if (n < 1) n = 1; for (i = 0; i < n; i++) plus = plus "+" }
+        /^diff --(git|combined) /        { hdr = 1; next }
+        hdr && /^\+\+\+ b\//             { f = substr($0, 7); next }
+        hdr && /^\+\+\+ /                { f = $0; next }
+        /^@@/                            { hdr = 0; next }
+        !hdr && substr($0, 1, n) == plus { print f "\t" substr($0, n + 1) }'
+}
+
+# The addresses this clone publishes under BY CHOICE: user.email from any config
+# scope (an includeIf's included, as git resolves it for this repository) and the
+# environment's overrides, one per line. An unset user.email contributes nothing,
+# so on a clone that never set one every stamped address is checked. Blank lines
+# are harmless: a non-empty address never matches one whole.
+chosen_emails() {
+    git config --get-all user.email 2>/dev/null || true
+    printf '%s\n' "${GIT_AUTHOR_EMAIL:-}" "${GIT_COMMITTER_EMAIL:-}" "${EMAIL:-}"
+}
+
+# Whether an address is one this clone chose: matched whole, case-insensitively.
+is_chosen() {   # <address> <chosen addresses, one per line>
+    printf '%s\n' "$2" | grep -qixF -e "$1"
+}
+
+# The addresses a commit is stamped with that this clone did not choose, one
+# line per role as "<role>\t<address>", authored and committed, whether or not
+# the two addresses are the same. An empty address is skipped (there is nothing
+# to publish in `<>`), and so is a chosen one.
+#
+# --no-show-signature here and on the message read below: with log.showSignature
+# set, git log prints a signed commit's verification report (the signer's name
+# or address among it) ahead of whatever the format asks for. Read as part of the
+# message, that refused a clean signed commit whose signer is on the denylist,
+# as the author's own name and address are, and numbered a real hit's line from
+# the report's first line rather than the subject. The flag keeps both reads to
+# the commit's own fields.
+stamped_addresses() {   # <rev> <chosen addresses, one per line>
+    local role email
+    git log -1 --no-show-signature --format='authored%x09%ae%ncommitted%x09%ce' "$1" | while IFS=$'\t' read -r role email; do
+        [ -n "$email" ] || continue
+        is_chosen "$email" "$2" && continue
+        printf '%s\t%s\n' "$role" "$email"
+    done
+}
+
+# One header field of an annotated tag object (`tagger`, `object`), or its
+# message: the header ends at the first empty line and the message is the rest
+# (a signed tag's signature included; it is text like any other). awk reads the
+# whole object before either function prints.
+tag_field() {   # <tag_sha> <field>
+    git cat-file -p "$1" | awk -v f="$2" 'BEGIN { hdr = 1 }
+        hdr && !NF { hdr = 0; next }
+        hdr && !seen && $1 == f { seen = 1; sub(/^[^ ]+ /, ""); print }'
+}
+tag_message() {   # <tag_sha>
+    git cat-file -p "$1" | awk 'BEGIN { hdr = 1 } hdr && !NF { hdr = 0; next } !hdr { print }'
+}
+
+# ── identifiers ───────────────────────────────────────────────────────────
+scan_identifiers() {
+    local strings_file line grep_args local_ref local_sha _remote_ref remote_sha lines role email obj tagger chosen
+    local hits links link blob link_path target revs rev
+    strings_file="${ROMP_PRIVATE_STRINGS:-${XDG_CONFIG_HOME:-$HOME/.config}/romp/private-strings.txt}"
+    [ -f "$strings_file" ] || return 0
+
+    # Banned strings: strip comments and surrounding whitespace, drop blanks.
+    grep_args=()
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] && grep_args+=(-e "$line")
+    done < "$strings_file"
+    [ ${#grep_args[@]} -gt 0 ] || return 0
+    chosen="$(chosen_emails)"      # the same for every commit in the push: read once
+
+    while read -r local_ref local_sha _remote_ref remote_sha; do
+        [ -n "${local_sha:-}" ] || continue
+        [ "$local_sha" = "$zero" ] && continue          # deleting a remote ref pushes nothing
+
+        # The tip's tree. -I skips binaries; -l lists files.
+        if hits=$(git grep -i -I -l -F "${grep_args[@]}" "$local_sha" -- 2>/dev/null) && [ -n "$hits" ]; then
+            echo "romp pre-push: the tip of $local_ref (${local_sha:0:10}) would publish a personal identifier in:" >&2
+            echo "$hits" | sed "s/^$local_sha:/  /" >&2
+            blocked_ids=1
+        fi
+
+        # The tip's symlinks. git grep reads regular-file blobs only, so a link whose
+        # TARGET holds a string is invisible to the grep above. A committed link's
+        # target is its blob content, so read each 120000 entry's blob itself. Not
+        # hypothetical: a `node_modules -> /home/<user>/code/romp/...` link, made to
+        # run the extension tests in a worktree and swept up by a broad `git add`,
+        # reached a public branch past a git grep of its tree, and a reviewer found
+        # it, not the hook. An ls-tree line is "<mode> <type> <sha>\t<path>". A blob
+        # that cannot be read counts as empty: under set -e a failed substitution
+        # would end the hook with no message, before its verdict on everything else.
+        if links=$(git ls-tree -r "$local_sha" 2>/dev/null | grep '^120000 '); then
+            while IFS= read -r link; do
+                blob=${link#* * }; blob=${blob%%[[:space:]]*}
+                link_path=${link#*$'\t'}
+                target=$(git cat-file -p "$blob" 2>/dev/null) || target=""
+                if printf '%s' "$target" | grep -qi -F "${grep_args[@]}"; then
+                    echo "romp pre-push: the tip of $local_ref (${local_sha:0:10}) would publish a personal identifier" >&2
+                    echo "  in the SYMLINK TARGET of $link_path -> $target" >&2
+                    blocked_ids=1
+                fi
+            done <<< "$links"
+        fi
+
+        # The lines each commit new to the remote adds.
+        # shellcheck disable=SC2046  # the range is deliberately word-split
+        revs=$(git rev-list $(rev_range "$local_sha" "$remote_sha") 2>/dev/null \
+               || git rev-list "$local_sha")
+        for rev in $revs; do
+            if hits=$(added_lines "$rev" | grep -i -F "${grep_args[@]}" | cut -f1 | sort -u) && [ -n "$hits" ]; then
+                echo "romp pre-push: commit ${rev:0:10} ADDS a personal identifier in:" >&2
+                echo "$hits" | sed 's/^/  /' >&2
+                blocked_ids=1
+            fi
+            # The addresses it is stamped with: the domain of each one the clone did
+            # not choose. `${email##*@}` is the whole string for an address with no @,
+            # which git never stamps; such an address is read whole.
+            while IFS=$'\t' read -r role email; do
+                if printf '%s' "${email##*@}" | grep -qi -F "${grep_args[@]}"; then
+                    echo "romp pre-push: commit ${rev:0:10} is $role as <$email>, an address this clone is not configured to use, whose domain carries a personal identifier" >&2
+                    blocked_ids=1
+                    blocked_addresses=1
+                fi
+            done < <(stamped_addresses "$rev" "$chosen")
+            # Its message, subject and body, like lines of content. -n so the report
+            # can point at the line (1 is the subject) without echoing the string;
+            # --no-show-signature so the message is all it reads (stamped_addresses).
+            if hits=$(git log -1 --no-show-signature --format=%B "$rev" | grep -in -F "${grep_args[@]}" | cut -d: -f1) && [ -n "$hits" ]; then
+                lines=$(printf '%s\n' "$hits" | tr '\n' ,); lines=${lines%,}
+                echo "romp pre-push: the MESSAGE of commit ${rev:0:10} carries a personal identifier on line $lines (line 1 is the subject)" >&2
+                blocked_ids=1
+                blocked_messages=1
+            fi
+        done
+
+        # An annotated tag's own tagger and message (the header note): the pushed
+        # object, peeled tag by tag down to the commit, which the loop above read.
+        # The tagger's address is read as a commit's are (not when the clone chose
+        # it, its domain otherwise) and the message like a commit's. A field that
+        # cannot be read counts as empty, as a symlink blob does above: under set -e
+        # a failed substitution would end the hook before its verdict.
+        obj="$local_sha"
+        while [ "$(git cat-file -t "$obj" 2>/dev/null || true)" = tag ]; do
+            tagger="$(tag_field "$obj" tagger 2>/dev/null)" || tagger=""
+            email=""
+            case "$tagger" in *"<"*">"*) email="${tagger#*<}"; email="${email%%>*}";; esac
+            if [ -n "$email" ] && ! is_chosen "$email" "$chosen" && printf '%s' "${email##*@}" | grep -qi -F "${grep_args[@]}"; then
+                echo "romp pre-push: tag $local_ref (${obj:0:10}) is tagged as <$email>, an address this clone is not configured to use, whose domain carries a personal identifier" >&2
+                blocked_ids=1
+                blocked_addresses=1
+                blocked_tags=1
+            fi
+            if hits=$(tag_message "$obj" 2>/dev/null | grep -in -F "${grep_args[@]}" | cut -d: -f1) && [ -n "$hits" ]; then
+                lines=$(printf '%s\n' "$hits" | tr '\n' ,); lines=${lines%,}
+                echo "romp pre-push: the MESSAGE of tag $local_ref (${obj:0:10}) carries a personal identifier on line $lines" >&2
+                blocked_ids=1
+                blocked_messages=1
+                blocked_tags=1
+            fi
+            obj="$(tag_field "$obj" object 2>/dev/null)" || obj=""
+        done
+    done <<< "$refs"
+
+    if [ "$blocked_ids" -ne 0 ]; then
+        echo "" >&2
+        echo "romp pre-push: BLOCKED — a banned string from $strings_file is in a pushed commit." >&2
+        echo "  Replace it with synthetic data (see CONTRIBUTING.md), then push again." >&2
+        echo "  If the string is only in an INTERMEDIATE commit, squash or rewrite the branch." >&2
+        echo "  If the tip only INHERITS a string an older commit added, merge the main that has since redacted it." >&2
+        echo "  If the named commit is already on some remote, this clone has not fetched it: fetch, then push again." >&2
+        if [ "$blocked_addresses" -ne 0 ]; then
+            echo "  An address this clone is not configured to use, with a banned string in its domain, is refused on every commit it stamps:" >&2
+            echo "    if it is yours, say so (git config --global user.email <address>) and push again;" >&2
+            echo "    if git filled it from the hostname (an unset user.email gets <login>@<hostname>), set yours, add user.useConfigOnly true" >&2
+            echo "    so git never fills it again, and rewrite the named commits, e.g. git rebase <base> --exec 'git commit --amend --no-edit --reset-author'." >&2
+        fi
+        if [ "$blocked_messages" -ne 0 ]; then
+            echo "  A commit MESSAGE is never redacted forward: rewrite the named commit (git commit --amend for the tip, a reword rebase with git rebase -i <base> for an older one) and push again." >&2
+        fi
+        if [ "$blocked_tags" -ne 0 ]; then
+            echo "  An annotated TAG's tagger and message are the tag object's own: re-create it under your configured address, with a clean message (git tag -f -a <name> <commit>), and push it again." >&2
+        fi
+    fi
+}
+
+# ── credentials ───────────────────────────────────────────────────────────
+# gitleaks (ROMP_GITLEAKS, else the first on PATH) over the commits this push
+# publishes: the same range per ref as the identifier scan, so a secret that is
+# already on a remote does not refuse every later push, and a secret in an
+# intermediate commit whose tip is clean is still caught.
+scan_credentials() {
+    [ -n "${ROMP_NO_GITLEAKS:-}" ] && return 0
+
+    local gl root cfg range rc _local_ref local_sha _remote_ref remote_sha
+    gl="${ROMP_GITLEAKS:-$(command -v gitleaks || true)}"
+    if [ -z "$gl" ] || [ ! -x "$gl" ]; then
+        # Loud rather than silent, but not a blocker: requiring an install to
+        # push would break every clone that never wanted the scanner, and CI
+        # scans the full history regardless.
+        echo "romp pre-push: gitleaks not installed, pushing WITHOUT a secret scan." >&2
+        echo "  Install it (brew install gitleaks, or the release .github/workflows/ci.yml pins)." >&2
+        echo "  ROMP_GITLEAKS names a binary that is not on PATH; ROMP_NO_GITLEAKS=1 silences this." >&2
+        return 0
+    fi
+
+    root="$(git rev-parse --show-toplevel)"
+    # The repo's rules, named explicitly: without --config gitleaks reads a
+    # GITLEAKS_CONFIG from the environment before the source root, so a
+    # developer's own config (for a pre-commit hook of theirs, say) would
+    # replace the repo's. A tree without the file scans under the default rules.
+    cfg=()
+    [ -f "$root/.gitleaks.toml" ] && cfg=(--config "$root/.gitleaks.toml")
+
+    while read -r _local_ref local_sha _remote_ref remote_sha; do
+        [ -n "${local_sha:-}" ] || continue
+        [ "$local_sha" = "$zero" ] && continue      # deleting a remote ref pushes nothing
+        # The range has to resolve in THIS clone before gitleaks sees it: handed
+        # a sha git cannot find (a force-push over a remote tip nobody fetched),
+        # gitleaks logs git's error, scans no commits and exits 0, and the push
+        # would go out unscanned. The identifier scan falls back to everything
+        # the pushed tip reaches; so does this one.
+        range="$(rev_range "$local_sha" "$remote_sha")"
+        # shellcheck disable=SC2086  # the range is deliberately word-split
+        git rev-list $range >/dev/null 2>&1 || range="$local_sha"
+        # -v prints the file, line and rule; without it gitleaks reports only a
+        # COUNT, which says a push was refused but not what to fix. --redact
+        # keeps the secret itself out of terminal scrollback: the location is
+        # what a fix needs, and the value has to be rotated anyway.
+        # --exit-code 2 tells a finding apart from gitleaks failing (exit 1: an
+        # unreadable config, say). Both refuse the push, with different advice.
+        # --diff-merges=first-parent: `gitleaks git` runs `git log -p`, which
+        # shows NO diff for a merge commit by default, so a secret introduced
+        # during a conflict resolution (in neither parent, only the merge tree)
+        # would be scanned by nothing. The first-parent diff of each merge
+        # surfaces exactly that content; non-merges are unaffected.
+        # ${cfg[@]+...}: an empty array expands to nothing under set -u in
+        # every bash, the 3.2 that macOS ships included.
+        rc=0
+        "$gl" git "$root" --no-banner --redact -v --exit-code 2 ${cfg[@]+"${cfg[@]}"} \
+            --log-opts="$range --diff-merges=first-parent" >&2 || rc=$?
+        case $rc in
+            0) ;;
+            2) blocked_creds=1 ;;
+            *) failed_scan=1 ;;
+        esac
+    done <<< "$refs"
+
+    if [ "$blocked_creds" -ne 0 ]; then
+        echo "" >&2
+        echo "romp pre-push: BLOCKED. gitleaks found a credential in a pushed commit." >&2
+        echo "  Treat it as compromised the moment it exists in a commit: ROTATE it, then remove it." >&2
+        echo "  Removing it in a NEW commit is not enough; the old commit still carries it." >&2
+        echo "  A false positive belongs in .gitleaks.toml, narrowly, with a reason." >&2
+    fi
+    if [ "$failed_scan" -ne 0 ]; then
+        echo "" >&2
+        echo "romp pre-push: BLOCKED. gitleaks could not scan; its error is above." >&2
+        echo "  The push is refused rather than published unscanned. Fix the scanner or its config, or set ROMP_NO_GITLEAKS=1 for one push." >&2
+    fi
+}
+
+scan_identifiers
+scan_credentials
+
+# Both scans have reported; one bypass line, then the verdict.
+if [ "$blocked_ids" -ne 0 ] || [ "$blocked_creds" -ne 0 ] || [ "$failed_scan" -ne 0 ]; then
     echo "  To bypass for one push (you are sure it is fine): git push --no-verify" >&2
     exit 1
 fi

@@ -13,7 +13,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -24,9 +24,9 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_em_mswap", os.path.join(BIN, "romp-event-model")).load_module()
-jd = SourceFileLoader("romp_judge_mswap", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_mswap", os.path.join(BIN, "romp-kernel")).load_module()
+em = load_source("romp_em_mswap", os.path.join(BIN, "romp-event-model"))
+jd = load_source("romp_judge_mswap", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_mswap", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 NOW = 1781100000
@@ -34,6 +34,8 @@ T0 = NOW - 3600
 
 NOTICE = ("The model's safeguards flagged this message. Switched to a fallback model. "
           "Send feedback with /feedback.")
+CATEGORY = "synthetic-category"
+EXPLANATION = "a synthetic explanation of the refusal"
 
 
 def iso(t):
@@ -58,7 +60,10 @@ def refusal_turn_records():
         {"type": "system", "subtype": "model_refusal_fallback", "timestamp": iso(T0 + 5),
          "uuid": "sfb", "parentUuid": "a1", "direction": "retry", "trigger": "refusal",
          "level": "warning", "content": NOTICE,
-         "originalModel": "claude-fable-5", "fallbackModel": "claude-opus-5"},
+         "originalModel": "claude-fable-5", "fallbackModel": "claude-opus-5",
+         # T279: the refusal's category (an open string; null when neither lane carried one) and the
+         # API's explanation (display-only prose; null on server-lane banners), plus the scope
+         "scope": "session", "apiRefusalCategory": CATEGORY, "apiRefusalExplanation": EXPLANATION},
     ]
 
 
@@ -77,6 +82,15 @@ class ParseEmitsTheFallbackAtom(unittest.TestCase):
         self.assertEqual(fb[0]["fallback_from"], "claude-fable-5")
         self.assertEqual(fb[0]["fallback_to"], "claude-opus-5")
         self.assertEqual(fb[0]["content"], NOTICE)
+
+    def test_the_atom_carries_the_refusal_category_explanation_and_scope(self):
+        # T279: the head and fold of the chat notice, and the card's cause — dropped at the parse before
+        parsed = self._parse()
+        atoms = [a for t in parsed["turns"] for a in t["atoms"]]
+        fb = [a for a in atoms if a.get("subtype") == "model_refusal_fallback"][0]
+        self.assertEqual(fb["refusal_category"], CATEGORY)
+        self.assertEqual(fb["refusal_explanation"], EXPLANATION)
+        self.assertEqual(fb["scope"], "session")
 
     def test_the_notice_sorts_before_the_fallback_models_reply(self):
         # its timestamp is the retry START, so the atom order reads: flagged -> switched -> the reply
@@ -113,10 +127,10 @@ class BuildSessionEmitsTheNoticeEvent(unittest.TestCase):
             mod.NAMES, mod.PROJECTS = names, proj
             mod.CAPDIR, mod.ARCHDIR, mod.GOALDIR = td / "captions", td / "archive", td / "goals"
             mod.STATE, mod.STATESDIR = td, td / "states"
-        self.saved_km = (km.NAMES, km._tmux_sessions, km._GLOBAL_CLAUDE_MD)
+        self.saved_km = (km.NAMES, km._live_map, km._GLOBAL_CLAUDE_MD)
         km.NAMES = names
         km._GLOBAL_CLAUDE_MD = td / "no-global-claude.md"
-        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
+        km._live_map = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None,
                                            "color": None}}
         km._parse_cache.clear()
@@ -125,7 +139,7 @@ class BuildSessionEmitsTheNoticeEvent(unittest.TestCase):
         for mod, *vals in self.saved:
             (mod.NAMES, mod.PROJECTS, mod.CAPDIR, mod.ARCHDIR,
              mod.GOALDIR, mod.STATE, mod.STATESDIR) = vals
-        (km.NAMES, km._tmux_sessions, km._GLOBAL_CLAUDE_MD) = self.saved_km
+        (km.NAMES, km._live_map, km._GLOBAL_CLAUDE_MD) = self.saved_km
         km._parse_cache.clear()
         self.td.cleanup()
 
@@ -141,6 +155,24 @@ class BuildSessionEmitsTheNoticeEvent(unittest.TestCase):
                        if "README covers install" in (e.get("md") or ""))
         self.assertLess(kinds.index("modelFallback"), i_reply,
                         "the notice reads before the fallback model's reply")
+
+    def test_the_event_carries_the_category_explanation_and_scope(self):
+        # T279: the client renders the category in the head and the explanation in the fold
+        m = km.build_session(SID, NOW)
+        ev = next(e for e in m["events"] if e.get("kind") == "modelFallback")
+        self.assertEqual(ev["category"], CATEGORY)
+        self.assertEqual(ev["explanation"], EXPLANATION)
+        self.assertEqual(ev["scope"], "session")
+
+    def test_the_notice_is_never_the_users_bubble(self):
+        # a STANDING guard on the routing, green before T279 too (the system atom is never a user
+        # event): the record's user-facing text belongs to the notice, never to a user bubble
+        m = km.build_session(SID, NOW)
+        for e in m["events"]:
+            if e.get("kind") == "user":
+                self.assertNotIn(NOTICE, e.get("md") or "")
+                self.assertNotIn(EXPLANATION, e.get("md") or "")
+        self.assertEqual([e.get("kind") for e in m["events"]].count("modelFallback"), 1)
 
 
 if __name__ == "__main__":

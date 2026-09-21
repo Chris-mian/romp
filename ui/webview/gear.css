@@ -2,17 +2,17 @@
    that hosts the modal can link it: the kernel's /feed page, and the VS Code feed AND chat
    panels (the modal opens over whichever pane the strip's gear was clicked in,
    the user 2026-07-13). */
-#rgear { position: fixed; top: 6px; right: 8px; z-index: 60; background: #2a2a2a; border: 1px solid #3a3a3a;
-  border-radius: 6px; color: #9aa0a6; font-size: 15px; cursor: pointer; opacity: .7; line-height: 1; padding: 3px 6px; }
-#rgear:hover { opacity: 1; background: #333; }
-#rrefresh { position: fixed; top: 6px; right: 42px; z-index: 60; background: #2a2a2a; border: 1px solid #3a3a3a;
-  border-radius: 6px; color: #9aa0a6; font-size: 14px; cursor: pointer; opacity: .7; line-height: 1; padding: 3px 6px; }
-#rrefresh:hover { opacity: 1; background: #333; color: #fff; }
+#rgear { position: fixed; top: 6px; right: 8px; z-index: 60; background: var(--btn-bg, #2a2a2a); border: 1px solid var(--hairline, #3a3a3a);
+  border-radius: 6px; color: var(--text-muted, #9aa0a6); font-size: 15px; cursor: pointer; opacity: .7; line-height: 1; padding: 3px 6px; }
+#rgear:hover { opacity: 1; background: var(--btn-hover-bg, #333); }
+#rrefresh { position: fixed; top: 6px; right: 42px; z-index: 60; background: var(--btn-bg, #2a2a2a); border: 1px solid var(--hairline, #3a3a3a);
+  border-radius: 6px; color: var(--text-muted, #9aa0a6); font-size: 14px; cursor: pointer; opacity: .7; line-height: 1; padding: 3px 6px; }
+#rrefresh:hover { opacity: 1; background: var(--btn-hover-bg, #333); color: #fff; }
 #rrefresh:disabled { opacity: .4; cursor: default; }
 /* The settings panel is a full-screen MODAL (the user 2026-06-23): #rsettings is the backdrop
    (the web shell expands the feed iframe to the whole window first — _LANDING_SETTINGS_JS;
    the VS Code feed panel already fills its group), .rs-card the roomy centered card. */
-#rsettings { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-start;
+#rsettings { position: fixed; inset: 0; z-index: 60; background: var(--overlay-dim, rgba(0, 0, 0, 0.55)); display: flex; align-items: flex-start;
   justify-content: center; overflow: auto; padding: 6vh 16px; box-sizing: border-box; }   /* the one modal dim */
 #rsettings[hidden] { display: none; }
 /* while open (web shell): the page's html goes transparent and the BODY is pinned to the feed pane's
@@ -39,96 +39,377 @@ body.rs-lifted::before { content: ""; position: absolute; inset: 0; background: 
    viewport, and painted --bg it would be the same full-window black-out from the other branch. */
 body.rs-pane-gone #feed-head, body.rs-pane-gone #feed-list, body.rs-pane-gone #feed-foot { visibility: hidden; }
 body.rs-lifted.rs-pane-gone::before { display: none; }
-.rs-card { width: min(560px, 94%); max-height: 88vh; overflow: auto; background: #252526; border: 1px solid #3a3a3a;
-  border-radius: 10px; padding: 16px 20px; font: 13px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #ccc; box-shadow: 0 12px 36px #000000aa; }
-#rsettings .rs-h { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #e8eaed; }
+.rs-card { width: min(560px, 94%); max-height: 88vh; overflow: auto; background: var(--surface-raised, #252526); border: 1px solid var(--hairline, #3a3a3a);
+  border-radius: 10px; padding: 16px 20px; font: 13px/1.6 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; color: var(--fg, #ccc); box-shadow: var(--shadow-modal, 0 12px 36px #000000aa); }
+#rsettings .rs-h { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: var(--text-bright, #e8eaed); }
 #rsver { white-space: pre-line; }
-/* subsection headers (Chat / Feed / Sessions / Debug) so the settings group by surface */
-#rsettings .rs-sec { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
-  color: #6f747c; margin: 15px 0 5px; border-top: 1px solid #333; padding-top: 11px; }
-#rsettings .rs-sec-first { border-top: 0; margin-top: 7px; padding-top: 0; }
+/* subsection headers (Chat / Feed / Sessions / Debug) so the settings group by surface. Sentence case in the accent blue,
+   no uppercase and no letter-spacing (the user 2026-09-18: the all-caps dress read as shouting; a delineator is told apart
+   from a heading by its size and colour, never by capitals). A TITLED DIVIDER since 2026-09-19 (the user, from the look):
+   the head sits IN the horizontal rule rather than above it, the rule running on both sides of the title in the hairline
+   token, the title CENTRED so it reads as a title and not a row, and one step up the size ladder from the 13px rows that
+   live under it: 14px/600, the card title's size, in the accent (no new size). The same shape for every head, the first of a
+   pane included (it lost its bare rule-less form), and for the tab widgets' .rs-divider, which already had the shape. */
+#rsettings .rs-sec, #rsettings .rs-widget.rs-divider { display: flex; align-items: center; justify-content: center; gap: 10px; text-align: center;
+  font-size: 14px; font-weight: 600; color: var(--accent, #9cd2ff); margin: 14px 0 6px; padding: 0; }
+#rsettings .rs-sec::before, #rsettings .rs-sec::after, #rsettings .rs-widget.rs-divider::before, #rsettings .rs-widget.rs-divider::after {
+  content: ""; flex: 1 1 0; min-width: 12px; height: 1px; background: var(--hairline, #3a3a3a); }
+/* (the divider's selector carries .rs-widget so this dress outranks the widget rows' grid rule below, which follows it in the sheet) */
+#rsettings .rs-sec-first { margin-top: 7px; }
 #rsettings .rs-row { display: flex; align-items: flex-start; gap: 8px; padding: 2px 0 6px; cursor: pointer; position: relative; }
 #rsettings .rs-row input { margin: 3px 0 0; flex: 0 0 auto; cursor: pointer; }
+/* a hidden row or section header (the Panes section off the dashboard's own page): the author display
+   rules above would otherwise defeat the UA [hidden]{display:none} (the #rsettings[hidden] precedent) */
+#rsettings .rs-row[hidden], #rsettings .rs-sec[hidden] { display: none; }
 /* two checkboxes side by side on one row (the Judges sets) — each half keeps the .rs-row look */
 #rsettings .rs-judges { display: flex; gap: 18px; }
 #rsettings .rs-judges .rs-half { flex: 1 1 0; min-width: 0; }
 /* the per-setting description is a HOVER tooltip (the user 2026-06-23): hidden by default,
    floats below the row on hover (absolute → no layout shift). */
 #rsettings .rs-sub { display: none; }
-#rsettings .rs-row:hover .rs-sub { display: block; position: absolute; left: 0; right: 0; top: 100%; z-index: 10;
-  margin-top: 2px; color: #cdd3da; font-size: 0.92em; line-height: 1.35; background: #1b1b1c; border: 1px solid #3a3a3a;
+#rsettings .rs-row:hover .rs-sub, #rsettings .rs-widget:hover .rs-sub { display: block; position: absolute; left: 0; right: 0; top: 100%; z-index: 10;
+  margin-top: 2px; color: var(--text-soft, #cdd3da); font-size: 0.92em; line-height: 1.35; background: var(--input-bg, #1b1b1c); border: 1px solid var(--hairline, #3a3a3a);
   border-radius: 6px; padding: 6px 9px; box-shadow: 0 4px 14px #000000aa; pointer-events: none; }
+/* the popover opens ABOVE a row whose popover would run past the card's bottom (gear.js placeSub sets rs-up on hover): the card
+   is the modal's scroll box, and a popover past its bottom grew it a scrollbar and was clipped (the T408 read) */
+#rsettings .rs-row.rs-up:hover .rs-sub, #rsettings .rs-widget.rs-up:hover .rs-sub { top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; }
+/* the Fast mode box's own popover, positioned against its row like the row's (the box is static, so the row is the
+   containing block and the popover keeps the row's width): the box carries rs-up itself (gear.js hostOf). Specificity
+   (1,5,0): two classes above the hover rule and one above the row's own rs-up rule, so the box's placement wins whatever the
+   row wears, whatever the order in this sheet */
+#rsettings .rs-row:hover .rs-fastin.rs-up .rs-sub { top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; }
 #rsettings .rs-sub code { background: #0d0d0d; border-radius: 3px; padding: 0 3px; }
+/* an inline live status beside a control (the login flow's "starting…") — visible when non-empty,
+   never a popover (as an rs-sub it doubled the Account row's tooltip, 2026-09-02) */
+#rsettings .rs-note { color: var(--text-muted, #9aa0a6); font-size: 0.92em; }
+#rsettings .rs-note:empty { display: none; }
+/* a row's permanent one-sentence line under its label (T408, the Automation rows): the note's dress on its own line, in
+   the flow (never a popover, so it cannot run past the card and scroll it the way a hover rs-sub does on a short pane) */
+#rsettings .rs-line { display: block; color: var(--text-muted, #9aa0a6); font-size: 0.92em; line-height: 1.35; margin-top: 1px; }
+/* ONE tooltip at a time: while a picker dropdown is open, or the pointer is on the tri-state
+   'mixed' mark (whose own title names the differing hosts), the row's description stands down —
+   otherwise the native tooltip and the description popover stack (2026-09-02) */
+#rsettings .rs-row:has(#rs-cmap-list:not([hidden])) .rs-sub,
+#rsettings .rs-row:has(#rs-pal-list:not([hidden])) .rs-sub,
+#rsettings .rs-row:has(.rs-mixed:hover) .rs-sub { display: none; }
 /* A setting whose value differs between the connected machines: the checkbox goes tri-state, and this
    says so in words beside the label, because an indeterminate box alone is easy to read straight past.
    Label size, section grey — the hover line names which machines. */
 #rsettings .rs-mixed { color: #6f747c; margin-left: 6px; }
+/* the DISAGREEMENT FLAG on a synchronized row (phase two, plans/settings-across-machines.md): the mixed mark's slot, the word
+   in the heads-up amber so it is seen without reading; the count on the selector wears the same */
+#rsettings .rs-mixed.rs-differs, #rsettings .rs-differs { color: var(--warn, #d7a23a); font-weight: 600; }
+/* the MACHINE SELECTOR above the tabs: the menu vocabulary (a pill button, a list under it), shown with more than one kernel */
+#rsettings #rs-scope { position: relative; margin: 0 0 8px; }
+#rsettings #rs-scope[hidden] { display: none; }
+#rsettings #rs-scope-btn { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
+  background: var(--btn-bg, #2a2a2a); color: var(--fg, #ccc); cursor: pointer; display: inline-flex; align-items: center; gap: 8px; }
+#rsettings #rs-scope-btn:hover { border-color: var(--accent, #9cd2ff); }
+#rsettings #rs-scope-count { font-size: 11px; }
+#rsettings .rs-scope-caret { color: var(--text-muted, #9aa0a6); font-size: 11px; }
+#rsettings #rs-scope-list { position: absolute; left: 0; top: 100%; z-index: 20; margin-top: 4px; min-width: 220px; padding: 4px; border-radius: 8px;
+  border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12)); background: var(--surface-raised, #252526); box-shadow: var(--shadow-modal, 0 12px 36px #000000aa); }
+#rsettings #rs-scope-list[hidden] { display: none; }
+#rsettings .rs-scope-opt { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--fg, #ccc); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+#rsettings .rs-scope-opt:hover { background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
+#rsettings .rs-scope-opt.on { color: var(--accent, #9cd2ff); }
+#rsettings .rs-scope-opt input { margin: 0; }
+/* the PIN GLYPH at a synchronized row's right edge: the mark of a scoped value (lit while the picked machine pins the store) */
+#rsettings .rs-pin { margin-left: auto; flex: 0 0 auto; align-self: flex-start; margin-top: 2px; padding: 2px 4px; border: 0; border-radius: 4px; background: transparent;
+  color: var(--text-muted, #9aa0a6); opacity: .55; cursor: pointer; line-height: 0; }
+#rsettings .rs-pin:hover { opacity: 1; color: var(--fg, #ccc); background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
+#rsettings .rs-pin.on { opacity: 1; color: var(--accent, #9cd2ff); }
+#rsettings .rs-pin[hidden] { display: none; }
 /* judge model/effort rows are one-liners (the user 2026-07-12): label left, picker right */
 #rsettings .rs-jrow { align-items: center; cursor: default; }
 #rsettings .rs-jrow b { flex: 1 1 auto; }
-#rsettings .rs-jrow select { flex: 0 0 auto; width: 45%; background: #1e1e1e; color: #ccc;
-  border: 1px solid #3a3a3a; border-radius: 5px; padding: 3px 4px; cursor: pointer; }
+#rsettings .rs-jrow select { flex: 0 0 auto; width: 45%; background: var(--bg, #1e1e1e); color: var(--fg, #ccc);
+  border: 1px solid var(--hairline, #3a3a3a); border-radius: 5px; padding: 3px 4px; cursor: pointer; }
+/* Fast mode rides the Triage model row, after the picker (the user 2026-09-10, who wanted the setting to speak
+   the chat's own words and sit with the model): a compact box + word at the row's size, greyed (.rs-off) while
+   no judge tier is on Opus. Hover shows ONE description: the box's own over the box, the row's elsewhere. */
+#rsettings .rs-fastin { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; flex: 0 0 auto; white-space: nowrap; cursor: pointer; }
+#rsettings .rs-fastin input { margin: 0; }
+/* the greyed look fades the BOX alone (the #rrefresh:disabled look) and greys the word by token: opacity on the whole
+   label faded the hint span inside it too, and made the label a stacking context that the rows beneath painted over,
+   so the reason the box was greyed read dim and overdrawn. The hint keeps the colour the hover rule above gives it. */
+#rsettings .rs-fastin.rs-off { color: var(--text-faint, #6e7681); cursor: default; }
+#rsettings .rs-fastin.rs-off input { opacity: .4; cursor: default; }
+#rsettings .rs-row:hover .rs-fastin .rs-sub { display: none; }
+#rsettings .rs-row:has(.rs-fastin:hover) > .rs-sub { display: none; }
+#rsettings .rs-row:has(.rs-fastin:hover) .rs-fastin .rs-sub { display: block; }
+/* the label's nowrap keeps the box and its word together; the hint must NOT inherit it, or it runs off
+   the card as one line with the Opus-only condition and the premium cut off at the right edge */
+#rsettings .rs-fastin .rs-sub { white-space: normal; }
+/* the box's own mixed mark carries a native title naming the machines that differ; while it is hovered the
+   hint stands down, so one tooltip shows at a time (the rule the section's other mixed marks follow above) */
+#rsettings .rs-row:has(.rs-fastin .rs-mixed:hover) .rs-fastin .rs-sub { display: none; }
 /* feed-colormap dropdown: the button shows the picked map's gradient bar; the list is one bar per map. */
 #rs-cmap { position: relative; margin-top: 5px; }
-#rs-cmap-btn { width: 100%; height: 20px; border-radius: 5px; border: 1px solid #3a3a3a; cursor: pointer; padding: 0; display: block; }
-#rs-cmap-list { position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 20; background: #1e1e1e;
-  border: 1px solid #3a3a3a; border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px #000000aa; }
+#rs-cmap-btn { width: 100%; height: 20px; border-radius: 5px; border: 1px solid var(--hairline, #3a3a3a); cursor: pointer; padding: 0; display: block; }
+#rs-cmap-list { position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 20; background: var(--menu-bg, #252526);
+  border: 1px solid var(--menu-border, rgba(255,255,255,0.12)); border-radius: var(--radius-menu, 6px); padding: 4px; box-shadow: var(--shadow-menu, 0 4px 12px rgba(0,0,0,0.35)); }   /* the menu card (T226 review): it wore the PAGE colour beside the tokenised pickers */
 #rs-cmap-list[hidden] { display: none; }
-.rs-cmap-opt { height: 18px; border-radius: 4px; border: 1px solid #3a3a3a; cursor: pointer; margin: 4px 0; }
+.rs-cmap-opt { height: 18px; border-radius: 4px; border: 1px solid var(--hairline, #3a3a3a); cursor: pointer; margin: 4px 0; }
 .rs-cmap-opt:first-child { margin-top: 0; }
 .rs-cmap-opt:last-child { margin-bottom: 0; }
 .rs-cmap-opt.sel { outline: 2px solid var(--accent, #9cd2ff); outline-offset: 1px; border-color: transparent; }
 /* Session-colors picker (the user 2026-07-12): same dropdown mechanics, options = 9 identity dots + name. */
 #rs-pal { position: relative; margin-top: 5px; }
-#rs-pal-btn { width: 100%; border: 1px solid #3a3a3a; border-radius: 5px; cursor: pointer; background: #1e1e1e;
+#rs-pal-btn { width: 100%; border: 1px solid var(--hairline, #3a3a3a); border-radius: 5px; cursor: pointer; background: var(--bg, #1e1e1e);
   display: flex; gap: 5px; align-items: center; padding: 4px 7px; min-height: 20px; }
-#rs-pal-list { position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 20; background: #1e1e1e;
-  border: 1px solid #3a3a3a; border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px #000000aa; }
+#rs-pal-list { position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 20; background: var(--menu-bg, #252526);
+  border: 1px solid var(--menu-border, rgba(255,255,255,0.12)); border-radius: var(--radius-menu, 6px); padding: 4px; box-shadow: var(--shadow-menu, 0 4px 12px rgba(0,0,0,0.35)); }
 #rs-pal-list[hidden] { display: none; }
-.rs-pal-opt { display: flex; gap: 5px; align-items: center; border: 1px solid #3a3a3a; border-radius: 4px;
+.rs-pal-opt { display: flex; gap: 5px; align-items: center; border: 1px solid var(--hairline, #3a3a3a); border-radius: 4px;
   cursor: pointer; margin: 4px 0; padding: 4px 7px; }
 .rs-pal-opt:first-child { margin-top: 0; }
 .rs-pal-opt:last-child { margin-bottom: 0; }
 .rs-pal-opt.sel { outline: 2px solid var(--accent, #9cd2ff); outline-offset: 1px; border-color: transparent; }
 .rs-pal-dot { width: 11px; height: 11px; border-radius: 50%; flex: 0 0 auto; }
-.rs-pal-name { color: #9aa0a6; font-size: 11px; margin-left: auto; padding-left: 8px; white-space: nowrap; }
-#rsettings .rs-sep { border-top: 1px solid #3a3a3a; margin-top: 6px; padding-top: 8px; }
+.rs-pal-name { color: var(--text-muted, #9aa0a6); font-size: 11px; margin-left: auto; padding-left: 8px; white-space: nowrap; }
+#rsettings .rs-sep { border-top: 1px solid var(--hairline, #3a3a3a); margin-top: 6px; padding-top: 8px; }
 /* keyboard-shortcuts rows: key combo + description, with <kbd> chips. */
 #rsettings .rs-key { display: flex; align-items: baseline; gap: 12px; padding: 3px 0; }
 #rsettings .rs-key-combo { flex: 0 0 auto; min-width: 108px; }
-#rsettings .rs-key-desc { flex: 1 1 auto; color: #cdd3da; }
+#rsettings .rs-key-desc { flex: 1 1 auto; color: var(--text-soft, #cdd3da); }
 #rsettings .rs-key[hidden] { display: none; }
 /* the customize link that replaced the static list (the shell's shortcuts dialog owns it now) */
-#rs-keys-btn { flex: 0 0 auto; cursor: pointer; background: #2a2a2a; color: #ccc;
-  border: 1px solid #3a3a3a; border-radius: 5px; padding: 3px 8px; font: inherit; }
-#rs-keys-btn:hover { background: #333; color: #e8eaed; }
-#rsettings kbd { display: inline-block; background: #1c1c1f; border: 1px solid #3d3d42; border-bottom-width: 2px;
+#rs-keys-btn { flex: 0 0 auto; cursor: pointer; background: var(--btn-bg, #2a2a2a); color: var(--fg, #ccc);
+  border: 1px solid var(--hairline, #3a3a3a); border-radius: 5px; padding: 3px 8px; font: inherit;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.08s ease; }
+#rs-keys-btn:active { transform: scale(0.96); }
+/* the ONE action-button hover (fallback literals — gear.css loads standalone, no :root to share) */
+#rs-keys-btn:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff);
+  background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
+#rsettings kbd { display: inline-block; background: var(--kbd-bg, #1c1c1f); border: 1px solid var(--kbd-border, #3d3d42); border-bottom-width: 2px;
   border-radius: 4px; padding: 1px 6px; font: 600 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: #e6e6e6; }
 /* token-usage analytics: a button in the gear panel opens a centered modal with the chart. */
-.ra-openbtn { margin-top: 8px; width: 100%; background: #2d2d2f; border: 1px solid #3a3a3a; border-radius: 6px;
-  color: #cdd3da; font: 600 12px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif; padding: 7px; cursor: pointer; }
-.ra-openbtn:hover { background: #343436; color: #fff; }
+.ra-openbtn { margin-top: 8px; width: 100%; background: var(--btn-bg, #2d2d2f); border: 1px solid var(--hairline, #3a3a3a); border-radius: 6px;
+  color: var(--text-soft, #cdd3da); font: 600 12px/1.4 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; padding: 7px; cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.08s ease; }
+.ra-openbtn:active { transform: scale(0.96); }
+.ra-openbtn:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff);
+  background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
 #ranalytics-back { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, 0.55); display: flex;
   align-items: center; justify-content: center; }
 /* an explicit display rule beats the UA [hidden]{display:none}; restore hiding at higher
    specificity so the close / backdrop-click / Esc (which set .hidden) actually dismiss the modal */
 #ranalytics-back[hidden] { display: none; }
-#ranalytics { width: min(520px, 94vw); max-height: 90vh; overflow: auto; background: #252526;
-  border: 1px solid #3a3a3a; border-radius: 10px; padding: 14px 16px; box-shadow: 0 12px 36px #000000aa;
-  font: 12px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #ccc; }
+#ranalytics { width: min(520px, 94vw); max-height: 90vh; overflow: auto; background: var(--surface-raised, #252526);
+  border: 1px solid var(--hairline, #3a3a3a); border-radius: 10px; padding: 14px 16px; box-shadow: 0 12px 36px #000000aa;
+  font: 12px/1.5 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; color: var(--fg, #ccc); }
 #ranalytics .ra-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-#ranalytics .ra-title { font-weight: 600; font-size: 14px; color: #e8eaed; }
-#ra-close { background: none; border: none; color: #9aa0a6; font-size: 16px; cursor: pointer; line-height: 1; }
+#ranalytics .ra-title { font-weight: 600; font-size: 14px; color: var(--text-bright, #e8eaed); }
+#ra-close { background: none; border: none; color: var(--text-muted, #9aa0a6); font-size: 16px; cursor: pointer; line-height: 1; }
 #ra-close:hover { color: #fff; }
 .ra-periods, .ra-group, .ra-metric { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
-.ra-periods button, .ra-group button, .ra-metric button { background: #2a2a2a; border: 1px solid #3a3a3a;
-  border-radius: 5px; color: #9aa0a6; font: 12px/1 system-ui, -apple-system, 'Segoe UI', sans-serif; padding: 5px 9px; cursor: pointer; }
-.ra-periods button:hover, .ra-group button:hover, .ra-metric button:hover { background: #333; color: #ddd; }
+.ra-periods button, .ra-group button, .ra-metric button { background: var(--btn-bg, #2a2a2a); border: 1px solid var(--hairline, #3a3a3a);
+  border-radius: 5px; color: var(--text-muted, #9aa0a6); font: 12px/1 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; padding: 5px 9px; cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.08s ease; }
+.ra-periods button:active, .ra-group button:active, .ra-metric button:active { transform: scale(0.96); }
+.ra-periods button:hover, .ra-group button:hover, .ra-metric button:hover { border-color: var(--accent, #9cd2ff);
+  color: var(--accent, #9cd2ff); background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
 .ra-periods button.on, .ra-group button.on, .ra-metric button.on { background: #0e639c; border-color: #1177bb; color: #fff; }
 .ra-chart { margin: 6px 0 10px; min-height: 120px; }
-.ra-empty { color: #9aa0a6; text-align: center; padding: 40px 0; }
+.ra-empty { color: var(--text-muted, #9aa0a6); text-align: center; padding: 40px 0; }
 .ra-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 8px; }
-.ra-li { display: inline-flex; align-items: center; gap: 5px; color: #bcc1c7; font-size: 11.5px; }
-.ra-li b { color: #e8eaed; font-weight: 600; }
+.ra-li { display: inline-flex; align-items: center; gap: 5px; color: var(--text-soft, #bcc1c7); font-size: 11px; }
+.ra-li b { color: var(--text-bright, #e8eaed); font-weight: 600; }
 .ra-sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: 0 0 auto; }
-.ra-note { color: #9aa0a6; font-size: 11.5px; border-top: 1px solid #3a3a3a; padding-top: 7px; }
+.ra-note { color: var(--text-muted, #9aa0a6); font-size: 11px; border-top: 1px solid var(--hairline, #3a3a3a); padding-top: 7px; }
+/* settingStale toasts (gear.js staleToast): the kernel stood a settings gesture down because a
+   newer one had already applied — the same top-right warn-toast treatment the chat uses, carried
+   HERE because the gear ships to panes that load only this sheet. Above the modal dim (z 60/70)
+   so the notice reads over an open gear. Dismissal is the family standard too (the user
+   2026-08-25): visible ✕, Escape, fade — copied from styles.css .warn-toast/.warn-toast-x in this
+   sheet's literal palette, since the gear's hosts don't load styles.css's vars. */
+#rs-stale-toasts { position: fixed; top: 44px; right: 14px; z-index: 80;
+  display: flex; flex-direction: column; gap: 8px; max-width: 340px; }
+.rs-stale-toast { display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 12px; border-radius: 6px; cursor: pointer; background: var(--surface-raised, #252526);
+  border: 1px solid var(--vscode-errorForeground, #f48771); color: var(--fg, #ccc);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  font: 12px/1.5 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  transition: opacity 0.7s ease; }
+.rs-stale-toast-msg { min-width: 0; }
+/* the dismiss ✕ — the family's chip-✕ dress (dim at rest, separate, hover-brightens); the whole
+   toast still click-dismisses, this makes the way out VISIBLE (the user 2026-08-25) */
+.rs-stale-toast-x { flex: 0 0 auto; border: none; background: none; cursor: pointer;
+  color: var(--text-muted, #9aa0a6);
+  font-size: 11px; line-height: 1.4; padding: 2px 4px; border-radius: 8px; }
+.rs-stale-toast-x:hover { color: var(--fg, #fff); background: rgba(255, 255, 255, 0.08); }
+/* the toast's one action (Apply anyway): the gear's small bordered button (#rs-keys-btn's dress), in
+   this sheet's literal palette because the gear's hosts load only this sheet */
+.rs-stale-toast-act { flex: 0 0 auto; cursor: pointer; font: inherit; font-size: 11px; line-height: 1.4;
+  padding: 2px 8px; border-radius: 5px; border: 1px solid var(--hairline, #3a3a3a);
+  background: var(--btn-bg, #2a2a2a); color: var(--fg, #ccc); white-space: nowrap; }
+.rs-stale-toast-act:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff);
+  background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
+/* a pending PROPOSAL from another machine under its row (plans/settings-across-machines.md, one A): the row's own line
+   size (11px, the rs-hint's), the two answers in the toast's action dress; a pinned store's note beside it */
+#rsettings .rs-proposal { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -2px 0 8px 26px; font-size: 11px; color: var(--text-muted, #9aa0a6); }
+#rsettings .rs-proposal-msg { flex: 1 1 auto; min-width: 0; }
+#rsettings .rs-proposal-act { flex: 0 0 auto; cursor: pointer; font: inherit; font-size: 11px; line-height: 1.4;
+  padding: 2px 8px; border-radius: 5px; border: 1px solid var(--hairline, #3a3a3a);
+  background: var(--btn-bg, #2a2a2a); color: var(--fg, #ccc); white-space: nowrap; }
+#rsettings .rs-proposal-act:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff);
+  background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
+.rs-stale-toast.fade { opacity: 0; }
+
+/* the login paste-code MODAL (the user 2026-08-30): the panel treatment — centered card over a
+   translucent backdrop, everything behind dimmed but visible; menus vocabulary card chrome. */
+#rs-login-modal { position: fixed; inset: 0; z-index: 1400; background: var(--overlay-dim, rgba(0, 0, 0, 0.55));
+  display: flex; align-items: center; justify-content: center; }
+#rs-login-modal[hidden] { display: none; }   /* the author display:flex would otherwise defeat [hidden] (the #rsettings[hidden] precedent) */
+#rs-login-modal .rs-login-card { background: var(--surface-raised, #252526); border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.35); padding: 14px 16px;
+  width: min(480px, calc(100vw - 48px)); }
+
+/* the Open log button's unread count (T290): the red the bar's triangle wore when something was unread —
+   a STATUS colour (the accent/status split), so it is the same literal on every surface */
+.rs-log-n { color: #ff6b6b; font-weight: 600; }
+
+/* the stored logins under the Account row (T346): one line per login (its label, its state, a Remove), the
+   sub-line's size; a refused or expired one wears the blocked red, an expiring one the working amber */
+.rs-logins .rs-login-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 0.82em; }
+.rs-logins .rs-login-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-logins .rs-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: 0; }
+.rs-logins .rs-login-bad { color: var(--err, #F85B5A); }   /* the blocked red, through the token */
+.rs-logins .rs-login-warn { color: var(--st-working-bg, #e5c07b); }
+.rs-logins .rs-login-rm { flex: 0 0 auto; cursor: pointer; font: inherit; background: var(--btn-bg, #2a2a2a); color: var(--fg, #ccc);
+  border: 1px solid var(--hairline, #3a3a3a); border-radius: 5px; padding: 2px 8px; }
+.rs-logins .rs-login-rm[disabled] { opacity: 0.5; cursor: default; }
+/* THE TABS (T379, the user 2026-09-12; re-cut T400): the settings grouped by surface, seven pills under the title in the menu vocabulary,
+   8px of side padding so the seven fit the 560px card's one row (at 10px they needed 528px against 518 and Debug wrapped)
+   (menu tokens, the accent wash on the current one); one pane shows at a time ([hidden] restored against the flex rules) */
+#rsettings .rs-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 10px; padding-bottom: 10px; border-bottom: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12)); }
+#rsettings .rs-tab { font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
+  background: transparent; color: var(--fg, #ccc); cursor: pointer; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
+#rsettings .rs-tab:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff); }
+#rsettings .rs-tab.on { color: var(--accent, #9cd2ff); border-color: var(--accent, #9cd2ff); background: var(--accent-wash, rgba(156, 210, 255, 0.12)); font-weight: 600; }
+#rsettings .rs-pane[hidden] { display: none; }
+#rsettings .rs-hint { color: var(--text-muted, #9aa0a6); font-size: 12px; margin: 4px 0 6px; }
+/* a WIDGET ROW: the live demo (a miniature tab), the name (its one-line description behind the panel's hover popover, .rs-sub), the sliding switch, the options */
+/* ONE grid across every row (round one, LOW 2: each row was its own grid, so the switches did not line up): the host holds
+   the columns, each row spans them through a subgrid, so the demos, the switches and the options align down the list */
+#rsettings .rs-widgets { display: grid; grid-template-columns: 18px 168px 1fr auto auto; column-gap: 10px; }   /* the grip's column leads (T409: the rows reorder by drag); the demo column holds the placeholder session_name with a widget either side (T415 part two: 96px fit the old three-letter demo and let the wider tab spill over the grip) */
+#rsettings .rs-widget { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; padding: 7px 0; position: relative;
+  border-bottom: 1px solid var(--menu-border, rgba(255, 255, 255, 0.08)); }
+#rsettings .rs-widget:last-child { border-bottom: 0; }
+#rsettings .rs-widget-demo { display: inline-flex; align-items: center; justify-content: center; height: 30px; border-radius: 6px;
+  background: var(--bg, #1e1e1e); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.1)); }
+#rsettings .rs-widget-off .rs-widget-demo { opacity: 0.45; }
+#rsettings .rs-widget-name b { display: block; color: var(--text-bright, #e8eaed); font-weight: 600; }
+/* the SLIDING TOGGLE (the user's pick over a plain checkbox, 2026-09-12): a pill with a knob; on wears the accent */
+#rsettings .rs-switch { width: 34px; height: 18px; border-radius: 999px; border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.14)); background: transparent;
+  position: relative; cursor: pointer; padding: 0; flex: 0 0 auto; transition: background 0.12s ease, border-color 0.12s ease; }
+#rsettings .rs-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-muted, #9aa0a6); transition: left 0.12s ease, background 0.12s ease; }
+#rsettings .rs-switch.on { background: var(--accent, #9cd2ff); border-color: var(--accent, #9cd2ff); }
+#rsettings .rs-switch.on::after { left: 18px; background: var(--accent-fg, #0c1a2e); }
+#rsettings .rs-widget-opts { display: inline-flex; gap: 6px; min-width: 0; }
+#rsettings .rs-widget-opt { display: inline-block; min-width: 140px; }
+/* the demo's miniature tab wears the STRIP's vocabulary (styles.css .tab, .tab-dot, .tab-ctx, .tab-key), in this sheet's
+   fallbacks: the gear's hosts load feed.css and gear.css, not the chat's sheet */
+#rsettings .rs-widget-demo .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg, #ccc); position: relative; border-radius: 6px; }   /* the radius the strip's tab has: a ring's outline follows it */
+#rsettings .rs-widget-demo .tab-dot, #rsettings .rs-preview .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg, #e0b020); }
+#rsettings .rs-widget-demo .tab-dot.await, #rsettings .rs-preview .tab-dot.await { background: var(--st-awaitbg-bg, #54B204); }
+#rsettings .rs-widget-demo .tab-dot.none, #rsettings .rs-preview .tab-dot.none { visibility: hidden; }
+#rsettings .rs-widget-demo .tab-dot.idle, #rsettings .rs-preview .tab-dot.idle { background: var(--text-muted, #9aa0a6); opacity: 0.45; }
+#rsettings .rs-widget-demo .tab-dot.unknown, #rsettings .rs-preview .tab-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
+#rsettings .rs-widget-demo .tab-dot.opening, #rsettings .rs-preview .tab-dot.opening { background: var(--accent, #9cd2ff); }
+#rsettings .rs-widget-demo .tab-ctx, #rsettings .rs-preview .tab-ctx { flex: 0 0 auto; position: relative; width: 4px; height: 13px; border-radius: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.13); }
+#rsettings .rs-widget-demo .tab-ctx-fill, #rsettings .rs-preview .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
+#rsettings .rs-widget-demo .tab-key, #rsettings .rs-preview .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted, #9aa0a6); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.18));
+  border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
+/* THE RINGS (the rings-as-widgets change, 2026-09-14): the ring rows' demos (and the preview, should a ring light on its
+   status) wear the strip's dashed outline through this sheet's fallbacks: the gear's hosts load feed.css and gear.css,
+   not styles.css. The classes are the ones the strip composes (tab-widgets.ts), the colours the status tokens. */
+#rsettings .rs-widget-demo .tab.ring-needs-you, #rsettings .rs-preview .tab.ring-needs-you { outline: 2px dashed var(--st-awaiting-bg, #c0392b); outline-offset: -2px; }
+#rsettings .rs-widget-demo .tab.ring-waiting-on-you, #rsettings .rs-preview .tab.ring-waiting-on-you { outline: 2px dashed var(--st-needs-bg, #d946ef); outline-offset: -2px; }
+#rsettings .rs-widget-demo .tab.ring-retrying, #rsettings .rs-preview .tab.ring-retrying { outline: 2px dashed var(--st-retrying-bg, #e67e22); outline-offset: -2px; }
+
+/* A control that depends on the Task tracking switch while it is off (T404): the row greys by token (the fast-mode box's
+   dress), keeps its hover so the title says what to enable, and its inputs are inert (disabled, and no pointer on them or
+   their house pickers). */
+#rsettings .rs-row.rs-off, #rsettings .rs-jrow.rs-off { color: var(--text-faint, #6e7681); cursor: default; }
+#rsettings .rs-row.rs-off > *, #rsettings .rs-jrow.rs-off > * { pointer-events: none; }
+#rsettings .rs-row.rs-off input, #rsettings .rs-jrow.rs-off input, #rsettings .rs-jrow.rs-off select, #rsettings .rs-jrow.rs-off button { opacity: .4; }
+/* the Status line section's demos (T409): the widget alone, as the line draws it (status-widgets.ts renders the row's
+   node through the same function as the line), in the line's own dim mono; the name chip on its identity colour */
+#rsettings .rs-widget-demo .status-dir, #rsettings .rs-widget-demo .status-branch { color: var(--text-muted); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+#rsettings .rs-widget-demo .status-dir-icon { display: inline-block; width: 13px; height: 13px; margin-right: 2px; vertical-align: -2px; }
+#rsettings .rs-widget-demo .status-dir-icon svg { display: block; }
+#rsettings .rs-widget-demo .chip-session { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: black; background: var(--menu-border); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* REORDER (the user's addition to T409): the grip on every widget row's left; a row in flight; the Tab widgets DIVIDER, the
+   session name's place as a line with subtle text (never a fake name); the PREVIEW under each section's rows */
+#rsettings .rs-grip { width: 18px; height: 22px; padding: 0; border: 0; background: transparent; color: var(--text-muted); font-size: 14px; line-height: 1;
+  cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; border-radius: 4px; }
+#rsettings .rs-grip:hover, #rsettings .rs-grip:focus-visible { color: var(--text-bright); background: var(--accent-wash); outline: none; }
+#rsettings .rs-widget.rs-dragging { opacity: 0.7; outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 6px; }
+#rsettings .rs-widget.rs-dragging .rs-grip { cursor: grabbing; }
+#rsettings .rs-grip-none { width: 18px; height: 22px; }   /* a section that does not reorder (the rings, 2026-09-14): the grip's cell, empty, keeps the grid's columns */
+#rsettings .rs-divider { grid-column: 1 / -1; border-bottom: 0; }   /* its dress is the heads' (the titled-divider rule beside .rs-sec above) */
+/* the caption is a TITLE above the box (T415 part two): the word Preview never sits inside the previewed thing */
+#rsettings .rs-preview-title { margin-top: 10px; color: var(--accent, #9cd2ff); font-size: 11px; font-weight: 600; }   /* the section-label dress (.rs-sec) */
+#rsettings .rs-preview { margin-top: 4px; padding: 8px; border: 1px solid var(--menu-border); border-radius: 6px; background: var(--bg); display: flex; align-items: center; gap: 12px; }
+#rsettings .rs-preview-body { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+#rsettings .rs-preview .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg); position: relative; border: 1px solid var(--menu-border); border-radius: 6px; }
+/* the demo tab wears the demo record's identity colour as a real tab does (T415 part two): styles.css .tab.colored .tab-label, mirrored */
+#rsettings .rs-widget-demo .tab.colored .tab-label, #rsettings .rs-preview .tab.colored .tab-label { color: var(--chip-bg); font-weight: 600; }
+#rsettings .rs-sl { display: flex; align-items: center; gap: 8px; width: 100%; font-size: 12px; }   /* the preview's own spacing, a notch tighter than T409's (the card's width is the line's whole room: T415 part two) */
+#rsettings .rs-sl-chip { display: inline-block; padding: 2px 8px; border-radius: 11px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; background: var(--accent); color: var(--accent-fg); }
+#rsettings .rs-sl-right { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+#rsettings .rs-sl .status-dir, #rsettings .rs-sl .status-branch { color: var(--text-muted); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 11px; white-space: nowrap; }
+#rsettings .rs-sl .status-dir-icon { display: inline-block; width: 13px; height: 13px; margin-right: 2px; vertical-align: -2px; }
+#rsettings .rs-sl .status-dir-icon svg { display: block; }
+#rsettings .rs-sl .chip-session { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: black; background: var(--menu-border); }
+/* THE STATUS LINE PREVIEW'S CONTROLS (T415 part two): the badges and the battery the shared renderer builds (status-controls.ts),
+   dressed as styles.css dresses the chat's line, declaration for declaration (ui/webview/settings-previews.test.ts pins each copy to
+   its original); this page loads feed.css and gear.css, never the chat's sheet. The tokens they read (--dim, --mono, --fg,
+   --box-border, --text-halo) are feed.css's. Inert here: no pointer, no hover lift, no compaction scan. */
+#rsettings .rs-sl .spinner-meta {
+  margin-left: 12px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 8px; min-width: 0;
+}
+#rsettings .rs-sl .meta-btn {
+  display: inline-flex; align-items: center; gap: 3px;
+  cursor: pointer; border-radius: 4px; padding: 1px 4px; margin: -1px -2px;
+}
+#rsettings .rs-sl .meta-caret { font-size: 0.82em; opacity: 0.65; }
+#rsettings .rs-sl .meta-ico { display: inline-flex; align-items: center; margin-right: 4px; vertical-align: -2px; }
+#rsettings .rs-sl .meta-ico svg { display: block; }
+#rsettings .rs-sl .ctx-bar {
+  position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 48px; height: 15px; border-radius: 4px; overflow: hidden;
+  border: 1px solid var(--box-border); background: rgba(255, 255, 255, 0.07);
+  cursor: pointer;
+}
+#rsettings .rs-sl .ctx-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; transition: width 0.3s ease, background 0.3s ease; }
+#rsettings .rs-sl .ctx-text {
+  position: relative; z-index: 1; font-family: var(--mono); font-size: 0.72em; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: var(--fg); text-shadow: 0 0 2px var(--text-halo);
+}
+#rsettings .rs-sl .ctx-scan { display: none; }
+/* the preview's departures, after the copies: nothing here opens or compacts; the badges never wrap between themselves (the line's own
+   rule at a narrow width), because the card is narrower than the chat and a badge dropped to a second row would read as the renderer's
+   fault rather than the room's; the cluster drops the line's 12px lead-in (the card's right cluster carries its own gap); and the line
+   wraps rather than clip when the card is narrow (round three low e, round four low b: the geometry as measured in the previews lab).
+   The right cluster holds the widgets, the badges and the battery, so at 500px it drops below the state chip as one block and wraps its
+   battery under the widgets and the badges; from 470px down to 380px the widgets take a row of their own and the badges and the battery
+   share the row below them; the battery never leaves the card. */
+#rsettings .rs-sl .meta-btn, #rsettings .rs-sl .ctx-bar { cursor: default; }
+#rsettings .rs-sl .spinner-meta { flex-wrap: nowrap; margin-left: 0; }
+#rsettings .rs-sl-right { flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; max-width: 100%; row-gap: 6px; }
+#rsettings .rs-sl { flex-wrap: wrap; row-gap: 6px; }
+/* a move refused (a status-line row held in its slot's group): a brief sideways nudge; the live region every move speaks through */
+@keyframes rs-nudge { 0% { transform: translateX(0); } 30% { transform: translateX(-5px); } 60% { transform: translateX(5px); } 100% { transform: translateX(0); } }
+#rsettings .rs-widget.rs-nudge { animation: rs-nudge 0.3s ease; }
+@media (prefers-reduced-motion: reduce) { #rsettings .rs-widget.rs-nudge { animation: none; outline: 1px solid var(--accent); outline-offset: -1px; } }
+#rsettings .rs-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

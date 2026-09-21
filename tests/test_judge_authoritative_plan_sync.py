@@ -4,7 +4,8 @@ Code's Task tool) is mirrored DETERMINISTICALLY into the goal graph as `agentTas
 agent-declared-OPEN item is authoritative — its open state trumps a judge/rollup 'done'.
 
 Covers:
-- em.declared_plan   — folding TaskCreate/TaskUpdate (+ results) into ordered {key,text,status}.
+- em.declared_plan   — folding TaskCreate/TaskUpdate (+ results) into ordered {key,text,status};
+                       a TaskCreate the CLI rejected (is_error result) is not a step.
 - em.task_store_plan — the AUTHORITATIVE live task store read the sync prefers over the fold.
 - jd._sync_declared_plan — find-or-create by stable Task id; idempotent; status refresh; reopen;
                        store-first sourcing (fold only when no store dir; unreadable store = loud skip).
@@ -18,7 +19,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -27,8 +28,8 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+em = load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+jd = load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
@@ -85,10 +86,19 @@ def tupdate(t, uuid, parent, task_id, status, tool_id):
                                      "input": {"taskId": task_id, "status": status}}]}}
 
 
-def tres(t, uuid, parent, tool_use_id, text):
+def tcreate_raw(t, uuid, parent, inp, tool_id):
+    """A TaskCreate with an arbitrary input — the malformed shapes the CLI rejects."""
+    return {"type": "assistant", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
+            "message": {"role": "assistant", "stop_reason": "tool_use",
+                        "content": [{"type": "tool_use", "id": tool_id, "name": "TaskCreate", "input": inp}]}}
+
+
+def tres(t, uuid, parent, tool_use_id, text, is_error=False):
+    b = {"type": "tool_result", "tool_use_id": tool_use_id, "content": text}
+    if is_error:
+        b["is_error"] = True
     return {"type": "user", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
-            "message": {"role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": text}]}}
+            "message": {"role": "user", "content": [b]}}
 
 
 def build_session(records, now=NOW, rompuuid=SID):
@@ -119,6 +129,51 @@ def plan_session(items, now=NOW):
     return build_session(recs, now=now)
 
 
+REJECTED = ("InputValidationError: TaskCreate failed due to the following issue:\n"
+            "The required parameter `subject` is missing")
+
+
+def rejected_plan_session(accepted=True):
+    """A session whose TaskCreate calls the CLI REJECTED — a subject-less {agent_hint, prompt} call and a
+    {tasks: [...]} batch, each answered by an is_error tool_result naming the missing field, so no task
+    exists for either — after one accepted create (Task #1) unless `accepted` is False."""
+    recs = [uline(T0, "run the migration", "u1")]
+    parent, t = "u1", T0 + 5
+    if accepted:
+        recs.append(tcreate(t, "ac1", parent, "Design v3", "Designing v3", "tc1")); t += 1
+        recs.append(tres(t, "rc1", "ac1", "tc1", "Task #1 created successfully. Use TaskUpdate to update it.")); t += 1
+        parent = "rc1"
+    recs.append(tcreate_raw(t, "ax1", parent, {"agent_hint": "overnight pipeline", "prompt": "run the thing"},
+                            "tx1")); t += 1
+    recs.append(tres(t, "rx1", "ax1", "tx1", REJECTED, is_error=True)); t += 1
+    recs.append(tcreate_raw(t, "ax2", "rx1", {"tasks": [{"subject": "Rewire store"}]}, "tx2")); t += 1
+    recs.append(tres(t, "rx2", "ax2", "tx2", REJECTED, is_error=True)); t += 1
+    recs.append(aline(t + 1, "On it.", "aend", "rx2", stop="end_turn"))
+    return build_session(recs)
+
+
+REJECTED_UPDATE = ("InputValidationError: TaskUpdate failed due to the following issue:\n"
+                   "The value of `status` must be one of pending, in_progress, completed")
+
+
+def rejected_update_session(status="done", then=None):
+    """One accepted create (Task #1) followed by a TaskUpdate the CLI REJECTED — a status outside its set,
+    answered by an is_error tool_result — so the store still holds the item open; `then`, when given, is
+    the status of an ACCEPTED update after it (the skip is per call, not per item)."""
+    recs = [uline(T0, "run the migration", "u1"),
+            tcreate(T0 + 5, "ac1", "u1", "Design v3", "Designing v3", "tc1"),
+            tres(T0 + 6, "rc1", "ac1", "tc1", "Task #1 created successfully. Use TaskUpdate to update it."),
+            tupdate(T0 + 7, "ax1", "rc1", "1", status, "tx1"),
+            tres(T0 + 8, "rx1", "ax1", "tx1", REJECTED_UPDATE, is_error=True)]
+    parent, t = "rx1", T0 + 9
+    if then is not None:
+        recs.append(tupdate(t, "au1", parent, "1", then, "tu1")); t += 1
+        recs.append(tres(t, "ru1", "au1", "tu1", "Task #1 updated.")); t += 1
+        parent = "ru1"
+    recs.append(aline(t, "On it.", "aend", parent, stop="end_turn"))
+    return build_session(recs)
+
+
 def fresh_store():
     return {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
 
@@ -146,6 +201,24 @@ class DeclaredPlanAdapter(unittest.TestCase):
     def test_empty_when_no_task_tool(self):
         s = build_session([uline(T0, "hi", "u1"), aline(T0 + 5, "hello", "a1", "u1")])
         self.assertEqual(em.declared_plan(s), [])
+
+    def test_a_rejected_taskcreate_is_not_a_declared_step(self):
+        """A TaskCreate the CLI rejected — its paired tool_result carries is_error and an InputValidationError
+        naming the missing `subject` — created nothing, so it is not a step of the plan: neither the
+        subject-less {agent_hint, prompt} call nor the {tasks: [...]} batch. Without the skip each folded
+        to a keyless item with empty text (mirroring the kernel's _fold_tasks skip)."""
+        self.assertEqual(em.declared_plan(rejected_plan_session(accepted=False)), [])
+        items = em.declared_plan(rejected_plan_session())
+        self.assertEqual([(it["key"], it["text"]) for it in items], [("1", "Design v3")],
+                         "the accepted create (its result carries Task #N) still folds")
+
+    def test_a_rejected_taskupdate_moves_no_step(self):
+        """The TaskCreate skip's twin (the #942 review): a TaskUpdate the CLI rejected — its paired
+        tool_result carries is_error — wrote nothing to the store, so the step keeps the status the store
+        holds. Without the skip the refused value folded as the item's status. The skip is per call: an
+        accepted update after the rejected one still applies (mirroring the kernel's _fold_tasks)."""
+        self.assertEqual(em.declared_plan(rejected_update_session())[0]["status"], "pending")
+        self.assertEqual(em.declared_plan(rejected_update_session(then="in_progress"))[0]["status"], "in_progress")
 
 
 class SyncFindOrCreate(unittest.TestCase):
@@ -230,6 +303,34 @@ class SyncFindOrCreate(unittest.TestCase):
         s = plan_session([("Phase 1 (already done)", "Doing", [("completed",)])])
         self.assertTrue(jd._sync_declared_plan(store, s, "s1", T0 + 10))
         self.assertEqual(agent_nodes(store), {}, "the born-done backlog node is self-healed away")
+
+    def test_a_rejected_taskcreate_mints_no_placeholder_card(self):
+        """What the fold-path leak cost: an item with empty text is minted as a standalone open card reading
+        "(declared step)" that no TaskUpdate can ever close — no task with that key exists — so it holds
+        the session working and re-mints after every clear. A rejected create must mint nothing."""
+        store = fresh_store()
+        changed = jd._sync_declared_plan(store, rejected_plan_session(accepted=False), "seg1", T0 + 50)
+        self.assertEqual([nd["text"] for nd in store["nodes"].values()], [],
+                         "rejected-only session: no mirror, no placeholder card")
+        self.assertFalse(changed)
+        store = fresh_store()
+        self.assertTrue(jd._sync_declared_plan(store, rejected_plan_session(), "seg1", T0 + 50))
+        self.assertEqual({k: nd["text"] for k, nd in agent_nodes(store).items()}, {"1": "Design v3"},
+                         "only the accepted create is mirrored")
+        self.assertNotIn("(declared step)", [nd["text"] for nd in store["nodes"].values()])
+
+    def test_a_rejected_taskupdate_leaves_the_mirrored_node_open(self):
+        """What the fold-path leak costs on the sync side: a rejected completing update read as the agent
+        crossing the item off, so the mirror flipped to authoritative-done for a task the store still holds
+        open. The node must stay open — the fold gave the sync no new status."""
+        store = fresh_store()
+        jd._sync_declared_plan(store, plan_session([("Design v3", "Designing v3", [])]), "seg1", T0 + 50)
+        nd = agent_nodes(store)["1"]
+        self.assertEqual(nd["agentTask"]["status"], "open")
+        self.assertFalse(jd._sync_declared_plan(store, rejected_update_session(status="completed"), "seg2", T0 + 100),
+                         "a rejected update is not new information: nothing to mutate")
+        self.assertEqual(nd["agentTask"]["status"], "open", "the store still holds the item open")
+        self.assertFalse(nd["nodeComplete"])
 
     def test_open_backlog_node_is_adopted_not_deleted(self):
         """A pre-fix OPEN agentTask node (marker absent) is ADOPTED (marker added), never deleted — so it

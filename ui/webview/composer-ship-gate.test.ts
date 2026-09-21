@@ -44,7 +44,7 @@ test("the OPEN gate dialog resolves itself on the last ack: closes and sends, no
   assert.match(RENDER, /const gateOpen = shipGateSid === owner;/);
   assert.match(RENDER, /if \(gateOpen\) \{ shipGateSid = null; closeConfirm\(null\); \}/,
     "the dialog dismisses itself the moment the last ship lands, then the send fires");
-  assert.match(RENDER, /shipGateSid = null;\n\s*if \(v === "now"\)/,
+  assert.match(RENDER, /shipGateSid = null; endReloadHoldIfIdle\(\);\n\s*if \(v === "now"\)/,
     "any button (or cancel) un-registers the gate — the ack path can never resolve a closed dialog");
   // a FAILED save also moots the dialog — it closes, but never auto-sends without the file
   assert.match(RENDER, /const gateWasOpen = shipGateSid === owner;/);
@@ -71,13 +71,15 @@ test("any successful send supersedes a hold, so a spent hold can never double-se
 });
 
 test("the ack attaches to the composer that SHIPPED the file, not whatever tab is active", () => {
-  assert.match(RENDER, /function retirePendingShip\(key: string\): string \| null \{/);
-  assert.match(RENDER, /const owner = retirePendingShip\(m\.path\) \|\| activeId;/);
+  assert.match(RENDER, /function retirePendingShip\(key: string, shipId\?: string\): string \| null \{/);
+  assert.match(RENDER, /const owner = retirePendingShip\(m\.path, ackShip\) \|\| activeId;/);
   assert.match(RENDER, /addComposerFile\(owner, m\.path\);/);
 });
 
 test("a held send is visible on the button and always inspectable", () => {
   assert.match(RENDER, /sendBtn\.classList\.toggle\("send-held", held\);/);
-  assert.match(RENDER, /"sends when the upload finishes"/);
+  // inspectable through the ONE styled tip: a native title beside the button's setTip showed two
+  // stacked tooltip boxes while a hold was armed (2026-09-02)
+  assert.match(RENDER, /setTip\(sendBtn, held \? "Send \(Enter\)\\nsends when the upload finishes" : "Send \(Enter\)"\);/);
   assert.match(CSS, /#composer-send\.send-held \{ opacity: 0\.45; \}/);
 });

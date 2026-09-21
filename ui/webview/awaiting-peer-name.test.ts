@@ -33,23 +33,35 @@ test("the chat pane names the peer: box in identity colour, pill with the colour
   assert.match(RENDER, /awaitingPeers\?: PeerIdent\[\] \| null;/, "the payload field beside awaitingKind");
   assert.match(RENDER, /type PeerIdent = \{ name: string; host\?: string; sid\?: string; color\?: \{ bg: string; fg: string \} \| null \};/,
     "named alias — the Status interface line stays brace-free for its other pins");
-  const boxAt = RENDER.indexOf("const awPeers = s!.status.awaitingPeers");
+  const boxAt = RENDER.indexOf("const awPeers = s.status.awaitingPeers");   // narrowed `s` since the one-renderer cut (2026-09-06)
   const box = RENDER.slice(boxAt, RENDER.indexOf("head.appendChild(lab);", boxAt));
   assert.match(box, /el\("span", "bg-await-peer"\)/);
   assert.match(box, /\(pr\.host \? pr\.host \+ ":" : ""\) \+ pr\.name/, "host-prefixed when cross-host");
   assert.match(box, /nm\.style\.color = pr\.color\.bg/);
-  const chipAt = RENDER.indexOf("const chipPeers = s.status.awaitingPeers");
-  const chip = RENDER.slice(chipAt, RENDER.indexOf("chip.title =", chipAt));
-  assert.match(chip, /el\("span", "chip-peer-dot"\)/, "'Awaiting <name>' wears the identity dot");
-  assert.match(chip, /dot\.style\.background = chipPeers\[0\]\.color\.bg/);
-  assert.match(chip, /chipPeers\.length \+ " peers"/, "several peers keep the one-line rule as a count");
-  assert.match(CSS, /\.chip-peer-dot \{ display: inline-block; width: 7px; height: 7px; border-radius: 50%;/);
+  // the bar's chip is the SHARED status chip since T322b (status-chip.ts): the peer name's treatment lives in its builder
+  const CHIP = ui("webview", "status-chip.ts");
+  const chip = CHIP.slice(CHIP.indexOf("export function statusChip("));
+  assert.ok(!chip.includes("chip-peer-dot"), "the dot retired (the user 2026-08-26, round two) — the name wears the colour");
+  assert.match(chip, /nm\.className = "chip-peer-name";/, "'Awaiting <name>' — the NAME itself in identity colour");
+  assert.match(chip, /nm\.replaceChildren\(\.\.\.hostPartsNodes\(w\.peer\.host, w\.peer\.name, doc\)\)/,
+    "the HOUSE idiom via the SHARED renderer (the user 2026-08-26, round three) — host in .host-prefix italic gray, never a restyled copy");
+  assert.match(chip, /nm\.style\.color = w\.peer\.color\.bg/);
+  assert.ok(!/nm\.textContent = .*host/.test(chip), "no one-string concatenation of host and name");
+  assert.match(CHIP, /peers\.length \+ " peers"/, "several peers keep the one-line rule as a count");
+  assert.match(RENDER, /const chip = statusChip\(chipWords\(s\.status\), "button"\) as HTMLButtonElement;/, "the bar builds from it");
+  // the backing is ONE rule shared with the transcript's mention chip since 2026-09-10 (the user, who wanted a
+  // typed @name to wear this chip's look); the peer name keeps its own #fff default beside it
+  assert.match(CSS, /^\.chip-peer-name, \.mention-chip \{ background: rgba\(0, 0, 0, 0\.85\); border-radius: 7px; padding: 0 5px; \}/m,
+    "the ~85% black backing — any colour reads on it, the chip hue still glows around it");
+  assert.match(CSS, /^\.chip-peer-name \{ color: #fff;/m, "the no-identity name's default stays the peer chip's own");
+  assert.ok(!/\.chip-peer-dot/.test(CSS), "the dot's CSS goes with it");
 });
 
 test("the kernel ships identities on every arm — the or-chain's hardcoded Nones are gone", () => {
-  assert.match(KERNEL, /\(_stamp_why, _stamp_kind, _stamp_since, _stamp_peers\)/, "the judge-stamp arm");
-  assert.match(KERNEL, /\(sess_awaiting_why, sess_awaiting_kind, sess_awaiting_since, sess_awaiting_peers\)/,
-    "the session-snapshot arm");
+  // …plus, since slice 2 (2026-09-05), the peers as ROWS in the sixth slot, so the pill lists them
+  assert.match(KERNEL, /\(_stamp_why, _stamp_kind, _stamp_since, _stamp_peers, \(len\(_stamp_peers\) if _stamp_peers else None\), _awaiting_peer_items\(_stamp_peers\)\)/, "the judge-stamp arm (identities + their count, T228; rows, slice 2)");
+  assert.match(KERNEL, /\(sess_awaiting_why, sess_awaiting_kind, sess_awaiting_since, sess_awaiting_peers, sess_awaiting_count, sess_awaiting_items\)/,
+    "the session-snapshot arm (its rows in the sixth slot, slice 2)");
   assert.match(KERNEL, /"awaitingPeers": \(\(_aw or \{\}\)\.get\("peers"\) or None\)/, "the chat status payload");
   assert.match(KERNEL, /"awaitingPeers": \(\(_aw_bg or \{\}\)\.get\("peers"\) or None\)/, "the timeline sessions payload");
   assert.match(KERNEL, /def _peer_identity\(psid\):/, "the ONE identity ladder");

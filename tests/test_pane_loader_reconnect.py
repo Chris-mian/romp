@@ -26,7 +26,7 @@ Source-pinning, like the other _pane_spin tests (this JS has no jsdom harness).
 """
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -37,7 +37,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 class PaneLoaderReconnect(unittest.TestCase):
@@ -61,18 +61,23 @@ class PaneLoaderReconnect(unittest.TestCase):
     def test_the_loader_comes_down_when_the_socket_comes_back(self):
         """The event-based exit for the re-show path. Without it the only way down is the failsafe, i.e.
         30 seconds of romp logo over a pane whose socket reconnected in under two."""
-        self.assertIn("window.addEventListener('romp:wsup',hide);", self.js)
-        self.assertIn("window.addEventListener('romp:wsdown',show);", self.js,
-                      "the drop still raises it — this is a matched pair")
+        self.assertIn("window.addEventListener('romp:wsup',function(){hide();});", self.js)
+        # …while the corner BADGE (a pane that has content) waits for the first fresh frame instead
+        # (2026-09-07; test_pane_shim_return.py owns that half)
+        self.assertIn("window.addEventListener('romp:wsfresh',function(){badge(false);});", self.js)
+        self.assertIn("window.addEventListener('romp:wsdown',function(){if(ready()){badge(true);}else{show();}});", self.js,
+                      "the drop still raises SOMETHING — a matched pair; since T217 a pane with "
+                      "content gets the translucent badge and only an empty pane the opaque sheet")
 
     def test_the_shim_fires_wsup_on_a_reconnect_only(self):
         """A first connect must NOT fire it: the loader is legitimately up during a cold load and has to
         stay there until real content lands (an 8s timer that hid it early was the 2026-07-03 bug)."""
         shim = km._shim("chat")
-        self.assertIn('if(wasReconn){armStale("reconnect");freshPending=true;'
-                      'try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}',
-                      shim, "wsup rides the same wasReconn gate as the reload prompt (which now also arms "
-                            "its own retire — the user 2026-08-01)")
+        self.assertIn('if(wasReconn){var ann=restartAnnounced&&Date.now()-restartAnnounced<30000;'
+                      'restartAnnounced=0;', shim,
+                      "the wasReconn gate stands; T217 spends the announced-restart latch inside it")
+        self.assertIn('try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}\nenqueue({type:"wsup"});}', shim,
+                      "wsup still rides the same wasReconn gate as the reload prompt")
         self.assertIn("var wasReconn=everConnected;everConnected=true;", shim,
                       "and wasReconn still means 'this socket had connected before'")
 
@@ -82,10 +87,11 @@ class PaneLoaderReconnect(unittest.TestCase):
         bars-area loader instead, the user 2026-06-26) — it still carries the shim, so it gets the event
         whether or not anything listens today."""
         for page in (km._chat_page(), km._feed_page(), km._fleet_page()):
-            self.assertIn("window.addEventListener('romp:wsup',hide);", page)
+            self.assertIn("window.addEventListener('romp:wsup',function(){hide();});", page)
+            self.assertIn("window.addEventListener('romp:wsfresh',function(){badge(false);});", page)
             self.assertIn('new Event("romp:wsup")', page)
         self.assertIn('new Event("romp:wsup")', km._timeline_page())
-        self.assertNotIn("window.addEventListener('romp:wsup',hide);", km._timeline_page(),
+        self.assertNotIn("window.addEventListener('romp:wsup',function(){hide();});", km._timeline_page(),
                          "the timeline still owns no _pane_spin overlay")
 
 

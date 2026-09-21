@@ -16,17 +16,21 @@ test("the swirl element is built in the body, right after the distiller line, an
   assert.match(FEED, /const awaitSpin = el\("div", "fask-awaiting"\); awaitSpin\.style\.display = "none";/);
   assert.match(FEED, /const awaitGlyph = el\("span", "fask-awaiting-swirl"\)/);
   // distill now rides inside the takeaway section (takeSec), with the background section above it (2026-07-02)
-  assert.match(FEED, /main\.append\(row1, row2, row3, secs, qbody, awaitSpin, checklist, delegations\)/);
+  // the notice card's body, attachment and actions (T370) sit between the sections and the swirl (the quarantine body left 2026-09-19)
+  assert.match(FEED, /main\.append\(row1, row2, row3, secs, nbody, nattach, nactions, awaitSpin, checklist, delegations\)/);
   assert.match(FEED, /a\._awaitSpin = awaitSpin; a\._awaitWhy = awaitWhy;/);
 });
 
 test("the swirl is driven by spinFor's caption — shown when there is one, else hidden", () => {
-  assert.match(FEED, /import \{ spinFor, KIND_WORD, waitedSuffix \} from "\.\/spin-caption";/);
-  assert.match(FEED, /const spin = spinFor\(it, distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\),/);
+  assert.match(FEED, /import \{ spinFor, awaitWord, groupRows, waitsNote, GROUP_TITLE, ROW_KIND_OF_LEGACY, type AwaitRow \} from "\.\/spin-caption";/);   // the rows' vocabulary too (slice 2)
+  assert.match(FEED, /const spin = spinFor\(it, !it\.notice && distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\),/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
   assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote \} from "\.\/distiller-line";/);
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
-  assert.match(FEED, /\} else a\._awaitWhy\.textContent = spinCaption;\n\s*a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
+  // a caption that ends in a running duration renders the duration as its own stamped element (feed-age.ts
+  // fmt "dur") so the live pass keeps it moving on a card the per-card update gate does not repaint
+  assert.match(FEED, /\} else if \(spin\.dur\) a\._awaitWhy\.replaceChildren\(spin\.dur\.text, durSpan\(spin\.dur\.since\)\);/);
+  assert.match(FEED, /else a\._awaitWhy\.textContent = spinCaption;\n\s*a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 
 test("a bg-task wait wears the compact 'Awaiting task' pill that expands the task list (the user 2026-07-13)", () => {
@@ -35,13 +39,17 @@ test("a bg-task wait wears the compact 'Awaiting task' pill that expands the tas
   assert.match(FEED, /"bg" \| "summary" \| "subgoals" \| "tasks" \| "stall" \| "none"/);
   // "Awaiting task", never "Waiting on task": one word per state across every surface — the chat chip
   // and timeline badge already say Awaiting for this exact state (the user 2026-08-13)
-  assert.match(FEED, /taskList\.length === 1 \? "Awaiting " \+ one\s*\n?\s*: "Awaiting " \+ taskList\.length \+ " "/);
+  // …worded by the ONE rule the chat chip and box use (awaitWord, slice 2 2026-09-05): "Awaiting
+  // agent" / "Awaiting 3 agents" / "Awaiting 4" for mixed kinds; a single named peer → its name
+  assert.match(FEED, /pillLbl\.replaceChildren\("Awaiting "\);/);
+  assert.match(FEED, /\} else pillLbl\.append\(pillWord\);/);
   assert.doesNotMatch(FEED, /"Waiting on task"/);
-  // the pill carries the wait's elapsed time, same readout as the awaiting box (the user 2026-08-23)
-  assert.match(FEED, /\+ pillWaited;/);
+  // the pill carries the wait's elapsed time, same readout as the awaiting box (the user 2026-08-23) —
+  // as a stamped duration element, so the 15 s live pass moves it (durNodes mirrors waitedSuffix's rule)
+  assert.match(FEED, /pillLbl\.append\(\.\.\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);\s*\/\/ the waited time, live/);   // appended after the (possibly coloured) word since slice 2
   assert.match(FEED, /taskBtn\.onclick = pick\("tasks"\);/);
   // expanded rows render in the checklist spot, same view as Sub-goals, the swirl as each row's mark
-  assert.match(FEED, /if \(choice === "tasks"\) \{[\s\S]*?el\("div", "fcheck ftask"\)[\s\S]*?ftask-swirl/);
+  assert.match(FEED, /if \(choice === "tasks"\) \{[\s\S]*?el\("div", "fcheck ftask" \+ \(sub \? " ftask-sub" : ""\)\)[\s\S]*?ftask-swirl/);   // + the nested-row marker (2026-09-10)
   assert.match(CSS, /\.fask-taskbtn \{ display: inline-flex/);
   assert.match(CSS, /\.ftask-swirl\.fask-awaiting-swirl/);
 });
@@ -89,9 +97,9 @@ test("a DELEGATION wait names its peers like the ↪ from line — identity colo
   assert.match(FEED, /nm\.replaceChildren\(\.\.\.hostPartsNodes\(p\.host, p\.name\)\);/);
   assert.match(FEED, /if \(p\.color && p\.color\.bg\) nm\.style\.color = p\.color\.bg;/);
   // the elapsed readout survives the structured path (the pill/box parity rule of 2026-08-23)
-  assert.match(FEED, /a\._awaitWhy\.append\(waitedSuffix\(it\.awaiting && it\.awaiting\.since, Date\.now\(\) \/ 1000\)\);/);
+  assert.match(FEED, /a\._awaitWhy\.append\(\.\.\.durNodes\(it\.awaiting && it\.awaiting\.since\)\);/);
   // older kernels ship no peers → the ladder's plain caption is the fallback
-  assert.match(FEED, /\} else a\._awaitWhy\.textContent = spinCaption;/);
+  assert.match(FEED, /else a\._awaitWhy\.textContent = spinCaption;/);
   // federation attributes a kernel-local peer to that kernel and prefixes its sid, exactly as it
   // does for origin.peerSid — a merged card's peer name keeps its host and its click routes home
   const FED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");

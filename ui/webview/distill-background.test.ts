@@ -81,7 +81,7 @@ test("the MODAL always shows BOTH sections, labeled background / summary", () =>
   // label size sits BETWEEN the section text (0.86em) and the tree/checklist lines (1em)
   assert.match(CSS, /\.ftree-seclabel \{ font-size: 0\.92em;/);
   // modal times match the checklist lines they correspond to, never bold (the user 2026-07-02)
-  assert.match(CSS, /\.ftree-meta \{[^}]*font-size: 0\.9em; font-weight: 400;/);
+  assert.match(CSS, /\.ftree-meta \{[^}]*font-size: 0\.92em; font-weight: 400;/);
 });
 
 test("background shows only alongside a produced takeaway, and the takeaway keeps its deep-link", () => {

@@ -19,7 +19,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -27,7 +27,7 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-km = SourceFileLoader("romp_kernel_sweep", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_sweep", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 NOW = 1781100000
@@ -155,24 +155,46 @@ class ReasonsRetireOnTheirEvents(SweepBase):
                          "a live captioner call must not re-dress a durable hold")
 
 
+class SharedViewRead(SweepBase):
+    """The sweep's one store read per session takes the shared read-only view (kernel/judge.py
+    load_goals_shared): it reads nodes, status and confirming and writes nothing, so two ticks over an
+    unchanged store parse it once."""
+
+    def test_the_sweep_reads_the_shared_view(self):
+        self._rec("a reason a future reviver minted")       # an unknown why stands: the record survives both ticks
+        jd._shared_clear()
+        private, o_load = [], jd.load_goals
+        jd.load_goals = lambda fsid: (private.append(fsid), o_load(fsid))[1]
+        stats0 = jd.shared_store_stats()
+        try:
+            km._deferral_sweep_tick(NOW)
+            km._deferral_sweep_tick(NOW)
+        finally:
+            jd.load_goals = o_load
+        stats = jd.shared_store_stats()
+        self.assertIn(GID, self._d["deferred"])
+        self.assertEqual(private, [], "the writer's loader is never asked")
+        self.assertEqual((stats["miss"] - stats0["miss"], stats["hit"] - stats0["hit"]), (1, 1), "one parse, then a hit")
+
+
 class HardRuleAndRoutingPins(unittest.TestCase):
     """build_feed's presentation, pinned by source (the build_feed test pattern)."""
 
     def test_stalled_plus_idle_files_under_blocked(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         # the user's hard rule (2026-08-13), superseding the 2026-07-23 Working-only stance
         self.assertIn('_stall_block = bool(_stall_rec and not who_working and not sess_awaiting_why)', src)
         self.assertIn('or nid == perm_top or _stall_block', src)
         self.assertIn('"blocked": _stall_block}', src)
 
     def test_in_flight_holds_route_to_the_swirl(self):
-        src = inspect.getsource(km.build_feed)
+        src = inspect.getsource(km._feed_session_entry)
         self.assertIn('_stall_rec.get("why") in jd.WHY_IN_FLIGHT', src)
         self.assertIn('bool((sess_judging or _stall_inflight) and column == "working")', src)
 
     def test_the_sweep_runs_every_tick_independent_of_the_toggle(self):
-        src = inspect.getsource(km._pusher_cycle_jobs)
-        self.assertIn("_deferral_sweep_tick(now)", src)
+        src = inspect.getsource(km._jobs_pass)                          # the jobs thread's list (the housekeeping split, 2026-09-13)
+        self.assertIn("_job_stage('deferralSweep', lambda: _deferral_sweep_tick(now))", src)   # a tick job, its own stage (T398)
         sweep_pos = src.index("_deferral_sweep_tick")
         nudge_pos = src.index("_auto_nudge_tick")
         self.assertLess(sweep_pos, nudge_pos, "retirement runs before the walk that would re-fire")

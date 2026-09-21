@@ -18,7 +18,7 @@ import time
 import unittest
 import os
 from pathlib import Path
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -28,7 +28,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_awstamp", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_awstamp", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-999999999999"
 NOW = int(time.time())
@@ -126,7 +126,7 @@ class SessionLevelStamp(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
-        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions, km._states_awaiting_overlay)
+        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._live_map, km._states_awaiting_overlay)
         km.jd.STATE = td
         km.jd.GOALDIR = td / "goals"
         km.jd.GOALDIR.mkdir(parents=True)
@@ -134,10 +134,10 @@ class SessionLevelStamp(unittest.TestCase):
         km._states_awaiting_overlay = lambda sid: None
         # a LIVE snapshot with an EMPTY bg-task set (SDK-style): sources 0-1 find nothing and fall through to
         # the stamp; the present "bgTasks" key means source 0.75 (transcript pairing) is skipped as well
-        km._tmux_sessions = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
+        km._live_map = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
 
     def tearDown(self):
-        km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions, km._states_awaiting_overlay = self._saved
+        km.jd.STATE, km.jd.GOALDIR, km._live_map, km._states_awaiting_overlay = self._saved
         km._SESSION_STAMP_CACHE.clear()
         self.td.cleanup()
 
@@ -155,9 +155,28 @@ class SessionLevelStamp(unittest.TestCase):
             "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": nodes}))
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
                          {"kind": "job", "why": "slurm 4821 regenerating the parts",
-                          "since": 200})   # the stamp's awaitingAt → the chips' elapsed readout (the user 2026-08-23)
+                          "since": 200,   # the stamp's awaitingAt → the chips' elapsed readout (the user 2026-08-23)
+                          "count": None,   # a stamp naming no peers carries no count (T225)
+                          "items": []})    # …and names no rows (slice 2, 2026-09-05: every arm ships the awaited rows)
         self.assertEqual(km._session_stamp_full(SID),
                          ("g1", 200, "slurm 4821 regenerating the parts", "job", ()))
+
+    def test_the_stamp_reader_takes_the_shared_view(self):
+        # _session_stamp_read's one store read per key takes the shared read-only view (kernel/judge.py
+        # load_goals_shared): it reads nodes and status and writes nothing
+        self._seed(("g1", "waiting on the nightly batch", 200))
+        km.jd._shared_clear()
+        km._SESSION_STAMP_CACHE.clear()
+        private, o_load = [], km.jd.load_goals
+        km.jd.load_goals = lambda fsid: (private.append(fsid), o_load(fsid))[1]
+        stats0 = km.jd.shared_store_stats()
+        try:
+            full, _tops, _deleg = km._session_stamp_read(SID)
+        finally:
+            km.jd.load_goals = o_load
+        self.assertEqual(full[0], "g1", "the stamp names the goal")
+        self.assertEqual(private, [], "the writer's loader is never asked")
+        self.assertEqual(km.jd.shared_store_stats()["miss"] - stats0["miss"], 1)
 
     def test_session_stamp_takes_the_freshest_across_ALL_tops(self):
         # session-level, so it scans every goal (not one subtree like _goal_awaiting_stamp) for the newest
@@ -168,7 +187,8 @@ class SessionLevelStamp(unittest.TestCase):
         self._seed(("g1", "the watcher it armed; files the clip when it triggers", 200))
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
                          {"kind": None, "since": 200,
-                          "why": "the watcher it armed; files the clip when it triggers"})
+                          "why": "the watcher it armed; files the clip when it triggers", "count": None,
+                          "items": []})   # a stamp names no rows (slice 2)
 
     def test_stamp_false_stays_none_so_the_feed_scopes_per_goal(self):
         # the crux: the feed calls stamp=False, so the session-level signal is None for a stamp-only session
@@ -178,7 +198,7 @@ class SessionLevelStamp(unittest.TestCase):
 
     def test_a_dormant_session_never_resurrects_off_a_stale_stamp(self):
         self._seed(("g1", "a wait whose CLI is gone", 200))
-        km._tmux_sessions = lambda: {}          # SID not in the live set → live is None
+        km._live_map = lambda: {}          # SID not in the live set → live is None
         self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True))
 
     def test_an_open_turn_is_working_not_awaiting_even_with_a_stamp(self):
@@ -194,7 +214,7 @@ class SessionLevelStamp(unittest.TestCase):
         km._compacting = lambda *a, **k: False
         km._interrupting = lambda *a, **k: False
         try:
-            chip = km._session_chip(SID, "/p", {"turns": []}, km._tmux_sessions()[SID], NOW)
+            chip = km._session_chip(SID, "/p", {"turns": []}, km._live_map()[SID], NOW)
         finally:
             km._session_working, km._api_error, km._compacting, km._interrupting = saved
         self.assertEqual(chip, "awaitingBg")
@@ -219,7 +239,7 @@ class SessionLevelDelegation(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
-        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions,
+        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._live_map,
                        km._states_awaiting_overlay, km._name_of)
         km.jd.STATE = td
         km.jd.GOALDIR = td / "goals"
@@ -228,10 +248,10 @@ class SessionLevelDelegation(unittest.TestCase):
         km._states_awaiting_overlay = lambda sid: None
         km._name_of = lambda s: "probe" if s == self.PEER else None
         # LIVE snapshot, empty bg sets (SDK-style): every live source falls through, like SessionLevelStamp
-        km._tmux_sessions = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
+        km._live_map = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
 
     def tearDown(self):
-        (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions,
+        (km.jd.STATE, km.jd.GOALDIR, km._live_map,
          km._states_awaiting_overlay, km._name_of) = self._saved
         km._SESSION_STAMP_CACHE.clear()
         self.td.cleanup()
@@ -257,7 +277,11 @@ class SessionLevelDelegation(unittest.TestCase):
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
                          {"kind": "peer", "why": "delegated to probe; waiting on their result",
                           "since": None,   # the handoff graph has no single event time here → no duration
-                          "peers": [{"name": "probe", "host": "", "sid": self.PEER, "color": None}]})
+                          "peers": [{"name": "probe", "host": "", "sid": self.PEER, "color": None}],
+                          "count": 1,   # one identified peer → "Awaiting peer" (T225)
+                          # the peers ALSO ride as rows (slice 2, 2026-09-05): label only — no sid, so
+                          # federation's prefixing has nothing to miss; the surfaces colour by awaitingPeers
+                          "items": [{"kind": "peer", "id": "peer:probe", "label": "probe", "since": None}]})
 
     def test_handoff_peer_identities_carry_name_host_and_colour_for_the_card(self):
         # the card's awaiting box names the peers the way the origin line does (the user 2026-08-23):
@@ -289,7 +313,8 @@ class SessionLevelDelegation(unittest.TestCase):
         nodes["g1"]["awaitingWhy"], nodes["g1"]["awaitingAt"] = "the sweep it launched", 200
         self._seed(nodes)
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
-                         {"kind": None, "why": "the sweep it launched", "since": 200})
+                         {"kind": None, "why": "the sweep it launched", "since": 200, "count": None,
+                          "items": []})   # slice 2: every arm ships rows; a stamp names none
 
     def test_a_pure_delegation_top_stays_dark_matching_its_suppressed_card(self):
         # EVERY leaf a handoff → the feed suppresses the card in every column, so its dot never lights;
@@ -312,7 +337,7 @@ class SessionLevelDelegation(unittest.TestCase):
 
     def test_a_dormant_session_never_lights_off_the_graph(self):
         self._seed(self._delegated_store())
-        km._tmux_sessions = lambda: {}
+        km._live_map = lambda: {}
         self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True))
 
     def test_the_chip_reads_awaitingBg_end_to_end(self):
@@ -324,7 +349,7 @@ class SessionLevelDelegation(unittest.TestCase):
         km._compacting = lambda *a, **k: False
         km._interrupting = lambda *a, **k: False
         try:
-            chip = km._session_chip(SID, "/p", {"turns": []}, km._tmux_sessions()[SID], NOW)
+            chip = km._session_chip(SID, "/p", {"turns": []}, km._live_map()[SID], NOW)
         finally:
             km._session_working, km._api_error, km._compacting, km._interrupting = saved
         self.assertEqual(chip, "awaitingBg")
@@ -338,7 +363,7 @@ class KindScopedRules(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
-        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions, km._states_awaiting_overlay,
+        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._live_map, km._states_awaiting_overlay,
                        km._peer_answered_at)
         km.jd.STATE = td
         km.jd.GOALDIR = td / "goals"
@@ -346,10 +371,10 @@ class KindScopedRules(unittest.TestCase):
         km._SESSION_STAMP_CACHE.clear()
         km._states_awaiting_overlay = lambda sid: None
         km._peer_answered_at = lambda sid: 900          # a peer exchange answered AFTER every stamp below
-        km._tmux_sessions = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
+        km._live_map = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
 
     def tearDown(self):
-        (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions, km._states_awaiting_overlay,
+        (km.jd.STATE, km.jd.GOALDIR, km._live_map, km._states_awaiting_overlay,
          km._peer_answered_at) = self._saved
         km._SESSION_STAMP_CACHE.clear()
         self.td.cleanup()
@@ -365,7 +390,7 @@ class KindScopedRules(unittest.TestCase):
     def test_a_peer_answer_supersedes_only_peer_waits(self):
         self._seed("job")
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
-                         {"kind": "job", "why": "the wait", "since": 200},
+                         {"kind": "job", "why": "the wait", "since": 200, "count": None, "items": []},   # items: slice 2
                          "unrelated mail cannot end a wait on an external job")
         self._seed("peer")
         self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True),
@@ -407,16 +432,16 @@ class OverlayDoesNotVeto(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
-        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions)
+        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._live_map)
         km.jd.STATE = td
         km.jd.GOALDIR = td / "goals"
         km.jd.GOALDIR.mkdir(parents=True)
         (td / "states").mkdir()
         km._SESSION_STAMP_CACHE.clear()
-        km._tmux_sessions = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
+        km._live_map = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
 
     def tearDown(self):
-        km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions = self._saved
+        km.jd.STATE, km.jd.GOALDIR, km._live_map = self._saved
         km._SESSION_STAMP_CACHE.clear()
         self.td.cleanup()
 
@@ -434,14 +459,15 @@ class OverlayDoesNotVeto(unittest.TestCase):
         self._seed()
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
                          {"kind": None, "why": "a dispatched release watch; tags when green",
-                          "since": 200},
+                          "since": 200, "count": None, "items": []},   # items: slice 2
                          "the Stop hook's ambient false must not hide the judge's stamp")
 
     def test_a_live_true_row_still_wins_with_its_own_why(self):
         self._overlay({"t": 100, "awaiting": True, "why": "a job the hook reported"})
         self._seed()
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
-                         {"kind": None, "why": "a job the hook reported", "since": 100},
+                         {"kind": None, "why": "a job the hook reported", "since": 100, "count": None,
+                          "items": []},   # an overlay row names no rows (slice 2)
                          "a positive overlay row keeps its channel")
 
     def test_false_row_and_no_stamp_is_plain_none(self):
@@ -506,7 +532,7 @@ class AwaitingWake(unittest.TestCase):
         (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {self.gid: nd}}))
 
-    def _wake(self, now, rec=None, tmux=None):
+    def _wake(self, now, rec=None, live_map=None):
         km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()   # deterministic: never a stale cache
         if rec is not None:
             d = json.loads((Path(self.td.name) / "auto-nudge.json").read_text())
@@ -517,7 +543,7 @@ class AwaitingWake(unittest.TestCase):
         stamp = km._goal_awaiting_stamp_full(store.get("nodes", {}), self.gid)
         self.assertIsNotNone(stamp, "fixture: the goal must be stamped")
         out = km._wake_goal(SID, self.gid, stamp, nudged, self.turns, store, now,
-                            self.turns[-1], {SID: {"state": ""}} if tmux is None else tmux)
+                            self.turns[-1], {SID: {"state": ""}} if live_map is None else live_map)
         km._autonudge_cache.clear()
         return out
 
@@ -633,21 +659,23 @@ class AwaitingWake(unittest.TestCase):
         # asleep — but the branch no longer dead-ends: the stamped Working card converts once to the
         # dead-wait procedural block, so it reaches a terminal column instead of pausing forever.
         # The conversion is owner-corroborated: the session carries its launch record (the names
-        # entry both backends write — without it no owner here could answer for the sid), and the
-        # owner scan is pinned to an authoritative empty answer rather than this box's real tmux.
+        # entry both backends write — without it no owner here could answer for the sid) and no
+        # backend holds a registry row for it, which is dead history (_dead_wait_corroborated → True).
         km.jd.NAMES.mkdir(parents=True, exist_ok=True)
         (km.jd.NAMES / SID).write_text("web\t~/notes-api\t#3355aa\t#ffffff\n")
         self.addCleanup(lambda: (km.jd.NAMES / SID).unlink())
-        km._TMUX.available = lambda: True
-        km._TMUX.alive_sids = lambda t=3: set()
-        self.addCleanup(lambda: [km._TMUX.__dict__.pop(nm, None)
-                                 for nm in ("available", "alive_sids")])
+        # The SDK registry directory must read for "no registry row" to mean anything: the kernel's boot
+        # pass creates sdk/ (_death_boot_pass), so a running kernel never lacks it, and a missing sdk/
+        # beside a names entry reads to _sdk_records_blind as blindness (a registry moved aside), on
+        # which the corroborator stands down instead of converting. An empty, readable sdk/ is the
+        # booted kernel's shape for a sid no backend holds (the idiom of tests/test_dead_wait_block.py).
+        km.jd.SDKDIR.mkdir(parents=True, exist_ok=True)
         now = 1_000_000
         self._seed(at=now - 7 * 3600)
         (km.jd.STATE / "states").mkdir(parents=True, exist_ok=True)
         (km.jd.STATE / "states" / (SID + ".jsonl")).write_text(
             json.dumps({"state": "idle", "t": now - 6 * 3600}) + "\n")
-        self.assertTrue(self._wake(now, tmux={}), "the conversion fired (the tick pushes once)")
+        self.assertTrue(self._wake(now, live_map={}), "the conversion fired (the tick pushes once)")
         self.assertEqual(self.fb.sent, [], "no wake message: nothing that could answer is running")
         nd = km.jd.load_goals(SID)["nodes"][self.gid]
         self.assertTrue(nd.get("blocked"), "the card lands in Blocked, the ladder's promised terminal")
@@ -763,6 +791,75 @@ class AwaitingWakeOutcomeSweep(unittest.TestCase):
         self.assertFalse(km.jd.load_goals(SID)["nodes"][self.gid]["blocked"])
 
 
+    def test_sweep_escalates_through_the_view_and_the_writer_loads_only_to_stamp(self):
+        # T267d (2026-09-09): the sweep's per-record store read takes the shared read-only view
+        # (kernel/judge.py load_goals_shared); a fresh writer load per record was the pusher's remaining
+        # goal loads once the walk's own read moved. Decision unchanged: a silent due wake the walk cannot
+        # reach still escalates; the view is read once for the record, and the writer's loader is asked
+        # exactly once, by the stamp itself (_mark_nudge_failed), never to decide.
+        now = 1_000_000
+        self._seed_goal(at=now - 20 * 3600)
+        self._seed_rec({"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t0",
+                        "armAtoms": 0, "at": now - 7 * 3600})
+        km.jd._shared_clear()
+        reads, o_load, o_view = [], km.jd.load_goals, km.jd.load_goals_shared
+        km.jd.load_goals = lambda fsid: (reads.append("writer"), o_load(fsid))[1]
+        km.jd.load_goals_shared = lambda fsid: (reads.append("view"), o_view(fsid))[1]
+        try:
+            self.assertTrue(km._awaiting_wake_outcomes(now))
+        finally:
+            km.jd.load_goals, km.jd.load_goals_shared = o_load, o_view
+        self.assertEqual(reads[0], "view", "the decision reads the view")
+        self.assertEqual(reads.count("view"), 1, "once, for the record")
+        self.assertTrue(len(reads) > 1 and all(r == "writer" for r in reads[1:]),
+                        "every writer load belongs to the stamp, after the decision: %r" % reads)
+        store = km.jd.load_goals(SID)
+        self.assertTrue(store["nodes"][self.gid]["blocked"], "the same escalation as before")
+        self.assertEqual(store["nodes"][self.gid].get("blockWhy"), km.jd.WAKE_BLOCK_WHY)
+
+    def test_sweep_leaves_a_cleared_card_alone_through_the_view(self):
+        # a due wake whose card the user cleared: the record is inert (not 'working'), no block, no writer load
+        now = 1_000_000
+        self._seed_goal(at=now - 20 * 3600)
+        d = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())
+        d["status"][self.gid] = "cleared"
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps(d))
+        self._seed_rec({"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t0",
+                        "armAtoms": 0, "at": now - 7 * 3600})
+        km.jd._shared_clear()
+        private, o_load = [], km.jd.load_goals
+        km.jd.load_goals = lambda fsid: (private.append(fsid), o_load(fsid))[1]
+        stats0 = km.jd.shared_store_stats()
+        try:
+            self.assertFalse(km._awaiting_wake_outcomes(now))
+        finally:
+            km.jd.load_goals = o_load
+        self.assertEqual(private, [])
+        self.assertEqual(km.jd.shared_store_stats()["miss"] - stats0["miss"], 1, "one view read for the record")
+        self.assertFalse(km.jd.load_goals(SID)["nodes"][self.gid].get("blocked"))
+
+    def test_sweep_files_an_answer_through_one_writer_load(self):
+        # the answered leg SAVES (record_verdict + save_goals), so it alone takes a writer load, exactly one
+        now = 1_000_000
+        self._seed_goal(at=now - 20 * 3600)
+        self._seed_rec({"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t1",
+                        "armAtoms": 0, "at": now - 7 * 3600})
+        km.jd._shared_clear()
+        saved = km._nudge_response_ready
+        km._nudge_response_ready = lambda *a, **k: (True, {"id": "s9", "t": now - 6 * 3600})
+        private, o_load = [], km.jd.load_goals
+        km.jd.load_goals = lambda fsid: (private.append(fsid), o_load(fsid))[1]
+        try:
+            self.assertFalse(km._awaiting_wake_outcomes(now))
+        finally:
+            km._nudge_response_ready = saved
+            km.jd.load_goals = o_load
+        self.assertEqual(private, [SID], "one writer load, for the filing")
+        self.assertEqual(km._auto_nudge_data()["nudged"][self.gid].get("answeredAt"), now - 6 * 3600)
+        self.assertFalse(km.jd.load_goals(SID)["nodes"][self.gid]["blocked"])
+        self.assertEqual(km.jd.shared_store_stats()["off"], 0, "no write ever reached the frozen view")
+
+
 class WakeBodyKeepsItsCopy(unittest.TestCase):
     """_followup_body(wake=True): the wake's ask survives the hierarchical enumeration branch. The generic
     status ask invites an answer from memory — the audited session twice reassured from memory that its
@@ -829,3 +926,82 @@ class SupersedeKeysOnWriteTime(unittest.TestCase):
     def test_job_stamps_never_yield_to_mail(self):
         got = km._goal_awaiting_stamp_full(self._nodes(100, 120, kind="job"), "g1", answered_at=150)
         self.assertIsNotNone(got, "peer-scoped: a slurm wait keeps standing through unrelated mail")
+
+
+class ForkedSessionChipMatchesFeed(unittest.TestCase):
+    """The chip and the card read the SAME fact. build_feed resolves a session's transcript via
+    discover — the registry's lastSid file for a /cleared or resume-forked SDK session — while
+    _session_stamp_read resolved _sdk_transcript_path, the DEAD anchor file, so the chip's
+    ask-unit discriminator (_pure_delegation_top's anchor resolve) answered from a transcript the
+    feed no longer reads: the feed suppressed a machine-anchored coordination top while the chip
+    lit 'waiting on peers' for it. One fact, two answers. The stamp cache also keys on the
+    resolved path + parse warmth: a not-yet-latched node's verdict is the only
+    cache-temperature-dependent input left (a LATCHED askAnchor rides the goal store, whose mtime
+    is already in the key), and without the temperature key the chip served a cold-beat fail-open
+    long after the feed's fresh read had warmed."""
+
+    FSID = "aa110001-2222-4333-8444-000000000001"
+    FORK = "aa110001-2222-4333-8444-000000000002"
+    PEER = "aa110001-2222-4333-8444-000000000003"
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        self._saved = (km.jd.STATE, km.jd.GOALDIR, km.jd.SDKDIR, km.NAMES, km._live_map,
+                       km._states_awaiting_overlay, km._name_of, km._parse_cached)
+        km.jd.STATE = td
+        km.jd.GOALDIR = td / "goals"
+        km.jd.GOALDIR.mkdir(parents=True)
+        km.jd.SDKDIR = td / "sdk"
+        km.jd.SDKDIR.mkdir()
+        km.NAMES = td / "names"
+        km.NAMES.mkdir()
+        cwd = str(td / "proj")
+        (km.NAMES / self.FSID).write_text("web\t%s\n" % cwd)
+        (km.jd.SDKDIR / (self.FSID + ".json")).write_text(json.dumps({"lastSid": self.FORK}))
+        self.fork_path = str(km.jd._proj_dir(cwd) / (self.FORK + ".jsonl"))
+        km.jd._lastsid_memo.clear()
+        km._SESSION_STAMP_CACHE.clear()
+        km._states_awaiting_overlay = lambda sid: None
+        km._name_of = lambda s: "probe" if s == self.PEER else None
+        km._live_map = lambda: {self.FSID: {"state": "", "since": None,
+                                                 "subagents": [], "bgTasks": []}}
+        # the WARM parse lives at the lastSid file — the anchor file is dead (no parse, ever)
+        self._machine = {"turns": [{"atoms": [
+            {"uuid": "a9", "type": "assistant",
+             "message": {"role": "assistant",
+                         "content": [{"type": "text", "text": "wrapping up the sweep"}]}}]}]}
+        km._parse_cached = lambda p: self._machine if str(p) == self.fork_path else None
+
+    def tearDown(self):
+        (km.jd.STATE, km.jd.GOALDIR, km.jd.SDKDIR, km.NAMES, km._live_map,
+         km._states_awaiting_overlay, km._name_of, km._parse_cached) = self._saved
+        km._SESSION_STAMP_CACHE.clear()
+        km.jd._lastsid_memo.clear()
+        self.td.cleanup()
+
+    def _seed(self):
+        top = _node("g1")
+        top["promptUuid"] = "a9"                       # machine-anchored coordination top, unlatched
+        h = _node("h1", parent="g1")
+        h["handoff"] = {"peer": self.PEER, "msgId": "1787000000.00001_00001.TESTHOST"}
+        nodes = {"g1": top, "h1": h}
+        (km.jd.GOALDIR / (self.FSID + ".json")).write_text(json.dumps({
+            "rompUuid": self.FSID, "seq": 1, "placements": {}, "status": {}, "nodes": nodes}))
+        return nodes
+
+    def test_the_chip_reads_the_forked_transcript_like_the_feed(self):
+        nodes = self._seed()
+        self.assertTrue(km._pure_delegation_top(nodes, "g1", sid=self.FSID, path=self.fork_path),
+                        "feed side: the warm lastSid parse proves a machine anchor — suppressed")
+        self.assertEqual(km._session_stamp_read(self.FSID)[2], (),
+                         "chip side answers identically: no peers lit for a suppressed card")
+
+    def test_the_stamp_cache_re_reads_when_the_parse_warms(self):
+        self._seed()
+        km._parse_cached = lambda p: None              # cold beat: both surfaces fail open (shown)
+        self.assertEqual(km._session_stamp_read(self.FSID)[2], (self.PEER,),
+                         "cold: unlatched fail-open, the same answer the feed's cold read gives")
+        km._parse_cached = lambda p: self._machine if str(p) == self.fork_path else None
+        self.assertEqual(km._session_stamp_read(self.FSID)[2], (),
+                         "the warm parse is new information — the cached chip must not outlive it")

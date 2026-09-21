@@ -35,9 +35,25 @@
 // only branches that fire in that window, so the swirl is the sole thing saying the card is in motion and
 // still blocked underneath. Gating either on a brief would leave it silent.
 
+/** One awaited ROW (kernel _awaiting_item, plans/subagent-transcripts.md slice 2, 2026-09-05): kind is
+ *  the row GROUP — agents | commands | watches | peer | timer — never a legacy kind key. agentId rides
+ *  on an agent row (the open-transcript arrow), detail on a watch row (its predicate), watchId on a
+ *  generic watch (the Cancel handle; a PR watch has no early-retire path and carries none). */
+export interface AwaitRow {
+  kind: string; id?: string; label?: string; since?: number | null;
+  agentId?: string | null; detail?: string | null; watchId?: string | null;
+  /** the row is a task in the SDK's live lifecycle set — stop_task resolves its id, so Stop is offered
+   *  even when no tracked task (the parent transcript's scan) lends a handle (2026-09-10) */
+  stoppable?: boolean | null;
+  /** what the thing this row names is ITSELF waiting on (kernel _awaiting_nest, 2026-09-10): a subagent's
+   *  own background commands, or its own subagents (which may nest again). The top level lists only what
+   *  the session itself waits on; every count and word on the surfaces reads the top level alone. */
+  waits?: AwaitRow[] | null;
+}
+
 /** The card fields the ladder reads. Structural, so the test can pass plain objects. */
 export interface SpinItem {
-  awaiting?: { why?: string | null; kind?: string | null; since?: number | null; tasks?: unknown[] | null } | null;   // since = the wait's own event time (kernel or-chain / _session_awaiting; the user 2026-08-23)
+  awaiting?: { why?: string | null; kind?: string | null; since?: number | null; count?: number | null; tasks?: unknown[] | null; items?: AwaitRow[] | null } | null;   // count = how many things are awaited (T225: the label agrees in number)   // since = the wait's own event time (kernel or-chain / _session_awaiting; the user 2026-08-23)   // items = the awaited rows (slice 2); present → the pill lists them and the caption stands down
   waitingOn?: unknown;
   provisional?: boolean;
   column?: string;
@@ -56,15 +72,151 @@ export interface Spin {
   tip: string;
   awaitingBg: boolean;
   still?: boolean;   // the at-rest floor: glyph present but NOT spinning — spin reads as in-flight, and quiet/unknown are states of rest
+  /** A caption that ENDS in a running duration, split for a live label: `caption` is
+   *  `text + workingFor(nowS - since)` exactly, and the renderer stamps the duration on its own element
+   *  (feed-age.ts fmt "dur") so the 15 s live pass keeps it moving. The feed's per-card update gate
+   *  repaints a card only when its inputs change, so a duration baked into one string would freeze on a
+   *  card the kernel has no reason to re-send (a long wait whose record does not change). */
+  dur?: { text: string; since: number } | null;
 }
 
 const NONE: Spin = { caption: null, tip: "", awaitingBg: false };
 
-/** The awaiting KIND's one label word (kernel jd.AWAIT_KINDS; the user 2026-08-15). Kindless (an older
- *  kernel, an untyped legacy stamp) falls back to "agents" — the word this box has always defaulted to. */
+/** The awaiting KIND's one label word (kernel jd.AWAIT_KINDS; the user 2026-08-15). The KEYS are the
+ *  kernel's legacy kind keys (agents / task / job / peer / timer, plus "mixed" since slice 2); the WORDS
+ *  are the plain ones the user asked for on 2026-09-05 (plans/subagent-transcripts.md slice 2): "task"
+ *  reads "command" (a run_in_background Bash or Monitor), "job" reads "watch" (an armed `romp watch`),
+ *  and "mixed" — several kinds at once — has NO word: the number alone is the label ("Awaiting 4").
+ *  Kindless (an older kernel, an untyped legacy stamp) falls back to "agents" — the word this box has
+ *  always defaulted to. The timeline mirrors this table byte for byte (tlKindWord). */
 export const KIND_WORD: Record<string, string> = {
-  agents: "agents", task: "task", job: "job", peer: "peer", timer: "timer",
+  agents: "agents", task: "command", job: "watch", peer: "peer", timer: "timer", mixed: "",
 };
+
+/** English plural for the kind words: "watch" → "watches", everything else + "s". */
+function pluralWord(w: string): string {
+  return /ch$/.test(w) ? w + "es" : w + "s";
+}
+
+/** The kind word AGREEING IN NUMBER with how many things are awaited (T225; the user 2026-09-02,
+ *  who wants one awaited agent labelled as one, not as "agents"). One helper feeds the
+ *  chat chip, the awaiting box gist, the feed pill and the spin caption, so every surface derives the
+ *  word from the same count. An unknown count (null/undefined — an older kernel, a kindless stamp)
+ *  keeps the KIND_WORD default the surfaces have always worn (plural "agents", singular otherwise);
+ *  an unknown kind stays "agents"; "mixed" is wordless whatever the count. */
+export function kindWord(kind: string | null | undefined, count: number | null | undefined): string {
+  if (kind === "mixed") return "";
+  const base = KIND_WORD[kind || ""] || "agents";
+  if (typeof count !== "number" || !Number.isFinite(count)) return base;
+  if (count === 1) return base === "agents" ? "agent" : base;
+  return base === "agents" ? base : pluralWord(base);
+}
+
+// ── the awaited ROWS' vocabulary (slice 2) ──────────────────────────────────────────────────────────
+/** Row groups in DISPLAY order — the kernel's _AWAIT_ITEM_KINDS, mirrored. */
+export const ROW_KINDS = ["agents", "commands", "watches", "peer", "timer"] as const;
+/** singular / plural per row group. */
+const ROW_WORD: Record<string, [string, string]> = {
+  agents: ["agent", "agents"], commands: ["command", "commands"], watches: ["watch", "watches"],
+  peer: ["peer", "peers"], timer: ["timer", "timers"],
+};
+/** The small dim header over each group when several groups show. */
+export const GROUP_TITLE: Record<string, string> = {
+  agents: "Agents", commands: "Commands", watches: "Watches", peer: "Peers", timer: "Timers",
+};
+/** legacy kind key → row group, for an older kernel's payload that ships descriptions but no rows. */
+export const ROW_KIND_OF_LEGACY: Record<string, string> = {
+  agents: "agents", task: "commands", job: "watches", peer: "peer", timer: "timer",
+};
+
+/** One group's word, agreeing in number: rowWord("watches", 2) → "watches"; rowWord("agents", 1) → "agent". */
+export function rowWord(kind: string, n: number): string {
+  const w = ROW_WORD[kind] || ROW_WORD.commands;
+  return n === 1 ? w[0] : w[1];
+}
+
+/** The rows bucketed by group, in display order; empty groups omitted. */
+export function groupRows(items: readonly AwaitRow[] | null | undefined): { kind: string; rows: AwaitRow[] }[] {
+  const out: { kind: string; rows: AwaitRow[] }[] = [];
+  for (const k of ROW_KINDS) {
+    const rows = (items || []).filter((it) => it && it.kind === k);
+    if (rows.length) out.push({ kind: k, rows });
+  }
+  const known = new Set<string>(ROW_KINDS);
+  const other = (items || []).filter((it) => it && !known.has(it.kind));   // a newer kernel's group this build doesn't know: shown, never dropped
+  if (other.length) out.push({ kind: "other", rows: other });
+  return out;
+}
+
+/** "2 agents · 1 command · 1 watch" — the tooltip breakdown; "" with no rows. Reads the rows it is given
+ *  and nothing beneath them: fed the top level, it counts what the session itself waits on. */
+export function awaitBreakdown(items: readonly AwaitRow[] | null | undefined): string {
+  return groupRows(items).map((g) => g.rows.length + " " + rowWord(g.kind, g.rows.length)).join(" · ");
+}
+
+/** The header's words for the rows wearing the judge's verdict (T394, the user 2026-09-12): tracked tasks the closer audited
+ *  past their launch without a wait, so nobody waits on them; they list in their kind's section, dimmed, and the header names
+ *  how many of its listed rows are such ("1 kept running"), a subset of the breakdown, never a further partition. "" when none. */
+export function keptWord(n: number): string {
+  return n > 0 ? n + " kept running" : "";
+}
+
+/** The header's tail: the breakdown of every row it is given (the caller feeds it every top-level row the list shows, by kind),
+ *  then how many of them wear the verdict; either alone when the other is empty. */
+export function listBreakdown(items: readonly AwaitRow[] | null | undefined, kept: number): string {
+  return [awaitBreakdown(items), keptWord(kept)].filter(Boolean).join(" · ");
+}
+
+// ── nested waits (2026-09-10): what an awaited agent is in turn waiting on ────────────────────────────
+/** Every row beneath these, depth-first: a row's waits, their waits, and so on. */
+export function flattenWaits(items: readonly AwaitRow[] | null | undefined): AwaitRow[] {
+  const out: AwaitRow[] = [];
+  const walk = (rows: readonly AwaitRow[] | null | undefined) => {
+    for (const r of rows || []) { if (!r) continue; out.push(r); walk(r.waits); }
+  };
+  walk(items);
+  return out;
+}
+
+/** The ids of the rows AND of everything nested under them — the set a tracked task must be in to count
+ *  as "named by the wait" rather than an unrelated leftover. */
+export function rowIds(items: readonly AwaitRow[] | null | undefined): Set<string> {
+  return new Set(flattenWaits(items).map((r) => r.id || "").filter(Boolean));
+}
+
+/** The agent row for `agentId` anywhere in the rows — top level or nested under another agent. */
+export function agentRowOf(items: readonly AwaitRow[] | null | undefined, agentId: string | null | undefined): AwaitRow | undefined {
+  if (!agentId) return undefined;
+  return flattenWaits(items).find((r) => r.kind === "agents" && r.agentId === agentId);
+}
+
+/** The words for what ONE row is waiting on, in the row vocabulary: a single wait → its label ("run the
+ *  parser test chunk"); several → the breakdown ("2 commands", "1 agent · 1 command"); "" with none.
+ *  Counts EVERYTHING beneath the row, so a level the box does not draw is still said. */
+export function waitsNote(row: AwaitRow | null | undefined): string {
+  const all = flattenWaits(row && row.waits);
+  if (!all.length) return "";
+  if (all.length === 1) return (all[0].label || "").trim() || rowWord(all[0].kind, 1);
+  return awaitBreakdown(all);
+}
+
+/** The text after "Awaiting" on the chat chip, the box gist and the feed pill — ONE rule (the user
+ *  2026-09-05): one row → its word ("agent", "command", "watch", "timer"; a peer row → "peer", which
+ *  the callers swap for the peer's own name); several of ONE group → the count and the word ("3
+ *  agents"); several GROUPS → the number alone ("4"), the breakdown riding the tooltip. With no rows
+ *  (an older kernel, a judge stamp, an overlay row) the legacy kind + count word it as before, the count
+ *  leading when it is known and plural ("3 agents"); kind "mixed" with no rows is the bare count. */
+export function awaitWord(kind: string | null | undefined, count: number | null | undefined,
+                          items: readonly AwaitRow[] | null | undefined): string {
+  const groups = groupRows(items);
+  const n = (items || []).length;
+  if (groups.length > 1) return String(n);
+  if (groups.length === 1) return n === 1 ? rowWord(groups[0].kind, 1) : n + " " + rowWord(groups[0].kind, n);
+  const known = typeof count === "number" && Number.isFinite(count) && count > 0;
+  if (kind === "mixed") return known ? String(count) : "";
+  const w = kindWord(kind, count);
+  return known && count! > 1 ? count + " " + w : w;
+}
 
 /** dCompleted/dBlocked come from distillInputs(distillState, column) — the GENUINE resolution state, not
  *  the transient column. distillPending is passed in (rather than recomputed) so the two modules keep one
@@ -89,13 +241,18 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
   // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Awaiting task" pill
   // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
   const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
+  // …and since slice 2 (2026-09-05) the awaited ROWS: any wait the kernel can enumerate — agents,
+  // commands, watches, peers — ships them, and the pill lists them grouped, so the same say-it-once
+  // rule holds for every such wait, not only the bg-task one. A wait with NEITHER (a judge stamp, an
+  // overlay row, an older kernel) keeps the boxed caption below — it is the only place its why shows.
+  const awRows = awTasks.length + ((aw && aw.items) || []).length;
   // A bg-TASK wait says it ONCE (the user 2026-08-23, second screenshot of the day): the "Awaiting
   // task" pill + its open-by-default list are the whole read. The first cut of today's fix named the
   // first task in a caption here — and with the list now open by default, one card said the same
   // wait three times (pill, caption, list row). No caption, then; the floor guards below keep the
   // quiet/unknown lines from contradicting the pill instead (that contradiction is what the caption
   // was for).
-  if (aw && !it.waitingOn && !awTasks.length) {
+  if (aw && !it.waitingOn && !awRows) {
     // AWAITING — the session is held, waiting on work it dispatched. It keeps its own read: a boxed
     // "Awaiting <kind-word>" label, the kind carried as DATA from the kernel (the user 2026-08-15) so
     // the box says WHAT is awaited — agents, a job on a cluster, a timer — not one word for five
@@ -104,16 +261,17 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     // actively-working cases, so the glyph needn't also freeze). A why that already leads with
     // "waiting on" is shown verbatim (capitalized); the kind word is the fallback frame.
     const why = aw.why || "";
-    const word = KIND_WORD[aw.kind || ""] || "agents";   // kindless = the box's historic default
+    const word = kindWord(aw.kind, aw.count);   // kindless = the box's historic default; agrees in number (T225)
     // how long the wait has held, from the kernel's event time — the same live readout the working
     // narration wears, so a stuck wait is visible at a glance (the user 2026-08-23)
     const waited = waitedSuffix(aw.since, nowS);
+    const head = /^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1) : "Awaiting " + word;
     return {
-      caption: (/^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
-                                         : "Awaiting " + word) + waited,
+      caption: head + waited,
       tip: why ? why + ". Not on you; paused until the background work lands."
                : "Paused, waiting on background work it dispatched (not on you). Clears when the result lands.",
       awaitingBg: true,
+      dur: waited ? { text: head + " · ", since: aw.since as number } : null,
     };
   }
   if (it.provisional && it.column === "working" && !aw) {
@@ -189,12 +347,14 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     const dur = nowS && it.working.since ? workingFor(nowS - it.working.since) : "";
     // zero tool uses says nothing worth reading ("0 tool uses" was noise — the user 2026-08-13):
     // the count appears once there is one, and until then the timer alone carries the narration
-    const parts = [n >= 1 ? `${n} tool ${n === 1 ? "use" : "uses"}` : "", dur].filter(Boolean);
+    const count = n >= 1 ? `${n} tool ${n === 1 ? "use" : "uses"}` : "";
+    const parts = [count, dur].filter(Boolean);
     return {
       caption: parts.length ? `Working — ${parts.join(" · ")}` : "Working…",
       tip: "The open turn's live progress: tool calls made so far, and how long this stretch has been "
          + "running. If the count freezes while the timer climbs, something is worth a look.",
       awaitingBg: false,
+      dur: dur ? { text: "Working — " + (count ? count + " · " : ""), since: it.working.since as number } : null,
     };
   }
   if (it.column === "working") {
@@ -208,7 +368,7 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     // say what this card is doing, and the quiet/unknown lines below would either contradict them
     // ("Paused — nothing is in motion" under in-flight tasks — the morning's screenshot) or repeat
     // them. An OPEN turn still narrates: the session working WHILE tasks run is new information.
-    if (awTasks.length && it.sessState !== "open") return NONE;
+    if (awRows && it.sessState !== "open") return NONE;
     if (it.sessState === "open") {
       return {
         caption: "Working…",
@@ -219,12 +379,15 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     }
     if (it.sessState === "quiet") {
       return {
-        // plain truth (the user 2026-08-24): the old line promised the session's NEXT turn, but the
-        // next turn may work another thread entirely — this goal resumes when its own wait ends
-        caption: "Paused — resumes when its wait ends",
-        tip: "Nothing is in motion right now: the session is between turns and this goal stays open. "
-           + "It picks back up when the session returns to this thread — not necessarily on its very "
-           + "next turn.",
+        // plain truth, round two (the user 2026-08-29, who went looking in the chat for the "wait"
+        // this line implied): there is no inspectable wait — the session is simply between turns
+        // with the goal open. The 2026-08-24 constraint stands too: never promise the session's
+        // NEXT turn (it may work another thread). Say only what is so.
+        caption: "Paused — nothing running right now; the session picks this back up",
+        tip: "Nothing is in motion: the session is between turns and this goal stays open. It picks "
+           + "back up when the session returns to this thread — not necessarily on its very next "
+           + "turn — and if it stays parked, romp nudges the session about it, so this card can't "
+           + "silently rot.",
         awaitingBg: false,
         still: true,
       };

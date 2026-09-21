@@ -15,7 +15,7 @@ test("the interrupting badge is built once and rides the wrapping chip row", () 
   assert.match(FEED, /const intingBadge = el\("span", "fask-interrupting"\)/);
   assert.match(FEED, /intingBadge\.textContent = "interrupting…"/, "text label, no emoji/glyph");
   // sits immediately left of the past-tense interrupted badge on the same wrapping row
-  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/);
+  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, apiLogin, capLine, capBtn, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/);
   assert.match(FEED, /a\._interrupting = intingBadge;/);
 });
 
@@ -37,5 +37,5 @@ test("it wears the WORKING treatment (filled yellow, faded) — an active state,
   // matches the chat chip's .chip-interrupting; the design system's working = filled --st-working-bg
   assert.match(CSS, /\.fask-interrupting \{[^}]*background: var\(--st-working-bg\)/);
   assert.match(CSS, /\.fask-interrupting \{[^}]*opacity: 0\.75/, "faded like the chat chip");
-  assert.match(CSS, /\.fask-interrupting \{[^}]*font-size: 0\.64em/, "same size as its sibling pills");
+  assert.match(CSS, /\.fask-interrupting \{[^}]*font-size: 0\.66em/, "same size as its sibling pills");
 });

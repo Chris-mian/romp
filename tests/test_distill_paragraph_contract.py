@@ -25,7 +25,7 @@ changes only what the audit named.
 """
 import pathlib
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import os
 import tempfile
 
@@ -34,7 +34,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_paras", str(ROOT / "kernel" / "judge.py")).load_module()
+jd = load_source("romp_judge_paras", str(ROOT / "kernel" / "judge.py"))
 
 PROMPTS = {
     "distiller": jd.DISTILL_SYS,
@@ -116,6 +116,68 @@ class ParagraphContract(unittest.TestCase):
             self.assertEqual(p.count("—"), 0, "%s: the prompt must not model what it forbids" % name)
 
 
+class DecisionListContract(unittest.TestCase):
+    """The user-approved communication rule (2026-08-30, via the optimizer): pending user decisions
+    render as a short numbered list of one-line yes/no questions, never buried inside status
+    recaps; and a status-shaped report opens with a done / in-motion / left-to-do split. Additive
+    paragraphs only — the takeaway specs' measured wording (the regression note above
+    BLOCK_BRIEF_SYS) is untouched, and the numbered list is exactly the countable per-paragraph
+    shape the owed-coverage guard verifies (tests/test_brief_owed_coverage.py)."""
+
+    def test_the_briefer_renders_owed_items_as_a_numbered_question_list(self):
+        p = jd.BLOCK_BRIEF_SYS
+        self.assertIn("NUMBERED DECISION LIST", p)
+        self.assertIn("one numbered single line", p)
+        self.assertIn("answer with a yes/no", p)
+        self.assertIn("one-word pick when the choice is between named options", p)
+        self.assertIn("one numbered line per paragraph", p,
+                      "each numbered item is its own paragraph — the render's per-paragraph "
+                      "stamps and the owed-coverage count both key on it")
+
+    def test_decisions_are_never_buried_in_recaps(self):
+        self.assertIn("never as a separate recap paragraph", jd.BLOCK_BRIEF_SYS,
+                      "context rides inside the question's own line — the buried-recap shape "
+                      "stalled the user's decisions for hours")
+
+    def test_the_merge_clause_and_the_single_item_lead_survive_untouched(self):
+        p = jd.BLOCK_BRIEF_SYS
+        self.assertIn("come down to the SAME decision, write ONE paragraph", p,
+                      "the measured merge clause is not reworded by the addition")
+        self.assertIn("Lead with exactly what you must decide or provide", p)
+
+    def test_the_staller_opens_status_with_the_three_way_split(self):
+        p = jd.STALL_BRIEF_SYS
+        self.assertIn("what is done, what was in motion, and what is left", p)
+        self.assertIn("before anything else", p)
+        self.assertIn("single-strand stall keeps the plain", p,
+                      "conditional: a one-strand stall keeps its terse where-it-stopped lead")
+
+    def test_the_split_stays_off_the_outcome_writer(self):
+        self.assertNotIn("what is done, what was in motion", jd.DISTILL_SYS,
+                         "a finished goal's takeaway is an outcome, not a status story")
+
+
+class QuoteLineJoinsTheProtocol(unittest.TestCase):
+    """T218: the SOURCE protocol grows an optional supporting-span line — the prompts offer it in all
+    three judges' words (verbatim, under 25 words, omit when no single sentence carries it), and the
+    parser peels it in either order without disturbing the body or the SOURCE label."""
+
+    def test_all_three_prompts_offer_the_quote_line(self):
+        for name, sysp in (("distiller", jd.DISTILL_SYS), ("briefer", jd.BLOCK_BRIEF_SYS),
+                           ("staller", jd.STALL_BRIEF_SYS)):
+            self.assertIn("QUOTE:", sysp, name)
+            self.assertIn("copied", sysp, name + " — verbatim, never paraphrased")
+            self.assertIn("omit", sysp.lower(), name + " — optional by instruction, absent stays honest")
+
+    def test_parser_peels_quote_in_either_order(self):
+        b1, s1, q1 = jd._split_source('take.\nSOURCE: m2\nQUOTE: "the exact sentence"')
+        self.assertEqual((b1, s1, q1), ("take.", "m2", "the exact sentence"))
+        b2, s2, q2 = jd._split_source('take.\nQUOTE: "the exact sentence"\nSOURCE: m2')
+        self.assertEqual((b2, s2, q2), ("take.", "m2", "the exact sentence"))
+        b3, s3, q3 = jd._split_source("take.\nSOURCE: m2")
+        self.assertEqual((b3, s3, q3), ("take.", "m2", None))
+
+
 class ParserKeepsTheParagraphs(unittest.TestCase):
     """The reply parser is what has to survive the new shape: a takeaway is now MULTI-paragraph, the
     trailing ARTIFACTS/SOURCE lines still peel off around it, and a decorated label still parses."""
@@ -127,7 +189,7 @@ class ParserKeepsTheParagraphs(unittest.TestCase):
              "SOURCE: m4")
 
     def _parse(self, reply):
-        body, src = jd._split_source(reply)
+        body, src, _q = jd._split_source(reply)
         body, arts = jd._split_artifacts(body)
         bg, take = jd._split_sections(body)
         return bg, take, arts, src

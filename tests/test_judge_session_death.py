@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -13,8 +13,8 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-jd = SourceFileLoader("romp_judge_death", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_death2", os.path.join(BIN, "romp-kernel")).load_module()
+jd = load_source("romp_judge_death", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_death2", os.path.join(BIN, "romp-kernel"))
 
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
@@ -36,6 +36,7 @@ def _wipe(sid):
     for mod in (jd, km.jd):                            # BOTH judge instances share the state dir; a
         mod._gone_memo.pop(sid, None)                  # deleted-then-recreated file within one mtime
         mod._episode_memo.pop(sid, None)               # tick would otherwise serve a stale memo
+        mod._UNREADABLE_LOGGED.discard(str(mod.STATESDIR / (sid + ".jsonl")))   # a read-failure episode ends with the file
 
 
 def _store(status=None, nodes=None):
@@ -130,6 +131,56 @@ class DeathFinalize(unittest.TestCase):
         jd._death_finalize(SID, _store(), settled=False)
         self.assertNotIn("endedAt", json.loads((jd.GONEDIR / (SID + ".json")).read_text()))
 
+    def _unreadable_rows(self):
+        if not os.path.exists(jd.ERRORS):
+            return []
+        rows = [json.loads(l) for l in open(jd.ERRORS) if l.strip()]
+        return [r for r in rows if r.get("err") == "states-unreadable" and r.get("fsid") == SID]
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 file")
+    def test_an_unreadable_states_file_defers_the_finalize(self):
+        # the supersession read is the ONE input that tells a revived session from a really-dead one.
+        # Before the fix a states file that existed but could not be read answered exactly like "no row
+        # newer than the marker": a revived session's marker took the real-end branch, a permanent 'ended'
+        # record naming its still-open cards reached the bell, and nothing could take it back (a finalized
+        # marker is never re-read). Unreadable is not evidence either way: the finalize waits — at the BACK of
+        # the oldest-first drain, the cut walk's move (review fold): a permission bit never clears on its own,
+        # and a marker left at the head would cost the drain one of its DEATH_DRAIN_PER_PASS slots every pass.
+        _write_marker(SID, t=NOW, by="gone")
+        marker = jd.GONEDIR / (SID + ".json")
+        os.utime(marker, (NOW, NOW))                       # the oldest marker in the queue
+        before = marker.stat().st_mtime_ns
+        jd.STATESDIR.mkdir(parents=True, exist_ok=True)
+        sp = jd.STATESDIR / (SID + ".jsonl")
+        with open(sp, "a") as f:
+            f.write(json.dumps({"t": NOW + 60, "state": "waiting"}) + "\n")   # the revival row
+        st = _store(status={SID + ":g1": "working"},
+                    nodes={SID + ":g1": {"id": SID + ":g1", "parentId": None,
+                                         "text": "an unfinished thing", "t": NOW - 100, "log": []}})
+        os.chmod(sp, 0)
+        try:
+            jd._judge_ctx.stage_incomplete = False
+            jd._death_finalize(SID, st, settled=True)
+            m = json.loads((jd.GONEDIR / (SID + ".json")).read_text())
+            self.assertNotIn("endedAt", m, "an unreadable states file is not 'no newer evidence': the finalize waits")
+            self.assertGreater(marker.stat().st_mtime_ns, before,
+                               "…at the BACK of the drain, not its head: the deferred marker is rotated like a cut one")
+            self.assertEqual([k for k in jd.episode_settles(SID) if str(k).startswith("ended:")], [],
+                             "no 'ended' record for a session the pass could not tell from a revived one")
+            self.assertTrue(jd._judge_ctx.stage_incomplete, "the failed read marks the stage: no closer stamp lands")
+            self.assertEqual(len(self._unreadable_rows()), 1, "one loud row")
+            jd._death_finalize(SID, st, settled=True)
+            self.assertNotIn("endedAt", json.loads((jd.GONEDIR / (SID + ".json")).read_text()))
+            self.assertEqual(len(self._unreadable_rows()), 1, "one row per failure episode, not per pass")
+        finally:
+            os.chmod(sp, 0o644)
+        jd._death_finalize(SID, st, settled=True)
+        m = json.loads((jd.GONEDIR / (SID + ".json")).read_text())
+        self.assertTrue(m.get("superseded") and m.get("endedAt") == NOW,
+                        "readable again: the deferred supersession lands and the marker retires")
+        self.assertEqual([k for k in jd.episode_settles(SID) if str(k).startswith("ended:")], [],
+                         "the revived session's open cards were never declared ended")
+
 
 class BellCarriesTheEnd(unittest.TestCase):
     def setUp(self):
@@ -189,8 +240,11 @@ class RunClosePins(unittest.TestCase):
         self.assertIn('discover(now, window=DEATH_BACKFILL_WINDOW)', src)
 
     def test_the_finalize_rides_every_close(self):
+        # …told NOT settled when the walk was CUT at a failed call (2026-09-03): a dead session is swept
+        # only through the death drain, so finalizing its marker off a walk that left turns unswept
+        # would strand them for good (the behavioral pin is test_judge.py SweepSession)
         import inspect
-        self.assertIn('_death_finalize(fsid, store, settled)', inspect.getsource(jd._close_session))
+        self.assertIn('_death_finalize(fsid, store, settled and not cut)', inspect.getsource(jd._close_session))
 
 
 if __name__ == "__main__":

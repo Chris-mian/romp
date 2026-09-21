@@ -18,7 +18,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -26,7 +26,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-sb = SourceFileLoader("romp_sdk_backend_rw", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+sb = load_source("romp_sdk_backend_rw", os.path.join(BIN, "romp_sdk_backend.py"))
 BACKEND_SRC = open(os.path.join(BIN, "romp_sdk_backend.py")).read()
 
 
@@ -107,7 +107,10 @@ class WiringPins(unittest.TestCase):
 
     def test_spent_flag_is_cleared_from_session_and_reg(self):
         self.assertIn('elif disp == "spent":', BACKEND_SRC)
-        self.assertIn('self._update_reg(sess.sid, rewindTo="", rewindLeaf="", rewindBare=False)', BACKEND_SRC)
+        self.assertIn('self._update_reg(sess.sid, rewindTo="", rewindLeaf="", rewindBare=False,', BACKEND_SRC)
+        # …and the delete-while-busy wait dies with the flags (a kernel death mid-window lands
+        # here: the "" leaf reads as spent, the cards restore loudly, never a wrong-branch cut)
+        self.assertIn('sess._rewind_wait = False', BACKEND_SRC)
 
     def test_input_gate_holds_the_edit_until_a_rewound_client_is_up(self):
         # feeding the edit turn to the un-rewound client is the wrong-branch delivery this kills
@@ -116,10 +119,15 @@ class WiringPins(unittest.TestCase):
     def test_reconnect_never_defers_on_rewind_held_turns(self):
         # rewind-held turns can't start until the reconnect arms them — deferring would deadlock
         self.assertIn("held = bool(self._rewind_to and not self._rewind_armed)", BACKEND_SRC)
-        self.assertIn("if self.inflight == 0 and (held or not self._pending):", BACKEND_SRC)
+        # the quiet reading counts a fed text the CLI has not taken (_untaken) as in flight
+        self.assertIn("quiet = self.inflight == 0 and self._untaken is None", BACKEND_SRC)
+        self.assertIn("if quiet and (held or not self._pending):", BACKEND_SRC)
 
     def test_result_message_consumes_the_flag(self):
         self.assertIn("# the rewind turn settled — the flag is CONSUMED", BACKEND_SRC)
+        # ARMED-only (delete-while-busy): the interrupted turn's own settle lands moments after
+        # the Stop hook armed the flag — an unguarded consume read that arm as the branch-take
+        self.assertIn("elif self._rewind_to and self._rewind_armed:", BACKEND_SRC)
 
     def test_refused_connect_fails_loudly_and_drops_the_held_edit(self):
         # a CLI exit-1 on the rewind connect: drop flag + queue head, toast, reconnect plainly —
@@ -136,7 +144,7 @@ class WiringPins(unittest.TestCase):
     def test_rewind_persists_the_flag_before_ensuring_the_thread(self):
         # a fresh session thread seeds _rewind_to from the reg — writing after _ensure could race
         # the first connect and strand the held queue
-        i_reg = BACKEND_SRC.index("self._update_reg(sid, rewindTo=target_uuid, rewindLeaf=leaf, rewindBare=bare)")
+        i_reg = BACKEND_SRC.index("self._update_reg(sid, rewindTo=target_uuid, rewindLeaf=leaf, rewindBare=bare, rewindWait=False)")
         i_ensure = BACKEND_SRC.index("s = self._ensure(sid)", i_reg - 2000)
         self.assertLess(i_reg, i_ensure)
 
@@ -171,8 +179,8 @@ class RollbackAndPendingCut(unittest.TestCase):
     pending, because no record lands to move the leaf until the user's next message."""
 
     def test_rollback_is_the_bare_arm_and_rewind_the_texted_one(self):
-        self.assertIn("def rollback(self, sid: str, target_uuid: str)", BACKEND_SRC)
-        self.assertIn("return self._arm_rewind(sid, target_uuid, None)", BACKEND_SRC)
+        self.assertIn("def rollback(self, sid: str, target_uuid: str, revalidate=None)", BACKEND_SRC)
+        self.assertIn("return self._arm_rewind(sid, target_uuid, None, revalidate=revalidate)", BACKEND_SRC)
         self.assertIn("return self._arm_rewind(sid, target_uuid, text)", BACKEND_SRC)
         self.assertIn("bare = text is None", BACKEND_SRC)
         # nothing is enqueued for a bare rollback — the next real message takes the branch
@@ -183,14 +191,14 @@ class RollbackAndPendingCut(unittest.TestCase):
         # the head (a held postal delivery, say) must survive the failure
         self.assertIn("bare = self._rewind_bare", BACKEND_SRC)
         i_bare = BACKEND_SRC.index("bare = self._rewind_bare")
-        i_pop = BACKEND_SRC.index("dropped = self._pending.pop(0) if self._pending else None", i_bare)
+        i_pop = BACKEND_SRC.index("dropped = self._q_pop(0)[0] if self._pending else None", i_bare)   # T252c: the queue pops through its helper
         seg = BACKEND_SRC[i_bare:i_pop]
         self.assertIn("if not bare:", seg)
         self.assertIn("the rollback failed (the session's CLI refused it)", BACKEND_SRC)
 
     def test_settle_consume_clears_the_bare_flag_too(self):
         i = BACKEND_SRC.index("the flag is CONSUMED")
-        seg = BACKEND_SRC[i:i + 600]
+        seg = BACKEND_SRC[i:i + 1200]
         self.assertIn('rewindTo="", rewindLeaf="", rewindBare=False', seg)
 
     def _fixture(self, tmp, bare=True, leaf_moved=False):
@@ -306,3 +314,169 @@ class RollbackAndPendingCut(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _BusySession:
+    """The attrs the delete-while-busy pipeline reads/writes off a live SdkSession, with the
+    interrupt and reconnect as call recorders. inflight=1 = a running turn."""
+    def __init__(self, sid, cwd):
+        import threading
+        self.sid, self.cwd, self.name = sid, cwd, "busy"
+        self.resume_sid = ""
+        self.ended = False
+        self.inflight = 1
+        self._pending = []
+        self._compacting = False
+        self._lock = threading.Lock()
+        self._rewind_to = self._rewind_leaf = ""
+        self._rewind_bare = self._rewind_armed = self._rewind_wait = False
+        self._rewind_revalidate = None
+        self.interrupts, self.reconnects = 0, 0
+
+    def interrupt(self):
+        self.interrupts += 1
+
+    def request_reconnect(self):
+        self.reconnects += 1
+
+
+class DeleteWhileBusy(unittest.TestCase):
+    """Delete-while-busy (the user 2026-08-29), EXECUTED on the real backend methods: a bare
+    rollback on an in-flight turn interrupts it, holds intake (the existing rewind gate), renders
+    the cut immediately, and arms the rewind at the turn's actual END — where the interrupted
+    turn's partial records become the abandoned branch tail. Failures restore loudly through
+    _rewind_resolved("failed"); the idle path is byte-identical to before (the tests above)."""
+
+    def setUp(self):
+        import pathlib
+        self._env = os.environ.get("HOME")
+        self.tmp = tempfile.mkdtemp()
+        os.environ["HOME"] = self.tmp
+        self.cwd = os.path.join(self.tmp, "proj")
+        os.makedirs(self.cwd)
+        self.sid = "11111111-2222-3333-4444-000000000077"
+        self.be = sb.SdkBackend(os.path.join(self.tmp, "sdk"), "/bin/true", lambda *a, **k: None,
+                                log=lambda *a, **k: None)
+        sb.write_reg(pathlib.Path(self.be.state_dir), self.sid,
+                     {"sid": self.sid, "name": "busy", "cwd": self.cwd, "alive": True})
+        tp = sb.transcript_path(self.cwd, self.sid)
+        os.makedirs(os.path.dirname(tp), exist_ok=True)
+        with open(tp, "w") as f:
+            f.write(json.dumps({"type": "user", "uuid": "t1"}) + "\n")
+            f.write(json.dumps({"type": "user", "uuid": "u2"}) + "\n")
+        self.s = _BusySession(self.sid, self.cwd)
+        self.be.sessions[self.sid] = self.s
+        self.resolved = []
+        self.be.rewind_resolved_cb = lambda sid, outcome: self.resolved.append((sid, outcome))
+
+    def tearDown(self):
+        if self._env is not None:
+            os.environ["HOME"] = self._env
+
+    def _partial_lands(self):
+        """The interrupted turn's partial output — records landing AFTER the gesture."""
+        with open(sb.transcript_path(self.cwd, self.sid), "a") as f:
+            f.write(json.dumps({"type": "assistant", "uuid": "a-partial"}) + "\n")
+
+    def test_gesture_interrupts_holds_and_renders_then_the_turn_end_arms(self):
+        ok, err = self.be.rollback(self.sid, "t1", revalidate=lambda: None)
+        self.assertTrue(ok, err)
+        self.assertEqual(self.s.interrupts, 1, "the running turn is interrupted at the gesture")
+        self.assertTrue(self.s._rewind_wait)
+        self.assertEqual((self.s._rewind_to, self.s._rewind_bare), ("t1", True))
+        # intake held: the inputs() gate's exact expression (rewind set, not armed)
+        self.assertTrue(bool(self.s._rewind_to and not self.s._rewind_armed),
+                        "the existing rewind gate holds message intake across the window")
+        # the UI acknowledged at the click: pending_cut renders even as records keep landing
+        self._partial_lands()
+        self.assertEqual(self.be.pending_cut(self.sid), "t1")
+        reg = sb.read_reg(self.be.state_dir, self.sid)
+        self.assertTrue(reg.get("rewindWait"), "the window survives a kernel death VISIBLY (reg)")
+        # the turn's actual end (the Stop hook / settle call this): the arm completes
+        self.s.inflight = 0
+        self.be._complete_rewind_wait(self.s)
+        self.assertFalse(self.s._rewind_wait)
+        self.assertEqual(self.s._rewind_leaf, "a-partial",
+                         "the leaf records AFTER the dust settles — the partial output is the "
+                         "abandoned branch tail, the rewind family's normal shape")
+        self.assertEqual(self.s.reconnects, 1, "from here it is the idle rollback path exactly")
+        reg = sb.read_reg(self.be.state_dir, self.sid)
+        self.assertEqual((reg.get("rewindTo"), reg.get("rewindLeaf"), bool(reg.get("rewindWait"))),
+                         ("t1", "a-partial", False))
+        # idempotent: the settle observer firing after the Stop observer is a no-op
+        self.be._complete_rewind_wait(self.s)
+        self.assertEqual(self.s.reconnects, 1)
+        self.assertEqual(self.resolved, [], "no failure — nothing resolved until the branch takes")
+
+    def test_busy_answers_for_the_double_with_its_three_attributes(self):
+        # busy() reads inflight, _pending and _untaken under _lock and calls no SdkSession method, so this
+        # double (recorders only) answers; a method call on the session would break every test here that
+        # reaches busy()
+        self.assertTrue(self.be.busy(self.sid), "a running turn (inflight 1)")
+        self.s.inflight = 0
+        self.assertFalse(self.be.busy(self.sid))
+        self.s._pending.append("queued behind the turn")
+        self.assertTrue(self.be.busy(self.sid), "a queued text")
+
+    def test_arm_time_revalidation_failure_restores_loudly(self):
+        # a mid-window auto-compaction moved the boundary past the target: the closure refuses
+        ok, _ = self.be.rollback(self.sid, "t1",
+                                 revalidate=lambda: "the target fell behind a compaction")
+        self.assertTrue(ok)
+        self.s.inflight = 0
+        self.be._complete_rewind_wait(self.s)
+        self.assertEqual((self.s._rewind_to, self.s._rewind_wait), ("", False))
+        self.assertEqual(self.resolved, [(self.sid, "failed")],
+                         "the held cards restore through the existing failure event")
+        self.assertEqual(self.s.reconnects, 0, "nothing to reconnect for — the delete is off")
+        self.assertEqual(self.be.pending_cut(self.sid), "", "the cut render dies with the restore")
+
+    def test_queued_strangers_still_refuse(self):
+        self.s._pending.append("a queued message")
+        ok, err = self.be.rollback(self.sid, "t1")
+        self.assertFalse(ok)
+        self.assertIn("queued", err)
+        self.assertEqual(self.s.interrupts, 0, "refused at the gesture — nothing was interrupted")
+
+    def test_compacting_refuses_with_its_own_honest_message(self):
+        self.s._compacting = True
+        ok, err = self.be.rollback(self.sid, "t1")
+        self.assertFalse(ok)
+        self.assertIn("compacting", err)
+        self.assertEqual(self.s.interrupts, 0)
+
+    def test_the_edit_rewind_keeps_the_busy_refusal(self):
+        # only the DELETE inverts the hazard — an edit's replacement turn must not race a dying one
+        ok, err = self.be.rewind(self.sid, "t1", "the edited text")
+        self.assertFalse(ok)
+        self.assertIn("busy", err)
+        self.assertEqual(self.s.interrupts, 0)
+
+    def test_a_turn_that_settled_under_the_gesture_completes_inline(self):
+        # the third observer: busy() read true, but the turn settled before the fields landed —
+        # with intake held, no later turn-end event would ever fire
+        real_interrupt = self.s.interrupt
+        def settle_and_interrupt():
+            real_interrupt()
+            self.s.inflight = 0
+        self.s.interrupt = settle_and_interrupt
+        ok, _ = self.be.rollback(self.sid, "t1", revalidate=lambda: None)
+        self.assertTrue(ok)
+        self.assertFalse(self.s._rewind_wait, "completed inline — nothing left to wait on")
+        self.assertEqual(self.s.reconnects, 1)
+
+    def test_wait_render_survives_a_kernel_restart_until_the_connect_rules(self):
+        # restart mid-window: the reg carries the wait; pending_cut still renders the cut from the
+        # reg (no live session), and the connect path's "" leaf reads as spent → loud restore
+        ok, _ = self.be.rollback(self.sid, "t1", revalidate=lambda: None)
+        self.assertTrue(ok)
+        del self.be.sessions[self.sid]
+        self.assertEqual(self.be.pending_cut(self.sid), "t1")
+        self.assertEqual(sb.rewind_disposition("t1", "", "u2"), "spent",
+                         "the mid-window '' leaf can never read as apply — a kernel death "
+                         "degrades to the loud spent restore, never a wrong-branch cut")
+
+    def test_stop_hook_and_settle_both_observe_the_turn_end(self):
+        self.assertIn('if getattr(self, "_rewind_wait", False):\n            try:\n'
+                      '                self.backend._complete_rewind_wait(self)', BACKEND_SRC)
+        self.assertIn('if self._rewind_to and getattr(self, "_rewind_wait", False):', BACKEND_SRC)

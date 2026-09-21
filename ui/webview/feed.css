@@ -1,13 +1,32 @@
 /* romp feed — a stream of rounded "deliverable cards" floating on a darker
    background. Shares the romp panel's theme-variable palette (see styles.css). */
 
+/* Inter (SIL OFL 1.1 — media/InterVariable-LICENSE.txt): THE romp UI typeface (the user
+   2026-08-26, who wanted the dashboard genuinely nice to look at). A variable face, so every
+   weight ships in one file; italic is its own optical design, not a slant. First in --sans, so
+   it beats the host font on every surface; falls back to the modern system stack unloaded. */
+/* Space Grotesk (SIL OFL, license beside the file in media/): the light theme's display face for
+   UI chrome (the user 2026-08-28). Declared unconditionally (a face loads only when some rule
+   uses it, so dark pays nothing); selected via --sans in the light block only. (The serif prose
+   face tried beside it was dropped 2026-08-31 — assistant output reads in the mono there.) */
+@font-face { font-family: 'Space Grotesk'; src: url(../media/SpaceGroteskVariable.woff2) format('woff2-variations');
+  font-weight: 300 700; font-style: normal; font-display: swap; }
+
+@font-face { font-family: 'Inter'; src: url(../media/InterVariable.woff2) format('woff2-variations');
+  font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Inter'; src: url(../media/InterVariable-Italic.woff2) format('woff2-variations');
+  font-weight: 100 900; font-style: italic; font-display: swap; }
+
 :root {
+  /* the word-button vocabulary (2026-08-28) — mirrors styles.css; same values in both themes */
+  --btn-pad-sm: 1px 8px; --btn-pad-md: 3px 10px; --btn-pad-lg: 5px 13px;
+  --btn-fs-sm: 0.72em; --btn-fs-md: 0.82em;
   --bg: var(--vscode-editor-background, #1e1e1e);
   --fg: var(--vscode-foreground, #cccccc);
   --dim: var(--vscode-descriptionForeground, #9a9a9a);
   --green: #74c991;
-  --err: #c0392b;   /* the block-red — mirrors styles.css; feed.css has its OWN :root, so the ⏸ block marks
-                       (and the modal's red ⏸-ring) need it defined HERE or var(--err) falls back to gray */
+  --err: #c0392b;   /* the hard stop's red (the ⏸ live-block badge; mirrors styles.css). feed.css has its OWN :root, so a token
+                       a rule reads must be defined HERE or var() falls back to gray; the Needs you marks read --st-needs-bg below */
   --warn: #d7a23a;  /* the heads-up amber — mirrors styles.css; ONE amber for "attention, not an error":
                        the toast's left rule, the judge-warnings head (two near-twin hexes before 2026-08-26) */
   --box-border: rgba(255, 255, 255, 0.12);  /* mirrors styles.css — same trap as --err: an undefined var()
@@ -15,23 +34,67 @@
                        the await-paused outline rendered with NO border at all (the user 2026-07-02) */
   --accent: #9cd2ff;  /* the romp accent (CLAUDE.md Design) — feed.css has its OWN :root, so selected-state
                        chrome here needs it defined locally or var(--accent) silently falls back */
+  --link: var(--vscode-textLink-foreground, #4daafc);  /* hyperlink ink — mirrors styles.css (one token
+                       for every rendered link; the light block re-inks it) */
+  /* the hljs syntax palette, as tokens — mirrors styles.css byte-for-byte (one treatment, two
+     sheets; file-view.test.ts pins the two identical). Raw hexes here were dark-only. */
+  --hl-fg: #d8c6a8; --hl-kw: #c98a6a; --hl-str: #9fb878; --hl-num: #d4a36a;
+  --hl-cmt: #978f81; --hl-title: #e1c08d; --hl-meta: #9a8f7a; --hl-attr: #cdaf7e;   /* --hl-cmt raised from #6f6a5f (2.85:1 on a code block) to 4.79:1; theme-parity.test.ts holds the pair */
   --accent-fg: #0c1a2e;  /* dark text ON the accent (CLAUDE.md) — for the reverse-highlight on a selected toggle */
   --accent-wash: rgba(156, 210, 255, 0.12);  /* THE faint accent wash — mirrors styles.css; one alpha
                        behind every selected/hovered accent chrome */
+  --accent-tint: rgba(156, 210, 255, 0.04);  /* the very faint accent TINT (the user 2026-09-18): a region's ground,
+                       a third of the wash, so a section set apart from the rest of the feed reads as one region
+                       without competing with the cards' own washes; today the focused-session section's */
   --radius-menu: 6px;  /* the menu vocabulary (CLAUDE.md) — mirrors styles.css */
   --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --menu-bg: var(--vscode-menu-background, #252526);   /* the menu SKIN tokens (T226) — mirror styles.css */
+  --menu-fg: var(--vscode-menu-foreground, #cccccc);
+  --menu-border: rgba(255, 255, 255, 0.12);
+  --rule-strong: rgba(255, 255, 255, 0.22);   /* a rule a step up from the hairline: the focused section's divider (T410) */
+  --menu-hover: rgba(255, 255, 255, 0.09);
+  --menu-ring: #fff;
+  --check-ring: rgba(30, 161, 235, 0.55);
   --surface-raised: #252526;  /* the transient-notice vocabulary — mirrors styles.css */
   --radius-toast: 8px;
+  --radius-card: 6px;   /* the boxed notice / card radius — mirrors styles.css */
   --shadow-toast: 0 8px 28px rgba(0, 0, 0, 0.45);
   --radius-modal: 10px;  /* the centered-modal vocabulary (CLAUDE.md) — mirrors styles.css */
   --shadow-modal: 0 12px 36px #000000aa;
   --overlay-dim: rgba(0, 0, 0, 0.55);
   --radius-pill: 999px;  /* the true-pill radius — mirrors styles.css */
+  /* the neutral chrome ladder (2026-08-28) — mirrors styles.css — named so the light theme can re-skin the small
+     sheets (gear/strip/sessions-pane/timeline-pane reference these with their old literals as
+     fallbacks). Defining --overlay-05/10 unifies a few near-alpha washes (0.05/0.08 -> 0.06,
+     0.10 -> 0.12) — imperceptible at these alphas, screenshot-checked. */
+  --hairline: #3a3a3a;
+  --text-muted: #9aa0a6;
+  --text-faint: #6e7681;
+  --text-soft: #cdd3da;
+  --text-bright: #e8eaed;
+  --btn-bg: #2a2a2a;
+  --btn-hover-bg: #333333;
+  --input-bg: #1b1b1c;
+  --kbd-bg: #1c1c1f;
+  --kbd-border: #3d3d42;
+  --overlay-05: rgba(255, 255, 255, 0.06);
+  --overlay-10: rgba(255, 255, 255, 0.12);
+  /* the halo behind text that sits ON a colored fill (the ctx battery %): dark glow under
+     light text on dark; a LIGHT glow under the dark text on light — a dark halo around dark
+     glyphs read as blur (the user 2026-08-31, off the live preview) */
+  --text-halo: rgba(0, 0, 0, 0.75);
+  /* YOUR voice (the outgoing bubble, the rail's user dot, the comment marker): royal blue on
+     dark; the light theme wears a warm sienna from the page's own family instead (the user
+     2026-08-31, who wanted a darker, more saturated color from the page's own family, not blue) */
+  --you: #2b6cef;
   --st-working-bg: #e0b020; --st-working-fg: #332600;  /* the WORKING yellow — mirrors styles.css, same trap
                        as --err: .fask-stallbtn and .fask-interrupting referenced these while they lived only
                        in styles.css, so the "filled yellow so the stall is noticed" chip rendered as a quiet
                        white outline (background→transparent, border→currentColor, the user 2026-07-25).
                        feed-css-vars.test.ts now holds the whole file to "define it here or carry a fallback". */
+  --st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;   /* the RETRYING amber — mirrors styles.css (tokenised 2026-09-08) */
+  --st-5xx-bg: #cb94d1; --st-5xx-fg: #1e1030;   /* the 5xx lilac (T316; apart from the Needs you magenta since 2026-09-21), mirrors styles.css */
+  --st-needs-bg: #d946ef; --st-needs-fg: #2a0a2a;   /* the NEEDS YOU magenta (plans/needs-you.md): mirrors styles.css, so the column chip, the question marks and the settings' ring demo resolve it in every theme */
 
   /* Card background + border are set inline per card (the hawaii recency tint).
      These neutral tokens are for the chrome that frames them (header, detail box,
@@ -52,9 +115,130 @@
      status text/chips stay --rel-done green (they encode status, not a check). */
   --check-bg: #1EA1EB;
 
-  --sans: var(--vscode-chat-font-family, var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif));
+  --sans: "Inter", var(--vscode-chat-font-family, var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif));
+  --font-prose: var(--sans);   /* the assistant's reading face; mirrors styles.css :root, and the light block re-points it */
+  /* --font-doc is the file viewer's face for a rendered document (.fileview-md): sans in both themes. --color-scheme names
+     the theme to a form control a document carries (a task list's checkbox), so its checkbox is drawn for the page it sits on.
+     Mirrors styles.css. */
+  --font-doc: var(--sans);
+  --color-scheme: dark;
   --fs: var(--vscode-chat-font-size, 13px);
 }
+
+/* ══ the Yatharth LIGHT theme (the user 2026-08-27): one block, token names only ═════════════════
+   Claude-desktop-warm: warm clay page (#F1EAE2, the user 2026-08-31 — #FAF9F5 read too bright), raised cream surfaces, near-black warm text, CLAY accent (the
+   light theme's accent is orange — the dark accent stays the romp blue). The block re-declares
+   (a) every :root token above and (b) the --vscode-* stand-ins inline rules fall back through —
+   body-scoped, so it beats both THEME_CSS (browser) and the editor's injected vars (VS Code;
+   winning over a dark editor is deliberate — the theme is opt-in). Components must NOT branch on
+   body.theme-light — a theme-conditional need is a NEW TOKEN in both blocks (CLAUDE.md; the
+   key-parity test enforces the set). Contrast: fg 13.96:1, muted 5.99:1, accent 4.34:1 on the page (accent is chrome-only at that ratio).
+*/
+body.theme-light {
+  /* feed-only tokens (parity with THIS sheet's :root) */
+  --btn-pad-sm: 1px 8px; --btn-pad-md: 3px 10px; --btn-pad-lg: 5px 13px;   /* geometry, theme-invariant */
+  --btn-fs-sm: 0.72em; --btn-fs-md: 0.82em;
+  --card-border: rgba(0, 0, 0, 0.10);
+  --detail-bg: rgba(0, 0, 0, 0.04);
+  --rel-done: #3E7D0E;       /* the light ok-green (matches --green) */
+  --rel-decision: #1478B8;   /* the classic blue, darkened to read on cream */
+  --rel-action: #9A6A00;     /* the light warn amber (matches --warn) */
+  --rel-details: var(--dim);
+  --chat-col: 100%;
+  --bg: #F1EAE2;
+  --fg: #1F1E1D;
+  --dim: #5D574E;
+  --rail: rgba(0, 0, 0, 0.14);
+  --green: #3E7D0E;
+  --check-bg: #C2410C;   /* the ✓ mark is THEMED (T226 ruling, 2026-09-02): every check on every surface
+                            wears the theme's own mark — dark keeps the #1EA1EB brand blue, light wears
+                            its clay accent (what the timeline's PAL_LIGHT already drew) */
+  --code-fg: #8C4A00;
+  --code-bg: rgba(180, 83, 9, 0.08);
+  --link: #1D63A8;   /* inked cobalt — clearly clickable, clearly not the error red (5.2:1 on the page) */
+  --hl-fg: #3E3A35; --hl-kw: #A03509; --hl-str: #47720F; --hl-num: #915C0B;
+  --hl-cmt: #67614f; --hl-title: #8C4A00; --hl-meta: #6E6455; --hl-attr: #7A5A20;   /* --hl-cmt from #6E675C (4.39:1 on a code block) to 4.86:1 */
+  --box-bg: rgba(0, 0, 0, 0.03);
+  --box-border: rgba(0, 0, 0, 0.12);
+  --err: #B02A1C;
+  --accent: #C2410C; --accent-fg: #FFF8F2;
+  --accent-wash: rgba(194, 65, 12, 0.10);
+  --accent-tint: rgba(194, 65, 12, 0.04);
+  --cmt-hl: #FFDF70;
+  --fast: #D45500;
+  --warn: #9A6A00;
+  /* working gold + compacting teal re-inked for cream (the user 2026-09-08) — mirrors styles.css, same numbers */
+  --st-working-bg: #8B6914; --st-working-fg: #ffffff;
+  --st-ready-bg: #2b7fb8;   --st-ready-fg: #ffffff;
+  --st-awaiting-bg: #c0392b;--st-awaiting-fg: #ffffff;
+  --st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;
+  --st-compacting-bg: #0F766E; --st-compacting-fg: #ffffff;
+  --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
+  --st-5xx-bg: #4c1b7e; --st-5xx-fg: #ffffff;   /* the 5xx deep violet (T316; apart from the Needs you magenta since 2026-09-21), mirrors styles.css */
+  --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;
+  --st-needs-bg: #a21caf; --st-needs-fg: #ffffff;   /* the Needs you magenta in the light palette, mirrors styles.css */
+  --radius-menu: 6px;
+  --shadow-menu: 0 4px 12px rgba(31, 26, 20, 0.16);
+  --menu-bg: #FBF6EF;
+  --menu-fg: #1F1E1D;
+  --menu-border: rgba(0, 0, 0, 0.12);
+  --rule-strong: rgba(0, 0, 0, 0.22);
+  --menu-hover: rgba(0, 0, 0, 0.06);
+  --menu-ring: #1F1E1D;
+  --check-ring: rgba(194, 65, 12, 0.55);
+  --surface-raised: #FAF5EE;
+  --radius-toast: 8px;
+  --radius-card: 6px;   /* the boxed notice / card radius — mirrors styles.css */
+  --shadow-toast: 0 8px 28px rgba(31, 26, 20, 0.18);
+  --radius-modal: 10px;
+  --shadow-modal: 0 12px 36px rgba(31, 26, 20, 0.22);
+  --overlay-dim: rgba(58, 46, 36, 0.35);
+  --radius-pill: 999px;
+  --hairline: #DCD2C4;
+  --text-muted: #5D574E;
+  --text-faint: #8A8378;
+  --text-soft: #3E3A35;
+  --text-bright: #141312;
+  --btn-bg: #E7DED2;
+  --btn-hover-bg: #DED2C2;
+  --input-bg: #FCF9F4;
+  --kbd-bg: #EFE7DC;
+  --kbd-border: #D3C7B6;
+  --overlay-05: rgba(0, 0, 0, 0.045);
+  --overlay-10: rgba(0, 0, 0, 0.08);
+  --you: #A55A2A;   /* warm sienna — white text clears 5:1 */
+  --text-halo: rgba(252, 249, 244, 0.85);
+  --mono: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  --sans: "Space Grotesk", "Inter", var(--vscode-chat-font-family, var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif));
+  --font-prose: var(--mono);   /* the user 2026-08-31, off the live preview: the serif read awful — assistant output goes MONO in light */
+  --font-doc: var(--sans);     /* a viewed document stays sans: the mono ruling was about chat output */
+  --color-scheme: light;
+  --fs: var(--vscode-chat-font-size, 13px);
+  /* the --vscode-* stand-ins: inline rules fall back through these (menus, inputs, widget cards) */
+  --vscode-editor-background: #F1EAE2;
+  --vscode-foreground: #1F1E1D;
+  --vscode-descriptionForeground: #5D574E;
+  --vscode-errorForeground: #B02A1C;
+  --vscode-editorWidget-background: #FAF5EE;
+  --vscode-editorHoverWidget-border: rgba(0, 0, 0, 0.12);
+  --vscode-sideBar-background: #F1EAE2;
+  --vscode-widget-border: #DCD2C4;
+  --vscode-focusBorder: #C2410C;
+  --vscode-input-background: #FCF9F4;
+  --vscode-input-foreground: #1F1E1D;
+  --vscode-input-border: #D3C7B6;
+  --vscode-menu-background: #FBF6EF;
+  --vscode-menu-foreground: #1F1E1D;
+  --vscode-menu-selectionBackground: #F3E0D5;
+  --vscode-menu-selectionForeground: #1F1E1D;
+  --vscode-scrollbarSlider-background: rgba(90, 84, 74, 0.35);
+  --vscode-textLink-foreground: #1D63A8;
+  --vscode-button-background: #C2410C;
+  --vscode-button-foreground: #FFF8F2;
+  --vscode-button-hoverBackground: #A93A0B;
+  --vscode-toolbar-hoverBackground: rgba(0, 0, 0, 0.06);
+}
+
 
 * { box-sizing: border-box; }
 
@@ -69,7 +253,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* header bar removed per the user — the columns are self-labeling */
 #feed-head { display: none; }
 .fh-title { font-weight: 600; }
-.fh-meta { color: var(--dim); font-size: 0.9em; }
+.fh-meta { color: var(--dim); font-size: 0.92em; }
 .fh-live { color: var(--green); }
 
 /* relevance filter badges — colored per class; click toggles that class off
@@ -135,6 +319,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the chip drags in BOTH layouts (the user 2026-08-24, reversing the 2026-08-16 stacked-only
    exclusion): grab cursor as the affordance, the section lifted over its siblings while it follows. */
 .feed-col-head .fcol-chip { cursor: grab; touch-action: none; user-select: none; }
+.feed-col-head .fcol-chip.fcol-static { cursor: default; touch-action: auto; }   /* a data board's chip: its definition's order, nothing to drag (phase four) */
 .feed-col.col-dragging { position: relative; z-index: 5; opacity: 0.9; }
 .feed-col.col-dragging .fcol-chip { cursor: grabbing; }
 .feed-col-head {
@@ -142,7 +327,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   display: flex; align-items: baseline; gap: 7px;
   padding: 2px 2px 7px;
   /* sentence case, matching the chat/timeline status chips (the user 2026-07-03) — the labels
-     ("Working"/"Blocked"/"Completed") are already cased in feed.ts; no text-transform here. */
+     ("Working"/"Needs you"/"Completed") are already cased in feed.ts; no text-transform here. */
   font-size: 0.72em; font-weight: 700; letter-spacing: 0.07em;
   color: var(--dim); background: var(--bg);
 }
@@ -165,6 +350,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 #freeze-selfnote { position: fixed; z-index: 6; pointer-events: none; color: var(--accent);
   font-size: 10.5px; font-weight: 600; background: rgba(30, 30, 30, 0.85);
   border-radius: 4px; padding: 1px 6px; }
+/* the HOVERED session header's churn badge (T285): the self-note's body-mounted, pointer-inert dress, so the
+   row the pointer rests on keeps its shape — an in-row badge slid Clear all out from under the pointer */
+#freeze-headnote { position: fixed; z-index: 6; pointer-events: none; background: rgba(30, 30, 30, 0.85);
+  border-radius: 4px; padding: 1px 6px; margin-left: 0; }
 /* margin-top, NOT header padding: the liveness rings are outlines drawn ~2.5px
    OUTSIDE the first card's top edge, and the sticky header paints its padding as
    opaque background over them — only unpainted margin space lets them show */
@@ -182,7 +371,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   font-weight: 700; letter-spacing: 0.07em;
 }
 .fcol-chip-working   { background: #e0b020; color: #332600; }
-.fcol-chip-blocked   { background: #c0392b; color: #ffffff; }
+.fcol-chip-blocked   { background: var(--st-needs-bg); color: var(--st-needs-fg); }   /* the Needs you column's chip: the category's colour, one everywhere (plans/needs-you.md); the class keeps its schema name */
 .fcol-chip-completed { background: #2b7fb8; color: #ffffff; }
 
 /* responsive: stack the three columns when the panel is too narrow for them to
@@ -221,7 +410,85 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
     background: transparent; border: 0; font: inherit; font-size: 1.389em; font-weight: 400;
     line-height: 1; cursor: pointer; transition: color 0.12s ease; }
   .fcol-fold:hover, .fcol-fold:focus-visible { color: var(--fg); }
+  /* stacked, the focused section's blocks are full width: nothing to trade width with, so no gutter (T410) */
+  .focus-gutter { display: none; }
+  /* stacked, a focused block whose category has no cards hides WHOLE, chip and all (the user 2026-09-14); it returns
+     with the first card. Side by side the heads stand as the board's do (this rule lives under the query alone).
+     With the no-cards line gone as well (the same day's amendment), a focused session with NO cards shows, single
+     column, just its label and the divider: the two amendments combined, and what the user asked for. */
+  .feed-focus-cols .feed-col.col-empty { display: none; }
 }
+
+/* ---------- the FOCUSED SESSION section (T347, the user 2026-09-11, who wanted the focused session's cards on top) ----------
+   When a tab has focus in the chat pane, the feed puts that session's cards ABOVE the board — its name as the
+   head, the board's three column chips, a horizontal rule under it — and the board below stays exactly as it
+   is (feed.ts renderFocusSection). The section's columns carry .feed-cols / .feed-col, so the row layout, the
+   stacked container query above and the --col-order var all reach them unchanged; what differs is here: no
+   sticky heads (a miniature is short), the block furniture the board has not got — an always-on fold caret,
+   a resize gutter, a focusable chip for the arrow keys — and the rule (T410). Both themes read through the
+   variables. */
+/* the WHOLE region the focused session lives in, the head row and its columns together, on the very faint accent tint
+   (the user 2026-09-18): one region set apart from the rest of the feed, a small radius, and padding so the tint has a
+   margin around the cards; the head and the fold caret are as they were. Round two (the user 2026-09-19): the tint runs
+   all the way across the box (the column heads inside paint no ground, below) and the divider sits UNDER the box, a
+   sibling after it (feed.ts), so the rounded bottom edge closes above the rule; the padding is even top and bottom. */
+#feed-focus { display: flex; flex-direction: column; gap: 8px; background: var(--accent-tint); border-radius: 8px; padding: 6px 8px; }
+/* the LABEL (T410b): "Current session: <name>", the section's fold control. The board's column heads' size
+   (0.72em — no new size) at the session headers' weight (600); the label text dim like the column heads, the
+   name bold in its identity colour (set inline, as the session headers do); the whole row folds on click, so
+   it wears the pointer. The caret is the block carets' glyph at their compensated size (1em / 0.72, back to the
+   feed's base exactly); the folded count rides .feed-col-count. */
+/* ONE line, never wrapping (T410 review round two): with flex-wrap the oversize name wrapped onto its own line before
+   flex-shrink could clamp it, and the caret onto a third; nowrap lets the name's min-width: 0 and ellipsis do their
+   work, so the caret sits at the end of the label's line, to the right of the name, at 420 px too */
+.feed-focus-head { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 6px; margin: 2px 3px 0;
+  font-size: 0.72em; font-weight: 600; cursor: pointer; }
+/* the name is styled as a session name is below it (the user 2026-09-14): the session headers' size (the card titles',
+   the feed's base: 1em / 0.72 back up from the label's 0.72em, exact) and weight, its identity colour set inline; the card's name
+   clamp (.fask-id .fname) so a long name shrinks and the caret keeps the end of the line */
+.feed-focus-head .fname { font-size: calc(1em / 0.72); font-weight: 600;
+  flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed-focus-fold { flex: none; padding: 0; border: 0; background: transparent; font: inherit; color: var(--dim);
+  cursor: pointer; transition: color 0.12s ease; }
+.feed-focus-head:hover .feed-focus-fold, .feed-focus-fold:focus-visible { color: var(--fg); }
+.feed-focus-caret { flex: none; padding: 0 3px; color: var(--dim); font-size: calc(1em / 0.72); font-weight: 400; line-height: 1;
+  transition: color 0.12s ease; }
+.feed-focus-head:hover .feed-focus-caret { color: var(--fg); }
+.feed-focus-cols { align-items: stretch; }   /* the blocks share the row's height, so a gutter spans the row */
+.feed-focus-cols .feed-col { position: relative; }   /* the gutter's positioned ancestor */
+/* the board's heads paint the page ground because they are sticky (cards scroll under them); inside the box they are not,
+   and that ground sat on the tint as a darker band across the row (the user 2026-09-19), so here they paint none and the
+   tint reads through the whole box; only the cards keep their own ground */
+.feed-focus-cols .feed-col-head { position: static; background: transparent; }
+/* the section's chips DRAG, as the board's do (the user 2026-09-14: no grip; the heads above and below the divider read
+   the same), and take keyboard focus for the arrow keys: the board's focus ring vocabulary */
+.feed-focus-cols .fcol-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* the fold caret shows in the section in BOTH layouts (the stacked rule's dress, copied; this selector outranks
+   the base `display: none`): folding is how a block gives its room back, since height is never resized */
+.feed-focus-cols .fcol-fold { display: inline-block; flex: none; padding: 0 5px; margin-left: -2px; color: var(--dim);
+  background: transparent; border: 0; font: inherit; font-size: calc(1em / 0.72); font-weight: 400;
+  line-height: 1; cursor: pointer; transition: color 0.12s ease; }
+.feed-focus-cols .fcol-fold:hover, .feed-focus-cols .fcol-fold:focus-visible { color: var(--fg); }
+/* a collapsed block: its list hidden, the block shrunk to its head (the others take the room), its gutter gone */
+.feed-focus-cols .feed-col.col-collapsed { flex: 0 0 auto; }
+.feed-focus-cols .feed-col.col-collapsed .feed-col-list { display: none; }
+/* the GUTTER (T410): an 8px hit zone centred in the 12px gap on a block's right edge, drawing a 2px line in the
+   menus' hairline that brightens on hover and while dragging; column-resize cursor. WIDTH only — the section
+   grows with its content, there is no height to trade. feed.ts hides it on the last block and on a collapsed
+   one; the [hidden] rule is explicit because an author `display` would otherwise outrank the UA's. */
+.focus-gutter { position: absolute; top: 0; bottom: 0; right: -10px; width: 8px; cursor: col-resize;
+  touch-action: none; z-index: 2; }
+.focus-gutter::before { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px;
+  background: var(--menu-border); transition: background 0.12s ease; }
+.focus-gutter:hover::before, .focus-gutter.active::before { background: var(--dim); }
+.focus-gutter[hidden] { display: none; }
+/* the rule under the BOX (T410; outside it since the user 2026-09-19): a 2px line in --rule-strong, a step up from the
+   menus' hairline, with more air above it than below, the section's next sibling in #feed-list so it separates the
+   tinted box from the rest of the feed. The margin shorthand zeroes the <hr>'s auto inline margins, which would
+   otherwise keep a flex item from stretching. */
+.feed-focus-divider { border: 0; border-top: 2px solid var(--rule-strong); margin: 8px 0 4px; }
+/* "No session is focused in the chat" / "<name> has no cards" — one quiet line, the menus' sub-line size */
+.feed-focus-empty { color: var(--dim); font-size: 0.82em; }
 
 /* ---------- ask card (the inbox unit): three rows (the user 2026-06-14) ---------- */
 /* row 1 — ask title, full width across the top. Hit-area still fits its TEXT (the title must
@@ -253,6 +520,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    2026-07-13): it wears the base size + weight the CARD TITLES render at, so the two read as one rank. */
 .feed-sess-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 9px 3px 0; font-weight: 600; }
 .feed-sess-head .fname { font-size: inherit; }   /* not .fname's 0.92em — the header matches the card titles exactly */
+.feed-sess-head .fname-plain { font-size: inherit; font-weight: 600; cursor: default; text-decoration: none; }
+.feed-modal-agent.fname-plain { cursor: default; text-decoration: none; }          /* an owner-less card's modal header: a name, not a session link (round four of PR 1831) */
+.feed-modal-notice { display: flex; flex-direction: column; gap: 6px; }                /* a notice card's modal body: its face in place of the goal tree */
+.feed-modal-notice .fask-nprod { margin-left: 0; white-space: normal; }
+.feed-modal-notice .fask-nbody { opacity: 1; }                                       /* the card's 0.86em, full ink: the modal is where the words are read */   /* the owner-less run's header (Notes): plain text in the header's weight, no link cursor, no hover underline, no session behind it (round two of PR 1831) */
 .feed-sess-head:first-child { margin-top: 2px; }
 /* the FOLD caret, right of the name (the user 2026-07-31). Bare glyph, no chip box: it sits on EVERY
    header, so the .fask-secbtn outline the service chip wears would draw a border down the whole column.
@@ -264,10 +536,15 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .feed-sess-fold:hover, .feed-sess-fold:focus-visible { color: var(--fg); }
 /* what the folded row stands in for. The header's other label size (0.74em) and dim, so the name stays the
    thing you read; drawn only while folded — expanded, the cards speak for themselves. */
-.feed-sess-foldn { flex: none; font-weight: 400; font-size: 0.74em; color: var(--dim); }
+.feed-sess-foldn { flex: none; font-weight: 400; font-size: 0.72em; color: var(--dim); }
 /* a folded header IS its whole group, so it takes the bottom margin the run of cards would have had —
    without it, consecutive folded threads jam into one unreadable stack of names. */
 .feed-sess-head.folded { margin-bottom: 7px; }
+/* the session-wide CLEAR (the user 2026-09-08, twice): it IS the card's Clear (.fdismiss: the outline, the
+   0.72em size, the accent hover), built by the same builder, reading "Clear all" (T271); this class carries its POSITION only — far
+   right of the header row, before the full-width process list that wraps below. No size, colour, border
+   or hover of its own: any of those here would be a second button that drifts. */
+.feed-sess-clear { flex: none; margin-left: auto; }
 /* the neutral background-process chip on the header (kernel bgServices): a process the session KEEPS
    (a dev server the judge classified as nobody-waits). Reuses the .fask-secbtn chip vocabulary — dim,
    0.74em, accent only while its list is open (a selected toggle, the accent's job) — and un-bolds from
@@ -315,8 +592,16 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fitem.ask { cursor: pointer; }
 .fitem.ask, .fitem.fgroup { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.5); }
 .fitem.ask.pinned  { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.85); }   /* pinned: bolded, persistent */
-/* effective focus: full-opacity same colour, thickened a touch by a 1px same-colour ring (a bolder highlight
-   without a layout-shifting border-width change), plus the hover lift — the user 2026-07-15.
+/* effective focus: the same colour at full opacity plus the hover lift (the user 2026-07-15).
+   The bolding is PAINT ONLY: the same 2px border at the identity colour's full alpha (rest is 0.5α), plus
+   the lifted shadow. No width change and no ring. History, so neither comes back: the first cut drew a 1px
+   box-shadow ring against the border, a second paint whose contact line is renderer- and zoom-dependent —
+   the user's Mac browser opened a dark seam between ring and border (T221, 2026-09-01); the second cut grew
+   the border 2→3px with a compensating margin -1px, which keeps the CSS content box byte-identical but not
+   the RENDERED text — on the user's display the hovered card's body text moved 1px right and down and the
+   card below dropped 1px (T270, 2026-09-08: a fractional border/margin pair snaps to device pixels
+   differently from the rest state). A colour change alone touches no layout property, so nothing inside or
+   below can move, at any zoom.
    A CROSS-PANE hover (a chat rail dot, a timeline bar) lands on this same rule rather than wearing a look
    of its own (the user 2026-07-23): it used to paint the neutral white .dot-hl outline, which read as a
    different kind of event from hovering the card with the mouse when it means exactly the same thing.
@@ -324,18 +609,18 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    specificity, so a pinned card still bolds to full when another pane hovers it. */
 .fitem.ask.focused, .fitem.ask.dot-hl, .fitem.fgroup.dot-hl {
   border-color: rgb(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255));
-  box-shadow: 0 0 0 1px rgb(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255)), 0 2px 7px rgba(0, 0, 0, 0.30);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.30);
 }
 
 /* decision sub-card — an OPEN question needing the user, rendered in the ask card */
 .fq { border: 1px solid rgba(30, 161, 235, 0.4); border-left: 3px solid var(--rel-decision); border-radius: 8px; padding: 8px 10px; background: rgba(30, 161, 235, 0.07); }
-.fq-input { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 0.88em; outline: none;
+.fq-input { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 0.86em; outline: none;
   background: var(--vscode-input-background, rgba(255, 255, 255, 0.05)); color: var(--fg);
   border: 1px solid var(--card-border); border-radius: 6px; padding: 5px 8px; }
 /* action (to-do) card: amber accent instead of decision-blue; ☐ glyph on the task
    line; the "✓ Done — I did it" button greens on hover (it's a check-off). */
-.fq-send { flex: 0 0 auto; font: inherit; font-size: 0.85em; cursor: pointer; color: var(--fg);
-  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--card-border); border-radius: 6px; padding: 5px 12px; }
+.fq-send { flex: 0 0 auto; font: inherit; font-size: 0.86em; cursor: pointer; color: var(--fg);
+  background: transparent; border: 1px solid var(--card-border); border-radius: 6px; padding: 5px 12px; }   /* T151: the one button rest */
 .fq-send:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 /* "didn't need me" — the false-awaiting teaching dismissal */
 
@@ -347,7 +632,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    right of the name when it fits; when the name + provenance + chips can't all fit, row2 wraps it to
    the next line instead of overflowing on top of the chips (the user 2026-06-20, was margin-left:auto
    + nested in .fask-id, which spilled the provenance over the chips on a narrow card). */
-.fask-origin { flex: 0 0 auto; font-size: 0.8em; cursor: pointer; white-space: nowrap; }
+.fask-origin { flex: 0 0 auto; font-size: 0.82em; cursor: pointer; white-space: nowrap; }
 .fask-origin-pre { color: var(--dim); }
 .fask-origin-peer { font-weight: 600; }
 .fask-origin-absorbed { opacity: 0.55; }   /* provenance of a finished handoff — history, not an active link */
@@ -365,14 +650,19 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-para { margin: 0 0 6px; }
 .fask-para:last-child { margin-bottom: 0; }
 .fask-para-age { color: var(--dim); white-space: nowrap; }
+.fask-para-link { cursor: pointer; border-radius: 5px; margin-left: -4px; padding-left: 4px; margin-right: -4px; padding-right: 4px; }
+/* the per-paragraph affordance (T220, the user's ruling): hovering highlights exactly the paragraph
+   under the pointer — each clickable piece reads as its own target as the pointer moves */
+.fask-para-link:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-decoration-color: var(--dim); }
 /* the card's distiller sections (the user 2026-07-07, compactness): the Background/Summary TOGGLES now ride
    the time row (row3) and are MUTUALLY EXCLUSIVE — one body shows at a time, or neither — so .fask-secs is
    just the body container (a plain block; whichever body is open runs the full card width). The toggles are
    REAL buttons in the Clear button's chrome (border, radius, muted text; NEUTRAL hover, not Clear's red). */
 .fask-secs { margin-top: 4px; }
-.fask-secbtn { flex: none; padding: 1px 9px; color: var(--dim); background: transparent;
-  border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 0.74em;
-  cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
+.fask-secbtn { flex: none; padding: var(--btn-pad-sm); color: var(--dim); background: transparent;
+  border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: var(--btn-fs-sm);
+  cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.08s ease; }
+.fask-secbtn:active { transform: scale(0.96); }
 .fask-secbtn:hover { color: var(--fg); border-color: var(--fg); }
 /* the SELECTED (accent) toggle had no hover feedback — .on overrode the plain :hover, so mousing it read as
    dead. Give it a REVERSE highlight: the accent fills in, the text flips to accent-fg (the user 2026-07-15). */
@@ -434,45 +724,55 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-taskbtn { display: inline-flex; align-items: center; gap: 5px; }
 .fask-taskbtn .fask-awaiting-swirl { width: 10px; height: 10px; }
 .ftask-swirl.fask-awaiting-swirl { display: inline-block; width: 11px; height: 11px; vertical-align: -1px; }
+/* the expanded list grouped by KIND (slice 2, 2026-09-05): a small dim caps header per group, in the
+   .fmodal-warn-cap vocabulary, shown only when more than one group is on the card */
+.ftask-group { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); margin: 4px 0 1px; }
+.ftask-group:first-child { margin-top: 1px; }
+/* NESTED rows (2026-09-10): what an awaited agent is itself waiting on, indented under its row; the first
+   led by a small dim "waiting on" (the .ftask-group rung), the rest by its blank twin so the marks align;
+   a nested row's own deeper waits are counted in .ftask-deeper (dim, same size as the text). */
+.fcheck.ftask-sub { padding-left: 1.2em; }
+.ftask-waits-on { flex: 0 0 auto; width: 5.4em; text-align: right; font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); white-space: nowrap; align-self: center; }
+.ftask-deeper { color: var(--dim); }
 
 /* "Followed up" — optimistic reopen pending the judge's re-file (judges delegation, 2026-06-17); blue pill */
-.fask-followedup { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+.fask-followedup { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); }
 /* "done, confirming" — the done verdict is in, only the settle event is pending (the user 2026-07-24):
    a steady cue on the Working card, never an early column move (that flicker is what the settle gate
    prevents). Outline pill in the done-check blue (--check-bg), the same family as the ✓ it will wear. */
-.fask-doneconfirming { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+.fask-doneconfirming { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
-  color: var(--check-bg); border: 1px solid rgba(30, 161, 235, 0.55); }
+  color: var(--check-bg); border: 1px solid var(--check-ring); }   /* the ring follows the themed ✓ (T226 review) */
 /* "nudge failed" — the one auto-nudge didn't resolve the stall and is never re-asked (design/
    stalled-open-todos-nudge.md); red pill: this thread is waiting on the human now */
-.fask-nudgefailed { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+.fask-nudgefailed { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   color: #ff6a6a; border: 1px solid rgba(255, 106, 106, 0.6); }
 /* "interrupted" — the user stopped this session mid-turn and hasn't re-engaged; auto-nudge holds
    off until their next message. WARNING yellow (the user 2026-07-06, was neutral gray and too easy
    to miss): the pause is user-chosen but the thread IS dangling — same yellow as the warn chip,
    one warning treatment across the card (see .fask-warnchip) */
-.fask-interrupted { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+.fask-interrupted { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   color: #ffd166; border: 1px solid rgba(255, 209, 102, 0.6); }
 /* "interrupting…" — a stop is IN FLIGHT (the user 2026-07-07): the turn is still winding down, so this
    wears the WORKING treatment (filled yellow, faded) exactly like the chat chip's .chip-interrupting —
    an active state, visually distinct from the interrupted OUTLINE badge (paused/done). It holds steady
    from the click until the interrupt settles, then yields to .fask-interrupted. */
-.fask-interrupting { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+.fask-interrupting { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   background: var(--st-working-bg); color: var(--st-working-fg); opacity: 0.75; }
 /* "warning" — a judge stamped an anomaly on this goal (judge _node_warn; the user 2026-07-02): yellow
    pill, a BUTTON — click opens the warn-detail overlay (what happened + why it's unexpected) */
-.fask-warnchip { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+.fask-warnchip { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4; font-family: inherit;
   color: #ffd166; border: 1px solid rgba(255, 209, 102, 0.6); background: transparent; cursor: pointer; }
 .fask-warnchip:hover { background: rgba(255, 209, 102, 0.14); }
 /* "waiting on <peer>" — an unanswered message out to a live peer; held in Working, not stalled (the user
    2026-06-22); teal pill, red for a mutual-wait deadlock cycle */
-.fask-waiton { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+.fask-waiton { flex: 0 0 auto; font-size: 0.66em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   color: #4ec9b0; border: 1px solid rgba(78, 201, 176, 0.6); }
 .fask-waiton-cycle { color: #ff6a6a; border-color: rgba(255, 106, 106, 0.7); }
@@ -486,11 +786,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* ---- ask DAG tree (expanded body) — nodes only; click a node for its history ---- */
 /* width:fit-content hugs the widest row so the right-aligned "(Xm ago)" node times sit just past the
    longest item instead of way out at the modal's right edge (the user 2026-06-16). */
-.ftree { margin-top: 8px; font-size: 0.9em; line-height: 1.5; width: fit-content; max-width: 100%; }
+.ftree { margin-top: 8px; font-size: 0.92em; line-height: 1.5; width: fit-content; max-width: 100%; }
 /* hierarchy via indentation only (paddingLeft set inline per depth) */
 .ftree-node{ display: flex; align-items: baseline; gap: 6px; border-radius: 5px; padding: 1px 4px; }
 /* the root goal (depth 0) reads as the heading — a notch larger than its sub-items (the user 2026-06-16) */
-.ftree-node.ftree-root .ftree-text { font-size: 1.08em; font-weight: 600; }
+.ftree-node.ftree-root .ftree-text { font-size: 1.05em; font-weight: 600; }
 .ftree-node.nav{ cursor: pointer; }
 .ftree-node.nav:hover{ background: rgba(255, 255, 255, 0.06); }
 /* the modal tree node splits into the SAME three click/hover zones as the ledger (the user 2026-06-17):
@@ -503,7 +803,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    checkbox stays a CIRCLE (its halo ring), the text its fill (the user 2026-06-17). No square/bridged fill. */
 /* disclosure triangle (▶/▼) before the mark; .empty = blank spacer, keeps alignment.
    .nav = expandable: the triangle is the ONLY toggle (the line itself navigates). */
-.ftree-tri { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.74em; }
+.ftree-tri { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.72em; }
 .ftree-tri.nav { cursor: pointer; }
 .ftree-tri.nav:hover { color: var(--fg); }
 .ftree-mark{ flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
@@ -527,7 +827,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    state; the point is that no-information renders as itself instead of as an empty spot, which is
    what lets a blank pip mean "alive and quiet". Hex here because this sheet loads standalone. */
 .fwork-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
-.ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.9em; font-weight: 400;
+.ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.92em; font-weight: 400;
   white-space: nowrap; }   /* same size as the card checklist lines it corresponds to, never bold (the user 2026-07-02) */
 /* the DISTILLER's per-node line in the modal (restored 2026-06-29): a done node's takeaway / a blocked node's
    decision brief. No why-rationale lines (those stay removed); shown only when produced. pre-wrap for artifacts. */
@@ -537,22 +837,23 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .ftree-seclabel { font-size: 0.92em; color: var(--dim); margin-top: 4px; }
 .ftree-summary-link { cursor: pointer; border-radius: 6px; transition: background 0.1s ease; }
 .ftree-summary-link:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-underline-offset: 2px; }
+.ftree-relaynote { font-size: 0.86em; line-height: 1.45; margin: 0 0 6px; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }   /* the modal's twin of .fask-relaynote */
 .st-done .ftree-mark { color: var(--rel-done); }
-/* a BLOCKED (needs-you) node: the "?" is RED inside a RED ring the SAME 13px size as the ✓ checkbox disc,
-   and its label reads "BLOCKED" in red (the user 2026-06-17) — a stronger, unmistakable block signal than
-   the old amber "needs you". The ring mirrors the st-open hollow ring, recoloured red, with the ? visible. */
+/* a NEEDS YOU node (a judge's question): the "?" inside a ring the SAME 13px size as the ✓ checkbox disc, and its label
+   reads "Needs you", both in the category's colour (plans/needs-you.md, the user 2026-09-20; red since 2026-06-17 until then,
+   red being the hard stop's alone now). The ring mirrors the st-open hollow ring, recoloured, with the ? visible. */
 .st-question .ftree-mark {
   width: 13px; height: 13px; min-width: 13px; box-sizing: border-box; align-self: center;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: 1.5px solid var(--err); background: transparent;
-  color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
+  border-radius: 50%; border: 1.5px solid var(--st-needs-bg); background: transparent;
+  color: var(--st-needs-bg); font-size: 9px; font-weight: 700; line-height: 1;
 }
 /* (the modal mark no longer doubles as a "cross it off" override — it's pure nav now, like the card; the old
    resolve-on-hover-preview rule was removed 2026-06-29 in favour of explicit Done / Follow up buttons.) */
-/* a BLOCKED node's label is a white-on-red CHIP — the same red as the feed's "Blocked" column header
-   (.fcol-chip-blocked), so a blocked step in the modal reads with the same weight as the column (the user
-   2026-06-17). */
-.st-question .ftree-meta { background: #c0392b; color: #ffffff; padding: 1px 7px; border-radius: 10px; font-weight: 700; letter-spacing: 0.05em; }
+/* a NEEDS YOU node's label is a CHIP in the category's colour, the same as the feed's Needs you column header
+   (.fcol-chip-blocked), so a step that needs you in the modal reads with the same weight as the column (the user
+   2026-06-17; the colour the category's since 2026-09-20). */
+.st-question .ftree-meta { background: var(--st-needs-bg); color: var(--st-needs-fg); padding: 1px 7px; border-radius: 10px; font-weight: 700; letter-spacing: 0.05em; }
 /* not-yet-done = a hollow ring the SAME 13px size as the ✓ disc it'll become (the user 2026-06-16) —
    an empty checkbox, not a tiny ○ glyph. The "○" text is hidden; the border IS the circle. */
 .st-open .ftree-mark {
@@ -566,9 +867,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    "↻ Followed up" chip below shows while that sub is optimistically reopened. */
 .ftree-node-acts { flex: 0 0 auto; margin-left: 8px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .ftree-act-btn {
-  font: inherit; font-size: 0.72em; line-height: 1.4; padding: 1px 8px; border-radius: 6px;
+  font: inherit; font-size: var(--btn-fs-sm); line-height: 1.4; padding: var(--btn-pad-sm); border-radius: 6px;
   background: transparent; border: 1px solid var(--dim); color: var(--dim); cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.08s ease;
 }
+.ftree-act-btn:active { transform: scale(0.96); }
 /* All four rest in the same neutral gray (.ftree-act-btn) and light up in ONE romp-accent hover (the
    user 2026-07-21): every action button across the UI shares this single accent highlight, Drop included
    (the user 2026-07-21, part 2: full uniformity — the only reds left anywhere are error/blocked STATUS).
@@ -614,7 +917,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .ftree-log-row:hover { background: rgba(255, 255, 255, 0.07); }
 .ftree-log-when { flex: 0 0 auto; color: var(--dim); white-space: nowrap; }
 .ftree-log-what { overflow-wrap: anywhere; }
-.ftree-followedup { flex: 0 0 auto; margin-left: 8px; font-size: 0.68em; font-weight: 700; letter-spacing: 0.03em;
+.ftree-followedup { flex: 0 0 auto; margin-left: 8px; font-size: 0.66em; font-weight: 700; letter-spacing: 0.03em;
   padding: 0 6px; border-radius: var(--radius-pill); line-height: 1.6; color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); white-space: nowrap; }
 .ftree-node.repeat { opacity: 0.5; }
 
@@ -624,7 +927,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fgroup-member { display: flex; align-items: baseline; gap: 7px; font-size: 0.92em; line-height: 1.35; }
 .fgroup-dot { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
 .fgroup-member.st-done .fgroup-dot { color: var(--rel-done); }
-.fgroup-member.st-question .fgroup-dot { color: var(--err); }   /* red ⏸ block mark (was an amber ?) */
+.fgroup-member.st-question .fgroup-dot { color: var(--st-needs-bg); }   /* the ⏸ question mark in the Needs you colour (plans/needs-you.md) */
 .fgroup-member.st-open .fgroup-dot { color: var(--dim); }
 /* completed marker = a filled disc with a white ✓ (the user: distinct from a plain
    dot, which other states + recency tints also use). One badge for EVERY "done" mark
@@ -661,9 +964,12 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   border-radius: var(--radius-modal); padding: 18px 20px; max-width: 380px; box-shadow: var(--shadow-modal); }
 .fconfirm-msg { color: var(--fg); line-height: 1.45; margin-bottom: 14px; overflow-wrap: anywhere; }
 .fconfirm-btns { display: flex; justify-content: flex-end; gap: 8px; }
-.fconfirm-btn { font: inherit; padding: 5px 13px; border-radius: 6px; cursor: pointer;
-  border: 1px solid var(--card-border, rgba(255, 255, 255, 0.18)); background: transparent; color: var(--fg); }
-.fconfirm-btn:hover { background: rgba(255, 255, 255, 0.08); }
+.fconfirm-btn { font: inherit; padding: var(--btn-pad-lg); border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--card-border, rgba(255, 255, 255, 0.18)); background: transparent; color: var(--fg);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.08s ease; }
+.fconfirm-btn:active { transform: scale(0.96); }
+/* the ONE action-button hover (accent text + outline + wash); the primary keeps its filled dress */
+.fconfirm-btn:not(.primary):hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 .fconfirm-btn.primary { border-color: transparent;
   background: var(--vscode-button-background, #2b7fb8); color: var(--vscode-button-foreground, #fff); }
 .fconfirm-btn.primary:hover { background: var(--vscode-button-hoverBackground, #3690cc); }
@@ -672,9 +978,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    multi-paragraph what-happened/why-unexpected detail reads comfortably; scrolls when long */
 .fwarn-box { max-width: 560px; max-height: 80vh; overflow-y: auto; }
 .fwarn-head { color: #ffd166; font-weight: 700; letter-spacing: 0.03em; margin-bottom: 2px; }
-.fwarn-sub { color: var(--dim); font-size: 0.9em; margin-bottom: 12px; overflow-wrap: anywhere; }
+.fwarn-sub { color: var(--dim); font-size: 0.92em; margin-bottom: 12px; overflow-wrap: anywhere; }
 .fwarn-entry { border-top: 1px solid var(--card-border, rgba(255, 255, 255, 0.18)); padding: 10px 0 12px; }
-.fwarn-meta { color: var(--dim); font-size: 0.78em; letter-spacing: 0.04em; margin-bottom: 6px; }
+.fwarn-meta { color: var(--dim); font-size: 0.82em; letter-spacing: 0.04em; margin-bottom: 6px; }
 .fwarn-detail { color: var(--fg); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.92em; }
 
 #feed-modal { position: fixed; inset: 0; z-index: 100; background: var(--overlay-dim);
@@ -688,7 +994,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .feed-modal-title.nav:hover { text-decoration: underline; text-underline-offset: 2px; }
 .feed-modal-agent { flex: 0 0 auto; font-weight: 600; cursor: pointer; text-decoration: none; }
 .feed-modal-agent:hover { text-decoration: underline; }
-.feed-modal-age { flex: 0 0 auto; color: var(--dim); font-size: 0.85em; }
+.feed-modal-age { flex: 0 0 auto; color: var(--dim); font-size: 0.86em; }
 .feed-modal-clear { flex: 0 0 auto; }
 /* the ✕ pins to the far right of the top bar — margin-left:auto pushes it past the session name (and
    the title, when shown for group/standalone modals). */
@@ -756,7 +1062,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 
 /* ⏸ live block badge on an ask card: the owning session is stopped mid-turn on a
    permission prompt / picker for THIS card's work; click opens the session.
-   Same red as the BLOCKED column header. */
+   The hard stop's red (plans/needs-you.md); the column header is the Needs you magenta. */
 .fask-blocked {
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em;
   color: #c0392b; cursor: pointer; white-space: nowrap;
@@ -774,22 +1080,23 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
   color: #e5484d; border: 1px solid #e5484d; border-radius: 5px; padding: 1px 6px;
 }
-/* ⚠ retrying since HH:MM — the open turn is inside an api-retry storm (kernel `retrying`): the same red
-   api-trouble family as .fask-apierror (same size — same information type), but FADED like the working
-   treatments: the session is still in motion, not stopped, and no Retry button — auto-retry is already
-   doing that (the user 2026-07-09). */
+/* ⚠ retrying since HH:MM: the open turn is inside an api-retry storm (kernel `retrying`), the same size as
+   .fask-apierror (same information type) but in the RETRYING AMBER its ring, chip and lane badge wear (plans/needs-you.md,
+   2026-09-21: red is the hard stop's, and a retry is not one), and FADED like the working treatments: the session is
+   still in motion, not stopped, and no Retry button, since auto-retry is already doing that (the user 2026-07-09). */
 .fask-retrying {
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
-  color: #e5484d; border: 1px solid rgba(229, 72, 77, 0.6); border-radius: 5px; padding: 1px 6px;
+  color: var(--st-retrying-bg); border: 1px solid var(--st-retrying-bg); border-radius: 5px; padding: 1px 6px;
   opacity: 0.85;
 }
 /* ⚠ Can't analyze · API key / login — judge-auth-down (the user 2026-08-12): romp's OWN analysis of
-   this session is refused on its credential, so nothing here can move without the user. FILLED red —
-   a deliberately new chip, same size as its api-trouble siblings (same information type) but
-   inverted: the outlined chips say "the session hit trouble", this one says "romp can't even look". */
+   this session is refused on its credential, so nothing here can move without the user. FILLED in the Needs you
+   pair (plans/needs-you.md: not a hard stop, the session runs), a deliberately distinct chip, same size as its
+   api-trouble siblings (same information type) but inverted: the outlined chips say "the session hit trouble", this
+   one says "romp can't even look". */
 .fask-jauth {
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
-  color: #fff; background: #c0392b; border: 1px solid #c0392b; border-radius: 5px; padding: 1px 6px;
+  color: var(--st-needs-fg); background: var(--st-needs-bg); border: 1px solid var(--st-needs-bg); border-radius: 5px; padding: 1px 6px;   /* the Needs you token (plans/needs-you.md): the session runs, romp's analysis is down, the fix is yours; not a hard stop, so not red */
 }
 .fdismiss.fretry { color: #e5484d; border-color: #e5484d; }
 .fdismiss.fretry:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
@@ -804,29 +1111,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fdismiss.fq-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
 .fdismiss.fq-no { color: #e5484d; border-color: rgba(229, 72, 77, 0.6); }
 .fdismiss.fq-no:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
-/* Compact quarantine line (the user 2026-07-26; given its route 2026-07-29): line one is WHO to WHO —
-   host:session -> host:session, hosts as quiet metadata, session names in their identity colours — and
-   line two is the gist. Click opens the decision modal; the full body never renders on the card. */
-.fask-qbody {
-  display: block; width: 100%; box-sizing: border-box; margin: 4px 0 2px;
-  font: inherit; font-size: 12px; line-height: 1.45;
-  color: var(--dim); cursor: pointer;
-}
-.fask-qbody:hover .fq-gist { color: #dfe7ee; }
-.fq-who { white-space: nowrap; }
-.fq-name { font-weight: 600; }               /* the identity colour rides an inline style */
-.fq-arrow { margin: 0 6px; opacity: 0.6; }
-.fq-gist {                                    /* one line, whatever the message length */
-  margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim);
-}
-/* The quarantine decision dialog rides the pickdlg overlay/box; the body is READ-ONLY (.qdlg-view);
-   the textarea appears only on the deny step, for the optional note back to the sender. */
+/* The held-mail Deny prompt (showDenyNoteDialog) rides the pickdlg overlay/box: a textarea for the optional note and two
+   choices; the message text is the notice card's body, so the prompt has no read-only view (2026-09-19). */
 .qdlg-box { width: min(640px, 96%); }
-.qdlg-view {
-  width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; line-height: 1.45;
-  max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
-  color: #dfe7ee; background: #0c1117; border: 1px solid #35414d; border-radius: 6px; padding: 6px 8px;
-}
 .qdlg-text {
   width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; line-height: 1.45;
   min-height: 5em; resize: vertical; margin-top: 8px;
@@ -841,7 +1128,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* ---------- liveness anomaly rings (2026-06-11) ---------- */
 /* The OUTLINE ring marks a card whose LIVE state disagrees with the column it's
    filed in (agreement = no ring; the user's simplification). Host-computed from
-   live tmux state + open handoffs; colors only, decides nothing. The border
+   live session state + open handoffs; colors only, decides nothing. The border
    keeps the recency tint; focus/pin keep box-shadow.
    green  = settled-but-in-Asks (nothing can move it without you — likely done)
    dashed = stalled-in-Asks (unfinished handoff, nobody working)
@@ -877,16 +1164,19 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .feed-modal-agent.dead:hover { text-decoration: line-through underline; }
 
 .ftime {
-  flex: 0 0 auto; font-size: 0.8em; color: var(--dim);
+  flex: 0 0 auto; font-size: 0.82em; color: var(--dim);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 /* controls row — the "+" expand toggle (left, below the title) + Dismiss to its
    right; replaces the old right-rail button stack. */ .fdismiss {
-  font: inherit; font-size: 0.74em; cursor: pointer; white-space: nowrap;
+  font: inherit; font-size: 0.72em; font-weight: 400; cursor: pointer; white-space: nowrap;
+  /* ^ weight pinned, not inherited: the session header renders at 600 and its Clear is THIS button
+     (the user 2026-09-08: identical to the card's); cards already sat at 400, so nothing moves there */
   color: var(--dim); background: transparent;
   border: 1px solid var(--card-border); border-radius: 6px;
-  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.08s ease;
 }
+.fdismiss:active { transform: scale(0.96); }
 /* the expand toggle is a compact square showing "+" (collapsed) / "−" (open) */
 .fdismiss { padding: 2px 10px; }
 /* One accent hover for every action button (the user 2026-07-21): Clear, Move to Working, Follow up,
@@ -902,7 +1192,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   display: flex; align-items: center; gap: 8px; padding: 6px 12px;
   flex-wrap: wrap; row-gap: 5px;   /* a narrow pane folds buttons onto another row — never a horizontal scrollbar */
   border-top: 1px solid var(--card-border);
-  background: var(--vscode-editorWidget-background, #252526); }   /* opaque panel so it reads as a dedicated bar */
+  /* the page dark (T151, superseding 2026-06-29's dedicated-panel look — the user's 2026-08-28
+     one-dark-background ruling names this bar as the reference surface tabs must match, so the
+     bar itself must sit on the same dark): the border-top hairline is the separator now. The old
+     editorWidget token resolved to #252526 under the kernel's THEME_CSS. */
+  background: var(--bg); }
 #feed-clearall { order: 10; margin-left: auto; }   /* accent hover like every action button */
 #feed-undoclear { order: 11; }                     /* restorative — far right */
 #feed-foot .fdismiss { font-size: 10.5px; padding: 1px 9px; opacity: 0.95; }
@@ -930,9 +1224,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 #feed-taglens svg { display: block; }
 #feed-lensmore { padding: 4px 14px 10px; color: var(--dim); font-size: 0.82em; cursor: pointer; }
 #feed-lensmore:hover { color: var(--accent); text-decoration: underline; }
-#feed-lensmore.prominent { margin: 6px 8px 2px; padding: 10px 14px; background: #252526;
+#feed-lensmore.prominent { margin: 6px 8px 2px; padding: 10px 14px; background: var(--vscode-editorWidget-background, #252526);   /* tokenized (T151) — the notice-card chrome, host-aware */
   border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px;
-  color: var(--fg); font-size: 0.9em; }
+  color: var(--fg); font-size: 0.92em; }
 #feed-lensmore.prominent:hover { color: var(--fg); text-decoration: none; border-color: var(--accent); }
 /* The per-host loading strip (the user 2026-08-25; round two same day): an attached host's sessions
    are on the tabs but its cards haven't merged yet — one quiet line per pending host, the SHARED
@@ -957,8 +1251,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   background: var(--vscode-editorWidget-background, #252526);
   box-shadow: var(--shadow-menu); }
 .feed-sessmenu .fsm-row { display: flex; align-items: center; gap: 7px; padding: 4px 9px;
-  border-radius: 4px; cursor: pointer; font-size: 11.5px; white-space: nowrap; }
-.feed-sessmenu .fsm-row:hover { background: rgba(255, 255, 255, 0.07); }
+  border-radius: 4px; cursor: pointer; font-size: 11px; white-space: nowrap; }
+.feed-sessmenu .fsm-row:hover { background: var(--menu-hover); }   /* the one menu hover (T226 review): 0.07 was drift, and a white wash vanished in light */
 .feed-sessmenu .fsm-row.on { background: var(--accent-wash); }
 /* TAG CHIPS on the combobox's session rows (the user 2026-08-25 — the smaller unification variant):
    the dialog's own outline-pill vocabulary at the row's scale, NON-interactive (grouping made
@@ -966,8 +1260,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    stay primary and rows never wrap. */
 .fsm-chips { flex: 1 1 auto; min-width: 0; margin-left: 8px; text-align: right;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
-.fsm-chip-tag { display: inline-block; font-style: normal; padding: 0 6px; margin-left: 4px;
-  border: 1px solid var(--dim); border-radius: 9px; font-size: 0.82em; color: var(--dim); }
+.fsm-chip-tag { margin-left: 4px; }   /* the chip's look is tagChip's own (T321); the sheet spaces it */
 /* the VIEW MENU (the user 2026-08-24): the sort + layout controls live behind one monochrome ordering
    glyph now (NOT a gear — the strip's ⛭ sits right below this footer on the kernel page). The popup
    wears the shared .ctx-menu vocabulary (chrome defined with the card menus below); these rules add
@@ -1001,17 +1294,17 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    (a line only exists while its session is live-working on an open branch) */
 .fask-delegations { display: flex; flex-direction: column; gap: 2px; margin-top: 5px; }
 .fask-delegation-line { display: flex; align-items: baseline; gap: 4px; padding-left: 2px; }
-.fask-delegation { font-weight: 600; font-size: 0.88em; cursor: pointer; }
+.fask-delegation { font-weight: 600; font-size: 0.86em; cursor: pointer; }
 .fask-delegation:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* inline sub-goal checklist on a card: the goal's DIRECT sub-goals (top 2 levels) — ✓ done / ? / ▢ open */
 .fask-checklist { display: flex; flex-direction: column; row-gap: 1px; margin: 4px 0 1px; padding-left: 2px; }
-.fcheck { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; font-size: 0.9em; }
+.fcheck { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; font-size: 0.92em; }
 /* disclosure triangle — same treatment as the modal outline's .ftree-tri (the user 2026-07-08): ▶/▼ on an
    expandable node, a blank same-width spacer otherwise so the marks stay aligned down a level. */
 .fcheck-tri { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.72em; }
 .fcheck-tri.nav { cursor: pointer; }
 .fcheck-tri.nav:hover { color: var(--fg); }
-.fcheck-mark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.9em; }
+.fcheck-mark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.92em; }
 .fcheck-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
 /* a node reached under two parents renders ONCE at full weight and dim on the repeat — same as the modal
    tree's .ftree-node.repeat, so the card's full sub-goal tree reads identically to the outline. */
@@ -1024,14 +1317,14 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   display: inline-flex; align-items: center; justify-content: center; align-self: center; line-height: 1;
 }
 .fcheck.done .fcheck-text { color: var(--dim); }
-/* blocked = a RED ⏸ inside a RED ring — the SAME 13px circle as the done ✓ disc above and the modal tree's
-   .st-question ⏸-ring, so a blocked sub-goal on a CARD reads with the same weight as everywhere else (the
-   user 2026-06-25: the card mark was getting only the red glyph, missing the ring). Hollow (transparent bg),
-   recoloured-red mirror of the not-done hollow ring. */
+/* needs you = a ⏸ inside a ring in the category's colour: the SAME 13px circle as the done ✓ disc above and the modal tree's
+   .st-question ⏸-ring, so a sub-goal that needs you on a CARD reads with the same weight as everywhere else (the
+   user 2026-06-25: the card mark was getting only the glyph, missing the ring). Hollow (transparent bg), a mirror of
+   the not-done hollow ring in the category's colour. */
 .fcheck.question .fcheck-mark {
   width: 13px; height: 13px; min-width: 13px; box-sizing: border-box;
-  border-radius: 50%; border: 1.5px solid var(--err); background: transparent;
-  color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
+  border-radius: 50%; border: 1.5px solid var(--st-needs-bg); background: transparent;
+  color: var(--st-needs-bg); font-size: 9px; font-weight: 700; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center; align-self: center;
 }
 /* not-done = an empty 13px HOLLOW RING, the SAME size as the done ✓ disc + the modal's .st-open ring (the
@@ -1065,6 +1358,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fcheck.freviewed:hover { opacity: 0.85; }
 /* the STALE-takeaway note above a completed card's summary: the user followed up after reading it */
 .fsum-stale { font-style: italic; opacity: 0.62; font-size: 0.92em; margin-bottom: 3px; }
+/* A far host still holds a relayed question after its wait ended (feed.ts relayNote): the card's own dim line
+   beside the sections (outside them, like the face), never a paragraph of the brief (the per-paragraph stamps
+   map the brief's paragraphs) and never inside the distill element (the sections hide that without a brief). */
+.fask-relaynote { color: var(--dim); opacity: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
 .fcheck-text.lz-hl { background: rgba(255, 255, 255, 0.12); border-radius: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12); }
 .fcheck-mark.lz-hl { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16); }
 /* standalone-completion modal: same tree vocabulary as ask cards; pending
@@ -1076,9 +1373,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .feed-modal-foot { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 10px 16px; border-top: 1px solid var(--card-border); }
 /* nudge HISTORY line (the user 2026-07-02): the stalled chip's evidence — when romp auto-followed-up
    on this goal; dim meta text above the age row */
-.feed-modal-nudges { font-size: 0.8em; color: var(--dim); }
+.feed-modal-nudges { font-size: 0.82em; color: var(--dim); }
 /* per-sub follow-up target label (the user 2026-06-17): names the blocked sub the composer is aimed at; click to revert to the whole card */
-.feed-modal-follow-target { font-size: 0.8em; color: #5aa2ff; cursor: pointer; }
+.feed-modal-follow-target { font-size: 0.82em; color: #5aa2ff; cursor: pointer; }
 .feed-modal-follow-target:hover { text-decoration: underline; text-underline-offset: 2px; }
 .feed-modal-foot-row { display: flex; align-items: baseline; gap: 10px; }
 .feed-modal-foot-row .feed-modal-age { margin-right: auto; }   /* age left, Follow up + Clear pushed right */
@@ -1140,17 +1437,13 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   box-shadow: var(--shadow-modal);
 }
 .pickdlg-title { font-weight: 700; color: var(--vscode-foreground, #ccc); margin-bottom: 4px; }
-/* the quarantine dialog's title IS the card's route line, so opening a held message never re-words who
-   it is between: "New message" then host:session -> host:session, same colours (the user 2026-07-29) */
-.qdlg-lead { margin-right: 8px; }
-.pickdlg-title .fq-name { font-weight: 700; }
 /* the err dialog's body sentence — the resume-picker dialog is all buttons, so its box carried no prose style */
 .pickdlg-detail { color: var(--vscode-descriptionForeground, #999); margin-bottom: 10px; line-height: 1.45; }
 .pickdlg-opt {
   padding: 8px 10px; cursor: pointer; text-align: left;
   background: rgba(255, 255, 255, 0.05); color: var(--vscode-foreground, #ccc);
   border: 1px solid var(--vscode-widget-border, #303031); border-radius: 6px;
-  font-size: 0.95em;
+  font-size: 0.92em;
 }
 .pickdlg-opt:hover { background: rgba(255, 255, 255, 0.1); }
 .pickdlg-opt:focus { outline: 1px solid var(--vscode-focusBorder, #4daafc); }
@@ -1245,44 +1538,121 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 #romp-fileview { position: fixed; inset: 0; z-index: 1200; background: var(--overlay-dim);
   display: flex; align-items: center; justify-content: center; }
 .fileview { width: 95%; height: 95%; display: flex; flex-direction: column; overflow: hidden;
-  background: var(--bg, #1e1e1e); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: var(--radius-modal);
+  background: var(--bg, #1e1e1e); border: 1px solid var(--box-border); border-radius: var(--radius-modal);
   box-shadow: var(--shadow-modal); }
 body.fileview-open { overflow: hidden; }
-.fileview-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-width: 0;
+.fileview-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0;
   padding: 7px 10px; border-bottom: 1px solid var(--box-border); }
 /* Only the DIRECTORY may be truncated: the filename identifies the file, so it holds its width however
-   deep the path is, and the dimmed directory in front of it gives up room first. */
+   deep the path is, and the dimmed directory in front of it gives up room first. The bar WRAPS: the path
+   keeps at least 12em and the action row drops to a second line, right-aligned, when the two do not fit
+   side by side (the text-size control's three buttons pushed Download, Copy path and the close button off
+   the card below about 600px; .fileview is overflow: hidden, and a phone has no Escape). The wrap is the
+   bar's own: the two .fileview-bar rules after .fileview-acts below. */
 .fileview-name { flex: 1 1 auto; min-width: 0; font-size: 0.86em; color: var(--fg);
   display: flex; align-items: baseline; white-space: nowrap; }
 .fileview-dir { flex: 0 1 auto; min-width: 0; color: var(--dim);
   overflow: hidden; text-overflow: ellipsis; }
 .fileview-base { flex: 0 0 auto; }
+/* the SESSION the file was opened from (the user 2026-09-03): a pill in the session's identity colour
+   (inline, from the resolved row — the colour its tab wears), a remote session's "host:" quiet inside.
+   Fixed width: the chip never yields to the path — only .fileview-dir above gives up room. Uncolored
+   when the session has no colour (a stub for a sid the document cannot name); absent when there is no
+   sid. The host: token takes the pill's OWN foreground (color: inherit): the global .host-prefix rule's
+   var(--dim) would otherwise beat the inline colour and sit near-invisible on a saturated pill.
+   Sized at the bar's button size — 0.82em of --fs, not a px value — so the chip scales with its
+   neighbours. A BLOCK container, not inline-flex: text-overflow acts on block containers only — on a flex
+   container the text sits in an anonymous flex item the property cannot reach, and an over-long name
+   hard-clipped at max-width (the review of #970). The bar's align-items centres the pill; its one nowrap
+   line centres within it. */
+.fileview-sess { flex: 0 0 auto; display: block; max-width: 38%; padding: 1px 8px;
+  border-radius: var(--radius-pill, 999px); font-size: 0.82em; font-weight: 600; line-height: 1.5;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  background: var(--overlay-10, rgba(255, 255, 255, 0.12)); color: var(--fg); user-select: none; }
+.fileview-sess .host-prefix { color: inherit; opacity: 0.75; }
 .fileview-acts { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+/* The wrap is the TITLE BAR's, not the classes': the file browser's action row (.fb-bar, file-browse.ts)
+   wears .fileview-acts outside any bar and keeps one line at every width (its crumb trail is what gives up
+   room), so the plain flex above holds there. Inside the bar the path keeps 12em and takes the rest of a
+   wide bar, and the action row shrinks and wraps to the right edge. */
+.fileview-bar .fileview-name { flex: 1 1 0; min-width: 12em; }
+.fileview-bar .fileview-acts { flex: 0 1 auto; min-width: 0; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
 .fileview-btn { font: inherit; font-size: 0.82em; cursor: pointer; flex: 0 0 auto;
-  padding: 3px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); color: var(--fg);
-  border: 1px solid var(--box-border); }
-.fileview-btn:hover { border-color: var(--accent); }
+  padding: 3px 9px; border-radius: 6px; background: transparent; color: var(--fg);   /* T151: the one button rest */
+  border: 1px solid var(--card-border);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.08s ease; }
+.fileview-btn:active { transform: scale(0.96); }
+/* the ONE action-button hover (accent triple, the feed convention) */
+.fileview-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 /* the GitHub link wears the button treatment but IS an anchor — the browser owns the new tab */
 a.fileview-btn { text-decoration: none; display: inline-flex; align-items: center; }
-/* an author `display` beats the UA's [hidden] rule — without this the anchor shows hrefless
-   before the kernel ever answers */
-a.fileview-btn[hidden] { display: none; }
+/* the GitHub action is one unit holding the link when the kernel's check resolves to a URL, and hidden otherwise
+   (T367: no greyed button, no caption; the [hidden] rule below takes it out of the row's flow) */
+.fileview-gh { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+/* a disabled bar button, greyed, hover inert: the editor's Save while a save is in flight (disabled and reading
+   "Saving…"), and the text-size control's ends (A− at the smallest step, A+ at the largest; aria-disabled, so
+   the button keeps the keyboard focus it holds and the ring stays where the person left it). One treatment for
+   every bar button, so neither an end nor a save in progress reads as live under the pointer. */
+.fileview-btn:disabled, .fileview-btn[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+.fileview-btn:disabled:hover, .fileview-btn[aria-disabled="true"]:hover { border-color: var(--card-border); color: var(--fg); background: transparent; }
+.fileview-btn:disabled:active, .fileview-btn[aria-disabled="true"]:active { transform: none; }
+/* the text-size readout between A− and A+ in the zoom flyout (file-view.ts textSizeControl): a slot of ONE
+   width whatever it says, so A− never moves under the pointer as the number changes; at the default (nothing
+   to reset) it reads dimmed rather than empty (T367). */
+.fileview-size-reset { min-width: 5.5em; box-sizing: border-box; text-align: center; font-variant-numeric: tabular-nums; }
+.fileview-size-reset.fileview-size-default { color: var(--dim); }
+/* a link whose branch is not on origin yet: dashed, the note in its tooltip and aria-label */
+a.fileview-gh-note { border-style: dashed; }
+/* T367 (the user 2026-09-12): the bar's controls in GROUPS that read as units — the view group (the Rendered|Raw
+   pair, the SVG Source toggle, the text-size glyph) and the file group (edit, the GitHub link, download, copy path),
+   set apart by a wider gap than the controls within them; the close cross alone at the end. The wider gaps apply
+   only where groups exist: the file browser's row and the URL viewer's flat row keep their spacing. */
+.fileview-group { display: inline-flex; align-items: center; gap: 4px; }
+.fileview-acts > .fileview-group + .fileview-group, .fileview-acts > .fileview-group ~ .fileview-close { margin-left: 10px; }
+/* the Rendered|Raw pair is ONE segmented control: joined, the shared hairline drawn once, the outer corners rounded,
+   the pressed segment's accent border over the seam */
+.fileview-seg { display: inline-flex; align-items: stretch; }
+.fileview-seg .fileview-btn { border-radius: 0; }
+.fileview-seg .fileview-btn + .fileview-btn { margin-left: -1px; }
+.fileview-seg .fileview-btn:first-child { border-radius: 6px 0 0 6px; }
+.fileview-seg .fileview-btn:last-child { border-radius: 0 6px 6px 0; }
+.fileview-seg .fileview-btn.on { position: relative; z-index: 1; }
+/* a glyph button: the drawing alone, its words in the title and aria-label (one hover away); the copy control's
+   acknowledgements (a check, a cross) recolour it; a busy press dims it until the answer */
+.fileview-btn.fileview-icon { display: inline-flex; align-items: center; justify-content: center; padding: 3px 7px; line-height: 1; }
+.fileview-btn.fileview-icon svg { display: block; }
+/* the display an author rule sets (inline-flex on a glyph button, on a group) would beat the browser's own [hidden]
+   rule, and a hidden edit pencil or zoom glyph would still paint (found on the lab's image screenshot) */
+.fileview-btn[hidden], .fileview-group[hidden], .fileview-zoom[hidden], .fileview-gh[hidden] { display: none; }
+.fileview-btn.fileview-icon.ok { color: var(--accent); border-color: var(--accent); }
+.fileview-btn.fileview-icon.err { color: var(--err); border-color: var(--err); }
+.fileview-btn.fileview-busy { opacity: 0.55; }
+/* the text-size flyout under its glyph: the menu vocabulary (the menu tokens, ui/CLAUDE.md), one row holding A−,
+   the readout and A+; the readout at the default reads dimmed (nothing to reset) rather than empty */
+.fileview-zoom { position: relative; display: inline-flex; }
+.fileview-zoom-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 5; display: flex; align-items: center; gap: 4px; padding: 4px;
+  background: var(--menu-bg, #252526); color: var(--menu-fg, #cccccc); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-menu, 6px); box-shadow: var(--shadow-menu, 0 4px 12px rgba(0, 0, 0, 0.35)); }
+.fileview-zoom-menu[hidden] { display: none; }
 .fileview-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
 /* gutter + code as two columns of ONE scroller: the numbers stay put horizontally against long lines,
    and because they are a sibling element a selection of the code copies without dragging them along */
 .fileview-code { display: flex; align-items: flex-start; min-height: 100%; }
 .fileview-gutter { flex: 0 0 auto; position: sticky; left: 0; z-index: 1;
   padding: 10px 8px 10px 10px; text-align: right; user-select: none;
-  font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
+  font-family: var(--mono, ui-monospace, monospace); font-size: calc(12px * var(--fv-scale, 1)); line-height: 1.5;
   color: var(--dim); opacity: 0.55; background: var(--bg, #1e1e1e);
   border-right: 1px solid var(--box-border); white-space: pre; }
 .fileview-pre { flex: 1 1 auto; margin: 0; padding: 10px 12px;
-  font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
+  font-family: var(--mono, ui-monospace, monospace); font-size: calc(12px * var(--fv-scale, 1)); line-height: 1.5;
   white-space: pre; tab-size: 4; }
 .fileview-pre code { background: none; padding: 0; font: inherit; }
 /* a refusal explains itself in place, in the kernel's own words (too large — with the size and the
    cap; not a text file; not found) over the path it was asked for. Never a blank pane. */
-.fileview-err { padding: 18px 14px; font-size: 0.86em; color: #e0a030; }
+.fileview-err { padding: 18px 14px; font-size: 0.86em; color: var(--warn); }
+/* the edit-mode notice (file-view.ts noteBar) is a row of the card, between the title bar and the body:
+   it keeps its height and the body row shrinks under it, so the editor's 100% is the body it can see */
+.fileview > .fileview-err { flex: 0 0 auto; }
 .fileview-err-hint { margin-top: 6px; color: var(--dim); font-size: 0.92em;
   font-family: var(--mono, ui-monospace, monospace); word-break: break-all; }
 /* the way out of a refusal: when the file exists but cannot render (413/415), the kernel's words are
@@ -1291,12 +1661,11 @@ a.fileview-btn[hidden] { display: none; }
 /* the romp loader, per the loading-state rule: swirl + wordmark + three pulsing accent dots */
 .fileview-load { display: flex; align-items: center; justify-content: center; gap: 7px;
   padding: 30px 0; color: var(--dim); font-size: 0.86em; }
-.fileview-load img { width: 17px; height: 17px; animation: fileview-spin 1.6s linear infinite reverse; }
+.fileview-load img { width: 17px; height: 17px; animation: fask-swirl-spin 7s linear infinite; }   /* the feed sheet's own shared swirl keyframe, at the loader pace (was a forked fileview-spin reverse) */
 .fileview-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
   animation: fileview-pulse 1.1s ease-in-out infinite; }
 .fileview-dot:nth-of-type(2) { animation-delay: 0.18s; }
 .fileview-dot:nth-of-type(3) { animation-delay: 0.36s; }
-@keyframes fileview-spin { to { transform: rotate(360deg); } }
 @keyframes fileview-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 
 /* A pressed viewer toggle (Rendered/Raw, Wrap) wears the app-wide selected language — accent text +
@@ -1321,24 +1690,103 @@ a.fileview-btn[hidden] { display: none; }
   color: var(--dim); opacity: 0.55; user-select: none;
 }
 .fileview-wrap .fv-ct { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Links inside a shown file (file-view-links.ts): a URL opens a new tab, a path opens in the viewer. Light by
+   design (the user 2026-09-07): the token keeps the colour the highlight gave it, under a faint dotted underline
+   that turns solid on hover; nothing else in the view changes. A Markdown link whose target is a file keeps the
+   link ink the other Markdown links wear. Neither is draggable (-webkit-user-drag: none, with draggable=false on the
+   anchor) and both are selectable (user-select: text; Chromium starts no selection inside a link without it), so a
+   press-drag inside a path link selects its text as on plain text, a press held on a URL anchor and then dragged
+   selects too (Chromium's rule for a link: an immediate drag on one selects nothing), and neither starts the browser's
+   link drag; a click that arrives with the selection open finds the viewer's listener and the chat's opener yielding
+   to it (path-links.ts selectionOpenIn). Mirrored in styles.css and feed.css (fileview-parity.test.ts). */
+.fileview-body .file-uri-link, .fileview-body .fv-url { color: inherit; cursor: pointer; text-decoration: underline dotted; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 2px; -webkit-user-drag: none; user-select: text; }
+.fileview-body .file-uri-link:hover, .fileview-body .fv-url:hover { text-decoration: underline; text-decoration-color: currentColor; }
+.fileview-md a.file-uri-link { color: var(--link); text-decoration: none; }
+.fileview-md a.file-uri-link:hover { text-decoration: underline; }
+/* A Markdown link with no target the viewer can follow (the sanitizer removed it; a section this document does not
+   have): dead, and it says so, since the title holds the reason (file-view-links.ts DEAD_LINK_CLASS). */
+.fileview-md a.fv-dead { color: inherit; opacity: 0.7; text-decoration: underline dotted; cursor: help; }
 
+/* ── text size and measure (file-view.ts textSizeControl) ── The A− / A+ buttons and Ctrl/Cmd + wheel over the
+   body set `data-fv-text` on the viewer root to one of TEXT_SIZES; this table turns the step into the ONE
+   property the text views read, --fv-scale. Every text size below is a multiple of it, so the prose, its
+   headings (em of the prose), inline and fenced code, and the Raw view's rows and gutter scale together, and
+   the prose measure with them (80 of the root's own ch, so the same characters per line at every size; the
+   Rendered markdown block below says how it is laid). Nothing else reads it: the title bar, its buttons and the
+   editor keep the page's size. Absent (a bundle without these rules) every fallback reads as 1, today's sizes
+   exactly. file-view-text-size.test.ts pins the table against TEXT_SIZES in both sheets and measures the layout. */
+.fileview[data-fv-text="70"] { --fv-scale: 0.7; }
+.fileview[data-fv-text="80"] { --fv-scale: 0.8; }
+.fileview[data-fv-text="90"] { --fv-scale: 0.9; }
+.fileview[data-fv-text="100"] { --fv-scale: 1; }
+.fileview[data-fv-text="115"] { --fv-scale: 1.15; }
+.fileview[data-fv-text="130"] { --fv-scale: 1.3; }
+.fileview[data-fv-text="150"] { --fv-scale: 1.5; }
+.fileview[data-fv-text="175"] { --fv-scale: 1.75; }
+.fileview[data-fv-text="200"] { --fv-scale: 2; }
 /* Rendered markdown (the Raw ⇄ Rendered toggle; Rendered is the default — the user 2026-08-09).
-   Typography mirrors the chat's .md block in styles.css, the reference aesthetic (one treatment, two
-   sheets — the .romp-acted precedent); font sizes reuse what this surface already wears (the page base,
-   12px mono, the err-hint's 0.92em). Vars the feed sheet does not define carry the chat's literals as
-   fallbacks (feed-css-vars.test.ts holds that line). */
-.fileview-md { padding: 14px 18px; max-width: 860px; overflow-wrap: anywhere; }
+   A document's type scale, GitHub's: the prose at 1.15 times the page's size (14.95px at the 13px default) in the
+   document's own face, --font-doc (sans in both themes; --font-prose is the assistant's reading face, mono in the light
+   theme, and a README in mono reads as source); headings 2 / 1.5 / 1.25 / 1em with h5 and h6 dimmed and a rule under h1
+   and h2; a 2em list gutter; fenced code at 12px mono with the chat's per-line rows and Copy button; inline code and kbd
+   at 0.92 and 0.86em; the leading 1.5, declared on the root rather than inherited, since the chat's body is 1.6 and the
+   feed's 1.5, so the same document was a different height on the two surfaces. Vars the feed sheet does not define
+   carry the chat's literals as fallbacks (feed-css-vars.test.ts holds that line). One treatment, two sheets: the
+   .romp-acted precedent; fileview-parity.test.ts pins every head byte-equal.
+   The measure is 80 of the root's own ch, laid as inline padding rounded DOWN to whole pixels (a fractional left edge put
+   the text on sub-pixel positions where a drag selection stayed collapsed), centred, never under 18px; the plain calc()
+   is the fallback for an engine without round(), declared first. It replaces a fixed pixel cap, so the column is the
+   same characters wide at every text size. contain: layout makes the root the containing block for anything inside it
+   (an element in a file that reaches `position: fixed` through a class of the page's it happens to wear, the sanitizer
+   having dropped an inline one, stays inside the note instead of covering the viewer's chrome; layout only, not paint, so
+   the body's vertical scroll is untouched) and turns content wider than the root into ink overflow the body cannot scroll
+   to, so nothing a document carries widens the viewer: the img rule and the media rules below cap a picture, an inline
+   svg, a canvas or a video at the column, and a table wider than the column scrolls on its own (the table rules below).
+   --fv-body-w, the body's content width for a top-level table's cap (below), is registered non-inherited so a write to a
+   table restyles that table alone. */
+@property --fv-body-w { syntax: "*"; inherits: false; }
+.fileview-md { padding: 14px 18px; padding-inline: max(18px, calc((100% - 80ch) / 2)); padding-inline: max(18px, round(down, calc((100% - 80ch) / 2), 1px)); overflow-wrap: anywhere; font-family: var(--font-doc); font-size: calc(var(--fs) * 1.15 * var(--fv-scale, 1)); line-height: 1.5; contain: layout; }
 .fileview-md > :first-child { margin-top: 0; }
 .fileview-md > :last-child { margin-bottom: 0; }
 .fileview-md p { margin: 0.5em 0; }
-.fileview-md h1, .fileview-md h2, .fileview-md h3, .fileview-md h4 {
-  font-weight: 600; color: var(--fg); margin: 1em 0 0.4em; line-height: 1.3; }
-.fileview-md h1 { font-size: 1.3em; } .fileview-md h2 { font-size: 1.15em; } .fileview-md h3 { font-size: 1.05em; }
-.fileview-md ul, .fileview-md ol { margin: 0.4em 0; padding-left: 1.4em; }
+/* The heading ladder: h1 2em, h2 1.5em, h3 1.25em, h4 1em, h5 and h6 1em in the dim tier, weight 600, a rule under h1 and
+   h2. em of the prose, so the text-size control scales them with it. The margins are 1.5 above and 0.5 below every
+   heading in the PROSE's em whatever the heading's size: a heading's em is its own, so the larger levels divide by their
+   size to land on the same distance. */
+.fileview-md h1, .fileview-md h2, .fileview-md h3, .fileview-md h4, .fileview-md h5, .fileview-md h6 {
+  font-weight: 600; color: var(--fg); margin: 1.5em 0 0.5em; line-height: 1.25; }
+.fileview-md h1 { font-size: 2em; margin: calc(1.5em / 2) 0 calc(0.5em / 2); }
+.fileview-md h2 { font-size: 1.5em; margin: calc(1.5em / 1.5) 0 calc(0.5em / 1.5); }
+.fileview-md h3 { font-size: 1.25em; margin: calc(1.5em / 1.25) 0 calc(0.5em / 1.25); }
+.fileview-md h4 { font-size: 1em; }
+.fileview-md h5, .fileview-md h6 { font-size: 1em; color: var(--dim); }
+.fileview-md h1, .fileview-md h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--box-border); }
+/* a heading an in-document link lands on (scrollIntoView) sits a breath below the title bar's hairline
+   rather than flush against it — the bar's own 10px spacing */
+.fileview-md h1, .fileview-md h2, .fileview-md h3, .fileview-md h4, .fileview-md h5, .fileview-md h6 { scroll-margin-top: 10px; }
+.fileview-md ul, .fileview-md ol { margin: 0.4em 0; padding-left: 2em; }
 .fileview-md li { margin: 0.2em 0; }
+/* A task item (`- [ ] ...`): no bullet beside the checkbox (mdBlock stamps GitHub's task-list-item on the li after the
+   sanitize, for a disabled checkbox that is the item's first child, in a paragraph or not), the checkbox pulled into the
+   gutter where the bullet was, drawn for the theme the page wears (--color-scheme; without it a dark page draws a white
+   checkbox). The pull is measured against Chromium's disc, whose centre sits about 7px plus 0.45em before the item's text at
+   every size, and the checkbox is the control's own 13px, declared so the margin can centre it on that point. font-size:
+   inherit makes the em the prose's: a control's own em is the UA's 13.33px, which the text-size control never moves.
+   The size is a rule of its own, for every checkbox under a task item (a nested list's too). 0.2em after the checkbox plus the
+   source's own space puts the text on the plain items' text edge. No accent-color: marked emits every checkbox disabled, and
+   Chromium paints a disabled checkbox grey whatever accent is declared. */
+.fileview-md li.task-list-item { list-style: none; }
+.fileview-md li.task-list-item input { font-size: inherit; }
+.fileview-md li.task-list-item > input[type="checkbox"], .fileview-md li.task-list-item > p:first-child > input[type="checkbox"] {
+  width: 13px; height: 13px; margin: 0 0.2em 0.25em calc(-13px - 0.46em); vertical-align: middle; color-scheme: var(--color-scheme); }
 .fileview-md strong { color: var(--fg); font-weight: 600; }
 .fileview-md em { font-style: italic; }
-.fileview-md a { color: var(--vscode-textLink-foreground, #4daafc); text-decoration: none; }
+.fileview-md a { color: var(--link); text-decoration: none; }
+/* PR references linked in plain-text surfaces (pr-links.ts): card titles, distiller lines, checklists,
+   outline goal rows. Inside .md the generic anchor rule already inks them; this covers the rest, in the
+   same hyperlink ink. */
+.pr-link { color: var(--link); text-decoration: none; }
+.pr-link:hover { text-decoration: underline; }
 .fileview-md a:hover { text-decoration: underline; }
 .fileview-md blockquote { margin: 0.5em 0; padding-left: 12px;
   border-left: 2px solid var(--box-border); color: var(--dim); }
@@ -1348,39 +1796,154 @@ a.fileview-btn[hidden] { display: none; }
   color: var(--code-fg, #e1c08d); background: var(--code-bg, rgba(217, 119, 87, 0.10));
   padding: 0.12em 0.4em; border-radius: 4px;
 }
+/* <kbd>, a key: the settings modal's two tokens (gear.css reads them too), mono at 0.86em, a bottom shadow line for the
+   key's edge. */
+.fileview-md kbd {
+  display: inline-block; padding: 0.1em 0.4em; font-family: var(--mono, ui-monospace, monospace); font-size: 0.86em;
+  line-height: 1.3; color: var(--fg); vertical-align: middle; background: var(--kbd-bg); border: 1px solid var(--kbd-border);
+  border-radius: 3px; box-shadow: inset 0 -1px 0 var(--kbd-border);
+}
 .fileview-md pre {
   background: var(--box-bg, rgba(255, 255, 255, 0.03)); border: 1px solid var(--box-border);
   border-radius: 6px; padding: 11px 14px; margin: 0.6em 0; overflow-x: auto;
 }
 .fileview-md pre code {
   background: none; padding: 0; display: block;
-  font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
+  font-family: var(--mono, ui-monospace, monospace); font-size: calc(12px * var(--fv-scale, 1)); line-height: 1.5;
   color: var(--code-fg, #e1c08d); white-space: pre-wrap; overflow-wrap: anywhere;
+  tab-size: 4; counter-reset: ln;   /* tabs as the Raw view shows them (.fileview-pre); the line counter, for every fence (below) */
 }
-.fileview-md table { border-collapse: collapse; margin: 0.6em 0; }
+/* A fence's per-line rows and Copy button (code-block.ts, the chat's own): .cl is one logical line, .ct its wrapping
+   content, the number a CSS counter in ::before so a soft-wrap reads distinctly from a real newline and the numbers never
+   copy with the code. The counter resets on `.fileview-md pre code` above, not on `code.hljs` as the chat's does: mdBlock
+   wraps EVERY fence, and an unregistered language's fence carries no hljs class, so it would have gone on counting from
+   the block before. The Copy button is parked top-right, faint until the block is hovered, green on success. Scoped
+   copies of the chat's unscoped rules (styles.css), byte-equal in both sheets since the feed page loads only feed.css
+   (fileview-parity.test.ts, code-block.test.ts); the code tint carries the chat's literal as its fallback, since feed.css
+   defines no --code-bg in :root (feed-css-vars.test.ts). The gutter's own line-height is 1 and it never wraps, its basis
+   is 2.5em or the fence's digit count in ch (--ln-digits, written by wrapCodeLines), and the .ct's ::before is a word
+   joiner so a blank line's row is the line-height: the chat's rule says why each. */
+.fileview-md pre code .cl { display: flex; align-items: baseline; }
+.fileview-md pre code .cl::before {
+  counter-increment: ln; content: counter(ln);
+  flex: 0 0 max(2.5em, calc(var(--ln-digits, 0) * 1ch + 0.05em)); margin-right: 0.85em; text-align: right;
+  color: var(--dim); opacity: 0.32; user-select: none; font-size: 0.92em; line-height: 1; overflow-wrap: normal;
+}
+.fileview-md pre code .ct { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.fileview-md pre code .ct::before { content: "\2060"; }
+.fileview-md pre.has-copy { position: relative; }
+.fileview-md .code-copy {
+  position: absolute; top: 6px; right: 6px; z-index: 1;
+  font-family: var(--sans); font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 4px;
+  border: 1px solid var(--box-border); background: var(--code-bg, rgba(217, 119, 87, 0.10)); color: var(--dim);
+  cursor: pointer; opacity: 0; user-select: none;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.fileview-md pre.has-copy:hover .code-copy, .fileview-md .code-copy:focus-visible { opacity: 0.9; }
+.fileview-md .code-copy:hover { color: var(--fg); border-color: var(--dim); }
+.fileview-md .code-copy.copied { color: var(--green); border-color: var(--green); opacity: 1; }
+@media (hover: none) { .fileview-md .code-copy { opacity: 0.8; } }   /* touch: no hover state, so keep it visible */
+/* A table is a block as wide as its columns need, scrolling in its own box past its cap, whole words kept (overflow-wrap:
+   normal against the root's anywhere). A table inside a quote or a list item is capped at its container. A table of the
+   page's own (a direct child of the root) is capped at the BODY's width less the root's 18px inset, not the column's:
+   --fv-body-w is the body's content width as its ResizeObserver reports it (file-view.ts watchBodyWidth), written on
+   each top-level table and registered non-inherited above. A table no wider than the column sits at the column's left
+   edge with the prose, as on GitHub; one wider than the column grows out of it EVENLY, into both gutters, until it meets
+   the body's inset: the translate moves it left by half of what it exceeds the column by (a percentage in translate is
+   of the table's own width; half the body less the root's inline padding is half the column, the padding rounded down
+   here as the root rounds it, and the observer's width is the content box the root's 100% is, so the two agree to the
+   pixel; min() holds a narrower table still; the shift is rounded to whole pixels, as the measure is). Scrollable overflow
+   is computed from the transformed box, so the shifted table never makes the body scroll sideways; contain: layout on the
+   root is for anything else wider than the column (a fixed-width svg, an iframe), which it turns into ink overflow the
+   body cannot scroll to. Before the observer's first report, or with no ResizeObserver, the property is unset and both
+   declarations read the same stand-in, 100% plus the inset the cap takes back: the cap is then the column, and in the
+   translate, where 100% is the table's own width, the padding term is under 19px for any table the column holds and
+   rounds down to its 18px floor, so the shift is exactly none. border-collapse is inherited by the anonymous table box the
+   block wraps, so the cell borders still collapse. */
+.fileview-md table { border-collapse: collapse; margin: 0.6em 0; display: block; width: max-content; max-width: 100%; overflow-x: auto; overflow-wrap: normal; }
+.fileview-md > table { max-width: calc(var(--fv-body-w, calc(100% + 36px)) - 36px); translate: min(0px, round(calc(var(--fv-body-w, calc(100% + 36px)) / 2 - max(18px, round(down, (var(--fv-body-w, calc(100% + 36px)) - 80ch) / 2, 1px)) - 50%), 1px)); }
 .fileview-md th, .fileview-md td { border: 1px solid var(--box-border); padding: 4px 10px; text-align: left; }
-.fileview-md th { background: rgba(255, 255, 255, 0.03); }
+.fileview-md th { font-weight: 600; background: var(--overlay-05); }
+.fileview-md tbody tr:nth-child(even) { background: var(--overlay-05); }
+/* marked writes a column's `:---:` / `---:` alignment as the cell's align attribute (DOMPurify keeps it); the rule above
+   overrode the presentational hint, so every cell read left */
+.fileview-md th[align="center"], .fileview-md td[align="center"] { text-align: center; }
+.fileview-md th[align="right"], .fileview-md td[align="right"] { text-align: right; }
+.fileview-md th[align="left"], .fileview-md td[align="left"] { text-align: left; }
 .fileview-md img { max-width: 100%; }
+/* Media a file draws itself (an inline <svg> diagram, a <canvas>, a <video>) fits the column the way an <img> does:
+   under contain: layout anything wider than .fileview-md is clipped at the body's edge and unreachable. :where() keeps
+   the selectors at element specificity, so KaTeX's own rules for the <svg> glyphs it draws inside a formula
+   (`.katex svg`, sized by its sheet) still outrank them. height: auto keeps a pixel-sized svg's or canvas's own
+   ratio (its viewBox, or its width and height) as the cap shrinks it; a percentage-width element is never shrunk by
+   the cap and keeps the author's height. */
+:where(.fileview-md) svg, :where(.fileview-md) canvas, :where(.fileview-md) video { max-width: 100%; }
+:where(.fileview-md :is(svg, canvas)[width]:not([width$="%"])) { height: auto; }
+
+/* ── the viewer's image + PDF bodies (a .png used to open as line-numbered mojibake). The <img>
+   wears the lightbox image's own treatment (.romp-lightbox-img: capped, object-fit contain, the
+   same radius + shadow) so media presents one way everywhere; the frame is the lightbox's PDF
+   iframe filling the card. Mirrored from styles.css — the viewer mounts in both documents (the
+   .romp-acted precedent). */
+.fileview-imgbox { display: flex; align-items: center; justify-content: center;
+  min-height: 100%; padding: 14px; box-sizing: border-box; }
+.fileview-img { max-width: 100%; max-height: 82vh; object-fit: contain; border-radius: 8px;
+  box-shadow: var(--shadow-modal); }
+.fileview-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+
+/* ── print (Ctrl/Cmd + P while a rendered file is open): the file alone, black on white, across as many pages as it needs.
+   The dashboard's chrome behind the viewer is left out and the viewer's own title bar and Copy buttons with it; the page
+   and the card go white (both :root and body.fileview-open, so a served page's inline theme cannot paint the canvas grey)
+   and every fixed height and overflow that holds the card to one screen is released, so the document runs on to the
+   next page instead of being cut at the first. Tokens and gutters print in full black in the document and in the Raw
+   view (code.hljs and its spans under the body, the wrap mode's row numbers, the plain gutter); the task checkbox is drawn in
+   the light scheme whatever the page's theme; fills and washes go, borders turn black. A table is laid out as a table
+   again (display: block would let it scroll, and paper does not), and a table of the page's own keeps the screen's room,
+   the body less the root's inset, with the screen's shift into both gutters: the cap and the translate are restated in
+   container units, the body made a size container here (no script runs at print layout, so a unit the sheet resolves is
+   the one that holds). Byte-equal in styles.css and feed.css (fileview-parity.test.ts). */
+@media print {
+  :root, body.fileview-open { height: auto; overflow: visible; background: white; color: black; }
+  body.fileview-open { display: block; }
+  body.fileview-open > :not(#romp-fileview) { display: none; }
+  #romp-fileview { position: static; inset: auto; z-index: auto; display: block; background: none; }
+  .fileview { width: auto; height: auto; display: block; overflow: visible; background: white; color: black; border: 0; border-radius: 0; box-shadow: none; }
+  .fileview-bar, .fileview > .fileview-err, .fileview-md .code-copy { display: none; }
+  .fileview-body { overflow: visible; container-type: inline-size; }
+  .fileview-md, .fileview-md h1, .fileview-md h2, .fileview-md h3, .fileview-md h4, .fileview-md h5, .fileview-md h6, .fileview-md strong,
+  .fileview-md blockquote, .fileview-md a, .fileview-md kbd, .fileview-md :not(pre) > code, .fileview-md pre code, .fileview-md pre code span,
+  .fileview-md pre code .cl::before { color: black; }
+  .fileview-md a { text-decoration: underline; }
+  .fileview-md li.task-list-item input[type="checkbox"] { color-scheme: light; }
+  .fileview-md :not(pre) > code, .fileview-md kbd, .fileview-md pre, .fileview-md th, .fileview-md tbody tr:nth-child(even) { background: none; }
+  .fileview-md pre, .fileview-md th, .fileview-md td, .fileview-md hr, .fileview-md blockquote, .fileview-md h1, .fileview-md h2, .fileview-md kbd { border-color: black; }
+  .fileview-md kbd { box-shadow: none; }
+  .fileview-body code.hljs, .fileview-body code.hljs span, .fileview-body .fv-cl::before, .fileview-gutter { color: black; }
+  .fileview-md pre code .cl::before, .fileview-body .fv-cl::before, .fileview-gutter { opacity: 1; }
+  .fileview-gutter { background: none; border-color: black; }
+  .fileview-md table { display: table; width: max-content; overflow: visible; overflow-wrap: anywhere; }
+  .fileview-md > table { max-width: calc(100cqi - 36px); translate: min(0px, round(calc(50cqi - max(18px, round(down, (100cqi - 80ch) / 2, 1px)) - 50%), 1px)); }
+}
 
 /* ---------- syntax highlighting (warm, restrained) ----------
    The hljs token palette, mirrored from styles.css (one treatment, two sheets — the .romp-acted
    precedent: each page loads only its own sheet). The viewer wraps every token in .hljs-* spans, and
    until this block landed the feed sheet had NO rules for them, so highlighting rendered colorless. */
-.hljs { color: #d8c6a8; background: transparent; }
-.hljs-keyword, .hljs-built_in, .hljs-literal, .hljs-type { color: #c98a6a; }
-.hljs-string, .hljs-attr, .hljs-regexp { color: #9fb878; }
-.hljs-number { color: #d4a36a; }
-.hljs-comment, .hljs-quote { color: #6f6a5f; font-style: italic; }
-.hljs-title, .hljs-title.function_, .hljs-section { color: #e1c08d; }
-.hljs-name, .hljs-tag { color: #c98a6a; }
-.hljs-params, .hljs-variable, .hljs-property { color: #d8c6a8; }
-.hljs-meta { color: #9a8f7a; }
-.hljs-attribute { color: #cdaf7e; }
-.hljs-addition { color: #9fb878; }
+.hljs { color: var(--hl-fg); background: transparent; }
+.hljs-keyword, .hljs-built_in, .hljs-literal, .hljs-type { color: var(--hl-kw); }
+.hljs-string, .hljs-attr, .hljs-regexp { color: var(--hl-str); }
+.hljs-number { color: var(--hl-num); }
+.hljs-comment, .hljs-quote { color: var(--hl-cmt); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--hl-title); }
+.hljs-name, .hljs-tag { color: var(--hl-kw); }
+.hljs-params, .hljs-variable, .hljs-property { color: var(--hl-fg); }
+.hljs-meta { color: var(--hl-meta); }
+.hljs-attribute { color: var(--hl-attr); }
+.hljs-addition { color: var(--hl-str); }
 .hljs-deletion { color: var(--err); }
 
 /* the "host:" prefix on a federated session's name — see styles.css (one treatment, two sheets) */
-.host-prefix { color: var(--dim); font-weight: 400; font-style: italic; font-size: 0.88em; }
+.host-prefix { color: var(--dim); font-weight: 400; font-style: italic; font-size: 0.86em; }
 /* DISCONNECTED host (the user 2026-07-29): its sessions keep their tabs, lanes and cards — dropping them
    would lose the thread — but the "host:" token says the link is down, so nobody reads a frozen transcript
    thinking it is live. Marked on the HOST only: a marked WHOLE name already means a dead session, and this
@@ -1396,18 +1959,27 @@ a.fileview-btn[hidden] { display: none; }
 #rpipe { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; text-align: center;
   background: #2b2d30; color: #e6e6e6; border-bottom: 1px solid #4a4d51; padding: 7px 14px; }
 
-/* Age-stamp provenance popover (the user 2026-07-27): hover a card's "Nm ago" for the thread's story.
-   Replaces the native title tooltip (dense, unaligned). Panel wears the feed-toast card look; rows are
-   the modal history-row family (0.86em, dim time cell — .ftree-log-when's vocabulary) with the times in
-   ONE right-aligned tabular column so they read as a list. The closing line (what the visible stamp
-   marks) is its own section under a hairline. pointer-events:none — it can never eat a click. */
-#age-tip {
-  position: fixed; z-index: 210; display: none; max-width: min(440px, 92vw);
-  background: var(--vscode-menu-background, var(--surface-raised)); color: var(--fg);
-  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: var(--radius-toast); padding: 7px 10px;
+/* ── ONE tooltip dress (2026-08-28): the shared styled-tooltip node (ui/webview/tip.ts). Every styled
+   tip wears these tokens — the chat tab tip and the feed/sessions tips carry the same values — so all
+   tips match and theme for free. BYTE-MIRRORED in styles.css and feed.css (like .ctx-menu); tokens
+   only, no raw hex (tip.test.ts pins both). Behavior (show/hide/position) lives in tip.ts. */
+.romp-tip {
+  position: fixed; z-index: 210;
+  background: var(--vscode-editorWidget-background, var(--surface-raised)); color: var(--fg);
+  border: 1px solid var(--box-border); border-radius: var(--radius-toast); padding: 7px 10px;
   box-shadow: var(--shadow-toast); font-size: 0.86em; line-height: 1.45;
-  pointer-events: none;
+  max-width: min(440px, 92vw);
 }
+
+/* Age-stamp provenance popover (the user 2026-07-27): hover a card's "Nm ago" for the thread's story.
+   Replaces the native title tooltip (dense, unaligned). The panel is the shared .romp-tip node
+   (tip.ts — pointer-events:none, so it can never eat a click; cards are keyed + updated IN PLACE
+   across pushes, so the hovered stamp usually survives a re-render, and the feed hides the tip only
+   when its anchor was actually torn out of the DOM via pruneTip — an unconditional hide made the tip
+   vanish ~a second into every hover, 2026-07-27). Rows are the modal history-row family (0.86em, dim
+   time cell — .ftree-log-when's vocabulary) with the times in ONE right-aligned tabular column so
+   they read as a list. The closing line (what the visible stamp marks) is its own section under a
+   hairline. */
 .age-tip-row { display: flex; column-gap: 10px; align-items: baseline; }
 .age-tip-when { flex: 0 0 auto; min-width: 118px; text-align: right; color: var(--dim);
   white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -1431,8 +2003,9 @@ a.fileview-btn[hidden] { display: none; }
    you or completes; the armed state is the quiet accent bell beside Clear. */
 .ctx-menu {
   position: fixed; z-index: 100; min-width: 110px; padding: 4px;
-  background: var(--vscode-menu-background, #252526);
-  color: var(--vscode-menu-foreground, var(--fg));
+  max-height: calc(100vh - 8px); overflow-y: auto; overscroll-behavior: contain;   /* mirrors styles.css: a menu taller than the window scrolls (2026-09-13) */
+  background: var(--menu-bg);   /* mirrors styles.css .ctx-menu — the menu tokens (T226) */
+  color: var(--menu-fg);
   border: 1px solid var(--box-border); border-radius: var(--radius-menu);
   box-shadow: var(--shadow-menu);
   font-size: 0.92em;
@@ -1447,6 +2020,9 @@ a.fileview-btn[hidden] { display: none; }
 .ctx-item-toggle .ctx-icon.off { color: var(--dim); }
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
+/* a tag chip standing for an UNSELECTED toggle (the tag-lens menu, T283): faded, its colour kept —
+   the state class; tag-menu.ts paints the same opacity inline for a sheet-less host (TAG_CHIP_OFF_OPACITY) */
+.tag-chip-off { opacity: 0.45; }
 /* the bell BUTTON (the user 2026-07-28, round 4): inline in row1's metadata cluster, right after the
    timestamp — shown only once the card is hovered or it's armed. Off = slashed dim bell; armed (.on) =
    accent bell, always visible. Accent = mechanics chrome, never a status colour.
@@ -1465,14 +2041,20 @@ a.fileview-btn[hidden] { display: none; }
   background: transparent; color: var(--dim); cursor: pointer; opacity: 0.55;
 }
 .fitem.ask:hover .fask-bellbtn { visibility: visible; }
-.fitem.ask .fask-bellbtn:hover { opacity: 1; background: rgba(255, 255, 255, 0.10); }
+.fitem.ask .fask-bellbtn:hover { opacity: 1; color: var(--accent); background: var(--accent-wash); }
 .fask-bellbtn.on { visibility: visible; opacity: 0.85; color: var(--accent); }
 
 /* ── the file BROWSER (file-browse.ts) ── the viewer's sibling overlay, one z layer BENEATH it
-   so a file opened from a listing overlays the listing and closing the file returns to it. Same
-   pane-takeover reasoning as .fileview; body.filebrowse-open stops the cards scrolling behind it. */
-.filebrowse { position: fixed; inset: 0; z-index: 890; display: flex; flex-direction: column;
-  background: var(--bg, #1e1e1e); }
+   so a file opened from a listing overlays the listing and closing the file returns to it. The
+   pane takeover it wore was superseded 2026-09-04 (the user found it odd once the listing was
+   capped): the viewer's centered-card treatment now, the id on the BACKDROP (every open/close
+   check looks it up); body.filebrowse-open stops the cards scrolling behind it. Height caps in
+   px/%, never vh (in a pane iframe vh is the pane — the cap must lose to 95% on short panes). */
+#romp-filebrowse { position: fixed; inset: 0; z-index: 890; background: var(--overlay-dim);
+  display: flex; align-items: center; justify-content: center; }
+.filebrowse { width: min(720px, 95%); height: min(760px, 95%); display: flex; flex-direction: column;
+  overflow: hidden; background: var(--bg, #1e1e1e); border: 1px solid var(--box-border);
+  border-radius: var(--radius-modal); box-shadow: var(--shadow-modal); }
 body.filebrowse-open { overflow: hidden; }
 .fb-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-width: 0;
   padding: 7px 10px; border-bottom: 1px solid var(--box-border); }
@@ -1490,8 +2072,8 @@ body.filebrowse-open { overflow: hidden; }
    and the full path live in the row's hover title */
 .fb-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 14px; cursor: pointer;
   font-size: 0.86em; }
-.fb-row:hover, .fb-row.active { background: rgba(255, 255, 255, 0.07); }
-.fb-row.active { outline: 1px solid rgba(156, 210, 255, 0.35); outline-offset: -1px; }
+.fb-row:hover, .fb-row.active { background: var(--menu-hover); }
+.fb-row.active { outline: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: -1px; }
 .fb-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-family: var(--mono, ui-monospace, monospace); }
 .fb-dir .fb-name { color: var(--accent); }
@@ -1523,20 +2105,33 @@ body.filebrowse-open { overflow: hidden; }
   background: var(--bg, #1e1e1e); color: var(--fg);
   font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
   white-space: pre; tab-size: 4; }
-.fileview-editor:focus { box-shadow: inset 0 0 0 1px rgba(156, 210, 255, 0.35); }
+.fileview-editor:focus { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
 
 /* usage-limit banner (2026-08-18): analysis paused on a usage limit says so above the columns —
    loud but compact, one line + (Fable only) the switch-to-Opus action. Neutral card chrome, never
    the accent (this is status, not highlight); red would overstate it — the pause is expected and
    self-resolving at the window reset. */
 .judge-limit-banner { display: flex; align-items: center; gap: 10px; margin: 6px 8px 2px;
-  padding: 7px 12px; background: #252526; border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px; font-size: 0.9em; }
+  padding: 7px 12px; background: var(--vscode-editorWidget-background, #252526); border: 1px solid rgba(255, 255, 255, 0.12);   /* tokenized (T151) */
+  border-radius: 6px; font-size: 0.92em; }
 .judge-limit-banner .jl-text { opacity: 0.85; }
 .judge-limit-banner .jl-switch { flex: none; padding: 3px 10px; border-radius: 4px; border: 1px solid
-  rgba(255, 255, 255, 0.18); background: #333; color: inherit; cursor: pointer; font-size: 0.95em; }
+  rgba(255, 255, 255, 0.18); background: var(--vscode-input-background, #3c3c3c); color: inherit; cursor: pointer; font-size: 0.92em; }   /* tokenized (T151; was a bare #333) */
 .judge-limit-banner .jl-switch:hover { background: #3c3c3c; }
 .judge-limit-banner .jl-switch:disabled { opacity: 0.6; cursor: default; }
+/* who the window touches (2026-08-28): same text size as the line it extends (fonts: reuse), dimmer */
+.judge-limit-banner .jl-sess { opacity: 0.65; min-width: 0; }
+.judge-limit-banner .jl-more { color: var(--accent); cursor: pointer; white-space: nowrap; }
+/* the standard session reference (the user 2026-08-28): bold name in its identity colour; the
+   host: prefix keeps the shared .host-prefix treatment */
+.judge-limit-banner .jl-chip { font-weight: 700; font-style: normal; }
+/* the cap-switch offer (2026-08-30): the tradeoff line rides the api-trouble row, dim like the
+   badge family; the button keeps the fdismiss vocabulary */
+.fask-capoffer { color: var(--dim); min-width: 0; overflow-wrap: anywhere; }
+.judge-limit-banner .jl-unknown { opacity: 0.8; font-style: italic; }
+.judge-limit-banner .jl-dismiss { flex: none; margin-left: auto; background: none; border: none;
+  color: var(--dim); cursor: pointer; font-size: 1em; padding: 2px 6px; border-radius: 4px; }
+.judge-limit-banner .jl-dismiss:hover { color: var(--fg); background: rgba(255, 255, 255, 0.07); }
 
 /* The footer SEARCH box (the user 2026-08-23; restyled 2026-08-24): a "Search" word-button expanding
    to an inline input that live-filters the board by session name, host prefix included. The expanded
@@ -1608,13 +2203,13 @@ body.filebrowse-open { overflow: hidden; }
   border-left: 2px solid var(--accent, #9cd2ff); padding-left: 8px; white-space: pre-wrap;
 }
 .fileview-cmt-input {
-  font: inherit; font-size: 0.9em; min-height: 68px; resize: vertical; padding: 6px;
+  font: inherit; font-size: 0.92em; min-height: 68px; resize: vertical; padding: 6px;
   color: inherit; background: var(--vscode-input-background, rgba(0,0,0,0.25));
   border: 1px solid var(--box-border, rgba(255,255,255,0.12)); border-radius: 4px;
 }
 .fileview-cmt-acts { display: flex; gap: 6px; justify-content: flex-end; }
 .fileview-cmt-err { font-size: 0.82em; color: var(--warn, #f0a84a); white-space: pre-wrap; }
-.fileview-cmt-count { flex: 0 0 auto; font-size: 0.78em; color: var(--dim); white-space: nowrap; }
+.fileview-cmt-count { flex: 0 0 auto; font-size: 0.82em; color: var(--dim); white-space: nowrap; }
 .fileview-send { border-color: var(--accent, #9cd2ff); color: var(--fg, #ddd); }
 /* The noted passage, marked for the life of this open — a format toggle re-renders the body and the
    mark goes with it, which the bar's count outlives. No store: the feed pane's note is a thread. */
@@ -1622,3 +2217,15 @@ body.filebrowse-open { overflow: hidden; }
   background: rgba(156, 210, 255, 0.16); border-bottom: 1px solid var(--accent, #9cd2ff);
   border-radius: 2px;
 }
+/* NOTICE CARDS (T370, plans/notice-cards.md): the producer label beside the session name; the body in the takeaway's
+   typography (.fask-distill's size), the attachment as an inline picture capped to the card, the action buttons in the
+   card's own button style (.fdismiss) */
+.fask-nprod { font-size: 0.82em; opacity: 0.7; margin-left: 6px; white-space: nowrap; }
+.fask-nbody { font-size: 0.86em; line-height: 1.4; margin: 2px 0 2px; color: var(--fg); opacity: 0.9; overflow-wrap: anywhere; }
+.fask-nbody p { margin: 0 0 4px; }
+.fask-nbody pre, .fask-nbody code { font-size: 0.92em; }
+.fask-nattach { margin: 4px 0 2px; }
+.fask-nimg { display: block; max-width: 100%; max-height: 240px; border-radius: 4px; }
+.fask-nfile { font-size: 0.82em; opacity: 0.75; font-family: var(--vscode-editor-font-family, monospace); }
+.fask-nactions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+.fdismiss.fnact { opacity: 0.95; }

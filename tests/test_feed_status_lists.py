@@ -13,7 +13,7 @@ Synthetic sessions only — the demo notes-api world (web / api / tests), never 
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -22,7 +22,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()   # hermetic BEFORE any romp code loads
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_pips", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_pips", os.path.join(BIN, "romp-kernel"))
 
 
 def sess(sid, name):
@@ -41,19 +41,19 @@ class StateUnknownIsTheUnREADABLEOnes(unittest.TestCase):
         self.addCleanup(lambda: setattr(km, "_session_flag", self._flag))
 
     def test_a_session_with_no_live_row_is_unknown(self):
-        tmux = {ALIVE[0]["sid"]: {}, ALIVE[1]["sid"]: {}}     # 'tests' has no row at all
-        self.assertEqual(km._state_unknown_names(ALIVE, tmux, [], []), ["tests"])
+        live_map = {ALIVE[0]["sid"]: {}, ALIVE[1]["sid"]: {}}     # 'tests' has no row at all
+        self.assertEqual(km._state_unknown_names(ALIVE, live_map, [], []), ["tests"])
 
     def test_a_readable_idle_session_is_NOT_unknown(self):
         # the whole point: a session we CAN read and that is quiet gets no pip, so it must not
         # appear here — otherwise every idle session would wear the gray ring
-        tmux = {s["sid"]: {} for s in ALIVE}
-        self.assertEqual(km._state_unknown_names(ALIVE, tmux, [], []), [])
+        live_map = {s["sid"]: {} for s in ALIVE}
+        self.assertEqual(km._state_unknown_names(ALIVE, live_map, [], []), [])
 
     def test_working_and_awaiting_are_never_unknown(self):
         # their state was read by definition; they already have their own dots
-        tmux = {}                                             # no live rows at all
-        out = km._state_unknown_names(ALIVE, tmux, ["web"], ["api"])
+        live_map = {}                                         # no live rows at all
+        out = km._state_unknown_names(ALIVE, live_map, ["web"], ["api"])
         self.assertEqual(out, ["tests"], "only the session with neither a dot nor a readable state")
 
     def test_hidden_sessions_are_in_no_list(self):
@@ -64,7 +64,7 @@ class StateUnknownIsTheUnREADABLEOnes(unittest.TestCase):
     def test_build_feed_ships_the_list(self):
         import inspect
         src = inspect.getsource(km.build_feed)
-        self.assertIn('"stateUnknown": _state_unknown_names(alive, tmux, working, awaiting)', src)
+        self.assertIn('"stateUnknown": _state_unknown_names(alive, live_map, working, awaiting)', src)
 
     def test_no_ready_list_is_published(self):
         # a healthy idle session is deliberately NOT enumerated: blank means quiet, so there is

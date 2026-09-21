@@ -9,15 +9,28 @@ The drift this guards is subtle and silent: vscode-extension/install.sh builds d
 time, and the kernel's _ensure_bundles() REBUILDS it whenever a .ts/.css looks newer. If only one
 passed --production, any later source touch would swap the served dashboard back to the slow
 bundle on the next kernel restart, with nothing saying so. Source-level assertions, because the
-real build needs npm install and a network.
+real build needs npm install and a network; the executed class at the end runs both kernel builders
+over a recording stand-in for subprocess, so it needs no build either.
 """
 import glob
 import os
 import re
+import tempfile
+import types
 import unittest
+from pathlib import Path
+from unittest import mock
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
+# Hermetic state BEFORE the loads: the executed class below loads bin/romp-kernel, and romp code
+# resolves its state root at import time; only pytest runs conftest's floor (a bare unittest or
+# script run otherwise writes REAL state). tests/test_state_isolation_order.py holds the order.
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 KERNEL = os.path.join(ROOT, "kernel", "kernel.py")
 EXT_INSTALL = os.path.join(ROOT, "vscode-extension", "install.sh")
 ESBUILD = os.path.join(ROOT, "vscode-extension", "esbuild.js")
@@ -30,11 +43,17 @@ def _read(p):
 
 class BundleBuildMode(unittest.TestCase):
     def test_esbuild_ties_minify_and_sourcemaps_to_the_production_flag(self):
-        """The flag has to actually mean something — this is what the other two rely on."""
+        """The flag has to actually mean something — this is what the other two rely on. The webview build
+        minifies whitespace and syntax only: identifiers are kept in every mode, because the browser's
+        long-frame attribution (ui/webview/perf-telemetry.ts) names a callback by its compile-time name, and
+        a mangled build reports a different letter after every rebuild. The extension host keeps `minify`."""
         src = _read(ESBUILD)
         self.assertIn('const production = process.argv.includes("--production")', src)
-        self.assertIn("minify: production", src)
+        self.assertIn("minify: production", src)              # the extension-host bundle
         self.assertIn("sourcemap: !production", src)
+        self.assertIn("minifyWhitespace: production", src)    # the webview bundles: whitespace and syntax…
+        self.assertIn("minifySyntax: production", src)
+        self.assertIn("minifyIdentifiers: false", src)        # …but never identifiers
 
     def test_the_installer_builds_production(self):
         src = _read(EXT_INSTALL)
@@ -110,6 +129,94 @@ class BundleBuildMode(unittest.TestCase):
         body = m.group(0)
         self.assertIn('rglob("*.js")', body,
                       "the staleness scan must watch the plain-JS modules the bundles require()")
+
+
+class FailureLineTail(unittest.TestCase):
+    """A guard on a pair of constants neither side reads from the other. The kernel's _rebuild_dist keeps
+    the last N characters of the script's stderr for the notice that says the served UI is stale, and
+    esbuild.js's failureSummary cuts its last line to N from the END (N minus three, then an ellipsis) so
+    that tail is the line's head: what failed and what is unchanged. Should the kernel's tail shrink alone, it
+    shows the end of the line's last clause and drops its head; should the script's cut shrink alone, the line
+    loses its location for nothing. Neither drift fails any other test."""
+
+    def test_the_scripts_cut_is_the_kernels_tail(self):
+        kernel = re.search(r"def _rebuild_dist\(\):.*?(?=\n\S)", _read(KERNEL), re.S)   # to the next top-level line
+        self.assertIsNotNone(kernel, "_rebuild_dist not found")
+        tail = re.search(r"\.strip\(\)\[-(\d+):\]", kernel.group(0))
+        self.assertIsNotNone(tail, "_rebuild_dist keeps a tail of the script's stderr")
+        n = int(tail.group(1))
+        fit = re.search(r"const fit = \(s\) => s\.length > (\d+)\s*\?\s*s\.slice\(0,\s*(\d+)\)", _read(ESBUILD))
+        self.assertIsNotNone(fit, "failureSummary's fit cuts the line")
+        self.assertEqual(int(fit.group(1)), n, "the script cuts its line where the kernel cuts its stderr")
+        self.assertEqual(int(fit.group(2)), n - len("..."), "the cut keeps room for the ellipsis")
+        # the node tests stand in for the kernel's tail with a constant of their own; it follows the kernel too
+        for name in ("esbuild-build.test.ts", "esbuild-failure-cap.test.ts"):
+            ts = _read(os.path.join(ROOT, "vscode-extension", "src", name))
+            k = re.search(r"^const KERNEL_TAIL = (\d+);$", ts, re.M)
+            self.assertIsNotNone(k, name + " names the kernel's tail")
+            self.assertEqual(int(k.group(1)), n, name)
+
+
+class TheBuildersRunTheProductionProfile(unittest.TestCase):
+    """EXECUTED, not read. A text pin on a builder's body is satisfied by a comment that names the flag and the
+    knob, so the two kernel builders are run here against a recording stand-in for subprocess and the argv each
+    hands it is asserted whole. Three knob states: unset and the empty string build --production (install.sh's
+    `-n` test reads the empty string as unset too); "1" builds the dev profile."""
+
+    CASES = ((None, ["node", "esbuild.js", "--production"]),
+             ("", ["node", "esbuild.js", "--production"]),
+             ("1", ["node", "esbuild.js"]))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.km = load_source("romp_kernel_build_mode", os.path.join(ROOT, "bin", "romp-kernel"))
+
+    def _run_with(self, knob, fn):
+        """Call `fn` with ROMP_EXT_DEV_BUILD in state `knob` (None = unset) and the kernel's subprocess swapped
+        for a recorder whose every run succeeds; return the argv of each run() it made, in order. The swap is
+        the kernel module's attribute, never subprocess.run itself: the real module is shared by everything
+        in this process."""
+        km = self.km
+        calls = []
+
+        def fake_run(argv, *a, **kw):
+            calls.append(list(argv))
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        real = km.subprocess
+        stand_in = types.SimpleNamespace(run=fake_run, TimeoutExpired=real.TimeoutExpired,
+                                         CalledProcessError=real.CalledProcessError)
+        with mock.patch.dict(os.environ), mock.patch.object(km, "subprocess", stand_in):
+            os.environ.pop("ROMP_EXT_DEV_BUILD", None)
+            if knob is not None:
+                os.environ["ROMP_EXT_DEV_BUILD"] = knob
+            fn()
+        return calls
+
+    def test_the_converge_rebuild_passes_production_unless_the_dev_knob_is_set(self):
+        """_rebuild_dist is the converge's builder: the in-place converge after a fast-forward, the dist check
+        at boot and on every drift pass, and the build before a restart. A bare `node esbuild.js` there served
+        unminified bundles with sourcemaps after every fast-forward, and _ensure_bundles never re-minified
+        them, since it judges staleness by mtime against dist/render.js and not by profile."""
+        for knob, want in self.CASES:
+            with self.subTest(knob=knob):
+                calls = self._run_with(knob, lambda: self.assertTrue(
+                    self.km._rebuild_dist()[0], "every recorded run succeeds, so the rebuild reports ok"))
+                self.assertEqual(calls, [want])
+
+    def test_the_boot_build_passes_production_unless_the_dev_knob_is_set(self):
+        """_ensure_bundles builds only when dist/render.js is missing or older than an input, so the kernel is
+        pointed at a synthetic checkout with a node_modules dir, no dist and no inputs: stale, one build,
+        recorded. The recorder never raises, so the npm-install retry is never entered."""
+        km = self.km
+        with tempfile.TemporaryDirectory(prefix="romp-build-mode-") as d:
+            tmp = Path(d)
+            (tmp / "vscode-extension" / "node_modules").mkdir(parents=True)
+            with mock.patch.object(km, "ROOT", tmp), mock.patch.object(km, "DIST", tmp / "dist"):
+                for knob, want in self.CASES:
+                    with self.subTest(knob=knob):
+                        calls = self._run_with(knob, km._ensure_bundles)
+                        self.assertEqual(calls, [want])
 
 
 if __name__ == "__main__":

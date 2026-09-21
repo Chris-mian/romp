@@ -25,7 +25,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -35,7 +35,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_pausedmx", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_pausedmx", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 SID = "11111111-2222-3333-4444-666666666666"   # the session under test
@@ -60,7 +60,7 @@ class _Base(unittest.TestCase):
         self._saved_fns = {k: getattr(km, k) for k in ("_alive_sessions", "_mark_views_dirty")}
         self.path = str(Path(self.td.name) / (SID + ".jsonl"))
         Path(self.path).write_text("")           # empty transcript: no bg dispatches anywhere
-        km._alive_sessions = lambda now, tmux: [{"sid": SID, "path": self.path}]
+        km._alive_sessions = lambda now, live: [{"sid": SID, "path": self.path}]
         km._mark_views_dirty = lambda *a, **k: None
         self.gid = SID + ":g1"
         self._reset_caches()
@@ -128,8 +128,10 @@ class MatrixMint(_Base):
         # the pair-blind trade (documented in _peer_answered_at): the answered exchange is with a
         # DIFFERENT topic/peer than the stamp's subject, and the stamp still goes dark. The sweep's
         # durable lift is what turns this cell from paused-forever into a fresh closer ruling.
+        # PIN MOVED 2026-09-08: the outbound is a QUESTION (was a coordinate) — the answered clock walks
+        # reply-REQUIRING sends, and a coordinate-only exchange answers nothing (test_awaiting_peer_matrix).
         other = "99999999-aaaa-bbbb-cccc-dddddddddddd"
-        self._log([_msg(1, SID, other, STAMP_EV - 50, "coordinate"),
+        self._log([_msg(1, SID, other, STAMP_EV - 50, "question"),
                    _msg(2, other, SID, REPLY, "coordinate")])
         self.assertTrue(self._dark(self._node(kind="peer")),
                         "any answered outbound pair supersedes a peer stamp (the known trade)")

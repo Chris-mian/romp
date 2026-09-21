@@ -6,7 +6,7 @@ never doubles. SYNTHETIC only."""
 import inspect
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -17,8 +17,8 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_orphan", os.path.join(BIN, "romp-kernel")).load_module()
-sb = SourceFileLoader("romp_sdk_backend_orphan_k", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+km = load_source("romp_kernel_orphan", os.path.join(BIN, "romp-kernel"))
+sb = load_source("romp_sdk_backend_orphan_k", os.path.join(BIN, "romp_sdk_backend.py"))
 
 
 class SalvageVerifiesTheDiskFirst(unittest.TestCase):
@@ -59,6 +59,21 @@ class SalvageVerifiesTheDiskFirst(unittest.TestCase):
         self._live_reply("aaaa1111-0000-0000-0000-000000000001", "the landed reply")
         self.be.retire_live_work(self.sid)
         self.assertEqual(self._markers(), [], "the uuid is on disk — the claim would be false")
+
+    def test_a_textless_twin_on_disk_does_not_eat_the_salvage(self):
+        # T112, guarding the 2026-07-28 class: the CLI persists a record under the SAME uuid with
+        # EMPTY text (a thinking-only twin) while the reply's text streamed only. Byte-containment
+        # alone refused the marker and the watched reply vanished everywhere; the check is
+        # text-aware now, mirroring landed_text_uuids.
+        import json
+        reg = sb.read_reg(self.be.state_dir, self.sid)
+        p = sb.transcript_path(reg.get("cwd") or "", reg.get("lastSid") or self.sid)
+        with open(p, "a") as f:
+            f.write(json.dumps({"type": "assistant", "uuid": "cccc3333-0000-0000-0000-000000000003",
+                                "message": {"content": [{"type": "thinking", "thinking": ""}]}}) + "\n")
+        self._live_reply("cccc3333-0000-0000-0000-000000000003", "the streamed text the twin dropped")
+        self.be.retire_live_work(self.sid)
+        self.assertEqual(len(self._markers()), 1, "the twin carries no text — the streamed reply must salvage")
 
     def test_a_genuinely_lost_reply_still_mints(self):
         self._live_reply("bbbb2222-0000-0000-0000-000000000002", "the discarded partial")
@@ -101,10 +116,10 @@ class OrphanReplyReader(unittest.TestCase):
 class OrphanInterleaveAndDedup(unittest.TestCase):
     def test_build_session_interleaves_the_orphan_as_an_assistant_bubble(self):
         src = inspect.getsource(km.build_session)
-        self.assertIn("orphans = _orphan_replies(sid)", src)
+        self.assertIn("orphans = _past_floor(_orphan_replies(sid))", src)   # floored at the episode boundary since T131
         # interleaved by timestamp in the same flush as the recovery note, as a normal assistant bubble
         self.assertIn('events.append({"kind": "assistant", "md": _o["text"], "orphaned": True,', src)
-        self.assertIn('"uuid": "orphan:%s" % (_o["uuid"] or _o["t"]), "ts": iso(_o["t"])})', src)
+        self.assertIn('"uuid": "orphan:%d:%d" % (_o["t"], _oi), "ts": iso(_o["t"])})', src)   # keyed like every note (T323 stage 4b); the record uuid rides orphanOf
 
     def test_the_orphan_is_deduped_against_what_the_disk_kept(self):
         src = inspect.getsource(km.build_session)
@@ -112,7 +127,7 @@ class OrphanInterleaveAndDedup(unittest.TestCase):
         self.assertIn('if _a.get("type") == "assistant" and not _a.get("isApiError"):', src)
         self.assertIn("_disk_texts.add(_tx)", src)
         # exact OR either-way prefix match → a retry that re-replied (full text, or the partial's completion) skips
-        self.assertIn("if _ot in _disk_texts or any(dt.startswith(_ot) or _ot.startswith(dt) for dt in _disk_texts):", src)
+        self.assertIn("if _ot in _near or any(dt.startswith(_ot) or _ot.startswith(dt) for dt in _near):", src)   # the texts within a turn of the note's time (T323 stage 4b)
 
 
 if __name__ == "__main__":

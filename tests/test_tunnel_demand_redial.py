@@ -19,7 +19,7 @@ import threading
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -27,9 +27,9 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 TOKEN = os.environ["ROMP_SERVE_TOKEN"]
 
@@ -43,8 +43,18 @@ class _FakeProc:
         self.terminated += 1
 
 
+def _keep_remotes(case):
+    """Restore the kernel's `_remotes` map after `case`: the module is ONE object per process for every
+    test file that loads it under this name, so a TESTHOST row planted here otherwise outlives the
+    test — under xdist a whole-map reader in another file (test_kernel_trust's PairsSnapshot) found
+    it (2026-09-02)."""
+    saved = dict(km._remotes)
+    case.addCleanup(lambda: (km._remotes.clear(), km._remotes.update(saved)))
+
+
 class DemandRedial(unittest.TestCase):
     def setUp(self):
+        _keep_remotes(self)
         km._remotes.clear()
         km._tunnel_wake.clear()
 
@@ -102,6 +112,7 @@ class DemandDoors(unittest.TestCase):
         cls.srv.shutdown()
 
     def setUp(self):
+        _keep_remotes(self)
         km._remotes.clear()
         km._tunnel_wake.clear()
         km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 1,

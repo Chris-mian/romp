@@ -10,14 +10,23 @@ Two layers:
     AskUserQuestion -> it surfaces as an askLive picker -> the UI answers ->
     PermissionResultAllow(updated_input={questions, answers}) goes back.
 """
+import asyncio
+import inspect
+import contextlib
+import io
 import os
 import json
+import sys
 import threading
 import time
+import tracemalloc
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
-from importlib.machinery import SourceFileLoader
+from unittest import mock
+from romp_load import load_source
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -25,7 +34,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-sb = SourceFileLoader("romp_sdk_backend", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+sb = load_source("romp_sdk_backend", os.path.join(BIN, "romp_sdk_backend.py"))
 
 
 class PureTranslation(unittest.TestCase):
@@ -146,6 +155,28 @@ class PureTranslation(unittest.TestCase):
         self.assertEqual(sb.pretty_model(""), "")
         self.assertEqual(sb.pretty_model("some-custom-id"), "some-custom-id")        # unrecognised → verbatim
 
+    def test_model_family(self):
+        # the /api-health bucket family a rate limit is scoped to: re.search, not pretty_model's anchored
+        # match, so a provider-prefixed Bedrock/Vertex id lands in its family; the badge form the session
+        # displays is accepted for the retry-attribution fallback; generation-first ids name the family
+        # after the generation and still file under it rather than pooling in `other`
+        for raw, fam in [
+            ("claude-fable-5-1", "fable"),
+            ("claude-fable-5", "fable"),
+            ("claude-haiku-4-5-20251001", "haiku"),
+            ("claude-opus-4-8", "opus"),
+            ("us.anthropic.claude-fable-5-20250101-v1:0", "fable"),   # provider-prefixed: not anchored
+            ("Fable 5", "fable"),                                      # the badge form
+            ("Opus 4.8", "opus"),
+            ("", "unknown"),                                           # nothing learned yet
+            (None, "unknown"),
+            ("some-custom-id", "other"),                               # non-empty, matching nothing
+            ("claude-3-5-sonnet-20241022", "sonnet"),                  # generation-first
+            ("claude-3-opus-20240229", "opus"),
+            ("anthropic.claude-3-haiku-20240307-v1:0", "haiku"),
+        ]:
+            self.assertEqual(sb.model_family(raw), fam, repr(raw))
+
     def test_model_label(self):
         # the live (init/assistant-echoed) name always wins once known
         self.assertEqual(sb.model_label("Opus 4.8", "opus"), "Opus 4.8")
@@ -259,7 +290,7 @@ class LiveTail(unittest.TestCase):
     def test_the_consumed_key_set_cannot_drift_from_the_file_adapter_s(self):
         # sdk_backend loads standalone (no event-model import), so the set is MIRRORED — this pin
         # is what keeps the two halves widening together.
-        em2 = SourceFileLoader("romp_event_model_drift", os.path.join(BIN, "romp-event-model")).load_module()
+        em2 = load_source("romp_event_model_drift", os.path.join(BIN, "romp-event-model"))
         self.assertEqual(sb.TUR_CONSUMED_KEYS, em2.TUR_CONSUMED_KEYS)
 
     def test_command_stdout_stream_becomes_a_turn_ENDING_assistant_atom(self):
@@ -348,7 +379,7 @@ class LiveTail(unittest.TestCase):
     def test_forwards_sends_is_true_for_the_sdk(self):
         be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
         self.assertTrue(be.forwards_sends(),
-                        "the SDK forwards its own sends (mid-turn + fold + interrupt-hold) — the kernel hands "
+                        "the SDK forwards its own sends (mid-turn + one message each + interrupt-hold): the kernel hands "
                         "composer sends straight over instead of parking them (the user 2026-07-17)")
 
     def test_queued_turns_survive_an_interrupt_and_release_when_the_turn_settles(self):
@@ -386,23 +417,24 @@ class LiveTail(unittest.TestCase):
         self.assertIn("blocked = self.inflight > 0 and self._interrupted", src,
                       "inputs() holds queued turns while a turn is interrupted/wedged")
 
-    def test_image_echo_pruned_by_human_floor_when_text_cant_match(self):
-        # The screenshots-piling-up bug (the user 2026-06-25): an image send's echo text is the raw composer
-        # text (an image path), but the transcript extracts the path into an image block, so the echoed path
-        # is NOT in tx_user_texts and the text-prune can never retire it → every screenshot echo accumulates.
-        # The FIFO floor retires it once the transcript's newest genuine-human turn is at/after its send time.
+    def test_image_echo_is_never_floored_it_lands_by_text(self):
+        # The screenshots-piling-up bug (the user 2026-06-25) was the TMUX composer's: its paste hook
+        # rewrites a pasted image path to "[Image #N]", so the echoed path is never in tx_user_texts and a
+        # FIFO floor had to retire the echo once a later genuine-human turn landed. The SDK route never
+        # runs that hook — stream-json input lands the path as typed — so since 2026-09-06 no SDK echo is
+        # floored: an image echo retires when its own text lands (or when the CLI dies holding it, the
+        # dropped marking), exactly like a plain-text one. tests/test_sdk_echo_durability.py has the rest.
         be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
         be._live["s"] = {"echo:img": {"uuid": "echo:img", "t": 100, "_echo_text": "/abs/shot.png"}}
-        be.prune_live("s", set(), set())               # no text/uuid match, no floor → echo persists (the bug)
+        be.prune_live("s", set(), set())               # nothing landed → the echo is the send's only record
         self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["echo:img"])
-        be.prune_live("s", set(), set(), human_floor=120)   # a later genuine-human turn landed → FIFO-retire it
+        be.prune_live("s", set(), set(), human_floor=120)   # a later genuine-human turn: not a retire here
+        self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["echo:img"],
+                         "the message may still sit in the CLI's queue; its path will land as typed")
+        be.prune_live("s", set(), {"/abs/shot.png": 130}, human_floor=130)   # its own record lands → retire
         self.assertEqual(be.live_atoms("s"), [])
-        # a not-yet-landed echo (send time AFTER the floor) must survive
-        be._live["s"] = {"echo:new": {"uuid": "echo:new", "t": 200, "_echo_text": "/abs/new.png"}}
-        be.prune_live("s", set(), set(), human_floor=120)
-        self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["echo:new"])
         # the floor must NOT retire a real stream atom (no _echo_text) — those prune by uuid only
-        be._live["s"]["a9"] = {"uuid": "a9", "t": 50}
+        be._live["s"] = {"a9": {"uuid": "a9", "t": 50}}
         be.prune_live("s", set(), set(), human_floor=300)
         self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["a9"])
 
@@ -449,14 +481,21 @@ class LiveTail(unittest.TestCase):
         self.assertEqual(cmds[0]["message"]["content"], [{"type": "text", "text": "/effort high"}])
         self.assertEqual(cmds[0]["author"], "human")
 
-    def test_set_effort_on_a_dormant_session_stays_quiet(self):
-        # no live thread → the value applies on the next connect; nothing to echo into (no _live entry)
+    def test_set_effort_on_a_dormant_session_still_leaves_the_acknowledging_chip(self):
+        # no live thread → the value applies on the next connect — but the pick is still acknowledged
+        # (reversing this test's earlier "stays quiet" pin): the chip is what the composer's optimistic
+        # bubble retires against, and with nothing landing on a dormant session a typed "/effort low"
+        # sat as an unconfirmed dashed bubble and then vanished without a trace
         d = tempfile.mkdtemp()
         be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
         sid = "11111111-2222-3333-4444-666666666666"
         sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
         self.assertTrue(be.set_effort(sid, "low"))
-        self.assertEqual(be.live_atoms(sid), [])
+        cmds = [a for a in be.live_atoms(sid) if a.get("command") == "/effort"]
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0]["message"]["content"], [{"type": "text", "text": "/effort low"}])
+        self.assertIsNone(cmds[0]["fsid"], "no live thread and no last resume target → none")
+        self.assertEqual(sb.read_reg(d, sid)["effort"], "low", "and the value still applies at the next connect")
 
     def _live_fast_session(self, d, sid, unlocked=False):
         """A constructed SdkSession whose thread READS alive (set_fast's gate) without spawning a CLI.
@@ -540,7 +579,7 @@ class LiveTail(unittest.TestCase):
         # the per-connection unlock is snapshotted from fast_opt exactly where _connect_once builds
         # the options that carry the flag, so the two can never disagree
         import inspect
-        self.assertIn("self._fast_unlocked = self.fast_opt", inspect.getsource(sb.SdkSession._amain))
+        self.assertIn("self._fast_unlocked = self.fast_effective()", inspect.getsource(sb.SdkSession._amain))   # the same expression _options reads (2026-09-17)
 
     def test_set_fast_refuses_bad_values_and_unknown_sids(self):
         d = tempfile.mkdtemp()
@@ -806,6 +845,67 @@ class LiveTail(unittest.TestCase):
         s.client = _Client({"percentage": 88, "model": "claude-opus-4-8"})
         asyncio.run(s._do_refresh_context())
         self.assertEqual(s._ctx_pct(), 88, "tracks the live value across turns")
+        self.assertFalse(s._ctx_over, "88% is inside the window — no overflow flag")
+
+        # the CLI documents percentage as "0-100+": past 100 the tokens exceed the CURRENT model's
+        # window (a 1M→200k model switch does this instantly). The battery stays clamped at 100,
+        # but the overflow is surfaced (ctxOver) instead of clamped into a silent, wrong-looking
+        # 100% (the user 2026-09-02, who switched models and read the full battery as a bug).
+        s.client = _Client({"percentage": 147, "model": "claude-haiku-4-5"})
+        asyncio.run(s._do_refresh_context())
+        self.assertEqual(s._ctx_pct(), 100, "the gauge value itself stays clamped")
+        self.assertTrue(s._ctx_over, "…but the overflow is news, not noise")
+        self.assertTrue(s.snapshot()["ctxOver"], "the snapshot ships it to the statusline")
+        self.assertTrue(sb.read_reg(d, sid).get("liveCtxOver"),
+                        "persisted beside liveCtx so a dormant/restarted session keeps saying so")
+        s.client = _Client({"percentage": 61, "model": "claude-haiku-4-5"})
+        asyncio.run(s._do_refresh_context())
+        self.assertFalse(s._ctx_over, "dropping back inside the window clears the flag")
+        self.assertFalse(sb.read_reg(d, sid).get("liveCtxOver"))
+
+    def test_context_refresh_queued_when_one_is_in_flight(self):
+        """A model/effort switch can ask for a context refresh while the turn-end refresh is still in
+        flight. The in-flight guard used to DROP that call silently, leaving the old model's percentage
+        standing until the next turn (the user 2026-09-02) — now it queues exactly one rerun, so the
+        number reflects the newest world."""
+        import asyncio
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+
+        class _Counting:
+            def __init__(self): self.calls = 0
+            async def get_context_usage(self): self.calls += 1; return {"percentage": 40}
+        s.client = _Counting()
+        s._ctx_refreshing = True                       # a refresh is mid-flight
+        asyncio.run(s._do_refresh_context())
+        self.assertEqual(s.client.calls, 0, "the guarded call never races the in-flight one")
+        self.assertTrue(s._ctx_refresh_again, "…but it is REMEMBERED, not dropped")
+        s._ctx_refreshing = False
+        asyncio.run(s._do_refresh_context())           # the in-flight one finishing runs the queued ask
+        self.assertEqual(s.client.calls, 2, "the queued rerun fires after the live refresh lands")
+        self.assertFalse(s._ctx_refresh_again, "the queue holds ONE rerun, not a storm")
+
+    def test_queued_refresh_survives_a_failed_attempt(self):
+        """PR #886 review: the early return on a failed/None payload sat BEFORE the rerun tail, so a
+        switch-time ask queued behind a refresh that then errored was dropped on the floor — the old
+        model's number stood until the next turn. The rerun fires however the attempt ended."""
+        import asyncio
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+
+        class _FailThenWork:
+            def __init__(self): self.calls = 0
+            async def get_context_usage(self):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("control channel hiccup")
+                return {"percentage": 40}
+        s.client = _FailThenWork()
+        s._ctx_refresh_again = True                    # an ask queued while the failing one was in flight
+        asyncio.run(s._do_refresh_context())           # attempt 1 fails; the queued rerun must still run
+        self.assertEqual(s.client.calls, 2, "the queued ask reruns even when the attempt it waited on failed")
+        self.assertEqual(s._ctx_pct(), 40, "…and the rerun's answer lands")
+        self.assertFalse(s._ctx_refresh_again)
 
     def test_assistant_model_sets_badge_but_synthetic_does_not_corrupt_it(self):
         """The model 'doesn't show' mid-conversation (the user 2026-06-24): injected/synthetic assistant turns
@@ -1194,6 +1294,51 @@ class SetModelModePure(unittest.TestCase):
         self.assertFalse(reg.get("modelPending"), "nothing is coming to resolve dots → resolve immediately, no trap")
         self.assertEqual(sb.model_label(reg["liveModel"], reg["model"]), "Fable")
 
+    def test_learn_model_persists_the_raw_id_beside_the_pretty_name(self):
+        # the pickers' version lists are seeded from a table and COMPLETED from what the CLI actually
+        # reports (the authoritative source for what it serves) — that needs the raw id, not just
+        # the badge text, persisted where the kernel reads regs (liveModelId)
+        sid = self.be.spawn("m", self.d)
+        sess = sb.SdkSession(self.be, sb.read_reg(self.d, sid))
+        sess._learn_model("Fable 5.1", raw="claude-fable-5-1")
+        reg = sb.read_reg(self.d, sid)
+        self.assertEqual((reg["liveModel"], reg["liveModelId"]), ("Fable 5.1", "claude-fable-5-1"))
+        # a pre-fix reg knows the NAME but not the id: the first report of an unchanged name still
+        # lands the id (otherwise a long-running session would never contribute its version)
+        sid2 = self.be.spawn("n", self.d)
+        sb.write_reg(self.d, sid2, {**sb.read_reg(self.d, sid2), "liveModel": "Fable 5"})
+        sess2 = sb.SdkSession(self.be, sb.read_reg(self.d, sid2))
+        self.assertEqual(sess2.model, "Fable 5")
+        sess2._learn_model("Fable 5", raw="claude-fable-5")
+        self.assertEqual(sb.read_reg(self.d, sid2)["liveModelId"], "claude-fable-5")
+        # the seeded id survives construction, so an unchanged report writes nothing new
+        sess3 = sb.SdkSession(self.be, sb.read_reg(self.d, sid2))
+        self.assertEqual(sess3._model_id, "claude-fable-5")
+
+    def test_refresh_context_persists_the_live_model_id(self):
+        # _do_refresh_context is the pre-turn source (get_context_usage answers on connect, before any
+        # init message), so an eager-connected session that never runs a turn still contributes its
+        # version to the pickers
+        sid = self.be.spawn("m", self.d)
+        sess = sb.SdkSession(self.be, sb.read_reg(self.d, sid))
+
+        class _Client:
+            async def get_context_usage(self):
+                return {"percentage": 41.6, "model": "claude-fable-5-1"}
+        sess.client = _Client()
+        asyncio.run(sess._do_refresh_context())
+        reg = sb.read_reg(self.d, sid)
+        self.assertEqual((reg["liveModelId"], reg["liveModel"], reg["liveCtx"]), ("claude-fable-5-1", "Fable 5.1", 42))
+        self.assertEqual(sess._model_id, "claude-fable-5-1")
+
+        # a [1m] variant is persisted as reported — the kernel's picker strips the tag on read
+        class _Client1m:
+            async def get_context_usage(self):
+                return {"percentage": 41.6, "model": "claude-fable-5-1[1m]"}
+        sess.client = _Client1m()
+        asyncio.run(sess._do_refresh_context())
+        self.assertEqual(sb.read_reg(self.d, sid)["liveModelId"], "claude-fable-5-1[1m]")
+
     def test_alias_label_and_model_reflects_alias(self):
         self.assertEqual(sb._alias_label("opus"), "Opus")
         self.assertEqual(sb._alias_label("claude-opus-4-8"), "Opus 4.8")
@@ -1205,6 +1350,704 @@ class SetModelModePure(unittest.TestCase):
         self.assertFalse(sb._model_reflects_alias("Fable 5", "opus"), "the OLD name does not reflect the new pick")
         self.assertTrue(sb._model_reflects_alias("anything", "default"), "default matches the resolved name")
         self.assertFalse(sb._model_reflects_alias("", "opus"), "no live name yet → not resolved")
+
+    def test_a_context_tagged_pick_resolves_its_pending_switch(self):
+        # "/model fable[1m]" — the CLI's 1M-context spelling — routes through the setter, but the literal
+        # "fable[1m]" is never a substring of the pretty live name "Fable 5.1", so the switching-dots
+        # stuck until the thread died. The check reads through the tag.
+        self.assertTrue(sb._model_reflects_alias("Fable 5.1", "fable[1m]"))
+        self.assertTrue(sb._model_reflects_alias("Opus 4.8", "claude-opus-4-8[1m]"))
+        self.assertFalse(sb._model_reflects_alias("Fable 5.1", "opus[1m]"), "still the family that must match")
+        sess = sb.SdkSession(self.be, {"sid": "q", "name": "n", "cwd": self.d, "model": "fable[1m]"})
+        sess.model = "Opus 4.8"
+        sess._model_pending = "fable[1m]"
+        sess._learn_model("Fable 5.1", raw="claude-fable-5-1[1m]")
+        self.assertEqual(sess._model_pending, "", "the new name clears the tagged switch — dots stop")
+
+    def test_a_refused_set_model_reverts_every_layer_and_warns(self):
+        # set_model PERSISTED before the CLI accepted — sdk-defaults.json (the seed for every future
+        # session), the reg (the reconnect's --model) and chosen_model — and a refusal only LOGGED,
+        # unlike _do_set_mode, which reverts every layer. A well-formed id the CLI's catalog rejects
+        # poisoned all three. The refusal now restores what was there and rings the problems.
+        sid = self.be.spawn("m", self.d)
+        self.assertTrue(self.be.set_model(sid, "opus"))                      # the prior, accepted pick
+        sess = sb.SdkSession(self.be, sb.read_reg(self.d, sid))
+        sess.model = "Opus 4.8"
+        self.be.sessions[sid] = sess
+
+        class _RefusingClient:
+            async def set_model(self, model=None):
+                raise Exception("Unknown model: %s" % model)   # the SDK's shape for a CLI error response (_cli_refusal)
+
+            async def get_context_usage(self):
+                return {"percentage": 3, "model": "claude-opus-4-8"}       # the CLI stayed where it was
+        sess.client = _RefusingClient()
+        scheduled = []
+        sess.set_model_live = lambda model, prev=None: scheduled.append((model, prev))   # the loop hop, stubbed
+        # a well-formed id of a known family that the CLI's catalog rejects (another family than the
+        # live one, so the switch is genuinely pending until the CLI answers)
+        self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "claude-fable-9-9", "accepted optimistically, as before")
+        self.assertEqual(sess._model_pending, "claude-fable-9-9")
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(sess._do_set_model(*scheduled[0]))
+        reg = sb.read_reg(self.d, sid)
+        self.assertEqual(reg["model"], "opus", "the reg — the reconnect's --model — is back to the accepted pick")
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "opus", "the seed for future sessions too")
+        self.assertEqual(sess.chosen_model, "opus")
+        self.assertEqual(sess._model_pending, "", "nothing is coming to resolve dots for a refused switch")
+        self.assertFalse(reg.get("modelPending"))
+        probs = [p["text"] for p in self.be.problems()]
+        self.assertEqual(len(probs), 1, "loud: the refusal rings the problems, the mode path's idiom")
+        self.assertIn("claude-fable-9-9", probs[0])
+        self.assertIn("did NOT apply", probs[0])
+        self.assertIn("opus", probs[0].rsplit("reverted", 1)[-1], "and names what it reverted to")
+
+    def test_a_refused_set_model_with_no_prior_pick_leaves_no_residue(self):
+        # the prior state may be ABSENT (a session on the account default, no remembered model):
+        # the revert removes the keys it wrote rather than parking a null or the refused value
+        sid = self.be.spawn("m", self.d)
+        self.assertNotIn("model", sb.read_reg(self.d, sid))
+        self.assertNotIn("model", sb.read_sdk_defaults(self.d))
+        sess = sb.SdkSession(self.be, sb.read_reg(self.d, sid))
+        self.be.sessions[sid] = sess
+
+        class _RefusingClient:
+            async def set_model(self, model=None):
+                raise Exception("Unknown model: %s" % model)
+
+            async def get_context_usage(self):
+                return {"percentage": 3, "model": "claude-fable-5-1"}
+        sess.client = _RefusingClient()
+        scheduled = []
+        sess.set_model_live = lambda model, prev=None: scheduled.append((model, prev))
+        self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))
+        asyncio.run(sess._do_set_model(*scheduled[0]))
+        self.assertNotIn("model", sb.read_reg(self.d, sid), "no pick before → no pick after")
+        self.assertNotIn("model", sb.read_sdk_defaults(self.d))
+        self.assertEqual(sess.chosen_model, "")
+        self.assertEqual(sb.read_reg(self.d, sid)["liveModel"], "Fable 5.1", "the badge shows what the CLI runs")
+
+    # ── refusal vs no-answer ──────────────────────────────────────────────────────────────────────
+    # The installed SDK (claude_agent_sdk 0.2.132, _internal/query.py) raises a BARE Exception for two
+    # different worlds: the CLI ANSWERED a control request with an error (`Exception(response["error"])`,
+    # built from the control_response frame — no cause), and the answer NEVER CAME (`Exception("Control
+    # request timeout: set_model") from TimeoutError` after fail_after; Query.close() cancels the reader
+    # without resolving pending requests, so a request stranded by a reconnect teardown ends the same
+    # way). A reader that dies re-raises ITS OWN typed error into every pending request; a disconnected
+    # client raises CLIConnectionError. Verified by probe against the installed package. The fakes below
+    # reproduce those exact shapes.
+
+    def _live(self, prior="opus", live="Opus 4.8"):
+        sid = self.be.spawn("m", self.d)
+        if prior:
+            self.assertTrue(self.be.set_model(sid, prior))
+        sess = sb.SdkSession(self.be, sb.read_reg(self.d, sid))
+        sess.model = live
+        self.be.sessions[sid] = sess
+        scheduled = []
+        sess.set_model_live = lambda model, prev=None: scheduled.append((model, prev))
+        return sid, sess, scheduled
+
+    def test_the_refusal_discriminator_matches_the_installed_sdks_shapes(self):
+        refusal = Exception("Unknown model: claude-fable-9-9")                 # control_response subtype=error
+        self.assertTrue(sb._cli_refusal(refusal))
+        self.assertTrue(sb._cli_refusal(Exception("Unknown error")), "the SDK's default text when the CLI's error is empty")
+        try:
+            raise Exception("Control request timeout: set_model") from TimeoutError()   # fail_after expired / stranded
+        except Exception as e:
+            self.assertFalse(sb._cli_refusal(e), "a timeout is no answer")
+        self.assertFalse(sb._cli_refusal(Exception("Control request timeout: set_model")),
+                         "…even read without its cause: the prefix alone says no answer")
+
+        class ProcessError(Exception):                                          # a typed SDK error the dying reader
+            pass                                                                # fans out to pending requests
+        self.assertFalse(sb._cli_refusal(ProcessError("exit 1")), "a reader death is no answer")
+        self.assertFalse(sb._cli_refusal(RuntimeError("stream broke")))
+
+    def test_a_lost_answer_is_not_a_refusal_the_pick_stands_and_nothing_rings(self):
+        # the reproduced strand: a model AND an effort picked while the session worked, both parked,
+        # replayed back-to-back at turn end — set_model's control request went to the OLD CLI and
+        # set_effort's reconnect tore that client down with the answer unread. The NEW connection came
+        # up with --model <new> (chosen_model rides _options) and ran it; 60s later the stranded request
+        # timed out and a revert flipped chosen_model, the reg and sdk-defaults back to the PREVIOUS
+        # model while the CLI ran the new one — the registry/argv divergence this change exists to
+        # close, re-minted, plus a false "did NOT apply" problem and, for a cheaper prev, a false
+        # model-fallback card at the next reconnect.
+        sid, sess, scheduled = self._live()
+        logs = []
+        self.be._log_cb = logs.append
+
+        class _NeverAnswers:
+            async def set_model(self, model=None):
+                raise Exception("Control request timeout: set_model") from TimeoutError()
+
+            async def get_context_usage(self):
+                return {"percentage": 3, "model": "claude-fable-5-1"}    # the reconnect runs the pick
+        sess.client = _NeverAnswers()
+        self.assertTrue(self.be.set_model(sid, "fable"))
+        asyncio.run(sess._do_set_model(*scheduled[0]))
+        self.assertEqual(sess.chosen_model, "fable", "the pick stands — the next connect's _options asserts it")
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "fable", "the reg (the reconnect's --model) keeps the pick")
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "fable", "so does the seed for future sessions")
+        self.assertEqual(self.be.problems(), [], "a lost answer is not a failed switch — nothing rings")
+        lost = [m for m in logs if "set_model" in m and "fable" in m]
+        self.assertEqual(len(lost), 1, "one line says the answer was lost")
+        self.assertNotIn("refused", lost[0])
+        self.assertNotIn("did NOT apply", lost[0])
+        self.assertIn("lost", lost[0])
+        # the same for a client that was already disconnected when the request was made (the SDK's
+        # typed CLIConnectionError), and for a reader death fanned out to the pending request
+        for exc in (type("CLIConnectionError", (Exception,), {})("Not connected. Call connect() first."),
+                    type("ProcessError", (Exception,), {})("Command failed with exit code 1")):
+            sid2, sess2, sched2 = self._live()
+
+            class _Typed:
+                async def set_model(self, model=None, _e=exc):
+                    raise _e
+
+                async def get_context_usage(self):
+                    return {"percentage": 3, "model": "claude-sonnet-4-6"}
+            sess2.client = _Typed()
+            self.assertTrue(self.be.set_model(sid2, "sonnet"))
+            asyncio.run(sess2._do_set_model(*sched2[0]))
+            self.assertEqual(sess2.chosen_model, "sonnet", type(exc).__name__)
+            self.assertEqual(sb.read_reg(self.d, sid2)["model"], "sonnet", type(exc).__name__)
+        self.assertEqual(self.be.problems(), [])
+
+    def test_a_refusal_landing_after_a_newer_pick_stands_down_entirely(self):
+        # same session, A then B: A's control request answers late with the CLI's error AFTER B was
+        # accepted. A revert that wrote A's captured snapshots back unconditionally rolled the ACCEPTED
+        # pick B back to the pre-A model in every layer while the CLI ran B. A writer whose evidence
+        # predates the diary stands down.
+        sid, sess, scheduled = self._live()
+
+        class _Client:
+            def __init__(self):
+                self.b_done = asyncio.Event()
+                self.accepted = None
+
+            async def set_model(self, model=None):
+                if model == "claude-fable-9-9":          # pick A — the CLI answers with an error, late
+                    await self.b_done.wait()
+                    raise Exception("Unknown model: %s" % model)
+                self.accepted = model                    # pick B — accepted at once
+                self.b_done.set()
+
+            async def get_context_usage(self):
+                return {"percentage": 3, "model": "claude-sonnet-4-6"}
+        self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))     # A: prev = opus
+        self.assertTrue(self.be.set_model(sid, "sonnet"))               # B: prev = A
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "sonnet")
+
+        async def drive():
+            cl = _Client()
+            sess.client = cl
+            ta = asyncio.ensure_future(sess._do_set_model(*scheduled[0]))   # one task per pick, as set_model_live does
+            tb = asyncio.ensure_future(sess._do_set_model(*scheduled[1]))
+            await asyncio.gather(ta, tb)
+            return cl
+        cl = asyncio.run(drive())
+        self.assertEqual(cl.accepted, "sonnet")
+        self.assertEqual(sess.chosen_model, "sonnet", "B stands: the late refusal of A owns nothing any more")
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "sonnet")
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "sonnet")
+        self.assertEqual(self.be.problems(), [], "a superseded refusal is not the user's problem — B applied")
+
+    def test_a_revert_leaves_a_layer_a_newer_writer_holds(self):
+        # the cross-session twin: sdk-defaults.json is SHARED. S1 picks X (later refused); S2 — dormant,
+        # no CLI to refuse — picks Y, which lands in the defaults as every set_model does. X's refusal
+        # must not restore S1's captured default over Y. Each layer reverts only while it still holds
+        # the refused value (compare-and-swap).
+        s1, sess1, sched1 = self._live()
+        s2 = self.be.spawn("two", self.d)
+        self.assertTrue(self.be.set_model(s1, "claude-fable-9-9"))     # X: captures default = opus
+        self.assertTrue(self.be.set_model(s2, "haiku"))                # Y: defaults.model = haiku
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "haiku")
+
+        class _Refusing:
+            async def set_model(self, model=None):
+                raise Exception("Unknown model: %s" % model)
+
+            async def get_context_usage(self):
+                return {"percentage": 3, "model": "claude-opus-4-8"}
+        sess1.client = _Refusing()
+        asyncio.run(sess1._do_set_model(*sched1[0]))
+        self.assertEqual(sess1.chosen_model, "opus", "S1's own layers revert — they still held X")
+        self.assertEqual(sb.read_reg(self.d, s1)["model"], "opus")
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "haiku", "S2's newer default survives")
+        self.assertEqual(sb.read_reg(self.d, s2)["model"], "haiku")
+        self.assertEqual(len(self.be.problems()), 1, "S1's refusal is still loud")
+
+    def test_a_refusal_tells_the_kernel_to_forget_the_pick_superseded_or_not_a_lost_answer_does_not(self):
+        """The kernel records a version as its family's pin BEFORE the CLI rules (_set_model_or_park →
+        _note_model_pick), and the revert never reached that memory: after a refusal the family row kept
+        sending the refused id, re-ringing the problem on every click. The backend tells the kernel through
+        a class-level hook, the on_model_fallback idiom — on a VERDICT.
+
+        A SUPERSEDED refusal forgets too: the newer pick owns chosen_model and the reg, but the pin the
+        kernel recorded for the REFUSED id is its own — a pick in another family, or the same family's
+        pin when the newer pick is an alias — and the CLI did rule on it. Left in place, a family click
+        re-sent the refused id. Firing the hook is safe for the newer pick because the kernel's forget
+        compares-and-swaps by value (_forget_model_pick(fam, only=id)): a newer pin for the same family
+        is never this refusal's to drop (test_model_versions pins that side). A LOST answer forgets
+        nothing — it says nothing about the id."""
+        calls = []
+        type(self.be).on_model_refused = staticmethod(lambda sid, value: calls.append((sid, value)))
+        try:
+            sid, sess, scheduled = self._live()
+
+            class _Refusing:
+                async def set_model(self, model=None):
+                    raise Exception("Unknown model: %s" % model)
+
+                async def get_context_usage(self):
+                    return {"percentage": 3, "model": "claude-opus-4-8"}
+            sess.client = _Refusing()
+            self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))
+            asyncio.run(sess._do_set_model(*scheduled[0]))
+            self.assertEqual(calls, [(sid, "claude-fable-9-9")], "the refused id, as the kernel recorded it")
+            # a lost answer: no call
+            sid2, sess2, sched2 = self._live()
+
+            class _Lost:
+                async def set_model(self, model=None):
+                    raise Exception("Control request timeout: set_model") from TimeoutError()
+
+                async def get_context_usage(self):
+                    return {"percentage": 3, "model": "claude-fable-5-1"}
+            sess2.client = _Lost()
+            self.assertTrue(self.be.set_model(sid2, "claude-fable-5-1"))
+            asyncio.run(sess2._do_set_model(*sched2[0]))
+            self.assertEqual(len(calls), 1, "a lost answer forgets nothing")
+            # a superseded refusal: the CLI ruled on the id, so its pin goes too — the newer pick (another
+            # family here) recorded its own pin, which this forget cannot reach (CAS by value, kernel side)
+            sid3, sess3, sched3 = self._live()
+            sess3.client = _Refusing()
+            rang = len(self.be.problems())
+            self.assertTrue(self.be.set_model(sid3, "claude-fable-9-9"))
+            self.assertTrue(self.be.set_model(sid3, "claude-sonnet-4-6"))
+            asyncio.run(sess3._do_set_model(*sched3[0]))
+            self.assertEqual(calls[1:], [(sid3, "claude-fable-9-9")], "a superseded refusal forgets the refused id")
+            self.assertEqual(sess3.chosen_model, "claude-sonnet-4-6", "…and touches nothing the newer pick owns")
+            self.assertEqual(sb.read_reg(self.d, sid3)["model"], "claude-sonnet-4-6")
+            self.assertEqual(len(self.be.problems()), rang, "and rings nothing — the user already picked again")
+        finally:
+            del type(self.be).on_model_refused
+
+    def test_a_superseded_write_whose_answer_was_lost_forgets_nothing_and_drops_its_node(self):
+        # superseded is computed from chosen_model alone — so a superseded write whose answer was LOST
+        # (a timeout, a request stranded by a reconnect teardown) must not forget the user's pin for it:
+        # a lost answer says nothing about the id. The hook fires on a refusal alone. The superseded lost
+        # write's node goes the way a settled write's does (dropped ≡ settled, the dead-thread rule): the
+        # store keeps the newer pick, and the newer pick's own unwind lands on this write — a lost pick
+        # stands, it was never refused.
+        calls = []
+        type(self.be).on_model_refused = staticmethod(lambda sid, value: calls.append((sid, value)))
+        try:
+            sid, sess, sched = self._live()                                     # accepted: opus
+
+            class _LostThenRefuses:
+                async def set_model(self, model=None):
+                    if model == "claude-fable-9-9":
+                        raise Exception("Control request timeout: set_model") from TimeoutError()
+                    raise Exception("Unknown model: %s" % model)
+
+                async def get_context_usage(self):
+                    return {"percentage": 3, "model": "claude-opus-4-8"}
+            sess.client = _LostThenRefuses()
+            self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))         # A: a version pin
+            self.assertTrue(self.be.set_model(sid, "claude-sonnet-4-6"))        # B: the newer pick
+            rang = len(self.be.problems())
+            asyncio.run(sess._do_set_model(*sched[0]))                         # A's answer: lost, superseded by B
+            self.assertEqual(calls, [], "a lost answer forgets nothing, superseded or not")
+            self.assertEqual(sess.chosen_model, "claude-sonnet-4-6", "the newer pick owns the session's layers")
+            self.assertEqual(sb.read_reg(self.d, sid)["model"], "claude-sonnet-4-6")
+            self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-sonnet-4-6", "the store keeps the newer write")
+            self.assertEqual(len(self.be.problems()), rang, "and rings nothing — the user already picked again")
+            nodes = {n["value"]: n for n in self.be._seed_writes.values()}
+            self.assertEqual(set(nodes), {"claude-sonnet-4-6"}, "A's node is dropped; B's stays pending")
+            self.assertEqual(nodes["claude-sonnet-4-6"]["prior"], "claude-fable-9-9",
+                             "B still points at A's write — lost, not refused, so it is what B unwinds onto")
+            asyncio.run(sess._do_set_model(*sched[1]))                         # B refused — the head
+            self.assertEqual(calls, [(sid, "claude-sonnet-4-6")], "B's refusal is a verdict: it forgets B alone")
+            self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-fable-9-9")
+            self.assertEqual(sess.chosen_model, "opus", "the session's own layers go back to the last ACCEPTED model")
+            self.assertEqual(self.be._seed_writes, {})
+        finally:
+            del type(self.be).on_model_refused
+
+    # ── the revert target is the last ACCEPTED state ──────────────────────────────────────────────
+    class _RefusesAll:
+        """A CLI that answers every set_model with an error and keeps running Opus 4.8."""
+        async def set_model(self, model=None):
+            raise Exception("Unknown model: %s" % model)
+
+        async def get_context_usage(self):
+            return {"percentage": 3, "model": "claude-opus-4-8"}
+
+    def test_two_refusals_in_a_row_restore_the_accepted_model_never_the_first_refused_pick(self):
+        # A then B, BOTH refused. A's answer lands after B's optimistic writes and stands down
+        # (superseded) — right. But B's snapshot was captured AFTER A's writes, so it held A, and a
+        # revert to "what the write replaced" would compare-and-swap A — a REFUSED id — back into
+        # chosen_model, the reg and the shared defaults: the poison the revert exists to remove,
+        # embedded by the revert. The revert restores the last state the CLI ACCEPTED (opus, before
+        # either pick), never the last state WRITTEN. First with NO accepted pick anywhere (a fresh
+        # store, a session on the account default): every layer returns to ABSENCE, never to A.
+        sid0, sess0, sched0 = self._live(prior="")
+        self.assertNotIn("model", sb.read_reg(self.d, sid0))
+        sess0.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(sid0, "claude-fable-9-9"))        # A
+        self.assertTrue(self.be.set_model(sid0, "claude-sonnet-9-9"))       # B, written over A
+
+        async def drive0():
+            await asyncio.gather(sess0._do_set_model(*sched0[0]), sess0._do_set_model(*sched0[1]))
+        asyncio.run(drive0())
+        self.assertEqual(sess0.chosen_model, "")
+        self.assertNotIn("model", sb.read_reg(self.d, sid0), "no accepted pick before → none after")
+        self.assertNotIn("model", sb.read_sdk_defaults(self.d))
+        self.assertEqual(len(self.be.problems()), 1, "B's refusal rings once; A's stood down")
+        # then with an accepted pick before A (opus, set while the session was dormant — the connect asserts
+        # it): every layer returns to opus
+        sid, sess, scheduled = self._live()                                 # accepted: opus
+        sess.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))         # A
+        self.assertTrue(self.be.set_model(sid, "claude-sonnet-9-9"))        # B, written over A
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "claude-sonnet-9-9")
+
+        async def drive():
+            await asyncio.gather(sess._do_set_model(*scheduled[0]), sess._do_set_model(*scheduled[1]))
+        asyncio.run(drive())
+        self.assertEqual(sess.chosen_model, "opus", "not A — a refused id is never a revert target")
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "opus")
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "opus")
+        self.assertFalse(sb.read_reg(self.d, sid).get("modelPending"))
+        probs = [p["text"] for p in self.be.problems()]
+        self.assertEqual(len(probs), 2, "one ring per session — B's refusal; A's stood down")
+        self.assertIn("opus", probs[1].rsplit("reverted", 1)[-1], "and names the ACCEPTED model it went back to")
+
+    def test_a_late_acceptance_becomes_the_revert_target_of_the_pick_after_it(self):
+        # the accepted state moves on ACCEPTANCE, whenever it lands: A accepted after B was already
+        # written, then B refused → B reverts to A (the CLI runs A), not to the pre-A model
+        sid, sess, scheduled = self._live()                                 # accepted: opus
+
+        class _Client:
+            async def set_model(self, model=None):
+                if model != "claude-fable-5-1":
+                    raise Exception("Unknown model: %s" % model)         # B refused; A accepted
+
+            async def get_context_usage(self):
+                return {"percentage": 3, "model": "claude-fable-5-1"}
+        sess.client = _Client()
+        self.assertTrue(self.be.set_model(sid, "claude-fable-5-1"))         # A
+        self.assertTrue(self.be.set_model(sid, "claude-sonnet-9-9"))        # B
+
+        async def drive():
+            await asyncio.gather(sess._do_set_model(*scheduled[0]), sess._do_set_model(*scheduled[1]))
+        asyncio.run(drive())
+        self.assertEqual(sess.chosen_model, "claude-fable-5-1")
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "claude-fable-5-1")
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-fable-5-1")
+
+    def test_a_connect_asserts_the_pick_whose_answer_died_with_its_thread(self):
+        # a pick written optimistically whose control request never resolved (the thread died) is what
+        # the NEXT connect launches with (--model rides _options); the CLI's init reporting it is the
+        # acceptance — so a later refused pick reverts to IT, not to the model accepted before it
+        sid, sess, scheduled = self._live()                                 # accepted: opus
+        self.assertTrue(self.be.set_model(sid, "claude-fable-5-1"))         # A — never driven: its task died
+
+        class _Sys:
+            def __init__(self, data): self.subtype = "init"; self.data = data
+
+        async def _noop(): pass
+        sess._do_refresh_context = _noop
+
+        async def connect():
+            sess._on_message(_Sys({"model": "claude-fable-5-1"}), _AssistantMessage, _ResultMessage, _Sys)
+            await asyncio.sleep(0)
+        asyncio.run(connect())
+        sess.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(sid, "claude-sonnet-9-9"))        # B, refused
+        asyncio.run(sess._do_set_model(*scheduled[1]))
+        self.assertEqual(sess.chosen_model, "claude-fable-5-1", "the connect made A the accepted model")
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "claude-fable-5-1")
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-fable-5-1")
+
+    # ── the SHARED defaults are ruled per write, by token ─────────────────────────────────────────
+    # sdk-defaults.json is one store for every session. Deciding "is the value in it still my write?" by
+    # VALUE from a per-session picture of the layer is wrong three ways, each reproduced below; the store
+    # carries the identity of the write that set it (`modelTok`), and a refusal unwinds exactly its own write.
+    class _AcceptsAll:
+        """A CLI that accepts every set_model and reports the picked model."""
+        def __init__(self, live="claude-sonnet-5-2"):
+            self.live = live
+
+        async def set_model(self, model=None):
+            return None
+
+        async def get_context_usage(self):
+            return {"percentage": 3, "model": self.live}
+
+    def test_picking_the_value_the_shared_default_already_holds_then_being_refused_leaves_it_in_place(self):
+        # The most common pick of all: the value another session's ACCEPTED pick left in the shared
+        # defaults — a new session seeds from it, and picking it again is one click. A by-value scheme
+        # cannot adopt it as the baseline (the value is in this session's own unaccepted set the moment
+        # it is picked), so the refusal restores a STALE baseline over the other session's pick.
+        sid, sess, sched = self._live()                                    # accepted opus; defaults = opus
+        other = self.be.spawn("two", self.d)
+        self.assertTrue(self.be.set_model(other, "claude-sonnet-5-2"))     # dormant: accepted where it stands
+        self.assertEqual(sb.read_sdk_defaults(self.d)["model"], "claude-sonnet-5-2")
+        sess.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(sid, "claude-sonnet-5-2"))       # the SAME value; this CLI refuses it
+        asyncio.run(sess._do_set_model(*sched[-1]))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-sonnet-5-2",
+                         "the other session's accepted pick stays the seed")
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "opus", "this session's own layers revert")
+        self.assertEqual(sess.chosen_model, "opus")
+        self.assertEqual(sb.read_reg(self.d, other)["model"], "claude-sonnet-5-2")
+        # the same with the other session LIVE and its CLI accepting — its accepted pick, literally
+        s3, sess3, sched3 = self._live()
+        s4, sess4, sched4 = self._live()
+        sess4.client = self._AcceptsAll()
+        self.assertTrue(self.be.set_model(s4, "claude-sonnet-5-2"))
+        asyncio.run(sess4._do_set_model(*sched4[-1]))                      # accepted
+        sess3.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(s3, "claude-sonnet-5-2"))
+        asyncio.run(sess3._do_set_model(*sched3[-1]))                      # refused
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-sonnet-5-2")
+        self.assertEqual(sb.read_reg(self.d, s3)["model"], "opus")
+        self.assertEqual(sb.read_reg(self.d, s4)["model"], "claude-sonnet-5-2")
+
+    def test_an_id_this_session_once_refused_stays_when_another_session_has_since_accepted_it(self):
+        # a by-value scheme keeps a refused id in the session's unaccepted set FOREVER, so the shared
+        # default holding it — put there later by another session whose CLI accepted it (a newer CLI,
+        # another account) — can never be adopted as a baseline, and this session's next refusal restores
+        # its own stale baseline over that accepted pick
+        sid, sess, sched = self._live()                                    # accepted opus
+        sess.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))        # X, refused here
+        asyncio.run(sess._do_set_model(*sched[-1]))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "opus")
+        other, sess2, sched2 = self._live()
+        sess2.client = self._AcceptsAll("claude-fable-9-9")
+        self.assertTrue(self.be.set_model(other, "claude-fable-9-9"))      # X again, on a CLI that takes it
+        asyncio.run(sess2._do_set_model(*sched2[-1]))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-fable-9-9")
+        self.assertTrue(self.be.set_model(sid, "claude-sonnet-9-9"))       # Y, refused
+        asyncio.run(sess._do_set_model(*sched[-1]))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-fable-9-9",
+                         "the other session's accepted X stands; this session's old refusal is not evidence")
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "opus")
+
+    def test_two_cross_session_refusals_never_seed_a_refused_id_in_either_order(self):
+        # Two live sessions pick concurrently: b's write lands on a's PENDING one. A by-value scheme
+        # adopts a's pending value as b's baseline (it is not in b's own unaccepted set), so when both
+        # are refused — a first, whose compare-and-swap stands down because b holds the store — b's
+        # revert restores a's REFUSED id as the seed every new session launches with.
+        a, sa, qa = self._live()
+        b, sb_, qb = self._live()
+        sa.client = sb_.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(a, "claude-fable-9-9"))          # Va, pending
+        self.assertTrue(self.be.set_model(b, "claude-sonnet-9-9"))         # Vb on top of it
+        asyncio.run(sa._do_set_model(*qa[-1]))                             # Va refused — not the head: spliced out
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-sonnet-9-9", "b's write still pending")
+        asyncio.run(sb_._do_set_model(*qb[-1]))                            # Vb refused — head: back past Va
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "opus", "neither refused id is the seed")
+        self.assertEqual((sb.read_reg(self.d, a)["model"], sb.read_reg(self.d, b)["model"]), ("opus", "opus"))
+        # the other order: b's refusal first unwinds onto a's pending Va (honest — a's verdict is still out),
+        # then a's refusal takes it back to opus
+        self.assertTrue(self.be.set_model(a, "claude-fable-9-9"))
+        self.assertTrue(self.be.set_model(b, "claude-sonnet-9-9"))
+        asyncio.run(sb_._do_set_model(*qb[-1]))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-fable-9-9", "a's write, still pending")
+        asyncio.run(sa._do_set_model(*qa[-1]))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "opus")
+        self.assertEqual(len(self.be.problems()), 4, "every refusal rang once")
+        # and an ACCEPTED write under a refused one is what the refusal unwinds onto
+        sa.client = self._AcceptsAll("claude-fable-9-9")
+        self.assertTrue(self.be.set_model(a, "claude-fable-9-9"))
+        self.assertTrue(self.be.set_model(b, "claude-sonnet-9-9"))
+        asyncio.run(sa._do_set_model(*qa[-1]))                             # Va accepted
+        asyncio.run(sb_._do_set_model(*qb[-1]))                            # Vb refused
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-fable-9-9")
+        self.assertEqual(sb.read_reg(self.d, a)["model"], "claude-fable-9-9")
+        self.assertEqual(sb.read_reg(self.d, b)["model"], "opus")
+
+    def test_the_store_carries_the_writes_token_and_a_seed_never_does(self):
+        # every writer of `model` stamps a fresh token; the spawn seed copies the model alone
+        sid = self.be.spawn("m", self.d)
+        self.assertTrue(self.be.set_model(sid, "opus"))                    # dormant path
+        d = sb.read_sdk_defaults(self.d)
+        self.assertEqual(d["model"], "opus")
+        t0 = d.get("modelTok")
+        self.assertTrue(t0 and isinstance(t0, str))
+        s2 = self.be.spawn("n", self.d)
+        self.assertEqual(sb.read_reg(self.d, s2)["model"], "opus")
+        self.assertNotIn("modelTok", sb.read_reg(self.d, s2), "the token is the store's, not the session's")
+        sess = sb.SdkSession(self.be, sb.read_reg(self.d, sid))
+        self.be.sessions[sid] = sess
+        sess.set_model_live = lambda model, prev=None: None
+        self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))        # live path
+        d = sb.read_sdk_defaults(self.d)
+        self.assertTrue(d["modelTok"] and d["modelTok"] != t0, "a new write, a new token")
+        self.be.set_effort(sid, "low")
+        self.assertEqual(sb.read_sdk_defaults(self.d)["modelTok"], d["modelTok"], "an effort write leaves it alone")
+        self.assertNotIn("effortTok", sb.read_sdk_defaults(self.d), "only the model carries one")
+
+    def test_a_defaults_file_without_a_token_is_never_reverted(self):
+        # compat, fail-safe: a file an older kernel or a hand edit wrote carries no `modelTok` — no
+        # token, no match, and the revert leaves the store alone rather than guess
+        sid, sess, sched = self._live()                                    # accepted opus
+        sess.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))
+        self.assertTrue(sb.read_sdk_defaults(self.d).get("modelTok"))
+        sb._defaults_path(self.d).write_text(json.dumps({"model": "claude-fable-9-9", "effort": "low"}))
+        asyncio.run(sess._do_set_model(*sched[-1]))                        # refused
+        self.assertEqual(sb.read_sdk_defaults(self.d), {"model": "claude-fable-9-9", "effort": "low"},
+                         "untokened: not this write's to move")
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "opus", "the session's own layers still revert")
+        self.assertEqual(sess.chosen_model, "opus")
+        # and a write whose verdict never came (the thread died) leaves no node behind to unwind later
+        sid2, sess2, sched2 = self._live()
+        self.assertTrue(self.be.set_model(sid2, "claude-sonnet-9-9"))
+        self.assertEqual(len(self.be._seed_writes), 1)
+        self.be._on_session_gone(sess2)
+        self.assertEqual(self.be._seed_writes, {}, "dropped with the thread; the store keeps the value")
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-sonnet-9-9")
+
+    def test_a_refusal_landing_between_the_shared_write_and_its_node_never_seeds_the_refused_id(self):
+        # If _seed_write_pending wrote the store under the lock, RELEASED it, and took it again to insert
+        # the node, a refusal for the write it replaced — on the SDK loop thread, through _revert_model —
+        # could run in that gap: it would pop its own node and re-point only the nodes that EXISTED, so
+        # the new node would be inserted afterwards still pointing at the refused (value, token); the
+        # head check would stand down (the file's head is the new write). The new write's own refusal
+        # would then restore the refused id under a token no node knew — unwindable by nothing, and the
+        # seed of every new session. Deterministic stand-in for "the other thread takes the lock the
+        # instant this one lets go": a lock whose RELEASE runs an armed action once — A's refusal — so it
+        # lands wherever the first release inside set_model falls. The write and the insert are one hold.
+        a, sa, qa = self._live()
+        b, sb_, qb = self._live()
+        sa.client = sb_.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(a, "claude-fable-9-9"))          # Va pending, the head
+
+        class _ReleaseRuns:
+            """_defaults_lock stand-in: the first release after arming runs the armed action."""
+            def __init__(self):
+                self._l, self.armed = threading.Lock(), None
+
+            def locked(self):
+                return self._l.locked()
+
+            def __enter__(self):
+                self._l.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                self._l.release()
+                fn, self.armed = self.armed, None
+                if fn:
+                    fn()
+        lock = _ReleaseRuns()
+        lock.armed = lambda: asyncio.run(sa._do_set_model(*qa[-1]))       # Va refused, at the first release
+        with mock.patch.object(sb, "_defaults_lock", lock):
+            self.assertTrue(self.be.set_model(b, "claude-sonnet-9-9"))     # Vb on top of Va
+        self.assertIsNone(lock.armed, "the refusal ran inside b's set_model")
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "claude-sonnet-9-9", "b's write is the head")
+        self.assertEqual(sb.read_reg(self.d, a)["model"], "opus", "a's own layers reverted")
+        (nb,) = self.be._seed_writes.values()
+        self.assertEqual((nb["value"], nb["prior"]), ("claude-sonnet-9-9", "opus"),
+                         "b's node points PAST the refused write: the refusal saw it")
+        asyncio.run(sb_._do_set_model(*qb[-1]))                            # Vb refused — the head: back to opus
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "opus", "neither refused id is the seed")
+        self.assertEqual(self.be._seed_writes, {})
+        self.assertEqual(len(self.be.problems()), 2, "every refusal rang once")
+
+    # ── snapshot and write in ONE lock hold; chosen_model compare-and-assign under the session lock ──
+    def test_a_defaults_or_reg_read_taken_outside_the_store_lock_never_feeds_the_revert(self):
+        # A set_model that captured its snapshots (read_reg, read_sdk_defaults) OUTSIDE _reg_lock /
+        # _defaults_lock and only then took the locks to write let a writer on the other thread (a
+        # revert, another session's pick) land between the read and the write, so the snapshot described
+        # a world the write never replaced. Deterministic stand-in for that interleave: a read made
+        # WITHOUT the store lock held reports a phantom value. If any such read feeds the revert, the
+        # phantom lands in the store; a read-modify-write under one hold never sees it.
+        sid, sess, scheduled = self._live()                                 # accepted: opus
+        sess.client = self._RefusesAll()
+        real_defaults, real_reg = sb.read_sdk_defaults, sb.read_reg
+        be = self.be
+
+        def phantom_defaults(state_dir):
+            d = real_defaults(state_dir)
+            return d if sb._defaults_lock.locked() else {**d, "model": "phantom-unlocked-read"}
+
+        def phantom_reg(state_dir, s):
+            r = real_reg(state_dir, s)
+            return r if (r is None or be._reg_lock.locked()) else {**r, "model": "phantom-unlocked-read"}
+        with mock.patch.object(sb, "read_sdk_defaults", phantom_defaults), mock.patch.object(sb, "read_reg", phantom_reg):
+            self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "claude-fable-9-9", "the optimistic write landed")
+        asyncio.run(sess._do_set_model(*scheduled[0]))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "opus", "the defaults snapshot was read under the lock")
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "opus", "so was the reg snapshot")
+        self.assertEqual(sess.chosen_model, "opus")
+
+    def test_chosen_model_is_written_only_under_the_session_lock(self):
+        # _revert_model compares and assigns sess.chosen_model while the kernel thread's set_model
+        # assigns it — a torn compare-and-swap unless both writers hold the session's lock around the
+        # compare-and-assign; a property stand-in records any write made without it.
+        sid = self.be.spawn("m", self.d)
+        self.assertTrue(self.be.set_model(sid, "opus"))
+        unlocked = []
+
+        class _Guarded(sb.SdkSession):
+            @property
+            def chosen_model(self):
+                return self.__dict__.get("_chosen", "")
+
+            @chosen_model.setter
+            def chosen_model(self, v):
+                lk = self.__dict__.get("_lock")           # absent during __init__'s own seed (before the lock exists)
+                if lk is not None and not lk.locked():
+                    unlocked.append(v)
+                self.__dict__["_chosen"] = v
+        sess = _Guarded(self.be, sb.read_reg(self.d, sid))
+        sess.model = "Opus 4.8"
+        self.be.sessions[sid] = sess
+        scheduled = []
+        sess.set_model_live = lambda model, prev=None: scheduled.append((model, prev))
+        sess.client = self._RefusesAll()
+        self.assertTrue(self.be.set_model(sid, "claude-fable-9-9"))
+        self.assertEqual(sess.chosen_model, "claude-fable-9-9")
+        asyncio.run(sess._do_set_model(*scheduled[0]))
+        self.assertEqual(sess.chosen_model, "opus")
+        self.assertEqual(unlocked, [], "every write — the optimistic one and the revert — held the lock")
+        # the compare half of the revert's compare-and-swap sits in the SAME hold as its assign
+        src = inspect.getsource(sb.SdkBackend._revert_model)
+        hold = src.index("with sess._lock:")
+        self.assertLess(hold, src.index("sess.chosen_model == picked"), "the compare is inside the hold")
+        self.assertLess(src.index("sess.chosen_model == picked"), src.index("with self._reg_lock:"),
+                        "…and the hold is released before the reg lock (no nesting)")
+
+    def test_set_model_and_effort_on_a_dormant_session_leave_an_acknowledgment_chip(self):
+        # a composer "/model X" on a LIVE session lands the synthesized command chip and the webview's
+        # optimistic bubble retires against it; on a DORMANT session nothing landed, so the dashed
+        # bubble sat as "unconfirmed" and vanished with no trace. The chip — and its durable gesture
+        # twin — are the acknowledgment, whatever the session's liveness.
+        sid = self.be.spawn("m", self.d)                  # a reg, no thread: dormant
+        self.assertTrue(self.be.set_model(sid, "fable"))
+        self.assertTrue(self.be.set_effort(sid, "high"))
+        chips = {a["command"]: a for a in self.be.live_atoms(sid) if a.get("command")}
+        self.assertEqual(set(chips), {"/model", "/effort"})
+        for cmd, disp in (("/model", "/model fable"), ("/effort", "/effort high")):
+            a = chips[cmd]
+            self.assertTrue(a["uuid"].startswith("cmd:"), a["uuid"])
+            self.assertEqual((a["type"], a["author"], a["_echo_text"]), ("user", "human", disp))
+            self.assertEqual(a["message"]["content"][0]["text"], disp, "the text the optimistic bubble retires against")
+            self.assertEqual(a["session_id"], sid)
+        gestures = [json.loads(l).get("cmdGesture") for l in (Path(self.d) / "states" / (sid + ".jsonl")).read_text().splitlines()]
+        self.assertEqual([g for g in gestures if g], ["/model fable", "/effort high"], "the durable twin, so the history keeps the gesture")
+        # the dormant resolution is unchanged: the badge shows the pick now, no dots
+        reg = sb.read_reg(self.d, sid)
+        self.assertEqual((reg["model"], reg["liveModel"], reg.get("modelPending")), ("fable", "Fable", False))
 
     def test_learn_model_clears_pending_only_when_the_new_name_lands(self):
         sess = sb.SdkSession(self.be, {"sid": "p", "name": "n", "cwd": self.d, "model": "fable"})
@@ -1386,12 +2229,150 @@ class LiveAskReplay(unittest.TestCase):
         self.assertIsNone(self.backend.current_ask(sess.sid))       # answered/cancelled → gone
 
 
+class AskArmedBeforePresent(unittest.TestCase):
+    """An ask is never PRESENTED before the future its answer lands on exists. resolve_ask reads
+    _cur_ask_fut synchronously on the caller's thread and reports False when nothing is waiting (T214's
+    truthful delivery outcome), so an answer that arrives between _emit_ask and the coroutine's first
+    await must already find the future armed — or it is reported lost and the coroutine waits forever.
+    Production dodges the gap by microseconds (only the kernel's click handlers answer, from another
+    thread); an answer delivered synchronously INSIDE the presentation callback hits it every time. That
+    is exactly how the SDK-gated round-trip classes below drive their asks, and CI does not install the
+    SDK, so the hang was never seen there. Pinned WITHOUT the SDK: _ask_one needs none, so the standard
+    runner and CI exercise the invariant. The answer rides on_ask -> resolve_ask, the kernel's own path."""
+
+    SID = "11111111-2222-3333-4444-555555555555"
+
+    def test_an_answer_delivered_inside_the_presentation_callback_is_not_lost(self):
+        import asyncio
+        outcomes = []
+
+        def notify(app, msg):
+            if msg.get("type") == "askLive":
+                # same call stack as _emit_ask: the future must ALREADY exist here
+                outcomes.append(self.backend.on_ask(msg["id"], "answer", 2))
+
+        d = tempfile.mkdtemp()
+        self.backend = sb.SdkBackend(d, "/bin/true", notify)
+        sess = sb.SdkSession(self.backend, {"sid": self.SID, "name": "n", "cwd": d})
+        self.backend.sessions[self.SID] = sess
+        q = {"question": "Cats or dogs?", "header": "Pet", "multiSelect": False,
+             "options": [{"label": "cats"}, {"label": "dogs"}]}
+
+        async def go():
+            sess.loop = asyncio.get_running_loop()
+            return await asyncio.wait_for(sess._ask_one(q, 0, 1), timeout=5)
+
+        try:
+            res = asyncio.run(go())
+        except asyncio.TimeoutError:
+            self.fail("the answer was dropped: _ask_one presented its ask before arming the future, "
+                      "so resolve_ask found nothing waiting and the coroutine never returned")
+        self.assertEqual(res, "dogs")
+        self.assertEqual(outcomes, [True], "resolve_ask must report the answer DELIVERED (T214), not lost")
+        self.assertIsNone(sess._cur_ask_fut, "the armed future clears once the ask is answered")
+
+
+class OverlappingAsksAnswerInTurn(unittest.TestCase):
+    """Two asks presented concurrently on one session (the SDK dispatches every control request as its
+    own detached task) must each get THEIR OWN answer. Before the per-session lock, arming at the sites
+    let the second ask find the first's live future and share it — one click resolved both, so an Allow
+    given to tool B was applied to tool A silently (PR #875 review). Now the second ask is not even
+    PRESENTED until the first resolves, and the answers land on the asks they were given to."""
+
+    SID = "11111111-2222-3333-4444-777777777777"
+
+    def test_the_second_ask_waits_and_each_gets_its_own_answer(self):
+        import asyncio
+        presented = []                                    # askLive ids in presentation order
+
+        def notify(app, msg):
+            if msg.get("type") == "askLive":
+                presented.append(msg["id"])
+
+        d = tempfile.mkdtemp()
+        backend = sb.SdkBackend(d, "/bin/true", notify)
+        sess = sb.SdkSession(backend, {"sid": self.SID, "name": "n", "cwd": d})
+        backend.sessions[self.SID] = sess
+        qa = {"question": "First?", "header": "A", "multiSelect": False, "options": [{"label": "a1"}, {"label": "a2"}]}
+        qb = {"question": "Second?", "header": "B", "multiSelect": False, "options": [{"label": "b1"}, {"label": "b2"}]}
+
+        async def go():
+            sess.loop = asyncio.get_running_loop()
+            ta = asyncio.ensure_future(sess._ask_one(qa, 0, 1))
+            tb = asyncio.ensure_future(sess._ask_one(qb, 0, 1))
+            await asyncio.sleep(0)                        # both tasks start; only ONE may be presented
+            self.assertEqual(len(presented), 1, "the second ask waits for the first — never two live at once")
+            self.assertTrue(backend.on_ask(presented[0], "answer", 2), "answer the FIRST ask: option 2")
+            await asyncio.wait_for(ta, timeout=5)        # the first ask resolves and releases the lock…
+            for _ in range(10):                           # …and the second acquires it within a few loop hops
+                if len(presented) == 2:
+                    break
+                await asyncio.sleep(0)
+            self.assertEqual(len(presented), 2, "the second ask is presented only after the first resolved")
+            self.assertTrue(backend.on_ask(presented[1], "answer", 1), "answer the SECOND ask: option 1")
+            return await asyncio.wait_for(asyncio.gather(ta, tb), timeout=5)
+
+        ra, rb = asyncio.run(go())
+        self.assertEqual((ra, rb), ("a2", "b1"), "each ask got the answer given to IT — no shared future")
+        self.assertIsNone(sess._cur_ask_fut)
+
+
+class ThinkingKw(unittest.TestCase):
+    """The thinking-summaries decision WITHOUT the SDK (2026-09-01, round 2): `thinking_kw` is what
+    _options hands ClaudeAgentOptions as `thinking=`, and `thinking_override_note` the one log line owed
+    when that flag will override a thinking cap. Both are pure, so the standard runner — which has no
+    claude_agent_sdk and therefore SKIPS every OptionsAssembly pin — still exercises the rule.
+    OptionsAssembly keeps the composition and the transport's `--thinking adaptive --thinking-display
+    summarized` pin; run it with the SDK venv on PYTHONPATH (tests/README.md)."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def _write(self, obj):
+        with open(os.path.join(self.d, sb.THINKING_SUMMARIES_FILE), "w") as f:
+            f.write(obj if isinstance(obj, str) else json.dumps(obj))
+
+    def test_off_is_none_whether_absent_explicit_or_unreadable(self):
+        self.assertIsNone(sb.thinking_kw(self.d), "absent file → pass nothing; the CLI's own default stands")
+        self._write({"enabled": False, "gt": 2})
+        self.assertIsNone(sb.thinking_kw(self.d), "an explicit off is the same as absent")
+        self._write("not json")
+        self.assertIsNone(sb.thinking_kw(self.d), "unreadable refuses — the opt-in must be provable")
+
+    def test_on_is_the_typed_adaptive_summarized_field(self):
+        self._write({"enabled": True, "gt": 1})
+        self.assertEqual(sb.thinking_kw(self.d), {"type": "adaptive", "display": "summarized"},
+                         "the SDK's ThinkingConfigAdaptive shape, display summarized")
+        self.assertIsNot(sb.thinking_kw(self.d), sb.THINKING_SUMMARIES_KW, "a copy per call, never the shared literal")
+
+    def test_the_override_note_fires_only_for_a_cap_in_the_cli_environment(self):
+        # The CLI resolves --thinking adaptive ahead of MAX_THINKING_TOKENS (verified in the 2.1.257
+        # binary, re-read at 2.1.258): with a cap in the environment the toggle turns thinking ON where
+        # the cap had it off. Real, so never silent — but only when it is real.
+        on = {"type": "adaptive", "display": "summarized"}
+        self.assertEqual(sb.thinking_override_note(None, {"MAX_THINKING_TOKENS": "0"}), "",
+                         "toggle off → the flag is not sent, so nothing is overridden")
+        self.assertEqual(sb.thinking_override_note(on, {"PATH": "/bin"}), "",
+                         "no cap in the environment → the flag changes only the display; nothing to say")
+        note = sb.thinking_override_note(on, {"MAX_THINKING_TOKENS": "0", "PATH": "/bin"})
+        self.assertIn("MAX_THINKING_TOKENS=0", note, "names the cap it overrides, with its value")
+        self.assertIn("--thinking adaptive", note, "…and the flag that wins")
+        self.assertIn("adaptive thinking", note, "…and what the sessions will actually run")
+
+
 # --- Runner + can_use_tool bridge (needs the SDK message classes) ---
 try:
     import claude_agent_sdk as _sdk
     _HAVE_SDK = True
 except Exception:
     _HAVE_SDK = False
+
+
+def _hosts_off(state_dir):
+    """A class that drives the connect loop with a fake client tests the plain-child road: hosts OFF explicitly, since
+    they are on by default (T348) and a bare state dir would send the connect to a real host spawn."""
+    os.makedirs(state_dir, exist_ok=True)
+    open(os.path.join(state_dir, "session-hosts"), "w").write("off")
 
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
@@ -1401,6 +2382,7 @@ class AskRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        _hosts_off(self.d)
         self._orig_client = _sdk.ClaudeSDKClient
 
         QUESTION = {"questions": [{
@@ -1607,6 +2589,7 @@ class CustomAnswerRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        _hosts_off(self.d)
         self.actions = []
         def notify(app, msg):
             if msg.get("type") == "askLive" and self.actions:
@@ -1654,6 +2637,7 @@ class PermissionAndPlanRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        _hosts_off(self.d)
         self.answer = "1"
         def notify(app, msg):
             if msg.get("type") == "askLive":
@@ -1908,6 +2892,46 @@ class SpendRecord(unittest.TestCase):
         h = json.loads(self.p.read_text())["hours"][time.strftime("%Y-%m-%dT%H")]
         self.assertAlmostEqual(h["bySid"]["aaaa1111-spend-attr-1"]["usd"], 0.07, msg="the hour buckets attribute too")
 
+    def test_a_thread_turn_bills_the_owning_session(self):
+        # T144: highlight-reply comment threads minted phantom cheap sessions in spend.json and
+        # undercounted the owner (one session split $360.31 own + $3.11 + $5.36 fork sids). The
+        # settle passes threadOf when present — assert at the recorder level with the owner's sid.
+        OWNER = "aaaa1111-spend-own-1"
+        self.be._record_spend(0.02, keyed=True, sid=OWNER)                  # the owner's own turn
+        self.be._record_spend(0.03, keyed=True, sid=OWNER)                  # a thread turn, billed via threadOf
+        d = json.loads(self.p.read_text())["days"][self._today()]
+        self.assertAlmostEqual(d["bySid"][OWNER]["usd"], 0.05,
+                               msg="whole-session truth: the thread's spend lands under the owner")
+        self.assertEqual(len(d["bySid"]), 1, "no phantom fork sid appears")
+
+    def test_the_settle_seam_prefers_thread_of(self):
+        # the session-object seam, executed: thread_of set → the owner's sid reaches the recorder;
+        # promotion clears it → the session bills itself from that moment
+        sid = "aaaa1111-spend-own-2"
+        own = "aaaa1111-spend-own-3"
+        sb.write_reg(Path(self.d), sid, {"sid": sid, "name": "c1", "cwd": "/tmp", "threadOf": own})
+        s = sb.SdkSession(self.be, sb.read_reg(Path(self.d), sid))
+        self.assertEqual(s.thread_of, own, "the durable reg field seeds the object")
+        self.assertEqual(s.thread_of or s.sid, own, "the settle's sid expression bills the owner")
+        self.be.sessions[sid] = s
+        sb.write_name(Path(self.d), sid, "promoted", "/tmp", "#123456", "white")  # promote needs no name write order here
+        self.assertTrue(self.be.promote_thread(sid, "promoted"))
+        self.assertEqual(s.thread_of, "", "a promoted session bills ITSELF from this moment")
+        self.assertEqual(s.thread_of or s.sid, sid)
+
+    def test_fork_spend_spanning_days_stays_under_the_owner(self):
+        # the day-spanning fixture: a thread that worked before and after midnight accumulates
+        # under the OWNER in each day's bucket independently (buckets key on local date at fold
+        # time; the owner sid is constant, so both days read whole-session truth)
+        OWNER = "aaaa1111-spend-own-4"
+        yesterday = {"usd": 1.0, "turns": 2, "bySid": {OWNER: {"usd": 1.0, "turns": 2, "tok": 5}}}
+        self.p.write_text(json.dumps({"days": {"2020-01-01": yesterday}}))
+        self.be._record_spend(0.04, keyed=True, sid=OWNER)                  # after midnight, same owner
+        days = json.loads(self.p.read_text())["days"]
+        self.assertAlmostEqual(days["2020-01-01"]["bySid"][OWNER]["usd"], 1.0, msg="yesterday untouched")
+        self.assertAlmostEqual(days[self._today()]["bySid"][OWNER]["usd"], 0.04,
+                               msg="today's bucket bills the same owner — no phantom split at midnight")
+
     def test_legacy_rows_and_sidless_folds_stay_lossless(self):
         # a pre-T100 bucket (no bySid) folds cleanly, and a sid-less fold never drops attribution
         # already there (lossless legacy, the T18 discipline)
@@ -1945,13 +2969,22 @@ class SpendRecord(unittest.TestCase):
     def test_result_message_records_and_the_kernel_serves_it(self):
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
                                 "kernel", "sdk_backend.py")).read()
-        self.assertIn("self.backend._record_spend(delta, turn_u, keyed=self.api_key_auth, sid=self.sid)", src,
-                      "the settle folds THIS turn's DELTAS — cost AND tokens are cumulative per process — "
-                      "tagged with the session's own auth AND its sid (T100: per-session attribution)")
+        self.assertIn("self.backend._record_spend(delta, turn_u, keyed=self.api_key_auth,", src,
+                      "the settle folds THIS turn's cost DELTA and _turn_usage's token counts")
+        self.assertIn("turn_u = self._turn_usage(msg)", src,
+                      "tokens come from _turn_usage — the flat usage dict is per-turn and is never diffed")
+        self.assertIn('mu = getattr(msg, "model_usage", None)', src,
+                      "the cumulative modelUsage map is the counter the token watermarks diff")
+        self.assertIn("sid=self.thread_of or self.sid,", src,
+                      "a comment THREAD bills its OWNING session (T144); a plain session bills itself "
+                      "(T100's per-session attribution, completed)")
+        self.assertIn("self._seed_spend_watermarks()   # a fresh CLI process starts its cumulative counters at", src,
+                      "each connect resets both watermarks with its new process, or seeds them from the resumed "
+                      "transcript's cost-state record (the resume-guard tests below)")
         self.assertIn("self._last_cost_total = 0.0   # a fresh CLI process starts its cumulative cost at zero",
-                      src, "each connect resets the watermark with its new process")
-        self.assertIn("self._last_usage_totals = {}  # …and its cumulative token counters", src,
-                      "the token watermarks reset with the same new process")
+                      src, "the seed starts the cost watermark at zero")
+        self.assertIn("self._last_usage_totals = {}  # and its cumulative token counters", src,
+                      "and the token watermarks with it")
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "romp-kernel")) as f:
             ksrc = f.read()
         self.assertIn('if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):',
@@ -1959,46 +2992,670 @@ class SpendRecord(unittest.TestCase):
         self.assertIn('"spend": _spend_windows()', ksrc)
         self.assertIn("def _spend_windows(keyed_only=False):", ksrc)   # keyed_only: the mixed-host API sum (test_session_auth)
 
-    def test_cumulative_process_totals_fold_as_per_turn_deltas(self):
-        """The CLI's total_cost_usd AND its usage dict are CUMULATIVE per process (the result event
-        carries totalCostUSD beside `usage: this.totalUsage`): folding the raw values re-added the
-        whole session-so-far on every turn, compounding the readouts into fiction — the dollars first
-        (the user 2026-08-08, who did not believe the bottom line), then the tokens (same day, round
-        two: the hover's 5h/7d/month dollars-per-token ratios diverged wildly because each window
-        carried a different inflation factor). Fold deltas for both; reset the watermarks with each
-        new CLI process; treat a shrunken counter as a reset we missed."""
+    def _spend_session(self, sid="11111111-2222-3333-4444-bbbbbbbbbbbb", name="n", **reg):
         import asyncio
-        sid = "11111111-2222-3333-4444-bbbbbbbbbbbb"
-        s = sb.SdkSession(self.be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        s = sb.SdkSession(self.be, {"sid": sid, "name": name, "cwd": "/tmp", **reg})
         self.be._forward = lambda sess, msg: None
         self.be._turn_completed = lambda sid: None
         async def _noop(): pass
         s._do_refresh_context = _noop
         s._do_refresh_usage = _noop
-        def _result(total, tok_in):
-            r = _ResultMessage()
-            r.total_cost_usd = total
-            r.usage = {"input_tokens": tok_in}
-            return r
-        async def run(total, tok_in):
-            s._on_message(_result(total, tok_in), _AssistantMessage, _ResultMessage, type("S", (), {}))
-            await asyncio.sleep(0)
+        def run(r):
+            async def go():
+                s._on_message(r, _AssistantMessage, _ResultMessage, type("S", (), {}))
+                await asyncio.sleep(0)
+            asyncio.run(go())
         def day():
             return json.loads(self.p.read_text())["days"][self._today()]
-        asyncio.run(run(1.0, 100))   # first turn of the process: delta = the whole counter
-        asyncio.run(run(2.5, 140))   # second turn: deltas = 1.5 / 40 tokens, NOT another 2.5 / 140
+        return s, run, day
+
+    @staticmethod
+    def _model_map(total_in, model="claude-x", out=0):
+        return {model: {"inputTokens": total_in, "outputTokens": out, "cacheReadInputTokens": 0,
+                        "cacheCreationInputTokens": 0, "webSearchRequests": 0, "costUSD": 0.0}}
+
+    def test_cost_and_model_usage_are_running_totals_folded_as_deltas(self):
+        """The CLI's total_cost_usd and its modelUsage map are CUMULATIVE per process — the CLI documents
+        the map as cumulative like the cost: read the latest result, never sum results — so folding the
+        raw values re-added the whole session-so-far on every turn (the dollars first: the user
+        2026-08-08, who did not believe the bottom line; then the tokens). Fold deltas for both; reset
+        the watermarks with each new CLI process; treat a shrunken counter as a reset we missed. The
+        flat `usage` dict rides every result as the TURN's own total and, with the map present, is
+        neither summed nor diffed — the map governs."""
+        s, run, day = self._spend_session()
+        def _result(total, map_in, turn_in):
+            r = _ResultMessage()
+            r.total_cost_usd = total
+            r.model_usage = self._model_map(map_in)
+            r.usage = {"input_tokens": 9999}         # deliberately NOT the map's delta: if the flat dict were read
+            return r                                 # or summed, tokIn would show it (review fold on #956)
+        run(_result(1.0, 100, 100))    # first turn of the process: delta = the whole counter
+        run(_result(2.5, 140, 40))     # second turn: deltas = 1.5 / 40 tokens, NOT another 2.5 / 140
         d = day()
         self.assertAlmostEqual(d["usd"], 2.5, msg="two turns fold to the process total, never more")
-        self.assertEqual(d["tokIn"], 140, "tokens fold as deltas of the totalUsage counter too")
+        self.assertEqual(d["tokIn"], 140, "tokens fold as deltas of the modelUsage running total")
         self.assertEqual(d["turns"], 2)
-        s._last_cost_total = 0.0     # the connect reset: a fresh CLI process starts at zero…
-        s._last_usage_totals = {}    # …on both counters
-        asyncio.run(run(0.8, 30))
+        s._last_cost_total = 0.0       # the connect reset: a fresh CLI process starts at zero…
+        s._last_usage_totals = {}      # …on both counters
+        run(_result(0.8, 30, 30))
         self.assertAlmostEqual(day()["usd"], 3.3)
         self.assertEqual(day()["tokIn"], 170)
-        asyncio.run(run(0.5, 20))    # a counter BELOW the watermark = a reset we missed → fold it whole
+        run(_result(0.5, 20, 20))      # a counter BELOW the watermark = a reset we missed → fold it whole
         self.assertAlmostEqual(day()["usd"], 3.8)
         self.assertEqual(day()["tokIn"], 190)
+
+    def test_a_clear_resets_the_watermarks_on_the_lastsid_flip_even_when_the_new_counter_is_higher(self):
+        # the /clear reset used to be inferred only from a counter that fell BELOW the watermark; a first
+        # post-clear turn larger than the whole pre-clear total was diffed against the old watermark and
+        # under-counted. The lastSid flip with `clearing` set IS the reset event (review find on #956,
+        # 2026-09-07): both watermarks go to zero there, so the next result folds whole.
+        s, run, day = self._spend_session()
+        def _result(total, map_in):
+            r = _ResultMessage(); r.total_cost_usd = total; r.model_usage = self._model_map(map_in)
+            r.usage = {"input_tokens": 9999}; return r
+        run(_result(1.0, 100))
+        self.assertEqual(day()["tokIn"], 100)
+        s._clearing = True                                    # a /clear was delivered…
+        class _Init:                                          # …and the CLI's init lands on a NEW fsid
+            subtype = "init"
+            data = {"session_id": "11111111-2222-3333-4444-cccccccccccc", "model": "claude-x"}
+        import asyncio
+        async def go():
+            s._on_message(_Init(), _AssistantMessage, _ResultMessage, _Init)
+            await asyncio.sleep(0)
+        asyncio.run(go())
+        self.assertEqual((s._last_cost_total, s._last_usage_totals), (0.0, {}), "reset on the event, not on a guess")
+        run(_result(2.0, 150))                                # HIGHER than the old watermark: the guess would diff it
+        self.assertEqual(day()["tokIn"], 250, "folded whole after the clear, not 150 - 100")
+        self.assertAlmostEqual(day()["usd"], 3.0)
+
+    def test_the_model_usage_map_sums_across_models_and_all_four_kinds(self):
+        # a mid-process model switch keeps BOTH models' running totals in the map — the process total
+        # is their sum, and every kind (in / out / cache read / cache write) folds
+        s, run, day = self._spend_session()
+        r = _ResultMessage(); r.total_cost_usd = 1.0
+        r.model_usage = {"claude-a": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 1000, "cacheCreationInputTokens": 60}}
+        run(r)
+        r2 = _ResultMessage(); r2.total_cost_usd = 2.0
+        r2.model_usage = {"claude-a": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 1000, "cacheCreationInputTokens": 60},
+                          "claude-b": {"inputTokens": 5, "outputTokens": 7, "cacheReadInputTokens": 300, "cacheCreationInputTokens": 9}}
+        run(r2)
+        d = day()
+        self.assertEqual((d["tokIn"], d["tokOut"], d["tokCacheR"], d["tokCacheW"]), (15, 27, 1300, 69))
+        self.assertEqual(d["turns"], 2)
+
+    def test_the_flat_usage_dict_is_the_turns_own_total_and_folds_whole(self):
+        """REGRESSION (the user 2026-09-06, who read the day's token count, asked how it was possible,
+        and was right in the other direction: the ledger held roughly HALF the true count). The flat
+        `usage` on a result is the TURN's own total — measured on CLI 2.1.263 against the transcript:
+        turn one's three API calls summed, turn two's single call alone — yet the settle diffed it
+        against the previous turn's like a running total, so a 100-token turn followed by a 140-token
+        turn recorded 140, not 240, and every turn but the first lost the previous turn's worth (a
+        SMALLER turn folded whole, by the shrunken-counter rule, which is why the loss looked random).
+        Without a modelUsage map (an older CLI) the flat dict folds WHOLE; it is never diffed."""
+        s, run, day = self._spend_session()
+        def _result(total, turn_in):
+            r = _ResultMessage()
+            r.total_cost_usd = total
+            r.usage = {"input_tokens": turn_in}
+            return r
+        run(_result(1.0, 100))
+        run(_result(2.5, 140))
+        self.assertEqual(day()["tokIn"], 240, "two turns of 100 and 140 tokens are 240 tokens — the bug recorded 140")
+        run(_result(3.0, 60))
+        self.assertEqual(day()["tokIn"], 300, "a turn smaller than the last folds whole too — there is no watermark on a per-turn figure")
+        self.assertAlmostEqual(day()["usd"], 3.0, msg="the dollars stay a delta of their running total")
+        self.assertEqual(s._last_usage_totals, {}, "the per-turn dict leaves the modelUsage watermarks untouched")
+
+    def test_a_paid_result_without_model_usage_says_so_once_per_session(self):
+        """The fallback above was SILENT: a paid result with no modelUsage map recorded the flat dict and
+        the day's token columns became main-loop-only figures with nothing in the error center saying
+        so. The field is present here (None, then an empty map), so the SDK has it and the CLI sent
+        nothing on this result: that is THIS session's CLI's doing, so the line names the session and
+        is said once per session, not once per turn. The count itself is unchanged."""
+        s, run, day = self._spend_session(name="web")
+        def _result(total, turn_in, mu):
+            r = _ResultMessage()
+            r.total_cost_usd = total
+            r.usage = {"input_tokens": turn_in, "output_tokens": 20}
+            r.model_usage = mu                    # the attribute exists: a current SDK, a CLI that sent no map
+            return r
+        run(_result(1.0, 100, None))
+        run(_result(2.0, 140, {}))
+        self.assertEqual(day()["tokIn"], 240, "each per-turn figure still lands whole")
+        self.assertAlmostEqual(day()["usd"], 2.0)
+        probs = [p["text"] for p in self.be.problems()]
+        self.assertEqual(len(probs), 1, "one line per session, not one per turn: %r" % probs)
+        self.assertIn("no modelUsage", probs[0])
+        self.assertIn("spend (web)", probs[0], "the CLI cause is this session's, so the line names it")
+        self.assertNotIn("model_usage field", probs[0], "the SDK remedy is not given for a CLI omission")
+        self.assertTrue(s._usage_fallback_noted)
+        self.assertFalse(self.be._usage_fallback_sdk_noted, "the CLI cause never spends the SDK cause's flag")
+        run(_result(3.0, 50, self._model_map(5000)))     # the map is back: the count diffs it, nothing new to say
+        self.assertEqual(day()["tokIn"], 5240)
+        self.assertEqual(len(self.be.problems()), 1)
+        # the scope is the session, not the backend: another session's CLI omission is said for that session
+        api, run_api, _ = self._spend_session("11111111-2222-3333-4444-aaaaaaaaaaaa", name="api")
+        run_api(_result(1.0, 10, None))
+        probs = [p["text"] for p in self.be.problems()]
+        self.assertEqual(len(probs), 2, "a second session says it once for itself: %r" % probs)
+        self.assertIn("spend (api)", probs[1])
+        self.assertTrue(api._usage_fallback_noted)
+        self.assertEqual(day()["tokIn"], 5250)
+
+    def test_a_log_callback_that_raises_on_the_notice_never_costs_the_turn_its_count(self):
+        """The notice is said from inside the token count, ahead of the spend write and after the cost
+        watermark moved: a log callback that raised there would propagate out of _turn_usage and the
+        turn's dollars and tokens would go unrecorded for the sake of a line. The line is not worth the
+        count. The ring row has landed by the time the callback runs, so the raise is swallowed and the
+        count proceeds; the settle's own containment never has to hear of it."""
+        s, run, day = self._spend_session(name="web")
+        def badlog(m):
+            if "no modelUsage" in str(m):
+                raise OSError(32, "Broken pipe")
+        self.be._log_cb = badlog                  # armed after construction (construction logs too)
+        r = _ResultMessage()
+        r.total_cost_usd = 1.0
+        r.usage = {"input_tokens": 100, "output_tokens": 20}
+        r.model_usage = None
+        run(r)
+        self.assertEqual(day()["tokIn"], 100, "the count landed although the notice's callback raised")
+        self.assertAlmostEqual(day()["usd"], 1.0)
+        probs = [p["text"] for p in self.be.problems()]
+        self.assertEqual(len(probs), 1, "the ring row landed before the callback raised: %r" % probs)
+        self.assertIn("spend (web)", probs[0])
+        self.assertTrue(s._usage_fallback_noted)
+
+    def test_an_sdk_whose_result_message_lacks_the_field_is_said_once_per_kernel_life(self):
+        """A ResultMessage with no model_usage ATTRIBUTE at all is the imported SDK's doing: the current
+        claude-agent-sdk declares the field (None when the CLI sends nothing), so a result without it
+        means the kernel imported an older copy found on sys.path ahead of the dedicated venv's. One
+        fact for every session this kernel runs, so the line names no session, names the remedy, and is
+        said once per backend: two sessions and three paid turns produce one line, and a fresh
+        SdkSession for a sid already seen (a dormant revive) adds nothing. The line names the copy by
+        path (the remedy is then a path, not a search), read off the imported module: a stand-in module
+        supplies one here, since this test interpreter has no SDK of its own."""
+        import sys
+        import types
+        fake = types.ModuleType("claude_agent_sdk")
+        fake.__file__ = "/synthetic/site-packages/claude_agent_sdk/__init__.py"
+        saved = sys.modules.get("claude_agent_sdk")
+        sys.modules["claude_agent_sdk"] = fake
+        def restore():
+            if saved is None:
+                sys.modules.pop("claude_agent_sdk", None)
+            else:
+                sys.modules["claude_agent_sdk"] = saved
+        self.addCleanup(restore)
+        web, run_web, day = self._spend_session("11111111-2222-3333-4444-aaaaaaaaaaaa", name="web")
+        api, run_api, _ = self._spend_session("11111111-2222-3333-4444-bbbbbbbbbbbb", name="api")
+        def _result(total):
+            r = _ResultMessage()                  # no model_usage attribute at all
+            r.total_cost_usd = total
+            r.usage = {"input_tokens": 100, "output_tokens": 20}
+            return r
+        r0 = _result(0)                           # a zero-cost result never reaches the token count (total > 0)
+        run_web(r0)
+        self.assertEqual(self.be.problems(), [])
+        run_web(_result(1.0))
+        run_api(_result(1.0))
+        run_web(_result(2.0))
+        self.assertEqual(day()["tokIn"], 300, "every turn's tokens still land, counted whole")
+        probs = [p["text"] for p in self.be.problems()]
+        self.assertEqual(len(probs), 1, "one line for one host-level remedy: %r" % probs)
+        self.assertIn("model_usage field", probs[0])
+        self.assertIn("romp-sdk-setup", probs[0], "the remedy names the venv the kernel should be importing from")
+        self.assertIn(fake.__file__, probs[0], "the line names the copy the kernel imported, by path")
+        self.assertTrue(probs[0].startswith("spend: "), "a host-level line names no session: %r" % probs[0])
+        self.assertNotIn("spend (web)", probs[0])
+        self.assertNotIn("spend (api)", probs[0])
+        self.assertTrue(self.be._usage_fallback_sdk_noted)
+        self.assertFalse(web._usage_fallback_noted, "the per-session flag is the CLI cause's, untouched")
+        self.assertFalse(api._usage_fallback_noted)
+        again, run_again, _ = self._spend_session("11111111-2222-3333-4444-aaaaaaaaaaaa", name="web")
+        run_again(_result(1.0))
+        self.assertEqual(len(self.be.problems()), 1, "a revive of a seen sid adds nothing")
+        self.assertEqual(day()["tokIn"], 400)
+        sys.modules.pop("claude_agent_sdk")       # no SDK loaded at all: the line still reads, and says so
+        self.assertIn("(an unknown path)", sb.usage_fallback_notice("web", _result(1.0)))
+
+    def test_the_keyed_sub_count_carries_the_by_kind_split(self):
+        # the hover splits each window's tokens by kind; a mixed host's API readout sums ONLY the keyed
+        # sub-counts, so the split must ride them too (2026-09-06) — and a login turn carries it forward
+        self.be._record_spend(0.02, {"input_tokens": 100, "output_tokens": 40,
+                                     "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 60}, keyed=True)
+        self.be._record_spend(0.03, {"input_tokens": 10, "output_tokens": 5}, keyed=False)
+        k = json.loads(self.p.read_text())["days"][self._today()]["key"]
+        self.assertEqual((k["tok"], k["tokIn"], k["tokOut"], k["tokCacheR"], k["tokCacheW"]), (1200, 100, 40, 1000, 60))
+        self.assertEqual(k["turns"], 1, "the login turn is carried forward, not counted")
+
+    # ── the resume guard: a CLI that restores its cost counters on resume must not have the whole
+    # ── session's history recorded as one turn's spend
+    _FSID = "22222222-3333-4444-5555-dddddddddddd"
+
+    @staticmethod
+    def _cost_state(total, model_usage, fsid=_FSID):
+        """The CLI's `cost-state` transcript record: totalCostUSD and modelUsage, the two counters the
+        settle diffs, beside the duration fields the record also carries."""
+        return json.dumps({"type": "cost-state", "sessionId": fsid, "totalCostUSD": total,
+                           "totalAPIDuration": 1, "totalDuration": 2, "startTime": 3,
+                           "modelUsage": model_usage})
+
+    @staticmethod
+    def _costed(total, model_usage):
+        r = _ResultMessage()
+        r.total_cost_usd = total
+        r.model_usage = model_usage
+        r.usage = {"input_tokens": 9999}     # never read while the map is present: the map governs
+        return r
+
+    @staticmethod
+    def _init_of(s):
+        """Deliver an init SystemMessage to `s` the way the stream does (the class passed as the
+        SystemMessage type is the double's own, so isinstance holds)."""
+        class _Sys:
+            def __init__(self, data): self.subtype = "init"; self.data = data
+        def init(data):
+            async def go():
+                s._on_message(_Sys(data), _AssistantMessage, _ResultMessage, _Sys)
+                await asyncio.sleep(0)
+            asyncio.run(go())
+        return init
+
+    def _private_dir(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        return td.name
+
+    def _resumed_session(self, transcript_lines, sid="11111111-2222-3333-4444-eeeeeeeeeeee", name="n"):
+        """A session whose reg resumes _FSID from self.d, with that transcript on disk under a private
+        CLAUDE_CONFIG_DIR (transcript_path reads the env at call time)."""
+        env = mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self._private_dir()})
+        env.start()
+        self.addCleanup(env.stop)
+        p = Path(sb.transcript_path(self.d, self._FSID))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("\n".join(transcript_lines) + "\n")
+        return self._spend_session(sid, name=name, cwd=self.d, lastSid=self._FSID)
+
+    def test_connect_seeds_the_watermarks_from_the_transcripts_last_cost_state(self):
+        """The CLI's transcript loader files `cost-state` as last-wins and its writer emits totalCostUSD
+        + modelUsage, the two counters the settle diffs. A CLI that restores them on resume reports its
+        first total_cost_usd as the WHOLE session's history plus this turn; watermarks at zero would
+        record that history as one turn's spend. Seeding from the record the CLI restores keeps the
+        first delta this turn's own."""
+        mu_old = {"claude-x": {"inputTokens": 400, "outputTokens": 40,
+                               "cacheReadInputTokens": 9000, "cacheCreationInputTokens": 100}}
+        mu = {"claude-x": {"inputTokens": 1000, "outputTokens": 200,
+                           "cacheReadInputTokens": 50000, "cacheCreationInputTokens": 3000}}
+        s, run, day = self._resumed_session([
+            json.dumps({"type": "user", "uuid": "u1", "message": {"role": "user", "content": "hello"}}),
+            self._cost_state(4.0, mu_old),                     # an earlier snapshot, superseded (last-wins)
+            json.dumps({"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": []}}),
+            self._cost_state(12.5, mu),
+            json.dumps({"type": "last-prompt", "lastPrompt": "x"}),   # uuid-less trailers after it are fine
+        ])
+        lines = []
+        self.be._log_cb = lines.append
+        seeded = lambda: [l for l in lines if "watermarks seeded" in l]
+        s._seed_spend_watermarks()                             # the connect-time step
+        self.assertEqual(s._last_cost_total, 12.5, "the LAST record's total is the seed")
+        self.assertEqual(s._last_usage_totals, {"input_tokens": 1000, "output_tokens": 200,
+                                                "cache_read_input_tokens": 50000,
+                                                "cache_creation_input_tokens": 3000})
+        self.assertTrue(s._spend_first_result)
+        self.assertEqual(len(seeded()), 1, "the seed is said once, in the kernel log")
+        self.assertIn("12.50", seeded()[0])
+        self.assertEqual(self.be.problems(), [], "an info line, not a problem: nothing for the user to act on")
+        # the restoring CLI's first result: history + this turn. Only THIS turn lands.
+        run(self._costed(13.0, {"claude-x": {"inputTokens": 1500, "outputTokens": 260,
+                                             "cacheReadInputTokens": 50000, "cacheCreationInputTokens": 3000}}))
+        d = day()
+        self.assertAlmostEqual(d["usd"], 0.5)
+        self.assertEqual((d["tokIn"], d["tokOut"], d["tokCacheR"]), (500, 60, 0))
+        self.assertFalse(s._spend_first_result)
+        self.assertEqual(len(seeded()), 1, "the settle says nothing about the seed")
+        # a CLI that wrote the record but did NOT restore: its own first total sits below the seed, so the
+        # shrunken-counter rule records it whole. The common case stays right without knowing which CLI it is.
+        s._seed_spend_watermarks()
+        self.assertEqual(len(seeded()), 2, "each connect that seeds says so")
+        run(self._costed(0.7, {"claude-x": {"inputTokens": 300}}))
+        self.assertAlmostEqual(day()["usd"], 1.2)
+        self.assertEqual(day()["tokIn"], 800)
+        self.assertEqual(self.be.problems(), [])
+
+    def test_no_cost_state_record_and_no_resume_target_leave_the_watermarks_at_zero(self):
+        s, run, day = self._resumed_session([
+            json.dumps({"type": "user", "uuid": "u1", "message": {"role": "user", "content": "hello"}}),
+            json.dumps({"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": [],
+                                                                        "usage": {"input_tokens": 5}}}),
+        ])
+        s._last_cost_total, s._last_usage_totals = 9.0, {"input_tokens": 9}   # stale from the old process
+        s._seed_spend_watermarks()
+        self.assertEqual((s._last_cost_total, s._last_usage_totals), (0.0, {}),
+                         "no record: a fresh process starts at zero, as every resume does on the CLI as probed")
+        run(self._costed(1.5, {"claude-x": {"inputTokens": 100}}))
+        self.assertAlmostEqual(day()["usd"], 1.5, msg="the first result is recorded whole")
+        self.assertEqual(day()["tokIn"], 100)
+        s.resume_sid = None                                    # no resume target at all
+        s._last_cost_total = 3.0
+        s._seed_spend_watermarks()
+        self.assertEqual((s._last_cost_total, s._last_usage_totals, s._spend_first_result), (0.0, {}, True))
+
+    def test_last_cost_state_reads_backwards_across_chunk_edges_and_takes_the_last_valid_record(self):
+        p = Path(self._private_dir()) / "t.jsonl"
+        filler = json.dumps({"type": "user", "uuid": "u", "message": {"role": "user", "content": "x" * 900}})
+        mu = {"m": {"inputTokens": 7, "outputTokens": 3}}
+        # a valid record early in the file, then ~200 KB with no marker: the scan walks several 64 KB
+        # chunks back to it. A later record with an unusable total is skipped, not taken as "none".
+        lines = [filler, self._cost_state(2.25, mu)] + [filler] * 220
+        lines.append(json.dumps({"type": "cost-state", "totalCostUSD": "not a number", "modelUsage": mu}))
+        p.write_text("\n".join(lines) + "\n")
+        self.assertEqual(sb.last_cost_state(str(p)), {"total": 2.25, "tokens": {
+            "input_tokens": 7, "output_tokens": 3, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}})
+        # a record STRADDLING a chunk edge: the tail after it is 21 bytes short of a chunk, so the edge of
+        # the last chunk (read first) falls inside the record, whose two halves land in different chunks
+        rec = self._cost_state(5.5, mu)
+        head = "\n".join([filler] * 80) + "\n"
+        tail = "x" * ((1 << 16) - 22) + "\n"
+        p.write_text(head + rec + "\n" + tail)
+        size = p.stat().st_size
+        start = len(head.encode())
+        edge = size - (1 << 16)
+        self.assertTrue(start < edge < start + len(rec), "the premise: the chunk edge falls inside the record")
+        self.assertEqual(sb.last_cost_state(str(p))["total"], 5.5, "a line split by the chunk edge is reassembled")
+        # last-wins: two valid records take the later one; no trailing newline is fine
+        p.write_text(self._cost_state(1.0, mu) + "\n" + self._cost_state(9.0, {}))
+        self.assertEqual(sb.last_cost_state(str(p)), {"total": 9.0, "tokens": {}},
+                         "an empty modelUsage seeds no token watermarks")
+        # two models sum per field, the settle's own count of a result's map
+        p.write_text(self._cost_state(3.0, {"a": {"inputTokens": 5, "cacheReadInputTokens": 10},
+                                            "b": {"inputTokens": 6, "outputTokens": 1, "webSearchRequests": 4},
+                                            "c": "not a map"}) + "\n")
+        self.assertEqual(sb.last_cost_state(str(p))["tokens"], {
+            "input_tokens": 11, "output_tokens": 1, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 0})
+        # a negative or non-finite total is unusable, like a non-number
+        p.write_text(self._cost_state(-1.0, mu) + "\n")
+        self.assertIsNone(sb.last_cost_state(str(p)))
+        p.write_text('{"type": "cost-state", "totalCostUSD": NaN, "modelUsage": {}}\n')
+        self.assertIsNone(sb.last_cost_state(str(p)))
+        p.write_text('{"type": "cost-state", "totalCostUSD": Infinity, "modelUsage": {}}\n')
+        self.assertIsNone(sb.last_cost_state(str(p)))
+        self.assertIsNone(sb.last_cost_state(str(p.parent / "missing.jsonl")))
+        p.write_text("")
+        self.assertIsNone(sb.last_cost_state(str(p)))
+        p.write_text(filler + "\n")
+        self.assertIsNone(sb.last_cost_state(str(p)), "no record: None, never a zero seed")
+
+    def _reads_through_a_stand_in(self, chunk_type=bytes):
+        """Route the module's `open` through a stand-in file object for this test: it records the length
+        of each read and hands the bytes back as `chunk_type`, so a test can see how the scan reads the
+        file and, with a bytes subclass, what the scan does to what it read. Restored at tearDown."""
+        reads, real_open = [], open
+
+        class Reader:
+            def __init__(self, f): self.f = f
+            def __enter__(self): return self
+            def __exit__(self, *exc): return self.f.__exit__(*exc)
+            def seek(self, *a): return self.f.seek(*a)
+            def tell(self): return self.f.tell()
+            def read(self, n=-1):
+                b = self.f.read(n)
+                reads.append(len(b))
+                return chunk_type(b)
+
+        patch = mock.patch.object(sb, "open", lambda p, *a, **k: Reader(real_open(p, *a, **k)), create=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return reads
+
+    @staticmethod
+    def _line_of(length, **fields):
+        """A JSON line of exactly `length` bytes: `fields`, then a `pad` of x's that makes up the length."""
+        bare = json.dumps({**fields, "pad": ""})
+        return json.dumps({**fields, "pad": "x" * (length - len(bare))})
+
+    def _record_line(self, total, length, mu):
+        """A record-shaped line of exactly `length` bytes: last_cost_state takes it when it is short enough."""
+        return self._line_of(length, type="cost-state", sessionId=self._FSID, totalCostUSD=total, modelUsage=mu)
+
+    def test_last_cost_state_reassembles_a_long_line_and_finds_the_record_before_it(self):
+        """A transcript line is one JSON record, and a tool result can make one several MB long. The
+        scan walks such a line back to its first byte in 64 KB reads, covering the bounded tail once
+        and nothing more, reassembles it, and takes the record before it."""
+        p = Path(self._private_dir()) / "t.jsonl"
+        mu = {"m": {"inputTokens": 7, "outputTokens": 3}}
+        long_line = json.dumps({"type": "user", "uuid": "u", "message": {"role": "user", "content": "x" * (3 << 20)}})
+        after = json.dumps({"type": "last-prompt", "lastPrompt": "x"})
+        p.write_text(self._cost_state(2.25, mu) + "\n" + long_line + "\n" + after + "\n")
+        reads = self._reads_through_a_stand_in()
+        self.assertEqual(sb.last_cost_state(str(p))["total"], 2.25)
+        size = p.stat().st_size
+        self.assertEqual(sum(reads), size, "the whole file, under the 8 MB bound, is read once")
+        self.assertEqual(len(reads), -(-size // (1 << 16)), "in chunks of 64 KB, the head chunk shorter")
+        self.assertLessEqual(max(reads), 1 << 16)
+
+    def test_the_bound_reads_the_same_tail_and_drops_the_line_it_cuts_through(self):
+        """The scan reads the last `scan_bytes` of the file and nothing before them: a record older than
+        that is absent, and the line the bound cuts through is a fragment, never joined, so a record
+        whose first byte the bound lands on is absent too, and found once the bound reaches the newline
+        before it. This held before the pieces were collected in a list and holds after: a guard on the
+        range read."""
+        p = Path(self._private_dir()) / "t.jsonl"
+        mu = {"m": {"inputTokens": 7, "outputTokens": 3}}
+        filler = json.dumps({"type": "user", "uuid": "u", "message": {"role": "user", "content": "x" * 900}})
+        bound = 3 << 16
+        rec = self._cost_state(2.25, mu)
+        p.write_text(rec + "\n" + (filler + "\n") * 300)          # about 290 KB after the record
+        reads = self._reads_through_a_stand_in()
+        self.assertIsNone(sb.last_cost_state(str(p), scan_bytes=bound), "older than the bound: absent")
+        self.assertEqual(sum(reads), bound, "the last scan_bytes of the file, and no more")
+        # the bound lands exactly on the record's first byte: the record is the cut line, a fragment; one
+        # byte more reaches the newline before it, and the record is a whole line again
+        tail = self._line_of(bound - len(rec) - 2, type="user", uuid="u", message={"role": "user"})
+        p.write_text((filler + "\n") * 5 + rec + "\n" + tail + "\n")
+        self.assertIsNone(sb.last_cost_state(str(p), scan_bytes=bound))
+        self.assertEqual(sb.last_cost_state(str(p), scan_bytes=bound + 1)["total"], 2.25)
+
+    def test_a_line_longer_than_the_cap_is_not_a_record_and_the_earlier_record_wins(self):
+        """A cost-state record is under 1 KB. A line longer than last_cost_state's cap (4 MB) is skipped
+        without being reassembled, even when its text would parse as a record: the record before it
+        wins, and with none before it the answer is None, as for a file that has no record. The rule is
+        exact on the length, and the same for a line the scan reassembles from the pieces of many chunks
+        as for one whole inside a chunk: a line AT the cap is still a record, joined from its pieces in
+        file order, and one byte longer is skipped."""
+        p = Path(self._private_dir()) / "t.jsonl"
+        mu = {"m": {"inputTokens": 7, "outputTokens": 3}}
+        filler = json.dumps({"type": "user", "uuid": "u", "message": {"role": "user", "content": "x" * 900}})
+        cap = 4 << 20
+        huge = self._record_line(7.0, cap + (1 << 20), mu)        # record-shaped, well past the cap
+        p.write_text(self._cost_state(1.0, mu) + "\n" + huge + "\n")
+        self.assertEqual(sb.last_cost_state(str(p))["total"], 1.0, "the line past the cap is not a record")
+        p.write_text(huge + "\n")
+        self.assertIsNone(sb.last_cost_state(str(p)), "skipped without an exception; no record remains")
+        p.write_text(huge)                                    # the too-long line is the file's head, unterminated
+        self.assertIsNone(sb.last_cost_state(str(p)))
+        p.write_text(huge + "\n" + self._cost_state(3.0, mu) + "\n")
+        self.assertEqual(sb.last_cost_state(str(p))["total"], 3.0, "a record after it is taken as usual")
+        # exactly the cap, spanning about 65 chunks between two other lines: a record, reassembled from its
+        # pieces in file order (out of order it would not parse); one byte longer: skipped, and the record
+        # before it wins
+        for length, total in ((cap, 2.5), (cap + 1, 1.0)):
+            p.write_text(self._cost_state(1.0, mu) + "\n" + self._record_line(2.5, length, mu) + "\n" + filler + "\n")
+            self.assertEqual(sb.last_cost_state(str(p))["total"], total, f"a line of {length} bytes")
+        # the cap is the parameter. A record-shaped line the scan carries in three pieces, one per chunk
+        # (it begins on a chunk edge: the file's tail from its first byte is three chunks exactly), is a
+        # record at a cap of its own length and skipped at one byte less, where the record before it wins
+        three = self._record_line(6.0, 3 * (1 << 16) - 1, mu)
+        p.write_text(self._cost_state(1.0, mu) + "\n" + three + "\n")
+        self.assertEqual(sb.last_cost_state(str(p), max_line=len(three))["total"], 6.0)
+        self.assertEqual(sb.last_cost_state(str(p), max_line=len(three) - 1)["total"], 1.0)
+        # and for a line the scan never carries: the head piece alone in the file, and a line whole inside a
+        # chunk between two others
+        rec = self._cost_state(2.0, mu)
+        for text in (rec + "\n", filler + "\n" + rec + "\n" + filler + "\n"):
+            p.write_text(text)
+            self.assertEqual(sb.last_cost_state(str(p), max_line=len(rec))["total"], 2.0)
+            self.assertIsNone(sb.last_cost_state(str(p), max_line=len(rec) - 1))
+
+    def test_the_scan_copies_a_line_once_and_holds_at_most_the_cap_however_long_the_line(self):
+        """Linear by construction, pinned without a clock. The pieces of a line are collected as the
+        chunks arrive and joined once at the newline that opens the line, so no chunk is ever
+        concatenated onto the carried fragment (that copied the fragment again on every chunk, a cost
+        quadratic in the line). A line past the cap is dropped as it arrives, so on such a line the scan
+        holds at most the cap plus a few chunks at any moment; a reader that keeps the line, or re-copies
+        it per chunk, peaks at one to three times the 7 MB line here. A line one byte past the cap is
+        never joined either, though every piece of it was kept: joined, it would be held twice."""
+        p = Path(self._private_dir()) / "t.jsonl"
+        mu = {"m": {"inputTokens": 7, "outputTokens": 3}}
+        filler = json.dumps({"type": "user", "uuid": "u", "message": {"role": "user", "content": "x" * 900}})
+        adds = []
+
+        class Chunk(bytes):
+            """What the scan read, watching for a concatenation onto it."""
+            def __add__(self, other): adds.append(len(self) + len(other)); return bytes(self) + other
+            def __radd__(self, other): adds.append(len(self) + len(other)); return other + bytes(self)
+
+        reads = self._reads_through_a_stand_in(Chunk)
+
+        def scan():
+            """The scan's answer and the process's growth in bytes over it, measured from what the process
+            held as the scan began (a tracer already running, PYTHONTRACEMALLOC, then adds nothing)."""
+            tracing = tracemalloc.is_tracing()
+            if not tracing:
+                tracemalloc.start()
+            try:
+                tracemalloc.reset_peak()
+                held = tracemalloc.get_traced_memory()[0]
+                rec = sb.last_cost_state(str(p))
+                return rec, tracemalloc.get_traced_memory()[1] - held
+            finally:
+                if not tracing:
+                    tracemalloc.stop()
+
+        big = json.dumps({"type": "user", "uuid": "u", "message": {"role": "user", "content": "x" * (7 << 20)}})
+        p.write_text(self._cost_state(2.25, mu) + "\n" + big + "\n" + filler + "\n")
+        rec, peak = scan()
+        self.assertEqual(rec["total"], 2.25, "the record before the 7 MB line is found")
+        self.assertEqual(sum(reads), p.stat().st_size, "the range read is the same bounded tail")
+        self.assertEqual(adds, [], "no chunk is concatenated onto: a line's pieces are joined once")
+        self.assertLess(peak, (4 << 20) + (2 << 20), "held: the 4 MB cap plus chunks, never the 7 MB line")
+        over = self._record_line(7.0, (4 << 20) + 1, mu)
+        p.write_text(self._cost_state(2.25, mu) + "\n" + over + "\n" + filler + "\n")
+        rec, peak = scan()
+        self.assertEqual(rec["total"], 2.25, "one byte past the cap: not a record")
+        self.assertEqual(adds, [])
+        self.assertLess(peak, (4 << 20) + (2 << 20), "held: its pieces, and no joined line beside them")
+
+    def test_a_first_result_after_connect_above_the_single_turn_mark_is_recorded_and_traced_as_info(self):
+        """On the CLI as probed a resumed process starts its cost counters at zero, so a first delta above
+        the mark is the turn's own cost: recorded as is and traced in the kernel log, NOT a problem (a
+        problem row for a right figure sends the user to check a record that is correct)."""
+        lines = []
+        self.be._log_cb = lines.append
+        traced = lambda: [l for l in lines if "first result after connect" in l]
+        s, run, day = self._spend_session()
+        s._seed_spend_watermarks()                             # no resume target: zero watermarks
+        run(self._costed(5.0, {"m": {"inputTokens": 10}}))
+        self.assertEqual(traced(), [], "an ordinary first turn says nothing")
+        s._seed_spend_watermarks()                             # a reconnect
+        run(self._costed(250.0, {"m": {"inputTokens": 20}}))
+        self.assertEqual(len(traced()), 1)
+        self.assertIn("250.00", traced()[0])
+        self.assertIn("Recorded as is", traced()[0])
+        self.assertEqual(self.be.problems(), [], "an info line: the figure is right, nothing to act on")
+        self.assertAlmostEqual(day()["usd"], 255.0, msg="recorded anyway; the record drops nothing")
+        run(self._costed(500.0, {"m": {"inputTokens": 30}}))   # a 250 USD delta on the NEXT result
+        self.assertEqual(len(traced()), 1, "only the FIRST result after a connect is checked")
+        self.assertAlmostEqual(day()["usd"], 505.0)
+
+    def test_init_correcting_the_cwd_re_seeds_the_watermarks_before_the_first_result(self):
+        """The connect-time seed reads the transcript under the REGISTRY's cwd; the CLI loads the one
+        under ITS cwd, which init reports (the same keying: transcript_path realpaths the string, so a
+        create-time variant such as a wrong case holds no transcript). Adopting the CLI's cwd re-seeds
+        from the file the CLI opened while no result has settled, and never afterwards: resetting the
+        watermarks mid-process would count the cumulative counters whole again."""
+        mu = {"m": {"inputTokens": 1000, "outputTokens": 200}}
+        s, run, day = self._resumed_session([self._cost_state(12.5, mu)])   # the record lives under self.d
+        variant = self._private_dir()
+        s.cwd = variant                                        # the registry's variant: no transcript there
+        sb.write_reg(self.d, s.sid, {"sid": s.sid, "name": "n", "cwd": variant, "alive": True, "lastSid": self._FSID})
+        s._seed_spend_watermarks()
+        self.assertEqual((s._last_cost_total, s._last_usage_totals), (0.0, {}), "nothing under the variant")
+        init = self._init_of(s)
+        init({"cwd": self.d, "session_id": self._FSID, "model": "claude-x"})
+        self.assertEqual(s.cwd, self.d)
+        self.assertEqual(sb.read_reg(self.d, s.sid)["cwd"], self.d)
+        self.assertEqual(s._last_cost_total, 12.5, "re-seeded from the file under the CLI's cwd")
+        self.assertEqual(s._last_usage_totals["input_tokens"], 1000)
+        self.assertTrue(s._spend_first_result)
+        run(self._costed(13.0, {"m": {"inputTokens": 1500, "outputTokens": 260}}))
+        self.assertAlmostEqual(day()["usd"], 0.5, msg="the first result records only this turn")
+        self.assertEqual(day()["tokIn"], 500)
+        # a cwd correction AFTER a settle (none is expected; the guard is the point) leaves them alone
+        init({"cwd": self._private_dir(), "session_id": self._FSID, "model": "claude-x"})
+        self.assertEqual(s._last_cost_total, 13.0, "no re-seed once a result has settled")
+        run(self._costed(13.2, {"m": {"inputTokens": 1600, "outputTokens": 260}}))
+        self.assertAlmostEqual(day()["usd"], 0.7)
+        self.assertEqual(day()["tokIn"], 600)
+
+    def test_an_init_that_lands_a_new_fsid_and_corrects_the_cwd_re_seeds_from_the_file_the_cli_loaded(self):
+        """One init can both land a NEW fsid (a resume the CLI continues under a fresh file; a rewind via
+        --resume-session-at is an in-place branch on the same fsid and never flips it) and correct the
+        cwd. The flip moves resume_sid to the file the CLI will WRITE, which holds no record yet; a CLI
+        that restores its counters took them from the file it LOADED, the old fsid's. The re-seed reads
+        that one."""
+        new_fsid = "33333333-4444-5555-6666-ffffffffffff"
+        mu = {"m": {"inputTokens": 1000, "outputTokens": 200}}
+        s, run, day = self._resumed_session([self._cost_state(12.5, mu)])   # the OLD fsid's record, under self.d
+        variant = self._private_dir()
+        s.cwd = variant                                        # the registry's variant: no transcript there
+        sb.write_reg(self.d, s.sid, {"sid": s.sid, "name": "n", "cwd": variant, "alive": True, "lastSid": self._FSID})
+        s._seed_spend_watermarks()
+        self.assertEqual(s._last_cost_total, 0.0, "nothing under the variant")
+        self._init_of(s)({"cwd": self.d, "session_id": new_fsid, "model": "claude-x"})
+        self.assertEqual((s.cwd, s.resume_sid), (self.d, new_fsid), "cwd adopted, fsid flipped")
+        self.assertEqual(sb.read_reg(self.d, s.sid)["lastSid"], new_fsid)
+        self.assertEqual(s._last_cost_total, 12.5, "re-seeded from the OLD fsid's file under the CLI's cwd")
+        self.assertEqual(s._last_usage_totals["input_tokens"], 1000)
+        run(self._costed(13.0, {"m": {"inputTokens": 1500, "outputTokens": 260}}))
+        self.assertAlmostEqual(day()["usd"], 0.5, msg="the restoring CLI's first result records only this turn")
+        self.assertEqual(day()["tokIn"], 500)
+        # a flip WITHOUT a cwd correction re-seeds nothing: the connect-time seed read the loaded file already
+        s2, _, _ = self._spend_session("11111111-2222-3333-4444-abababababab", name="n2", cwd=self.d, lastSid=self._FSID)
+        sb.write_reg(self.d, s2.sid, {"sid": s2.sid, "name": "n2", "cwd": self.d, "alive": True, "lastSid": self._FSID})
+        s2._seed_spend_watermarks()
+        self.assertEqual(s2._last_cost_total, 12.5)
+        # the record changes under the seed: a re-seed here would read 99.0
+        Path(sb.transcript_path(self.d, self._FSID)).write_text(self._cost_state(99.0, mu) + "\n")
+        self._init_of(s2)({"cwd": self.d, "session_id": new_fsid, "model": "claude-x"})
+        self.assertEqual((s2.resume_sid, s2._last_cost_total), (new_fsid, 12.5), "flipped, seed kept: not re-read")
+
+    def test_an_init_that_ends_a_clear_and_corrects_the_cwd_keeps_the_watermarks_at_zero(self):
+        """A /clear's init flip zeroes the watermarks on the event: the CLI zeroed its counters at that
+        instant. When the same init also corrects the cwd, the re-seed stands down. The file the CLI
+        loaded may carry a record (the CLI's writer appends one to the conversation a /clear abandons),
+        and seeding from it would hold the watermarks above counters that are at zero."""
+        mu = {"m": {"inputTokens": 1000, "outputTokens": 200}}
+        s, run, day = self._resumed_session([self._cost_state(12.5, mu)])
+        variant = self._private_dir()
+        s.cwd = variant
+        sb.write_reg(self.d, s.sid, {"sid": s.sid, "name": "n", "cwd": variant, "alive": True, "lastSid": self._FSID})
+        s._seed_spend_watermarks()
+        self.assertEqual(s._last_cost_total, 0.0)
+        new_fsid = "33333333-4444-5555-6666-ffffffffffff"
+        # planted so the stand-down is observable: a re-seed that fell back to the NEW fsid's file would read 7.0
+        p = Path(sb.transcript_path(self.d, new_fsid))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(self._cost_state(7.0, mu, fsid=new_fsid) + "\n")
+        s._clearing = True                                     # a /clear was delivered on this connection...
+        self._init_of(s)({"cwd": self.d, "session_id": new_fsid, "model": "claude-x"})
+        self.assertEqual(s.cwd, self.d, "...and its init lands a new fsid under the CLI's cwd")
+        self.assertEqual((s._last_cost_total, s._last_usage_totals), (0.0, {}),
+                         "the clear's zero stands: neither the abandoned conversation's record nor the new file is read")
+        run(self._costed(13.0, {"m": {"inputTokens": 1500}}))
+        self.assertAlmostEqual(day()["usd"], 13.0, msg="the first post-clear turn is the whole counter")
+        self.assertEqual(day()["tokIn"], 1500)
 
 
 class RewindFiles(unittest.TestCase):
@@ -2164,11 +3821,124 @@ class OptionsAssembly(unittest.TestCase):
         self.assertGreaterEqual(opts.max_buffer_size, 32 * 1024 * 1024,
                                 "well past any realistic single message, so a picker never dies on overflow")
 
+    # Thinking summaries (2026-09-01). On the SDK's stream-json path the CLI requests NO thinking display
+    # (it uses an explicit --thinking-display when given, consults the showThinkingSummaries settings key
+    # only when interactive, and forces "omitted" only for --print text/json output — verified in the
+    # 2.1.257 binary, re-read at 2.1.258), so the API default applies and current models return
+    # signature-only thinking blocks. The kernel's per-install gear toggle writes
+    # STATE/thinking-summaries.json; _options reads it at every connect and, when on, passes the SDK's
+    # TYPED ThinkingConfigAdaptive field (types.py: display "summarized" | "omitted") — never the
+    # extra_args escape hatch, which this option has a field for.
+    def test_thinking_summaries_off_by_default_requests_no_display(self):
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        self.assertFalse(sb.thinking_summaries_on(be.state_dir), "absent file reads OFF")
+        opts = be._options(self._sess(be), _sdk.ClaudeAgentOptions)
+        self.assertIsNone(opts.thinking, "off → no thinking option at all (the CLI's own default stands)")
+        self.assertNotIn("thinking-display", opts.extra_args or {})
+
+    def test_thinking_summaries_on_passes_the_typed_adaptive_summarized_field(self):
+        with open(os.path.join(self.d, sb.THINKING_SUMMARIES_FILE), "w") as f:
+            json.dump({"enabled": True, "gt": 1}, f)
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        self.assertTrue(sb.thinking_summaries_on(be.state_dir))
+        opts = be._options(self._sess(be), _sdk.ClaudeAgentOptions)
+        self.assertEqual(opts.thinking, {"type": "adaptive", "display": "summarized"},
+                         "the designed field, in the shape the SDK types")
+        self.assertNotIn("thinking-display", opts.extra_args or {},
+                         "must NOT route the display through the extra_args CLI-flag escape hatch")
+        # …and the installed SDK's transport turns that field into the CLI flags the binary honors
+        # (--thinking adaptive --thinking-display summarized) — verified against the SDK romp runs, not
+        # assumed from its docs.
+        from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+        cmd = SubprocessCLITransport("", opts)._build_command()
+        self.assertIn("--thinking-display", cmd)
+        self.assertEqual(cmd[cmd.index("--thinking-display") + 1], "summarized")
+        self.assertEqual(cmd[cmd.index("--thinking") + 1], "adaptive")
+
+    def test_thinking_summaries_explicit_off_requests_no_display(self):
+        # OFF written as a value (the user turned it on, then off again) is the same as absent
+        with open(os.path.join(self.d, sb.THINKING_SUMMARIES_FILE), "w") as f:
+            json.dump({"enabled": False, "gt": 2}, f)
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        self.assertIsNone(be._options(self._sess(be), _sdk.ClaudeAgentOptions).thinking)
+        with open(os.path.join(self.d, sb.THINKING_SUMMARIES_FILE), "w") as f:
+            f.write("not json")
+        self.assertFalse(sb.thinking_summaries_on(be.state_dir), "an unreadable file refuses — the opt-in must be provable")
+
+    def test_thinking_summaries_on_over_a_thinking_cap_logs_the_override_once(self):
+        # The CLI resolves --thinking adaptive ahead of MAX_THINKING_TOKENS (verified in the 2.1.257
+        # binary), so with a cap in the manager's environment the toggle turns thinking ON where the cap
+        # had it off — real, and never silent: one kernel-log line per backend (the environment is fixed
+        # for the process's lifetime), not one per connect.
+        with open(os.path.join(self.d, sb.THINKING_SUMMARIES_FILE), "w") as f:
+            json.dump({"enabled": True, "gt": 1}, f)
+        lines = []
+        had = os.environ.get("MAX_THINKING_TOKENS")
+        os.environ["MAX_THINKING_TOKENS"] = "0"
+        try:
+            be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None, log=lines.append)
+            opts = be._options(self._sess(be), _sdk.ClaudeAgentOptions)
+            self.assertEqual(opts.thinking, {"type": "adaptive", "display": "summarized"}, "the flag still goes")
+            be._options(self._sess(be), _sdk.ClaudeAgentOptions)   # a second connect: no second line
+        finally:
+            if had is None:
+                os.environ.pop("MAX_THINKING_TOKENS", None)
+            else:
+                os.environ["MAX_THINKING_TOKENS"] = had
+        hits = [l for l in lines if "MAX_THINKING_TOKENS=0" in l]
+        self.assertEqual(len(hits), 1, "one line though two sessions connected: %r" % lines)
+        self.assertIn("--thinking adaptive", hits[0], "names the flag that wins")
+
+    def test_thinking_summaries_on_without_a_cap_logs_nothing(self):
+        with open(os.path.join(self.d, sb.THINKING_SUMMARIES_FILE), "w") as f:
+            json.dump({"enabled": True, "gt": 1}, f)
+        lines = []
+        had = os.environ.pop("MAX_THINKING_TOKENS", None)
+        try:
+            be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None, log=lines.append)
+            be._options(self._sess(be), _sdk.ClaudeAgentOptions)
+        finally:
+            if had is not None:
+                os.environ["MAX_THINKING_TOKENS"] = had
+        self.assertEqual([l for l in lines if "thinking" in l.lower()], [],
+                         "no cap → the flag changes only the display; nothing to announce")
+
+
+# One retry storm as the CLI's api_retry frames report it, field for field (the values are invented):
+# attempt / max_retries / retry_delay_ms / error_status / error, where `error` is a category string from the
+# CLI's own classifier and error_status is null for a connection error that got no HTTP response. First a
+# 529, then a connection error on the next attempt.
+WIRE_RETRY_FRAMES = (
+    {"attempt": 4, "max_retries": 10, "retry_delay_ms": 2000, "error_status": 529, "error": "overloaded",
+     "uuid": "11111111-2222-3333-4444-0000000000a4", "session_id": "11111111-2222-3333-4444-555555555555"},
+    {"attempt": 5, "max_retries": 10, "retry_delay_ms": 4000, "error_status": None, "error": "unknown",
+     "uuid": "11111111-2222-3333-4444-0000000000a5", "session_id": "11111111-2222-3333-4444-555555555555"},
+)
+
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class ApiRetryState(unittest.TestCase):
     """An api_retry storm (API rate-limit/overload) must surface as a distinct 'retrying' state, not a
     silent 'working', so a stall reads as an API issue (the user 2026-06-23). Cleared on real output."""
+
+    def setUp(self):
+        # A turn-end ResultMessage takes the real settle branch, which schedules the context refresh with
+        # asyncio.ensure_future on the CURRENT event loop (the session's own loop in production). This
+        # thread gets one to schedule onto; it is never run, so the refresh never executes and _on_message
+        # can be driven synchronously. Without it, once any earlier asyncio.run in the process has marked
+        # the policy, get_event_loop raises "no current event loop" on the main thread and the bare-payload
+        # case below is red whenever this class runs.
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+    def tearDown(self):
+        pending = asyncio.all_tasks(self._loop)
+        for t in pending:
+            t.cancel()   # never stepped, so the refresh coroutine does not run
+        if pending:
+            self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        asyncio.set_event_loop(None)
+        self._loop.close()
 
     def test_api_retry_shows_retrying_then_clears(self):
         d = tempfile.mkdtemp()
@@ -2227,6 +3997,68 @@ class ApiRetryState(unittest.TestCase):
                          _sdk.AssistantMessage, _sdk.ResultMessage, _sdk.SystemMessage)
         self.assertIsNone(sess.snapshot()["retryInfo"])
 
+    def test_the_installed_clis_wire_frame_fills_the_attempt_and_the_error(self):
+        # The frame the CLI emits for a retry attempt, field for field (WIRE_RETRY_FRAMES). The detail read
+        # neither `attempt` (the local per-frame tally stood in for it) nor the string `error` (the reason
+        # stayed blank), while the API-health ring (_ah_note_retry) read error_status and the string `error`
+        # from the same frame all along.
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sess = sb.SdkSession(be, {"sid": "r4", "name": "n", "cwd": d, "mode": "acceptEdits"})
+        sess.inflight = 1
+        overloaded, connection = WIRE_RETRY_FRAMES
+        sess._on_message(_sdk.SystemMessage("api_retry", dict(overloaded)),
+                         _sdk.AssistantMessage, _sdk.ResultMessage, _sdk.SystemMessage)
+        info = sess.snapshot()["retryInfo"]
+        self.assertEqual(info["attempt"], 4, "the CLI's attempt number, not the local tally (1 here)")
+        self.assertEqual((info["max"], info["status"]), (10, 529))
+        self.assertEqual(info["error"], "overloaded", "the wire's category string is the reason shown")
+        sess._on_message(_sdk.SystemMessage("api_retry", dict(connection)),
+                         _sdk.AssistantMessage, _sdk.ResultMessage, _sdk.SystemMessage)
+        info = sess.snapshot()["retryInfo"]
+        self.assertEqual(info["attempt"], 5)
+        self.assertIsNone(info["status"], "a connection error has no HTTP status: null on the wire, None here")
+        self.assertEqual(info["error"], "unknown")
+
+
+class ApiRetryWireFrame(unittest.TestCase):
+    """The same frames through the same handler as ApiRetryState's wire-frame case, with a duck-typed frame
+    class in place of the SDK's SystemMessage (the handler matches on the classes it is handed), so the read
+    is checked where claude_agent_sdk is absent too, CI included."""
+
+    class _Sys:
+        def __init__(self, subtype, data): self.subtype, self.data = subtype, data
+
+    def _session(self, sid):
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sess = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": d, "mode": "acceptEdits"})
+        sess.inflight = 1
+        return sess
+
+    def _feed(self, sess, frame):
+        sess._on_message(self._Sys("api_retry", dict(frame)), _AssistantMessage, _ResultMessage, self._Sys)
+        return sess.snapshot()["retryInfo"]
+
+    def test_the_wire_frame_fills_the_attempt_and_the_error_without_the_sdk(self):
+        sess = self._session("r5")
+        for frame in WIRE_RETRY_FRAMES:
+            info = self._feed(sess, frame)
+            self.assertEqual(info["attempt"], frame["attempt"], "the CLI's attempt number, not the local tally")
+            self.assertEqual(info["max"], frame["max_retries"])
+            self.assertEqual(info["status"], frame["error_status"])
+            self.assertEqual(info["error"], frame["error"], "the wire's category string is the reason shown")
+
+    def test_the_wires_name_wins_over_the_other_spellings_of_the_same_field(self):
+        # Each read accepts three spellings of its field (the wire's, the transcript twin's, an old guess) and
+        # takes the first present. No frame the CLI sends carries two of them, so a frame built to carry them
+        # all with different values pins the precedence the reads promise: the wire's name leads.
+        mixed = dict(WIRE_RETRY_FRAMES[0], retry_attempt=7, retryAttempt=8, number=9,
+                     display_message="529 Overloaded", message="raw envelope")
+        info = self._feed(self._session("r6"), mixed)
+        self.assertEqual(info["attempt"], 4, "`attempt` before retry_attempt / retryAttempt / number")
+        self.assertEqual(info["error"], "overloaded", "the string `error` before display_message / message")
+
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class InterruptSettlesStall(unittest.TestCase):
@@ -2236,6 +4068,7 @@ class InterruptSettlesStall(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        _hosts_off(self.d)
         self._orig = _sdk.ClaudeSDKClient
         import asyncio as _aio
 
@@ -2431,6 +4264,18 @@ class PendingQueue(unittest.TestCase):
         self.assertFalse(self.be.queue_recallable("qr1"), "armed rewind releases the hold")
         self.assertTrue(self.be.queue_recallable("no-such-sid"), "unknown session fails toward the ✕")
 
+    def test_queue_recallable_during_the_ping_feed_hold(self):
+        # the rename ping's feed-hold (2026-08-25) is a romp-side hold exactly like the interrupt
+        # and rewind ones: while the ping's turn is in flight the drain releases nothing, so a
+        # recall can still win — withholding the ✕ there denies a cancel that would succeed
+        # (found 2026-08-26).
+        s = self._sess("qr2")
+        s.inflight = 1
+        s._ping_feeding = True
+        self.assertTrue(self.be.queue_recallable("qr2"), "ping feed-hold → the queue is romp-held")
+        s._ping_feeding = False
+        self.assertFalse(self.be.queue_recallable("qr2"), "hold cleared → forwards instantly again")
+
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class PendingQueueLoop(unittest.TestCase):
@@ -2441,6 +4286,7 @@ class PendingQueueLoop(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        _hosts_off(self.d)
         self._orig_client = _sdk.ClaudeSDKClient
         import asyncio as _aio
 
@@ -2527,6 +4373,7 @@ class InterruptWithQueue(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        _hosts_off(self.d)
         self._orig = _sdk.ClaudeSDKClient
         import asyncio as _aio
 
@@ -2610,6 +4457,7 @@ class ReconnectReconcilesInflight(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        _hosts_off(self.d)
         self._orig = _sdk.ClaudeSDKClient
         import asyncio as _aio
 
@@ -2634,10 +4482,14 @@ class ReconnectReconcilesInflight(unittest.TestCase):
             async def get_context_usage(self): return {"percentage": 2, "model": "claude-x"}
 
             async def receive_messages(self):
-                yield _sdk.SystemMessage("init", {"session_id": self.options.session_id or "fsid"})
+                # the CLI's init opens a TURN (one per turn, none on a turn-less connect: _on_message's init
+                # branch says so), so the fake streams it with the first dequeued turn. Streamed at connect, the
+                # SECOND client's init read as a turn the CLI started (a turn frame at inflight 0 counts as one,
+                # the CLI-owned-turn count) and held inflight at 1 for the stall's whole life.
                 while True:
                     turn = await self._turnq.get()
                     StallClient.received.append(turn["message"]["content"][0]["text"])
+                    yield _sdk.SystemMessage("init", {"session_id": self.options.session_id or "fsid"})
                     await _aio.sleep(3600)           # stall this turn forever (never a ResultMessage)
 
         _sdk.ClaudeSDKClient = StallClient
@@ -2998,6 +4850,40 @@ class BgTaskLifecycle(unittest.TestCase):
         self.assertEqual(be2._ensured, [])
         self.assertEqual([t["desc"] for t in sb.read_reg(be2.state_dir, s2.sid)["bgTasks"]], ["timer"])
 
+    def test_a_threads_crash_resume_hears_dead_tasks_once_after_the_nudge(self):
+        # a comment thread's CLI dies mid-turn with the kernel alive: the crash resume spawns the
+        # fresh session through _ensure, whose thread-wake report (the boot sweep never resumes a
+        # thread, so a thread's dead life is reported at its wake) queues the task-death notice from
+        # the reg mirror — and this method's own report from the in-memory set follows with the
+        # identical text. The session hears it ONCE, after the continuation nudge: the order the
+        # boot sweep gives a top-level session.
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-00000000c0de"
+        reg = {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True,
+               "threadOf": "11111111-2222-3333-4444-000000000000"}
+        sb.write_reg(be.state_dir, sid, reg)
+        s = sb.SdkSession(be, reg)
+        self._feed(s, "task_started", {"task_id": "b1", "description": "release watcher"})
+        note = sb.task_death_notice(s._live_bg_tasks())
+        s.inflight = 1                                       # mid-turn: the crash-resume path
+        made = []
+
+        class _Rec:
+            def __init__(self, backend, reg):
+                made.append(dict(reg))
+                self.thread = mock.Mock(is_alive=lambda: True)
+                self.on_boot_settled = None
+
+            def start(self):
+                pass
+
+        with mock.patch.object(sb, "SdkSession", _Rec):
+            be._on_session_gone(s)
+        self.assertEqual(made[0].get("queue"), [sb.CRASH_RESUME_NUDGE, note], "nudge first, the notice once")
+        reg = sb.read_reg(be.state_dir, sid)
+        self.assertEqual(reg["queue"], [sb.CRASH_RESUME_NUDGE, note], "the persisted queue agrees")
+        self.assertEqual(reg["bgTasks"], [])
+
     def test_construction_heals_stranded_pending_switch_flags(self):
         # a pending /model / /effort switch that died with the previous process must not strand the
         # switching-dots (the user 2026-07-11): a fresh construction applies both at its next connect,
@@ -3045,6 +4931,19 @@ class BgTaskLifecycle(unittest.TestCase):
         snap = s.snapshot()["bgTasks"]
         self.assertEqual((snap[0]["desc"], snap[0]["lastTool"]), ("long build", "Bash"),
                          "a progress event for an id we never saw ADDS it (mid-task attach converges)")
+
+    def test_every_live_row_carries_its_lifecycle_task_id(self):
+        # the CLI keys an Agent task's lifecycle by the AGENT ID (probe-verified on 2.1.257; _on_task_event
+        # already retires the subagent by it). Shipping it on the row is what lets the kernel join the
+        # stream's row to the SubagentStart hook's — without it the same agent listed twice in the
+        # Awaiting box, once by type and once as "Running <description>" (2026-09-06).
+        s = self._sess()
+        self._feed(s, "task_started", {"task_id": "a1111111111111111", "description": "Running Map the parser",
+                                       "task_type": "local_agent", "tool_use_id": "toolu_01"})
+        self._feed(s, "task_started", {"task_id": "b2222", "description": "build the docs", "tool_use_id": "toolu_02"})
+        rows = s.snapshot()["bgTasks"]
+        self.assertEqual([(r["taskId"], r["toolUseId"]) for r in rows],
+                         [("a1111111111111111", "toolu_01"), ("b2222", "toolu_02")])
 
     def test_a_task_id_less_event_is_ignored(self):
         s = self._sess()
@@ -3113,6 +5012,392 @@ class RegListCache(unittest.TestCase):
         self.assertEqual([r["sid"] for r in sb.list_regs(self.sd)], ["aaaa"])
 
 
+class UpdateRegDroppingUnreadable(unittest.TestCase):
+    """_update_reg_dropping tells an unreadable reg from an absent one by an explicit stat (2026-09-14): under a mode-000 sdk/
+    CPython 3.14's Path.exists() answered False, so the guard read absent and the write below it would have gutted a reg the
+    backend could not read. The real fault staged, never a stub of the call that would raise."""
+
+    SID = "11111111-2222-3333-4444-555555555577"
+
+    def test_a_reg_under_an_unlistable_directory_refuses_the_write_and_says_so(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "cwdPending": True})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0)
+        err = io.StringIO()
+        try:                                                    # restored in a finally, as every staged-fault test here
+            with contextlib.redirect_stderr(err):
+                be._update_reg_dropping(self.SID, drop=("cwdPending",), cwd="/tmp/x")
+        finally:
+            os.chmod(d, 0o755)
+        self.assertIn("unreadable", err.getvalue(), "the refusal is said: %r" % err.getvalue())
+        self.assertEqual(sb.read_reg(root, self.SID), {"sid": self.SID, "name": "web", "cwdPending": True}, "the reg untouched, never gutted")
+
+    def test_update_reg_under_an_unlistable_directory_refuses_the_write_and_says_so(self):
+        """Round two's medium 1: _update_reg kept the exists() guard its twin dropped; under a mode-000 sdk/ the guard read absent
+        and the write raised PermissionError out of the caller from inside write_reg on 3.14 (raised out of the guard on 3.13)."""
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "alive": True})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0)
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                be._update_reg(self.SID, cwd="/tmp/x")          # must not raise, must not write
+        finally:
+            os.chmod(d, 0o755)
+        self.assertIn("unreadable", err.getvalue(), err.getvalue())
+        self.assertEqual(sb.read_reg(root, self.SID), {"sid": self.SID, "name": "web", "alive": True}, "name and alive stand")
+
+    def test_a_symlink_loop_reg_path_is_never_a_writable_absence(self):
+        """ELOOP: Path.exists() answered False on every interpreter, so _update_reg built {sid}+fields over a path that cannot hold
+        a reg and the session lost name and alive (the 2026-08-31 blink class); read_reg_for_rmw answered {} there, the
+        writable-empty base its docstring forbids. A writer may build a fresh record only on ENOENT."""
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        p = sb._reg_path(root, self.SID); p.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(p.name, p)                                   # a loop: the path names itself
+        self.assertIsNone(sb.read_reg_for_rmw(root, self.SID), "a loop is not an absent reg: None, the caller skips its write")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            be._update_reg(self.SID, name="x")
+            be._update_reg_dropping(self.SID, drop=("cwdPending",), name="y")
+        self.assertEqual(err.getvalue().count("unreadable"), 2, err.getvalue())
+        self.assertTrue(os.path.islink(p) and not os.path.exists(p), "the loop stands, nothing was written through it")
+        self.assertEqual(sb.read_reg_for_rmw(root, "11111111-2222-3333-4444-555555555599"), {}, "a genuinely absent reg: the empty base")
+
+    def test_read_reg_for_rmw_answers_none_under_an_unlistable_directory(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "bgLedger": [1, 2, 3]})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0)
+        try:
+            self.assertIsNone(sb.read_reg_for_rmw(root, self.SID), "unreadable: None, never the writable-empty base")
+        finally:
+            os.chmod(d, 0o755)
+        self.assertEqual(sb.read_reg_for_rmw(root, self.SID)["bgLedger"], [1, 2, 3])
+
+
+def _sdk_module_for_the_road_pins():
+    """The module the connect loop imports ClaudeSDKClient from, and whether this call installed it: the installed SDK when
+    there is one, else a stand-in with an inert class for any name the backend imports. The road pins stub the transport and
+    fake the client, so they need no package; CI installs none, and a gate on the package would let a re-key on the pre-read
+    go green on every Python (the follow-up's item a). The stand-in lives in sys.modules only for the test that asked (its
+    tearDown removes it): left behind, it made every later import of the SDK succeed with inert classes, and the kernel's own
+    wiring took roads it never takes without the package (two shared-parse tests red under the whole suite)."""
+    if _HAVE_SDK:
+        return _sdk, False
+    import types
+    m = sys.modules.get("claude_agent_sdk")
+    if m is not None:
+        return m, False
+    class _StandIn(types.ModuleType):
+        def __getattr__(self, name):
+            if name.startswith("__"):
+                raise AttributeError(name)
+            cls = type(name, (), {"__init__": lambda self, *a, **k: None})
+            setattr(self, name, cls)
+            return cls
+    m = _StandIn("claude_agent_sdk")
+    sys.modules["claude_agent_sdk"] = m
+    return m, True
+
+
+class SpawnedAtStampedOncePerCli(unittest.TestCase):
+    """spawnedAt is the CLI's epoch (judge _cli_epoch, the bg-tasks ghost gate, the evidence gate, the planner's persisted
+    memo): stamped ONCE PER CLI, keyed on the CLI's identity, never on the connect's road or a lease pre-read (2026-09-14:
+    every kernel boot under session hosts re-stamped every attached session; then a stamp at the connect's outcome missed a
+    host whose CLI came up and whose handshake then failed, since the retry ATTACHED to that fresh CLI and nothing stamped
+    for its life). Under a host the decision is made at the host's hello (_on_host_hello, inside the transport's connect,
+    before the SDK's initialize): the hello's cli.pid:cli.start against the reg's spawnedAtCli, the epoch the host's own
+    cli.spawnedAt, the launch login the hello's cli.login; for a kernel child at the connect, with now. The pins drive the
+    REAL connect loop (`_run` into `_amain`) with the transport road stubbed to each shape and a fake SDK client whose
+    connect delivers the road's hello as HostTransport.connect does, then fails or completes."""
+
+    SID = "11111111-2222-3333-4444-555555555588"
+    T0 = 1700000000                            # the reg's epoch, the CLI the reg names
+    T_HOST = 1700005000                        # a fresh CLI's spawn time, the host's own
+    CLI_A = {"pid": 4242, "start": "a1"}       # the CLI the reg's epoch belongs to (a survivor)
+    CLI_B = {"pid": 4343, "start": "b1"}       # a fresh CLI under a host
+
+    def setUp(self):
+        self._mod, self._installed = _sdk_module_for_the_road_pins()
+        self._orig_client = self._mod.ClaudeSDKClient
+
+    def tearDown(self):
+        self._mod.ClaudeSDKClient = self._orig_client
+        if self._installed:
+            sys.modules.pop("claude_agent_sdk", None)     # the stand-in never outlives the test that needed it
+
+    def _world(self, hosts, stamped=True):
+        root = tempfile.mkdtemp()
+        open(os.path.join(root, "session-hosts"), "w").write(hosts)
+        self.logs = []
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None, log=self.logs.append)
+        reg = {"sid": self.SID, "name": "web", "cwd": "/tmp", "spawnedAt": self.T0}
+        if stamped:
+            reg["spawnedAtCli"] = "4242:a1"             # this kernel (or an earlier one on this code) stamped CLI_A
+        sb.write_reg(root, self.SID, reg)
+        s = sb.SdkSession(be, {"sid": self.SID, "name": "web", "cwd": "/tmp"})
+        s._launched_login = "restored-login"        # what the reg restored for a surviving CLI (an attach keeps it)
+        return root, be, s
+
+    def _hello(self, cli, spawned=None, login="launch-login", old=False):
+        """A host's hello for `cli`: a host on this code carries the CLI's spawn time and the launch's login identifier;
+        `old` is a host running code older than the fields."""
+        c = dict(cli, fsid=self.SID)
+        if not old:
+            c["spawnedAt"] = self.T_HOST if spawned is None else spawned
+            c["login"] = login
+        return {"host": {"pid": 77, "start": "h1", "version": "test"}, "cli": c, "journal": {"next": 0}, "parked": [],
+                "inflight": 0}
+
+    def _live_host_lease(self, root):
+        """A lease that reads 'attach' before the connect: its CLI pid and holder are THIS process (alive, start time
+        matching), the holder a host, the beat now. The decision no longer reads it; the controls write it to show that."""
+        pid = os.getpid(); start = sb.proc_start(pid); now = time.time()
+        sb.write_lease(root, {"sid": self.SID, "fsid": self.SID, "name": "web", "pid": pid, "start": start,
+                              "holder": {"kind": "host", "pid": pid, "start": start}, "version": "test", "spawnedAt": self.T0, "t": now})
+
+    def _drive(self, be, s, root, roads, marking_raises=False):
+        """Run the real connect loop. `roads` is one dict per iteration: {"road": "attach" | "spawn-host" | "child",
+        "hello": the host's hello (host roads), "fail": None | "before-hello" (the connect fails before any CLI exists) |
+        "after-hello" (the host's CLI is up and its hello arrived, then the SDK's initialize fails: the loop's own retry
+        road)}. The fake client's connect delivers the hello as HostTransport.connect does, then fails or completes; the
+        thread ends after the last road's connect. Returns the reg's (spawnedAt, spawnedAtCli) after each fresh-CLI block."""
+        seen = []; calls = {"n": 0}; sid = self.SID; roads = list(roads)
+        class FakeTransport:
+            hello = None; _init_pending = True; exit_info = None; ack_offset = -1
+        async def transport_for(sess, opts, msg_classes):
+            r = roads[min(calls["n"], len(roads) - 1)]
+            if r["road"] == "child":
+                return None                                  # a kernel child
+            sess._host_is_attach = r["road"] == "attach"
+            t = FakeTransport(); t.hello = r.get("hello"); sess._host = t
+            return t
+        real_stamp = s._fresh_cli_stamp
+        def stamp(spawned_at, cli_ident="", mark_echoes=True):
+            real_stamp(spawned_at, cli_ident, mark_echoes=mark_echoes)
+            reg = sb.read_reg(root, sid)
+            seen.append((reg.get("spawnedAt"), reg.get("spawnedAtCli")))
+        s._fresh_cli_stamp = stamp
+        class FakeClient:
+            def __init__(self, options=None, transport=None):
+                pass
+            async def __aenter__(self):
+                r = roads[min(calls["n"], len(roads) - 1)]; calls["n"] += 1
+                if r.get("fail") == "before-hello":
+                    raise OSError("the binary is missing: no CLI launched")   # this launch fails before any CLI exists
+                if r["road"] != "child":
+                    be._on_host_hello(s, r["hello"])         # what HostTransport.connect does once the hello frame arrives
+                if r.get("fail") == "after-hello":
+                    raise TimeoutError("initialize timed out")   # the SDK's connect fails with the host's CLI up
+                if calls["n"] >= len(roads):
+                    s.ended = True; s._wake.set()            # the last connect: the loop ends once the connect has landed
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def query(self, prompt):
+                async for _ in prompt:
+                    pass
+            async def receive_messages(self):
+                if False:
+                    yield None
+            async def get_context_usage(self):
+                return None
+            async def get_server_info(self):
+                return None
+        if marking_raises:
+            def boom(sid_, texts, refeed=True):
+                raise RuntimeError("the tail moved under the walk")
+            be._mark_dropped_echoes = boom                   # a bookkeeping fault, never a launch error
+        be._host_transport_for = transport_for
+        self._mod.ClaudeSDKClient = FakeClient
+        s._run()
+        return seen
+
+    def _reg(self, root):
+        r = sb.read_reg(root, self.SID)
+        return (r.get("spawnedAt"), r.get("spawnedAtCli"))
+
+    def test_the_mirror_road_stamps_the_fresh_cli_once_at_the_hello_whose_handshake_then_failed(self):
+        """Round one's medium: hosts on, the spawn road; the host spawns the CLI, writes its lease, serves its socket, and
+        the SDK's initialize then fails; the retry ATTACHES to that fresh CLI. The decision was made at the hello inside
+        the failed connect, so the epoch (the host's spawn time) and the launch login (the hello's cli.login) are stamped
+        once, and the attach that follows finds the CLI the reg already names."""
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, [{"road": "spawn-host", "hello": self._hello(self.CLI_B), "fail": "after-hello"},
+                                          {"road": "attach", "hello": self._hello(self.CLI_B)}])
+        self.assertEqual(seen, [(self.T_HOST, "4343:b1")], "one block, at the first hello, with the host's spawn time")
+        self.assertEqual(self._reg(root), (self.T_HOST, "4343:b1"))
+        self.assertEqual(s._launched_login, "launch-login", "the login the launch's spec carried, stamped once")
+        self.assertEqual(sb.read_reg(root, self.SID).get("launchedLogin"), "launch-login")
+        self.assertTrue(any("attach did not complete" in str(m) for m in self.logs), "the loop's own retry road was taken: %s" % self.logs[-4:])
+
+    def test_two_failed_handshakes_then_the_attach_stamp_once(self):
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, [{"road": "spawn-host", "hello": self._hello(self.CLI_B), "fail": "after-hello"},
+                                          {"road": "attach", "hello": self._hello(self.CLI_B), "fail": "after-hello"},
+                                          {"road": "attach", "hello": self._hello(self.CLI_B)}])
+        self.assertEqual(seen, [(self.T_HOST, "4343:b1")])
+        self.assertEqual(sum("attach did not complete" in str(m) for m in self.logs), 2)
+
+    def test_a_survivor_attach_keeps_its_epoch_its_identity_and_its_login(self):
+        root, be, s = self._world("on"); self._live_host_lease(root)
+        seen = self._drive(be, s, root, [{"road": "attach", "hello": self._hello(self.CLI_A, login="today")}])
+        self.assertEqual(seen, [], "the CLI the reg names: nothing runs")
+        self.assertEqual(self._reg(root), (self.T0, "4242:a1"))
+        self.assertEqual(s._launched_login, "restored-login", "the restored launch login and init evidence stand")
+
+    def test_an_older_hosts_hello_records_the_identity_and_moves_nothing(self):
+        """A host running code older than the spawn-time field: its CLI predates this kernel (every host spawned by this code
+        carries the field), so the epoch, the login and the heals all stand, and the identity is recorded for the next
+        attach to compare against. The first deploy boot of this change attaches only such hosts."""
+        root, be, s = self._world("on", stamped=False)          # a reg written before the identity existed
+        seen = self._drive(be, s, root, [{"road": "attach", "hello": self._hello(self.CLI_A, old=True)}])
+        self.assertEqual(seen, [])
+        self.assertEqual(self._reg(root), (self.T0, "4242:a1"), "the identity recorded, the epoch untouched")
+        self.assertEqual(s._launched_login, "restored-login")
+        self.assertTrue(any("recorded, nothing stamped" in str(m) for m in self.logs), self.logs[-4:])
+
+    def test_a_hello_without_a_cli_identity_is_tolerated_with_a_log_line(self):
+        """A hello older than the identity itself (no cli dict, or one without pid or start): nothing stamped, said in the
+        log, and the connect goes on."""
+        root, be, s = self._world("on")
+        hello = self._hello(self.CLI_B); hello["cli"] = {"fsid": self.SID}
+        bare = self._hello(self.CLI_B); del bare["cli"]
+        seen = self._drive(be, s, root, [{"road": "attach", "hello": bare, "fail": "after-hello"}, {"road": "attach", "hello": hello}])
+        self.assertEqual(seen, [])
+        self.assertEqual(self._reg(root), (self.T0, "4242:a1"))
+        self.assertEqual(sum("names no CLI identity" in str(m) for m in self.logs), 2, self.logs)
+        self.assertFalse(any("crashed" in str(m) for m in self.logs), "never a raise out of the connect: %s" % self.logs)
+
+    def test_a_kernel_child_stamps_at_the_connect_with_now_and_no_identity(self):
+        root, be, s = self._world("off")
+        seen = self._drive(be, s, root, [{"road": "child"}])
+        self.assertEqual(len(seen), 1); self.assertGreater(seen[0][0], self.T0); self.assertEqual(seen[0][1], "")
+        self.assertEqual(s._launched_login, "", "a kernel child stamps its options' login (the machine's own here)")
+
+    def test_a_launch_that_fails_before_any_cli_exists_moves_nothing(self):
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, [{"road": "spawn-host", "hello": self._hello(self.CLI_B), "fail": "before-hello"}])
+        self.assertEqual(seen, [], "no block ran")
+        self.assertEqual(self._reg(root), (self.T0, "4242:a1"), "the failed launch moved nothing")
+        self.assertEqual(s._launched_login, "restored-login", "nor the launch login")
+        s2 = sb.SdkSession(be, {"sid": self.SID, "name": "web", "cwd": "/tmp"})
+        seen2 = self._drive(be, s2, root, [{"road": "spawn-host", "hello": self._hello(self.CLI_B)}])
+        self.assertEqual(seen2, [(self.T_HOST, "4343:b1")], "the launch that succeeded stamped once")
+
+    def test_a_raise_out_of_the_marking_is_a_bookkeeping_fault_not_a_launch_error(self):
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, [{"road": "spawn-host", "hello": self._hello(self.CLI_B)}], marking_raises=True)
+        self.assertEqual(len(seen), 1, "the block completed and the connect was reached")
+        self.assertTrue(any("dropped-echo marking" in str(m) and "failed" in str(m) for m in self.logs), self.logs)
+        self.assertFalse(any("failed to start" in str(m) for m in self.logs), "never a launch error: %s" % self.logs)
+
+    def test_a_deliberate_reconnect_stamps_the_fresh_cli_but_marks_no_echoes(self):
+        """The waker's effort or model change tears the client down and reconnects in the same thread: the host it asks to
+        end is replaced by a fresh one, whose CLI is fresh (its epoch moves), but the forwarded sends land through the
+        resume, so nothing is marked dropped (the loop's `deliberate`, carried to the hello's decision)."""
+        root, be, s = self._world("on")
+        marked = []
+        be._mark_dropped_echoes = lambda sid_, texts, refeed=True: marked.append(sid_)
+        s._reconnect = True                                  # the waker armed a reconnect; no attach retry pending
+        seen = self._drive(be, s, root, [{"road": "spawn-host", "hello": self._hello(self.CLI_B)}])
+        self.assertEqual(seen, [(self.T_HOST, "4343:b1")])
+        self.assertEqual(marked, [], "a deliberate reconnect marks nothing")
+        root2, be2, s2 = self._world("on")
+        marked2 = []
+        be2._mark_dropped_echoes = lambda sid_, texts, refeed=True: marked2.append(sid_)
+        self._drive(be2, s2, root2, [{"road": "spawn-host", "hello": self._hello(self.CLI_B)}])
+        self.assertEqual(marked2, [self.SID], "a thread-top spawn marks")
+
+    def test_a_first_hello_naming_the_known_cli_then_a_second_naming_a_fresh_one_moves_once(self):
+        """The follow-up's read, low 1: an attach to the CLI the reg names whose handshake then fails (keep), then a spawn
+        whose hello names a fresh CLI (move): one stamp, with the host's spawn time and the launch's login; and a stale lease
+        beside a surviving CLI (the pre-read would have said spawn) still keeps, since the lease never decides."""
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, [{"road": "attach", "hello": self._hello(self.CLI_A), "fail": "after-hello"},
+                                          {"road": "spawn-host", "hello": self._hello(self.CLI_B)}])
+        self.assertEqual(seen, [(self.T_HOST, "4343:b1")], "the known CLI kept at the first hello; the fresh one stamped at the second")
+        self.assertEqual(s._launched_login, "launch-login")
+        root2, be2, s2 = self._world("on")
+        pid = os.getpid(); start = sb.proc_start(pid)
+        sb.write_lease(root2, {"sid": self.SID, "fsid": self.SID, "name": "web", "pid": pid, "start": start,
+                               "holder": {"kind": "host", "pid": pid, "start": start}, "version": "test", "spawnedAt": self.T0,
+                               "t": time.time() - 3600})                   # a beat an hour stale: the pre-read would call it an orphan
+        seen2 = self._drive(be2, s2, root2, [{"road": "attach", "hello": self._hello(self.CLI_A, login="today")}])
+        self.assertEqual((seen2, self._reg(root2), s2._launched_login), ([], (self.T0, "4242:a1"), "restored-login"))
+
+    def test_a_host_iteration_then_a_kernel_child_iteration_stamp_twice_and_the_child_clears_the_identity(self):
+        """The follow-up's read, low 2: the kernel-child gate at the connect is `self._host is None`, true only because the
+        loop's finally clears the host each iteration. A host iteration (a fresh CLI stamped at its hello, the handshake then
+        fails) followed by a child iteration stamps twice, and the child's stamp clears the identity; a change to that finally
+        that left the host set would skip the child's stamp and fail here."""
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, [{"road": "spawn-host", "hello": self._hello(self.CLI_B), "fail": "after-hello"},
+                                          {"road": "child"}])
+        self.assertEqual(len(seen), 2, seen)
+        self.assertEqual(seen[0], (self.T_HOST, "4343:b1"), "the host's CLI at its hello")
+        self.assertGreater(seen[1][0], self.T0); self.assertEqual(seen[1][1], "", "the kernel child's stamp clears the identity")
+
+    def test_the_plain_roads_as_controls(self):
+        """The lease before the connect is irrelevant to the decision: a host gone between the reads (a live lease, then a
+        spawn), hosts off with a live lease (a kernel child), the reverse race (no lease, then an attach to the CLI the reg
+        names) and the four plain roads all decide by the CLI the hello names, or by the connect for a kernel child."""
+        for hosts, lease, road, cli, moves in (("on", True, "spawn-host", "B", "host"), ("off", True, "child", None, "now"),
+                                               ("on", False, "attach", "A", None), ("on", True, "attach", "A", None),
+                                               ("on", False, "spawn-host", "B", "host"), ("off", False, "child", None, "now"),
+                                               ("on", False, "child", None, "now")):
+            with self.subTest(hosts=hosts, lease=lease, road=road, cli=cli):
+                root, be, s = self._world(hosts)
+                if lease:
+                    self._live_host_lease(root)
+                r = {"road": road}
+                if cli:
+                    r["hello"] = self._hello(self.CLI_A if cli == "A" else self.CLI_B)
+                seen = self._drive(be, s, root, [r])
+                if moves == "host":
+                    self.assertEqual(seen, [(self.T_HOST, "4343:b1")], "a fresh CLI under a host: the host's spawn time")
+                elif moves == "now":
+                    self.assertEqual(len(seen), 1); self.assertGreater(seen[0][0], self.T0); self.assertEqual(seen[0][1], "")
+                else:
+                    self.assertEqual(seen, [], "the CLI the reg names keeps its epoch")
+                    self.assertEqual(self._reg(root), (self.T0, "4242:a1"))
+
+class HealCwdPendingUnderAnUnreadableSlug(unittest.TestCase):
+    """The queued low (b): the boot reconcile decided a mid-move reg by two os.path.exists calls, so an unsearchable pending slug
+    with the transcript also at the old slug read as a move that never happened and dropped cwdPending; an unreadable slug
+    takes the loud branch and leaves the flag."""
+
+    SID = "11111111-2222-3333-4444-555555555599"
+
+    def test_an_unreadable_pending_slug_leaves_the_move_pending_and_says_so(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        logs = []
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None, log=logs.append)
+        proj = Path(tempfile.mkdtemp()) / "projects"
+        old, pend = proj / "-tmp-old", proj / "-tmp-new"
+        old.mkdir(parents=True); pend.mkdir(parents=True)
+        (old / (self.SID + ".jsonl")).write_text(""); (pend / (self.SID + ".jsonl")).write_text("")
+        with mock.patch.object(sb, "transcript_path", lambda slug, fsid: str(Path(slug) / (fsid + ".jsonl"))):
+            sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "cwd": str(old), "cwdPending": str(pend)})
+            os.chmod(pend, 0)
+            try:
+                be._heal_cwd_pending(sb.read_reg(root, self.SID))
+            finally:
+                os.chmod(pend, 0o755)
+        self.assertEqual(sb.read_reg(root, self.SID).get("cwdPending"), str(pend), "the move stays pending: the folder could not be read")
+        self.assertTrue(any("cannot be read" in str(m) for m in logs), logs)
+
+
 class PushSessionCallback(unittest.TestCase):
     """_push_session — the connect handshake's targeted one-session push (2026-08-10). The handshake is
     the exact event the kernel's opening chip stands down on, and a plain pusher wake left that flip
@@ -3129,6 +5414,19 @@ class PushSessionCallback(unittest.TestCase):
         be._push_session(self.SID)
         self.assertTrue(done.wait(5), "the callback fires, on its own thread")
         self.assertEqual(got, [self.SID])
+
+    def test_the_hand_off_to_the_cli_pushes_its_one_session(self):
+        # The pop in inputs() is the moment a queued copy leaves _pending for the CLI's stdin, where no recall
+        # exists: the chat's bubble must flip from "sending… ✎" to "taken by the session" NOW, not at the next
+        # full cycle (the user 2026-09-19: the ✎ stayed for the whole wait and answered "too late"). Source-
+        # pinned like the other inputs() rules (a nested closure); the callback's mechanics are the tests here.
+        import inspect
+        src = inspect.getsource(sb.SdkSession)
+        i = src.index("self._inflight_texts.append(item)")
+        k = src.index('yield {"type": "user",', i)
+        j = src.find("self.backend._push_session(self.sid)", i, k)
+        self.assertGreater(j, 0, "the targeted push sits between the pop and the yield that hands the text to the CLI")
+        self.assertIn("self.backend._poke()", src[i:j], "…after the poke that wakes the fleet cycle")
 
     def test_without_the_callback_it_falls_back_to_the_pusher_wake(self):
         # an older kernel (or a test) that didn't wire push_session still gets the pre-existing
@@ -3153,6 +5451,416 @@ class PushSessionCallback(unittest.TestCase):
             time.sleep(0.01)
         self.assertTrue(any("session push" in str(m) for m in logs),
                         "the failure is reported, not swallowed: %r" % logs)
+
+
+class LiveSubagentsRetire(unittest.TestCase):
+    """The lane's live subagent count only ever GREW (the user 2026-09-02, whose session read Working with
+    37 subagents for hours). The CLI fires SubagentStart for every workflow agent but not SubagentStop for
+    every one of them (probe-verified on CLI 2.1.257: a run with one agent on a nonexistent model got one
+    stop hook; the failed agent's slot in the run's `workflow_progress` list read state "error" and
+    nothing else), so the set is retired on the events that DO arrive: a run's per-agent
+    progress list (an end state, or a slot re-minted for a retry), the run's end, a Task agent's own
+    task end (its task_id IS the agent id), and the client teardown. Every id and uuid here is synthetic."""
+
+    SID = "11111111-2222-3333-4444-666666666666"
+
+    def _sess(self):
+        self.logs, self.pokes = [], []
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None, log=self.logs.append,
+                           poke=lambda: self.pokes.append(1))
+        s = sb.SdkSession(be, {"sid": self.SID, "name": "web", "cwd": "/tmp"})
+        s.inflight = 0                                          # the main turn is idle throughout
+        return s
+
+    def _start(self, s, aid, kind="workflow-subagent"):
+        import asyncio
+        asyncio.run(s._subagent_start_hook({"agent_id": aid, "agent_type": kind}, None, None))
+
+    @staticmethod
+    def _wf(index, aid, state, label="reader"):
+        e = {"type": "workflow_agent", "index": index, "label": label, "state": state, "queuedAt": 1}
+        if aid:
+            e["agentId"] = aid
+            e["startedAt"] = 2
+        return e
+
+    def test_background_work_counts_as_busy_for_the_quiet_gate(self):
+        # T240: busy_count counted only in-flight turns, so a quiet deploy applied INSTANTLY over a
+        # session running a Workflow (no turn in flight between its own turns) and killed it — eight
+        # review runs lost in one night. Background work makes the session busy; the breakdown is
+        # separate so the manager can hold new turn starts only for turns that are actually in flight.
+        s = self._sess()
+        be = s.backend
+        be.sessions[s.sid] = s
+        self.assertEqual(be.busy_breakdown(), (0, 0))
+        self.assertEqual(be.busy_count(), 0)
+        s._on_task_event("task_started", {"task_id": "w1", "task_type": "local_workflow"})
+        self.assertEqual(be.busy_breakdown(), (0, 1), "a live workflow with no turn in flight is background work")
+        self.assertEqual(be.busy_count(), 1)
+        s._on_task_event("task_notification", {"task_id": "w1", "status": "completed"})
+        self.assertEqual(be.busy_breakdown(), (0, 0), "ended → not busy")
+        self.assertEqual(be.busy_count(), 0)
+        self._start(s, "a1")
+        self.assertEqual(be.busy_breakdown(), (0, 1), "a live background agent counts the same way")
+        s.inflight = 1
+        self.assertEqual(be.busy_breakdown(), (1, 0), "a session is counted ONCE — in flight wins")
+        self.assertEqual(be.busy_count(), 1)
+
+    def test_a_failed_workflow_agent_retires_on_the_runs_progress_list(self):
+        """The shape the probe recorded: the run's task_progress re-ships the whole per-agent list on every
+        state change; the failed agent's slot flips to "error" with no SubagentStop ever following."""
+        s = self._sess()
+        s._on_task_event("task_started", {"task_id": "w1", "task_type": "local_workflow", "description": "review"})
+        self._start(s, "a1"); self._start(s, "a2")
+        s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": [
+            self._wf(1, "a1", "start"), self._wf(2, "a2", "start"), self._wf(3, None, "start")]})   # 3rd still queued
+        self.assertEqual(set(s._subagents), {"a1", "a2"}, "start states retire nothing")
+        self.assertEqual(s.snapshot()["state"], "working", "live agents keep the session working")
+        n0 = len(self.pokes)
+        s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": [
+            self._wf(1, "a1", "progress"), self._wf(2, "a2", "error"), self._wf(3, None, "start")]})
+        self.assertEqual(set(s._subagents), {"a1"}, "the failed agent retires on its error state — no stop hook came")
+        self.assertGreater(len(self.pokes), n0, "the retirement pushes a build now, not at the backstop")
+        n1 = len(self.pokes)
+        s._on_task_event("task_progress", {"task_id": "w1"})   # a throttled tick without the list changes nothing
+        self.assertEqual(set(s._subagents), {"a1"})
+        self.assertEqual(len(self.pokes), n1, "…and a tick that changed nothing pushes nothing")
+        s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": [
+            self._wf(1, "a1", "done"), self._wf(2, "a2", "error")]})
+        self.assertEqual(s._subagents, {}, "a done state retires too (its stop hook would only be a no-op)")
+        self.assertEqual(s.snapshot()["state"], "waiting", "and the session idles once the set empties")
+
+    def test_b_the_runs_end_retires_every_agent_it_listed(self):
+        """A run's end is the end of everything it ever listed, whatever state the slot last showed."""
+        s = self._sess()
+        s._on_task_event("task_started", {"task_id": "w1", "task_type": "local_workflow"})
+        self._start(s, "a1"); self._start(s, "a2")
+        s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": [
+            self._wf(1, "a1", "start"), self._wf(2, "a2", "progress")]})
+        s._on_task_event("task_notification", {"task_id": "w1", "status": "completed"})
+        self.assertEqual(s._subagents, {}, "both listed agents retire at the run's end")
+        self.assertNotIn("w1", s._wf_agents, "the run's roster is dropped with it")
+        self.assertEqual(s.snapshot()["state"], "waiting")
+
+    def test_c_an_agent_no_run_listed_is_never_inferred_dead(self):
+        """Every retirement keys on an event about the agent. An agent no run has listed yet is NOT retired
+        because some other run ended and "no run is live any more" — that is inference from absence, and an
+        earlier draft that did it would have retired a live agent had the events ever landed in this order
+        (review 2026-09-02). It stays until its own end arrives: here its run's list naming it done."""
+        s = self._sess()
+        s._on_task_event("task_started", {"task_id": "w1", "task_type": "local_workflow"})
+        self._start(s, "b1")                                    # w2's first agent — its task_started still queued
+        s._on_task_event("task_notification", {"task_id": "w1", "status": "completed"})
+        self.assertEqual(set(s._subagents), {"b1"}, "w1's end says nothing about an agent w1 never listed")
+        self.assertEqual(s.snapshot()["state"], "working", "the live agent still holds the session working")
+        s._on_task_event("task_started", {"task_id": "w2", "task_type": "local_workflow"})
+        s._on_task_event("task_progress", {"task_id": "w2", "workflow_progress": [self._wf(1, "b1", "done")]})
+        self.assertEqual(s._subagents, {}, "its own run's list is what ends it")
+
+    def test_c2_a_retried_slot_ends_the_attempt_it_displaced(self):
+        """A retried workflow agent is re-minted with a NEW id in the SAME slot; the first attempt got a
+        SubagentStart and nothing else, so the slot changing hands is its end."""
+        s = self._sess()
+        s._on_task_event("task_started", {"task_id": "w1", "task_type": "local_workflow"})
+        self._start(s, "a1")
+        s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": [self._wf(1, "a1", "start")]})
+        self._start(s, "a1r")                                   # the retry, same slot
+        s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": [self._wf(1, "a1r", "start")]})
+        self.assertEqual(set(s._subagents), {"a1r"}, "the displaced attempt is over; the retry is live")
+        s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": [self._wf(1, "a1r", "done")]})
+        self.assertEqual(s._subagents, {})
+        s._on_task_event("task_notification", {"task_id": "w1", "status": "completed"})
+        self.assertNotIn("w1", s._wf_slots, "the run's slots are dropped with it")
+
+    def test_d_a_task_agents_own_task_end_retires_it(self):
+        """A Task/Agent subagent's lifecycle task carries the agent id as its task_id (probe-verified), so
+        the task ending retires the agent — here as a failure. Whether a failed Task agent gets a
+        SubagentStop is unverified (the probe saw a failed WORKFLOW agent get none); its task end retires
+        it either way."""
+        s = self._sess()
+        self._start(s, "t1", "general-purpose")
+        s._on_task_event("task_started", {"task_id": "t1", "task_type": "local_agent", "subagent_type": "general-purpose"})
+        self.assertEqual(s.snapshot()["state"], "working")
+        s._on_task_event("task_notification", {"task_id": "t1", "status": "failed"})
+        self.assertEqual(s._subagents, {}, "the task's end is the agent's end")
+        self.assertEqual(s._bg_tasks, {}, "the task itself cleared as before")
+        self.assertEqual(s.snapshot()["state"], "waiting")
+
+    def test_e_a_task_agents_progress_never_touches_the_workflow_path(self):
+        """A local_agent task's progress is not a workflow list; nothing retires and nothing raises."""
+        s = self._sess()
+        self._start(s, "t1", "Explore")
+        s._on_task_event("task_started", {"task_id": "t1", "task_type": "local_agent"})
+        s._on_task_event("task_progress", {"task_id": "t1", "last_tool_name": "Read"})
+        self.assertEqual(set(s._subagents), {"t1"})
+        self.assertEqual(s._wf_agents, {}, "no roster is minted for a non-workflow task")
+
+    def test_f_the_client_teardown_drops_the_abandoned_clients_agents_and_tasks(self):
+        """A reconnect abandons the CLI process the agents and background tasks ran inside: they died with
+        it and their hooks/notifications can never arrive, so the loop top forgets the agents, retires the
+        tasks, queues the same death notice a CLI death does (once), clears the reg mirror, and logs."""
+        s = self._sess()
+        sb.write_reg(s.backend.state_dir, self.SID, {"sid": self.SID, "name": "web", "cwd": "/tmp", "alive": True})
+        s._on_task_event("task_started", {"task_id": "w1", "task_type": "local_workflow", "description": "review sweep"})
+        s._on_task_event("task_started", {"task_id": "b1", "task_type": "local_bash", "description": "watch the build"})
+        self._start(s, "a1"); self._start(s, "a2")
+        s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": [self._wf(1, "a1", "start")]})
+        self.assertEqual(s.snapshot()["state"], "working")
+        s._drop_live_work("reconnect")
+        self.assertEqual(s._subagents, {})
+        self.assertEqual(s._wf_agents, {})
+        self.assertEqual(s._wf_slots, {})
+        self.assertEqual(s._bg_tasks, {}, "the tasks died with the CLI too — their notifications can never arrive")
+        self.assertEqual(s.snapshot()["state"], "waiting")
+        self.assertEqual(s.snapshot()["bgTasks"], [])
+        notes = [q for q in s.pending() if "background task" in q]
+        self.assertEqual(len(notes), 1, "the session is told what it lost: %r" % s.pending())
+        self.assertEqual(notes[0], sb.task_death_notice([{"desc": "review sweep"}, {"desc": "watch the build"}],
+                                                        cause=sb.SdkSession._RECONNECT_CAUSE),
+                         "the very copy the session reads, with the cause named truthfully")
+        self.assertIn("settings switch", notes[0])
+        self.assertNotIn("crash", notes[0], "a reconnect is neither a crash nor an unexplained restart")
+        self.assertEqual(sb.read_reg(s.backend.state_dir, self.SID).get("bgTasks"), [], "mirror cleared: reported once")
+        self.assertTrue(any("dropped 2 subagents and 2 background tasks on reconnect" in str(m) for m in self.logs), self.logs)
+        self.logs.clear()
+        s._drop_live_work("reconnect")
+        self.assertFalse(self.logs, "an empty set drops silently — the first connect is not an event worth a line")
+        self.assertEqual(len([q for q in s.pending() if "background task" in q]), 1, "no second notice for nothing")
+
+    def test_f2_a_flapping_reconnect_does_not_stack_the_same_notice(self):
+        s = self._sess()
+        for _ in range(2):
+            s._on_task_event("task_started", {"task_id": "b1", "task_type": "local_bash", "description": "watch"})
+            s._drop_live_work("reconnect")
+        self.assertEqual(len([q for q in s.pending() if "background task" in q]), 1, s.pending())
+
+    def test_g_the_reconnect_loop_top_calls_the_drop_before_reconciling(self):
+        """Pin the wiring: the drop runs at the loop top, before _reconcile_stranded, every iteration."""
+        src = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
+        i = src.index('self._drop_live_work("reconnect")')
+        j = src.index("self._reconcile_stranded()")
+        self.assertLess(i, j, "the drop precedes the stranded-turn reconcile at the loop top")
+        k = src.rfind("while not self.ended:", 0, i)
+        self.assertGreater(k, 0)
+        self.assertNotIn("async with ClaudeSDKClient", src[k:i], "…inside the reconnect loop, before the connect")
+
+    def test_i_a_run_seen_only_through_its_progress_list_still_retires(self):
+        """A backend that attached mid-run never saw the run's task_started (the self-heal path); the
+        per-agent list is shipped only by Workflow runs, so its presence types the entry and the run's
+        error states and end retire its agents like any other."""
+        s = self._sess()
+        self._start(s, "a1"); self._start(s, "a2")
+        s._on_task_event("task_progress", {"task_id": "w7", "workflow_progress": [
+            self._wf(1, "a1", "error"), self._wf(2, "a2", "progress")]})
+        self.assertEqual(s._bg_tasks["w7"]["type"], "local_workflow", "the entry learned what it is from the list")
+        self.assertEqual(set(s._subagents), {"a2"}, "the failed agent retired on the first list seen")
+        s._on_task_event("task_notification", {"task_id": "w7", "status": "completed"})
+        self.assertEqual(s._subagents, {}, "the run's end retires the rest")
+
+    def test_h_a_clean_stop_hook_still_retires_exactly_its_own_agent(self):
+        """The designed path is untouched: a SubagentStop retires its agent and no other, and a later
+        progress list naming it as done is a harmless no-op."""
+        import asyncio
+        s = self._sess()
+        s._on_task_event("task_started", {"task_id": "w1", "task_type": "local_workflow"})
+        self._start(s, "a1"); self._start(s, "a2")
+        asyncio.run(s._subagent_stop_hook({"agent_id": "a1", "agent_type": "workflow-subagent"}, None, None))
+        self.assertEqual(set(s._subagents), {"a2"})
+        s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": [
+            self._wf(1, "a1", "done"), self._wf(2, "a2", "progress")]})
+        self.assertEqual(set(s._subagents), {"a2"})
+
+
+class WorkflowProgressShapeIsLoud(unittest.TestCase):
+    """The retirement parser keys on the field names the probe recorded. If the CLI renames them, the
+    ever-growing live count comes back — and would come back SILENTLY, so a list this build cannot read is
+    reported once per process, naming what arrived (the api_retry shape warning's pattern)."""
+
+    SID = "11111111-2222-3333-4444-888888888888"
+
+    def setUp(self):
+        sb.SdkSession._wf_shape_warned = False
+
+    def tearDown(self):
+        sb.SdkSession._wf_shape_warned = False
+
+    def _sess(self):
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None, log=lambda m, problem=None: None)
+        s = sb.SdkSession(be, {"sid": self.SID, "name": "web", "cwd": "/tmp"})
+        s.inflight = 0
+        s._on_task_event("task_started", {"task_id": "w1", "task_type": "local_workflow"})
+        return s
+
+    def _feed(self, s, progress):
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": progress})
+        return buf.getvalue()
+
+    def test_a_renamed_list_says_so_once_and_names_what_arrived(self):
+        s = self._sess()
+        out = self._feed(s, [{"type": "wf_agent", "agent_ref": "a1", "phase": "done"}])
+        self.assertIn("workflow_progress payload", out)
+        self.assertIn("workflow_agent", out, "the diagnostic names the type it expected")
+        self.assertIn("agent_ref", out, "…and the keys it actually got")
+        self.assertIn("live subagent count", out, "…and what the user will see go wrong")
+        self.assertIn("until the session reconnects", out, "…stated for the worst case: a type/agentId rename "
+                                                          "leaves the roster empty, so a run's end retires nothing")
+        self.assertEqual(self._feed(s, [{"type": "wf_agent", "agent_ref": "a2"}]), "", "once per process, not per event")
+
+    def test_b_the_probe_recorded_shapes_are_silent(self):
+        """Every shape CLI 2.1.257 was seen to ship on an ordinary run must stay silent, or the latch is spent
+        on a false alarm and a real rename later in the process goes unreported (review 2026-09-03)."""
+        s = self._sess()
+        cases = {
+            "phases only, before any agent is queued": [
+                {"type": "workflow_phase", "index": 0, "title": "Review", "kind": "review"},
+                {"type": "workflow_phase", "index": 1, "title": "Verify"}],
+            "a log line beside the phases": [
+                {"type": "workflow_log", "message": "scanning"}, {"type": "workflow_phase", "index": 0, "title": "Review"}],
+            "a queued slot has no agentId yet": [
+                {"type": "workflow_agent", "index": 1, "label": "a", "agentId": "a1", "state": "done", "queuedAt": 1, "startedAt": 2},
+                {"type": "workflow_agent", "index": 2, "label": "b", "state": "start", "queuedAt": 1},
+                {"type": "workflow_phase", "index": 0, "title": "Review"}],
+            "a slot blocked before spawn: error, no agentId, no startedAt": [
+                {"type": "workflow_agent", "index": 1, "label": "a", "state": "error", "blocked": True,
+                 "error": "blocked", "queuedAt": 1, "lastProgressAt": 2}],
+            "a slot whose spawn threw: error, no agentId, no startedAt": [
+                {"type": "workflow_agent", "index": 1, "label": "a", "state": "error", "error": "spawn failed", "queuedAt": 1}],
+        }
+        for name, shape in cases.items():
+            self.assertEqual(self._feed(s, shape), "", name)
+        self.assertFalse(sb.SdkSession._wf_shape_warned)
+
+    def test_c_a_missing_field_is_named(self):
+        for entry, word in (({"type": "workflow_agent", "index": 1, "agentId": "a1", "startedAt": 2}, "'state'"),
+                            ({"type": "workflow_agent", "agentId": "a1", "state": "done"}, "'index'"),
+                            ({"type": "workflow_agent", "index": 1, "state": "done", "startedAt": 2}, "'agentId'"),
+                            ({"type": "workflow_step", "index": 1, "agentId": "a1", "state": "done"}, "'workflow_agent'")):
+            sb.SdkSession._wf_shape_warned = False
+            out = self._feed(self._sess(), [entry])
+            self.assertIn(word, out, "the diagnostic names the missing field: %r → %r" % (entry, out))
+
+    def test_d_an_unknown_state_word_is_named(self):
+        out = self._feed(self._sess(), [{"type": "workflow_agent", "index": 1, "agentId": "a1", "state": "failed", "startedAt": 2}])
+        self.assertIn("failed", out)
+        self.assertIn("unknown state word", out)
+
+    def test_e_a_throttled_tick_without_the_list_is_not_a_shape(self):
+        s = self._sess()
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            s._on_task_event("task_progress", {"task_id": "w1"})
+            s._on_task_event("task_progress", {"task_id": "w1", "workflow_progress": []})
+        self.assertEqual(buf.getvalue(), "")
+
+
+class SettleBeforePoke(unittest.TestCase):
+    """The kernel's parked-op drain wakes on the backend's turn-end poke (2026-09-03) and reads busy() to
+    decide whether the session is quiet — so the settle must CLOSE the turn (inflight 0, compaction over)
+    before the poke fires, or the woken cycle reads the session as still working and delivery slips to
+    the pusher's backstop with every test green. Codex got the same pin in tests/test_codex_backend.py."""
+
+    def test_the_result_branch_settles_before_it_pokes(self):
+        import inspect
+        src = inspect.getsource(sb.SdkSession._on_message)
+        i = src.index("elif isinstance(msg, ResultMessage):")
+        zero, comp, poke = (src.index("self.inflight = 0", i), src.index("self._compacting = False", i),
+                            src.index("self.backend._poke()", i))
+        self.assertLess(zero, poke, "inflight is zeroed before the poke")
+        self.assertLess(comp, poke, "…and the compaction cue is cleared before it")
+
+    def test_the_fed_turn_counts_as_in_flight_under_the_pop_lock(self):
+        # busy() is inflight>0 or _pending; the input generator pops _pending and must count the turn in
+        # flight under the SAME lock, or a drain re-running right after a delivery reads the gap as idle
+        src = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
+        body = src[src.index("async def inputs():"):src.index("# Reconnect loop:")]   # the generator, up to the
+        #   connect loop that follows it (the receive side is SdkSession._drain since 2026-09-06)
+        self.assertLess(body.index("self.inflight += 1"), body.index("if item is None:"),
+                        "the increment sits inside the lock block that popped the item")
+        self.assertLess(body.index("self.inflight += 1"), body.index("self._persist_queue()"),
+                        "…before the registry write that used to separate them")
+
+
+class KillDuringRevive(unittest.TestCase):
+    """A Kill that lands while _ensure is reviving the same sid (the producer waking a cron-armed
+    session at the instant the user clicks Kill) must end the session the revive builds, not miss it.
+    _ensure reads alive, constructs, inserts and starts under the backend lock; kill used to flip the
+    reg under _reg_lock and pop the session under no lock, so a kill arriving mid-construction popped
+    nothing, and the revive then inserted and started a CLI for a reg the flip had just marked dead: a
+    running claude process with no tab, no listing and nothing that could stop it. Event-ordered, no
+    sleeps: the session under construction parks the revive inside the lock until the test lets it go,
+    and the kill thread signals the moment it commits to its path — on main by completing its pop
+    (finding nothing) while the revive is parked; with the fix by queueing on the backend lock — and
+    only then is the revive released. Either way the kill then has to take effect on the session the
+    revive built."""
+
+    def test_kill_during_revive_ends_the_revived_session(self):
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = be.spawn("alpha", d)
+        Real = sb.SdkSession
+        constructing, release, committed = threading.Event(), threading.Event(), threading.Event()
+        built = []
+        self.addCleanup(lambda: [s.shutdown() for s in built])   # never leave a parked stand-in behind
+
+        class Parked(Real):
+            def __init__(self, backend, reg):
+                super().__init__(backend, reg)
+                self._stopped = threading.Event()
+                built.append(self)
+                constructing.set()
+                release.wait(10)
+
+            def _run(self):                          # the CLI stand-in: alive until shutdown says stop
+                self._stopped.wait(10)
+
+            def shutdown(self):
+                super().shutdown()
+                self._stopped.set()
+
+        class PopSpy(dict):                          # main's kill commits by popping under no lock
+            def pop(self, key, *default):
+                r = super().pop(key, *default)
+                if threading.current_thread() is killer:
+                    committed.set()
+                return r
+
+        class LockSpy:                               # the fixed kill commits by queueing on the lock
+            def __init__(self, real):
+                self._real = real
+
+            def __enter__(self):
+                if threading.current_thread() is killer:
+                    committed.set()
+                return self._real.__enter__()
+
+            def __exit__(self, *a):
+                return self._real.__exit__(*a)
+
+        be.sessions = PopSpy(be.sessions)
+        be._lock = LockSpy(be._lock)
+        revived = []
+        reviver = threading.Thread(target=lambda: revived.append(be._ensure(sid)))
+        killer = threading.Thread(target=lambda: be.kill(sid))
+        with mock.patch.object(sb, "SdkSession", Parked):
+            reviver.start()
+            self.assertTrue(constructing.wait(10), "the revive never reached construction")
+            killer.start()
+            self.assertTrue(committed.wait(10), "the kill never committed to a path")
+            release.set()
+            reviver.join(10)
+            killer.join(10)
+        self.assertFalse(reviver.is_alive() or killer.is_alive(), "a thread never finished")
+        self.assertEqual(len(built), 1, "the revive built exactly one session")
+        s = built[0]
+        self.assertIs(revived[0], s, "the revive returned the session it built")
+        self.assertFalse(sb.read_reg(d, sid)["alive"], "the kill flipped the reg dead")
+        self.assertNotIn(sid, be.sessions,
+                         "the revived session outlived the kill: a running CLI whose reg says dead")
+        self.assertTrue(s.ended, "the revived session was never shut down")
+        s.thread.join(10)
+        self.assertFalse(s.thread.is_alive(), "the stand-in CLI thread kept running after the kill")
 
 
 if __name__ == "__main__":

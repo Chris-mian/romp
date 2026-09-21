@@ -17,14 +17,14 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()      # hermetic; constants resolve under here at import
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal-service")).load_module()
+pm = load_source("romp_postal", os.path.join(BIN, "romp-postal-service"))
 
 TO = "11111111-2222-3333-4444-555555555555"
 FROM = "66666666-7777-8888-9999-aaaaaaaaaaaa"
@@ -55,7 +55,7 @@ class DeferredPushKeepsOneIdentity(unittest.TestCase):
         self.assertEqual([m["id"] for m in claimed], [mid])
         self.assertFalse((pm.MAILROOT / TO / "new" / mid).exists(), "claimed → out of new/")
 
-        self.assertTrue(pm.restore(TO, mid), "a claimed message can be put back")
+        self.assertEqual(pm.restore(TO, mid), pm.RESTORED, "a claimed message can be put back")
         self.assertTrue((pm.MAILROOT / TO / "new" / mid).is_file(), "back in new/ under its own id")
         self.assertFalse((pm.MAILROOT / TO / "cur" / mid).exists(), "and no longer claimed")
 
@@ -98,11 +98,11 @@ class DeferredPushKeepsOneIdentity(unittest.TestCase):
         mid = pm.deliver(TO, "api", FROM, "never mind", kind="coordinate")
         pm.read_box(TO, consume=True)
         (pm.MAILROOT / TO / "cur" / mid).unlink()
-        self.assertFalse(pm.restore(TO, mid))
+        self.assertEqual(pm.restore(TO, mid), pm.RESTORE_MISSING, "gone: the re-send cue (never the unknown answer, which re-sends nothing)")
 
     def test_restore_rejects_a_traversing_id(self):
-        self.assertFalse(pm.restore(TO, "../../../../etc/passwd"))
-        self.assertFalse(pm.restore("../../../../etc", "x"))
+        self.assertEqual(pm.restore(TO, "../../../../etc/passwd"), pm.RESTORE_MISSING)
+        self.assertEqual(pm.restore("../../../../etc", "x"), pm.RESTORE_MISSING)
 
 
 class DeferredPushEndToEnd(unittest.TestCase):
@@ -129,7 +129,7 @@ class DeferredPushEndToEnd(unittest.TestCase):
 
     def test_push_that_cannot_inject_keeps_the_message_id(self):
         mid = pm.deliver(TO, "api", FROM, "staging is green, promoting", kind="coordinate")
-        agent = {"id": TO, "state": "working", "backend": "tmux"}
+        agent = {"id": TO, "state": "working", "backend": "sdk"}
 
         for _ in range(3):                       # three deferred pushes in a row
             self.assertFalse(pm._push(TO, agent), "not injected → push reports False")

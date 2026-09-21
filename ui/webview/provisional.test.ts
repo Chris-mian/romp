@@ -1,7 +1,7 @@
 // A new session shows its chat box immediately and starts behind it (the user 2026-07-30).
 //
 // Creating a session used to raise an "Opening session…" modal over the pane: the kernel resolved the
-// directory, spawned tmux or connected the SDK, and the first transcript poll came back — seconds you
+// directory, connected the session, and the first transcript poll came back — seconds you
 // could do nothing with, watching three bouncing dots. Now the tab is there from the first click with a
 // live composer; anything typed is HELD and flushed the moment the real session lands; and a create that
 // fails says so in a dialog carrying the kernel's own words, instead of the cue silently timing out.
@@ -9,10 +9,11 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional,
+import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional, focusResolvesProvisional,
   PROVISIONAL_PREFIX } from "./provisional";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const PLACEHOLDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "pane-placeholder.ts"), "utf8");   // the empty pane's placeholder, by kind (T355)
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("a provisional id carries NO colon — federation would read it as a host", () => {
@@ -51,7 +52,42 @@ test("only an unseen session under exactly the requested name adopts the tab", (
   assert.ok(!adoptsProvisional(false, "web:api", "api"), "a remote arrival is not the local one we asked for");
 });
 
+test("executed: a focus on a RUNNING session under the requested name resolves the create in flight", () => {
+  // a create naming a running session is answered by focusing it, never by a new session — so no
+  // session frame will ever adopt the tab (adoptsProvisional wants an unseen one); the focus is the
+  // verdict. Before this the tab stayed pending: the warn that followed a tagged request became a
+  // "Couldn't start api" dialog over a running api, and an untagged one waited 90 s for the same.
+  const prov = mintProvisionalId("x1");
+  assert.ok(focusResolvesProvisional("LIVE", "api", "api", prov));
+  assert.ok(!focusResolvesProvisional("LIVE", "api", "api", null), "no create pending: an ordinary focus");
+  assert.ok(!focusResolvesProvisional("LIVE", "web", "api", prov), "some other session focused mid-create (a feed click): the create is still pending");
+  assert.ok(!focusResolvesProvisional("LIVE", undefined, "api", prov),
+    "a session this client does not hold yet: its frame arrives unseen and adopts the tab the usual way");
+  assert.ok(!focusResolvesProvisional(prov, "api", "api", prov), "the provisional id is never the kernel's to focus");
+  assert.ok(!focusResolvesProvisional("LIVE", "web:api", "api", prov), "a remote namesake is not the local one asked for");
+  assert.ok(focusResolvesProvisional("LIVE", "web:api", "web:api", prov), "…and a remote create resolves to its host-prefixed namesake");
+});
+
 // ── the wiring in render.ts ────────────────────────────────────────────────────────────────────────
+
+test("the focus handler retires the provisional QUIETLY when the kernel answered the create by focusing a running session; a warn after that toasts", () => {
+  const focus = RENDER.slice(RENDER.indexOf('else if (m.type === "focus") {'), RENDER.indexOf('else if (m.type === "dropCitation"'));
+  assert.match(focus, /if \(focusResolvesProvisional\(m\.id, tabName\(m\.id\), pendingNewSession, provisionalId\)\) resolveProvisionalToExisting\(m\.id\);/);   // tabName: the loaded session's name, else the strip's (a skeleton tab has no session entry; the chat split, 2026-09-11)
+  assert.ok(focus.indexOf("resolveProvisionalToExisting(m.id)") < focus.indexOf("setActive(m.id"),
+    "retired BEFORE the switch, so dropProvisional's reselect cannot outrank the focus and the real tab is what stays active");
+  assert.ok(focus.indexOf("closingTabs.delete(m.id);") < focus.indexOf("resolveProvisionalToExisting(m.id)"),
+    "…and AFTER the branch's reveal + close-suppression retire, which stay first (the per-viewer focus contract, peek-tab / tab-close-optimistic pins)");
+  const res = RENDER.slice(RENDER.indexOf("function resolveProvisionalToExisting("), RENDER.indexOf("// A create that FAILED."));
+  assert.match(res, /const \{ queued, draft \} = dropProvisional\(\);/, "the tab goes, and the 90 s backstop with it");
+  assert.ok(!res.includes("showConfirm(") && !res.includes("failProvisional(") && !res.includes("warnToast("), "quietly: no dialog, no toast of its own");
+  assert.ok(!res.includes("sendMessage"), "held text is kept as the running session's draft, never sent into a thread the user has not read");
+  assert.match(res, /drafts\.set\(realId, \[drafts\.get\(realId\) \?\? "", held\]\.filter\(Boolean\)\.join\("\\n\\n"\)\);/,
+    "…and never dropped: it joins that session's draft (nothing typed is ever just lost)");
+  assert.match(res, /if \(activeId === realId && ta\) \{ ta\.value = drafts\.get\(realId\) \?\? ""; growComposer\(ta\); \}/,
+    "the reselect may already sit on the real tab (setActive then early-returns): the box is filled here too");
+  // the warn that follows a tagged request finds no create pending → the toast path, unchanged
+  assert.match(RENDER, /if \(provisionalId\) failProvisional\(m\.text\); else warnToast\(m\.text\);/);
+});
 
 test("creating a session opens the provisional tab instead of a modal", () => {
   assert.match(RENDER, /openProvisional\(req\);/);
@@ -64,22 +100,28 @@ test("creating a session opens the provisional tab instead of a modal", () => {
     "the chip says what this phase IS — the session is opening");
   assert.doesNotMatch(RENDER, /state: "working", sinceEpoch: Math\.floor/, "the broken-clock seed is gone");
   // …and the tab strip shows the accent loader dot for the opening state, so the starting tab has a cue
-  assert.match(RENDER, /else if \(st === "opening"\) tab\.appendChild\(el\("span", "tab-dot opening"\)\);/);
+  // the opening dot comes from the one dot rule (tabDotClass, T262g)
+  const TS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-state.ts"), "utf8");
+  assert.match(TS, /if \(st === "opening"\) return "tab-dot opening";/);
+  const TW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-widgets.ts"), "utf8");   // the dot is a WIDGET since T379: its render is the one rule's site
+  assert.match(TW, /const cls = tabDotClass\(status\.state\);/, "the dot widget renders from the one rule");
+  assert.match(RENDER, /composeTabWidgets\(tab, "before"/, "the strip composes it");
   assert.match(CSS, /\.tab-dot\.opening \{ background: var\(--accent\); animation: opening-line-pulse/);
   assert.match(RENDER, /order\.push\(id\);/, "the tab survives reconcileTabOrder as a not-yet-kernel-known extra");
 });
 
 test("a send on a provisional tab is HELD, not posted to a session that doesn't exist", () => {
-  assert.match(RENDER, /provisionalQueue\.push\(text\);\s*\n\s*registerOptimistic\(sid, text, attached\.filter\(\(p\) => previewKind\(p\) === "img"\)\);/,
+  assert.match(RENDER, /provisionalQueue\.push\(text\);\s*\n\s*registerOptimistic\(sid, text, attached\.filter\(\(p\) => previewKind\(p\) === "img"\), undefined, attached\);/,
     "the dashed bubble goes up now — with its dragged-image thumbnails — romp has it, it is not delivered");
-  // a FAILED tab has no pending spawn to queue onto: refuse loudly, the box keeps the only copy
-  assert.match(RENDER, /if \(sid !== provisionalId\) \{\s*\n\s*warnToast\("“" \+ \(sessions\.get\(sid\)\?\.name \|\| "this session"\)/);
+  // a FAILED tab has no pending spawn to queue onto: refuse loudly, the box keeps the only copy. The refusal reports
+  // a state the page after a reload does not have, so it is ephemeral (executed in reload-notices.test.ts)
+  assert.match(RENDER, /if \(sid !== provisionalId\) \{\s*\n\s*ephemeralWarnToast\("“" \+ \(sessions\.get\(sid\)\?\.name \|\| "this session"\)/);
 });
 
 test("adoption flushes the held messages FOR REAL and carries the draft across", () => {
   assert.match(RENDER, /if \(adoptsProvisional\(existed, msg\.name, pendingNewSession\)\) \{\s*\n\s*adoptProvisional\(msg\.id\);/);
-  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "sendMessage", id: realId, text \}\);/);
-  assert.match(RENDER, /registerOptimistic\(realId, text\);/);
+  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "sendMessage", id: realId, text, qid \}\);/);   // under the id the press minted, so the bubble carried over wears it too
+  assert.match(RENDER, /registerOptimistic\(realId, text, undefined, qid\);/);
   // the draft must be set BEFORE the switch — setActive fills the box from `drafts`
   const adopt = RENDER.slice(RENDER.indexOf("function adoptProvisional"));
   assert.ok(adopt.indexOf("drafts.set(realId, draft)") < adopt.indexOf("setActive(realId)"),
@@ -101,8 +143,11 @@ test("a failed create says so in a dialog, in the kernel's own words — ON the 
   assert.ok(!fail.includes("= dropProvisional()"), "the tab is NOT torn down — it holds the text");
   assert.ok(fail.includes("failedProvisionals.add(id);"));
   // the failed tab's transcript says what happened (the starting loader would be a lie)…
-  assert.match(RENDER, /This session couldn't start\. What you typed is kept in the box below/);
-  assert.match(RENDER, /const staleStart = !!only && only\.classList\?\.contains\("tx-starting"\) && failedProvisionals\.has\(id\);/);
+  assert.match(PLACEHOLDER, /This session couldn't start\. What you typed is kept in the box below/);   // the placeholder by kind (pane-placeholder.ts, T355)
+  // …the starting loader gives way to it because the placeholder's KIND changed (starting → start-failed), the rule that
+  // replaced the stale-start special case: the failed create feeds the kind, and a kind change rebuilds
+  assert.match(RENDER, /provisional: isProvisionalId\(id\), provisionalFailed: failedProvisionals\.has\(id\) \}\);/);
+  assert.match(PLACEHOLDER, /if \(st\.provisional && st\.provisionalFailed\) return "start-failed";\s*\n\s*if \(st\.provisional\) return "starting";/);
   // …and its composer stays LIVE despite the closed-tab treatment, so the text is editable/copyable
   assert.match(RENDER, /const closed = s\.status\.state === "closed" && !failedProvisionals\.has\(activeId!\);/);
 });
@@ -114,7 +159,7 @@ test("the silent-failure backstop is long, because it is no longer what you wait
 });
 
 test("closing a provisional tab aborts the pending spawn; a FAILED one is a plain local discard", () => {
-  assert.match(RENDER, /if \(id === provisionalId\) cancelProvisional\(\);\s*\n\s*else \{ failedProvisionals\.delete\(id\); dismissSession\(id\); \}/);
+  assert.match(RENDER, /if \(id === provisionalId\) cancelProvisional\(\);\s*\n\s*else \{ failedProvisionals\.delete\(id\); dismissSession\(id, "close"\); noteColumnIdle\(\); \}/);   // …and the discard tells the shell the column is idle again (the chat split's deferred close; chat-split-exec.test.ts)
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "cancelCreate", name \}\)/);
   // the kernel never knew a provisional id — the dead-tab ✕ must not post closeTab for one
   assert.match(RENDER, /if \(!isProvisionalId\(id\)\) vscodeApi\.postMessage\(\{ type: "closeTab", id \}\);/);
@@ -127,9 +172,10 @@ test("the folder question retires the tab and holds what was typed for the retry
 });
 
 test("a starting tab shows the romp loader, not the 'No messages yet' placeholder", () => {
-  assert.match(RENDER, /\} else if \(isProvisionalId\(id\)\) \{\s*\n\s*ph\.classList\.add\("tx-starting"\);/);
+  assert.match(PLACEHOLDER, /case "starting": \{[\s\S]{0,400}?ph\.classList\.add\("tx-starting"\);/);   // the placeholder by kind (pane-placeholder.ts, T355)
   assert.match(RENDER, /romp-swirl-glyph\.svg/);
-  assert.match(RENDER, /"Starting " \+ s\.name \+ "… you can type now; romp sends it when it's up\."/);
+  assert.match(PLACEHOLDER, /"Starting " \+ ctx\.text\.sessionName \+ "… you can type now; romp sends it when it's up\."/);
+  assert.match(RENDER, /sessionName: s\.name \},/);
   assert.match(CSS, /\.tx-starting-swirl \{[\s\S]*?animation: tx-starting-spin/);
   assert.match(CSS, /prefers-reduced-motion: reduce\) \{ \.tx-starting-swirl \{ animation: none/);
   assert.doesNotMatch(CSS, /opening-dots/, "the bouncing-dots modal CSS went with it");

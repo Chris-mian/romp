@@ -6,7 +6,7 @@ the first learn never mints. SYNTHETIC fixtures."""
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -15,23 +15,40 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
-sb = SourceFileLoader("romp_sdk_backend",
-                      os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+jd = load_source("romp_judge", os.path.join(BIN, "romp-judge"))
+sb = load_source("romp_sdk_backend",
+                      os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 
 
 class FallbackCard(unittest.TestCase):
+    """OWN sid, like DedupeBackstop below and for the same reason: load_goals replays the per-sid
+    user-override journal on every load, other test modules journal user gestures against the shared
+    placeholder SID, and a fresh store's first node id collides ("<sid>:g1"). The collision is live
+    in the default serial order, not latent: by the time this file runs, earlier modules have left a
+    resolve on <SID>:g1 plus restore and unclear rows for other node ids in the journal, and
+    replaying them plants two foreign nodes in the freshly minted store. The assertions held only
+    because none of those ops touches g1's nodeComplete or status; a journaled followup or move on
+    <SID>:g1 replays as a reopen and turns them red, which a downstream tree carrying more test
+    modules hit under parallel ordering. A sid nobody else touches keeps these tests about the mint,
+    not the journal."""
+
+    FSID = "5a5a5a5a-6b6b-7c7c-8d8d-9e9e9e9e9e9e"
+
     def tearDown(self):
         for f in jd.GOALDIR.glob("*"):
             f.unlink()
+        try:
+            (jd._overrides_dir() / (self.FSID + ".jsonl")).unlink()
+        except OSError:
+            pass
 
     def test_mints_a_completed_top_naming_the_swap(self):
-        gid = jd.mint_fallback_card(SID, "claude-fable-5", "claude-sonnet-5", ev_t=1_787_500_000)
+        gid = jd.mint_fallback_card(self.FSID, "claude-fable-5", "claude-sonnet-5", ev_t=1_787_500_000)
         self.assertTrue(gid)
-        store = jd.load_goals(SID)
+        store = jd.load_goals(self.FSID)
         nd = store["nodes"][gid]
         self.assertTrue(nd["nodeComplete"])
         self.assertIn("fell back to claude-sonnet-5", nd["doneWhy"])
@@ -127,6 +144,9 @@ class SidechainNeverLearns(unittest.TestCase):
         s.sid = SID
         s.name = "web"
         s.model = "Fable 5"
+        s._model_id = "claude-fable-5"                  # the id behind that name, as a reg-seeded session carries it
+        #                                                 (a FIRST-known id is persisted even under an unchanged
+        #                                                 name — test_sdk_backend covers that write)
         s._model_pending = ""
         s.retrying = False
         s.retry_count = 0

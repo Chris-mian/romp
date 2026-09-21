@@ -3,9 +3,11 @@
 narrow/touch viewport, and the kernel tells the shell to switch to Chat when a feed/timeline tap
 brings the chat forward. Pure-HTML + routing asserts; no real session data.
 """
+import json
 import os
+import subprocess
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -15,7 +17,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_mobile", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_mobile", os.path.join(BIN, "romp-kernel"))
 
 
 class LandingShell(unittest.TestCase):
@@ -35,7 +37,7 @@ class LandingShell(unittest.TestCase):
         # explicitly desktop-only (#fleet-pane display:none!important, no tab, no switcher entry).
         html = km._landing()
         self.assertIn(">Outline</button>", html)                       # the tab exists, labeled Outline
-        self.assertIn("#f-chat.m-on,#f-fleet.m-on,#f-feed.m-on{display:block}", html)   # ...and shows as the active pane
+        self.assertIn("#f-chat.m-on,#f-fleet.m-on,#f-feed.m-on,#f-files.m-on{display:block}", html)   # ...and shows as the active pane
         self.assertNotIn("#fleet-pane{display:none!important}", html)  # the desktop-only exclusion is gone
         self.assertIn("fleet:document.getElementById('f-fleet')", km._LANDING_MOBILE_JS)
         # the chat header's Fleet pill / the fleet's back-to-chat (toggleFleet) is a tab switch on mobile
@@ -56,14 +58,14 @@ class LandingShell(unittest.TestCase):
         self.assertIn("data-act=net data-keycmd=net.open aria-label='Remote kernels'", html)
         self.assertIn("<rect x='1' y='3' width='9' height='4' rx='1' fill='currentColor'/>", html)   # the used-bar fill
         self.assertNotIn(">Gear</button>", html)
-        self.assertIn("{romp:'openSettings'}", km._LANDING_MOBILE_JS)   # same path as the desktop gear
+        self.assertIn("window.__rompOpenSettings&&window.__rompOpenSettings();", km._LANDING_MOBILE_JS)   # same path as the desktop gear: the settings iframe
         self.assertIn("__rompOpenNet", km._LANDING_MOBILE_JS)           # opens the shell's remotes panel
         self.assertIn("window.__rompOpenNet=open", km._LANDING_REMOTES_JS)
         self.assertIn("__rompUsagePanel", km._LANDING_MOBILE_JS)        # the tooltip's bars as a modal
         self.assertIn("window.__rompUsagePanel=function", km._LANDING_USAGE_JS)
         self.assertIn("#ru-tip.ru-modal", html)                         # centered placement for the panel
         # the lifted-fullscreen settings iframe must override the mobile display:none
-        self.assertIn("body.settings-open #f-feed{display:block;position:fixed", html)
+        self.assertIn("body.settings-open #f-settings{display:block;position:fixed", html)
 
     def test_mobile_restart_button_reuses_the_rail_refresh_kernel_restart(self):
         # the user 2026-07-22: there was no restart-kernel affordance on mobile (the rail's own ↻ is hidden
@@ -116,8 +118,8 @@ class LandingShell(unittest.TestCase):
         # the desktop shell is the flex pane row (chat | fleet | feed | timeline)
         self.assertIn(".col{display:flex", html)
         self.assertIn("src=/chat", html)
-        self.assertIn("src=/feed", html)
-        self.assertIn("src=/timeline", html)
+        self.assertIn("data-src=/feed", html)   # optional panes load from data-src (the Panes setting)
+        self.assertIn("data-src=/timeline", html)
 
     def test_the_shell_leaves_a_hair_of_slack_down_the_right_edge(self):
         # The panes tiled flush to the window, so whatever sat hard right inside one — a feed card's
@@ -167,7 +169,9 @@ class LandingShell(unittest.TestCase):
         # carries id=f-timeline inside #tl-pane, and the old stale-id splitter bug must not regress.
         html = km._landing()
         self.assertIn("id=f-timeline", html)                      # the iframe carries this id
-        self.assertIn("<div class=pane id=tl-pane><iframe id=f-timeline src=/timeline></iframe></div>", html)
+        # data-src, not src (the user 2026-09-10): the band is an optional pane, loaded by the pane controller
+        # only where this browser's gear shows it (tests/test_pane_state_broadcast.py OptionalPanes)
+        self.assertIn("<div class=pane id=tl-pane><iframe id=f-timeline data-src=/timeline></iframe></div>", html)
         self.assertNotIn("getElementById('t')", km._LANDING_JS)   # the stale id is gone
 
     def test_mobile_switcher_is_isolated_in_its_own_script(self):
@@ -180,7 +184,13 @@ class LandingShell(unittest.TestCase):
         # ios-standalone viewport flip and the push bell 2026-08-07, plans/ios-app.md; + the shared
         # Escape-closes-the-topmost-modal block 2026-08-09; + the release-update banner 2026-08-09).
         html = km._landing()
-        self.assertEqual(html.count("<script>"), 16)
+        # +1 2026-08-28: the theme reader right after <body>; +1 2026-09-06: the notification-tap landing
+        # script (_LANDING_REVEAL_JS) — its own script so a throw in the bell's cannot strand a tap;
+        # +1 2026-09-08: the reload core (T265, _reload_core) ahead of the build-staleness banner script, which
+        # registers as its refused fallback — its own script so a banner throw cannot take the reload with it
+        # +1: the bottom bar's API health cell (_LANDING_APIH_JS), after the usage script whose backdrop it shares
+        # +1 2026-09-08: the chat split columns (_LANDING_SPLIT_JS), after the pane controller it leans on
+        self.assertEqual(html.count("<script>"), 21)
 
     def test_bottom_bar_is_text_only_and_compact(self):
         html = km._landing()
@@ -223,12 +233,25 @@ class LandingShell(unittest.TestCase):
         # that branch, so the 2026-06-17 regression cannot recur through it.
         html = km._landing()
         self.assertIn("<meta name=viewport content='width=device-width,initial-scale=1,"
-                      "maximum-scale=1,user-scalable=no'>", html)     # the static meta: no cover
+                      "maximum-scale=1,user-scalable=no,interactive-widget=resizes-content'>", html)   # the static meta: no cover
         self.assertEqual(html.count("viewport-fit=cover"), 1)         # exactly the runtime flip…
         self.assertIn("if(navigator.standalone)", html)               # …behind the iOS-standalone gate
         self.assertLess(html.index("if(navigator.standalone)"), html.index("viewport-fit=cover"))
         self.assertIn("100dvh", html)            # still address-bar-aware
         self.assertIn("user-scalable=no", html)  # pinch-zoom governance preserved alongside the change
+
+    def test_keyboard_shrinks_content_and_never_strands_a_scroll(self):
+        """The composer tap used to scroll the whole shell up behind the soft keyboard (the user
+        2026-09-02): the viewport's default mode is resizes-visual — the keyboard PANS the visual
+        viewport while innerHeight stands still, the UA slides the page up to reveal the input, and
+        fit() re-lays the shrunken --app-h top-anchored into a window whose visible band starts a
+        keyboard-height down; the composer sat off-screen until dragged back. Two halves, both
+        pinned: interactive-widget=resizes-content makes engines that honor it (Android Chrome)
+        SHRINK the layout viewport instead of panning, and fit() undoes the stray page offset iOS
+        still forces (a UA input-reveal scroll bypasses overflow:hidden)."""
+        self.assertIn("interactive-widget=resizes-content", km._landing())
+        self.assertIn("if(window.scrollY||document.documentElement.scrollTop)window.scrollTo(0,0);",
+                      km._LANDING_MOBILE_JS)
 
     def test_bottom_bar_has_no_safe_area_padding(self):
         # The user 2026-06-19 (Firefox/Android): the bar showed a dead slab below the labels in PORTRAIT
@@ -246,6 +269,17 @@ class LandingShell(unittest.TestCase):
         self.assertEqual(html.count("env(safe-area-inset"), 1)        # exactly the standalone rule below
         self.assertIn("html.ios-standalone #mtabs{padding-bottom:env(safe-area-inset-bottom,0px)}", html)
         self.assertIn("#mtabs{display:flex;position:fixed;left:0;right:0;bottom:0", html)
+
+    def test_the_shell_forwards_a_quote_seed_from_a_composerless_pane_into_the_chat(self):
+        # A passage selected in the file viewer hosted by the FEED pane (the file browser's document)
+        # has no composer in its own document; file-view.ts posts the editorSelection message up to the
+        # shell, which forwards it whole into the chat iframe, whose existing handler seeds the labeled
+        # quote chip for m.sid. The arm sits in the same listener as the browseFiles relay, and the chat
+        # iframe carries the id it keys on.
+        js = km._LANDING_SETTINGS_JS
+        self.assertIn("if(m.type==='editorSelection'&&typeof m.text==='string'){var fc=document.getElementById('f-chat');", js)
+        self.assertIn("try{fc&&fc.contentWindow&&fc.contentWindow.postMessage(m,'*');}catch(e){}}", js)
+        self.assertIn("<iframe id=f-chat class=m-on src=/chat>", km._landing())
 
 
 class TimelineTouchSurface(unittest.TestCase):
@@ -315,12 +349,24 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("if(!wd){wd=document.createElement('span');wd.className='workdot';", js)   # in-place form: one dot node, created once, classes toggled (2026-08-19)  # gold dot when working
         # awaitingBg is read off the desktop tab's own green dot (no tab-working class on an awaiting tab)
         self.assertIn("awaitbg:!!t.querySelector('.tab-dot.await')", js)
+        # the NEEDS YOU RING (the ask ring of 2026-09-13; a widget with a switch since 2026-09-14): the desktop tab's ring-waiting-on-you class
+        # (something of the session's is waiting on you) is scraped beside the dots, and the picker paints it on the row (a
+        # magenta bar at the left edge) and the current chip (its border goes dashed magenta), off the same status token the
+        # desktop ring wears — so the phone's list says which sessions need you without a tap through each, and a ring
+        # switched off in the settings (no class on the tab) leaves the phone plain too
+        self.assertIn("ask:t.classList.contains('ring-waiting-on-you'),", js)
+        self.assertNotIn("'tab-ask'", js)
+        self.assertIn("row.classList.toggle('ask',!!s.ask);", js)
+        self.assertIn("cur.classList.toggle('ask',!!(act&&act.ask));", js)
         self.assertIn("wd.classList.toggle('await',!s.working&&!!s.awaitbg);", js)  # green dot when awaiting (in-place toggle form, 2026-08-19)
         self.assertNotIn(".mrow .dot{", css)              # the old identity/grey dot is gone
         self.assertNotIn("dot.style.background=s.bg", js)  # ...and nothing paints identity onto a dot
         # the dots are the SAME status colors desktop uses (styles.css --st-working-bg gold, --st-awaitbg-bg green)
         self.assertIn(".mrow .workdot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}", css)
         self.assertIn(".mrow .workdot.await{background:var(--st-awaitbg-bg,#54B204)}", css)
+        self.assertIn(".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}", css)   # the Needs you ring's mark on a row (plans/needs-you.md)
+        self.assertIn("#mcur.ask{border-color:var(--st-needs-bg,#d946ef);border-style:dashed}", css)
+        self.assertLess(css.index("#mcur.colored{"), css.index("#mcur.ask{"), "the ring's border wins over the identity colour: declared after")
         self.assertNotIn("'• ')+s.name", js)              # the '• ' text-bullet prefix on rows is gone
         # the current-session header uses the same gold/green status dot, not the text bullet either
         self.assertIn("#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}", css)
@@ -331,11 +377,13 @@ class ChatSessionPicker(unittest.TestCase):
 
     def test_current_session_title_is_bold_color_on_the_grey_chip(self):
         # the user 2026-07-22: the mobile current-session title reads as the identity color in BOLD on the
-        # SAME grey chip as the +/madd button (#2a2a2a), with a hairline color border, not the color as a fill.
+        # SAME grey chip as the +/madd button, with a hairline color border, not the color as a fill.
+        # (The chip grey rides --btn-bg since 2026-09-02 — dark value byte-identical to the old #2a2a2a
+        # literal, and the light theme re-skins it; see test_kernel_mobile_picker's token test.)
         css = km._CHAT_MOBILE_CSS
-        self.assertIn("#mcur.colored{background:#2a2a2a;color:var(--cbg);border-color:var(--cbg)}", css)
+        self.assertIn("#mcur.colored{background:var(--btn-bg,#2a2a2a);color:var(--cbg);border-color:var(--cbg)}", css)
         self.assertIn("#madd{flex:0 0 auto", css)                    # ...and the + button is that same grey
-        self.assertIn("background:#2a2a2a;color:#bbbbbb", css)       # (the shared chip grey)
+        self.assertIn("background:var(--btn-bg,#2a2a2a);color:#bbbbbb", css)   # (the shared chip grey)
         self.assertIn("white-space:nowrap;font-weight:700}", css)   # the .nm name span is bold
 
     def test_no_pane_focus_ring_on_mobile(self):
@@ -396,6 +444,466 @@ class RevealRouting(unittest.TestCase):
         shell_msg = next(m for a, _, m in sent if a == "shell")
         self.assertEqual(chat_msg["id"], "s1")        # the original focus payload is preserved verbatim
         self.assertEqual(shell_msg, {"type": "reveal", "pane": "chat"})
+
+
+# A node stand-in for the phone: the shell's mobile script runs against a stub window whose visual
+# viewport the driver shrinks and grows by hand, so the fit's INPUTS are exact and its OUTPUT (the
+# --app-h / --mtabs-h it publishes) is read back. Same shape as test_kernel_webpush's reveal harness.
+_FIT_HARNESS = r"""
+'use strict';
+const PROPS = {}, SETS = [], RAF = [], WIN = {}, DOC = {}, VV = {}, CHAT = {}, LOADS = [];
+const on = (book) => (k, f) => { (book[k] = book[k] || []).push(f); };
+global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
+global.innerHeight = 844; global.innerWidth = 390; global.scrollY = 0;
+global.scrollTo = () => {};
+global.matchMedia = () => ({ matches: true });                 // a coarse pointer: the phone
+global.requestAnimationFrame = (f) => { RAF.push(f); return RAF.length; };
+global.addEventListener = on(WIN);
+global.visualViewport = { height: 844, scale: 1, addEventListener: on(VV) };
+const pane = (id) => ({ id, classList: { toggle() {} }, contentDocument: {},
+  contentWindow: { addEventListener: on(id === 'f-chat' ? CHAT : {}) },
+  addEventListener: (k) => { if (k === 'load') LOADS.push(id); } });
+const PANES = { 'f-chat': pane('f-chat'), 'f-fleet': pane('f-fleet'), 'f-feed': pane('f-feed'), 'f-timeline': pane('f-timeline') };
+const BAR = { offsetHeight: 44, querySelectorAll: () => [] };
+global.document = {
+  visibilityState: 'visible',
+  addEventListener: on(DOC),
+  documentElement: { scrollTop: 0, style: { setProperty: (k, v) => { PROPS[k] = v; SETS.push(k); } } },
+  body: { setAttribute() {} },
+  getElementById: (id) => (id === 'mtabs' ? BAR : (PANES[id] || null)),
+};
+global.localStorage = { getItem: () => null, setItem() {} };
+"""
+_FIT_DRIVER = r"""
+const fire = (book, k) => (book[k] || []).forEach((f) => f({}));
+const flush = () => { RAF.splice(0).forEach((f) => f(0)); };            // one frame: run what this frame queued
+const appH = () => PROPS['--app-h'], barH = () => PROPS['--mtabs-h'];
+const fits = () => SETS.filter((k) => k === '--app-h').length;
+const out = {};
+out.bound = { win: Object.keys(WIN).sort(), doc: Object.keys(DOC).sort(), vv: Object.keys(VV).sort(),
+  chat: Object.keys(CHAT).sort(), loads: LOADS.slice().sort() };
+out.boot = { appH: appH(), barH: barH(), rafPending: RAF.length };
+// the keyboard slides up: iOS shrinks the visual viewport while innerHeight stands still
+visualViewport.height = 460; fire(VV, 'resize'); flush();
+out.kbUp = { appH: appH(), barH: barH() };
+// the keyboard goes away and NO viewport event arrives: the composer's blur is the only word
+visualViewport.height = 844; fire(CHAT, 'focusout');
+out.blurBeforeFrame = appH();
+flush();
+out.kbDown = { appH: appH(), barH: barH() };
+// resume: backgrounded with the keyboard up; iOS dropped it while the page was frozen, no event delivered
+visualViewport.height = 460; fire(VV, 'resize'); flush();
+document.visibilityState = 'hidden'; fire(DOC, 'visibilitychange');
+const beforeHidden = fits(); flush(); out.hiddenFits = fits() - beforeHidden;
+visualViewport.height = 844; document.visibilityState = 'visible'; fire(DOC, 'visibilitychange'); flush();
+out.resume = { appH: appH(), barH: barH() };
+// resume where iOS reports the FINAL geometry a beat late: the fit at visible reads the stale height,
+// and the visual-viewport resize that follows is what corrects it
+visualViewport.height = 460; fire(VV, 'resize'); flush();
+document.visibilityState = 'hidden'; fire(DOC, 'visibilitychange'); flush();
+document.visibilityState = 'visible'; fire(DOC, 'visibilitychange'); flush();
+out.resumeStale = appH();
+visualViewport.height = 844; fire(VV, 'resize'); flush();
+out.resumeSettled = appH();
+// a burst of events fits ONCE, on the next frame
+const before = fits();
+fire(VV, 'resize'); fire(VV, 'scroll'); fire(WIN, 'resize'); fire(WIN, 'focus'); fire(WIN, 'pageshow'); fire(DOC, 'focusout');
+out.burst = { beforeFlush: fits() - before, pendingRafs: RAF.length };
+flush();
+out.burst.afterFlush = fits() - before;
+// every bound event refits on its own, reading the geometry fresh each time
+const each = {};
+for (const [book, k, tag] of [[WIN, 'focus', ''], [WIN, 'pageshow', ''], [WIN, 'orientationchange', ''], [WIN, 'resize', ''],
+                              [VV, 'scroll', '@vv'], [VV, 'resize', '@vv'], [DOC, 'focusout', '@doc']]) {
+  visualViewport.height = 700; fire(book, k); flush(); const a = appH();
+  visualViewport.height = 844; fire(book, k); flush(); each[k + tag] = [a, appH()];
+}
+out.each = each;
+// a page offset the UA forced (iOS's input reveal) is undone on the same frame
+global.scrollY = 120; let scrolled = null; global.scrollTo = (x, y) => { scrolled = [x, y]; global.scrollY = 0; };
+fire(VV, 'scroll'); flush(); out.scrollReset = scrolled;
+console.log(JSON.stringify(out));
+"""
+
+
+class MobileFitExecutes(unittest.TestCase):
+    """The installed iPhone app came back from the background with the chat pane filling only the
+    top ~60% of the screen: the composer mid-screen, a keyboard-tall blank band under it, the tab
+    bar at the very bottom (the user 2026-09-08). --app-h had been measured while the keyboard was
+    up and nothing re-measured it: the keyboard fell while the page was frozen, so the visual
+    viewport's resize (the only keyboard event the fit listened to) never arrived, and on iOS the
+    same resize sometimes fails to fire for a keyboard the composer's blur dismissed. The fix binds
+    the fit to every event that moves the real viewport (visibilitychange, window focus, the
+    composer's focusout heard through the same-origin pane window, alongside the resize / scroll /
+    orientationchange / pageshow it already had), coalesces a burst to one fit per animation frame,
+    and always recomputes from scratch, so a viewport that grows back is never left short."""
+
+    @classmethod
+    def setUpClass(cls):
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(_FIT_HARNESS + km._LANDING_MOBILE_JS + _FIT_DRIVER)
+            path = f.name
+        try:
+            r = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+        finally:
+            os.unlink(path)
+        assert r.returncode == 0, "the mobile script threw: " + r.stderr[:800]
+        cls.out = json.loads(r.stdout.strip().splitlines()[-1])
+
+    def test_the_fit_is_bound_to_every_event_that_moves_the_real_viewport(self):
+        b = self.out["bound"]
+        for ev in ("resize", "orientationchange", "pageshow", "focus"):
+            self.assertIn(ev, b["win"], ev)
+        for ev in ("visibilitychange", "focusout"):
+            self.assertIn(ev, b["doc"], ev)
+        self.assertEqual(b["vv"], ["resize", "scroll"])
+        # the composer lives in the chat pane's document: its blur (keyboard dismissal) is heard
+        # through the same-origin pane window, wired now and again on every (re)load
+        self.assertEqual(b["chat"], ["focusout"])
+        self.assertIn("f-chat", b["loads"])
+
+    def test_boot_fits_at_once_from_the_visual_viewport(self):
+        # the first paint is right without waiting a frame; the bar's reservation is measured too
+        self.assertEqual(self.out["boot"], {"appH": "844px", "barH": "44px", "rafPending": 0})
+
+    def test_the_keyboard_shrinks_the_shell_and_the_composers_blur_alone_grows_it_back(self):
+        self.assertEqual(self.out["kbUp"], {"appH": "460px", "barH": "0px"})
+        self.assertEqual(self.out["blurBeforeFrame"], "460px", "events schedule a frame; they do not fit inline")
+        self.assertEqual(self.out["kbDown"], {"appH": "844px", "barH": "44px"})
+
+    def test_coming_back_to_the_foreground_refits_a_keyboard_that_fell_while_hidden(self):
+        self.assertEqual(self.out["hiddenFits"], 0, "going hidden is not new geometry")
+        self.assertEqual(self.out["resume"], {"appH": "844px", "barH": "44px"})
+
+    def test_a_resume_whose_final_geometry_lands_late_is_fitted_twice(self):
+        # belt and braces: the fit at visible reads what iOS reports then; the visual-viewport resize
+        # that follows a beat later is bound permanently, so it is the second fit — no timer
+        self.assertEqual(self.out["resumeStale"], "460px")
+        self.assertEqual(self.out["resumeSettled"], "844px")
+
+    def test_a_burst_of_viewport_events_fits_once_per_frame(self):
+        self.assertEqual(self.out["burst"], {"beforeFlush": 0, "pendingRafs": 1, "afterFlush": 1})
+
+    def test_each_bound_event_refits_from_scratch_on_its_own(self):
+        for ev, seen in self.out["each"].items():
+            self.assertEqual(seen, ["700px", "844px"], ev)
+
+    def test_a_ua_forced_page_offset_is_undone_on_the_same_frame(self):
+        self.assertEqual(self.out["scrollReset"], [0, 0])
+
+
+# A node stand-in for the installed phone app with a REAL class list: the shell's mobile script and
+# its bell script run in the shell's own order against a stub DOM whose elements keep classes,
+# attributes and listeners, so the bell's `.on` (the slash rule keys on its absence) is state read
+# back after each transition — a tab tap, a reveal, the kernel's notifyAll frame, the popover's own
+# switches — not a pin on the source text. Same shape as the fit harness above.
+_BELL_HARNESS = r"""
+'use strict';
+class El {
+  constructor(tag, attrs) { this.tag = tag; this.attrs = Object.assign({}, attrs || {}); this.children = []; this.parentNode = null;
+    this.hidden = false; this.style = {}; this.textContent = ''; this.disabled = false; this.L = {}; this.contentDocument = null;
+    const cls = new Set((this.attrs['class'] || '').split(/\s+/).filter(Boolean));
+    this.classList = { add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c),
+      toggle: (c, f) => { const on = f === undefined ? !cls.has(c) : !!f; if (on) cls.add(c); else cls.delete(c); return on; } }; }
+  get id() { return this.attrs.id || ''; }
+  append(...k) { k.forEach((c) => { c.parentNode = this; this.children.push(c); }); return this; }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  addEventListener(k, f) { (this.L[k] = this.L[k] || []).push(f); }
+  fire(k, ev) { const e = Object.assign({ target: this }, ev || {}); for (let n = this; n; n = n.parentNode) (n.L[k] || []).forEach((f) => f(e)); }
+  all() { return this.children.flatMap((c) => [c, ...c.all()]); }
+  matches(sel) {                                   // one compound selector: tag, #id, .class, [attr], [attr=val]
+    const m = sel.match(/^([a-z]*)((?:[#.][\w-]+|\[[\w-]+(?:=[\w-]+)?\])*)$/); if (!m) throw new Error('selector ' + sel);
+    if (m[1] && m[1] !== this.tag) return false;
+    for (const p of m[2].match(/[#.][\w-]+|\[[^\]]+\]/g) || []) {
+      if (p[0] === '#') { if (this.id !== p.slice(1)) return false; }
+      else if (p[0] === '.') { if (!this.classList.contains(p.slice(1))) return false; }
+      else { const [k, v] = p.slice(1, -1).split('='); if (!(k in this.attrs) || (v !== undefined && this.attrs[k] !== v)) return false; } }
+    return true; }
+  querySelectorAll(sel) { const parts = sel.split(',').map((s) => s.trim()); return this.all().filter((e) => parts.some((p) => e.matches(p))); }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+  getBoundingClientRect() { return { top: 800, right: 380, bottom: 844, left: 340 }; }
+}
+// the shell's markup, reduced to the nodes the two scripts touch
+const root = new El('html'), body = new El('body'); root.append(body);
+['f-chat', 'f-fleet', 'f-feed', 'f-timeline'].forEach((id) => { const p = new El('iframe', { id }); p.contentWindow = { addEventListener() {} }; body.append(p); });
+const railBell = new El('div', { class: 'rail-act', id: 'rail-bell' }); railBell.hidden = true;
+body.append(new El('div', { class: 'rail-acts' }).append(railBell));
+const bar = new El('nav', { id: 'mtabs' }); bar.offsetHeight = 44;
+['chat', 'fleet', 'feed', 'timeline'].forEach((k) => bar.append(new El('button', k === 'chat' ? { 'data-pane': k, class: 'on' } : { 'data-pane': k })));
+bar.append(new El('span', { class: 'mtabs-div' }));
+['usage', 'net', 'restart', 'errs'].forEach((a) => bar.append(new El('button', { class: 'mact', 'data-act': a })));
+const mbell = new El('button', { class: 'mact', id: 'mbell' }); mbell.hidden = true; bar.append(mbell);
+bar.append(new El('button', { class: 'mact', 'data-act': 'settings' }));
+body.append(bar);
+const back = new El('div', { id: 'rbell-back' }); back.hidden = true;
+const pop = new El('div', { id: 'rbell-pop' }), rows = {};
+['all', 'dev', 'turns'].forEach((a) => { rows[a] = new El('div', { class: 'rbp-row', 'data-act': a }).append(new El('span', { class: 'rbp-sw' })); pop.append(rows[a]); });
+pop.append(new El('div', { id: 'rbp-dev-sub' }), new El('button', { id: 'rbp-test', 'data-act': 'test' }), new El('div', { id: 'rbp-test-out' }));
+back.append(pop); body.append(back);
+// the window: a coarse pointer, a live shell socket the driver feeds frames into
+const WIN = {}, WSS = [], POSTS = [];
+const on = (book) => (k, f) => { (book[k] = book[k] || []).push(f); };
+global.window = global;
+window.__rompPaneSourceOk = () => true;   // the shell's source check (the boot script's, plans/panes-as-data.md): this stub's posts stand for a protocol pane's
+global.innerHeight = 844; global.innerWidth = 390; global.scrollY = 0; global.scrollTo = () => {};
+global.matchMedia = () => ({ matches: true });
+global.requestAnimationFrame = () => 1;
+global.addEventListener = on(WIN);
+global.visualViewport = { height: 844, scale: 1, addEventListener() {} };
+global.document = { visibilityState: 'visible', addEventListener() {}, body,
+  documentElement: { scrollTop: 0, style: { setProperty() {} } },
+  getElementById: (id) => root.querySelector('#' + id),
+  querySelectorAll: (s) => root.querySelectorAll(s), querySelector: (s) => root.querySelector(s) };
+global.localStorage = { getItem: () => null, setItem() {} };
+global.location = { protocol: 'https:', host: 'TESTHOST' };
+global.WebSocket = class { constructor(u) { this.url = u; WSS.push(this); } send() {} };
+// the Push API: this browser holds a subscription at boot; the popover's row can drop and re-take it
+let SUB = null;
+const mkSub = (n) => ({ endpoint: 'https://push.example/dev-' + n, unsubscribe() { SUB = null; return Promise.resolve(true); }, toJSON() { return { endpoint: this.endpoint }; } });
+SUB = mkSub(1);
+const REG = { pushManager: { getSubscription: () => Promise.resolve(SUB), subscribe: () => { SUB = mkSub(2); return Promise.resolve(SUB); } } };
+Object.defineProperty(global, 'navigator', { configurable: true, value:   // node 22's own navigator is a getter-only global
+  { serviceWorker: { getRegistration: () => Promise.resolve(REG), register: () => Promise.resolve(REG), ready: Promise.resolve(REG) } } });
+global.PushManager = function () {};
+global.Notification = { permission: 'granted', requestPermission: () => Promise.resolve('granted') };
+const GETS = { '/notify-all': { on: true }, '/notify-turns': { on: false }, '/push/vapid-key': { key: 'BAAA' } };
+global.fetch = (path, init) => { const post = !!(init && init.method === 'POST'); if (post) POSTS.push([path, JSON.parse(init.body)]);
+  const b = post ? { ok: true } : (GETS[path] || {});
+  return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(b), text: () => Promise.resolve(JSON.stringify(b)) }); };
+"""
+_BELL_DRIVER = r"""
+const settle = async () => { for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r)); };
+const sw = (k) => rows[k].querySelector('.rbp-sw').classList.contains('on');
+const state = () => ({ mbell: mbell.classList.contains('on'), rail: railBell.classList.contains('on'),
+  title: [mbell.getAttribute('title'), railBell.getAttribute('title')], rows: { all: sw('all'), dev: sw('dev') },
+  tabs: bar.querySelectorAll('button[data-pane]').filter((b) => b.classList.contains('on')).map((b) => b.getAttribute('data-pane')) });
+const ws = () => WSS[WSS.length - 1];
+const frame = (m) => ws().onmessage({ data: JSON.stringify(m) });
+const post = (m) => (WIN.message || []).forEach((f) => f({ data: m }));
+(async () => {
+  const out = {};
+  (0, eval)(MOBILE_JS); (0, eval)(PUSH_JS);          // the shell's order: the tab bar's script parses first, the bell's after it
+  out.revealed = { mbell: !mbell.hidden, rail: !railBell.hidden };
+  await settle();
+  out.boot = state();                                // master on + subscribed: lit, and no popover was opened
+  bar.querySelector('button[data-pane=feed]').fire('click'); out.tabTap = state();
+  post({ romp: 'reveal', pane: 'chat' });            out.revealMsg = state();
+  frame({ type: 'reveal', pane: 'timeline' });       out.revealFrame = state();
+  post({ romp: 'toggleFleet', to: 'fleet' });        out.listJump = state();   // the chat header's jump to the sessions list
+  frame({ type: 'notifyAll', on: false }); out.masterOffFrame = state();
+  frame({ type: 'notifyAll', on: true });  out.masterOnFrame = state();
+  rows.dev.fire('click'); await settle(); out.devOff = state();          // the popover's This-device row: unsubscribes
+  bar.querySelector('button[data-pane=chat]').fire('click'); out.devOffTabTap = state();
+  rows.dev.fire('click'); await settle(); out.devOn = state();           // …and re-subscribes
+  rows.all.fire('click'); await settle(); out.masterOffRow = state();    // the master row itself
+  rows.all.fire('click'); await settle(); out.masterOnRow = state();
+  bar.querySelector('button[data-pane=feed]').fire('click'); out.finalTabTap = state();
+  out.posts = POSTS.map((p) => p[0]);
+  console.log(JSON.stringify(out));
+})().catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+"""
+
+
+class MobileBellExecutes(unittest.TestCase):
+    """The installed iPhone app, light theme (the user 2026-09-08): the bell popover showed all three
+    switches on — Notifications, This device, the turn-finished one — while the tab bar's bell wore
+    the OFF slash. The bell script paints `.on` on both bells from the master + this device's
+    subscription and was right at boot; then the tab bar's switcher took it away. `show(p)` ran over
+    EVERY button in #mtabs — the pane tabs, the action buttons and the bell among them — toggling
+    `.on` to `data-pane===p`, which for the bell (no data-pane) is always off. So every pane switch
+    (a tab tap, a notification's reveal, the chat header's jump to the sessions list) slashed a subscribed bell until the next
+    paint event, while the popover's rows, painted from the same state, still said on. The switcher
+    now owns only the pane tabs (`button[data-pane]`); the bell's class is the bell script's alone."""
+
+    @classmethod
+    def setUpClass(cls):
+        src = "const MOBILE_JS=%s;const PUSH_JS=%s;" % (json.dumps(km._LANDING_MOBILE_JS), json.dumps(km._LANDING_PUSH_JS))
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(_BELL_HARNESS + src + _BELL_DRIVER)
+            path = f.name
+        try:
+            r = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+        finally:
+            os.unlink(path)
+        assert r.returncode == 0, "the shell scripts threw: " + r.stderr[:1200]
+        cls.out = json.loads(r.stdout.strip().splitlines()[-1])
+
+    LIT = "Notifications on — tap for options"
+
+    def _lit(self, s, where):
+        self.assertEqual((s["mbell"], s["rail"]), (True, True), where + ": both bells lit")
+        self.assertEqual(s["title"], [self.LIT, self.LIT], where)
+
+    def test_boot_lights_a_subscribed_device_without_opening_the_popover(self):
+        self.assertEqual(self.out["revealed"], {"mbell": True, "rail": True}, "the Push API exists here: both bells show")
+        s = self.out["boot"]
+        self._lit(s, "boot")
+        self.assertEqual(s["rows"], {"all": True, "dev": True})
+        self.assertEqual(s["tabs"], ["chat"])
+
+    def test_a_pane_switch_leaves_the_bell_alone(self):
+        # the bug: a tab tap (and every other route into show()) stripped `.on` from the bell while
+        # the popover's rows still said on — the glyph and the popover disagreed
+        for where in ("tabTap", "revealMsg", "revealFrame", "listJump"):
+            s = self.out[where]
+            self._lit(s, where)
+            self.assertEqual(s["rows"], {"all": True, "dev": True}, where)
+        self.assertEqual(self.out["tabTap"]["tabs"], ["feed"], "the tap still switches the pane")
+        self.assertEqual(self.out["revealMsg"]["tabs"], ["chat"])
+        self.assertEqual(self.out["revealFrame"]["tabs"], ["timeline"])
+        self.assertEqual(self.out["listJump"]["tabs"], ["fleet"])
+
+    def test_the_kernels_master_frame_repaints_both_bells(self):
+        off = self.out["masterOffFrame"]
+        self.assertEqual((off["mbell"], off["rail"]), (False, False))
+        self.assertEqual(off["title"], ["Notifications off for all devices"] * 2)
+        self.assertEqual(off["rows"], {"all": False, "dev": True}, "the device row keeps its own truth")
+        self._lit(self.out["masterOnFrame"], "masterOnFrame")
+
+    def test_this_devices_switch_slashes_and_relights_both_bells_and_a_tab_tap_keeps_the_slash(self):
+        off = self.out["devOff"]
+        self.assertEqual((off["mbell"], off["rail"]), (False, False))
+        self.assertEqual(off["title"], ["Notifications off on this device"] * 2)
+        self.assertEqual(off["rows"], {"all": True, "dev": False})
+        # a pane switch with the device off must not light it either: the switcher paints nothing on the bell
+        tap = self.out["devOffTabTap"]
+        self.assertEqual((tap["mbell"], tap["rail"], tap["tabs"]), (False, False, ["chat"]))
+        self.assertEqual(tap["title"], ["Notifications off on this device"] * 2)
+        self._lit(self.out["devOn"], "devOn")
+        self.assertEqual(self.out["devOn"]["rows"], {"all": True, "dev": True})
+
+    def test_the_master_row_and_a_final_tab_tap(self):
+        off = self.out["masterOffRow"]
+        self.assertEqual((off["mbell"], off["rail"]), (False, False))
+        self.assertEqual(off["title"], ["Notifications off for all devices"] * 2)
+        self._lit(self.out["masterOnRow"], "masterOnRow")
+        self._lit(self.out["finalTabTap"], "finalTabTap")
+        self.assertEqual(self.out["finalTabTap"]["tabs"], ["feed"])
+        self.assertEqual(self.out["posts"], ["/push/unsubscribe", "/push/subscribe", "/notify-all", "/notify-all"])
+
+    def test_the_switcher_selects_only_the_pane_tabs(self):
+        js = km._LANDING_MOBILE_JS
+        self.assertIn("var B=bar.querySelectorAll('button[data-pane]')", js)
+        self.assertNotIn("bar.querySelectorAll('button'),", js)
+
+
+
+# ── the two scripts together, executed: the mobile switcher's boot restore, then the pane controller ───────────────────────
+# A phone shows a pane by its TAB (the 1922 read): the mobile script parses BEFORE the pane controller and restores the remembered
+# tab then, so its copy of data-src to src used to run before the gear had ruled and in every layout; the controller's apply copied a
+# generic pane's src by the desktop flag into a frame the phone never shows. Both scripts run here, in the boot's order, over a DOM
+# stub of the phone's shell: the tab bar (one button per NON-experimental pane, as _mtab_buttons_html renders it), the frames with
+# data-src, the body, the store, a media query the seed flips.
+_TWO_HARNESS = r"""
+'use strict';
+const ATTR = __ATTR__, STORE = __STORE__; let MQ_ON = __MOBILE__;
+const SETS = {};
+function el(id, attrs) { const a = Object.assign({}, attrs || {}); const cls = new Set(); return { id, hidden: false, offsetHeight: 40, title: '',
+  getAttribute: (k) => (k in a ? a[k] : null), setAttribute: (k, v) => { a[k] = v; if (k === 'src') SETS[id] = (SETS[id] || 0) + 1; }, removeAttribute: (k) => { delete a[k]; },
+  classList: { toggle: (c, on) => { if (on === undefined) on = !cls.has(c); if (on) cls.add(c); else cls.delete(c); return on; }, add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c) },
+  style: { setProperty() {}, removeProperty() {}, getPropertyValue: () => '' }, addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [], querySelector: () => null, focus() {},
+  contentWindow: { postMessage() {} }, getBoundingClientRect: () => ({ left: 0, top: 0, width: 390, height: 40, right: 390, bottom: 40 }) }; }
+const HAND = ['chat', 'timeline', 'fleet', 'feed', 'files'];
+const KEYS = HAND.concat(ATTR.map((p) => p.id));
+const frames = {}; KEYS.forEach((k) => { frames['f-' + k] = el('f-' + k, (k === 'chat' || k === 'files') ? { src: '/' + k } : { 'data-src': '/' + k }); });
+const TABS = HAND.concat(ATTR.filter((p) => !p.experimental).map((p) => p.id));   // an experimental record has no phone tab
+const buttons = TABS.map((k) => el('mtab-' + k, { 'data-pane': k }));
+const railBtns = KEYS.map((k) => el('rail-' + k, { 'data-pane': k }));
+const bar = el('mtabs'); bar.querySelectorAll = (sel) => (sel === 'button[data-pane]' ? buttons : []);
+const BODY_ATTR = { 'data-panes': JSON.stringify(ATTR) }; const bodyCls = new Set(['po-chat', 'po-feed', 'po-timeline']);
+const body = { getAttribute: (k) => (k in BODY_ATTR ? BODY_ATTR[k] : null), setAttribute: (k, v) => { BODY_ATTR[k] = v; }, removeAttribute: (k) => { delete BODY_ATTR[k]; },
+  classList: { toggle: (c, on) => { if (on === undefined) on = !bodyCls.has(c); if (on) bodyCls.add(c); else bodyCls.delete(c); return on; }, contains: (c) => bodyCls.has(c), add: (c) => bodyCls.add(c), remove: (c) => bodyCls.delete(c) },
+  appendChild() {}, style: { setProperty() {}, removeProperty() {} } };
+global.window = global;
+global.document = { body, documentElement: { style: { setProperty() {}, removeProperty() {} }, scrollTop: 0, clientWidth: 390 }, visibilityState: 'visible', hasFocus: () => true,
+  getElementById: (id) => (id === 'mtabs' ? bar : frames[id] || null), addEventListener() {}, removeEventListener() {},
+  querySelectorAll: (sel) => { if (sel === '.rail-btn[data-pane]') return railBtns; const m = /data-pane=([\w-]+)/.exec(sel); if (!m) return []; return railBtns.concat(buttons).filter((b) => b.getAttribute('data-pane') === m[1]); },
+  querySelector: () => null, createElement: () => el('x'), activeElement: null };
+global.localStorage = { getItem: (k) => (k in STORE ? STORE[k] : null), setItem: (k, v) => { STORE[k] = String(v); }, removeItem: (k) => { delete STORE[k]; } };
+global.sessionStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+global.location = { search: '', pathname: '/', origin: 'http://TESTHOST:7432', reload() {} };
+global.URLSearchParams = class { get() { return null; } };
+global.Event = class { constructor(t) { this.type = t; } };
+const MQ = { get matches() { return MQ_ON; }, _ls: [], addEventListener: (t, f) => { MQ._ls.push(f); }, addListener: (f) => { MQ._ls.push(f); } };
+global.matchMedia = () => MQ;
+Object.defineProperty(global, 'navigator', { configurable: true, value: { userAgent: 'test' } });   // node's own navigator is getter-only
+global.innerHeight = 844; global.innerWidth = 390; global.scrollY = 0; global.scrollTo = () => {};
+global.requestAnimationFrame = () => 0; global.cancelAnimationFrame = () => {};
+global.setTimeout = () => 0; global.clearTimeout = () => {}; global.setInterval = () => 0; global.clearInterval = () => {};
+global.addEventListener = () => {}; global.removeEventListener = () => {}; global.dispatchEvent = () => true;
+global.fetch = () => new Promise(() => {});
+global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} addEventListener() {} };   // the shell socket the mobile script dials (node 22 has a real one, whose failed connection would crash the run)
+global.MessageChannel = class { constructor() { this.port1 = { postMessage() {}, onmessage: null }; this.port2 = { postMessage() {}, onmessage: null }; } };
+// `sets`: the src writes to the GENERIC panes' frames (the hand-written optional panes, timeline, fleet and feed, load by their flag on every layout, as before)
+const generic = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => ['f-chat', 'f-timeline', 'f-fleet', 'f-feed', 'f-files'].indexOf(k) < 0));
+const snap = () => ({ tab: BODY_ATTR['data-tab'] || null, remembered: STORE['romp-mobile-tab'] || null, sets: generic(SETS),
+  src: Object.fromEntries(KEYS.map((k) => [k, frames['f-' + k].getAttribute('src')])), shown: KEYS.filter((k) => frames['f-' + k].classList.contains('m-on')), po: [...bodyCls].filter((c) => c.indexOf('po-') === 0).sort() });
+const out = {};
+"""
+_TWO_MIDDLE = r"""
+out.afterMobile = snap();   // the mobile script parsed and restored the remembered tab; the pane controller has not parsed yet
+"""
+_TWO_DRIVER = r"""
+out.afterBoot = snap();     // both scripts parsed: the controller's boot reconcile and apply have run
+MQ_ON = !MQ_ON; MQ._ls.forEach((f) => f({ matches: MQ_ON }));   // the layout flips (a rotation across the breakpoint): the media query's change event
+out.afterFlip = snap();
+console.log(JSON.stringify(out));
+"""
+
+
+def _run_two(rows, store, mobile):
+    js = (_TWO_HARNESS.replace("__ATTR__", json.dumps(rows)).replace("__STORE__", json.dumps({k: json.dumps(v) if not isinstance(v, str) else v for k, v in store.items()}))
+          .replace("__MOBILE__", "true" if mobile else "false") + km._LANDING_MOBILE_JS + _TWO_MIDDLE + km._LANDING_COLLAPSE_JS + _TWO_DRIVER)
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(js)
+        path = f.name
+    try:
+        r = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+    finally:
+        os.unlink(path)
+    assert r.returncode == 0, "the scripts threw: " + r.stderr[-1200:]
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+_ART = {"id": "artifacts", "title": "Artifacts", "protocol": "romp", "experimental": True, "on": False, "builtin": True}
+_NOTES = {"id": "notes", "title": "Notes", "protocol": "romp", "experimental": False, "on": True, "builtin": False}
+_DOCS = {"id": "docs", "title": "Docs", "protocol": "none", "experimental": False, "on": True, "builtin": False}
+
+
+class TheMobileSwitcherAndThePaneControllerBoot(unittest.TestCase):
+    def test_a_remembered_tab_of_a_pane_with_no_tab_falls_to_the_chat_and_loads_nothing(self):
+        # a stale artifacts key with the gear on: the pane is enabled but has no tab, so the chat shows, its key is repaired, nothing loads
+        r = _run_two([_ART, _NOTES, _DOCS], {"romp-mobile-tab": "artifacts", "romp:settings": {"panes": {"artifacts": True}}, "romp-panes": {"artifacts": True}}, mobile=True)
+        m, b = r["afterMobile"], r["afterBoot"]
+        self.assertEqual((m["tab"], m["remembered"]), ("chat", "chat"), "the restore falls to the chat and repairs the key: %r" % m)
+        self.assertEqual(m["sets"], {}, "no src copied by the restore")
+        self.assertEqual((b["tab"], b["src"]["artifacts"], b["shown"]), ("chat", None, ["chat"]), "after the controller: still the chat, the Artifacts page never loaded: %r" % b)
+        self.assertIn("po-artifacts", b["po"], "the pane's flag stands for the desktop")
+        self.assertEqual(r["afterFlip"]["src"]["artifacts"], "/artifacts", "the layout flipped to the desktop: the flag loads it there, where it shows")
+
+    def test_a_remembered_tab_of_a_pane_the_gear_disabled_never_loads_and_the_controller_reroutes_to_the_chat(self):
+        r = _run_two([_ART, _NOTES, _DOCS], {"romp-mobile-tab": "notes", "romp:settings": {"panes": {"notes": False}}}, mobile=True)
+        m, b = r["afterMobile"], r["afterBoot"]
+        self.assertEqual((m["tab"], m["src"]["notes"]), ("notes", None), "the restore shows the remembered tab but copies no src before the controller has ruled: %r" % m)
+        self.assertEqual((b["tab"], b["src"]["notes"]), ("chat", None), "the controller hides the gear-disabled pane's tab and reroutes to the chat; nothing loaded: %r" % b)
+        self.assertEqual(b["sets"], {}, "no src written at all")
+
+    def test_a_remembered_narrow_layout_key_on_a_desktop_boot_loads_nothing_off_screen(self):
+        r = _run_two([_ART, _NOTES, _DOCS], {"romp-mobile-tab": "notes", "romp-panes": {"notes": False, "docs": False}}, mobile=False)
+        m, b = r["afterMobile"], r["afterBoot"]
+        self.assertEqual(m["src"]["notes"], None, "a desktop boot copies nothing for the remembered tab: %r" % m)
+        self.assertEqual((b["src"]["notes"], b["src"]["docs"]), (None, None), "the desktop loads by the flag alone; both off: nothing: %r" % b)
+        self.assertEqual(b["sets"], {})
+
+    def test_on_a_phone_the_current_tab_loads_on_the_controllers_apply_and_the_flip_loads_the_rest(self):
+        r = _run_two([_ART, _NOTES, _DOCS], {"romp-mobile-tab": "notes", "romp-panes": {"notes": False}}, mobile=True)
+        m, b, f = r["afterMobile"], r["afterBoot"], r["afterFlip"]
+        self.assertEqual((m["tab"], m["src"]["notes"]), ("notes", None), "the restore: the tab, no src yet")
+        self.assertEqual((b["tab"], b["src"]["notes"], b["sets"]), ("notes", "/notes", {"f-notes": 1}), "the controller's boot apply loads the CURRENT tab's frame, once (its key is in the dashboard): %r" % b)
+        self.assertEqual(b["src"]["docs"], None, "the docs pane (flag on, not the current tab) is not loaded into a frame the phone never shows")
+        self.assertEqual((f["src"]["docs"], f["sets"]), ("/docs", {"f-notes": 1, "f-docs": 1}), "the layout flipped to the desktop: the flag loads the docs pane; the notes frame is not re-assigned: %r" % f)
 
 
 if __name__ == "__main__":

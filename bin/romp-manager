@@ -20,10 +20,13 @@
 //   romp on        → `up`          run the manager in the foreground (Ctrl+C stops it + its kernels)
 //   romp refresh   → `restart-all` restart EVERY kernel the manager owns (loops the registry)
 //   romp status    → `status`      print the manager + kernel status
-// (`restart [kernel]` (single) and `down`/`/stop` also exist for front ends / SIGINT — no romp verb.)
+//   romp down      → `down`        stop every kernel and exit: the UNSUPERVISED half of `romp down`
+//                                  (under the login service bin/romp stops the service instead, or
+//                                  Restart=always / KeepAlive would respawn us within seconds)
+// (`restart [kernel]` (single) also exists for front ends: no romp verb.)
 
 const http = require('http');
-const { spawn, execFileSync } = require('child_process');
+const { spawn } = require('child_process');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -42,17 +45,29 @@ const KERNEL_PORT = Number(process.env.ROMP_SERVE_PORT) || Number(process.env.RO
 const STATE_ROOT = process.env.ROMP_STATE_DIR ||
   path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'romp');
 const KERNELS_FILE = path.join(STATE_ROOT, 'kernels.json');
+// `romp down` leaves this marker (bin/romp writes {t, cmd}) so a stopped kernel reads as stopped on
+// purpose. Two consumers here: `ensure` (the supervised start that `romp update <host>` and the remote
+// restart run on a far host) refuses to bring the manager back while it exists, since a remote update
+// must not silently undo a deliberate stop, and `up` (a deliberate start: `romp up`, the login service,
+// a hand `systemctl start`) clears it.
+const DOWN_MARKER = path.join(STATE_ROOT, 'down-by-romp');
+function downMarkerHeld(file = DOWN_MARKER) { try { return fs.existsSync(file); } catch (e) { return false; } }
+function clearDownMarker(file = DOWN_MARKER) {
+  try { fs.unlinkSync(file); return true; } catch (e) { return false; }   // absent = nothing to clear
+}
 
-// $TMUX scrub (2026-07-20): a manager launched by hand from INSIDE a tmux session leaks $TMUX to
-// its kernels and their SDK-session children — whose tmux-status hooks then resolve `#S` to
-// whatever session is ATTACHED and hijack ITS @romp-session-id anchor (a live session flapping
-// "dead" → bogus revive prompts). launchd spawns us clean; this makes the manual path just as
-// clean at the source. Mirrors kernel/judge.py's scrub for judge subprocesses. The hook's own
-// CLAUDE_CODE_ENTRYPOINT guard stays as defense-in-depth for managers older than this line.
+// Environment scrub: a manager started by hand from inside a terminal multiplexer pane inherits that
+// pane's variables (TMUX, TMUX_PANE). Every kernel is spawned with a copy of this process's
+// environment (specEnv), and each session's CLI inherits its kernel's, so the leak would tell every
+// CLI it sits in a pane of that multiplexer. launchd and systemd start the manager clean; this makes
+// the manual path as clean, at the source. Mirrors kernel/judge.py's scrub for judge subprocesses.
 delete process.env.TMUX;
 delete process.env.TMUX_PANE;
 
-function log(msg) { process.stderr.write('[romp-manager] ' + msg + '\n'); }
+// log(msg, cb): cb runs once the line is written. A caller about to process.exit() passes its exit as
+// the callback, or the line can be lost: stderr on a pipe is asynchronous on macOS (the far-host
+// update script reads ensure's output through one), and exit() does not wait for pending writes.
+function log(msg, cb) { process.stderr.write('[romp-manager] ' + msg + '\n', cb); }
 
 // romp-serve is the kernel launcher (rebuilds dist if stale, then execs node on it). Resolve it the
 // same way the other consumers do: $ROMP_SERVE_BIN → $ROMP_DIR/bin → next to this script → the
@@ -74,7 +89,7 @@ function rompServeBin() {
 // demand via /ensure ('k<port>').
 
 // kernels.json (plans/multi-kernel.md phase 3): the durable aux-kernel profiles —
-//   { "kernels": [ { "id", "port", "postalPort"?, "stateDir"?, "claudeConfigDir"?, "tmuxSocket"? } ] }
+//   { "kernels": [ { "id", "port", "postalPort"?, "stateDir"?, "claudeConfigDir"? } ] }
 // Parsed FRESH at every consult (never cached at manager start): the --refresh stale-manager
 // incident (the user 2026-07-24) was the manager baking config once at start and then respawning
 // kernels with values the disk had long since moved past. A `main` entry may override the primary's
@@ -110,7 +125,7 @@ function loadSpecs(file, mainPort, controlPort) {
       if (!Number.isInteger(pp) || pp < 1024 || pp > 65535 || ports.has(pp)) { bad('postalPort must be a free integer in [1024,65535]'); continue; }
       spec.postalPort = pp; ports.add(pp);
     }
-    for (const [field, pat] of [['stateDir', /^[/~]/], ['claudeConfigDir', /^[/~]/], ['tmuxSocket', /^[A-Za-z0-9_-]{1,64}$/]]) {
+    for (const [field, pat] of [['stateDir', /^[/~]/], ['claudeConfigDir', /^[/~]/]]) {
       if (k[field] != null) {
         const v = String(k[field]);
         if (!pat.test(v)) { spec._bad = field; break; }
@@ -124,8 +139,8 @@ function loadSpecs(file, mainPort, controlPort) {
 }
 
 // The per-spec child env (pure, exported for tests): the profile's whole isolation story rides these
-// five variables — the kernel and everything it spawns (SDK sessions, its tmux server, its postal
-// bus) inherit them, so one env set at spawn scopes state, sessions, and mail per kernel.
+// four variables — the kernel and everything it spawns (SDK sessions, its postal bus) inherit them,
+// so one env set at spawn scopes state, sessions, and mail per kernel.
 function specEnv(spec, base, ids) {
   const env = Object.assign({}, base, {
     // BOTH spellings of the listen port, always overwritten together: `base` is the manager's own
@@ -135,11 +150,11 @@ function specEnv(spec, base, ids) {
     ROMP_KERNEL_PORT: String(spec.port),
     ROMP_MANAGER_PID: String(ids.managerPid),  // → kernel's parent-death watchdog
     ROMP_MANAGER_PORT: String(ids.controlPort),
+    ROMP_SHUTDOWN_GRACE_MS: String(SHUTDOWN_GRACE_MS),   // → the kernel's exit budgets (shares of the grace)
   });
   if (spec.postalPort) env.ROMP_POSTAL_PORT = String(spec.postalPort);
   if (spec.stateDir) env.ROMP_STATE_DIR = spec.stateDir;
   if (spec.claudeConfigDir) env.CLAUDE_CONFIG_DIR = spec.claudeConfigDir;
-  if (spec.tmuxSocket) env.ROMP_TMUX_SOCKET = spec.tmuxSocket;
   return env;
 }
 
@@ -199,7 +214,96 @@ const STORM_COOLDOWN_MS = 30000;      // during a storm, hold to 1 restart per t
 // loudly. Immediate restarts (the dashboard ↻, `--now`) behave exactly as before and satisfy any
 // pending quiet request in passing.
 const QUIET_POLL_MS = Number(process.env.ROMP_QUIET_POLL_MS) || 3000;
+// T240b: a busy poll that gets NO answer is a MISS, not quiet. Under load — exactly when a review
+// workflow's agents are running — the kernel answers /busy late, and one timed-out poll applied a
+// parked deploy over live background work ten minutes before the backstop (07:57Z 2026-09-07).
+// The tunnel supervisor's STALE_MISSES precedent: unreachable applies only after this many
+// CONSECUTIVE unanswered probes; any answer resets the streak. Probes go out on the 3 s grid and
+// each carries its own 5 s timeout, so a DEAD kernel (connection refused, instant) applies at
+// ~6 s and one that accepts but never answers at ~11 s (timeouts at 5, 8, 11) — measured, not
+// "3 poll intervals". The stated trade-off: a live kernel whose /busy latency stays above 5 s for
+// three probes in a row (a stall of ~10 s) is indistinguishable from a wedged one and is cut; the
+// backstop stays the ultimate bound.
+const BUSY_MISS_LIMIT = Number(process.env.ROMP_BUSY_MISS_LIMIT) || 3;
 const QUIET_MAX_DEFER_MS = Number(process.env.ROMP_QUIET_MAX_DEFER_MS) || 15 * 60 * 1000;
+
+// The manager's own note of a SIGTERM it is about to send, in the SAME restart-audit.jsonl the
+// requesters (bin/romp refresh, the kernel's self-update, the dashboard button) write and the
+// kernel's exit handler reads. Without it a `romp-manager restart` or a service stop reaches the kernel with no
+// row on disk, indistinguishable from a stray kill, and the kernel's "no request on record" verdict
+// (kernel/kernel.py _unrequested_signal_reason) would name the manager's own kills wrongly. Aux
+// kernels read the file under their own state root, so the row goes where that kernel will look.
+// Best-effort: never blocks the kill.
+//
+// MECHANISM NOTES, NOT INTENTS. A manager-sigterm row says the manager was the messenger; who
+// asked is the requester's own row, written before it (bin/romp's refresh row, the kernel's
+// self-update). A reader after the newest intent therefore SKIPS manager-sigterm rows rather than
+// stopping at the newest row (kernel/kernel.py _recent_restart_audit does; any reader that takes
+// only the newest row must do the same). `trigger` names what set the SIGTERM off, so the row is
+// legible on its own:
+//   restart      one kernel, POST /restart (the dashboard button, `romp-manager restart`)
+//   restart-all  every kernel, POST /restart-all (`romp refresh`), at once or at the quiet window
+//   refresh      the stale-manager self-bounce: kernels stopped so the supervisor respawns the new manager
+//   cli-down     a stop while `romp down`'s marker (DOWN_MARKER) is on disk: the CLI asked for it
+//   stop         any other stop: a service stop by hand, Ctrl+C on the foreground manager, POST /stop
+// `reason` stays what the manager does next: `restart` (respawn) or `stop` (reap).
+function auditSigterm(spec, pid, reason, trigger) {
+  const t = Math.floor(Date.now() / 1000);
+  try {
+    const root = (spec && spec.stateDir) || STATE_ROOT;
+    fs.mkdirSync(root, { recursive: true });
+    fs.appendFileSync(path.join(root, 'restart-audit.jsonl'),
+      JSON.stringify({ t, action: 'manager-sigterm', kernel: spec.id, pid, reason, trigger: trigger || reason }) + '\n');
+  } catch (e) { /* a lost note, not a lost restart */ }
+  return t;
+}
+
+// The trigger of a stop nobody labeled (SIGINT/SIGTERM to the manager, POST /stop). A stop that finds
+// `romp down`'s marker (DOWN_MARKER above; bin/romp writes it before it stops the service) was the
+// CLI's, not a hand on systemctl or a Ctrl+C; anything else is `stop`. Read at stop time, never
+// cached (the marker appears seconds before the SIGTERM does), and once per shutdown, so every
+// kernel's row names the same cause.
+function stopTrigger() { return downMarkerHeld() ? 'cli-down' : 'stop'; }
+
+// T304: the quiet window's OWN row in restart-audit.jsonl, written when the parked refresh APPLIES, so the
+// wait from parked to restart and the fifteen-minute backstop's firing are machine-readable (until now they
+// were the `applying deferred refresh … waited Ns` log line alone). A mechanism note like manager-sigterm,
+// never a request: the kernel's reason walk lists `quiet-window` in _NO_RESTART_ACTIONS and passes it over;
+// the restart it releases writes its own manager-sigterm note. `since` and `t` are epoch seconds; `reason`
+// is quietGate's verdict verbatim ('quiet', 'backstop cap', or the unreachable-kernel sentence), `backstop`
+// the one bit a reader wants most; the drain counts are the park's evidence (queueQuietRestart records them).
+function quietWindowRow(park, g, now) {
+  const p = park || {}; const since = Number(p.since) || now;
+  return { t: Math.floor(now / 1000), action: 'quiet-window', since: Math.floor(since / 1000),
+           waitedS: Math.max(0, Math.round((now - since) / 1000)), reason: String((g && g.reason) || ''),
+           backstop: !!(g && g.reason === 'backstop cap'), coalesced: p.count || 1, mode: String(p.mode || 'all'),
+           lastInflight: p.lastInflight === undefined ? null : p.lastInflight, misses: p.misses || 0,
+           drainRefusedCount: p.drainRefusedCount || 0, drainArmedCount: p.drainArmedCount || 0,
+           drainRefusedAfterArm: p.drainRefusedAfterArm || 0 };
+}
+function auditQuietWindow(park, g, now) {
+  const row = quietWindowRow(park, g, now || Date.now());
+  try {
+    fs.mkdirSync(STATE_ROOT, { recursive: true });
+    fs.appendFileSync(path.join(STATE_ROOT, 'restart-audit.jsonl'), JSON.stringify(row) + '\n');
+  } catch (e) { /* a lost note, not a lost restart */ }
+  return row;
+}
+
+// The exit handler's verdict (pure, exported for tests): what to log and whether to respawn. A
+// kernel we asked to stop is reaped; one we SIGTERMed for a restart keeps the plain respawn line;
+// one that exited with NEITHER on record (a signal from elsewhere, or a crash) says so, because
+// that is the exit worth a second look: a direct SIGTERM to the kernel pid used to be logged like
+// any requested restart, and a respawn that lands on a different python takes every session down.
+function exitLine(rec, code, sig, delay) {
+  const id = rec.spec.id;
+  if (rec.stopping) return { respawn: false, line: `kernel '${id}' stopped` };
+  const how = `code=${code} sig=${sig || '-'}`;
+  const n = `[#${rec.restarts}]`;
+  if (rec.requested) return { respawn: true, line: `kernel '${id}' exited (${how}); respawning in ${delay}ms ${n}` };
+  return { respawn: true,
+    line: `kernel '${id}' (pid ${rec.child && rec.child.pid}) exited without a restart request (signal or crash); respawning in ${delay}ms (${how}) ${n}` };
+}
 
 function spawnKernel(spec) {
   // SPAWN-TIME RE-READ (the --refresh stale-manager incident): re-resolve this kernel's profile from
@@ -212,7 +316,7 @@ function spawnKernel(spec) {
   // ROMP_MANAGER_PID lets the kernel run a parent-death watchdog (_parent_watch in bin/romp-kernel):
   // if we die uncleanly (SIGKILL / crash / closed terminal) and never SIGTERM it, it sees us vanish and
   // exits itself instead of orphaning. ROMP_SERVE_PORT is the kernel's listen port; the rest of the
-  // profile env (state root, Claude config dir, postal port, tmux socket) is the kernel's whole
+  // profile env (state root, Claude config dir, postal port) is the kernel's whole
   // isolation story (specEnv).
   const env = specEnv(spec, process.env, { managerPid: process.pid, controlPort: CONTROL_PORT });
   // stdio inherited → the kernel's own logs surface in this foreground terminal (visible owner).
@@ -222,27 +326,91 @@ function spawnKernel(spec) {
     restarts: prev ? prev.restarts : 0,
     quickCrashes: prev ? prev.quickCrashes : 0,
     startedAt: Date.now(), stopping: false,
-  });
+    requested: null,          // when restartKernel SIGTERMed this child (exitLine: asked vs not)
+    inflight: prev && prev.inflight ? 'spawned' : null,   // a restart in flight moves to its second phase: the successor is up,
+    trail: prev ? prev.trail || null : null,              //  not yet answering; a trailing request, if one was kept, fires when it is
+  });                                                     // (the storm gate's history is NOT carried: a completed restart is a fresh record)
+  if (prev && prev.inflight) awaitReady(spec.id, child);
   log(`kernel '${spec.id}' → :${spec.port} (pid ${child.pid})`);
   child.on('error', (e) => log(`kernel '${spec.id}' spawn error: ${e.message}`));
   child.on('exit', (code, sig) => {
     const cur = kernels.get(spec.id);
     if (!cur || cur.child !== child) return;                 // already superseded by a fresh spawn
-    if (cur.stopping) { kernels.delete(spec.id); log(`kernel '${spec.id}' stopped`); return; }
+    if (cur.stopping) { kernels.delete(spec.id); log(exitLine(cur, code, sig, 0).line); return; }
+    cur.inflight = inflightAfterExit(cur.inflight);          // a successor that died booting ends the flight (round two, high 1)
+    if (cur.inflight === null && cur.trail) { cur.trail = null; }   // its trailing restart is moot: the respawn loads the disk as it stands
     cur.restarts++;
     // crash-loop? back off. A healthy run (uptime ≥ QUICK_CRASH_MS) resets the counter.
     cur.quickCrashes = (Date.now() - cur.startedAt) < QUICK_CRASH_MS ? cur.quickCrashes + 1 : 0;
     const delay = Math.min(cur.quickCrashes * 1000, MAX_BACKOFF_MS);
-    log(`kernel '${spec.id}' exited (code=${code} sig=${sig || '-'}) — respawning in ${delay}ms [#${cur.restarts}]`);
+    log(exitLine(cur, code, sig, delay).line);
     setTimeout(() => {
       const c = kernels.get(spec.id);
-      if (c && c.child === child && !c.stopping) spawnKernel(spec);   // still ours & not asked to stop
+      if (!(c && c.child === child && !c.stopping)) return;   // superseded, or asked to stop
+      if (staleManagerYields(`respawning kernel '${spec.id}'`)) return;   // the fresh manager brings it back
+      spawnKernel(spec);                                     // still ours & not asked to stop
     }, delay);                                               // crash OR requested restart → bring it back
   });
 }
 
 // /ensure's worker: return the kernel for `port` if the manager already owns one, else spawn it.
 // This is how a front end (configured for a port) gets a kernel there without owning the process.
+// The successor answers its port: the restart in flight is over (the event the fold keys on). Probed with the
+// same /busy read the quiet window uses; while it does not answer the probe is asked again after READY_PROBE_MS,
+// bounded by the successor's exit (a child that leaves before answering ends the probe, and its exit handler
+// ends the flight). The probe's cadence is the one clock here: the kernel's readiness has no push to the
+// manager yet (its stdout is inherited, not piped), so the port is asked.
+function awaitReady(id, child) {
+  const rec = kernels.get(id);
+  if (!rec || rec.child !== child) return;
+  let acted = false;                                       // fetchBusy fires its callback twice on a timeout (destroy, then the
+  fetchBusy(rec.spec.port, (n) => {                        //  request's own error): one probe, one act, else the probes double
+    if (acted) return;
+    acted = true;
+    const cur = kernels.get(id);
+    if (!cur || cur.child !== child) return;
+    if (n === null) {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      setTimeout(() => awaitReady(id, child), READY_PROBE_MS);
+      return;
+    }
+    cur.inflight = null;
+    const trail = cur.trail;
+    cur.trail = null;
+    fetchVersion(cur.spec.port, (v) => {                   // the kernel's own verdict on EVERY answer, trail or none (round three): its
+      const c2 = kernels.get(id);                          //  booted code identity against the disk (kernel.py _restart_pending). True:
+      if (!c2 || c2.child !== child) return;               //  a restart, since the disk moved after this kernel loaded its code (the
+      const pending = v ? v.restart_pending : null;        //  leaving kernel's pull, a push during the boot); false: a pending trail is
+      if (pending === true) {                              //  current and dropped; unreadable: a pending trail restarts (none is lost),
+        log(`kernel '${id}': the new kernel answers and its disk holds code it does not run; restarting it (${trail || 'successor-behind-disk'})`);
+        restartKernel(id, trail || 'successor-behind-disk');
+        return;
+      }
+      if (!trail) return;
+      if (pending === false) {
+        log(`kernel '${id}': the new kernel answers and runs the disk's code; the trailing restart (${trail}) is current and dropped`);
+        auditNote(c2.spec, 'restart-trailing-current', { trigger: trail, pid: child.pid });
+        return;
+      }
+      log(`kernel '${id}': the new kernel answers (no verdict read); sending the trailing restart (${trail})`);
+      restartKernel(id, trail);
+    });
+  });
+}
+
+// GET /version on a kernel: the JSON body, or null when it did not answer (auth-exempt, polled by every reader).
+function fetchVersion(port, cb) {
+  let done = false;                                        // one answer per ask: a timeout destroys the request, which then errors too
+  const once = (v) => { if (done) return; done = true; cb(v); };
+  const req = http.get({ host: HOST, port, path: '/version', timeout: 5000 }, (res) => {
+    let b = ''; res.on('data', (d) => (b += d));
+    res.on('end', () => { try { once(JSON.parse(b)); } catch { once(null); } });
+  });
+  req.on('timeout', () => { req.destroy(); once(null); });
+  req.on('error', () => once(null));
+}
+const READY_PROBE_MS = Number(process.env.ROMP_READY_PROBE_MS) || 500;   // the probe's retry while the new kernel boots
+
 function ensureKernel(port) {
   const id = idForPort(port);
   const existing = kernels.get(id);
@@ -264,12 +432,86 @@ function restartGate(st, now, opts) {
   return { action: 'restart', scheduleIn: 0, inStorm, last: now, history: [...history, now] };
 }
 
+// A restart IN FLIGHT is an event, not a window (2026-09-15: the kernel's own converge and a peer's push
+// asked restart-all three seconds apart, and the second SIGTERM killed a kernel two seconds old). From
+// the SIGTERM until the successor is spawned, a second request changes nothing the successor will not
+// already load from disk: it is FOLDED into the restart in flight. From the spawn until the successor
+// answers its port, the checkout may have moved after the code the successor loaded: the request is
+// kept as ONE trailing restart, sent when the successor is ready. Pure on the record's inflight phase
+// ('signaled' | 'spawned' | null), unit-tested in tests/manager-fold.test.js.
+function inflightGate(phase, trailPending = false) {
+  if (phase === 'signaled') return 'fold';
+  if (phase === 'spawned') return trailPending ? 'restart' : 'trail';   // a second ask during one boot is new information: a
+  return 'restart';                                                      //  person asking twice recovers a hung boot (round two)
+}
+
+// The phase after the kernel's child exited: a successor that dies while booting ('spawned') ends the flight, so the
+// respawn starts clean and the next request restarts; a restart this manager asked for ('signaled') keeps its phase,
+// since the exit IS that restart's first half. Pure on the record's phase.
+function inflightAfterExit(phase) {
+  return phase === 'signaled' ? 'signaled' : null;
+}
+
 const STORM_OPTS = { coalesceMs: RESTART_COALESCE_MS, stormWindowMs: STORM_WINDOW_MS,
   stormMax: STORM_MAX, stormCooldownMs: STORM_COOLDOWN_MS };
 
-function restartKernel(id) {
+// How long a kernel gets to leave on SIGTERM before SIGKILL: a bound on the kernel's own drain (about
+// 2s, _graceful_term in kernel/kernel.py), so one still there at 5s is wedged. The manager used to
+// exit 800ms after one SIGTERM and escalate to nothing, so a kernel that ignored the signal outlived
+// it, keeping its port and its sessions under a `romp down` marker that said otherwise. The env seam
+// is for the unit tests, which cannot sit through 5s.
+const SHUTDOWN_GRACE_MS = Number(process.env.ROMP_SHUTDOWN_GRACE_MS) || 8000;   // 8 s (was 5; the kernel's exit
+// budgets are shares of this value, passed down in specEnv, so a kernel never assumes more grace than it gets)
+
+// SIGTERM a kernel and, when it is still there once the grace has run out, SIGKILL it and say so.
+// Every stop and every restart goes through here: a kernel that ignores its SIGTERM under `romp
+// refresh`, the dashboard's restart or the quiet-window apply would otherwise never be respawned and
+// keep its port and its sessions on stale code, with nothing logged. The timer holds the child it
+// signaled, never the registry's current one: a kernel respawned in the meantime is not the one that
+// owes the exit. The exit handler does the rest (reap or respawn, per rec.stopping).
+function termThenKill(rec) {
+  const child = rec.child;
+  try { child.kill('SIGTERM'); } catch (e) { return; }
+  setTimeout(() => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    log(`kernel '${rec.spec.id}' (pid ${child.pid}) still running ${SHUTDOWN_GRACE_MS}ms after SIGTERM; sending SIGKILL`);
+    try { child.kill('SIGKILL'); } catch (e) { /* already gone */ }
+  }, SHUTDOWN_GRACE_MS);
+}
+
+function auditNote(spec, action, extra) {
+  // The manager's own note of a decision that sends no signal (a folded or trailing request): the same
+  // ledger as auditSigterm, an action the kernel's audit walk skips (_NO_RESTART_ACTIONS in kernel.py).
+  try {
+    const root = (spec && spec.stateDir) || STATE_ROOT;
+    fs.mkdirSync(root, { recursive: true });
+    fs.appendFileSync(path.join(root, 'restart-audit.jsonl'),
+      JSON.stringify(Object.assign({ t: Math.floor(Date.now() / 1000), action, kernel: spec.id }, extra || {})) + '\n');
+  } catch (e) { /* a lost note, not a lost decision */ }
+}
+
+function restartKernel(id, trigger = 'restart') {
   const rec = kernels.get(id);
   if (!rec) return false;
+  const fold = inflightGate(rec.inflight, !!rec.trail);
+  if (fold === 'fold') {           // a restart is in flight and its successor is not yet spawned: this request rides it
+    rec.folded = (rec.folded || 0) + 1;
+    log(`kernel '${id}': restart (${trigger}) folded into the one in flight (pid ${rec.child && rec.child.pid} signaled, successor not yet spawned)`);
+    auditNote(rec.spec, 'restart-folded', { trigger, into: rec.child && rec.child.pid });
+    rec.lastAnswer = 'folded';
+    return 'folded';
+  }
+  if (fold === 'trail') {          // the successor is up but not yet answering: one trailing restart once it is
+    rec.trail = trigger;
+    log(`kernel '${id}': restart (${trigger}) kept as one trailing restart until the new kernel (pid ${rec.child && rec.child.pid}) answers`);
+    auditNote(rec.spec, 'restart-trailing', { trigger, after: rec.child && rec.child.pid });
+    rec.lastAnswer = 'trailing';
+    return 'trailing';
+  }
+  if (rec.trail) {                 // a second ask while a trail is pending: the ordinary restart below, the trail consumed by it
+    log(`kernel '${id}': a second restart request (${trigger}) during one boot restarts the new kernel now (the trailing ${rec.trail} rides it)`);
+    rec.trail = null;
+  }
   rec._rs = rec._rs || { last: null, history: [] };
   const g = restartGate(rec._rs, Date.now(), STORM_OPTS);
   rec._rs.last = g.last;
@@ -279,20 +521,39 @@ function restartKernel(id) {
       log(`kernel '${id}': RESTART STORM — ${rec._rs.history.length}+ restarts in ${STORM_WINDOW_MS / 1000}s; holding to 1 per ${STORM_COOLDOWN_MS / 1000}s + this log. Something is spamming /restart (a refresh loop / concurrent \`romp refresh\`?).`);
       rec._stormLogged = true;
     }
-    if (!rec._pending) rec._pending = setTimeout(() => { rec._pending = null; restartKernel(id); }, Math.max(50, g.scheduleIn));
+    if (!rec._pending) rec._pending = setTimeout(() => { rec._pending = null; restartKernel(id, trigger); }, Math.max(50, g.scheduleIn));
     return true;
   }
   rec._stormLogged = false;
   rec.stopping = false;          // ensure the exit handler RESPAWNS rather than reaps
-  rec.child.kill('SIGTERM');     // the exit handler spawns a fresh one (romp-serve rebuilds if stale)
+  rec.requested = Date.now();    // ...and knows this exit was asked for (exitLine)
+  rec.inflight = 'signaled';     // the restart is in flight from here until the successor answers (inflightGate)
+  rec.lastAnswer = 'restarted';
+  auditSigterm(rec.spec, rec.child.pid, 'restart', trigger);   // the row BEFORE the signal: the kernel reads it on SIGTERM
+  termThenKill(rec);             // the exit handler spawns a fresh one (romp-serve rebuilds if stale)
   return true;
 }
 
 // Restart EVERY kernel the manager owns — the `romp refresh` action (loops the registry, not just
 // 'main'). Returns the ids it kicked, so the caller can report them.
-function restartAll() {
+// The single-kernel /restart answer: restarted, or folded / trailing when the request rode a restart in flight (the
+// same words /restart-all carries in `folded`), read off the record the request just moved.
+function restartAnswer(kid) {
+  const rec = kernels.get(kid);
+  const how = rec && rec.lastAnswer;
+  return Object.assign({ ok: true, restarted: kid }, how && how !== 'restarted' ? { [how]: true } : {});
+}
+
+function restartAll(trigger = 'restart-all', out = null) {
   const ids = [...kernels.keys()];
-  for (const id of ids) restartKernel(id);
+  const signaled = [], folded = [], trailing = [];
+  for (const id of ids) {
+    const r = restartKernel(id, trigger);
+    if (r === 'folded') folded.push(id);             // rode a restart already in flight (inflightGate)
+    else if (r === 'trailing') trailing.push(id);    // kept for the successor's answer
+    else if (r) signaled.push(id);                   // a SIGTERM went out
+  }
+  if (out) Object.assign(out, { signaled, folded, trailing });   // for the handler's answer; the ids array stays a plain list
   return ids;
 }
 
@@ -304,34 +565,123 @@ function restartAllOrSelf() {
   if (managerStale() && process.env.ROMP_SUPERVISED) {
     const ids = [...kernels.keys()];
     log('manager binary changed since start — exiting for a supervised respawn (the fresh manager brings every kernel up on the new defaults)');
-    shutdownAll(0);
+    shutdownAll(0, 'refresh');
     return { self: true, ids };
   }
   if (managerStale()) {
     log('WARNING: bin/romp-manager changed since this manager started — respawned kernels inherit STALE manager defaults. Restart the manager to load the new one: Ctrl+C + `romp on`, or `romp-service install`.');
   }
-  return { self: false, ids: restartAll() };
+  const out = {};
+  const ids = restartAll('restart-all', out);
+  return { self: false, ids, signaled: out.signaled, folded: out.folded, trailing: out.trailing };
 }
 
 // ── quiet-window deferral (deploy refreshes) ────────────────────────────────
 // Pure decision (time injected → unit-testable). `st` = {since}; `busy` = the kernel's in-flight
 // SDK turn count, or null when the kernel is unreachable — a kernel that isn't answering has no
 // turns a restart could cut, so unreachable counts as quiet.
-function quietGate(st, busy, now, opts) {
-  if (busy === null || busy === 0) return { action: 'apply', reason: busy === null ? 'kernel unreachable' : 'quiet' };
+function quietGate(st, busy, now, opts, bd, misses) {
+  if (busy === null) {
+    // no answer: a MISS (T240b) — injected like `now`, counted by quietTick on the park
+    const n = misses || 0, lim = opts.missLimit || BUSY_MISS_LIMIT;
+    if (n >= lim) return { action: 'apply', reason: `kernel unreachable — ${n} consecutive busy polls missed` };
+    if (now - st.since >= opts.maxDeferMs) return { action: 'apply', reason: 'backstop cap' };
+    return { action: 'wait', reason: `busy poll missed (${n}/${lim}) — a slow or unreachable kernel is not yet quiet` };
+  }
+  if (busy === 0) return { action: 'apply', reason: 'quiet' };
   if (now - st.since >= opts.maxDeferMs) return { action: 'apply', reason: 'backstop cap' };
-  return { action: 'wait', reason: `${busy} turn(s) in flight` };
+  // T240: `busy` counts sessions with a turn in flight OR live background work (a Workflow run, a
+  // background agent) — either kind defers the restart; the breakdown says which
+  const why = bd ? `${bd.inflight} turn(s) in flight, ${bd.background} session(s) with background work`
+                 : `${busy} turn(s) in flight`;
+  return { action: 'wait', reason: why };
 }
 
-let pendingQuiet = null;   // {since, count, mode:'all'|<kernel id>, timer}
+let pendingQuiet = null;   // {since, count, mode:'all'|<kernel id>, timer, drainRefusedCount, drainArmedCount, drainRefusedAfterArm}
 
-function fetchBusy(port, cb) {
-  const req = http.get({ host: HOST, port, path: '/busy', timeout: 2000 }, (res) => {
+// The primary kernel's serve token. The drain arm of '/busy?drain=1' is a WRITE — it holds every
+// session's new turn starts — so the kernel now requires the token for it (a drive-by loopback page
+// or a tailnet client, holding no token, can no longer freeze turns by looping the poll). We are the
+// same-user local daemon: read the 0600 token file (the kernel writes it under its state root on
+// startup), or the env a profile baked in. Absent/unreadable → the poll still reads the count (the
+// read stays auth-exempt), the drain hold just does not arm; the quiet-window gate still works off
+// the count. Read fresh each poll so a kernel that reminted its token is picked up.
+//
+// FAIL LOUDLY, NOT DIFFERENTLY: left silent, both halves of that degrade disappear — a token-read
+// failure collapses to '' with zero log, and the kernel's `draining` answer (the refusal signal
+// it returns in the same /busy response) gets parsed out and dropped — so a parked deploy would
+// believe new turn starts were held while the kernel armed nothing; busy never quiets, and the
+// 15-minute backstop SIGTERMs the kernel MID-TURN (the exact cut the quiet window exists to
+// prevent) with no line anywhere naming the cause. The degrade BEHAVIOR is deliberate
+// (count-only polling keeps working; the /busy read arm needs no token) — these notices
+// make it visible, once per refusal EPISODE, not per 3s poll: queueQuietRestart re-arms them when
+// a fresh park begins, and an ARMED drain answer re-arms the refusal notice mid-park
+// (kernelToken() reads fresh per poll, so a hold can recover when the token file
+// comes back and be refused AGAIN when it goes; each transition is new information, said once).
+let tokenNoticed = false;   // the serve-token read failed → said once
+let drainNoticed = false;   // the kernel answered a drain=1 poll with draining:false → said once per episode
+function resetDrainNotices() { tokenNoticed = false; drainNoticed = false; }
+
+function kernelToken() {
+  const t = (process.env.ROMP_SERVE_TOKEN || '').trim();
+  if (t) return t;
+  const file = path.join(STATE_ROOT, 'serve-token');
+  try { return fs.readFileSync(file, 'utf8').trim(); }
+  catch (e) {
+    if (!tokenNoticed) {
+      tokenNoticed = true;
+      log(`kernel serve token unreadable (${file}: ${e && e.message}) — polling token-less: the busy count still reads, but the kernel will refuse to arm the drain hold`);
+    }
+    return '';
+  }
+}
+
+function fetchBusy(port, cb, path) {
+  // the PARKED quiet poll passes '/busy?drain=1' (T121): the same probe that reads the count also
+  // refreshes the kernel's drain lease, so new turn starts hold while the restart is parked and
+  // the count falls on turn-end events. The lease dies by itself (~12s) when this manager stops
+  // polling — no off-switch to forget — and a fresh kernel boots clear by construction. The drain
+  // arm is a gated WRITE, so present the token (X-Romp-Token, the local-daemon header form); a
+  // plain read needs none, but carrying it costs nothing.
+  // The callback gets (busy, draining): `draining` is the kernel's own answer for whether the
+  // hold is armed — true/false from the response, null when unknown (an older kernel without the
+  // field, an unreachable kernel, unparsable body). A drain=1 poll answered draining:false is a
+  // REFUSED drain (token missing/rejected — the kernel still serves the exempt count): said once
+  // per refusal episode — an armed answer after a noticed refusal logs the recovery and re-arms
+  // the notice, so a hold lost AGAIN later is not swallowed by the first episode's line. `null`
+  // never cries refusal — no field is no evidence, not a rejection.
+  const tok = kernelToken();
+  const headers = tok ? { 'X-Romp-Token': tok } : {};
+  const wantDrain = /[?&]drain=1(?:&|$)/.test(path || '');
+  // 5 s, not 2 (T240b): the kernel answers /busy on a thread that competes with its pushers under
+  // load, and a 2 s cap turned ordinary slowness into "unreachable"
+  const req = http.get({ host: HOST, port, path: path || '/busy', timeout: 5000, headers }, (res) => {
     let b = ''; res.on('data', (d) => (b += d));
-    res.on('end', () => { let n = null; try { const v = JSON.parse(b).busy; n = Number.isFinite(v) ? v : null; } catch { n = null; } cb(n); });
+    res.on('end', () => {
+      let n = null, draining = null, bd = null;
+      try {
+        const j = JSON.parse(b);
+        n = Number.isFinite(j.busy) ? j.busy : null;
+        draining = typeof j.draining === 'boolean' ? j.draining : null;
+        // the breakdown (T240); an older kernel reports only `busy`, which then all counts as in flight
+        if (n !== null) bd = { inflight: Number.isFinite(j.inflight) ? j.inflight : n,
+                               background: Number.isFinite(j.background) ? j.background : 0 };
+      } catch { n = null; }
+      if (wantDrain && n !== null && draining === false && !drainNoticed) {
+        drainNoticed = true;
+        log(`kernel refused the drain hold (asked via /busy?drain=1 ${tok ? 'but it rejected the token' : 'holding no token'}) — new turn starts are NOT held; the quiet window runs count-only and its backstop may cut turns mid-flight`);
+      } else if (wantDrain && n !== null && draining === true && drainNoticed) {
+        // recovery: the hold armed after the refusal above — put that on record and re-arm the
+        // notice (event-keyed: the arm is the new information), so a SECOND refusal episode in
+        // the same park logs again instead of hiding behind the first episode's line.
+        drainNoticed = false;
+        log('kernel armed the drain hold after the refusal above — new turn starts are held from here');
+      }
+      cb(n, draining, bd);
+    });
   });
-  req.on('timeout', () => { req.destroy(); cb(null); });
-  req.on('error', () => cb(null));
+  req.on('timeout', () => { req.destroy(); cb(null, null, null); });
+  req.on('error', () => cb(null, null, null));
 }
 
 function clearPendingQuiet() {
@@ -350,17 +700,40 @@ function clearPendingQuiet() {
 //  - the callback acts at most once (http 'timeout' destroys the request and 'error' follows — a double
 //    fire must not evaluate twice);
 //  - a throwing evaluation is LOUD and leaves the refresh queued (fail loudly, never evaporate).
+//  - GENERATION-BOUND (T224): the busy answer belongs to the park that ISSUED the probe. The park is
+//    captured at issue time and compared by identity at response time — a probe issued for park A
+//    whose answer lands after A was cleared and park B took its place is DROPPED loudly, never fed
+//    to B's gate. Before this the gate read pendingQuiet at response time, so a stale busy:0 from
+//    A applied B's refresh over turns B never saw quiet, and a stale count from A held B for nothing.
+//    Each queueQuietRestart mints a fresh park object, so identity IS the generation; no counter to
+//    keep in step.
 function quietTick(deps) {
   const { pending, fetchBusy, now, opts, apply, schedule, log } = deps;
-  if (!pending()) return;                 // an immediate restart satisfied it meanwhile
+  const park = pending();                 // the generation this probe is FOR
+  if (!park) return;                      // an immediate restart satisfied it meanwhile
   schedule();                             // schedule-first: the chain outlives any probe failure
   let acted = false;
-  fetchBusy((busy) => {
+  fetchBusy((busy, bd) => {
     if (acted) return;
     acted = true;
-    if (!pending()) return;
+    const cur = pending();
+    if (!cur) return;
+    if (cur !== park) {
+      log(`stale busy answer (${busy === null ? 'kernel unreachable' : `${busy} in flight`}) from a replaced park dropped — a probe binds to the park that issued it, never to whichever park is pending when the answer lands`);
+      return;
+    }
     try {
-      const g = quietGate(pending(), busy, now(), opts);
+      // the miss streak lives on the park (one per generation, like its drain evidence): a null
+      // answer extends it and logs once per miss; ANY answer ends it, loudly if it ran (T240b)
+      const lim = opts.missLimit || BUSY_MISS_LIMIT;
+      if (busy === null) {
+        park.misses = (park.misses || 0) + 1;
+        log(`busy poll missed (${park.misses}/${lim}): timeout or no answer — ${park.misses >= lim ? 'treating the kernel as unreachable' : 'not yet quiet'}`);
+      } else if (park.misses) {
+        log(`busy poll answered again after ${park.misses} miss(es) — the kernel was slow, not gone`);
+        park.misses = 0;
+      }
+      const g = quietGate(park, busy, now(), opts, bd, park.misses || 0);
       if (g.action === 'apply') apply(g);
     } catch (e) {
       log(`quiet-window evaluation failed (${e && e.message}) — the pending refresh stays queued`);
@@ -375,11 +748,49 @@ function queueQuietRestart(mode) {
     log(`refresh queued behind the pending one (${pendingQuiet.count} coalesced — one bounce will deliver all)`);
     return pendingQuiet.count;
   }
-  pendingQuiet = { since: Date.now(), count: 1, mode, timer: null };
+  pendingQuiet = { since: Date.now(), count: 1, mode, timer: null,
+                   drainRefusedCount: 0, drainArmedCount: 0, drainRefusedAfterArm: 0 };
+  resetDrainNotices();                   // the token/refusal notices re-arm when a fresh park begins
   log(`refresh queued — applying at the next quiet window (no SDK turn in flight; backstop ${Math.round(QUIET_MAX_DEFER_MS / 60000)} min)`);
   const tick = () => quietTick({
     pending: () => pendingQuiet,
-    fetchBusy: (cb) => fetchBusy(KERNEL_PORT, cb),
+    fetchBusy: (done) => {
+      // record the kernel's drain answers as EVIDENCE ON THE PARK THAT ISSUED THIS POLL — the
+      // park is captured here, at issue time, never read back from pendingQuiet when the response
+      // lands (an in-flight probe from a just-cleared park must not stamp a brand-new park that
+      // never polled). Refusals and arms are COUNTED, not latched into one bit: kernelToken()
+      // reads fresh per poll, so a refusal can be transient (a token restored mid-park arms every
+      // later poll), and the apply line below renders what this park's counts actually show.
+      const park = pendingQuiet;
+      const cb = (busy, draining, bd) => {
+        if (park && busy !== null) {
+          // T240: remember whether any TURN is in flight — the drain hold (new turn starts held
+          // box-wide) is asked for only while one is; background-only busyness defers the restart
+          // without freezing other sessions' queued prompts for up to the backstop
+          park.lastInflight = bd ? bd.inflight : busy;
+          // a plain /busy poll (no hold asked) answers draining:false by construction — that is not
+          // a REFUSAL, and counting it as one made the backstop line blame a lost hold (review find)
+          if (draining === false && park.lastAsked) {
+            park.drainRefusedCount++;
+            // ORDER matters for the apply line (T227): two bare counters cannot tell "refused, then
+            // armed" from "armed, then LOST" — a refusal that lands AFTER any arm is the loss, and
+            // it is COUNTED on its own (the review's catch: a boolean here let the line report the
+            // park's whole refusal total as "after arming", pre-arm refusals included)
+            if (park.drainArmedCount > 0) park.drainRefusedAfterArm++;
+          } else if (draining === true) park.drainArmedCount++;
+        }
+        done(busy, bd);
+      };
+      // parked → hold new turn starts (T121) — but only while a turn is actually in flight (T240);
+      // the first poll, knowing nothing yet, asks for the hold as before
+      const holdTurns = park.lastInflight === undefined || park.lastInflight > 0;
+      park.lastAsked = holdTurns;            // what THIS poll asked for — the answer's refusal test reads it
+      // the park's identity rides every parked poll (T240c): the kernel keys its drain EPISODE — one
+      // "parked" line, one 5-minute ring — on it instead of a time window, and can ring from a plain
+      // poll while only background work holds the park
+      const pk = 'park=' + Math.round(park.since);
+      fetchBusy(KERNEL_PORT, cb, holdTurns ? '/busy?drain=1&' + pk : '/busy?' + pk);
+    },
     now: Date.now,
     opts: { maxDeferMs: QUIET_MAX_DEFER_MS },
     log,
@@ -387,7 +798,20 @@ function queueQuietRestart(mode) {
     apply: (g) => {
       const p = pendingQuiet;
       clearPendingQuiet();               // also disarms the pre-armed next tick
-      log(`applying deferred refresh — ${g.reason} (${p.count} request(s) coalesced, waited ${Math.round((Date.now() - p.since) / 1000)}s)`);
+      // On a backstop cut, say what this park's drain evidence shows (a wrong cause misleads the
+      // reader worse than none): every answer refused → the hold never armed; refused then armed
+      // → the hold arrived late, so turns started before it may still be cut; armed then LOST
+      // (T227: a refusal after any arm) → the hold covered the early part of the park only, so
+      // turns started after the loss may be cut. No refusals → no suffix (and draining:null
+      // answers are no evidence either way, so they count nowhere).
+      const cause = g.reason !== 'backstop cap' || p.drainRefusedCount === 0 ? ''
+        : p.drainArmedCount === 0
+          ? ' — the kernel never armed the drain hold for this park (see the refusal line above), so in-flight turns may be cut'
+          : p.drainRefusedAfterArm > 0
+            ? ` — the drain hold armed and was then LOST for this park (refused ${p.drainRefusedAfterArm} time(s) after arming, ${p.drainRefusedCount - p.drainRefusedAfterArm} before), so turns started after the loss may be cut`
+            : ` — the drain hold was refused ${p.drainRefusedCount} time(s) before arming for this park, so turns started before it armed may be cut`;
+      auditQuietWindow(p, g, Date.now());   // the row before the restart it releases (T304: the wait, measured)
+      log(`applying deferred refresh — ${g.reason}${cause} (${p.count} request(s) coalesced, waited ${Math.round((Date.now() - p.since) / 1000)}s)`);
       if (p.mode === 'all') restartAllOrSelf(); else restartKernel(p.mode);
     },
   });
@@ -395,23 +819,32 @@ function queueQuietRestart(mode) {
   return 1;
 }
 
-function stopKernel(id) {
+function stopKernel(id, trigger) {
   const rec = kernels.get(id);
   if (!rec) return false;
   rec.stopping = true;
-  rec.child.kill('SIGTERM');
+  auditSigterm(rec.spec, rec.child.pid, 'stop', trigger || stopTrigger());   // the row BEFORE the signal
+  termThenKill(rec);
   return true;
 }
 
 let shuttingDown = false;
-function shutdownAll(exitCode) {
+function shutdownAll(exitCode, trigger) {
   if (shuttingDown) return;
   shuttingDown = true;
   clearPendingQuiet();           // never let a deferred refresh respawn what we're stopping
-  log('shutting down — stopping all kernels');
-  for (const id of kernels.keys()) stopKernel(id);
-  // give the kernels a moment to exit, then go regardless
-  setTimeout(() => process.exit(exitCode || 0), 800);
+  const trig = trigger || stopTrigger();   // once, so every kernel's row names the same cause
+  log(`shutting down: stopping all kernels (${trig})`);
+  for (const id of kernels.keys()) stopKernel(id, trig);   // each: SIGTERM now, SIGKILL when the grace runs out
+  // exit as soon as every kernel has left, or once the grace and the SIGKILLs behind it have run:
+  // neither the manager nor a kernel outlives this stop
+  const t0 = Date.now();
+  const alive = () => [...kernels.values()].some((r) => r.child.exitCode === null && r.child.signalCode === null);
+  const tick = () => {
+    if (!alive() || Date.now() - t0 >= SHUTDOWN_GRACE_MS + 200) return process.exit(exitCode || 0);
+    setTimeout(tick, 100);
+  };
+  setTimeout(tick, 100);
 }
 
 // ── control endpoint (loopback only) ───────────────────────────────────────
@@ -423,21 +856,60 @@ function runManager() {
   });
 }
 
-// Start the tmux server under THIS launchd-rooted manager so every romp session inherits a clean launchd
-// lineage. macOS TCC blames the GUI app at the root of the tmux SERVER's process lineage for any
-// protected access, so a server first started from a VS Code integrated terminal makes every new session
-// prompt "Visual Studio Code wants to access…" — even with VS Code closed (its helpers linger). Starting
-// the server here at login fixes it permanently. `exit-empty off` keeps the (initially empty) server alive
-// until real sessions join; it's a no-op if a server is already running (the user 2026-06-16).
-function startTmuxServer() {
-  try {
-    execFileSync('tmux', ['start-server', ';', 'set', '-g', 'exit-empty', 'off'], { stdio: 'ignore', timeout: 5000 });
-    log('tmux server ensured (launchd-rooted) — new sessions won\'t inherit a terminal\'s TCC identity');
-  } catch (e) { /* tmux not installed, or a server is already up — nothing to do */ }
+// romp holds no API key and runs no secret-manager CLI (the user 2026-09-08): every kernel the manager
+// spawns inherits the manager's environment as it stands (specEnv copies it), and nothing is scrubbed
+// here. A retired provider variable in that environment is refused BEFORE a kernel starts
+// (retiredCredentialNames, below). The kernel refuses to boot on the same variable
+// (kernel/credentials.py check_boot_environment), but the manager is what receives service.env (systemd's
+// EnvironmentFile=, bin/romp-node-launch), so the check sits at the door the file comes in through: the
+// variable never reaches a kernel or a session it starts, and the manager's own log names the line to
+// remove. The retired provider variables, then the 1Password CLI's own names (the retired reference kind
+// read them; romp no longer runs op, and a token left here would ride into every kernel and session):
+// kernel/credentials.py RETIRED_VARS, OP_ENV_NAMES and OP_ENV_PREFIX, mirrored.
+const RETIRED_CREDENTIAL_NAMES = ['ROMP_API_KEY_CMD', 'ROMP_API_KEY_REF', 'ANTHROPIC_API_KEY'];
+const OP_ENV_NAMES = ['OP_SERVICE_ACCOUNT_TOKEN', 'OP_CONNECT_HOST', 'OP_CONNECT_TOKEN', 'OP_ACCOUNT'];
+const OP_ENV_PREFIX = 'OP_SESSION_';
+function retiredCredentialNames(env) {
+  const has = (k) => Object.prototype.hasOwnProperty.call(env, k);
+  return RETIRED_CREDENTIAL_NAMES.filter(has)
+    .concat(Object.keys(env).filter((k) => OP_ENV_NAMES.includes(k) || k.startsWith(OP_ENV_PREFIX)).sort());
+}
+function retiredCredentialMessage(names) {
+  const op = names.some((k) => OP_ENV_NAMES.includes(k) || k.startsWith(OP_ENV_PREFIX))
+    ? ' The 1Password CLI\'s names go too: romp no longer runs op, and a helper that needs that token reads it from a file of its own.'
+    : '';
+  return `romp-manager did NOT start: its environment carries ${names.join(', ')}. romp no longer holds an API key ` +
+    '(a key romp holds is a key a session can print). Remove the line from service.env (and any exported variable), ' +
+    'configure apiKeyHelper in Claude Code\'s settings, declare the billing with ROMP_EXPECTED_AUTH=key, then start again.' + op;
 }
 
+// A manager whose binary changed since it started must not bring a kernel up under itself (the stale-manager
+// shape restartAllOrSelf handles for `romp refresh`): the same for a single kernel's /restart and for the crash
+// respawn (T325 review: a new-code kernel under an old manager inherits its stale environment, ports and profile
+// env alike, for as long as the checkout sits ahead of the running manager). Supervised → exit so the
+// supervisor respawns the new manager, which brings every kernel back on the new defaults; foreground → warn and
+// let the kernel come up anyway. Returns true when the manager is exiting instead.
+function staleManagerYields(why) {
+  if (!managerStale()) return false;
+  if (process.env.ROMP_SUPERVISED) {
+    log(`manager binary changed since start — exiting for a supervised respawn instead of ${why} under the stale manager`);
+    shutdownAll(0, 'refresh');
+    return true;
+  }
+  log(`WARNING: bin/romp-manager changed since this manager started — ${why} inherits STALE manager defaults. Restart the manager to load the new one.`);
+  return false;
+}
+
+// startManager's first statement clears the `romp down` marker: a deliberate start brings the kernels
+// back, and a start the credential check below refuses still records that it was asked for, so
+// `romp status` does not call the kernel stopped on purpose.
 function startManager() {
-  startTmuxServer();
+  if (clearDownMarker()) log('cleared the `romp down` marker; this start brings the kernels back');
+  const retired = retiredCredentialNames(process.env);
+  if (retired.length) {
+    log(retiredCredentialMessage(retired));   // the supervisor restarts the manager on its backoff, so the line
+    process.exit(1);                          // repeats in its log until the file is repaired (the kernel's own shape)
+  }
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://x');
     const kid = url.searchParams.get('kernel') || 'main';
@@ -471,12 +943,13 @@ function startManager() {
       // SIGTERM respawns blinked every dashboard for an hour, and this handler — the one door every
       // programmatic restart walks through — recorded nothing. The immediate path used to be silent.
       log(`restart-all requested (${url.searchParams.get('when') === 'quiet' ? 'deferred to quiet window' : 'IMMEDIATE'}) from ${req.socket.remoteAddress || '?'}`);
-      if (url.searchParams.get('when') === 'quiet') {            // deploy path: land at the next quiet window
+      if (url.searchParams.get('when') === 'quiet') {            // `romp refresh --quiet`, the one quiet door (T269): land at the next quiet window
         return json(202, { ok: true, deferred: true, coalesced: queueQuietRestart('all') });
       }
       clearPendingQuiet();                                       // this bounce delivers any pending deploy too
-      const r = restartAllOrSelf();                              // `romp refresh --now` — every kernel
-      return json(200, { ok: true, restarted: r.ids, managerRestart: r.self });
+      const r = restartAllOrSelf();                              // `romp refresh` — every kernel
+      return json(200, { ok: true, restarted: r.self ? r.ids : (r.signaled || []), managerRestart: r.self,   // restarted: a signal went out
+                         folded: r.folded || [], trailing: r.trailing || [] });                            // the rest rode a flight
     }
     if (req.method === 'POST' && url.pathname === '/restart') {
       log(`restart '${kid}' requested (${url.searchParams.get('when') === 'quiet' ? 'deferred to quiet window' : 'IMMEDIATE'}) from ${req.socket.remoteAddress || '?'}`);
@@ -485,7 +958,9 @@ function startManager() {
         return json(202, { ok: true, deferred: true, coalesced: queueQuietRestart(kid) });
       }
       clearPendingQuiet();                                       // the dashboard ↻ satisfies a pending deploy in passing
-      return restartKernel(kid) ? json(200, { ok: true, restarted: kid }) : json(404, { ok: false, error: `no kernel '${kid}'` });
+      if (!kernels.has(kid)) return json(404, { ok: false, error: `no kernel '${kid}'` });
+      if (staleManagerYields(`restarting kernel '${kid}'`)) return json(200, { ok: true, restarted: kid, managerRestart: true });
+      return restartKernel(kid) ? json(200, restartAnswer(kid)) : json(404, { ok: false, error: `no kernel '${kid}'` });
     }
     if (req.method === 'POST' && url.pathname === '/stop') {
       if (url.searchParams.has('kernel')) {
@@ -527,14 +1002,27 @@ function control(method, pathname, kernel, params) {
   req.end();
 }
 
-// `romp-manager ensure` — idempotent, non-blocking auto-start: if a manager is already
-// up, do nothing; otherwise spawn `up` DETACHED and return immediately. The SessionStart
-// hook calls this so romp usage auto-starts the supervisor (and the kernel) — no `romp on`.
+// `romp-manager ensure`: idempotent, non-blocking auto-start. If a manager is already up, do
+// nothing; otherwise spawn `up` DETACHED and return immediately. `romp update <host>` and the
+// dashboard's remote restart run this on the far host so the supervisor (and the kernel) come up
+// there without a `romp up`.
 // Race-safe: the detached `up` re-probes and exits cleanly if another session won.
+// A `romp down` marker HOLDS it: auto-start is the one door that would bring a deliberately
+// stopped kernel back without anyone asking (a remote update), so it refuses, says why, and
+// exits 0: the caller is not failing, the kernel is down on purpose.
+// The pure decision is exported for the unit tests; the I/O stays here.
+function ensureDecision({ alive, held }) {
+  if (alive) return 'noop';
+  if (held) return 'held';
+  return 'spawn';
+}
 function ensureUp() {
   probeControl((alive) => {
-    if (alive) return process.exit(0);
-    spawn(process.execPath, [__filename, 'up'], { detached: true, stdio: 'ignore' }).unref();
+    const d = ensureDecision({ alive, held: downMarkerHeld() });
+    if (d === 'held') {   // the reason is the one thing this run says: exit only once it is written
+      return log('the kernel was stopped by `romp down`; not auto-starting it. `romp up` brings it back', () => process.exit(0));
+    }
+    if (d === 'spawn') spawn(process.execPath, [__filename, 'up'], { detached: true, stdio: 'ignore' }).unref();
     process.exit(0);
   });
 }
@@ -542,17 +1030,29 @@ function ensureUp() {
 // ── dispatch ────────────────────────────────────────────────────────────────
 // Exported for unit tests (restartGate = the pure storm-cap decision). The CLI dispatch runs only when this
 // file is executed directly, so require()-ing it from a test has no side effects.
-module.exports = { restartGate, quietGate, quietTick, loadSpecs, specEnv, fileStamp };
+module.exports = { restartGate, quietGate, quietTick, loadSpecs, specEnv, fileStamp,
+                   kernelToken, fetchBusy, resetDrainNotices, queueQuietRestart, clearPendingQuiet,
+                   staleManagerYields, startManager,
+                   retiredCredentialNames, retiredCredentialMessage, exitLine, auditSigterm,
+                   ensureDecision, downMarkerHeld, clearDownMarker, DOWN_MARKER,
+                   quietWindowRow, auditQuietWindow,
+                   // the SIGTERM wiring, for tests that seed `kernels` with a stand-in child or point
+                   // ROMP_SERVE_BIN at a stand-in launcher
+                   restartKernel, restartAll, restartAllOrSelf, stopKernel, shutdownAll, stopTrigger, spawnKernel, kernels,
+                   inflightGate, inflightAfterExit, auditNote, awaitReady, fetchVersion, restartAnswer };
 if (require.main === module) {
   const cmd = process.argv[2];
-  // `restart-all` (the `romp refresh` deploy path) defers to the next quiet window by default —
-  // `--now` keeps the old immediate bounce for emergencies/humans in a hurry.
+  // `restart-all` (the `romp refresh` deploy path) bounces IMMEDIATELY by default (T160, the user
+  // 2026-08-28, reversing the T121 quiet default: parked windows cost minutes per push and still cut
+  // turns at the backstop). `--quiet` defers to the next quiet window explicitly — the drain lease
+  // and the coalescing gate are invoked, not gone. `--now` stays accepted as the explicit spelling
+  // of the default, so scripts written against either era keep working.
   if (cmd === 'restart') control('POST', '/restart', process.argv[3]);
   else if (cmd === 'restart-all') control('POST', '/restart-all', null,
-    process.argv[3] === '--now' ? {} : { when: 'quiet' });
+    process.argv[3] === '--quiet' ? { when: 'quiet' } : {});
   else if (cmd === 'status') control('GET', '/status');
   else if (cmd === 'down') control('POST', '/stop');
   else if (cmd === 'ensure') ensureUp();
   else if (!cmd || cmd === 'up') runManager();
-  else { console.error('usage: romp-manager [up | ensure | restart-all [--now] | restart [kernel] | status | down]'); process.exit(2); }
+  else { console.error('usage: romp-manager [up | ensure | restart-all [--quiet] | restart [kernel] | status | down]'); process.exit(2); }
 }

@@ -41,7 +41,7 @@ test("every file arrival becomes an attachment, never raw path text in the box",
   assert.match(RENDER, /if \(p && !hostOf\(activeId \|\| ""\)\) addComposerFile\(activeId, p\);\s*\n\s*else shipFileToHost\(f\);/);
   // the window spans the popover-owned branch first (an open comment popover claims its own
   // clip's ack; the COMPOSER path below it still always lands as an attachment)
-  assert.match(RENDER, /m\.type === "droppedPath" && typeof m\.path === "string"\) \{[\s\S]{0,900}addComposerFile\(owner, m\.path\);/);
+  assert.match(RENDER, /m\.type === "droppedPath" && typeof m\.path === "string"\) \{[\s\S]{0,1500}addComposerFile\(owner, m\.path\);/);   // window covers the T215 stray-ack gate
   // the old insert-at-cursor path is gone with its last caller
   assert.doesNotMatch(RENDER, /function insertComposerText/);
 });
@@ -62,7 +62,7 @@ test("an image thumbnail renders per surface; other files wear an ext + name chi
   assert.match(RENDER, /nm\.textContent = p\.split\("\/"\)\.pop\(\) \|\| p;/);
   // click opens the file — routed by openPath (VS Code editor / the feed pane's viewer on the web);
   // the ✕ removes exactly that attachment
-  assert.match(fn, /openPath\(p, id \|\| null\);/);
+  assert.match(fn, /openPath\(p, id \|\| null, e\);/);   // with its click: a modified click on a PDF takes a browser tab
   assert.match(fn, /if \(id\) removeComposerFile\(id, i\);/);
   // the same file dropped twice attaches once
   assert.match(RENDER, /if \(!list\.includes\(path\)\) list\.push\(path\);/);
@@ -90,5 +90,7 @@ test("attachments live the DRAFT lifecycle: switch, reload, close", () => {
   assert.match(RENDER, /renderComposerFiles\(activeId\);   \/\/ attachments persisted across the reload/);
   // closing a session drops its attachments with its draft, and repaints for the new active tab
   assert.match(RENDER, /drafts\.delete\(id\); composerCitations\.delete\(id\); composerEdits\.delete\(id\); composerFiles\.delete\(id\); persistDrafts\(\);/);
-  assert.match(RENDER, /renderComposerFiles\(activeId\);   \/\/ same for its attachment thumbnails/);
+  // …through the shared loader (T236): loadComposerFor paints thumbnails with the chips, staged stack and draft
+  assert.match(RENDER, /loadComposerFor\(activeId\);   \/\/ the strip was showing the CLOSED session/);
+  assert.match(RENDER, /function loadComposerFor\(id: string \| null, keepTyped = false\): void \{[\s\S]*?renderComposerFiles\(id\);/);
 });

@@ -7,10 +7,11 @@ Also covers auto-retry IDEMPOTENCY (the user 2026-07-08): the 10s auto-loop must
 when the one romp already sent is still queued and unconsumed — that piled N bare "retry"s into the SDK
 queue during one API-error storm (the "retry retry retry retry…" card). A MANUAL "Retry now" still fires.
 """
+import json
 import os
 import types
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -20,9 +21,9 @@ SRC = open(os.path.join(BIN, "romp-kernel")).read()
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-em = SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_apiretry", os.path.join(BIN, "romp-kernel")).load_module()
+em = load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_apiretry", os.path.join(BIN, "romp-kernel"))
 
 RETRY = "retry\n\n<!-- romp-injected -->"
 
@@ -136,6 +137,65 @@ class ApiRetryIdempotency(unittest.TestCase):
         self.assertEqual(be.sent, [RETRY], "a manual retry is not deduped by the pending-queue guard")
 
 
+class RefusingBackend(FakeBackend):
+    """A backend whose send is refused: SdkBackend.send returns False for a session with no live registry
+    row (a dead client the retry cannot reach), CodexBackend.send likewise."""
+    def send(self, sid, text):
+        self.sent.append(text)
+        return False
+
+
+class ManualRetryRefusal(unittest.TestCase):
+    """A MANUAL Retry the backend cannot deliver answers the pane that asked (review find, 2026-09-08). The
+    feed's Retry latches "Retrying…" on the click and re-arms on the kernel's reply for that request; a send
+    the backend refused used to answer nothing at all, so the button stayed latched until the card happened
+    to be re-sent. The auto path stays silent: no pane asked, and the kernel's own tick asks again."""
+    def setUp(self):
+        self._saved = (km.Sessions, km._name_of, km._retry_paused_on, km._session_retry_suppressed,
+                       km._api_error, km._path_of)
+        km._name_of = lambda sid: "web"          # a session this kernel HAS; _drive refuses a foreign one earlier
+        km._retry_paused_on = lambda: False
+        km._session_retry_suppressed = lambda sid: False
+        km._api_error = lambda path: {"text": "500", "status": 500, "category": "server_error", "uuid": "ep-r",
+                                      "tooLong": False, "spendLimit": False}
+        km._path_of = lambda sid, now=None: "/TESTDIR/x.jsonl"
+        km._auto_retried.clear()
+        km._auto_retry_state.clear()
+        self.sent = []
+        self.client = {"app": "feed", "wid": "w1", "alive": True, "send": lambda raw: self.sent.append(json.loads(raw))}
+
+    def tearDown(self):
+        (km.Sessions, km._name_of, km._retry_paused_on, km._session_retry_suppressed,
+         km._api_error, km._path_of) = self._saved
+        km._auto_retried.clear()
+        km._auto_retry_state.clear()
+
+    def _drive(self, be, **msg):
+        km.Sessions = types.SimpleNamespace(backend_for=lambda sid: be)
+        m = {"type": "apiRetry", "id": "s1"}
+        m.update(msg)
+        km._drive(m, self.client)
+
+    def test_a_refused_manual_retry_answers_the_asker_by_session(self):
+        be = RefusingBackend(pending=[])
+        self._drive(be, manual=True)
+        self.assertEqual(be.sent, [RETRY], "the manual retry was attempted")
+        self.assertEqual([(m["type"], m["sid"]) for m in self.sent], [("retryRefused", "s1")],
+                         "the refusal names the session whose Retry was clicked, so that latch alone re-arms")
+        self.assertTrue(self.sent[0]["text"], "…and says why")
+
+    def test_a_delivered_manual_retry_answers_nothing(self):
+        # the retry is in the session's queue: the card's next frame (the turn opening, or a new error record)
+        # is the reply, as before
+        self._drive(FakeBackend(pending=[]), manual=True)
+        self.assertEqual(self.sent, [])
+
+    def test_a_refused_auto_retry_stays_silent(self):
+        # nobody clicked: the dashboard tick and the kernel's own driver ask again on their next cycle
+        self._drive(RefusingBackend(pending=[]))
+        self.assertEqual(self.sent, [])
+
+
 class KernelAutoRetryTick(unittest.TestCase):
     """_auto_retry_tick (the user 2026-08-11): the KERNEL drives the transient-api-error retry itself.
     Before it, the only clock was apiRetryTick in each open dashboard — a session that died on a transient
@@ -150,7 +210,7 @@ class KernelAutoRetryTick(unittest.TestCase):
                        km._api_error, km._path_of, km._alive_sessions)
         km._retry_paused_on = lambda: False
         km._session_retry_suppressed = lambda sid: False
-        km._alive_sessions = lambda now, tmux: [{"sid": self.SID, "path": "/TESTDIR/x.jsonl"}]
+        km._alive_sessions = lambda now, live_map: [{"sid": self.SID, "path": "/TESTDIR/x.jsonl"}]
         km._path_of = lambda sid, now=None: "/TESTDIR/x.jsonl"
         self.aerr = {"text": "Unable to connect to API (ENOTFOUND)", "status": None,
                      "category": "network", "uuid": "ep-1",
@@ -167,8 +227,8 @@ class KernelAutoRetryTick(unittest.TestCase):
         km._auto_retried.clear()
         km._auto_retry_state.clear()
 
-    def _tick(self, tmux=None):
-        km._auto_retry_tick(1_000_000, {self.SID: {"state": ""}} if tmux is None else tmux)
+    def _tick(self, live_map=None):
+        km._auto_retry_tick(1_000_000, {self.SID: {"state": ""}} if live_map is None else live_map)
 
     def test_fires_unattended_with_no_client(self):
         # THE live wedge: a transient-errored idle session, zero clients. The kernel now asks for itself.
@@ -205,7 +265,7 @@ class KernelAutoRetryTick(unittest.TestCase):
         self.assertEqual(self.be.sent, [RETRY])
 
     def test_dormant_sessions_are_skipped(self):
-        self._tick(tmux={})                          # SID not in the live set → no live CLI
+        self._tick(live_map={})                          # SID not in the live set → no live CLI
         self.assertEqual(self.be.sent, [], "a dead CLI's api-error is settled history, not retried into")
 
     def test_global_pause_stands(self):
@@ -219,7 +279,7 @@ class KernelAutoRetryTick(unittest.TestCase):
         self.assertEqual(self.be.sent, [], "no api error → nothing to retry")
 
     def test_the_pusher_cycle_runs_the_tick(self):
-        self.assertIn("_auto_retry_tick(now, tmux)", SRC,
+        self.assertIn("_auto_retry_tick(now, live_map)", SRC,
                       "the pusher cycle drives retries server-side — unattended recovery")
 
 

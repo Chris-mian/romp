@@ -62,3 +62,64 @@ def age_rgb(age, name=DEFAULT):
     a = max(FADE_LO, min(FADE_HI, float(age)))
     f = (math.log(a) - math.log(FADE_LO)) / (math.log(FADE_HI) - math.log(FADE_LO))
     return ramp(1.0 - f, stops_for(name))
+
+
+# ── semantic single-tone ramps (the user 2026-08-27) ──────────────────────────────────────────
+# Model capability, reasoning effort, and context pressure used to sample the SAME user-selectable
+# recency colormap over its full extent — so fable == ultracode == a 100%-full context (one
+# identical purple) and haiku == low == 0% (one identical green): three meanings, one color. Each
+# quantity now owns ONE hue, with saturation+lightness encoding magnitude ("more" reads as more
+# vivid), so the FAMILY is recognizable at a glance and the level within it needs no legend:
+#   model   = orange (hue 28)  — haiku #B88151 … fable #F7A964
+#   effort  = violet (hue 258) — low #9A84CD … ultracode #B394F9 (higher L floor: violets read dark)
+#   context = teal   (hue 200) — calm below the warn line; amber/red are SEMANTIC overrides above
+# Every sampled value clears 5:1 on the dark #1e1e1e page (tuned 2026-08-27); light-theme clients
+# re-encode lightness client-side (the kernel cannot know a page's theme — one kernel serves
+# browser, VS Code and Obsidian hosts at once). The recency colormap (gear picker) keeps governing
+# feed recency + the compacting sweep only.
+TONE_HUES = {"model": 28.0, "effort": 258.0, "context": 200.0}
+_TONE_L = {"model": (0.52, 0.16), "effort": (0.66, 0.12), "context": (0.52, 0.16)}
+
+
+def _hsl_to_rgb(h, s, l):
+    h = (h % 360.0) / 360.0
+    if s <= 0:
+        v = round(l * 255)
+        return (v, v, v)
+    q = l * (1 + s) if l < 0.5 else l + s - l * s
+    p = 2 * l - q
+
+    def ch(t):
+        t = t % 1.0
+        if t < 1 / 6: return p + (q - p) * 6 * t
+        if t < 1 / 2: return q
+        if t < 2 / 3: return p + (q - p) * (2 / 3 - t) * 6
+        return p
+
+    return tuple(round(ch(x) * 255) for x in (h + 1 / 3, h, h - 1 / 3))
+
+
+def tone_rgb(family, v):
+    """v in [0,1] -> RGB in `family`'s hue; higher v = more saturated and lighter (dark-UI canonical)."""
+    v = max(0.0, min(1.0, float(v)))
+    l0, l1 = _TONE_L[family]
+    return _hsl_to_rgb(TONE_HUES[family], 0.42 + 0.48 * v, l0 + l1 * v)
+
+
+# Context-pressure thresholds — ONE pair for every gauge. Before 2026-08-27 the ctx gauges said
+# 60/85 (three copies) while the usage bars said 70/90 (two more, bypassing the colormap): the same
+# fullness wore different alarms on different surfaces. Above the lines the color is a STATUS, not
+# a position on an aesthetic ramp — the shared warn amber, then the shared alarm red.
+CTX_WARN, CTX_DANGER = 70, 88
+WARN_RGB = (215, 162, 58)     # --warn
+DANGER_RGB = (192, 57, 43)    # --err
+
+
+def context_rgb(pct):
+    """Context/usage fullness percent -> RGB: the calm teal tone until CTX_WARN, then amber, then red."""
+    p = max(0.0, min(100.0, float(pct or 0)))
+    if p >= CTX_DANGER:
+        return DANGER_RGB
+    if p >= CTX_WARN:
+        return WARN_RGB
+    return tone_rgb("context", p / 100.0)

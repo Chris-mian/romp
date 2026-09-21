@@ -18,7 +18,7 @@ test("the composer markup includes a send button to the right of 📎", () => {
 
 test("⏎ and the send button share ONE sendComposer() path", () => {
   assert.match(RENDER, /const sendComposer = \(opts\?: \{ pastShipGate\?: boolean \}\) => \{/);   // the opts are the ship gate's re-entry door (composer-ship-gate.test.ts)
-  assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "sendMessage", id: sid, text \}\)/);   // routeUserMessage — one routing owner since the staged flush (2026-08-15)
+  assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "sendMessage", id: sid, text, qid, \.\.\.att \}\)/);   // routeUserMessage — one routing owner since the staged flush (2026-08-15)
   // Enter calls it (desktop only — the mobile guard is asserted separately below)
   assert.match(RENDER, /if \(e\.key === "Enter" && !e\.shiftKey && !isCoarsePointer\(\)\) \{\s*e\.preventDefault\(\);\s*sendComposer\(\);/);
   // the button calls it (mousedown keeps textarea focus on desktop; on a phone it blurs so the keyboard
@@ -90,7 +90,7 @@ test("focusing a tab (after ⏎-send) draws NO white UA focus ring around its co
   // default focus outline doesn't draw a redundant white ring around the identity-colored border.
   assert.match(CSS, /\.tab \{[^}]*outline: none;[^}]*\}/);
   // the dashed STATE outlines stay (higher specificity than the base .tab rule, so outline:none can't kill them)
-  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed/);
+  assert.match(CSS, /\.tab\.ring-needs-you, \.tab\.ring-retrying \{ outline: 2px dashed/);   // the ring class the strip composes (widgets since 2026-09-14), still above the base .tab rule's specificity
 });
 
 test("a staged chip clips IN BOUNDS with an ellipsis and expands on click (the user 2026-08-15)", () => {
@@ -98,9 +98,9 @@ test("a staged chip clips IN BOUNDS with an ellipsis and expands on click (the u
   // the flex label could never shrink (no min-width:0), so long texts ran off the pane edge with no
   // ellipsis; expanded, the same label wraps to the full text — the context-fold idiom
   assert.match(STYLES, /\.staged-chip \.composer-chip-label \{ flex: 1 1 auto; max-width: 100%; min-width: 0; \}/);
-  assert.match(STYLES, /\.staged-chip\.open \.staged-row \.composer-chip-label \{ white-space: pre-wrap; overflow: visible; \}/);
+  assert.match(STYLES, /\.staged-chip\.open \.staged-row \.composer-chip-label \{ white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; \}/);
   // the affordance is visibly CHROME, not message text: dim, parenthesized, at the line's end
-  assert.match(STYLES, /\.staged-expand \{ flex: 0 0 auto; color: var\(--dim\); font-size: 0\.85em; \}/);
+  assert.match(STYLES, /\.staged-expand \{ flex: 0 0 auto; color: var\(--dim\); font-size: 0\.86em; \}/);
   assert.match(RENDER, /hint\.textContent = open \? "\(collapse\)" : "\(click to expand\)";/);   // the tail names the gesture (the user 2026-08-16)
   // expansion survives the strip re-render (keyed set), and the discard ✕ does not toggle the fold
   assert.match(RENDER, /const stagedOpen = new Set<string>\(\);/);
@@ -113,6 +113,6 @@ test("a staged chip clips IN BOUNDS with an ellipsis and expands on click (the u
   assert.match(RENDER, /el\("div", "composer-chip staged-cite"/);
   assert.match(STYLES, /\.staged-cite \{ min-width: 0; max-width: 100%; cursor: pointer; \}/);
   assert.match(RENDER, /cite\.addEventListener\("click", \(ev\) => \{\s*\n\s*ev\.stopPropagation\(\);/);
-  assert.match(STYLES, /\.staged-cite\.open \.composer-chip-label \{ white-space: pre-wrap; overflow: visible; \}/);
+  assert.match(STYLES, /\.staged-cite\.open \.composer-chip-label \{ white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; \}/);
 });
 

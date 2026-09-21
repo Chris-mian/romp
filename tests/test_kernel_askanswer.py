@@ -16,7 +16,7 @@ import json
 import os
 import unittest
 from datetime import datetime, timezone
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 import tempfile
 
@@ -25,10 +25,10 @@ BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-km = SourceFileLoader("romp_kernel_aa", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_aa", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 
@@ -162,19 +162,19 @@ class BuildSessionAskAnswer(unittest.TestCase):
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self.saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE, km.NAMES,
-                      km._tmux_sessions, km._read_task_store, km._GLOBAL_CLAUDE_MD)
+                      km._live_map, km._read_task_store, km._GLOBAL_CLAUDE_MD)
         jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE = names, proj, td / "goals", td
         km.NAMES = names
         km._GLOBAL_CLAUDE_MD = td / "no-global.md"           # keep a real ~/.claude/CLAUDE.md out of the fixture
         km._read_task_store = lambda fsid, fold=None: []                # no to-do card in the way
-        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
+        km._live_map = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         jd.GOALDIR.mkdir(parents=True)
         km._parse_cache.clear()
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE, km.NAMES,
-         km._tmux_sessions, km._read_task_store, km._GLOBAL_CLAUDE_MD) = self.saved
+         km._live_map, km._read_task_store, km._GLOBAL_CLAUDE_MD) = self.saved
         km._parse_cache.clear()
         self.td.cleanup()
 

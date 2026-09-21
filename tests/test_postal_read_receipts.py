@@ -12,8 +12,10 @@ import os
 import shutil
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
+
+from tests.conftest import restore_env
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -25,7 +27,7 @@ _SESS = os.path.join(os.environ["XDG_STATE_HOME"], "sessions.json")
 Path(_SESS).write_text(json.dumps([{"id": "sess-web", "name": "web", "dir": "/tmp/notes-api",
                                     "state": "waiting", "working": ""}]))
 os.environ["ROMP_SESSIONS_FILE"] = _SESS
-ps = SourceFileLoader("romp_postal_read_receipts", os.path.join(BIN, "romp-postal-service")).load_module()
+ps = load_source("romp_postal_read_receipts", os.path.join(BIN, "romp-postal-service"))
 
 _MIDS = iter("px-%05d.mail.peerbox" % i for i in range(10000))
 
@@ -53,6 +55,10 @@ def _resp(host, **kw):
 
 class _Base(unittest.TestCase):
     def setUp(self):
+        # the sessions-file seam is read per call, so the import-time assignment above holds only until
+        # another module's test changes it: bind this module's file for the duration of each test
+        self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
+        os.environ["ROMP_SESSIONS_FILE"] = _SESS
         os.environ["ROMP_POSTAL_PEERS"] = "1"
         ps.PEERS.clear()
         ps.PEER_STATE.clear()
@@ -66,6 +72,7 @@ class _Base(unittest.TestCase):
 
     def tearDown(self):
         os.environ.pop("ROMP_POSTAL_PEERS", None)
+        restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
 
     def _trusted_peer(self, host="boxalias"):
         ps.peer_update({"host": host, "port": 19999, "up": True, "trust": "trusted"})
@@ -267,6 +274,107 @@ class FormatHonesty(_Base):
         self.assertNotIn("unreachable", txt)
         txt = ps.format_receipts([self._row(parked="boxalias", parkedUp=False)])
         self.assertIn("parked for boxalias (unreachable) — delivers on reconnect", txt)
+
+
+class RefusalReceipts(_Base):
+    """A terminal bounced row that records a REFUSAL (nothing left this machine; no return note) must
+    not read as "undeliverable, returned to you" — no note is coming (2026-09-08). Mutant: the
+    refusal branch dropped → every bounce promises a note."""
+
+    def _row(self, **kw):
+        r = {"to": "boxalias:api", "id": "px-1.mail.peerbox", "sent": 1, "exec": None,
+             "recalled": None, "relayed": None, "bounced": None, "parked": None}
+        r.update(kw)
+        return r
+
+    def test_a_refusal_bounce_promises_no_return_note(self):
+        for why in (ps.WHY_STOPPED_BEFORE_PUBLISH, ps.WHY_NOT_PARKED, ps.WHY_OUTBOX_UNREADABLE):
+            txt = ps.format_receipts([self._row(bounced=7, bouncedWhy=why)])
+            self.assertIn("refused — " + why, txt)
+            self.assertNotIn("returned to you", txt, why)
+
+    def test_a_peers_refusal_still_reads_as_returned(self):
+        txt = ps.format_receipts([self._row(bounced=7, bouncedWhy="no live session named 'api' on boxalias")])
+        self.assertIn("undeliverable, returned to you", txt, "a peer's bounce did come back as a note")
+        txt = ps.format_receipts([self._row(bounced=7)])
+        self.assertIn("undeliverable, returned to you", txt, "an older row with no why keeps the old line")
+
+    def test_sent_receipts_carries_the_why(self):
+        ps._tl_append("messages.jsonl", {"t": 1, "ev": "sent", "id": "px-r", "from": "web", "from_id": "sid-w",
+                                         "to_id": "peer:boxalias", "toName": "boxalias:api", "body": "hi",
+                                         "kind": ""})
+        ps._tl_append("messages.jsonl", {"t": 2, "ev": "bounced", "id": "px-r", "host": "boxalias",
+                                         "why": ps.WHY_NOT_PARKED})
+        row = ps._sent_receipts("sid-w")[-1]
+        self.assertEqual((row["bounced"], row["bouncedWhy"]), (2, ps.WHY_NOT_PARKED))
+
+
+class ReceiptsNeverDropSilently(_Base):
+    """_read_arrived reports whether the receipt APPLIED, and both halves of the exchange keep an
+    unapplied one on the wire (review find, 2026-09-08): the dialed side names it in `readsKept`
+    (additive) so the dialer keeps its record for the next request, and the dialer withholds its
+    readAck so the dialed side re-sends. Before this readbox_put's new False was ignored: a
+    forwarded receipt the store could not take was acked and gone, where the base's raised OSError
+    had aborted the exchange and left it to retry. Mutants: the return ignored on either side."""
+
+    def _break_the_log(self):
+        fd, path = tempfile.mkstemp()
+        os.close(fd)
+        saved = ps.TLDIR
+        ps.TLDIR = Path(path) / "timeline"                 # under a regular file: the REAL append fails
+        self.addCleanup(lambda: (setattr(ps, "TLDIR", saved), ps._TL_FAULT.__setitem__(0, False), os.unlink(path)))
+        return saved
+
+    def test_a_forward_the_store_cannot_take_is_named_kept_and_the_dialer_keeps_it(self):
+        self._trusted_peer()
+        ps.peer_update({"host": "srchost", "port": 19998, "up": True, "trust": "trusted"})
+        mid = next(_MIDS)
+        saved = ps.readbox_put
+        ps.readbox_put = lambda h, r: False                # the readbox could not be written
+        try:
+            resp, status = ps.peer_exchange_handle(_req("boxalias", reads=[{"mid": mid, "t": 7, "origin": "srchost"}]))
+        finally:
+            ps.readbox_put = saved
+        self.assertEqual(status, 200)
+        self.assertEqual(resp["readsKept"], [{"mid": mid, "unread": False}], "named kept, not silently acked")
+        self.assertEqual(ps.readbox_list("srchost"), [], "nothing was parked for the hop")
+        # the dialer: its parked read, named kept by the response, survives for the next request
+        ps.readbox_put("boxalias", {"mid": mid, "t": 7})
+        req = ps.build_exchange_request("boxalias", wait=False)
+        self.assertEqual([r["mid"] for r in req["reads"]], [mid])
+        ps.peer_exchange_apply("boxalias", req, _resp("boxalias", readsKept=[{"mid": mid, "unread": False}]))
+        self.assertEqual([r["mid"] for r in ps.readbox_list("boxalias")], [mid], "kept for the next request")
+        ps.peer_exchange_apply("boxalias", req, _resp("boxalias"))
+        self.assertEqual(ps.readbox_list("boxalias"), [], "a response that kept nothing clears it as before")
+
+    def test_a_response_carried_read_that_cannot_apply_gets_no_readack(self):
+        self._trusted_peer()
+        mid = next(_MIDS)
+        ps._tl_append("messages.jsonl", {"t": 1, "ev": "sent", "id": mid, "from": "web", "from_id": "sess-web",
+                                         "to_id": "peer:boxalias", "toName": "boxalias:api", "body": "b",
+                                         "kind": "question"})
+        good = self._break_the_log()
+        ps.peer_exchange_apply("boxalias", _req("boxalias"), _resp("boxalias", reads=[{"mid": mid, "t": 7}]))
+        self.assertEqual(ps._pending("boxalias")["readAcks"], [], "no ack for a receipt whose row did not land")
+        ps.TLDIR = good                                    # the log writes again: the dialed side re-sent it
+        ps._TL_FAULT[0] = False
+        ps.peer_exchange_apply("boxalias", _req("boxalias"), _resp("boxalias", reads=[{"mid": mid, "t": 7}]))
+        self.assertEqual(ps._pending("boxalias")["readAcks"], [{"mid": mid, "unread": False}])
+        self.assertEqual(ps._sent_receipts("sess-web")[0]["exec"], 7)
+
+    def test_read_arrived_reports_the_outcome(self):
+        self._trusted_peer()
+        ps.peer_update({"host": "srchost", "port": 19998, "up": True, "trust": "trusted"})
+        mid = next(_MIDS)
+        self.assertTrue(ps._read_arrived("boxalias", {"mid": "../nope", "t": 1}), "unaddressable: nothing a retry could change")
+        self.assertTrue(ps._read_arrived("boxalias", {"mid": mid, "t": 1, "origin": "nosuch"}), "no peer owns it: dropped on purpose")
+        self.assertTrue(ps._read_arrived("boxalias", {"mid": mid, "t": 1, "origin": "srchost"}), "forwarded and parked")
+        self.assertEqual([r["mid"] for r in ps.readbox_list("srchost")], [mid])
+        ps._tl_append("messages.jsonl", {"t": 1, "ev": "sent", "id": mid, "from": "web", "from_id": "sess-web",
+                                         "to_id": "peer:boxalias", "toName": "boxalias:api", "body": "b", "kind": ""})
+        self.assertTrue(ps._read_arrived("boxalias", {"mid": mid, "t": 7}), "ours: the exec row landed")
+        self._break_the_log()
+        self.assertFalse(ps._read_arrived("boxalias", {"mid": mid, "t": 8}), "ours, but the row could not land")
 
 
 if __name__ == "__main__":

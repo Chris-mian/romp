@@ -22,7 +22,7 @@ import os
 import tempfile
 import time
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -30,7 +30,7 @@ _STATE_TMP = tempfile.mkdtemp()
 os.environ["XDG_STATE_HOME"] = _STATE_TMP
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-kern = SourceFileLoader("romp_kernel_restoreflick", os.path.join(BIN, "romp-kernel")).load_module()
+kern = load_source("romp_kernel_restoreflick", os.path.join(BIN, "romp-kernel"))
 jd = kern.jd
 
 SID = "11111111-2222-3333-4444-cccccccccccc"
@@ -50,8 +50,20 @@ class RestoreReplyFlicker(unittest.TestCase):
             jd.save_goal_archive(SID, {"nodes": {}, "status": {}})
         kern._end_goals_pass()                         # never inherit a stuck snapshot from a failed test
         kern._compact_seen.pop(SID, None)
+        # The incident's session is a live one, so discover lists it. This root has no transcript for SID,
+        # and the seed's compaction sweep rules a store no discovered session owns out of the next pass's
+        # snapshot (2026-09-15): without an owner, every test below would read SID live and never touch
+        # the snapshot they are about.
+        self.saved_discover = jd.discover
+        jd.discover = lambda now, window=None, forks=True: [(SID, "/dev/null", None, "web")]
+        # ...and the sweep's liveness read answers nothing here: the owner list is discovered AND live sessions
+        # (2026-09-15), and a real read would build the backends inside this hermetic root for no reason
+        self.saved_live = kern._live_map
+        kern._live_map = lambda: {}
 
     def tearDown(self):
+        jd.discover = self.saved_discover
+        kern._live_map = self.saved_live
         kern._end_goals_pass()
 
     def _seed_archived_completed(self):
@@ -81,6 +93,7 @@ class RestoreReplyFlicker(unittest.TestCase):
         # THE INCIDENT: the pass (and its snapshot) predate the restore; the reply lands mid-pass.
         self._seed_archived_completed()
         kern._begin_goals_pass()                       # snapshot: card still archived
+        self.assertIn(SID, kern._goals_snap[0], "the snapshot holds the store: the punch below lands on it")
         kern._undo_clear()                             # user restores the dismissed card…
         self.assertTrue(self._reply(now=int(time.time()) + 42), "…and replies 42s later")
         mid = kern._feed_goals(SID)
@@ -126,6 +139,7 @@ class RestoreReplyFlicker(unittest.TestCase):
     def test_a_failed_replay_does_not_burn_the_punch(self):
         # The punch marked itself done BEFORE replaying; one exception served the pre-gesture card
         # for the rest of the pass. Done is stamped on success only — the next read retries.
+        # The retry lands on a fresh copy: the object the failed read served is a fixed value.
         self._seed_archived_completed()
         kern._undo_clear()                             # live restore (completed on the board)
         kern._begin_goals_pass()
@@ -147,6 +161,9 @@ class RestoreReplyFlicker(unittest.TestCase):
             second = kern._feed_goals(SID)
             self.assertEqual(second["status"].get(GID), "working",
                              "the mark was not burned — the very next read retries and punches")
+            self.assertIsNot(second, first, "the retry replays onto a fresh copy, not onto the served one")
+            self.assertEqual(first["status"].get(GID), "completed",
+                             "what the failed read served has not changed under its holder")
         finally:
             jd._replay_overrides = real
 

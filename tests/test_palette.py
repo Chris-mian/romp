@@ -7,11 +7,10 @@ can't drift. Curation invariant: every choosable set is 9 mid-tone, mutually dis
 (Crameri "S" palettes ship near-black/near-white entries for paper; those must never reach a tab).
 """
 import os
-import re
 import tempfile
 import unittest
 from pathlib import Path
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -19,10 +18,11 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-pal = SourceFileLoader("romp_palette", os.path.join(BIN, "romp_palette.py")).load_module()
+pal = load_source("romp_palette", os.path.join(BIN, "romp_palette.py"))
 
 ROMP_BG = ["#1EA1EB", "#54B204", "#4EA8A9", "#DD42FF", "#E87221",
-           "#98998A", "#F85B5A", "#F9D849", "#9088F0"]
+           "#98998A", "#F85B5A", "#F9D849", "#9088F0", "#E0629C",
+           "#B585B6", "#B69513"]
 
 
 def _lum(h):
@@ -34,11 +34,13 @@ def _lum(h):
 
 
 class PaletteShapes(unittest.TestCase):
-    def test_every_palette_is_nine_unique_hex_colors_with_fg_words(self):
+    def test_every_palette_is_at_least_nine_unique_hex_colors_with_fg_words(self):
+        # the romp set grows APPEND-ONLY past nine (rose #E0629C, the user 2026-08-28; more
+        # additions expected) — the invariant is shape + uniqueness + the nine-slot floor
         for name, p in pal.PALETTES.items():
-            self.assertEqual(len(p["bg"]), 9, name)
-            self.assertEqual(len(p["fg"]), 9, name)
-            self.assertEqual(len(set(p["bg"])), 9, "%s: duplicate swatch" % name)
+            self.assertGreaterEqual(len(p["bg"]), 9, name)
+            self.assertEqual(len(p["fg"]), len(p["bg"]), name)
+            self.assertEqual(len(set(p["bg"])), len(p["bg"]), "%s: duplicate swatch" % name)
             self.assertTrue(p["label"], name)
             for bg in p["bg"]:
                 self.assertRegex(bg, r"^#[0-9A-F]{6}$", name)
@@ -54,7 +56,8 @@ class PaletteShapes(unittest.TestCase):
         # the 2026-08-26 addition: a high-lightness identity set for anyone who finds the saturated
         # palettes loud across many tabs — soft by construction, so every fg must be black
         self.assertIn("pastel", pal.PALETTES)
-        self.assertEqual(pal.PALETTES["pastel"]["fg"], ["black"] * 9)
+        self.assertEqual(pal.PALETTES["pastel"]["fg"],
+                         ["black"] * len(pal.PALETTES["pastel"]["bg"]))
 
     def test_crameri_and_cmocean_sets_are_curated_mid_tone(self):
         # The raw Crameri "S" orderings include near-black (#011959) and near-white entries — built for
@@ -85,7 +88,7 @@ class PaletteLookups(unittest.TestCase):
 
     def test_colors_and_fgs_fall_back_to_the_default_set(self):
         self.assertEqual(pal.colors("no-such-palette"), ROMP_BG)
-        self.assertEqual(len(pal.fgs("no-such-palette")), 9)
+        self.assertEqual(len(pal.fgs("no-such-palette")), len(ROMP_BG))
 
 
 class ActiveName(unittest.TestCase):
@@ -99,15 +102,6 @@ class ActiveName(unittest.TestCase):
 
 
 class ShellFallbackSync(unittest.TestCase):
-    def test_bin_romp_fallback_matches_the_default_palette(self):
-        # bin/romp normally assigns from the kernel's STATE/palette-colors mirror; its hardcoded
-        # FALLBACK (kernel never booted) must stay byte-identical to the module's default set.
-        src = Path(BIN, "romp").read_text()
-        m = re.search(r"_palette=\(\n(.*?)\)\n\s*_fg=\(\n(.*?)\)", src, re.S)
-        self.assertIsNotNone(m, "bin/romp fallback palette block not found")
-        self.assertEqual(re.findall(r'"(#[0-9A-F]{6})"', m.group(1)), ROMP_BG)
-        self.assertEqual(re.findall(r'"(black|white)"', m.group(2)), pal.PALETTES["romp"]["fg"])
-
     def test_bin_romp_reads_the_kernel_mirror_first(self):
         src = Path(BIN, "romp").read_text()
         self.assertIn("palette-colors", src, "the launcher assigns from the kernel-maintained mirror")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A MACHINE cut leaves no "no response — turn settled" line (the user 2026-07-22).
+"""A MACHINE cut leaves no "turn settled with no response" line (the user 2026-07-22).
 
 When a turn is cut mid-flight the model closes it with a null settle-reply, which the chat draws as a
 compact seam line. That is useful feedback when YOU pressed stop. It is noise when romp itself caused the
@@ -15,7 +15,7 @@ Synthetic only — invented prompt text, placeholder uuids.
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -23,7 +23,7 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-km = SourceFileLoader("romp_kernel_seam", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_seam", os.path.join(BIN, "romp-kernel"))
 
 U1 = "11111111-2222-3333-4444-555555555555"
 U2 = "11111111-2222-3333-4444-666666666666"
@@ -96,9 +96,12 @@ class InterruptSettleOnMachineCut(unittest.TestCase):
         self.assertNotIn("settleUuids", marker, "no alias when nothing was dropped")
 
     def test_the_client_still_renders_the_line_for_user_stops(self):
-        # the renderer keeps its seam branch — this change is server-side only
+        # the renderer keeps its seam branch — this change is server-side only. The seam's words are the
+        # SETTLE_GIST constant since 2026-09-08 (the notice-vocabulary pass: the settle is a slim SESSION
+        # notice, "turn settled with no response", shared with compact mode's group head).
         r = open(os.path.join(os.path.dirname(HERE), "ui", "webview", "render.ts")).read()
-        self.assertIn("no response — turn settled", r)
+        self.assertIn('const SETTLE_GIST = "turn settled with no response";', r)
+        self.assertIn("gist: SETTLE_GIST", r)
 
 
 if __name__ == "__main__":

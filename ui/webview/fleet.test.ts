@@ -15,21 +15,29 @@ test("fleet rides the FEED payload, reading its per-session `ledgers`", () => {
   assert.match(SRC, /sessions = m\.ledgers as FleetSession\[\]/);
 });
 
+test("fleet.ts applies no delta itself: the shim reassembles every {type:\"delta\"} frame before the bundle sees it — and one that arrives raw is loud, never dropped", () => {
+  // a host that hands the pane a kernel frame unreassembled would otherwise have every update fall through
+  // the `m.type !== "feed"` return in silence; the guard says so and asks for the whole slot with the
+  // message the shim itself uses (needSlot). Run for real in fleet-live-clock.test.ts.
+  assert.match(SRC, /if \(m\.type === "delta"\) \{[\s\S]*?"delta-unapplied"[\s\S]*?\{ type: "needSlot", slot: m\.slot \}[\s\S]*?return;\n\s*\}\n\s*if \(m\.type !== "feed"\) return;/);
+  assert.doesNotMatch(SRC, /applyDelta|from "\.\/feed-delta"/);
+});
+
 test("each session renders the real LEDGER TREE — .ledger-* nodes, marks, collapse, recency time", () => {
   assert.match(SRC, /el\("div", "ledger-tree"\)/);
   assert.match(SRC, /"ledger-tnode"/);
-  assert.match(SRC, /el\("span", "ledger-tmark lz-nav"\)/);
+  assert.match(SRC, /el\("span", "ledger-tmark" \+ \(prov \? "" : " lz-nav"\)\)/);   // the pointer zone, withheld on a provisional row (plans/outline-pane-provisional-row.md)
   assert.match(SRC, /n\.done \? "✓" : n\.blocked \? "⏸" : ""/);   // the ledger box's marks
   assert.match(SRC, /el\("span", "ledger-tri"/);                   // the collapse triangle
-  assert.match(SRC, /el\("span", "ledger-ttext lz-nav"\)/);
+  assert.match(SRC, /el\("span", "ledger-ttext" \+ \(prov \? "" : " lz-nav"\)\)/);
   assert.match(SRC, /el\("span", "ledger-ttime"\)/);
 });
 
 test("ledger parity (the user 2026-06-24): pointer-cursor zones + grouped hover highlight (no ⊕ summary expander)", () => {
   // .lz-nav → the pointer cursor (styles.css) on the checkbox / text / time, so each reads as clickable
-  assert.match(SRC, /"ledger-tmark lz-nav"/);
-  assert.match(SRC, /"ledger-ttext lz-nav"/);
-  assert.match(SRC, /if \(time\.textContent\) \{ time\.classList\.add\("lz-nav"\)/);
+  assert.match(SRC, /"ledger-tmark" \+ \(prov \? "" : " lz-nav"\)/);
+  assert.match(SRC, /"ledger-ttext" \+ \(prov \? "" : " lz-nav"\)/);
+  assert.match(SRC, /if \(time\.textContent && !prov\) \{ time\.classList\.add\("lz-nav"\)/);
   // grouped hover (.lz-hl toggled together) — the ledger box's linkHover, ported verbatim
   assert.match(SRC, /function linkHover\(group: HTMLElement\[\]\)/);
   assert.match(SRC, /g\.classList\.add\("lz-hl"\)/);
@@ -192,10 +200,14 @@ test("the mark's WHY rule (markReason) survives — as the hover card's state li
 
 test("hovering a row shows the modal's story: state, background, takeaway/brief, sub-goals (the user 2026-07-13)", () => {
   // one persistent panel on document.body — render() wipes #fleet-list every push, so the card must live
-  // outside the wipe; wiring is delegated to the stable list, 120ms intent, keyed per (sid, nid)
+  // outside the wipe; wiring is delegated to the stable list, INSTANT show (the one tooltip
+  // treatment, 2026-08-28 — the 120ms intent debounce is gone), keyed per (sid, nid)
   assert.match(SRC, /row\.dataset\.nid = n\.id;/);
   assert.match(SRC, /document\.body\.appendChild\(card\);/);
-  assert.match(SRC, /hoverShowT = window\.setTimeout\(\(\) => \{ hoverShowT = undefined; showHoverCard\(row, sid, nid\); \}, 120\);/);
+  assert.match(SRC, /showHoverCard\(row, sid, nid\);/);
+  assert.doesNotMatch(SRC, /hoverShowT/, "no show-intent timer — the hover card is instant-in");
+  // the hide grace is the SHARED tip constant, so the fleet card and every styled tip agree
+  assert.match(SRC, /window\.setTimeout\(hideHoverCard, TIP_GRACE_MS\);/);
   // the modal's sections, from data the pane already holds (ledger node + the matching feed card)
   assert.match(SRC, /state\.textContent = markReason\(n, byId\)/);
   assert.match(SRC, /if \(ask\?\.background && ask\.background\.trim\(\)\) section\("Background", ask\.background\);/);
@@ -300,4 +312,53 @@ test("an ARCHIVED node's zones deep-link too: fleetNode searches archivedTops, n
   const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
   assert.match(KERNEL, /"promptAnchorUuid": None if jd\.junk_quote\(nd\.get\("quote"\)\) else nd\.get\("promptUuid"\),/);
   assert.match(KERNEL, /"anchorUuid": nd\.get\("summaryAnchor"\),/);
+});
+
+// ── the pending-host strip (the user 2026-09-02) ─────────────────────────────────────────────────
+// After a kernel restart or a phone re-foreground, an attached host's sessions were simply ABSENT from
+// this pane for up to two minutes — no row, no cue — and read as wiped state. The feed merge names such
+// hosts (pendingHosts / pendingDead, riding the same feed message the ledgers do); this pane wears the
+// feed's own strip for them, and it leaves only on the merge's events. Source pins (no jsdom here).
+test("the fleet reads pendingHosts/pendingDead off the feed payload — the merge is the ONLY writer", () => {
+  assert.match(SRC, /pendingHosts = Array\.isArray\(m\.pendingHosts\) \? m\.pendingHosts\.filter\(\(h: any\) => typeof h === "string"\) : \[\];/);
+  assert.match(SRC, /pendingDead = Array\.isArray\(m\.pendingDead\) \? m\.pendingDead\.filter\(\(h: any\) => typeof h === "string"\) : \[\];/);
+  assert.doesNotMatch(SRC, /setTimeout\([^)]*pendingHosts/, "no timer ever edits the pending set");
+});
+
+test("one quiet line per pending host LEADS the list, the feed's copy family, swirl left of the text", () => {
+  assert.match(SRC, /if \(pendingHosts\.length\) list\.appendChild\(hostLoadStrip\(\)\);   \/\/ leads the list: what is still coming/);
+  assert.match(SRC, /strip\.id = "fleet-hostload";/);
+  assert.match(SRC, /const line = el\("div", "hostload-line"\);/);
+  assert.match(SRC, /const swirl = el\("span", "fask-awaiting-swirl"\);/);
+  assert.match(SRC, /"reconnecting to " \+ h \+ "\\u2026"/, "a dead link names itself (fail loudly)");
+  assert.match(SRC, /"loading sessions from " \+ h \+ "\\u2026"/, "an open link still waiting on its first payload");
+  assert.match(SRC, /line\.append\(swirl, txt\);/);
+  // the inbox-zero wordmark must not claim "every session is clear" while a host is still coming
+  assert.match(SRC, /\} else if \(!any && !pendingHosts\.length\) \{/);
+});
+
+test("the strip's styles live in the fleet's own sheet, mirroring feed.css — this page never loads feed.css", () => {
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "fleet-pane.css"), "utf8");
+  const FEEDCSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+  assert.match(CSS, /#fleet-hostload\{display:flex;flex-direction:column;gap:4px;padding:8px 14px\}/);
+  assert.match(CSS, /\.hostload-line\{display:flex;align-items:center;gap:7px;color:var\(--dim,#9a9a9a\);font-size:0\.82em\}/,
+    "same geometry + scale as feed.css's .hostload-line");
+  assert.match(CSS, /\.fask-awaiting-swirl\{width:14px;height:14px;flex:0 0 auto;background:url\(\.\.\/media\/romp-swirl-glyph\.svg\) center \/ contain no-repeat;\s*animation:fask-swirl-spin 2\.4s linear infinite\}/);
+  assert.match(CSS, /@keyframes fask-swirl-spin\{to\{transform:rotate\(-360deg\)\}\}/, "reverse spin, like every romp loader");
+  assert.match(FEEDCSS, /\.hostload-line \{ display: flex; align-items: center; gap: 7px; color: var\(--dim\); font-size: 0\.82em; \}/,
+    "the feed's rule this mirrors is still the reference");
+});
+
+test("the outline's lens write carries a writeId and `edited: []`, so the kernel applies the lens only (the 2026-09-05 review)", () => {
+  // before this change this was the one views write posted without either: the kernel judged its tag set as a
+  // whole blob, and a targeted edit that landed in the same second as the pane's frame copy was reverted
+  // by the next lens change. The empty list is the kernel's word that the write changes no tag.
+  assert.match(SRC, /import \{ mintWriteId \} from "\.\/views-writes";/);
+  assert.match(SRC, /function postOutlineLens\(v: SessionViews\) \{\s*\n\s*vscodeApi\?\.postMessage\(\{ type: "setTimelineViews", views: v, writeId: mintWriteId\(\+\+outlineViewsWriteSeq\), edited: \[\] \}\);/);
+  // both lens paths (the tag menu's apply, the chips' remove) post through it, from the frame copy the pane
+  // holds with only the outline lens changed
+  const sites = SRC.match(/const v = JSON\.parse\(JSON\.stringify\(fleetViews \|\| \{ active: "all", tags: \[\] \}\)\);\s*\n\s*v\.actives = Object\.assign\(\{\}, v\.actives, \{ outline: l \}\);\s*\n\s*fleetViews = v;[^\n]*\n\s*postOutlineLens\(v\);/g) || [];
+  assert.equal(sites.length, 2, "the two lens gestures post the same shape");
+  assert.equal((SRC.match(/type: "setTimelineViews"/g) || []).length, 1, "one post site: no views write leaves this pane without the two fields");
+  assert.doesNotMatch(SRC, /type: "setTimelineViews", views: v \}/);
 });

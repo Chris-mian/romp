@@ -1,17 +1,19 @@
 name: CI
 
 # Run the test suites that gate romp: the Python pipeline (kernel/, cli/,
-# postal/), the shell surfaces (tmux hooks / postal / manager), and the VS Code
-# extension build.
+# postal/), the shell surfaces (hooks / postal / manager), and the VS Code
+# extension build; and scan the whole history for credentials (the secrets job).
 #
 # LINUX runs on every push and PR — it is free on a public repo, no minute cap.
-# macOS is BILLED even on a public repo (larger runners always are, at ~10x), and
-# the bats suite alone is ~16 macOS-minutes = ~160 billable minutes per run, so
-# it does NOT run automatically. Trigger it by hand from the Actions tab ("Run
-# workflow") when you want a cross-platform check before a release or after
-# touching a platform-sensitive surface (tmux, launchd, the folder opener).
+# macOS is free too on the standard macOS runners of a public repository (2026-09-17;
+# an earlier note here said it was billed), but the macOS cells are slow (the bats
+# suite alone is about 16 minutes) and the runners are scarcer, so they do NOT run
+# on every push. They run once a week on a schedule (see `on:`) and
+# by hand from the Actions tab ("Run workflow") when you want a cross-platform
+# check before a release or after touching a platform-sensitive surface (launchd,
+# the folder opener, the CLI scope).
 # On a macOS dev box, the pre-push hook runs the same suites locally, so the
-# common macOS-only breakages (a real browser opening, a tmux-binary dependency)
+# common macOS-only breakages (a real browser opening, a GNU-only flag)
 # are caught before the push rather than waiting on this manual run.
 #
 # Python spans 3.10 (the floor docs/install.md promises) through 3.13 (the dev
@@ -23,31 +25,54 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:   # the manual on-switch for the macOS cells (see above)
+  schedule:
+    # The macOS cells also run ONCE A WEEK on their own (2026-09-16): with the manual switch alone the
+    # release gate was the first macOS run in two weeks, and it found twenty-nine failures that had
+    # accumulated unseen. One run at a quiet hour Pacific (Monday 10:00 UTC is 03:00 Pacific in summer,
+    # 02:00 in winter); the manual dispatch stays for the release day and for a platform-sensitive change.
+    - cron: "0 10 * * 1"   # weekly macOS cells: the scheduled run selects the same matrix a manual dispatch does
 
-# A newer push to the same ref cancels the older in-flight run OF THE SAME KIND.
-# The event is part of the key on purpose: a release dispatch (the macOS gate)
+# A newer push to a PULL REQUEST cancels the older in-flight run of the same
+# kind: the new head supersedes the old one, and the old verdict is moot. The
+# event is part of the key on purpose: a release dispatch (the macOS gate)
 # shares main's ref with every push, and a bare ref key let an auto-merged PR
 # cancel the in-flight release run mid-watch (2026-07-27).
+# Pushes to main are keyed on the commit sha and never cancelled: main's CI
+# must never cancel itself. With one group per ref, two merges in quick
+# succession cancelled the first merge's run, and a red main (2e9d4492,
+# 2026-09-08) went unseen until a later run happened to fail; a queue would
+# not do either, since a group holds at most one pending run and a third merge
+# would replace the second's. One group per merge commit, so every merge gets
+# its own completed run. A dispatch queues rather than cancels for the same
+# reason: a release gate mid-watch is not superseded by a second dispatch.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   python:
     name: Python ${{ matrix.python-version }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Every job is time-boxed. Without this a test that BLOCKS (waiting on a tmux
-    # server, a socket, a prompt that never comes) burns the 6h default before
+    # Every job is time-boxed. Without this a test that BLOCKS (waiting on a socket,
+    # a prompt that never comes) burns the 6h default before
     # anyone finds out, and a required check that hangs blocks merges silently.
-    timeout-minutes: 15
+    # T230b follow-up (the review's catch): the job cap must EXCEED the pytest phase plus the
+    # 600 s per-test timeout plus setup, or a stall that begins late in the run is killed by
+    # this cap first - the identical silence the per-test timeout exists to end. Measured pytest
+    # phases run 160-300 s, so 15 min left ~100 s of headroom; 25 min = 300 + 600 + setup, with
+    # margin for a slow runner. The macOS cells (a manual dispatch) run the same suite in 17 to 25
+    # minutes on the image's slower runners: the 3.10 cell took 24 min 43 s on one dispatch and was
+    # cancelled at 25 min 27 s on the next (2026-09-16), a one-minute margin that can kill the
+    # release's combined proof for nothing. macOS gets 40; Linux keeps 25.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 40 || 25 }}
     strategy:
       # One red cell must not hide the others: a 3.10-only break and a
       # macOS-only break look identical if the matrix stops at the first.
       fail-fast: false
       matrix:
-        # macOS is in the matrix ONLY on a manual run (workflow_dispatch); a
-        # normal push/PR gets Linux alone. See the billing note in the header.
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
+        # macOS is in the matrix ONLY on a manual run (workflow_dispatch) or the weekly
+        # schedule; a normal push/PR gets Linux alone. See the billing note in the header.
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
         python-version: ['3.10', '3.13']
         include:
           - os: ubuntu-latest
@@ -63,9 +88,18 @@ jobs:
         # cryptography: the kernel's Web Push soft dependency (plans/ios-app.md). Installed here
         # so tests/test_kernel_webpush.py's crypto layers RUN in CI instead of skipping — the
         # kernel itself still degrades loudly without it (that path has its own test).
-        run: python -m pip install --upgrade pip pytest cryptography
+        run: python -m pip install --upgrade pip pytest pytest-timeout cryptography
       - name: Run pytest
-        run: python -m pytest -q
+        # T230b: a hung test used to be 15 minutes of silence (five jobs since 2026-08-27, a
+        # process-global time.sleep patch consumed by a foreign thread). pytest-timeout turns the
+        # NEXT stall into a named failure with every thread's stack: thread method = guaranteed
+        # termination (the process ends; the dump's bottom frame is the blocked primitive, and the
+        # hung test is the lowest tests/ frame above the _pytest/runner frames) - the signal
+        # method cannot interrupt a C call. 600 s strictly exceeds the slowest legitimate test
+        # (~122 s, leak-scaled) and the 300 s child timeout in test_session_move_live. Its timer
+        # waits on an Event, so it can never itself consume a patched sleep. --durations names the
+        # slowest tests on every run so a creeping one is visible before it stalls.
+        run: python -m pytest -q --durations=10 --timeout=600 --timeout-method=thread
 
   shell:
     name: Shell (bats, ${{ matrix.os }})
@@ -76,16 +110,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS only on a manual run (workflow_dispatch); see the header note.
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
+        # macOS only on a manual run (workflow_dispatch) or the weekly schedule; see the header note.
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       # bats comes from the pinned release tarball, NOT apt: an Azure apt-mirror outage hung
       # `apt-get update` to the job timeout three runs in a row (2026-08-19, ~35 wasted minutes
       # each). GitHub itself is already on the critical path (checkout), so this adds no new
-      # dependency — and no bats test needs a real tmux (every suite PATH-prepends its own mock),
-      # so nothing else is installed at all. The step timeout kills any residual network hang in
-      # minutes instead of letting it eat the job's budget.
+      # dependency — and no bats test needs a tool the runner image lacks: node, python3 and curl are
+      # on the GitHub images (the manager suites run the real bin/romp-manager under node; romp.bats and
+      # install-sh.bats run python3 and curl), the rest mock their subjects on PATH; gitleaks, two steps
+      # below, is the one extra install, for tests/gitleaks-config.bats. The step timeout kills any
+      # residual network hang in minutes instead of letting it eat the job's budget.
       - name: Install bats (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 5
@@ -94,17 +130,117 @@ jobs:
             https://github.com/bats-core/bats-core/archive/refs/tags/v1.11.1.tar.gz
           tar -xzf /tmp/bats.tar.gz -C /tmp
           sudo /tmp/bats-core-1.11.1/install.sh /usr/local
-      - name: Install bats + tmux (macOS)
+      - name: Install bats (macOS)
         if: runner.os == 'macOS'
         timeout-minutes: 15
-        run: brew install bats-core tmux
+        run: brew install bats-core
+      - name: Install gitleaks (Linux)
+        # tests/gitleaks-config.bats skips itself when gitleaks is absent, so without this step the
+        # repo's scanning rules (.gitleaks.toml: the value-anchored allowlist, the merge-commit scan)
+        # would be checked nowhere and a rule regression would ship green. The same pinned,
+        # checksummed release the secrets job installs; bump the two version/sha pairs together.
+        # Linux only: the macOS cell is manual (see the header), and one arbiter is enough.
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        env:
+          GITLEAKS_VERSION: 8.28.0
+          GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
       - name: Run bats
+        # A per-test bound from bats itself (BATS_TEST_TIMEOUT, since bats-core 1.8: a background sleep,
+        # then pkill or ps on the test's children), so one hung test fails in minutes and is NAMED in the
+        # TAP line ("# timeout after Ns") instead of eating the job's whole budget and being cancelled
+        # nameless at the ceiling (the macOS leg, 2026-09-16: every dispatch cut at 35 minutes). No
+        # coreutils timeout is involved, which the macOS image lacks. The bound is generous against the
+        # slowest legitimate test on macOS (the romp-serve probe tests hold 60 s by design).
+        env:
+          BATS_TEST_TIMEOUT: "180"
         run: bats --print-output-on-failure tests/*.bats
+      # T224: the manager<->kernel handshake proof (tests/manager-*.test.js: restart coalescing, the
+      # quiet-window chain, the drain-lease refusal notices) ran only by hand until now. It runs HERE,
+      # inside a check the upstream ruleset already REQUIRES, so a red handshake blocks the merge -
+      # a standalone job would have gone red while auto-merge landed the PR anyway (the ruleset lists
+      # six contexts and adding one is an owner-side change). node's built-in runner, no deps, no
+      # continue-on-error; the runtime is pinned so the step never rides whatever node the image has.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Manager handshake tests (node --test)
+        run: node --test tests/manager-*.test.js
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    # About a minute in practice (a full-history checkout, then two scans); the cap exists so a
+    # wedged download cannot burn the 6h default.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The load-bearing line. A secret's whole problem is that history is permanent, so the
+          # scan has to see history: the default depth-1 checkout would scan one commit and report
+          # no leaks for a repo with a token three commits back. Depth 0 also brings every branch
+          # and tag, which is what the --all below reads.
+          fetch-depth: 0
+      - name: Install gitleaks
+        # Pinned, and checksummed against the publisher's own release manifest
+        # (gitleaks_<version>_checksums.txt), rather than the marketplace action: a step that exists
+        # to keep secrets out of the repo should not hand a token to a third-party action, and
+        # gitleaks-action needs a licence key for organisation-owned repos. To bump, change both
+        # lines together (here and in the shell job above), or the checksum check fails loudly.
+        timeout-minutes: 5
+        env:
+          GITLEAKS_VERSION: 8.28.0
+          GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+      - name: Scan every commit
+        # The repo's rules, named explicitly, as the hook names them: without --config gitleaks
+        # reads a GITLEAKS_CONFIG from the environment before the source root, and a missing file
+        # would scan under the default rules in silence; named, a missing file fails the step.
+        # -v prints the file, line and rule of each hit; without it gitleaks reports a bare count,
+        # so a red job would not say what to fix. --redact so a hit does not reprint the secret
+        # into a public build log, where it would be MORE exposed than in the commit that tripped
+        # the scan. --all reads every branch and tag the checkout brought, not only the pushed
+        # ref. --diff-merges=first-parent: `gitleaks git` runs `git log -p`, which omits
+        # merge-commit diffs, so a secret introduced only in a merge (a conflict resolution) is
+        # invisible to --all alone; the tree scan below catches it only while it is still at HEAD;
+        # this surfaces it in history for good. A finding exits nonzero and fails the step.
+        run: gitleaks git . --no-banner --redact -v --config .gitleaks.toml --log-opts="--all --diff-merges=first-parent"
+      - name: Scan the tree as it stands
+        # The history scan reads commit diffs, so a secret in a file that is present but untouched
+        # by any scanned commit (a submodule tip, a file added before a rewrite) is only caught by
+        # scanning the tree itself. Runs after a red history scan too, so one run reports both.
+        if: ${{ !cancelled() }}
+        run: gitleaks dir . --no-banner --redact -v --config .gitleaks.toml
 
   vscode-extension:
     name: vscode-extension (typecheck + test + build)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Time-boxed like the Python jobs above, and for the same reason the cap must EXCEED the phase it
+    # guards plus the 600 s per-test timeout plus setup. This job's long phase is the served-page
+    # pytest step below, which grows with every served lab added (the focused section's, the widgets',
+    # the held-answer federation lab). Measured from the Actions API (2026-09-14): main's run
+    # 34812968222 took the job 14 min 42 s with the served step alone at 12 min 44 s, seconds under the
+    # old 15 min; PR 1598's run 34809524051 was CANCELLED at 15 min 16 s with the served step killed
+    # at 13 min 14 s and every earlier step green, so a PR adding a lab, or a slow runner, read as a
+    # red. 25 min = 13 min of labs + 600 s for one stalled test + setup, with margin; the served step
+    # names its slowest labs (--durations=20) so the next growth is visible in the log. The labs kept
+    # growing: PR 1790's run 35138058863 was cancelled at 25 min 04 s mid served-lab on a slow runner,
+    # every step green up to the cut (2026-09-16). 40 min: the served step's 20-odd minutes on a slow
+    # runner plus the 600 s per-test timeout plus setup.
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: vscode-extension
@@ -127,3 +263,68 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+      - name: Cache Playwright's browsers
+        # Keyed on the lockfile, so the download below runs once per playwright version.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('vscode-extension/package-lock.json') }}
+      - name: Install the pinned Playwright Chromium
+        # The pane bench below needs a browser. It is playwright's own download for the version
+        # package-lock pins (1.62.x fetches its matching Chromium build, about 150 MB, cached above), NOT
+        # the runner image's Google Chrome: the image's browser is unpinned and auto-updated, so a Chrome
+        # release the pinned driver cannot speak, or an image without one, would have turned this REQUIRED
+        # check red with no change in the repo (review find, 2026-09-08). The same stance as the node pin
+        # above: the step never rides whatever the image has. No --with-deps: that runs apt, which the bats
+        # step stopped trusting after a mirror outage, and the shared libraries Chromium needs come with
+        # the image. tools/ui-bench.mjs prefers this browser to any system Chrome, and the step's log says
+        # which one ran ("browser: playwright chromium").
+        timeout-minutes: 5
+        run: npx playwright install chromium
+      - name: Dashboard pane bench (node --test)
+        # tools/ui-bench.mjs replays a synthetic frame stream into the real feed and timeline pages in the
+        # headless Chromium installed above, served by the kernel's own page route from the dist the Build
+        # step just wrote; python3 comes with the image (every Ubuntu image ships one inside the kernel's
+        # 3.10 to 3.13 range, which the Python cells above cover). The test file lives at the repo root,
+        # hence the working-directory override of the job's vscode-extension/ default. On a contributor's
+        # machine the browser tests skip, and say why, when no browser, python3 or dist is present. Here
+        # ROMP_UI_BENCH_REQUIRE makes that skip a failure: this is the only CI run of the real pane
+        # bundles, and a runner without the browser or python3 must turn the job red rather than green
+        # with the coverage gone (the same stance as the cryptography install above, which exists so its
+        # tests RUN). The replays assert only what holds under any scheduling (totals, ordering, the
+        # handoff's accounting); the timing relations are assertions only under ROMP_UI_BENCH_TIMING,
+        # which this step deliberately leaves unset: a shared runner's scheduler is not what the required
+        # check measures (review find, 2026-09-08).
+        working-directory: ${{ github.workspace }}
+        env:
+          ROMP_UI_BENCH_REQUIRE: "1"
+        run: node --test tests/ui-bench.test.mjs
+      - uses: actions/setup-python@v5
+        # For the served-page tests below: the image's python3 would do, but its pip refuses to install
+        # into the system interpreter, and pytest is not on the image.
+        with:
+          python-version: '3.12'
+      - name: Browser-backed served-page tests (pytest)
+        # tests/test_*_browser.py and tests/test_*_served.py boot a hermetic kernel and drive the real
+        # dashboard pages in the headless Chromium installed above; on the Python matrix runners (no
+        # node deps, no browser) they skip, and say why, so a served-page regression never turned CI
+        # red (the deep-link landing pin, 2026-09-10: red on main, CI green). This is the one job that
+        # has the browser and the built dist, so they run HERE, one pytest process, with
+        # ROMP_SERVED_TESTS_REQUIRE=1 turning any skip in those files into a failure that carries the
+        # skip's reason (tests/conftest.py; the same stance as ROMP_UI_BENCH_REQUIRE above): a runner
+        # without the browser, the deps or a serving kernel turns the job red rather than green with
+        # the coverage gone. cryptography is what the push tests' kernel needs, as in the Python jobs.
+        # ROMP_SERVED_TESTS_ENGINES names the one engine this job installs: the pane-hiding test drives
+        # Chromium, Firefox and WebKit, and its legs for engines a runner declares it does not have skip
+        # as "optional", which the switch leaves alone (WebKit's system libraries would need apt, which
+        # this step does not run; see the install step above). The matrix jobs are unchanged: still no
+        # browser, still skipping these. --durations=20 names the slowest labs in the log: this step is
+        # the job's long phase (12 min 44 s on main, 2026-09-14, against the job's cap above), and every
+        # served lab added grows it, so the next growth should be visible by name.
+        working-directory: ${{ github.workspace }}
+        env:
+          ROMP_SERVED_TESTS_REQUIRE: "1"
+          ROMP_SERVED_TESTS_ENGINES: chromium
+        run: |
+          python -m pip install --upgrade pip pytest pytest-timeout cryptography
+          python -m pytest tests/test_*_browser.py tests/test_*_served.py -q -rs -p no:cacheprovider --durations=20 --timeout=600 --timeout-method=thread

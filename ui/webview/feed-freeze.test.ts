@@ -55,7 +55,9 @@ test("the feed payload path defers while a card is hovered — and ONLY the payl
 });
 
 test("flush is event-based: card mouseleave, window blur backstop — no timers anywhere in the freeze", () => {
-  assert.match(FEED, /function freezeLeave\(key: string\): void \{\s*\n\s*if \(tabScopeKey === key\) releaseTabScope\(\);[^\n]*\n\s*if \(freezeKey !== key\) return;\s*\n\s*freezeKey = null;\s*\n\s*flushFreeze\(\);/);
+  // the hold is the PAIR (key, which twin) since T410 folded in the T347b low: both twins of a card share the bare
+  // key, so leaving one must not release a hold or a keyboard scope taken on the other
+  assert.match(FEED, /function freezeLeave\(key: string, copy = false\): void \{\s*\n\s*if \(tabScopeKey === key && tabScopeCopy === copy\) releaseTabScope\(\);[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*if \(freezeKey !== key \|\| freezeCopy !== copy\) return;\s*\n\s*freezeKey = null;\s*\n\s*flushFreeze\(\);/);
   assert.match(FEED, /window\.addEventListener\("blur", \(\) => \{ releaseTabScope\(\); freezeKey = null; flushFreeze\(\); \}\);/,
     "blur releases BOTH gate holders — the keyboard scope has no pointer to leave with");
   const block = FEED.slice(FEED.indexOf("// ── HOVER-FREEZE"), FEED.indexOf("function applyFeedPayload"));
@@ -72,9 +74,10 @@ test("a local render that detaches or re-keys the hovered element heals the free
   // found in review 2026-08-24: a removed element never fires mouseleave — typing in search can
   // filter the hovered card out, and toggling Group swaps it for a group card in place with no
   // enter/leave events. The render tail checks live pointer truth per render — event-based.
-  assert.match(FEED, /const hov = document\.querySelector<HTMLElement>\("\.feed-cols \.fitem:hover"\);/);
+  assert.match(FEED, /const hov = document\.querySelector<HTMLElement>\("\.feed-cols \.fitem:hover, \.feed-sess-head:hover"\);/,
+    "a card or a session header under the pointer is pointer truth (T285 added the header)");
   assert.match(FEED, /if \(!hov\) \{ freezeKey = null; flushFreeze\(\); \}/);
-  assert.match(FEED, /else \{ const k = kbHoverId\(hov\); if \(k && k !== freezeKey\) freezeKey = k; \}/,
+  assert.match(FEED, /else \{ const k = hov\.classList\.contains\("feed-sess-head"\) \? sessFreezeKey\(hov\) : kbHoverId\(hov\); if \(k && k !== freezeKey\) freezeKey = k; freezeCopy = isFocusCopy\(hov\); \}/,
     "a re-keyed card under a stationary pointer re-arms to the element actually hovered");
 });
 
@@ -116,10 +119,11 @@ test("the badge hint mirrors the optimistic-restore overlay — a card the flush
 });
 
 test("both card shapes arm the freeze on the same events the hover highlight rides", () => {
-  assert.match(FEED, /freezeEnter\(it\.itemId\);\s*[^\n]*\n\s*if \(it\.provisional\) return;/, "ask cards enter before the provisional bail");
-  assert.match(FEED, /freezeLeave\(it\.itemId\);/, "ask cards flush on leave");
-  assert.match(FEED, /freezeEnter\(fkey\);/, "group cards enter");
-  assert.match(FEED, /freezeLeave\(fkey\);/, "group cards flush on leave");
+  // each builder says WHICH twin enters and leaves (the focused section's copy or the board's element, T410)
+  assert.match(FEED, /freezeEnter\(it\.itemId, isFocusCopy\(card\)\);\s*[^\n]*\n\s*if \(it\.provisional\) return;/, "ask cards enter before the provisional bail");
+  assert.match(FEED, /freezeLeave\(it\.itemId, isFocusCopy\(card\)\);/, "ask cards flush on leave");
+  assert.match(FEED, /freezeEnter\(fkey, isFocusCopy\(card\)\);/, "group cards enter");
+  assert.match(FEED, /freezeLeave\(fkey, isFocusCopy\(card\)\);/, "group cards flush on leave");
   // a card CLEARED under the pointer flushes via its synthetic mouseleave — the existing dispatch
   // (feed.ts's clear paths) runs the exact leave logic, freezeLeave included
   assert.match(FEED, /card\.dispatchEvent\(new MouseEvent\("mouseleave"\)\);/);
@@ -128,7 +132,8 @@ test("both card shapes arm the freeze on the same events the hover highlight rid
 test("the badge hint counts the USER'S view and never mutates state computing it", () => {
   // render and the painter share one view filter, so the hint counts exactly what would move
   assert.match(FEED, /function viewFiltered\(list: AskItem\[\]\): AskItem\[\]/);
-  assert.match(FEED, /let shown = viewFiltered\(asks\);/);
+  assert.match(FEED, /let shown = onActiveBoard\(viewFiltered\(asks\)\);/);   // the active board's cards alone (phase four)
+  assert.match(FEED, /const toItems = \(list: AskItem\[\]\) => onActiveBoard\(viewFiltered\(list\)\)\.map/, "the hint reads the render pass's own board filter, so it counts what is on screen (the 1886 read, medium 1)");
   assert.match(FEED, /const d = freezeDiff\(toItems\(asks\), toItems\(payloadView\(pendingFeedPayload\)\)\);/);
   // payloadView reads pendingCleared but must not write it (the flush re-runs the real bookkeeping)
   const pv = FEED.slice(FEED.indexOf("function payloadView"), FEED.indexOf("function paintFreezeParts"));
@@ -162,12 +167,51 @@ test("badges wear the header conventions: accent adds, block-red removes, the co
   assert.match(CSS, /\.freeze-badge \.fz-add \{ color: var\(--accent\); \}/, "never a re-hardcoded accent hex");
   assert.match(CSS, /\.freeze-badge \.fz-del \{ color: var\(--err\); \}/, "the board's existing block red");
   assert.doesNotMatch(CSS, /\.freeze-badge[^}]*font-size/, "no new font sizes — the badge inherits the head's scale");
-  // painted on the build-once column heads and the data-fsid-stamped session headers; cleared when quiet
-  assert.match(FEED, /put\(document\.querySelector\("\.feed-col\.col-" \+ key \+ " \.feed-col-head"\), d\.cols\[key\]\);/);
+  // painted on the build-once column heads and the data-fsid-stamped session headers; cleared when quiet. The
+  // BOARD's heads, under #feed-cols: the focused-session section (T347) above the board carries the same column
+  // classes and comes first in the DOM, so a bare query would hang the badges on the miniature's head instead
+  assert.match(FEED, /put\(document\.querySelector\("#feed-cols \.feed-col\.col-" \+ key \+ " \.feed-col-head"\), d\.cols\[key\]\);/);
   assert.match(FEED, /h\.setAttribute\("data-fsid", e\.sid\);/);
-  assert.match(FEED, /put\(h, groupedNow \? d\.sess\[h\.getAttribute\("data-fsid"\) \|\| ""\] : undefined\);/);
+  assert.match(FEED, /if \(h\.getAttribute\("data-fcol"\) !== e\.col\) h\.setAttribute\("data-fcol", e\.col\);/,
+    "the column stamp beside the sid, compare-first like it: the two together are the row the hover key names");
+  assert.match(FEED, /const c = groupedNow \? d\.sess\[sid\] : undefined;\s*if \(sessFreezeKey\(h\) !== hoveredHead\) \{ put\(h, c\); return; \}/,
+    "every header but the hovered ROW carries its in-row badge (the hovered one's floats, T285); the same session's header in another column is not the hovered row");
   assert.match(FEED, /document\.querySelectorAll\("\.freeze-badge"\)\.forEach\(\(n\) => n\.remove\(\)\);/,
     "nothing pending → every badge comes off");
   // local renders while frozen re-sync the hints, so a rebuilt board never strands a stale count
   assert.match(FEED, /paintFreezeBadges\(\);   \/\/ hover-freeze: local renders while frozen re-sync/);
 });
+
+test("a session header row holds the same gate a card holds: a push while it is hovered is queued, never rebuilt under the pointer; leaving releases (T285)", () => {
+  const head = FEED.slice(FEED.indexOf("function makeSessHead()"), FEED.indexOf("function updateSessHead("));
+  // the row (name, caret, Clear all inside it) enters and leaves the freeze by the session it stands for
+  assert.match(head, /h\.addEventListener\("mouseenter", \(\) => freezeEnter\(sessFreezeKey\(h\)\)\);/, "hovering the header row arms the gate");
+  assert.match(head, /h\.addEventListener\("mouseleave", \(\) => freezeLeave\(sessFreezeKey\(h\)\)\);/, "leaving it releases (the flush follows)");
+  assert.match(FEED, /function sessFreezeKey\(h: HTMLElement\): string \{\s*return "h:" \+ \(h\.getAttribute\("data-fcol"\) \|\| ""\) \+ ":" \+ \(h\.getAttribute\("data-fsid"\) \|\| ""\);\s*\}/,
+    "keyed by the data-fcol and data-fsid stamps read at event time: the (column, session) row's identity across re-homing renders");
+  // the payload path is ONE gate for both holders: while any freeze key is set, the payload is queued and
+  // NOTHING renders — so updateSessHead never runs and the hovered row (its Clear all included) stands
+  const gate = FEED.slice(FEED.indexOf('if (m.type === "feed") {'), FEED.indexOf('} else if (m.type === "hoverCards") {'));
+  assert.match(gate, /if \(freezeKey \|\| tabScopeKey\) \{ pendingFeedPayload = m; paintFreezeBadges\(\); return; \}/,
+    "a push during header hover is held: queued, badges painted, no render");
+  assert.match(gate, /applyFeedPayload\(m\);/, "…and applies only when nothing holds the gate");
+  // the release re-renders: mouseleave → freezeLeave → flushFreeze → applyFeedPayload of the newest payload
+  const leave = FEED.slice(FEED.indexOf("function freezeLeave(key: string, copy = false): void {"), FEED.indexOf("let flushQueued = false;"));
+  assert.match(leave, /if \(freezeKey !== key \|\| freezeCopy !== copy\) return;\s*freezeKey = null;\s*flushFreeze\(\);/);
+  const flush = FEED.slice(FEED.indexOf("function flushFreeze(): void {"), FEED.indexOf('window.addEventListener("blur", () => { releaseTabScope();'));
+  assert.match(flush, /if \(m\) applyFeedPayload\(m\);/, "the queued payload renders on release");
+  // the stale-freeze heal reads a hovered header as pointer truth, keyed the same way
+  const heal = FEED.slice(FEED.indexOf("// Stale-freeze heal (hover-freeze)"), FEED.indexOf("paintFreezeBadges();   // hover-freeze: local renders"));
+  assert.match(heal, /querySelector<HTMLElement>\("\.feed-cols \.fitem:hover, \.feed-sess-head:hover"\)/, "a hovered header keeps the freeze live across a local render");
+  assert.match(heal, /hov\.classList\.contains\("feed-sess-head"\) \? sessFreezeKey\(hov\) : kbHoverId\(hov\)/);
+  // the same pending indicator beside each header — but NEVER inside the hovered row (review find): an in-row
+  // badge lands after the auto-margin Clear all and slides it out from under the pointer, the very click loss
+  // this hold prevents. The hovered header's badge floats: body-mounted, pointer-inert, its row's rect untouched.
+  const paint = FEED.slice(FEED.indexOf("function paintFreezeBadges(): void {"), FEED.indexOf("// ── CARD KEYBOARD SCOPE"));
+  assert.match(paint, /const hoveredHead = freezeKey && freezeKey\.startsWith\("h:"\) \? freezeKey : null;/, "the whole key, never the sid alone");
+  assert.match(paint, /if \(sessFreezeKey\(h\) !== hoveredHead\) \{ put\(h, c\); return; \}\s*put\(h, undefined\);/, "every other header keeps its in-row badge; the hovered row carries none");
+  assert.match(paint, /headNote\.id = "freeze-headnote"; document\.body\.appendChild\(headNote\);/, "…its hint is body-mounted");
+  assert.match(paint, /headNote\.style\.top = Math\.round\(r\.bottom \+ 2\) \+ "px";/, "…placed just under the row, right-aligned");
+  assert.match(CSS, /#freeze-headnote \{ position: fixed; z-index: 6; pointer-events: none;/, "pointer-inert, like the card's self-note");
+});
+

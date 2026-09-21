@@ -6,7 +6,7 @@ inputs only: placeholder UUID, no real session data.
 """
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -16,7 +16,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_awaitcard", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_awaitcard", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 COLOR = {"bg": "#9cd2ff", "fg": "#0c1a2e"}
@@ -33,7 +33,7 @@ class AwaitingCard(unittest.TestCase):
     def tearDown(self):
         km._parse, km._awaiting_task_descs = self._parse, self._descs
 
-    def _card(self, why="waiting on a background task: watching CI run", live=True, now=2000):
+    def _card(self, why="waiting on a background command: watching CI run", live=True, now=2000):
         return km._awaiting_card({"sid": SID, "path": "/tmp/x"}, "docs", COLOR, SID, live, now, why)
 
     def test_shape_is_a_working_column_provisional_awaiting_card(self):
@@ -49,7 +49,7 @@ class AwaitingCard(unittest.TestCase):
     def test_awaiting_carries_the_live_task_descriptions_for_the_pill(self):
         c = self._card()
         self.assertEqual(c["awaiting"]["tasks"], ["watching CI run"])
-        self.assertEqual(c["awaiting"]["why"], "waiting on a background task: watching CI run")
+        self.assertEqual(c["awaiting"]["why"], "waiting on a background command: watching CI run")
 
     def test_awaiting_carries_the_waits_own_start_for_the_elapsed_readout(self):
         # the user 2026-08-23: Working shows how long it has been running, the awaiting states showed
@@ -60,10 +60,11 @@ class AwaitingCard(unittest.TestCase):
         self.assertIsNone(self._card()["awaiting"]["since"])   # absent → None: the UI shows no duration, never a guess
 
     def test_headline_capitalizes_the_why(self):
-        self.assertTrue(self._card()["text"].startswith("Waiting on a background task"))
+        self.assertTrue(self._card()["text"].startswith("Waiting on a background command"))
 
     def test_empty_why_falls_back_to_a_generic_headline(self):
-        self.assertEqual(self._card(why="")["text"], "Waiting on a background task")
+        # "command", not "task", since slice 2 (2026-09-05) — the awaiting vocabulary is agents / commands / watches
+        self.assertEqual(self._card(why="")["text"], "Waiting on a background command")
 
     def test_a_dead_session_gets_no_card(self):
         self.assertIsNone(self._card(live=False))

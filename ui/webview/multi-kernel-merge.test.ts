@@ -155,6 +155,15 @@ test("routeOutbound: dropFile routes by its session id — attachment bytes reac
   assert.deepEqual(prefixInbound("gpu1", reply), reply);
 });
 
+test("prefixInbound: a remote kernel's settingStale frame is host-stamped (the gear names the refusing machines)", () => {
+  const f = { type: "settingStale", setting: "judge-model", storedGt: 2000, gt: 1000, kept: "m",
+              gesture: { type: "setJudgeModel", model: "x" } };
+  const out = prefixInbound("gpu1", f);
+  assert.equal(out.host, "gpu1");
+  assert.deepEqual(out.gesture, f.gesture, "the echoed gesture passes through untouched — it is re-issued as-is");
+  assert.deepEqual(prefixInbound("", f), f, "the local kernel's frame has no host key (the gear words it as this machine)");
+});
+
 test("prefixInbound: glowTurns groups get sid-prefixed so the merged chat finds the remote pane", () => {
   // The return leg of the same highlight: the owning kernel answers with glowTurns keyed by its own
   // bare sids, but the merged chat page keys its views "host:sid" — unprefixed groups matched nothing.
@@ -168,6 +177,21 @@ test("prefixInbound: glowTurns groups get sid-prefixed so the merged chat finds 
 test("routeOutbound: a global message (no session id) goes local", () => {
   const routes = routeOutbound({ type: "setColormap", name: "viridis" });
   assert.deepEqual(routes, [{ host: "", msg: { type: "setColormap", name: "viridis" } }]);
+});
+
+test("routeOutbound: a views write goes to the LOCAL kernel whatever it carries — the views store is per kernel", () => {
+  const hosts = new Set(["gpu1"]);
+  // the tag op rides NESTED under `edit`; even a tag named like a remote lane cannot take the name-addressed route
+  const edit = { type: "tagEdit", writeId: "w1", edit: { op: "rename", tid: "g7", newName: "gpu1:api" } };
+  assert.deepEqual(routeOutbound(edit, hosts), [{ host: "", msg: edit }]);
+  // and the router routes the TYPE local explicitly: a flat legacy shape with a remote-looking name stays local too
+  const flat = { type: "tagEdit", writeId: "w2", name: "gpu1:api", newName: "x" };
+  assert.deepEqual(routeOutbound(flat, hosts), [{ host: "", msg: flat }], "tag names and session names share a field name, not a meaning");
+  const whole = { type: "setTimelineViews", writeId: "w3", views: { active: "all", tags: [] } };
+  assert.deepEqual(routeOutbound(whole, hosts), [{ host: "", msg: whole }]);
+  // …while a remote session's edit inside a LOCAL tag keeps its viewer-relative id: the local kernel stores the pair as-is
+  const member = { type: "tagEdit", writeId: "w4", edit: { op: "addMember", tid: "g7", sids: ["gpu1:" + U] } };
+  assert.deepEqual(routeOutbound(member, hosts), [{ host: "", msg: member }]);
 });
 
 test("routeOutbound: a cross-host reorder fans out one route per host with its own sids", () => {
@@ -315,7 +339,8 @@ test("prefixInbound: timeline {type:data} payload — sessions, turns keys + bar
   assert.equal(d.turns["TESTHOST:" + U][0].id, "ev-1", "event uuids stay bare (globally unique)");
   assert.equal(d.messages[0].fromId, "TESTHOST:" + U);
   assert.equal(d.messages[0].toId, "TESTHOST:" + V);
-  assert.equal(d.judging[0].sid, "TESTHOST:" + U);
+  assert.deepEqual(Object.keys(d.judging), ["TESTHOST:" + U], "judging rides per lane; the lane key is prefixed (T278c)");
+  assert.equal(d.judging["TESTHOST:" + U][0].j, "planner");
   assert.equal(d.activeChat.tid, "TESTHOST:" + U, "the active-chat cue lights the prefixed lane");
   assert.equal(d.now, 1000, "scalar fields untouched");
 });
@@ -330,7 +355,7 @@ test("prefixInbound: timeline {type:bars} detail message (top-level turns/marks)
   });
   assert.deepEqual(Object.keys(out.turns), ["TESTHOST:" + U]);
   assert.equal(out.turns["TESTHOST:" + U][0].tid, "TESTHOST:" + U);
-  assert.equal(out.judging[0].sid, "TESTHOST:" + U);
+  assert.deepEqual(Object.keys(out.judging), ["TESTHOST:" + U]);
   assert.equal(out.now, 7);
 });
 
@@ -363,7 +388,7 @@ test("mergeHostBars: per-host bars union — one host's push can't clobber anoth
   };
   const m = mergeHostBars(perHost, ["", "TESTHOST"]);
   assert.deepEqual(Object.keys(m.turns).sort(), [U, "TESTHOST:" + V].sort());
-  assert.equal(m.judging.length, 1);
+  assert.equal(Object.keys(m.judging).length, 1, "one lane's judging, per lane (T278c)");
   assert.equal(m.now, 50, "local clock");
   // a host with no bars yet contributes nothing (no crash)
   const single = mergeHostBars({ "": perHost[""] }, ["", "TESTHOST"]);
@@ -407,6 +432,47 @@ test("stitchMessages: fills a missing display name from the matched lane; unmatc
   const ghost = "77777777-6666-5555-4444-333333333333";
   const [g] = stitchMessages([{ id: "m3", fromId: U, toId: ghost, sent: 1, exec: 1, hasExec: false }], sessions);
   assert.equal(g.toId, ghost);
+});
+
+test("stitchMessages: the sender's row ends at the recipient's lane, named with its host; the two kernels' copies dedupe by the delivery mid", () => {
+  // The LOCAL kernel's web mailed TESTHOST's web (a twin by name). Its kernel's row ends at the recipient's bare sid
+  // (the bus row's to_sid) and names it "TESTHOST:web"; the read receipt gave it the recipient's delivery mid (dmid).
+  // TESTHOST's kernel emitted the delivered copy under THAT mid, both ends named bare, its foreign end prefixed.
+  const sessions = [{ id: U, name: "web" }, { id: "TESTHOST:" + V, name: "TESTHOST:web" }];
+  const merged = stitchMessages([
+    { id: "m1", dmid: "m1-landed", fromId: U, toId: V, from: "web", to: "TESTHOST:web", sent: 100, exec: 130, hasExec: true, pending: false },
+    { id: "m1-landed", fromId: "TESTHOST:" + U, toId: "TESTHOST:" + V, from: "web", to: "web", sent: 100, exec: 130, hasExec: true, pending: false },
+  ], sessions);
+  assert.equal(merged.length, 1, "one message, one connector: the recipient's copy is the sender's, by the delivery mid");
+  assert.deepEqual([merged[0].id, merged[0].dmid, merged[0].fromId, merged[0].toId], ["m1", "m1-landed", U, "TESTHOST:" + V]);
+  assert.deepEqual([merged[0].from, merged[0].to], ["web", "TESTHOST:web"], "the remote twin is told apart by its host, as on its lane label");
+  // the recipient's copy upgrades a sender's row that has no exec yet, keeping the sender's ids (the join keys) and
+  // ending the pending state: an exec IS the landing
+  const up = stitchMessages([
+    { id: "m4", dmid: "m4-landed", fromId: U, toId: V, from: "web", to: "TESTHOST:web", sent: 100, exec: 100, hasExec: false, pending: true },
+    { id: "m4-landed", fromId: "TESTHOST:" + U, toId: "TESTHOST:" + V, from: "web", to: "web", sent: 100, exec: 140, hasExec: true, pending: false },
+  ], sessions);
+  assert.equal(up.length, 1);
+  assert.deepEqual([up[0].id, up[0].dmid, up[0].exec, up[0].hasExec, up[0].pending], ["m4", "m4-landed", 140, true, false]);
+  // before the read receipt reaches the sender's kernel its row has no dmid yet; the delivered copy's originMid alone
+  // joins them, so the pair never shows in the receipt's lag
+  const early = stitchMessages([
+    { id: "m6", fromId: U, toId: V, from: "web", to: "TESTHOST:web", sent: 100, exec: 100, hasExec: false, pending: true },
+    { id: "m6-landed", originMid: "m6", fromId: "TESTHOST:" + U, toId: "TESTHOST:" + V, from: "web", to: "web", sent: 100, exec: 150, hasExec: true, pending: false },
+  ], sessions);
+  assert.equal(early.length, 1);
+  assert.deepEqual([early[0].id, early[0].exec, early[0].hasExec, early[0].pending], ["m6", 150, true, false]);
+});
+
+test("stitchMessages: a remote kernel's own connector names its lanes as the board labels them; a thread-anchored end keeps the thread's name", () => {
+  const sessions = [{ id: "TESTHOST:" + U, name: "TESTHOST:web" }, { id: "TESTHOST:" + V, name: "TESTHOST:api" }];
+  const [m] = stitchMessages([{ id: "m2", fromId: "TESTHOST:" + U, toId: "TESTHOST:" + V, from: "web", to: "api", sent: 1, exec: 1, hasExec: false }], sessions);
+  assert.deepEqual([m.from, m.to], ["TESTHOST:web", "TESTHOST:api"], "bare names from the remote kernel wear the host on the merged board");
+  const [t] = stitchMessages([{ id: "m3", fromId: "TESTHOST:" + U, fromThreadT: 5, toId: "TESTHOST:" + V, from: "review-thread", to: "api", sent: 1, exec: 1, hasExec: false }], sessions);
+  assert.deepEqual([t.from, t.to], ["review-thread", "TESTHOST:api"], "a thread speaks under its own name from its parent's lane");
+  // a LOCAL lane's row keeps the kernel's own name for it (a local thread's name among them): only remote lanes re-label
+  const [l] = stitchMessages([{ id: "m5", fromId: U, toId: V, from: "notes-thread", to: "", sent: 1, exec: 1, hasExec: false }], [{ id: U, name: "web" }, { id: V, name: "api" }]);
+  assert.deepEqual([l.from, l.to], ["notes-thread", "api"]);
 });
 
 test("mergeHostBars: stitches connectors against the lane list handed in (bars carry no lanes)", () => {
@@ -480,14 +546,24 @@ test("routeOutbound: the gear's kernel-side settings reach EVERY attached kernel
                      { type: "setUpdateMode", mode: "auto" },
                      { type: "setDistillModel", model: "haiku" },
                      { type: "setDistillEffort", effort: "triage" },
-                     { type: "setFileEditing", enabled: true }]) {
+                     { type: "setCommentModel", model: "claude-opus-5" },
+                     { type: "setCommentEffort", effort: "high" },
+                     { type: "setCommentFast", fast: "on" },
+                     { type: "setJudgeFast", enabled: true },
+                     { type: "setDistillFast", enabled: true },
+                     { type: "setIndexFast", enabled: true },
+                     { type: "setFileEditing", enabled: true },
+                     { type: "setCompactSuggest", enabled: true }]) {   // T248: no longer per-install
     const routes = routeOutbound(msg, new Set(["TESTHOST", "gpu1"]));
     assert.deepEqual(routes.map((r) => r.host).sort(), ["", "TESTHOST", "gpu1"].sort(), msg.type);
-    for (const r of routes) assert.deepEqual(r.msg, msg, "the kernels are host-blind: same message to each");
+    // the same setting to each kernel; since 2026-09-18 (plans/settings-across-machines.md, one A) each copy also says where the
+    // click came from relative to that kernel, "local" to this dashboard's own and "remote" to every attached host, the field a
+    // machine that pinned the store stands a remote click down on
+    for (const r of routes) assert.deepEqual(r.msg, { ...msg, origin: r.host === "" ? "local" : "remote" }, "the same message to each, its origin per copy");
   }
-  // with nothing attached it is the single-kernel path, byte for byte
+  // with nothing attached it is the single-kernel path: the one copy, stamped local
   assert.deepEqual(routeOutbound({ type: "setAutoNudge", enabled: true }),
-                   [{ host: "", msg: { type: "setAutoNudge", enabled: true } }]);
+                   [{ host: "", msg: { type: "setAutoNudge", enabled: true, origin: "local" } }]);
   // an explicit host still wins — the popover can ask ONE machine (that branch runs first)
   assert.deepEqual(routeOutbound({ type: "setAutoNudge", enabled: true, host: "gpu1" }, new Set(["gpu1"])),
                    [{ host: "gpu1", msg: { type: "setAutoNudge", enabled: true } }]);
@@ -578,6 +654,23 @@ function withManager(fn: (fm: FederationManager, emitted: any[], store: Map<stri
 }
 const lastOrder = (emitted: any[]) => emitted.filter((m) => m && m.type === "tabOrder").pop()!.order;
 
+test("the merged tabOrder frame carries the LOCAL kernel's own name (selfHost), never a remote kernel's, and keeps it on a re-emit", () => {
+  // the chat reads a postal card's sender host against its kernel's own name, learned from the tabOrder
+  // frame every chat receives first; the manager re-emits a MERGED frame in place of each host's own, so the
+  // field has to be carried the way the views blob is — and a remote kernel's frame names ITSELF
+  const lastSelf = (emitted: any[]) => emitted.filter((m) => m && m.type === "tabOrder").pop()!.selfHost;
+  withManager((fm, emitted) => {
+    fm.inbound("TESTHOST", { type: "tabOrder", order: [V], tabs: [{ id: V, name: "tests" }], selfHost: "TESTHOST" });
+    assert.equal(lastSelf(emitted), undefined, "a remote kernel's own name is not this dashboard's");
+    fm.inbound("", { type: "tabOrder", order: ["a"], tabs: [{ id: "a", name: "web" }], selfHost: "SELFHOST" });
+    assert.equal(lastSelf(emitted), "SELFHOST");
+    fm.inbound("TESTHOST", { type: "tabOrder", order: [V], tabs: [{ id: V, name: "tests" }], selfHost: "TESTHOST" });
+    assert.equal(lastSelf(emitted), "SELFHOST", "a remote host's report re-emits the merge with the local name still on it");
+    fm.inbound("", { type: "tabOrder", order: ["a"], tabs: [{ id: "a", name: "web" }] });
+    assert.equal(lastSelf(emitted), "SELFHOST", "an older local frame without the field does not unlearn it");
+  });
+});
+
 test("a session created after a remote host attached lands at the END of the merged strip", () => {
   // The 2026-08-10 report: the new session's provisional tab rendered last, then the merged push
   // re-slotted it in front of the remote host's block (host-blocked seed, local first).
@@ -641,7 +734,7 @@ test("a skewed host's bars, lanes, marks and sent-times re-base onto the local c
   const r = m.sessions.find((s: any) => s.id === "gpu1:R");
   assert.equal(r.since, 990, "lane since re-based (+60)");
   assert.deepEqual(m.turns["gpu1:R"][0], { start: 900, end: 950 }, "bars re-based (+60)");
-  assert.equal(m.judging.find((j: any) => j.sid === "gpu1:R").t, 940, "marks re-based (+60)");
+  assert.equal(m.judging["gpu1:R"][0].t, 940, "marks re-based (+60): judging rides per lane (T278c)");
   const msg = m.messages.find((x: any) => x.id === "m1");
   assert.equal(msg.sent, 960, "sent re-based by the EMITTING host (+60)");
   assert.equal(msg.exec, 960, "a pending exec is the emitter's copy of sent — it moves with it");
@@ -706,4 +799,12 @@ test("re-based times cannot strand a connector after its sender's last bar (the 
   assert.ok(msg.sent <= lane.end, "the send mark sits within the sender's re-based work, not after it");
   assert.equal(msg.sent, 990);
   assert.deepEqual(lane, { start: 910, end: 995 });
+});
+
+test("routeOutbound: redial ALWAYS stays local with its host field INTACT — it asks the LOCAL kernel to re-dial that tunnel", () => {
+  // the composer's refusal on a downed host posts {type:"redial", host} (render.ts, 2026-08-16). The explicit-host
+  // rule carried it to that very host — down, so it dropped with a toast about "redial" on top of the refusal's own
+  // copy — with the field stripped, which the kernel's handler requires (2026-09-10).
+  assert.deepEqual(routeOutbound({ type: "redial", host: "gpu1" }), [{ host: "", msg: { type: "redial", host: "gpu1" } }]);
+  assert.deepEqual(routeOutbound({ type: "redial", host: "gpu1" }, new Set(["gpu1"])), [{ host: "", msg: { type: "redial", host: "gpu1" } }]);
 });

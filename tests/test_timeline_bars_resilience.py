@@ -18,7 +18,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -27,8 +27,8 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_barsres", os.path.join(BIN, "romp-judge")).load_module()
-km = SourceFileLoader("romp_kernel_barsres", os.path.join(BIN, "romp-kernel")).load_module()
+jd = load_source("romp_judge_barsres", os.path.join(BIN, "romp-judge"))
+km = load_source("romp_kernel_barsres", os.path.join(BIN, "romp-kernel"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 NOW = 1781100000.0
@@ -73,12 +73,15 @@ class RunJudgingFeed(unittest.TestCase):
 
 class FrameNeverSilentlyDies(unittest.TestCase):
     def test_every_bars_stage_degrades_alone_and_loudly(self):
-        src = inspect.getsource(km.build_timeline)
+        # the per-lane seams and marks stages live in _lane_segments (the lane memo's derivation); the parse, the
+        # live merge, the store read and the global stages stay in build_timeline
+        src = inspect.getsource(km.build_timeline) + inspect.getsource(km._lane_segments)
         # the per-lane parse swallow SAYS why a lane has no bars
         self.assertIn('_bars_complain(sid, "parse", e)', src)
         self.assertIn('_bars_complain(sid, "live-merge", e)', src)
         # seam refinement failing costs the seams, never the lane's bars
         self.assertIn('_bars_complain(sid, "seams", e)', src)
+        self.assertIn('_bars_complain(sid, "goals", gfault)', src)   # an unreadable goal store: lane without goal data
         self.assertIn('_bars_complain(sid, "judging-marks", e)', src)
         # the global stages are guarded ALONE — one malformed row costs that band, never the frame
         self.assertIn('_bars_complain("*", "messages", e)', src)

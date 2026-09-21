@@ -16,7 +16,7 @@ Source pins on the kernel-served JS/CSS strings."""
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -24,7 +24,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_mpick", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_mpick", os.path.join(BIN, "romp-kernel"))
 
 
 class MobilePickerClickSafe(unittest.TestCase):
@@ -32,7 +32,27 @@ class MobilePickerClickSafe(unittest.TestCase):
         self.assertNotIn("list.innerHTML=''", km._CHAT_MOBILE_JS,
                          "a wipe destroys the row under the finger and resets the scroll")
         self.assertIn("if(!row)row=rowMake(s);else rowUpdate(row,s);", km._CHAT_MOBILE_JS,
-                      "rows update in place, keyed by data-id")
+                      "rows update in place, keyed the strip's way (data-key: the tab's id and the group of its copy)")
+
+    def test_the_list_mirrors_the_strips_children_headings_and_the_trails_divider_included(self):
+        """The phone listed the sessions in another order than the desktop strip once the tabs were grouped
+        by tag (the user 2026-09-16): the plan flattened on the phone and the picker scraped that flat strip.
+        Now the plan sections there too (tab-groups.ts planStrip; nothing folds on the phone) and the picker
+        walks the strip's children in order — a heading per group header, a row per tab copy, a divider where
+        the untagged trail begins — keyed the strip's way. tests/test_mobile_picker_order_browser.py executes
+        it in a real browser against the desktop strip."""
+        js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS
+        self.assertIn("[].forEach.call(tabs.children,function(t){", js, "the strip's children in order, not a tab query")
+        self.assertNotIn("tabs.querySelectorAll('.tab[data-id]')", js)
+        self.assertIn("if(t.classList.contains('tab-group-head')&&t.hasAttribute('data-group'))", js, "a heading per group header")
+        self.assertIn("if(t.classList.contains('tab-group-sep')){out.push({key:'sep'});return;}", js, "a divider where the trail begins")
+        self.assertIn("key:'t:'+id+'/'+(copy===null?'':copy)", js, "a row per COPY: a session under two tags is a row under each")
+        self.assertIn("row.appendChild(s.chip.cloneNode(true))", js, "the header's own chip, cloned: one tag treatment")
+        self.assertNotIn("tab-group-caret", js, "no caret: the phone folds nothing, and a chevron would promise a fold")
+        self.assertIn("if(!ts[i].id)continue;", js, "the current chip falls back to the first SESSION row, never a heading")
+        self.assertIn(".mhead{", css)
+        self.assertIn(".msep{", css)
+        self.assertNotIn("list.querySelector(", js, "rows are found by key through a map, never a selector (a tag name needs no escaping)")
 
     def test_one_delegated_listener_on_the_stable_list(self):
         self.assertIn("list.addEventListener('click',function(e){", km._CHAT_MOBILE_JS)
@@ -55,6 +75,22 @@ class MobilePickerClickSafe(unittest.TestCase):
     def test_the_rows_say_syncing_and_opening(self):
         self.assertIn(".mrow.ph::after{content:'syncing", km._CHAT_MOBILE_CSS)
         self.assertIn(".mrow.pending::after{content:'opening", km._CHAT_MOBILE_CSS)
+
+    def test_the_trigger_chip_wears_the_chrome_tokens_and_a_light_skin(self):
+        """The #mcur/#madd chip is the one mobile surface that never joined the token migration: raw
+        #2a2a2a/#3a3a3a in this inline sheet outranked everything styles.css could say, so the chip sat
+        as a dark slab on the light chat page (the user 2026-09-02). Surfaces ride tokens whose dark
+        value is byte-identical to the old literals; text tiers take light-block overrides, with the
+        .colored restatement keeping the identity color on the name."""
+        css = km._CHAT_MOBILE_CSS
+        self.assertNotIn("background:#2a2a2a", css, "no raw chip surface left — tokens with dark fallbacks")
+        self.assertNotIn("border:1px solid #3a3a3a", css)
+        self.assertEqual(css.count("background:var(--btn-bg,#2a2a2a)"), 3, "chip, colored chip, and +")
+        self.assertEqual(css.count("border:1px solid var(--hairline,#3a3a3a)"), 3,
+                         "chip + the '+' + the #mlist card share the one hairline")
+        self.assertIn("body.theme-light #mcur{color:var(--menu-fg)}", css)
+        self.assertIn("body.theme-light #mcur.colored{color:var(--cbg)}", css)
+        self.assertIn("body.theme-light #madd{color:var(--text-muted)}", css)
 
 
 if __name__ == "__main__":

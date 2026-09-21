@@ -1,6 +1,8 @@
+<!-- Front page: keep it short and human. Rules in CLAUDE.md, "The documentation front pages". -->
 # Guide
 
-This guide covers how to use Romp and how its back end works.
+This guide walks through Romp one feature at a time, at the level of what you
+see and do. The [Reference](reference.md) documents the same features in full.
 
 ## The Romp user interface
 
@@ -11,24 +13,36 @@ complementary views of what the agents are doing:
   agent, with features that make a long session easier to scan.
 - **[The feed](#the-feed)** is Romp's task-management layer: what is in
   progress, what needs your input, and what is done.
-- **[The timeline](#the-timeline)** is the history of what each session worked
-  on and how they coordinated; click any part to jump to that moment in the
-  chat.
+- **[The Sessions pane](#the-sessions-pane)** holds the timeline: what each
+  session worked on and how they coordinated; click any part to jump to that
+  moment in the chat.
 - **[The outline](#the-outline)** lists every session with its tasks, for
   reviewing what a session has done and searching across all of them.
+
+[Two more panes](#the-other-panes), Files and Artifacts, are off by default.
 
 ### The chat
 
 ![Tool calls fold into runs; each expands to one line per call](assets/guide/chat-detail.png){ width="100%" }
 
-**Reviewing a document.** Select any passage in the file viewer and it lands in the
-composer as a quote chip, labeled with the file and the line the passage lives on. Type
-what should change and press **⌘⏎** to set the note aside; keep reading, select the next
-passage, and repeat — each staged note remembers its quote and its place. **⏎** sends
-everything you staged along with whatever is in the box, so the session applies the lot
-in one pass, and you never copy a line out of the document by hand. The line in each
-label is checked against the file at the moment you select, so numbers that moved under
-you are caught rather than quietly carried.
+Tool calls fold into runs, and each run opens to one line per call.
+
+The message box also supports attachments, session names and recall. A file
+dropped anywhere on the pane attaches to the next message, `@` and the first
+letters of a session's name list the live sessions that match, and picking one
+inserts it. The pencil on a message the session has not taken yet puts it back
+in the box.
+
+A path or a markdown link in the chat opens the file in the viewer, rendered. A
+passage selected there lands in the composer as a quote, labelled with the file
+and the line it came from.
+
+Tabs carry the state of their sessions. A tab wears a ring while its session
+needs you, tags group the strip into sections, and a tab can take a hot key of
+your own.
+
+Drag a tab to the right edge and the chat splits into columns, each a full chat
+with its own tab strip and composer, four at most.
 
 ### The feed
 
@@ -38,11 +52,11 @@ keep every card current.
 
 Cards sit in three columns:
 
-- <span class="romp-chip romp-chip-working">Working</span> — the session is
+- <span class="romp-chip romp-chip-working">Working</span>: the session is
   actively working on the task.
-- <span class="romp-chip romp-chip-blocked">Blocked</span> — it needs your
+- <span class="romp-chip romp-chip-needs">Needs you</span>: it needs your
   input to move on.
-- <span class="romp-chip romp-chip-completed">Completed</span> — done, ready
+- <span class="romp-chip romp-chip-completed">Completed</span>: done, ready
   for you to review and clear.
 
 ![The feed's three columns, with the cues on a card](assets/guide/feed-annotated.png){ width="100%" }
@@ -58,11 +72,27 @@ tasks, and a task can be handed from one session to another.
 Press <span class="romp-btn">Clear</span> on a card when you are done with it. A
 cleared card is archived, and no more work is added to it.
 
-### The timeline
+`romp card` posts a card from a script or an agent, with a title, a body and a
+picture if you want one; a card that names no session sits at the top of the
+feed under Notes.
 
-Each row is one session. A bar is a stretch where the session was working, and a
-circle is a message you sent. A striped stretch means the session is blocked,
-waiting on your input.
+`romp board define` adds a board beside the feed: its categories, how its cards
+sort, and which category rings the bell. The feed's **View** button then offers
+a row per board.
+
+**View** also holds the feed's own layout: the sort direction, a single column,
+cards grouped by session, and a section at the top for the session you are
+reading in the chat.
+
+Task tracking has a master switch, at the top of its own settings tab and on by
+default. Off, the judges do not run and cost nothing, the feed and the outline
+go away, and Romp is a chat tool.
+
+### The Sessions pane
+
+The Sessions pane holds the timeline, one row per session. A bar is a stretch
+where the session was working, and a circle is a message you sent. A striped
+stretch means the session had stopped and needed you.
 
 ![A timeline lane per session, with status and context at the left](assets/guide/timeline-annotated.png){ width="100%" }
 
@@ -81,6 +111,24 @@ find past work: the search box reaches every session, live or closed.
 
 ![The outline: each session's tasks as a tree](assets/guide/outline.png){ width="100%" }
 
+Right-click a session's name here to rename or end it. A rename changes the
+label only: the session's mail, goals and history follow the session itself.
+
+### The other panes
+
+Two panes sit beside these, off until you switch them on in Settings, General,
+Panes:
+
+- **Files** keeps the file viewer in a column of its own, so an open file
+  covers neither the chat nor the feed.
+- **Artifacts**, which is experimental, lists the files a session wrote, showed
+  or was handed, its pictures as thumbnails.
+
+**Pane docking**, in the same settings section and also off by default, arranges
+the panes by dragging: grab a pane by its empty space, drop it on another pane's
+half, and drag the dividers between them. A session tab dropped that way becomes
+a chat pane of its own.
+
 ## Automatic nudges
 
 Agents stall: they hit an API error, they get interrupted, or they end a turn
@@ -92,7 +140,7 @@ Romp asks the agent, item by item, where each open piece stands: continue what
 it can, and say what blocks the rest.
 
 - If the agent can keep going, it does, and you were never interrupted.
-- If something needs you, the card flips to <span class="romp-chip romp-chip-blocked">Blocked</span> and names exactly what
+- If something needs you, the card flips to <span class="romp-chip romp-chip-needs">Needs you</span> and names exactly what
   it needs.
 
 Nudging engages only when you are not actively messaging the session, so it
@@ -108,9 +156,10 @@ or as soon as you reply.
 
 Sessions message each other through a mailbox Romp gives them, and every
 exchange is visible to you. Each session gets mail tools: send a message to a
-session by name, check the inbox, and see who is live. Each session also
-publishes a working note saying what it currently holds, so agents can see who
-to talk to instead of messaging each other to find out.
+session by name, check the inbox, and see who is live.
+
+Each session also publishes a working note saying what it currently holds, so
+agents can see who to talk to instead of messaging each other to find out.
 
 The timeline draws an arc for each message. Hover one for its gist:
 
@@ -118,17 +167,18 @@ The timeline draws an arc for each message. Hover one for its gist:
 
 Underneath, a local message bus writes the message into a mailbox on disk that
 belongs to the recipient, then delivers it: straight away if that session is
-idle, otherwise when its current turn ends. The recipient reads it as a message
-in its chat, and it appears in the user interface as a card naming the sender
-and the kind:
+idle, otherwise when its current turn ends.
 
-![A message from another session, as the recipient's chat shows it](assets/guide/postal-chat.png){ width="100%" }
+The recipient reads it as an ordinary message in its chat, and it appears in
+the interface as a card naming both ends. A message you sent carries a delivery
+mark, the way a messaging app does: sent, delivered, read, parked, bounced or
+recalled.
 
-Every message declares its kind, which the card wears as a chip:
+Every message declares its kind, which the card shows as colored text:
 
-- <span class="romp-chip-kind romp-chip-delegate">delegation</span> — the recipient owns the work now.
-- <span class="romp-chip-kind romp-chip-coordinate">coordination</span> — a heads-up; a reply is optional.
-- <span class="romp-chip-kind romp-chip-question">question</span> — an answer is required.
+- <span class="romp-kind romp-kind-delegate">Delegation</span>: the recipient owns the work now.
+- <span class="romp-kind romp-kind-coordinate">Coordination</span>: a heads-up; a reply is optional.
+- <span class="romp-kind romp-kind-question">Question</span>: an answer is required.
 
 The same mailbox is on the command line, for you and for scripts:
 
@@ -137,10 +187,8 @@ romp mail send --kind question api "Which auth approach did we settle on?"   # s
 romp mail inbox                                                              # read this session's messages, and clear them
 ```
 
-The full mail surface, shell and in-session, is in the
-[Reference](reference.md#mail-from-the-terminal). Names resolve against the
-currently live sessions; sending to a dead session's name errors instead of
-silently parking mail.
+Names resolve against the currently live sessions; sending to a dead session's
+name errors instead of silently parking mail.
 
 ## Sessions, revival, and search
 
@@ -155,6 +203,15 @@ to open it read-only. Revival works by picking the session, not by its name, so
 a new session that reuses an old name is a new session rather than the old one
 resumed.
 
+A session can move to another folder, for when the code it works on moves.
+Right-click its tab and choose **Move to folder…**, or run `romp move <session>
+<dir>`: its conversation, name, mail and history stay with it, and the agent
+reads the new folder's `CLAUDE.md` from the next turn.
+
+Words your team coined wear a quiet dotted underline wherever a session writes
+them: hover one for the definition, click it to open the group's glossary at
+that entry.
+
 Search reaches inside sessions, not just across their names. As sessions run, a
 lightweight index judge writes each one a headline and an abstract of what it
 did, so searching for the work finds the session that did it, months later.
@@ -163,18 +220,12 @@ did, so searching for the work finds the session that did it, months later.
 
 Sessions run on one of two backends, chosen per session:
 
-- **SDK (the default, strongly recommended).** The kernel manages the Claude
-  Code session through the Claude Agent SDK.
-- **tmux.** A Claude Code session running in a terminal inside tmux. Run
-  `romp new -t <name>` and that terminal session joins the interface like any other, so
-  you can work in the terminal directly and still see it in Romp. The cost is
-  that Romp has no direct connection to it: it reads what appears in the
-  terminal and on disk, and sends messages and nudges by injecting keystrokes.
-  That makes it less reliable and less responsive than the SDK, since scraping a
-  terminal has edge cases a real API does not, and updates wait on the
-  transcript reaching disk.
+- **Claude Code (the default).** The kernel runs the Claude Code session
+  itself, through the Claude Agent SDK.
+- **Codex.** An OpenAI Codex agent, which needs [its own one-time
+  setup](codex.md) on each machine.
 
-The two backends interleave freely, so terminal sessions and SDK sessions sit
+The backends interleave freely, so Codex sessions and Claude Code sessions sit
 side by side in the interface and message each other like any other pair.
 
 ## The Romp kernel (the back end)
@@ -185,12 +236,17 @@ hosted service in between. Everything Romp stores stays local; the only traffic
 that leaves your machine is `claude` itself, both the agents' own model calls and
 the LLM calls in Romp's judge pipeline.
 
+It runs as a login service, so it is up whenever you are logged in. `romp down`
+stops it, giving turns in flight a few seconds to finish first, and `romp up`
+brings every session back with its history.
+
 ### Linking kernels on other machines
 
 Romp kernels can connect and communicate across multiple machines, e.g. a laptop
 and a server. This lets you control them all from one user interface, and lets
-their agents communicate across the machines. A linked machine's sessions appear
-as
+their agents communicate across the machines.
+
+A linked machine's sessions appear as
 <span class="romp-sid"><span class="host">server:</span>api</span> tabs and
 timeline lanes beside your local ones, its cards share the feed, and its
 sessions message yours, so an agent on your desktop can hand work to one on the
@@ -221,26 +277,25 @@ on. Your kernel opens the connection.
    host**, type the ssh target, and click **Attach**.
 
 The machine appears as a row with a live status, and Romp reads its kernel's
-access token over ssh so your browser can authorize against it. A row reading
-**kernel not answering** means no Romp kernel is running there: click **Start**,
-which brings that machine's Romp up to date with this one's and boots it. Romp
-never starts a remote kernel by itself, since a stopped one may be stopped on
-purpose.
+access token over ssh so your browser can authorize against it.
+
+A row reading **kernel not answering** means no Romp kernel is running there:
+click **Start**, which brings that machine's Romp up to date with this one's
+and boots it. Romp never starts a remote kernel by itself, since a stopped one
+may be stopped on purpose.
+
 Detaching keeps the machine under **Previously attached**, so re-linking later
-is one click and it returns with the trust level you last gave it.
+is one click, and the machine comes back with the trust level you last gave it.
 
 #### Mail across linked machines
 
 Each linked machine carries a trust level, set on its row, that decides what
 happens to mail arriving from it:
 
-- **trusted** — delivered straight to your sessions.
-- **directed**, the default — held for your approval as a needs-you card.
-- **isolated** — no mail either way; its sessions still appear in your
+- **trusted**: delivered straight to your sessions.
+- **directed**, the default: held for your approval as a needs-you card.
+- **isolated**: no mail either way; its sessions still appear in your
   interface.
-
-Which to choose, and what each one guards against, is in
-[Security and trust](#security-and-trust).
 
 Machines that a linked machine can reach appear to you too, under **Reachable
 via relay**: no tunnel of your own, their mail arriving one hop through the
@@ -257,7 +312,7 @@ back. If it returns and the session you addressed is gone, that refusal comes
 back to you. Every machine runs its own postal bus, so a laptop with no
 connection at all still has full local messaging; linking only adds reach.
 
-#### Also drive the fleet from the far machine
+#### Work from the far machine too
 
 Attaching leaves the far machine's interface unaware of your sessions. Do this
 only if you work from both computers, since mail already crosses both ways
@@ -278,6 +333,10 @@ way in to it; untick the box and it forgets you. Romp calls this checking in,
 and the always-on machine the hub, which is where `romp checkin` and
 `romp checkout` get their names.
 
+Restarting Romp from the hub's interface restarts the machines linked to it as
+well. A machine that checked in is asked to restart itself only, so anything
+attached to that machine alone is restarted from its own interface.
+
 #### Hand the connection to a different machine
 
 The add-host box has a **from** picker. Leave it on *this machine* and the
@@ -286,13 +345,35 @@ instead and the attach is forwarded to that kernel, which dials out itself, so
 the connection outlives your laptop. That machine needs its own ssh access to
 the target.
 
-The mechanics, including how the tunnels and the check-in handshake work, are in
-[How Romp works](architecture.md).
+### Settings across machines
+
+How a page looks is kept in the browser you are using. What the kernel acts on,
+Auto Nudge or Task tracking for instance, is sent to every machine you are
+connected to.
+
+A machine that was set differently while you were apart asks rather than
+changes: a line under the row, and a card on the feed, each offering **Apply**
+or **Keep mine**. A picker above the settings tabs says which machine you are
+setting, and pins a value there when you pick one.
 
 ## Remote access
 
 You reach Romp in a browser tab, in the VS Code / Cursor extension, or from your
 phone.
+
+### From another machine
+
+The kernel listens only on `127.0.0.1`, so a browser on another machine needs a
+path to that port. Forward it over ssh, from the machine with the browser:
+
+```bash
+ssh -N -L 29855:127.0.0.1:29855 <the machine running romp>
+```
+
+Then open `http://127.0.0.1:29855` as usual. Tailscale, set up as for a phone
+below, is the other path. VS Code's port forwarder is a poor one for the
+dashboard: it carries every socket over the one channel it shares with your
+editor, and does not close the far end when a pane goes away.
 
 ### From your phone
 
@@ -303,74 +384,45 @@ on `127.0.0.1`, which your phone is not on.
 [Tailscale](https://tailscale.com) closes that gap, and is free for personal
 use. It puts your own devices on a private encrypted network, so your phone can
 reach your laptop directly whatever network either one is on. Install it on both
-devices and sign in to the same account on each.
+devices, sign in to the same account on each, and turn on **HTTPS Certificates**
+in its admin console.
 
-In the Tailscale admin console, enable **HTTPS Certificates**, and leave
-**MagicDNS** on (it is on by default): the `ts.net` certificate names come from
-MagicDNS, so turning it off makes certificate provisioning fail in confusing
-ways.
-
-Three settings in the Tailscale app on the kernel's machine decide whether your
-phone can reach it at all:
-
-- **Allow incoming connections** must be on. Without it the machine joins the
-  network but serves nothing to it, which reads as Romp being broken rather than
-  as a Tailscale setting.
-- **Use Tailscale DNS settings** must be on. This is MagicDNS on the client, and
-  it is what makes the `ts.net` name resolve.
-- **Launch Tailscale at login** is worth turning on. The proxy below survives a
-  reboot, but it can only serve while Tailscale is running, so without this the
-  machine drops off the network until you next open the app.
-
-Then, on that same machine, one command opens Romp to your other devices:
+Then, on the machine running Romp, one command opens it to your other devices:
 
 ```bash
 tailscale serve --bg 29855
 ```
 
-The bare-port form needs Tailscale 1.56 or newer; on older clients write
-`tailscale serve https / http://127.0.0.1:29855`. On macOS the `tailscale`
-command is not on your `PATH` until you enable **CLI integration** in the app's
-settings.
-
-Two commands go with it, for later rather than now. `tailscale serve status`
-prints where the proxy currently points, which is the first thing to check when
-a device cannot reach Romp. `tailscale serve reset` undoes the setup and returns
-the machine to local-only, so run it when you want remote access off, not as
-part of turning it on.
-
-!!! warning "If you change the kernel's port"
-
-    `tailscale serve` remembers the port you gave it, not whatever Romp is
-    running on now. Change `ROMP_KERNEL_PORT` and the proxy goes on pointing at
-    the old one, so the phone gets a dead page while everything looks healthy on
-    the machine itself. Re-run `tailscale serve --bg <new port>` — it replaces
-    the existing mapping rather than adding to it.
-
 On the phone, open `https://<machine>.<tailnet>.ts.net/`. Romp answers with a
-page asking for your access token; paste in the one `romp` prints. A
-year-long cookie remembers the phone afterwards. Prefer this to putting
-`?token=<token>` in the address, which works but leaves the token in your
-browser history and in anything you share the link through. The cookie is itself
-a credential, so only do this on a phone you control.
+page asking for your access token: paste in the one `romp` prints, and a
+year-long cookie remembers the phone afterwards. Only devices signed in to your
+Tailscale account can reach it, and nothing is exposed to your local network or
+to the internet.
 
-Only devices signed in to your Tailscale account can reach Romp: Tailscale
-checks each device's identity and encrypts the traffic between them, and nothing
-is exposed to your local network or to the internet. The proxy survives restarts
-of both Tailscale and the kernel.
+If you change the kernel's port later, re-run that command. The proxy remembers
+the port you gave it, so a stale mapping leaves the phone on a dead page while
+the machine itself looks healthy.
 
-Two settings are worth changing while you are in the admin console. Turn on
-**device approval**, so a new device has to be approved before it can join, and
-leave key expiry enabled on the phone. Do not use `tailscale funnel`, the
-public-internet variant: it would leave the token as the only thing between the
-internet and your agents, with no device check in front of it.
+Three settings in the Tailscale app on that machine decide whether it can serve
+at all: allow incoming connections, use Tailscale DNS settings, and launch
+Tailscale at login.
 
-!!! warning "If other people are on your tailnet"
+On a tailnet you share with other people, `tailscale serve` exposes Romp to
+every device on it, with the access token the only thing in front of your
+agents. Keep the tailnet to your own devices, or write an ACL that restricts the
+kernel's machine to them.
 
-    `tailscale serve` exposes Romp to **every** device on the tailnet, not just
-    yours. On a family or team tailnet, the access token becomes the only thing
-    standing between other members and your agents. Either keep the tailnet to
-    your own devices, or write an ACL restricting the kernel machine to them.
+#### Notifications on your phone
+
+Romp can buzz your phone when a session needs you or finishes a task. Tap the
+bell, in the bar along the bottom on a phone and at the bottom right on a
+desktop, then turn on **Notifications** and **This device** and send yourself a
+test.
+
+On an iPhone, add Romp to the Home Screen first (share sheet, then **Add to Home
+Screen**) and open it from there: iOS only lets an installed app receive
+notifications. Tapping a notification brings Romp forward on the session it was
+about.
 
 ## Security and trust
 
@@ -381,11 +433,13 @@ is equivalent to running code as you. Everything below follows from that.
 demand a token on every request, local ones included. Loopback is not a
 security boundary: on a multi-user machine every local account can reach your
 ports, so without this any other user could inject prompts into your live
-sessions. The token is 144-bit random and lives at
-`~/.local/state/romp/serve-token` with mode `0600` (readable only by your own
-user account). Local tools (the CLI, hooks, the bus, the editor extension) read
-that file and send it automatically, so you never type it. Only liveness probes
-(`/healthz`, `/version`, `/busy`, and the bus's `/ping`) are exempt.
+sessions.
+
+The token is 144-bit random and lives at `~/.local/state/romp/serve-token` with
+mode `0600` (readable only by your own user account). Local tools (the CLI,
+hooks, the bus, the editor extension) read that file and send it automatically,
+so you never type it. Only liveness probes and the few files a browser fetches
+to install Romp on a Home Screen are exempt.
 
 A browser cannot read that file, which is why the link `romp` prints carries the
 token in it. The first visit trades it for a year-long cookie, so the bare
@@ -396,6 +450,7 @@ own right, so treat a machine holding one as signed in.
 **Remote machines.** Every machine mints its own token. When you attach a host,
 your machine reads that host's token over ssh and stores it locally (in
 `~/.local/state/romp/remotes.json`, also `0600`: it is a credential store).
+
 Dashboard traffic to a remote never crosses the network in the open; it rides
 the ssh tunnel, which supplies encryption and machine identity, while the token
 authorizes at the far end. Checking a laptop in to a hub reverses which end opens
@@ -406,18 +461,20 @@ initiates, and a hub never holds a way in.
 message each other, which means a session on the remote machine can put text
 into a local session's context, and text in an agent's context can steer it. So
 each host carries a trust level, set on its row in the network popover and
-remembered per host. The level goes by where a message originated, not by the
-route it travelled, so a machine whose mail reaches you relayed through a hub is
-judged by the level you gave that machine:
+remembered per host.
 
-- **trusted** — sessions on both machines message each other freely, as if they
+The level goes by where a message originated, not by the route it travelled, so
+a machine whose mail reaches you relayed through a hub is judged by the level
+you gave that machine:
+
+- **trusted**: sessions on both machines message each other freely, as if they
   were on the same machine. For a machine you fully control.
-- **directed** (the default for a newly attached host) — you can send work to
-  its sessions, but its mail back to you is held for approval: each held message
-  becomes a needs-you card with **Approve**, **Edit**, and **Deny**, so a person
-  decides before that host's content reaches one of your agents. For rented or
-  shared compute.
-- **isolated** — no messaging in either direction. Its sessions still appear in
+- **directed** (the default for a newly attached host): you can send work to
+  its sessions, but its mail back to you is held for approval. Each held
+  message becomes a needs-you card with **Approve**, **Edit**, and **Deny**, so
+  a person decides before that host's content reaches one of your agents. For
+  rented or shared compute.
+- **isolated**: no messaging in either direction. Its sessions still appear in
   your interface, but the two mail systems never connect. For gathering kernels
   that have nothing to do with each other into one place to work from.
 
@@ -425,18 +482,27 @@ judged by the level you gave that machine:
 machine can read any file on it, the token included, so don't keep long-lived
 credentials on a machine you don't trust that far. Any program already running
 under your own user account can read the token too, so two sessions on the same
-machine are separated by policy rather than by this boundary. The lines Romp can
-actually enforce are per-user (the token file) and per-machine (the trust
-level).
+machine are separated by policy rather than by this boundary.
 
-Full details, including how to report a vulnerability, are in
-[SECURITY.md](https://github.com/romp-on/romp/blob/main/SECURITY.md).
+The lines Romp can actually enforce are per-user (the token file) and
+per-machine (the trust level);
+[SECURITY.md](https://github.com/romp-on/romp/blob/main/SECURITY.md) states the
+trust model in full and names the private channel for reporting a
+vulnerability.
 
 ## How many tokens does Romp use?
 
 Romp spends tokens on top of what you spend yourself. If you are running models
 like Opus or Fable at high effort, the judging costs much less than the sessions
-themselves. The analytics modal in settings shows what you actually spent,
-separating your sessions from the judge pipeline. You can also reconfigure the
-judges from the gear: the high-volume indexing tier defaults to Haiku, and the
-judgment tier defaults to Sonnet.
+themselves.
+
+Settings, Debug holds **Token usage analytics**: your sessions' tokens beside
+the judges' over a period you pick. The bottom bar's spend readout opens API
+spend: the sessions' spend in dollars, by session and over time.
+
+You can also reconfigure the judges from the gear: the high-volume indexing tier
+defaults to Haiku, and the judgment tier defaults to Sonnet.
+
+The bottom bar carries a small dot for how the API is treating your sessions:
+red while errors are being met on any connected machine, gray when nothing is
+calling it.

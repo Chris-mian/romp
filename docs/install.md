@@ -1,3 +1,4 @@
+<!-- Front page: keep it short and human. Rules in CLAUDE.md, "The documentation front pages". -->
 # Install
 
 ## Requirements
@@ -23,8 +24,10 @@ Open a new terminal afterwards, so `~/romp/bin` is on your `PATH`, and type
 The same command updates Romp later. To remove Romp, run `romp uninstall` (add
 `--purge` to delete recorded sessions too).
 
-This clones Romp to `~/romp` and installs the newest release.
-[What it installs, in detail](architecture.md#what-the-installer-sets-up).
+This clones Romp to `~/romp` and installs the newest release, mostly as
+[symlinks back into that clone](architecture.md#what-the-installer-sets-up), so
+updating the clone updates the installation with it. On a machine with several
+Pythons, [which one runs the kernel](reference.md#the-kernels-python) matters.
 
 ### Manual and custom installs
 
@@ -34,7 +37,7 @@ latest commit rather than the newest release:
 ```bash
 git clone https://github.com/romp-on/romp.git ~/romp
 cd ~/romp
-git checkout "$(git tag -l 'v*' --sort=-v:refname | head -n1)"   # newest release
+git checkout "$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)"   # newest release
 # or:   git checkout main                                        # the latest commit
 ./install.sh
 ```
@@ -60,3 +63,6 @@ open Romp from the sidebar.
 ### Start a session
 
 <video src="../assets/guide/first-session.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
+
+Next: the [guide](guide.md), which walks through the interface one feature at a
+time.

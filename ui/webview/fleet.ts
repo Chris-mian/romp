@@ -4,15 +4,27 @@
 // ledger, the SAME tree the ledger box draws) — the proven feed channel. Completed top goals hide behind a
 // bottom "Show completed" checkbox (default off). The recency colour helpers are copied verbatim from render.ts
 // so the colours are IDENTICAL to the ledger box.
-import { delegate } from "./actions";
+import { delegate, flash } from "./actions";
+import { paintHeld, paintReleased, publishPaneHidden } from "./paint-gate";
+import { applyTheme } from "./theme";
+import { loadSettings, installSettingsSync, onExternalSettingsChange } from "./settings";
 import { SessionViews, viewTagUnion } from "./session-views";
 import { lensVisible, surfaceLens } from "./tag-lens";
 import { openTagMenu, tagMenuButton, syncTagFilter } from "./tag-menu";
+import { mintWriteId } from "./views-writes";
 import { fleetVisibleRoots } from "./fleet-roots";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostPrefix } from "./host-prefix";
 import { ageColorReadable } from "./age-color";
 import { prChipParts, rollupParts, prDetailLines, prMatches, PR } from "./pr-chip";
+import { liveNow } from "./feed-age";
+import { TIP_GRACE_MS } from "./tip";
+import { perfFrameHandler } from "./perf-telemetry";
+import { linkifyPrRefs, installPrLinkOpener } from "./pr-links";
+import { listenForFrames } from "./frame-listener";
+import { openGear } from "./gear-host";
+import { openContextMenu, openConfirmBox } from "./ctx-menu";
+import { openTopTitles, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
 
 type Color = { bg: string; fg: string } | null;
 interface LedgerNode {
@@ -29,25 +41,49 @@ interface LedgerNode {
   prNums?: number[] | null;
 }
 interface Ledger { summary?: string; tree: LedgerNode[]; current?: { t?: number } | null; archivedTops?: LedgerNode[]; }
-interface FleetSession {
-  sid: string; name: string; color: Color; status?: { state?: string } | null; ledger?: Ledger | null;
-  // The session's PR slice (kernel _session_pr_payload): its branch, that branch's PR (the header chip),
-  // every PR its goals reference, and the reason when gh could not answer — which is RENDERED, never
-  // swallowed, since a blank chip would read as "no PR" (the user 2026-08-17).
-  branch?: string; prNum?: number | null; prs?: Record<string, PR> | null; prError?: string | null;
-}
+interface FleetSession { sid: string; name: string; color: Color; status?: { state?: string } | null; ledger?: Ledger | null;
+                         postalServiceOff?: boolean; mailOffWhy?: string;   // the session's mail is off, and why (isolation, a comment thread's default, an unreadable record; T356)
+                         provisional?: boolean;   // the cold-tab gate skipped this tab: the row's ledger is the store's, its jumps wait for the tab (plans/outline-pane-provisional-row.md)
+                         // the session's PR slice (kernel _session_pr_payload): its branch, that branch's PR,
+                         // every PR its goals reference, and the reason when gh could not answer — rendered,
+                         // never swallowed, since a blank chip would read as "no PR"
+                         branch?: string; prNum?: number | null; prs?: Record<string, PR> | null; prError?: string | null; }
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
+// A `#123` in a goal row links to the PR page of the repository its session works in (pr-links.ts; the
+// user 2026-09-06). The repo per session rides the feed frame's `sessions` rows (owner/repo, or null).
+let repoBySid = new Map<string, string | null>();
+// The link opens the PR and nothing else: capture-phase on the document, so the row's delegated jump
+// under it never fires. Web → the viewer's browser; VS Code → the host's openExternal (view-routing.ts).
+installPrLinkOpener(document, vscodeApi ? (m) => vscodeApi.postMessage(m) : undefined);
 
 let sessions: FleetSession[] = [];
 // Whether the FIRST feed payload has arrived (the user 2026-06-29): before it has, the fleet must NOT claim
 // "no work" — that's the loading gap, where the data simply hasn't landed yet. We leave #fleet-list empty so
 // the page's romp loader (_pane_spin) stays up, exactly like the other panes, until real data arrives.
 let loaded = false;
+let offNotice = false;   // the Task tracking switch's off frame is on screen as the notice (T404): the loader stands down without the page claiming loaded
 let emptyShown = false;   // the romp wordmark is currently showing → don't replay its fade-in every push
+// Attached hosts whose feed payload this pane has not merged yet (federation.ts pendingHosts, riding the
+// same feed message the ledgers do), and which of those sit on a dead link right now (pendingDead). The
+// user 2026-09-02: after a kernel restart or a phone re-foreground the remote hosts' sessions were
+// simply ABSENT from this pane for two minutes — no row, no cue — and read as wiped state. One quiet
+// line per pending host (the feed's own strip, mirrored) says they are coming; it leaves ONLY on that
+// host's first payload or its detach, the events the merge keys on — never a timer.
+let pendingHosts: string[] = [];
+let pendingDead: string[] = [];
 let searchQuery = "";     // #fleet-search filter (the user 2026-06-29): show only sessions whose NAME matches
 let fleetViews: SessionViews | null = null;   // the rendered views blob off the feed payload — the outline lens reads it (2026-08-25)
+let outlineViewsWriteSeq = 0;                   // per-page counter behind this pane's lens-write ids (mintWriteId)
+// This pane's lens write: the frame copy it holds with only the outline lens changed, posted with a
+// writeId and `edited: []` (the 2026-09-05 review) — the empty list is the kernel's word
+// that the write changes NO tag, so the tags the copy carries are never applied over a newer store;
+// only the lens lands. The pane ignores the viewsAck and settles from the next feed frame, as it
+// always has (docs/read-side.md, the views contract).
+function postOutlineLens(v: SessionViews) {
+  vscodeApi?.postMessage({ type: "setTimelineViews", views: v, writeId: mintWriteId(++outlineViewsWriteSeq), edited: [] });
+}
 let syncFleetTagBtn: (() => void) | null = null;   // re-dress the tag button per the shared convention on each render
 // Provisional cards (the user 2026-06-29): a session working a brand-new prompt the planner hasn't classified
 // into a goal yet has NO ledger node, so it's invisible in the fleet — exactly the "things about to appear" the
@@ -55,9 +91,22 @@ let syncFleetTagBtn: (() => void) | null = null;   // re-dress the tag button pe
 // signature row per such session here. Stored from each push.
 interface ProvCard { sid: string; name: string; color: { bg: string; fg: string } | null; text: string }
 let provCards: ProvCard[] = [];
+// A PROVISIONAL ROW's nodes (plans/outline-pane-provisional-row.md): the store holds each goal's position, but a cold tab has no
+// landing (the chat page holds no history for it, and the focus road has no time fallback), so the jump actions are withheld and
+// the mark and the text say what the click cannot do; the row's own open still jumps into the session, whose build lands the row.
+const WITHHELD = "nothing to land on until this tab is built: open the session first";
 // Full feed-card lookup by goal id (the SAME asks slice provCards reads): the hover card joins a top goal's
 // row to its feed card for the distiller BACKGROUND (cards carry it; ledger nodes don't — the user 2026-07-13).
 let asksById = new Map<string, { background?: string | null; summary?: string | null; blockSummary?: string | null }>();
+// The kernel's clock: `now` on the last frame, and WHEN that frame arrived (local ms). Every age on this pane
+// reads nowSec(), which adds the local time elapsed since (feed-age.ts liveNow), so the browser's own clock
+// never enters — read against Date.now(), every "(Xm ago)", the current goal's elapsed time and the recency
+// cutoff were off by whatever skew sat between the two clocks, and moved only when a frame arrived (a quiet
+// board on the delta path sends one every 60 s). `nowAt` is the WIRE arrival federation stamps on the merged
+// frame it re-emits (a re-emit after a quiet hour must not move an age); a frame without one (the VS Code
+// pipe hands frames straight to this pane) is arriving now.
+let hostNow = Math.floor(Date.now() / 1000), hostNowAt = Date.now();
+function nowSec(): number { return liveNow(hostNow, hostNowAt, Date.now()); }
 const DONE_KEY = "romp:fleetShowDone";
 function showDone(): boolean { try { return localStorage.getItem(DONE_KEY) === "1"; } catch { return false; } }
 function setShowDone(on: boolean) { try { localStorage.setItem(DONE_KEY, on ? "1" : "0"); } catch { /* ignore */ } }
@@ -413,6 +462,7 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
     curFoldMode === "collapse" ? true
     : curFoldMode === "expand" ? false
     : (folded.has(fkey(s.sid, n.id)) || (defaultFold && !expanded.has(fkey(s.sid, n.id)))));
+  const prov = !!ctx.s.provisional;
   const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
     + (n.current ? " current" : "") + (n.done ? " done" : "")
     + (n.blocked && !n.done ? " blocked" : "") + (n.derived ? " derived" : "")
@@ -430,15 +480,16 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   // their own data-act (innermost wins), so a click lands the deep-link; the row's data-act="open" remains
   // the fallback for a click on the row's empty space. (Delegated via #fleet-list — see ./actions.)
   const resolved = !!(n.done || n.blocked);
-  const mark = el("span", "ledger-tmark lz-nav");
-  mark.dataset.sid = s.sid; mark.dataset.nid = n.id; mark.dataset.act = resolved ? "gowork" : "goprompt";
+  const mark = el("span", "ledger-tmark" + (prov ? "" : " lz-nav"));
+  if (!prov) { mark.dataset.sid = s.sid; mark.dataset.nid = n.id; mark.dataset.act = resolved ? "gowork" : "goprompt"; }
   mark.textContent = n.done ? "✓" : n.blocked ? "⏸" : "";   // open = a hollow CSS ring (no glyph)
   // The mark's WHY tooltip + the text's full-goal tooltip both moved INTO the hover card (the user
   // 2026-07-13): it leads with markReason() as its state line and the untruncated title, so the native
   // titles would only pop redundantly on top of it. (markReason is hoisted below the render — one rule.)
-  const txt = el("span", "ledger-ttext lz-nav");
-  txt.dataset.sid = s.sid; txt.dataset.nid = n.id; txt.dataset.act = "goprompt";   // text → the asking message
+  const txt = el("span", "ledger-ttext" + (prov ? "" : " lz-nav"));
+  if (!prov) { txt.dataset.sid = s.sid; txt.dataset.nid = n.id; txt.dataset.act = "goprompt"; }   // text → the asking message; withheld on a provisional row (the hover card says why: no native titles here, 2026-07-13)
   highlightInto(txt, n.text, curSearch);   // search: highlight the matched substring (plain text otherwise)
+  linkifyPrRefs(txt, repoBySid.get(s.sid) || null);   // `#123` in the goal → its PR page; a search hit span is walked, not skipped
   // (The ⊕ distiller-summary expander was removed 2026-06-27 — the user: show just the goals, not the
   //  distiller takeaway / decision brief.)
   const time = el("span", "ledger-ttime");
@@ -449,7 +500,7 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
     time.textContent = `(${agehms(dt)} ago)`; time.style.color = ageColorReadable(dt);
     txt.style.color = ageColorReadable(dt);                 // done text matches its rolled-up recency colour
   }
-  if (time.textContent) { time.classList.add("lz-nav"); time.dataset.sid = s.sid; time.dataset.nid = n.id; time.dataset.act = "gowork"; }   // time → where the work happened/resolved
+  if (time.textContent && !prov) { time.classList.add("lz-nav"); time.dataset.sid = s.sid; time.dataset.nid = n.id; time.dataset.act = "gowork"; }   // time → where the work happened/resolved; withheld on a provisional row
   // group the hover highlight like the ledger: a resolved node's checkbox + time light together, the text
   // on its own; an open node's checkbox + text are one block, the time on its own (the user 2026-06-24).
   if (n.done || n.blocked) { linkHover([txt]); linkHover(time.textContent ? [mark, time] : [mark]); }
@@ -484,21 +535,91 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   if (expandable && !isFolded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderFleetNode(ctx, c, depth + 1, container, now, flat); }
 }
 
+// The per-host loading strip (the user 2026-09-02): the feed's #feed-hostload, worn here — one line per
+// pending host, the shared reverse-spin swirl LEFT of the text, at the top so it announces what is
+// COMING before the sessions already here. Non-interactive, so the per-render rebuild is click-safe.
+// The copy names a dead link honestly (fail loudly) instead of an open-ended "loading".
+function hostLoadStrip(): HTMLElement {
+  const strip = el("div", "");
+  strip.id = "fleet-hostload";
+  for (const h of pendingHosts) {
+    const line = el("div", "hostload-line");
+    const swirl = el("span", "fask-awaiting-swirl");
+    const txt = el("span", "");
+    txt.textContent = pendingDead.includes(h)
+      ? "reconnecting to " + h + "\u2026"
+      : "loading sessions from " + h + "\u2026";
+    line.append(swirl, txt);
+    strip.appendChild(line);
+  }
+  return strip;
+}
+
+// The pane is hidden by default in the dashboard shell (a display:none iframe) yet it received every feed
+// push and rebuilt its whole list for nobody, on the main thread every pane shares (2026-09-04). While the
+// list is not on screen the payload is kept and the rebuild deferred to the moment it comes into view.
+// TWO measures of "not on screen" (the user 2026-09-07, whose dashboard froze on the return to its tab):
+// the observer sees a display:none pane but never fires while the TAB is hidden — so an on-screen pane in
+// a background tab kept rebuilding on every push, and nothing fired on the return — and document.hidden
+// sees the tab but never a display:none pane. Both gate, both events release, and the payload (sessions,
+// asksById, the pending hosts) is applied either way; only the rebuild waits (paint-gate.ts).
+// The same two measures are this pane's hidden word for the kernel's pane shim (paint-gate.ts publishPaneHidden):
+// the shim's zero-viewport probe misses a pane hidden after a first show in Chromium, so the release path and the
+// hidden arm of visibilitychange publish document.hidden OR the observer's last word as window.__rompPaneHidden,
+// on the same events, and nothing until the observer has spoken.
+let paneVisible: boolean | null = null;   // the observer's last word; null until it speaks (the gate reads null as on screen; nothing is published for it)
+let paneDirty = false;
+let renameHold = false;    // an in-place rename is open on a row: render() waits (renameDirty remembers a push that arrived meanwhile); declared
+let renameDirty = false;   //  beside the paint gate's state, inside the slice outline-visibility.test.ts lifts, so that harness needs no stub
+let focusedHead: HTMLElement | null = null;  // the session head holding keyboard focus, the node itself: render() rebuilds the list on every push, and
+//                                              only the rebuild that removes THIS node while it holds the focus puts the focus on the same session's new
+//                                              head (round three: a restore keyed on the sid alone fired on every push once a head had been focused, and
+//                                              pulled the window's focus out of the chat composer into the pane)
+let rebuilding = false;    // render() is replacing the list: the focusout its removals fire (Chromium) is the rebuild's, not the user's focus leaving
+function watchPaneVisibility(list: HTMLElement): void {
+  if (typeof IntersectionObserver === "undefined") return;   // no observer → the tab's visibility alone gates
+  new IntersectionObserver((entries) => {
+    paneVisible = entries.some((e) => e.isIntersecting);
+    releasePaint();
+  }).observe(list);
+}
+// Synchronous on purpose: a paint inside the event handler is the earliest fresh frame after the
+// compositor's cached one; a requestAnimationFrame hop is later at best and never fires in a hidden frame.
+function releasePaint(): void {
+  publishPaneHidden(document.hidden, paneVisible);
+  if (!paintReleased(paneDirty, document.hidden, paneVisible)) return;
+  paneDirty = false;
+  render();
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) releasePaint(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) publishPaneHidden(true, paneVisible); });   // the hidden arm releases nothing, so the release path never publishes it
+let paneWatching = false;
 function render() {
   syncFleetTagBtn?.();
   const list = document.getElementById("fleet-list");
   if (!list) return;
+  if (!paneWatching) { paneWatching = true; watchPaneVisibility(list); }
+  // Nobody can see it: paint when it is shown — except the FIRST content, which paints through so the reveal
+  // shows the list at once rather than the pane loader fading out over an empty pane (an empty list IS the
+  // loader-up state; one hidden render buys an instant reveal).
+  if (paintHeld(document.hidden, paneVisible, list.childElementCount > 0)) { paneDirty = true; return; }
+  if (renameHold) { renameDirty = true; return; }   // a name is being edited in place: the push waits for Enter or Escape (the strip freezes the same way)
+  const held = focusedHead;                                                                 // read before the rebuild: the one event that moves the focus
+  const heldActive = !!held && held.isConnected && held.contains(document.activeElement);   //  back is this render removing the head that holds it
+  rebuilding = true;
   list.replaceChildren();
+  rebuilding = false;
   // BEFORE the first payload: leave the list EMPTY so the page's romp loader (_pane_spin over #fleet-list)
   // stays up — no child means it never hides — instead of flashing a false "no work" message (the user
   // 2026-06-29). A WS drop / kernel restart re-shows that same loader (romp:wsdown), so a restart shows the
   // swirl, not "no tasks".
   if (!loaded) { emptyShown = false; return; }
+  if (pendingHosts.length) list.appendChild(hostLoadStrip());   // leads the list: what is still coming
   const sd = showDone();
   const grouped = isGrouped();
   curFoldMode = foldMode();   // snapshot the sticky Collapse/Expand mode once for this render
   paintFoldButtons();
-  const now = Math.floor(Date.now() / 1000);
+  const now = nowSec();   // the kernel's clock, moving between frames (see hostNow)
   let any = false;
 
   // Adaptive cutoff range: the slider's right end tracks the OLDEST currently-eligible TOP goal (the user
@@ -626,6 +747,7 @@ function render() {
       any = true;
       const s = ctx.s;
       const sec = el("div", "fl-session");
+      if (s.provisional) { sec.classList.add("fl-prov-sess"); }   // the light mark: this tab's row is the store's until the tab is built
       const head = el("div", "fl-head");
       // session-level collapse caret (the user 2026-06-24): folds this session's WHOLE task tree. Its OWN
       // data-act="sessfold" (the innermost data-act in the head) so clicking it folds WITHOUT opening the
@@ -643,7 +765,17 @@ function render() {
       nameInto(nm, s.name, s.sid, curSearch);   // highlight a name match (remote "host:" stays quiet metadata)
       if (s.color?.bg) nm.style.color = s.color.bg;
       head.appendChild(nm);
-      head.title = "Open this session";
+      if (s.postalServiceOff) {
+        // T356: a session whose mail is off says so on its row, quietly
+        const mo = el("span", "fl-mail-off");
+        mo.textContent = (s.mailOffWhy === "unreadable" || s.mailOffWhy === "flags") ? "mail held" : "mail off";
+        mo.title = s.mailOffWhy === "unreadable" ? "this session's record cannot be read: mail waits until it is repaired"
+          : s.mailOffWhy === "flags" ? "the session settings file cannot be read: mail waits until it is written again"
+          : s.mailOffWhy === "thread" ? "a comment thread's mail is off until it is broken out"
+          : "this session neither sends nor receives peer mail";
+        head.appendChild(mo);
+      }
+      head.title = s.provisional ? "Open this session: its transcript has not been loaded since the restart, so its goals are read from the store and their jumps wait for the tab" : "Open this session";
       head.dataset.act = "open"; head.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
       // The session's own chip: the PR on its CURRENT BRANCH — "what is this session shipping right now",
       // readable with the tree collapsed. It deliberately repeats the live goal's chip, which is the point
@@ -651,6 +783,7 @@ function render() {
       const curPr = s.prNum ? s.prs?.[String(s.prNum)] : null;
       if (curPr) head.appendChild(prChip(s.sid, "", curPr));
       else if (s.prError) head.appendChild(prErrChip(s.prError));
+      head.tabIndex = 0; head.setAttribute("role", "button");   // focusable: Enter opens, the menu key or Shift+F10 opens the row's menu (2026-09-16)
       sec.appendChild(head);
 
       const treeBox = el("div", "ledger-tree");
@@ -672,6 +805,7 @@ function render() {
       const nm = el("span", "fl-name"); nm.textContent = p.name; if (p.color?.bg) nm.style.color = p.color.bg;
       head.appendChild(nm);
       head.title = "Open this session"; head.dataset.act = "open"; head.dataset.sid = p.sid;
+      head.tabIndex = 0; head.setAttribute("role", "button");   // the same reach as a session with a tree
       sec.appendChild(head);
       const treeBox = el("div", "ledger-tree"); treeBox.appendChild(makeProvRow(p, false)); sec.appendChild(treeBox);
       list.appendChild(sec);
@@ -700,7 +834,7 @@ function render() {
     nr.textContent = "No results for “" + searchQuery.trim() + "”";
     list.appendChild(nr);
     emptyShown = false;
-  } else if (!any) {
+  } else if (!any && !pendingHosts.length) {
     // GENUINELY empty (data loaded, no open work): the romp tri-color WORDMARK, centered + faded in — the
     // same calm inbox-zero treatment as the feed (the user 2026-06-29). The fade plays ONCE on the
     // not-empty→empty transition (emptyShown guard), not on every push, since render() rebuilds each time.
@@ -711,6 +845,15 @@ function render() {
     emptyShown = true;
   } else {
     emptyShown = false;
+  }
+  // this rebuild removed the head that held the focus: the same session's new head takes it back, so a row reached by keyboard
+  // (and the row the menu returns focus to) is not lost to the next push (round two, low a). Bounded to that event and to a pane
+  // whose document has the focus: a head focused earlier and left for a goal row or the chat composer is never refocused by a
+  // push (round three, high: each push pulled the focus into the pane and the composer lost the rest of the sentence)
+  if (held && !held.isConnected) {
+    const next = heldActive && document.hasFocus() && held.dataset.sid ? headOf(held.dataset.sid) : null;
+    focusedHead = next;
+    next?.focus({ preventScroll: true });
   }
 }
 
@@ -737,10 +880,10 @@ function mountControls() {
   // again to leave, or fold something by hand to release it. id'd so paintFoldButtons can light the active one.
   const collapse = el("button", "fl-foot-btn"); collapse.id = "fl-collapse";
   collapse.textContent = "Collapse"; collapse.title = "Keep everything collapsed — folds every session + goal and stays that way as work streams in (click again, or fold something by hand, to release)";
-  collapse.addEventListener("click", () => { collapse.classList.add("romp-acted"); setTimeout(() => collapse.classList.remove("romp-acted"), 280); toggleFoldMode("collapse"); });
+  collapse.addEventListener("click", () => { flash(collapse); toggleFoldMode("collapse"); });
   const expand = el("button", "fl-foot-btn"); expand.id = "fl-expand";
   expand.textContent = "Expand"; expand.title = "Keep everything expanded — opens every goal and stays that way as work streams in (click again, or fold something by hand, to release)";
-  expand.addEventListener("click", () => { expand.classList.add("romp-acted"); setTimeout(() => expand.classList.remove("romp-acted"), 280); toggleFoldMode("expand"); });
+  expand.addEventListener("click", () => { flash(expand); toggleFoldMode("expand"); });
   left.append(grpLbl, collapse, expand);
 
   // ── RIGHT cluster: recency cutoff slider + Show completed ──
@@ -777,14 +920,54 @@ function mountControls() {
   foot.append(left, right);
 }
 
-window.addEventListener("message", (e: MessageEvent) => {
+// every frame's synchronous handling time is measured (perf-telemetry.ts: one clientDiag row a
+// minute, read by `romp perf client`); the handler itself is unchanged
+// …and handed the merged frames by direct call from federation.js when this page has it (frame-listener.ts)
+listenForFrames(perfFrameHandler("fleet", (m) => vscodeApi?.postMessage(m), (e: MessageEvent) => {
   const m = e.data;
-  if (!m || m.type !== "feed") return;               // Fleet rides the FEED payload (proven channel); reads its `ledgers`
+  if (!m) return;
+  if (m.type === "delta") {
+    // The shim reassembles every {type:"delta"} frame into the whole message before a bundle sees it, and
+    // federation's remote sockets never dial for deltas — so one reaching this handler means a host handed
+    // the pane a kernel frame unreassembled. Say so and ask for the whole slot (needSlot: what the shim
+    // itself sends for a delta it cannot apply) rather than sit on the last frame while every update is
+    // dropped on the floor (fail loudly, never degrade). Run for real in fleet-live-clock.test.ts.
+    console.error("outline: a delta frame reached the pane unreassembled — asking the kernel for the whole slot");
+    vscodeApi?.postMessage({ type: "clientDiag", surface: "outline", what: "delta-unapplied", data: { slot: m.slot, rev: m.rev } });
+    vscodeApi?.postMessage({ type: "needSlot", slot: m.slot });
+    return;
+  }
+  if (m.type !== "feed") return;                     // the Outline rides the FEED payload (proven channel); reads its `ledgers`
+  // the Task tracking switch off (T404): the frame carries `off` and no ledgers; the notice the kernel rendered shows in
+  // place of the list, and nothing below applies; the next real frame swaps back
+  const ttOff = document.getElementById("tt-off"), ttList = document.getElementById("fleet-list");
+  if (ttOff) ttOff.hidden = !m.off;
+  if (ttList) ttList.hidden = !!m.off;
+  if (m.off) {
+    // the notice IS this frame's content (T404 round two, medium 1): _keepLoader below stands down while it shows, and the
+    // loader itself goes now (its observer watches the list, which the off frame leaves empty). The page does not claim
+    // loaded (round three, low 2): a later frame with no ledgers array (federation before any host built its ledgers)
+    // then brings the loader back instead of leaving an empty list with no loader and no notice
+    offNotice = true;
+    document.getElementById("pane-spin")?.classList.add("gone");
+    return;
+  }
+  offNotice = false;
   // "loaded" means the kernel actually BUILT the fleet's ledgers (the key is present, even if []) — NOT merely
   // that some feed message arrived. A feed push can reach us before the (cold) ledger build finishes; treating
   // that as loaded would drop the loader onto an empty pane (the user 2026-06-29). Until ledgers land, keep the
   // loader up (render() bails, leaving the list empty so _pane_spin holds).
   if (m.views && typeof m.views === "object") fleetViews = m.views as SessionViews;   // rides the feed payload (2026-08-25)
+  // the attached-but-not-yet-merged hosts, from the merge itself (the ONLY writer; absent = none pending)
+  pendingHosts = Array.isArray(m.pendingHosts) ? m.pendingHosts.filter((h: any) => typeof h === "string") : [];
+  pendingDead = Array.isArray(m.pendingDead) ? m.pendingDead.filter((h: any) => typeof h === "string") : [];
+  if (typeof m.now === "number") {
+    hostNow = m.now;
+    hostNowAt = typeof m.nowAt === "number" ? m.nowAt : Date.now();   // the pair travels together: the frame's clock, and when THAT frame arrived
+  }
+  if (Array.isArray(m.sessions))
+    repoBySid = new Map(m.sessions.filter((s: any) => s && typeof s.sid === "string")
+      .map((s: any) => [s.sid as string, typeof s.githubRepo === "string" ? s.githubRepo : null] as const));
   if (!Array.isArray(m.ledgers)) return;
   loaded = true;
   sessions = m.ledgers as FleetSession[];
@@ -795,8 +978,131 @@ window.addEventListener("message", (e: MessageEvent) => {
     .filter((a: any) => a && a.itemId && !a.provisional)
     .map((a: any) => [a.itemId as string, a] as const));
   render();
-});
-window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:settings") render(); });   // colormap change → recolour
+}));
+window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:settings") { applyTheme(document, loadSettings()); render(); } });   // theme/colormap change → reskin + recolour
+applyTheme(document, loadSettings());   // the persisted theme applies at boot (2026-08-28)
+// VS Code webviews have per-origin storage and never see another pane's `storage` events — gear
+// saves arrive as settingsSync host messages (PR #763 item 3; the raiser re-fires romp:settings,
+// which onExternalSettingsChange below already handles in the browser too)
+installSettingsSync();
+onExternalSettingsChange((s) => { applyTheme(document, s); render(); });
+
+// THE ROW'S MENU (the user 2026-09-16, who wanted to right-click a session's name here to rename or delete it):
+// a right-click on a session's head, or the ContextMenu key or Shift+F10 on the focused head, opens Rename and Delete
+// through the shared builder (ctx-menu.ts: the chat's menu dress through the theme tokens, dismissal, keyboard reach).
+// Both verbs take the tab strip's own roads, never a second one: Rename edits the name in place (the strip's
+// startTabRename shape: Enter commits, Escape cancels, a blur commits) and posts renameSession, nothing renamed locally
+// ahead of the kernel, whose push brings the new name to every surface; Delete is the strip's close button: the End
+// confirm (its title, the open goals named in the detail, its buttons) and then endSession and closeTab in its order.
+// The row leaves on the kernel's push (the kill is the event), never locally ahead of it. plans/sessions-pane-session-menu.md.
+function sessionRow(sid: string): FleetSession | undefined { return sessions.find((s) => s.sid === sid); }
+// the row's head as it stands NOW: render() rebuilds the list on every push (every half second to three seconds), so a node
+// captured when the menu opened may be detached by the time an item is picked; every pick resolves by sid (the strip's own
+// rule for its menu: the id only, never the node under the cursor)
+function headOf(sid: string): HTMLElement | null {
+  return document.querySelector('#fleet-list .fl-head[data-sid="' + CSS.escape(sid) + '"]') as HTMLElement | null;
+}
+function displayName(sid: string): string {
+  return sessionRow(sid)?.name || (headOf(sid)?.querySelector(".fl-name") as HTMLElement | null)?.textContent || "";
+}
+
+function showSessionMenu(x: number, y: number, sid: string, viaKeyboard: boolean): void {
+  if (!sid) return;
+  // on close the focus returns to the row's head by sid (a push may have rebuilt the list under the open menu, and the builder's
+  // own return refocuses only a still-connected opener), unless the close followed the focus out of this document: the window's
+  // blur fires when a click lands in another pane, and a refocus then pulled the focus back to the head (Firefox lost the composer)
+  openContextMenu(x, y, [
+    { label: "Rename", sub: RENAME_SUBLINE, pick: () => startRowRename(sid) },
+    { label: "Delete", sub: "ends the session; its history stays on disk", danger: true, pick: () => confirmEndSession(sid) },
+  ], { className: "fl-sess-menu", viaKeyboard, onClose: () => { if (!document.hasFocus()) return; const h = headOf(sid); if (h) h.focus({ preventScroll: true }); } });
+}
+
+function startRowRename(sid: string): void {
+  const head = headOf(sid);                                     // resolved now: a push since the menu opened rebuilt the row
+  const nm = head?.querySelector(".fl-name") as HTMLElement | null;
+  if (!head || !nm || renameHold) return;                       // the row is gone (the session ended): nothing to edit, nothing held
+  const row: HTMLElement = head;
+  const full = displayName(sid);
+  const p = hostPrefix(full, sid);                              // a federated row shows "host:name": the host is this viewer's metadata and the far kernel
+  const base = p ? p.rest : full;                               //  knows the bare name, so the name alone is edited and posted (the strip's rule)
+  const input = document.createElement("input");
+  input.className = "fl-rename";
+  input.value = base;
+  input.spellcheck = false;
+  input.size = Math.max(base.length, 4);
+  const fixed = p ? document.createElement("span") : null;      // the host stays put beside the input, rendered as the row renders it and not editable
+  if (fixed) { fixed.className = "host-prefix"; fixed.textContent = p!.host; }   //  (the strip's shape; round three, low)
+  let settled = false;
+  const finish = (commit: boolean) => {
+    if (settled) return;
+    settled = true;
+    const v = input.value.trim();
+    const hadFocus = document.activeElement === input;          // Enter or Escape: the row takes the focus back; a blur has already moved it elsewhere
+    if (input.isConnected) input.replaceWith(nm);
+    fixed?.remove();
+    if (hadFocus && row.isConnected) row.focus({ preventScroll: true });
+    renameHold = false;
+    if (renameDirty) { renameDirty = false; render(); }
+    if (commit && v && v !== base) vscodeApi?.postMessage({ type: "renameSession", id: sid, name: v });   // the strip's message; the kernel's push renames the row
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();   // the list's keys (Enter opens, the menu key) are not the input's
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+  for (const ev of ["click", "mousedown", "dblclick", "contextmenu"]) input.addEventListener(ev, (e) => e.stopPropagation());   // never the head's open
+  nm.replaceWith(input);
+  if (fixed) input.before(fixed);
+  if (!input.isConnected) return;                               // never hold render() for an input that is not in the document
+  renameHold = true;
+  input.focus();
+  input.select();
+}
+
+function confirmEndSession(sid: string): void {
+  const name = displayName(sid);
+  const titles = openTopTitles((sessionRow(sid)?.ledger?.tree || []) as any);   // the live ledger at click time, as the strip reads it
+  openConfirmBox("End \u201c" + name + "\u201d?",
+    endConfirmDetail(titles, END_SESSION_STANDING),
+    [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
+    (v) => {
+      if (v !== "end") return;   // Cancel, Escape, the backdrop: nothing
+      vscodeApi?.postMessage({ type: "endSession", id: sid });   // the strip's two messages, in its order
+      vscodeApi?.postMessage({ type: "closeTab", id: sid });
+    });
+}
+
+(() => {
+  const list = document.getElementById("fleet-list");
+  if (!list) return;
+  list.addEventListener("contextmenu", (e) => {
+    const head = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
+    if (!head || !head.dataset.sid) return;   // the goal rows below keep their own clicks; a right-click there does nothing new
+    e.preventDefault(); e.stopPropagation();
+    showSessionMenu(e.clientX, e.clientY, head.dataset.sid, false);
+  });
+  document.addEventListener("focusin", (e) => {   // which session head has the focus, for the restore after a rebuild
+    focusedHead = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
+  });
+  list.addEventListener("focusout", (e) => {      // the focus left the list (a goal row, another frame, the menu): no head holds it. A head the rebuild
+    if (rebuilding) return;                        //  removes fires this too (Chromium), and that one is the rebuild's to settle
+    const to = e.relatedTarget as Node | null;
+    if (!to || !list.contains(to)) focusedHead = null;
+  });
+  list.addEventListener("keydown", (e) => {
+    const head = (e.target as Element).closest?.(".fl-head") as HTMLElement | null;
+    if (!head || !head.dataset.sid || e.target !== head) return;
+    if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+      e.preventDefault();
+      const r = head.getBoundingClientRect();
+      showSessionMenu(r.left + 12, r.bottom, head.dataset.sid, true);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openSession(head.dataset.sid);
+    }
+  });
+})();
 
 // Fleet-list clicks are DELEGATED to the stable #fleet-list (installed once). render() does
 // `#fleet-list`.replaceChildren() on every feed push, so a handler hung on a rebuilt row/header/caret is
@@ -843,8 +1149,9 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
 // sub-goal checklist — without leaving the Outline. ONE persistent panel on document.body: render()
 // wipes #fleet-list on every push (replaceChildren), so anything mounted inside it dies mid-hover
 // (the timeline SVG-wipe lesson) — the panel lives outside the wipe and only hides on a real
-// mouse-out / scroll / click. Wiring is DELEGATED to the stable #fleet-list; 120ms intent before
-// showing (the feed card's hover debounce) so row sweeps don't flash it.
+// mouse-out / scroll / click. Wiring is DELEGATED to the stable #fleet-list; the card shows INSTANTLY
+// on hover (the one tooltip treatment, 2026-08-28 — a hover IS the intent) and hides after the shared
+// TIP_GRACE_MS transit grace so sweeping into the card never flickers it.
 
 // WHY a node's checkbox reads the way it does — explicit vs inferred (roll-up = every sub-step done,
 // roll-down = a resolved parent) vs dismissed vs blocked vs open — worked out from the children the
@@ -855,7 +1162,7 @@ function markReason(n: LedgerNode, byId: Map<string, LedgerNode>): string {
   // actually finished before the dismissal — no more guessing from summary-presence.
   if (!n.done) {
     if (n.cleared) return n.blocked ? "blocked, then cleared — dismissed unfinished" : "cleared — dismissed as no longer needed, never done";
-    return n.blocked ? "blocked — needs you" : "not yet done";
+    return n.blocked ? "needs you" : "not yet done";
   }
   if (n.cleared) return "completed, then cleared off the board";
   if (!n.derived) return "done — explicitly checked off";
@@ -867,21 +1174,19 @@ function markReason(n: LedgerNode, byId: Map<string, LedgerNode>): string {
 
 const HOVER_SUB_CAP = 14;   // sub-goal rows shown before "…and N more" (the card stays a glance, not a scroll)
 let hoverCardEl: HTMLElement | null = null;
-let hoverKey = "";                      // "sid\0nid" currently shown (or pending)
-let hoverShowT: number | undefined, hoverHideT: number | undefined;
+let hoverKey = "";                      // "sid\0nid" currently shown
+let hoverHideT: number | undefined;
 
 function hideHoverCard(): void {
-  if (hoverShowT) { clearTimeout(hoverShowT); hoverShowT = undefined; }
   if (hoverHideT) { clearTimeout(hoverHideT); hoverHideT = undefined; }
   hoverKey = "";
   if (hoverCardEl) { hoverCardEl.remove(); hoverCardEl = null; }
 }
-// Leaving a row schedules the hide with a short transit grace, so crossing the small gap into the card
-// (or to the next row, which re-keys) doesn't flicker it; entering the card cancels.
+// Leaving a row schedules the hide with the shared tip grace (tip.ts TIP_GRACE_MS), so crossing the
+// small gap into the card (or to the next row, which re-keys) doesn't flicker it; entering cancels.
 function scheduleHideHover(): void {
-  if (hoverShowT) { clearTimeout(hoverShowT); hoverShowT = undefined; }
   if (hoverHideT) clearTimeout(hoverHideT);
-  hoverHideT = window.setTimeout(hideHoverCard, 160);
+  hoverHideT = window.setTimeout(hideHoverCard, TIP_GRACE_MS);
 }
 
 // The card body — the modal's sections from data the pane already holds: the ledger node (state, text,
@@ -892,7 +1197,10 @@ function buildHoverCard(s: FleetSession, n: LedgerNode, byId: Map<string, Ledger
   const rec = nodeRecency(n);
   state.textContent = markReason(n, byId) + (rec ? " · " + agehms(now - rec) + " ago" : "");
   const title = el("div", "fl-hover-title"); title.textContent = n.text;
-  card.append(state, title);
+  card.append(state);
+  // a provisional row's jumps are withheld (plans/outline-pane-provisional-row.md); the card, the row's one tooltip, says why
+  if (s.provisional) { const held = el("div", "fl-hover-state"); held.textContent = WITHHELD; card.append(held); }
+  card.append(title);
   const section = (label: string, text: string) => {
     const sec = el("div", "fl-hover-sec");
     const lab = el("div", "fl-hover-lab"); lab.textContent = label;
@@ -945,7 +1253,7 @@ function showHoverCard(row: HTMLElement, sid: string, nid: string): void {
   if (!s || !n) return;
   const byId = new Map([...(s.ledger?.tree || []), ...(s.ledger?.archivedTops || [])].map((x) => [x.id, x] as const));
   if (hoverCardEl) hoverCardEl.remove();
-  const card = buildHoverCard(s, n, byId, Math.floor(Date.now() / 1000));
+  const card = buildHoverCard(s, n, byId, nowSec());
   card.addEventListener("mouseenter", () => { if (hoverHideT) { clearTimeout(hoverHideT); hoverHideT = undefined; } });
   card.addEventListener("mouseleave", scheduleHideHover);
   document.body.appendChild(card);
@@ -966,10 +1274,11 @@ function showHoverCard(row: HTMLElement, sid: string, nid: string): void {
     if (!row || !sid || !nid) return;                 // provisional rows (no nid) keep their native title
     if (hoverHideT) { clearTimeout(hoverHideT); hoverHideT = undefined; }
     const key = sid + "\0" + nid;
-    if (key === hoverKey) return;                     // already shown/pending for this row
-    if (hoverShowT) clearTimeout(hoverShowT);
+    if (key === hoverKey) return;                     // already shown for this row
     hoverKey = key;
-    hoverShowT = window.setTimeout(() => { hoverShowT = undefined; showHoverCard(row, sid, nid); }, 120);
+    // INSTANT show (the one tooltip treatment, 2026-08-28): a hover IS the intent — the old 120ms
+    // debounce made every row feel laggy; the key check above keeps child-element mouseovers cheap.
+    showHoverCard(row, sid, nid);
   });
   list.addEventListener("mouseout", (e) => {
     const to = e.relatedTarget as Element | null;
@@ -1000,7 +1309,7 @@ function showHoverCard(row: HTMLElement, sid: string, nid: string): void {
           const v = JSON.parse(JSON.stringify(fleetViews || { active: "all", tags: [] }));
           v.actives = Object.assign({}, v.actives, { outline: l });
           fleetViews = v;                                        // optimistic: the next feed push echoes it
-          vscodeApi?.postMessage({ type: "setTimelineViews", views: v });
+          postOutlineLens(v);
           render();
         },
         onConfigure: () => { vscodeApi?.postMessage({ type: "openTagsDialog" }); },
@@ -1016,7 +1325,7 @@ function showHoverCard(row: HTMLElement, sid: string, nid: string): void {
       const v = JSON.parse(JSON.stringify(fleetViews || { active: "all", tags: [] }));
       v.actives = Object.assign({}, v.actives, { outline: l });
       fleetViews = v;
-      vscodeApi?.postMessage({ type: "setTimelineViews", views: v });
+      postOutlineLens(v);
       render();
     });
     syncFleetTagBtn();
@@ -1031,6 +1340,30 @@ mountControls();
 render();
 vscodeApi?.postMessage({ type: "ready" });   // ask the kernel to push the initial fleet state (like feed/timeline)
 
+// Keep every "(Xm ago)", the current goal's elapsed time, the recency cutoff and the slider's range honest
+// between frames: the clock-derived parts move on the local clock's deltas (nowSec) every 15 s, whatever the
+// wire is doing. A whole render(), not a per-element repaint: it is what every frame already runs, the ledgers
+// are small, and the cutoff filter has to be able to DROP a row as it ages out of the window — which no
+// repaint of the row's own text could do. Not for a pane nobody can see: a hidden tab (document.hidden) or a
+// pane the shell has hidden (display:none gives the iframe a ZERO viewport, the shim's zero-viewport probe;
+// document.hidden stays false for it) skips the tick, and the first visible moment catches up once
+// (visibilitychange, or the resize the iframe gets when it is shown again) — not on every flip, only after a
+// tick was skipped. Frames still render as they arrive. The probe alone, not the pane's published word the shim's
+// paneHidden() also reads: a pane hidden after a first show keeps its size in Chromium, so this tick runs for it,
+// and the cost is one 15 s pass nobody sees.
+const paneHidden = () => document.hidden || window.innerWidth === 0 || window.innerHeight === 0;
+let tickSkipped = false;   // a refresh fell while hidden: the pane owes one catch-up render
+const refreshIfVisible = () => {
+  if (!loaded) return;
+  if (paneHidden()) { tickSkipped = true; return; }
+  tickSkipped = false;
+  render();
+};
+setInterval(refreshIfVisible, 15000);
+const catchUp = () => { if (tickSkipped) refreshIfVisible(); };
+document.addEventListener("visibilitychange", catchUp);
+window.addEventListener("resize", catchUp);
+
 // Hold the romp loader up until the ledgers actually land (the user 2026-06-29, who wanted the loading thing shown until
 // the tasks are ready to render). The shared _pane_spin loader has an 8s backstop that would otherwise hide
 // it over an EMPTY pane while a cold kernel is still building every session's ledger (which can take longer
@@ -1038,8 +1371,17 @@ vscodeApi?.postMessage({ type: "ready" });   // ask the kernel to push the initi
 // re-asserting the loader, beating that backstop; stop the instant the data arrives (event-based via `loaded`).
 const _keepLoader = setInterval(() => {
   if (loaded) { clearInterval(_keepLoader); return; }
+  if (offNotice) return;   // the Task tracking switch's notice is the content: no loader over it (T404)
   const spin = document.getElementById("pane-spin");
   if (spin) spin.classList.remove("gone");
 }, 1000);
 
 export {};   // module scope — keep its globals off feed.ts's (a global script)
+
+// the notice's button while the Task tracking switch is off (T404): the settings on Task tracking
+document.getElementById("tt-off-btn")?.addEventListener("click", () => {
+  // through gear-host's one road (the shell forwards it into the settings iframe at the Task tracking tab); a standalone
+  // /feed or /fleet page has no shell to ask and hosts no gear, so it goes to the dashboard with the tab named in the hash,
+  // which the landing opens (T404 round two, medium 2: the bare post reached nothing on the only page where the notice shows)
+  if (!openGear(window, { tab: "tasks" })) window.location.assign("/" + window.location.search + "#settings=tasks");
+});

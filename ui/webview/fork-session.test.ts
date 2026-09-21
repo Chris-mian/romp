@@ -39,6 +39,18 @@ test("the fork button sits INLINE, right of the worked-seconds label — never i
   assert.match(CSS, /\.turn-elapsed \.fork-spot \{ margin-top: 0; \}/);
   // the OLD home is gone: the prompt's msg-acts row no longer carries a fork (the user 2026-08-19)
   assert.doesNotMatch(RENDER, /acts\.appendChild\(fk\);/);
+  // the fork GLYPH beside the word, Fork in the accessible name (T381, the user 2026-09-12): the stroke family's
+  // drawing from icons.ts, a line in from the left branching into two that run on to the right, no arrowheads
+  assert.match(RENDER, /fk\.innerHTML = ICON_FORK \+ '<span class="msg-fork-word">fork<\/span>';/, "the glyph carried on the button, the word beside it");
+  assert.match(RENDER, /fk\.setAttribute\("aria-label", "Fork"\);/);
+  assert.match(RENDER, /import \{ GEAR_GLYPH, ICON_FORK \} from "\.\/icons";/);   // the strip's gear glyph shares the import (the lock icons left with the gear's menu, T415)
+  assert.doesNotMatch(RENDER, /fk\.textContent = "fork";/, "no bare word any more");
+  const ICONS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "icons.ts"), "utf8");
+  const fork = ICONS.slice(ICONS.indexOf("export const ICON_FORK"), ICONS.indexOf(";", ICONS.indexOf("export const ICON_FORK")));
+  assert.match(fork, /<polyline points="2 12 9 12 15 7 22 7"\/>/, "the trunk from the left edge to the fork point, then up-right to the right edge");
+  assert.match(fork, /<polyline points="9 12 15 17 22 17"\/>/, "…and the second branch down-right to the right edge");
+  assert.doesNotMatch(fork, /marker|arrow|#[0-9a-fA-F]{3,6}\b/, "no arrowheads, no raw hex: currentColor strokes in the shared family");
+  assert.match(CSS, /\.msg-fork \{ display: inline-flex; align-items: center; gap: 4px; \}/);
   // click-safe: the button is DELEGATED (data-act), landing in the shared modal with the spot's own cut
   assert.match(RENDER, /fk\.dataset\.act = "forkspot";/);
   assert.match(RENDER, /forkspot: \(elx\) => \{/);
@@ -47,12 +59,14 @@ test("the fork button sits INLINE, right of the worked-seconds label — never i
   assert.match(CSS, /\.turn-assistant:hover \.msg-fork, \.msg-fork:focus-visible \{ opacity: 0\.9; \}/);
   assert.match(CSS, /\.msg-fork:hover \{ color: var\(--fg\); border-color: var\(--accent\); \}/);
   assert.doesNotMatch(CSS, /\.msg-fork\.armed/);
-  // the under-bubble button family wears NEUTRAL chrome (the user 2026-08-23): it sits on the page
-  // ground, where the terracotta code tint (--code-bg) read as a faint red button. Only .code-copy
-  // keeps the tint — it sits ON the tinted code block and blends there.
-  for (const block of [".msg-edit {", ".msg-del, .msg-restorefiles, .msg-fork {", ".undelivered-act {"]) {
+  // the under-bubble button family wears the ONE button rest (the user 2026-08-23 made it neutral,
+  // never the terracotta code tint; T141 2026-08-28 unified all button rests to the feed's — dark
+  // ground, the mirrored --card-border hairline). Only .code-copy keeps the tint — it sits ON the
+  // tinted code block and blends there.
+  for (const block of [".msg-edit {", ".msg-del, .msg-restorefiles, .msg-fork {", ".notice-act {"]) {   // .undelivered-act → the notice word button (2026-09-08)
     const body = CSS.slice(CSS.indexOf(block), CSS.indexOf("}", CSS.indexOf(block)));
-    assert.ok(body.includes("background: rgba(255, 255, 255, 0.06)"), block + " wears the neutral ground");
+    assert.ok(body.includes("background: transparent"), block + " wears the one button rest");
+    assert.ok(body.includes("var(--card-border)"), block + " wears the feed hairline");
     assert.ok(!body.includes("--code-bg"), block + " must not borrow the code tint");
   }
   const copy = CSS.slice(CSS.indexOf(".code-copy {"), CSS.indexOf("}", CSS.indexOf(".code-copy {")));
@@ -61,7 +75,8 @@ test("the fork button sits INLINE, right of the worked-seconds label — never i
 
 test("the modal defaults to <session>-fork and posts forkSession {id, uuid, name}", () => {
   assert.match(RENDER, /function showForkPrompt\(sid: string, uuid: string\): void \{/);
-  assert.match(RENDER, /input\.value = base \+ "-fork";/);
+  assert.match(RENDER, /const base = defaultForkName\(sess\?\.name, sid\);/);   // <bare session>-fork (T289: never the viewer's host label)
+  assert.match(RENDER, /input\.value = base;/);
   assert.match(RENDER, /if \(!\/\^\[A-Za-z0-9._-\]\+\$\/\.test\(name\)\) \{ input\.classList\.add\("bad"\); input\.focus\(\); return; \}/);
   assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "forkSession", id: sid, uuid, name \}\);/);
   // the instant acknowledgement is the provisional tab, name-joined like a picker create
@@ -74,7 +89,7 @@ test("the modal defaults to <session>-fork and posts forkSession {id, uuid, name
 
 test("the palette forks the ACTIVE session from the tip, via the chat pane", () => {
   assert.match(PALETTE, /id: "session\.fork", title: "Fork this session…"/);
-  assert.match(PALETTE, /pane\("f-chat"\)!\.contentWindow!\.postMessage\(\{ romp: "forkSession" \}, "\*"\)/);
+  assert.match(PALETTE, /chatPane\(\)!\.contentWindow!\.postMessage\(\{ romp: "forkSession" \}, "\*"\)/);   // the chat column last worked in (split screen 2026-09-08)
   assert.match(RENDER, /if \(m\.romp === "forkSession"\) \{/);
   assert.match(RENDER, /if \(activeId && !isProvisionalId\(activeId\) && sessions\.get\(activeId\)\) showForkPrompt\(activeId, ""\);/);
 });
@@ -95,7 +110,7 @@ test("kernel: forkSession is a session op; seeding precedes discoverability; the
   assert.match(BACKEND, /if self\._fork_of and fsid == self\.sid:/);
   assert.match(BACKEND, /self\.backend\._update_reg\(self\.sid, forkOf="", forkAt=""\)/);
   // …and the names/ entry is written LAST (it is the discoverability trigger)
-  assert.match(BACKEND, /write_reg\(self\.state_dir, sid, reg\)[\s\S]{0,400}write_name\(self\.state_dir, sid, name, cwd, bg, fg\)[\s\S]{0,200}append_state\(self\.state_dir, sid, "waiting"\)/);
+  assert.match(BACKEND, /self\._write_reg_locked\(sid, reg\)[\s\S]{0,400}write_name\(self\.state_dir, sid, name, cwd, bg, fg\)[\s\S]{0,200}append_state\(self\.state_dir, sid, "waiting"\)/);
 });
 
 // ── branch lineage (the user 2026-08-13: branching must SHOW) ───────────────────────────────────
@@ -125,6 +140,9 @@ test("kernel persists lineage durably and serves it on the session payload", () 
 
 test("branch chrome wears the accent, like every highlight", () => {
   const css = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
-  assert.match(css, /\.branch-divider::before, \.branch-divider::after \{[^}]*var\(--accent\)/s);
+  // 2026-09-08 (the notice-vocabulary pass): the child's divider is a slim BRANCH notice in the romp severity —
+  // the accent on its rail/dot/glyph; the accent hairlines + pill are retired
+  assert.match(css, /\.notice-sev-romp\s+\{ --notice-rail: var\(--accent\);/);
+  assert.doesNotMatch(css, /\.branch-divider|\.branch-label/);
   assert.match(css, /\.branch-chip \{[^}]*color: var\(--accent\)/s);
 });

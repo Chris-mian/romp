@@ -15,7 +15,7 @@ import threading
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -24,11 +24,11 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 PARENT_SID = "11111111-2222-3333-4444-555555555555"
 FORK_SID = "66666666-7777-8888-9999-000000000000"
@@ -48,8 +48,8 @@ class ForkRoute(unittest.TestCase):
     def setUp(self):
         self.calls = []
         self.names = {"exp-web": PARENT_SID}      # the live-name store the route consults
-        self._saved = (km._tmux_sessions, km._live_names, km._fork_session)
-        km._tmux_sessions = lambda: {}
+        self._saved = (km._live_map, km._live_names, km._fork_session)
+        km._live_map = lambda: {}
         km._live_names = lambda tm: dict(self.names)
 
         def fake_fork(psid, at, nm, now=None, client=None):
@@ -59,7 +59,7 @@ class ForkRoute(unittest.TestCase):
         km._fork_session = fake_fork
 
     def tearDown(self):
-        km._tmux_sessions, km._live_names, km._fork_session = self._saved
+        km._live_map, km._live_names, km._fork_session = self._saved
 
     def _post(self, body):
         req = urllib.request.Request(
@@ -114,6 +114,16 @@ class ForkRoute(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertFalse(r.get("ok"))
         self.assertIn("SDK backend", r.get("error") or "")
+
+    def test_the_route_reaches_the_one_fork_op_that_inherits_tags(self):
+        # tab groups on tags (the user 2026-09-04): /fork and the WS forkSession op both land in
+        # _fork_session, which copies the parent's tag memberships onto the fork BEFORE connect — so
+        # the headless fork gets exactly the dashboard's behavior (test_kernel_fork.py executes it)
+        import inspect
+        src = inspect.getsource(km._fork_session_inner)   # _fork_session is a wrapper over it; setUp swaps only the wrapper
+        self.assertIn("_inherit_tag_membership(parent_sid, sid)", src)
+        self.assertLess(src.index("_inherit_tag_membership(parent_sid, sid)"), src.index("be.connect(sid)"),
+                        "membership lands before the connect that precedes the direct push")
 
 
 if __name__ == "__main__":

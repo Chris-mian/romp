@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -18,7 +18,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 TUSE = "11111111-aaaa-bbbb-cccc-222222222222"
 
@@ -184,7 +184,7 @@ class BgTasks(unittest.TestCase):
         # the CLI's task lifecycle stream is the AUTHORITATIVE liveness source (the user 2026-07-11): a
         # scan row survives only while its tool_use id is in the live set, so a killed/finished task drops
         # the instant its terminal event lands — and live=[] (no tasks) empties the box even if the
-        # transcript still reads 'running'. live=None (tmux / backend mid-restart) keeps the scan verdict.
+        # transcript still reads 'running'. live=None (a backend mid-restart, no snapshot) keeps the scan verdict.
         path = _write([_launch(), _launch(tid="tu_watch", desc="power watcher")])
         try:
             live_one = [{"desc": "Restart server after test", "type": "local_bash",
@@ -195,7 +195,7 @@ class BgTasks(unittest.TestCase):
             self.assertEqual(km._bg_tasks(path, live=[])["count"], 0,
                              "an EMPTY live set is authoritative: nothing is running")
             self.assertEqual(km._bg_tasks(path, live=None)["count"], 2,
-                             "no live info (tmux / no snapshot) → the transcript scan stands")
+                             "no live info (no snapshot) → the transcript scan stands")
         finally:
             os.unlink(path)
 
@@ -328,14 +328,14 @@ class DispatchGist(unittest.TestCase):
         ack["toolUseResult"] = {"isAsync": True, "status": "async_launched", "taskType": "local_agent",
                                 "outputFile": "/tmp/agent-a1.output"}
         path = _write([use, ack])
-        saved = (km._tmux_sessions, km._sdk_spawned_at)
-        km._tmux_sessions = lambda: {"11111111-2222-3333-4444-555555555555": {"name": "web"}}
+        saved = (km._live_map, km._sdk_spawned_at)
+        km._live_map = lambda: {"11111111-2222-3333-4444-555555555555": {"name": "web"}}
         km._sdk_spawned_at = lambda s: None
         try:
             res = km._bg_tasks(path)
             row = km._bg_live_norm("11111111-2222-3333-4444-555555555555", path)[0]
         finally:
-            km._tmux_sessions, km._sdk_spawned_at = saved
+            km._live_map, km._sdk_spawned_at = saved
             os.unlink(path)
         self.assertEqual(res["count"], 1, "the ack must not duplicate the launch row")
         self.assertEqual(res["tasks"][0]["summary"], "Audit the sampler")
@@ -378,51 +378,60 @@ class DispatchGist(unittest.TestCase):
 
     def test_the_acks_task_type_rides_the_scan_row(self):
         # the lifecycle set's type already threads through _bg_live_norm; the transcript scan carried
-        # no type at all, so a placed-unstamped agent on the scan path (tmux) read as furniture
+        # no type at all, so a placed-unstamped agent on the scan path read as furniture
         sid = "11111111-2222-3333-4444-555555555555"
         use, ack = _workflow_launch()
         bare = _agent_launch(tid="tu_agent1")
         bare["toolUseResult"] = {"isAsync": True, "status": "async_launched"}
         path = _write([use, ack, _agent_tool_use(tid="tu_agent1"), bare])
-        saved = (km._tmux_sessions, km._sdk_spawned_at)
-        km._tmux_sessions = lambda: {sid: {"name": "web"}}   # live CLI, no lifecycle set → scan source
+        saved = (km._live_map, km._sdk_spawned_at)
+        km._live_map = lambda: {sid: {"name": "web"}}   # live CLI, no lifecycle set → scan source
         km._sdk_spawned_at = lambda s: None
         try:
             rows = {r["desc"]: r["type"] for r in km._bg_live_norm(sid, path)}
         finally:
-            km._tmux_sessions, km._sdk_spawned_at = saved
+            km._live_map, km._sdk_spawned_at = saved
             os.unlink(path)
         self.assertEqual(rows["Sweep the notes-api routes for slow spots"], "local_workflow")
         self.assertEqual(rows["Map the parser"], "local_agent")
 
 
 class DurableAwaitingSource(unittest.TestCase):
-    """_session_awaiting source 0.75: for a LIVE CLI with no lifecycle set (tmux — the CLI outlives kernel
+    """_session_awaiting source 0.75: for a LIVE CLI with no lifecycle set (the CLI outlives kernel
     restarts and has no SDK task stream), the transcript's own launch↔notification pairing keeps awaiting
     across kernel restarts. An SDK snapshot's bgTasks key (even empty) stays authoritative; a dormant
     session never reaches the source."""
     SID = "11111111-2222-3333-4444-555555555555"
 
     def _patched(self, live_map, spawned=None):
-        saved = (km._tmux_sessions, km._sdk_spawned_at, km._states_awaiting_overlay)
-        km._tmux_sessions = lambda: live_map
+        saved = (km._live_map, km._sdk_spawned_at, km._states_awaiting_overlay)
+        km._live_map = lambda: live_map
         km._sdk_spawned_at = lambda sid: spawned
         km._states_awaiting_overlay = lambda sid: None
         return saved
 
     def _restore(self, saved):
-        km._tmux_sessions, km._sdk_spawned_at, km._states_awaiting_overlay = saved
+        km._live_map, km._sdk_spawned_at, km._states_awaiting_overlay = saved
 
-    def test_pending_agent_dispatches_read_kind_agents_not_task(self):
-        # dispatched agents/workflows are kind agents even through the task stream; a MIXED pending
-        # set (or plain shell work) is kind task — the generic word (the user 2026-08-15)
+    def test_pending_agent_and_shell_dispatches_are_two_rows_of_two_kinds(self):
+        # dispatched agents/workflows are AGENT rows even through the task stream; a shell launch is a
+        # COMMAND row. Until 2026-09-05 a mixed pending set collapsed to the generic kind "task" (the
+        # agent silently absorbed into "Awaiting 2 tasks"); the user's call (plans/subagent-transcripts.md
+        # slice 2): the kinds are different things — separate rows, kind "mixed", count = every row.
         rows = [{"toolUseId": "t1", "desc": "audit the sampler", "since": 5, "type": "local_agent"},
                 {"toolUseId": "t2", "desc": "notes-api sweep", "since": 6, "type": "local_workflow"}]
         saved = self._patched({self.SID: {"bgTasks": rows}})
         try:
-            self.assertEqual(km._session_awaiting(self.SID, None, True)["kind"], "agents")
+            aw = km._session_awaiting(self.SID, None, True)
+            self.assertEqual((aw["kind"], aw["count"]), ("agents", 2))
+            self.assertEqual([it["kind"] for it in aw["items"]], ["agents", "agents"])
             rows.append({"toolUseId": "t3", "desc": "mkdocs serve", "since": 7, "type": "local_bash"})
-            self.assertEqual(km._session_awaiting(self.SID, None, True)["kind"], "task")
+            aw = km._session_awaiting(self.SID, None, True)
+            self.assertEqual((aw["kind"], aw["count"]), ("mixed", 3), "two kinds present → mixed, every row counted")
+            self.assertEqual([(it["kind"], it["label"]) for it in aw["items"]],
+                             [("agents", "audit the sampler"), ("agents", "notes-api sweep"), ("commands", "mkdocs serve")])
+            self.assertNotIn("task", aw["why"], "the collapse word is gone: %r" % aw["why"])
+            self.assertEqual(aw["why"], "waiting on 2 background agents and 1 background command")
         finally:
             self._restore(saved)
 
@@ -434,8 +443,10 @@ class DurableAwaitingSource(unittest.TestCase):
         finally:
             self._restore(saved)
             os.unlink(path)
-        self.assertEqual(why, {"kind": "task", "why": "waiting on a background task: power watcher",
-                               "since": None})   # the transcript scan carries no dispatch stamp → no duration, never a guess
+        self.assertEqual(why, {"kind": "task", "why": "waiting on a background command: power watcher",   # "command" since slice 2 (2026-09-05)
+                               "since": None, "count": 1,   # the transcript scan carries no dispatch stamp → no duration, never a guess
+                               "tasks": ["power watcher"],
+                               "items": [{"kind": "commands", "id": TUSE, "label": "power watcher", "since": None}]})   # the one awaited row (slice 2)
 
     def test_the_notification_landing_ends_it(self):
         path = _write([_launch(), _notif_str(tid=TUSE)])
@@ -477,6 +488,171 @@ class DurableAwaitingSource(unittest.TestCase):
             os.unlink(path)
 
 
+class OneRowPerAgentAcrossTheHookAndTheStream(unittest.TestCase):
+    """A background agent is reported TWICE to _session_awaiting: by the SubagentStart hook set (source 0:
+    {type, since, agentId}) and by the CLI's task lifecycle stream (source 0.5: the bgTasks mirror, whose
+    rows carry the launch's toolUseId and the CLI's own description). The slice-2 join matched them on
+    agentId — but the stream rows never carried one: _live_bg_tasks dropped the lifecycle task_id (which IS
+    the agent id for an Agent task, probe-verified on 2.1.257 and already relied on by _on_task_event), the
+    launch ledger records Bash/Monitor only (its agentId is the ACTING agent), and the sidecar meta map is
+    keyed on the ORIGINAL launch's toolUseId, which a resumed agent's task no longer carries. Seen live on
+    2026-09-06: two agents and a shell command read "Awaiting 5 · 4 agents · 1 command" — each agent once by
+    type (with the open-transcript arrow) and once as "Running <description>" (no arrow). The join key is
+    the stream's own task_id (`taskId` on every bgTasks row), and an agent row's label is the dispatch
+    description with the CLI's "Running " prefix stripped (the STATUS word already says running).
+    SYNTHETIC: placeholder sid, invented agent ids and descriptions (the notes-api demo domain)."""
+    SID = "11111111-2222-3333-4444-555555555555"
+    A1, A2 = "a1111111111111111", "a2222222222222222"
+
+    def setUp(self):
+        self._saved = (km._live_map, km._sdk_spawned_at, km._states_awaiting_overlay, km._bg_pending)
+        km._sdk_spawned_at = lambda sid: None
+        km._states_awaiting_overlay = lambda sid: None
+        km._bg_pending = lambda sid, path, tasks: tasks     # nothing placed yet: every live row is pending
+
+    def tearDown(self):
+        km._live_map, km._sdk_spawned_at, km._states_awaiting_overlay, km._bg_pending = self._saved
+
+    def _snap(self, subs, tasks):
+        km._live_map = lambda: {self.SID: {"subagents": subs, "bgTasks": tasks}}
+
+    def test_a_placed_launch_still_joins_its_hook_row(self):
+        # the ordinary idle-awaiting steady state: the judge has PLACED the launch turn, so the launch is
+        # no longer pending — the hook row must still meet its stream twin (one row, the launch's id and
+        # description), not flap back to {id: agentId, label: agent type} (review find on #938, 2026-09-07)
+        km._bg_pending = lambda sid, path, tasks: []          # everything placed
+        self._snap([{"type": "general-purpose", "since": 100, "agentId": self.A1}],
+                   [{"toolUseId": "toolu_01", "taskId": self.A1, "type": "local_agent", "since": 98,
+                     "desc": "Running Check the exporter for banned words", "lastTool": ""},
+                    {"toolUseId": "toolu_03", "taskId": "b3333", "type": "local_bash", "since": 110,
+                     "desc": "build the docs site", "lastTool": ""}])
+        aw = km._session_awaiting(self.SID, None, True)
+        self.assertEqual(aw["count"], 1, "the placed command adds no row; the hook agent is one joined row: %r" % aw["items"])
+        it = aw["items"][0]
+        self.assertEqual((it["kind"], it["id"], it["label"], it.get("agentId"), it["since"]),
+                         ("agents", "toolu_01", "Check the exporter for banned words", self.A1, 98),
+                         "joined over EVERY live agent task, not only the pending ones")
+
+    def test_two_agents_seen_by_both_sources_and_a_shell_command_are_three_rows(self):
+        # the live defect, reproduced on the REAL _bg_live_norm: hook rows (type-labelled) + stream rows
+        # (the same two agents, the CLI's "Running <description>" wording, toolUseIds) + one shell task
+        self._snap([{"type": "general-purpose", "since": 100, "agentId": self.A1},
+                    {"type": "general-purpose", "since": 105, "agentId": self.A2}],
+                   [{"toolUseId": "toolu_01", "taskId": self.A1, "type": "local_agent", "since": 98,
+                     "desc": "Running Check the exporter for banned words", "lastTool": ""},
+                    {"toolUseId": "toolu_02", "taskId": self.A2, "type": "local_agent", "since": 104,
+                     "desc": "Running Rerun the notes-api harness", "lastTool": ""},
+                    {"toolUseId": "toolu_03", "taskId": "b3333", "type": "local_bash", "since": 110,
+                     "desc": "build the docs site", "lastTool": ""}])
+        aw = km._session_awaiting(self.SID, None, True)
+        self.assertEqual(aw["count"], 3, "one row per awaited thing — the same agent is never counted twice: %r" % aw["items"])
+        self.assertEqual([it["kind"] for it in aw["items"]], ["agents", "agents", "commands"])
+        self.assertEqual([it["label"] for it in aw["items"]],
+                         ["Check the exporter for banned words", "Rerun the notes-api harness", "build the docs site"],
+                         "the dispatch description, never the agent type and never the CLI's 'Running ' prefix")
+        self.assertEqual([it.get("agentId") for it in aw["items"]], [self.A1, self.A2, None],
+                         "every joined agent row keeps its agentId (the open-transcript arrow)")
+        self.assertEqual([it["id"] for it in aw["items"]], ["toolu_01", "toolu_02", "toolu_03"],
+                         "a joined row wears the launch's toolUseId — Stop's handle")
+        self.assertEqual([it["since"] for it in aw["items"]], [98, 104, 110], "the earlier of the two starts")
+        self.assertEqual((aw["kind"], aw["why"]), ("mixed", "waiting on 2 background agents and 1 background command"))
+        self.assertEqual(aw["tasks"], ["Check the exporter for banned words", "Rerun the notes-api harness", "build the docs site"])
+
+    def test_the_same_three_rows_ride_while_the_turn_is_open(self):
+        # 2026-09-06, on the REAL _bg_live_norm: the joined rows are a turn-agnostic read
+        # (_session_background_items) — the chat box lists them under a working header instead of falling
+        # to the legacy tasks list, which is what made the box swap presentations at every turn boundary
+        self._snap([{"type": "general-purpose", "since": 100, "agentId": self.A1},
+                    {"type": "general-purpose", "since": 105, "agentId": self.A2}],
+                   [{"toolUseId": "toolu_01", "taskId": self.A1, "type": "local_agent", "since": 98,
+                     "desc": "Running Check the exporter for banned words", "lastTool": ""},
+                    {"toolUseId": "toolu_02", "taskId": self.A2, "type": "local_agent", "since": 104,
+                     "desc": "Running Rerun the notes-api harness", "lastTool": ""},
+                    {"toolUseId": "toolu_03", "taskId": "b3333", "type": "local_bash", "since": 110,
+                     "desc": "build the docs site", "lastTool": ""}])
+        idle_rows = km._session_awaiting(self.SID, None, True)["items"]
+        self.assertIsNone(km._session_awaiting(self.SID, None, False), "mid-turn there is no WAIT (the chip reads Working)")
+        self.assertEqual(km._session_background_items(self.SID, None), idle_rows, "…but the rows are the same three")
+        self.assertEqual([it["label"] for it in idle_rows],
+                         ["Check the exporter for banned words", "Rerun the notes-api harness", "build the docs site"])
+
+    def test_a_live_agent_the_stream_has_not_seen_keeps_its_type_as_the_label(self):
+        self._snap([{"type": "explore", "since": 100, "agentId": self.A1}], [])
+        aw = km._session_awaiting(self.SID, None, True)
+        self.assertEqual([(it["kind"], it["label"], it.get("agentId"), it["id"]) for it in aw["items"]],
+                         [("agents", "explore", self.A1, self.A1)])
+        self.assertEqual(aw["count"], 1)
+
+    def test_a_stream_agent_with_no_hook_row_is_one_row_by_description(self):
+        self._snap([], [{"toolUseId": "toolu_01", "taskId": self.A1, "type": "local_agent", "since": 98,
+                         "desc": "Running Check the exporter for banned words", "lastTool": ""}])
+        aw = km._session_awaiting(self.SID, None, True)
+        self.assertEqual([(it["kind"], it["label"], it.get("agentId"), it["id"]) for it in aw["items"]],
+                         [("agents", "Check the exporter for banned words", self.A1, "toolu_01")])
+        self.assertEqual(aw["count"], 1)
+
+    def test_the_stream_row_carries_the_agent_id_and_the_plain_description(self):
+        # the normalized row itself, so every reader of _bg_live_norm (the chip's awaitingTasks, the
+        # feed pill, the nudge gates) sees one vocabulary
+        self._snap([], [{"toolUseId": "toolu_01", "taskId": self.A1, "type": "local_agent", "since": 98,
+                         "desc": "Running Check the exporter for banned words", "lastTool": ""},
+                        {"toolUseId": "toolu_03", "taskId": "b3333", "type": "local_bash", "since": 110,
+                         "desc": "Running the docs build", "lastTool": ""}])
+        rows = km._bg_live_norm(self.SID, None)
+        self.assertEqual([(r["tid"], r.get("agentId"), r["desc"]) for r in rows],
+                         [("toolu_01", self.A1, "Check the exporter for banned words"),
+                          ("toolu_03", None, "Running the docs build")],
+                         "only an AGENT row's desc wears the CLI's prefix; a shell task's description is the user's own words")
+
+    def test_a_subagents_own_command_nests_under_the_agent_by_the_ledgers_acting_agent(self):
+        # 2026-09-10, on the REAL _bg_live_norm: one live agent whose background test chunk registered under
+        # the parent's task list (one list per session). The launch ledger's entry for the Bash carries the
+        # hook's agent_id (the acting agent), so the command is the AGENT's wait, nested under its row and
+        # stoppable (a lifecycle-set task); the session's own count is one agent, breakdown "1 agent".
+        saved_reg = km._thread_reg
+        km._thread_reg = lambda sid: {"bgLedger": [{"tid": "b3333", "toolUseId": "toolu_03", "tool": "bash",
+                                                    "desc": "run the parser test chunk", "armedAt": 110,
+                                                    "agentId": self.A1, "src": "hook"}]}
+        try:
+            self._snap([{"type": "general-purpose", "since": 100, "agentId": self.A1}],
+                       [{"toolUseId": "toolu_01", "taskId": self.A1, "type": "local_agent", "since": 98,
+                         "desc": "Running Check the exporter for banned words", "lastTool": ""},
+                        {"toolUseId": "toolu_03", "taskId": "b3333", "type": "local_bash", "since": 110,
+                         "desc": "run the parser test chunk", "lastTool": ""}])
+            aw = km._session_awaiting(self.SID, None, True)
+        finally:
+            km._thread_reg = saved_reg
+        self.assertEqual((aw["kind"], aw["count"], aw["why"]), ("agents", 1, "1 background agent still working"))
+        self.assertEqual(aw["items"], [{"kind": "agents", "id": "toolu_01", "label": "Check the exporter for banned words",
+                                        "since": 98, "agentId": self.A1, "stoppable": True,
+                                        "waits": [{"kind": "commands", "id": "toolu_03", "label": "run the parser test chunk",
+                                                   "since": 110, "stoppable": True}]}])
+        self.assertEqual(aw["tasks"], ["Check the exporter for banned words"])
+
+    def test_a_command_with_no_ledger_owner_and_no_agent_file_stays_beside_the_agent(self):
+        # the same two tasks, the ledger silent and no transcript to consult (path None): never a guess
+        self._snap([{"type": "general-purpose", "since": 100, "agentId": self.A1}],
+                   [{"toolUseId": "toolu_01", "taskId": self.A1, "type": "local_agent", "since": 98,
+                     "desc": "Running Check the exporter for banned words", "lastTool": ""},
+                    {"toolUseId": "toolu_03", "taskId": "b3333", "type": "local_bash", "since": 110,
+                     "desc": "run the parser test chunk", "lastTool": ""}])
+        aw = km._session_awaiting(self.SID, None, True)
+        self.assertEqual((aw["kind"], aw["count"]), ("mixed", 2))
+        self.assertEqual([it["kind"] for it in aw["items"]], ["agents", "commands"])
+        self.assertTrue(all(it.get("stoppable") for it in aw["items"]), "every lifecycle-set row is stoppable")
+
+    def test_the_transcript_scan_path_carries_the_acks_agent_id(self):
+        # source 0.75 (a live CLI with no lifecycle set): the async ack names the agent; the row
+        # must carry it so the same join works there
+        path = _write([_agent_tool_use(tid="tu_agent1", desc="Map the parser"), _agent_launch(tid="tu_agent1")])
+        km._live_map = lambda: {self.SID: {"name": "web"}}
+        try:
+            rows = km._bg_live_norm(self.SID, path)
+        finally:
+            os.unlink(path)
+        self.assertEqual([(r["tid"], r.get("agentId"), r["desc"]) for r in rows], [("tu_agent1", "a1", "Map the parser")])
+
+
 class AgentTasksAreNeverServices(unittest.TestCase):
     """_bg_split (the user 2026-07-27): a dispatched AGENT is work the session waits on by construction,
     never furniture — only shell tasks can be classified as services. A background agent was riding the
@@ -511,13 +687,13 @@ class AgentTasksAreNeverServices(unittest.TestCase):
         self.assertEqual(awaited, [t], "the closer affirmed this thread's wait")
 
     def test_norm_threads_the_type_through_both_sources(self):
-        saved = km._tmux_sessions
-        km._tmux_sessions = lambda: {self.SID: {"bgTasks": [
+        saved = km._live_map
+        km._live_map = lambda: {self.SID: {"bgTasks": [
             {"toolUseId": "t4", "desc": "an agent", "since": 5, "type": "local_agent"}]}}
         try:
             rows = km._bg_live_norm(self.SID, None)
         finally:
-            km._tmux_sessions = saved
+            km._live_map = saved
         self.assertEqual(rows[0]["type"], "local_agent", "the lifecycle set's type survives normalization")
 
 
@@ -529,8 +705,8 @@ class AwaitedTaskIdsMirrorTheDescs(unittest.TestCase):
     SID = "11111111-2222-3333-4444-555555555555"
 
     def test_ids_track_the_awaited_split_and_skip_services(self):
-        saved = (km._tmux_sessions, km._bg_placed_tops, km._session_stamped_tops)
-        km._tmux_sessions = lambda: {self.SID: {"bgTasks": [
+        saved = (km._live_map, km._bg_placed_tops, km._session_stamped_tops)
+        km._live_map = lambda: {self.SID: {"bgTasks": [
             {"toolUseId": "t1", "desc": "suite run", "since": 5, "type": "local_shell"},
             {"toolUseId": "t2", "desc": "mkdocs serve", "since": 6, "type": "local_shell"},
         ]}}
@@ -540,7 +716,7 @@ class AwaitedTaskIdsMirrorTheDescs(unittest.TestCase):
             ids = km._awaiting_task_ids(self.SID, "/p")
             descs = km._awaiting_task_descs(self.SID, "/p")
         finally:
-            km._tmux_sessions, km._bg_placed_tops, km._session_stamped_tops = saved
+            km._live_map, km._bg_placed_tops, km._session_stamped_tops = saved
         self.assertEqual(ids, ["t1"], "pending t1 is awaited; the placed-unstamped service t2 is not")
         self.assertEqual(descs, ["suite run"], "ids and descriptions describe the same awaited set")
 

@@ -9,8 +9,9 @@ resolves sid → the live-blocked card(s) from the LAST BUILT feed payload (pre-
 the cards about to unblock); apiError floors are excluded — an answer doesn't lift those. SYNTHETIC
 fixtures only."""
 import os
+import json
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -21,7 +22,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_cardpredict", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_cardpredict", os.path.join(BIN, "romp-kernel"))
 
 # The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
 # tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
@@ -65,7 +66,7 @@ class PredictWorkingFanOut(unittest.TestCase):
         km._send_to_app = lambda app, m: self.frames.append((app, m))
         km._name_of = lambda sid: "web"   # these tests drive ops on a session this kernel HAS; _drive refuses one it doesn't (2026-07-29)
         km.Sessions.backend_for = lambda sid: self.be
-        km._send_or_park = lambda *a, **k: None
+        km._send_or_park = lambda *a, **k: False   # handed over now (None is the REFUSED value since 2026-09-08)
         km.jd.optimistic_followup = lambda *a, **k: False
         # the last-built feed payload: the pre-answer map of which card the live floor sits on
         km._built_feed[:] = [None, {"type": "feed", "asks": [
@@ -168,6 +169,37 @@ class PredictWorkingFanOut(unittest.TestCase):
         # longer a drive op, routes nowhere, and fans no prediction.
         self.assertFalse(km._drive({"type": "cardMove", "itemId": SID + ":g2", "to": "working"}, client))
         self.assertEqual(self._feed_frames(), [])
+
+
+
+class SwallowedAnswerNeverLooksLikeProgress(PredictWorkingFanOut):
+    """T214 (verified live 2026-09-01): an answer flushed across a kernel restart found no waiting
+    ask — on_ask returned False (sid not respawned) or resolve_ask silently no-opped — yet the
+    handler predicted Working unconditionally and told no one. The delivery outcome is honored now:
+    a False flips nothing and surfaces loudly; a True keeps the exact old behavior."""
+
+    def test_red_repro_a_swallowed_answer_flips_nothing_and_surfaces(self):
+        self.be.on_ask = lambda sid, action, target=None: False   # the ask died with the old kernel
+        sent = []
+        client = {"send": lambda s: sent.append(json.loads(s))}
+        for op in ({"type": "answerAsk", "id": SID, "target": 0},
+                   {"type": "submitAsk", "id": SID},
+                   {"type": "addCustomAsk", "id": SID, "text": "mine"},
+                   {"type": "askText", "id": SID, "text": "typed"}):
+            self.frames.clear(); sent.clear()
+            km._drive(op, client)
+            self.assertEqual(self._feed_frames(), [],
+                             "%s: a swallowed answer must never look like progress" % op["type"])
+            lost = [m for m in sent if m.get("type") == "askLost" and m.get("id") == SID]
+            self.assertEqual(len(lost), 1, "%s: the swallow must surface loudly to the asker" % op["type"])
+            self.assertIn("didn't reach", lost[0].get("text", ""))
+
+    def test_regression_a_delivered_answer_still_flips_and_stays_quiet(self):
+        sent = []
+        client = {"send": lambda s: sent.append(json.loads(s))}
+        km._drive({"type": "answerAsk", "id": SID, "target": 0}, client)
+        self.assertEqual(len(self._feed_frames()), 1, "the delivered answer flips exactly as before")
+        self.assertEqual([m for m in sent if m.get("type") == "askLost"], [], "…with no false alarm")
 
 
 if __name__ == "__main__":

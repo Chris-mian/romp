@@ -9,37 +9,48 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const LINKS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "path-links.ts"), "utf8");   // the matcher, lifted out of render.ts
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("a bare file:// URL becomes a clickable .file-uri-link that opens the file in the host app", () => {
-  assert.match(RENDER, /function linkifyFileUris\(root: HTMLElement, skipThumbs\?: string\[\], spacePaths\?: string\[\],\s*\n\s*pathLinks\?: Record<string, string>, pathPins\?: Record<string, string>\): void/);
-  assert.match(RENDER, /el\("span", "file-uri-link"\)/);
+  assert.match(RENDER, /function linkifyFileUris\(root: HTMLElement, skipThumbs\?: string\[\], spacePaths\?: string\[\],\s*\n\s*pathLinks\?: Record<string, string>, pathPins\?: Record<string, string>, pathPreview\?: Record<string, string>,\s*\n\s*pathPreviewWhy\?: Record<string, string>\): void/);
+  assert.match(LINKS, /el\("span", "file-uri-link"\)/);
   // clicking is ROUTED by openPath, never a blocked window.open(file://) — a file:// URI is absolute,
-  // so it takes the shared openPathLink's no-session-id branch
-  assert.match(RENDER, /function fileUriLink\(uri: string\): HTMLElement \{ return openPathLink\(uri, fileUriToPath\(uri\)\); \}/);
-  assert.match(RENDER, /openPath\(open, relative \? activeId : null\);/);
+  // so it takes the shared openPathLink's no-session-id branch (no data-rel on the span; render.ts's
+  // bindPathLink then sends no session id)
+  assert.match(LINKS, /function fileUriLink\(uri: string\): HTMLElement \{ return openPathLink\(uri, fileUriToPath\(uri\)\); \}/);
+  assert.match(RENDER, /openPath\(open, relative \? activeId : null, e, a\.dataset\.frag \|\| null\);/);
   // the URL is turned into a real filesystem path: scheme stripped, percent-decoded
-  assert.match(RENDER, /\.replace\(\/\^file:/);
-  assert.match(RENDER, /decodeURIComponent\(p\)/);
+  assert.match(LINKS, /const FILE_URI_RE = \/\^file:\\\/\\\/\(\?:localhost\)\?\(\?=\\\/\)\/i;/, "a LOCAL URI: an empty authority or localhost; file://host/x names another machine and stays prose");
+  assert.match(LINKS, /decodeURIComponent\(p\)/);
 });
 
 test("linkify runs on chat message bodies (assistant reply + user bubble + nudge full text) and nowhere else — never tool summaries", () => {
-  assert.match(RENDER, /linkifyFileUris\(body, undefined, ev\.spacePaths, ev\.pathLinks, ev\.pathPins\)/);   // the assistant reply
-  assert.match(RENDER, /linkifyFileUris\(bubble, imgPaths, ev\.spacePaths, ev\.pathLinks, ev\.pathPins\)/); // your own bubble (in-bubble images don't re-thumb)
-  assert.match(RENDER, /linkifyFileUris\(full, imgPaths, ev\.spacePaths, ev\.pathLinks, ev\.pathPins\)/);   // a compact nudge's expanded full text (2026-07-17)
+  assert.match(RENDER, /linkifyFileUris\(body, undefined, ev\.spacePaths, ev\.pathLinks, ev\.pathPins, ev\.pathPreview, ev\.pathPreviewWhy\)/);   // the assistant reply
+  assert.match(RENDER, /linkifyFileUris\(bubble, imgPaths, ev\.spacePaths, ev\.pathLinks, ev\.pathPins, ev\.pathPreview, ev\.pathPreviewWhy\)/); // your own bubble (in-bubble images don't re-thumb)
+  assert.match(RENDER, /linkifyFileUris\(full, imgPaths, ev\.spacePaths, ev\.pathLinks, ev\.pathPins, ev\.pathPreview, ev\.pathPreviewWhy\)/);   // a compact nudge's expanded full text (2026-07-17)
   // exactly the definition + those three applications — so tool-use reports/summaries stay untouched
   const uses = RENDER.match(/linkifyFileUris\(/g) || [];
   assert.equal(uses.length, 4, "linkifyFileUris is defined once and applied to exactly the three chat bodies");
 });
 
-test("linkify works inside INLINE backticks (agents backtick paths), skips only fenced code + existing links, trims trailing punctuation", () => {
-  // inline <code> is NOT skipped — a `file://…` path in backticks still linkifies; only fenced <pre> + links are skipped
-  assert.match(RENDER, /closest\("a, \.file-uri-link, pre"\)/);
-  assert.doesNotMatch(RENDER, /closest\("a, \.file-uri-link, code, pre"\)/);
-  assert.match(RENDER, /tok = tok\.slice\(0, tok\.length - trail\[0\]\.length\)/);
+test("linkify works inside INLINE backticks (agents backtick paths), skips existing links, trims trailing punctuation; a fenced block links on the kernel's verdict under the viewer's code gate (2026-09-12)", () => {
+  // inline <code> is NOT skipped — a `file://…` path in backticks still linkifies; links and inline SVGs are dead text
+  assert.match(LINKS, /export const DEAD_TEXT = "a, \.file-uri-link, svg";/);
+  assert.match(LINKS, /const skip = opts && opts\.inPre \? DEAD_TEXT : DEAD_TEXT \+ ", pre";/, "a surface that asks for no fenced walk skips the block; never inline code");
+  assert.doesNotMatch(LINKS, /DEAD_TEXT \+ ", code/);
+  assert.match(LINKS, /tok = tok\.slice\(0, tok\.length - trail\[0\]\.length\)/);
+  // the chat asks for the fenced walk (the user 2026-09-12: a report's path printed in a ``` block did not link): the
+  // kernel's verdict or nothing inside a fence, the viewer's code-aware gate there, the fence's rows as units, and a
+  // fenced hit opens the file and previews on hover like any link, and renders no figure under a code sample
+  assert.match(RENDER, /^import \{ viewerPathGate \} from "\.\/file-view-links";/m);
+  assert.match(RENDER, /^const FENCE_WALK: PathLinkOptions = \{\n\s*inPre: true, preVerified: true, unit: "\.cl",\n\s*accept: \(tok, ctx\) => !ctx\.inPre \|\| viewerPathGate\(tok, ctx\),/m);
+  assert.match(RENDER, /for \(const \{ el: link, open, verified, inPre \} of linkifyPathTokens\(root, pathLinks, FENCE_WALK\)\) \{\n\s*bindPathLink\(link\);\n\s*armPreview\(link, link\.textContent \|\| "", open\);\n\s*absorbFragment\(link\);\n\s*if \(verified\) kernelVerified\.add\(open\);[^\n]*\n\s*if \(inPre\) continue;/);
+  assert.match(LINKS, /if \(!isUri && span\.inPre && opts && opts\.preVerified && typeof fixed !== "string"\) continue;/, "fenced: the kernel's word or nothing");
+  assert.match(CSS, /^pre code \.file-uri-link \{ color: var\(--accent\); \}/m, "the link keeps the accent over the highlight's token colour");
 });
 
-test(".file-uri-link is styled as a wrapping accent link", () => {
-  assert.match(CSS, /\.file-uri-link \{[\s\S]*?cursor: pointer[\s\S]*?color: var\(--accent\)/);
+test(".file-uri-link is styled as a wrapping link in the chat's one link dress (T378)", () => {
+  assert.match(CSS, /\.file-uri-link \{[\s\S]*?cursor: pointer[\s\S]*?color: var\(--link\)/, "the link token, as .md a and .term-link (T378)");
   assert.match(CSS, /\.file-uri-link:hover \{ text-decoration: underline; \}/);
 });

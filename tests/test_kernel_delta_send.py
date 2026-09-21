@@ -10,7 +10,7 @@ which a fixed window would mishandle. A fresh connect / fork / behind-the-change
 import json
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -21,7 +21,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 def _client():
@@ -73,6 +73,38 @@ class SendChatTest(unittest.TestCase):
         self.assertEqual(tail["type"], "chatTail")
         self.assertEqual(tail["from"], 1)
         self.assertEqual([e.get("output") for e in tail["events"]], ["done", None])
+
+    def test_a_flag_only_change_rides_an_empty_tail_carrying_the_flags(self):
+        # the user 2026-09-11: a bell flipped in one split column reached the other only with its next FULL frame.
+        # Unchanged events diff to len(prev) → an empty suffix; the flags ride it as the status does
+        c, sent = _client()
+        a = [{"uuid": "1"}, {"uuid": "2"}]
+        km._send_chat(c, self._m("S", a), None, 0, False)             # full
+        m2 = dict(self._m("S", a), notify=True, hideFromFeed=False, postalServiceOff=True)
+        km._send_chat(c, m2, None, km._chat_diff(a, a), False)
+        t = _last(sent)
+        self.assertEqual((t["type"], t["from"], t["events"]), ("chatTail", 2, []), "an empty suffix: nothing in the events changed")
+        self.assertEqual((t["notify"], t["hideFromFeed"], t["postalServiceOff"]), (True, False, True), "the flags ride the tail")
+        n = len(sent)
+        km._send_chat(c, dict(m2, notify=False), None, km._chat_diff(a, a), False)
+        self.assertEqual((len(sent), _last(sent)["notify"]), (n + 1, False), "the flip alone is a new frame: the dedup signature reads the flags")
+
+    def test_a_flag_only_change_reaches_an_index_client_on_its_uuid_anchored_tail_too(self):
+        # the shell's pages speak the uuid-anchored wire (proto 2, T323): the same flip has to ride THAT delta, or another
+        # window on the same kernel learns a bell only with the session's next full frame (2026-09-13, found by the served
+        # split story's second window)
+        c, sent = _client(); c["proto"] = 2
+        a = [{"uuid": "1"}, {"uuid": "2"}]
+        km._send_chat(c, self._m("S", a), None, 0, False)             # the full frame: the client's base is {first, last}
+        self.assertEqual((_last(sent)["type"], _last(sent)["proto"]), ("session", 2))
+        m2 = dict(self._m("S", a), notify=True, hideFromFeed=False, postalServiceOff=True)
+        km._send_chat(c, m2, None, km._chat_diff(a, a), False)
+        t = _last(sent)
+        self.assertEqual((t["type"], t["afterUuid"], t["events"]), ("chatTail", "2", []), "an empty suffix after the newest held event")
+        self.assertEqual((t["notify"], t["hideFromFeed"], t["postalServiceOff"]), (True, False, True), "the flags ride the uuid-anchored tail")
+        n = len(sent)
+        km._send_chat(c, dict(m2, notify=False), None, km._chat_diff(a, a), False)
+        self.assertEqual((len(sent), _last(sent)["notify"]), (n + 1, False), "the flip alone is a new frame here too")
 
     def test_a_fork_new_head_uuid_forces_a_full_resend(self):
         c, sent = _client()
@@ -149,7 +181,7 @@ class RenderHandlesTheTail(unittest.TestCase):
     def test_render_truncates_to_from_appends_and_repaints_from_the_changed_point(self):
         r = self._render()
         self.assertIn('else if (m.type === "chatTail") chatTail(m);', r)       # dispatched
-        self.assertIn("const from = (msg.from | 0) - (s.headFrom || 0);", r)   # GLOBAL index → resident-tail local
+        self.assertIn("from = (msg.from | 0) - (s.headFrom || 0);", r)   # GLOBAL index → resident-tail local
         # The two rejection cases split on 2026-07-28. Below the loaded head → still a quiet return (the
         # resident tail is fine). A GAP (from past what we hold) → ask for a full session: "wait for the
         # next full" was a promise nothing kept, and the tab froze there until its socket dropped.
@@ -157,18 +189,22 @@ class RenderHandlesTheTail(unittest.TestCase):
         # the gap check runs in KERNEL coordinates — the client's injected optimistic tail is not part
         # of the kernel's index space, and counting it masked genuine gaps (the user 2026-08-09)
         self.assertIn("if (from > kernelLen) {", r)
-        self.assertIn("requestFullSession(msg.id);", r)
+        self.assertIn('requestFullSession(msg.id, "gap");', r)   # 2026-09-07: the ask names its reason (skeleton tabs)
         self.assertIn("s.events.length = from;", r)                            # truncate the superseded tail
         self.assertIn("for (const e of (msg.events || [])) s.events.push(e);", r)  # append the suffix
         self.assertIn("v.rendered = Math.min(v.rendered, from);", r)           # repaint from the exact change
 
     def test_render_handles_a_partial_session_and_streams_older_in(self):
         r = self._render()
-        # upsert records the wire offset → s.events is the tail [headFrom, headTotal)
-        self.assertIn("headFrom: msg.headFrom ?? 0,", r)
+        # upsert records the wire offset → s.events is the tail [headFrom, headTotal); an empty frame for a held
+        # transcript keeps the resident window instead (T249b, frame-merge.ts)
+        self.assertIn("headFrom: keepResident && prev ? prev.headFrom : (msg.headFrom ?? 0),", r)
         # scroll to the top of the resident tail with older on the server → request the previous chunk
-        self.assertIn('vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.headFrom });', r)
-        self.assertIn("if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx) { requestOlder(", r)
+        self.assertIn('vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.proto === 2 ? s.firstUuid : s.headFrom });', r)
+        # …only on an upward or unchanged move of the view (T366: a downward flick inside the estimate's top band never asks)
+        self.assertIn("if (gesture) v.edgeUp = olderRequestAllowed(v.edgeTop, st);", r)
+        self.assertIn("const upward = v.edgeUp !== false;", r)
+        self.assertIn("if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx && upward) { requestOlder(", r)
         # chatHead PREPENDS the chunk + lowers headFrom + re-anchors
         self.assertIn('else if (m.type === "chatHead") chatHead(m);', r)
         self.assertIn("if (older.length) s.events = older.concat(s.events);", r)

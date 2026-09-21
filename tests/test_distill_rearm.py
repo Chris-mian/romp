@@ -21,7 +21,7 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -32,7 +32,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-jd = SourceFileLoader("romp_judge_rearm", os.path.join(BIN, "romp-judge")).load_module()
+jd = load_source("romp_judge_rearm", os.path.join(BIN, "romp-judge"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 NID = SID + ":g1"
@@ -426,7 +426,7 @@ class KernelRearmWiring(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.km = SourceFileLoader("romp_kernel_rearm", os.path.join(BIN, "romp-kernel")).load_module()
+        cls.km = load_source("romp_kernel_rearm", os.path.join(BIN, "romp-kernel"))
 
     def test_startup_rearms_before_the_server_loop(self):
         import inspect
@@ -438,11 +438,13 @@ class KernelRearmWiring(unittest.TestCase):
     def test_producer_consumes_the_health_edge_after_the_tier_join(self):
         import inspect
         src = inspect.getsource(self.km._producer)
-        i_join = src.index("t.join()")
-        i_edge = src.index("consume_judge_recovery")
+        i_join = src.index("res = jd.run_pass(")          # the barrier (t.join()) lives inside the shared pass body since stage three
+        i_edge = src.index("consume_judge_recovery")      #  round two; the body returns only after both tiers joined
         self.assertGreater(i_edge, i_join,
-                           "the edge is consumed AFTER the join — the single-writer window, so the "
+                           "the edge is consumed AFTER the pass body returned (the join inside it): the single-writer window, so the "
                            "re-arm's store writes can't race the judge worker threads")
+        body = inspect.getsource(self.km.jd.run_pass)
+        self.assertLess(body.index("t.join()"), body.index("return {"), "the shared body joins both tiers before it returns")
         seg = src[i_edge:]
         self.assertIn("rearm_failed_summaries", seg[:400], "the consumed edge drives the auto re-arm")
         self.assertIn("auto=True", seg[:400], "the health edge is the era-bounded auto path")
@@ -456,7 +458,9 @@ class KernelRearmWiring(unittest.TestCase):
                       "the EFFECTIVE model is compared — a triage change while following counts too")
         self.assertIn("rearm_failed_summaries", src, "the switch is a discrete recovery event")
         self.assertIn("_producer_wake.set()", src, "the retry pass starts now, not at the next tick")
-        self.assertIn("_push_all()", src, "the swirl replaces the chip immediately")
+        self.assertIn("_push_soon()", src,
+                      "the swirl replaces the chip via the woken pusher — never an inline fleet build "
+                      "on the request thread (the 2026-08-30 POST wedge)")
 
 
 if __name__ == "__main__":

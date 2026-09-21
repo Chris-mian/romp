@@ -46,7 +46,9 @@ test("menus wear ONE vocabulary (CLAUDE.md): --radius-menu 6px + --shadow-menu o
   assert.match(CHAT, /--radius-menu: 6px;\n  --shadow-menu: 0 4px 12px rgba\(0, 0, 0, 0\.35\);/);
   assert.match(FEED, /--radius-menu: 6px;/);
   assert.match(FEED, /--shadow-menu: 0 4px 12px rgba\(0, 0, 0, 0\.35\);/);
-  for (const sel of [".ctx-menu", ".meta-menu", ".tab-tip", ".slash-pop"]) {
+  // .tab-tip left this list 2026-08-28: it is a TOOLTIP, not a dropdown, and wears the ONE tooltip
+  // dress's tokens (--radius-toast/--shadow-toast) now — tip.test.ts pins that.
+  for (const sel of [".ctx-menu", ".meta-menu", ".slash-pop"]) {
     const at = CHAT.indexOf(sel + " {");
     const rule = CHAT.slice(at, CHAT.indexOf("}", at));
     assert.ok(rule.includes("var(--radius-menu)"), sel + " radius through the token");
@@ -108,6 +110,7 @@ test("centered modals wear ONE card (CLAUDE.md): --radius-modal 10px + --shadow-
     [".picker-box", CHAT, "styles.css"], [".fileview", CHAT, "styles.css"],
     [".fileview", FEED, "feed.css"], [".fconfirm-box", FEED, "feed.css"],
     [".feed-modal-inner", FEED, "feed.css"], [".pickdlg-box", FEED, "feed.css"],
+    [".filebrowse", CHAT, "styles.css"], [".filebrowse", FEED, "feed.css"],   // a card since 2026-09-04
   ] as const) {
     // regex, not indexOf: a selector may have a second (e.g. mobile) rule that skips the box chrome
     const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -129,10 +132,14 @@ test("same-row badges wear the SAME metric set; micro-labels wear the section-he
   // .fcol-chip's comment says it reproduces the chat .chip — now its padding does too
   assert.match(FEED, /\.fcol-chip \{[^}]*padding: 3px 10px;/s);
   assert.match(CHAT, /\.chip \{[^}]*padding: 3px 10px;/s);
-  // uppercase section micro-labels: 10.5px/700/.08em (the .rs-sec spec, documented at the kernel's
-  // .rnet-khead) — .sn-khead is the same feature in the VS Code strip and had drifted off it
-  assert.match(STRIP, /\.sn-khead \{[^}]*font-weight: 700; letter-spacing: 0\.08em;/);
-  assert.match(GEAR, /\.rs-sec \{[^}]*font-weight: 700; letter-spacing: 0\.08em;/s);
+  // section labels: sentence case in the accent colour, 600, never uppercase or letter-spaced (the user 2026-09-18; the .rs-sec
+  // spec, mirrored at the kernel's .rnet-khead); .sn-khead is the same feature in the VS Code strip at 11px. The settings card's
+  // own heads are centred titled dividers a step above their 13px rows since 2026-09-19 (14px, the user's ask), the one place
+  // the size differs: a head over rows, not a label over a list
+  assert.match(STRIP, /\.sn-khead \{ color: var\(--accent, #9cd2ff\); font-size: 11px; font-weight: 600;/);
+  assert.match(GEAR, /\.rs-sec, #rsettings \.rs-widget\.rs-divider \{ display: flex; align-items: center; justify-content: center;[^}]*font-size: 14px; font-weight: 600; color: var\(--accent, #9cd2ff\);/s);
+  assert.doesNotMatch(GEAR, /text-transform: uppercase/, "no all-caps rule survives in the settings sheet");
+  assert.doesNotMatch(STRIP, /\.sn-khead \{[^}]*(uppercase|letter-spacing)/);
   // no px letter-spacing (an em value scales with its label; 0.4px was the one outlier)
   const SESSIONS = read("fleet-pane.css");   // the Sessions pane sheet (file keeps its legacy name)
   assert.doesNotMatch(SESSIONS, /letter-spacing:0\.4px/);
@@ -140,6 +147,20 @@ test("same-row badges wear the SAME metric set; micro-labels wear the section-he
   for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
     assert.match(css, /--radius-pill: 999px;/, name);
     assert.doesNotMatch(css, /border-radius: 999px/, name + " pills use the token");
+  }
+});
+
+test("the em type ladder is SIX sizes below 1em: 0.66 / 0.7 / 0.72 / 0.82 / 0.86 / 0.92", () => {
+  // CLAUDE.md: font sizes — few, consistent by information type. Sixteen sub-1em sizes had
+  // accumulated in the two sheets, most a rounding-error apart (0.9 vs 0.92 is a quarter pixel at
+  // the 13px base); collapsed 2026-08-26. A new size below 1em must join an existing rung — if a
+  // genuinely new information type needs its own, widen this list in the same commit and say why.
+  const LADDER = new Set(["0.66em", "0.7em", "0.72em", "0.82em", "0.86em", "0.92em"]);
+  for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
+    for (const m of css.match(/font-size: (0\.\d+em)/g) || []) {
+      const v = m.slice("font-size: ".length);
+      assert.ok(LADDER.has(v), name + " uses off-ladder size " + v);
+    }
   }
 });
 
@@ -180,4 +201,33 @@ test("ONE accent wash: every selected/hovered accent chrome resolves through --a
     assert.match(css, /\.fileview-btn\.on:hover \{ background: var\(--accent\); color: var\(--accent-fg\); border-color: var\(--accent\); \}/,
       name + " reverse-highlights the selected viewer toggle");
   }
+});
+
+test("the px type set is CLOSED: chrome sizes come from the pinned set, like the em ladder", () => {
+  // the 2026-08-28 collapse retired 11.5px and 12.5px (the last strays); a new px size is a new
+  // rung — justify it here in the same commit or reuse a neighbour. (em sizes have their own
+  // ladder pin; px is chrome-only: kbd chips, micro-labels, statusline hardware.)
+  const ALLOWED = new Set(["8", "9", "10", "10.5", "11", "12", "13", "14", "15", "16", "19", "21", "38"]);   // 15 = the gear/strip icon glyphs
+  for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED], ["gear.css", GEAR], ["strip.css", STRIP]] as const) {
+    const sizes = [...css.matchAll(/font-size:\s*(\d+(?:\.\d+)?)px/g)].map((m) => m[1]);
+    const strays = sizes.filter((v) => !ALLOWED.has(v));
+    assert.deepEqual(strays, [], name + " px sizes outside the set");
+  }
+});
+
+test("the bubble's inner-markdown overrides OUTRANK .md — the doubled-selector guard", () => {
+  // the bubble element itself wears .md, so a plain `.user-bubble X` (0,1,1) ties `.md X` and
+  // loses on source order — links rendered link-ink-on-saturated-fill and the quote tint fell to
+  // var(--dim) grey at ~2:1 (found 2026-09-02). The doubled form (0,2,1) is the guard; a new
+  // inner-markdown override on the bubble must carry it too.
+  assert.match(CHAT, /\.user-bubble a, \.user-bubble\.md a \{ color: #fff;/, "bubble links stay white");
+  assert.match(CHAT, /\.user-bubble blockquote, \.user-bubble\.md blockquote \{ color: rgba\(255, 255, 255, 0\.88\);/,
+    "the quoted-assistant tint actually lands");
+  // the third hit of the same trap (the user 2026-09-04, red text in their light bubbles): inline
+  // code fell to .md's page code-ink on the saturated fill, fenced code wore the page-tuned hljs
+  // palette on the wrong ground, and bold fell to the near-page text tone
+  assert.match(CHAT, /\.user-bubble :not\(pre\) > code, \.user-bubble\.md :not\(pre\) > code \{ background: rgba\(255, 255, 255, 0\.2\); color: #fff; \}/);
+  assert.match(CHAT, /\.user-bubble pre, \.user-bubble\.md pre \{ background: var\(--bg\); \}/,
+    "fenced code sits in a page-colored well, where the hljs palette is correct in both themes");
+  assert.match(CHAT, /\.user-bubble strong, \.user-bubble\.md strong \{ color: #fff; \}/);
 });

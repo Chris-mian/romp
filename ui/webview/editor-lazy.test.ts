@@ -31,8 +31,10 @@ test("the chunk is its own esbuild entry, and no main-bundle source imports Code
 });
 
 test("file-view loads the chunk from its own bundle's URL (same dir, same ?v= token), latch cleared on failure", () => {
-  assert.match(VIEW, /\.find\(\(u\) => \/\\\/\(render\|feed\)\\\.js\/\.test\(u\)\)/);
-  assert.match(VIEW, /sc\.src = self\.replace\(\/\\\/\(render\|feed\)\\\.js\/, "\/editor-chunk\.js"\);/);
+  // the three bundles that host the viewer: render.js (chat), feed.js (feed), files.js (the Files pane); a page
+  // whose bundle the pattern misses sends every Edit to the textarea with the raw "no bundle script tag" error
+  assert.match(VIEW, /\.find\(\(u\) => \/\\\/\(render\|feed\|files\)\\\.js\/\.test\(u\)\)/);
+  assert.match(VIEW, /sc\.src = self\.replace\(\/\\\/\(render\|feed\|files\)\\\.js\/, "\/editor-chunk\.js"\);/);
   assert.match(VIEW, /sc\.onerror = \(\) => \{ edChunk = null; rej\(/,
     "a failed load clears the latch so a later edit retries fresh");
 });
@@ -103,5 +105,11 @@ test("edit arming stays the kernel's verdict: UTF-8-only and the ns mtime anchor
 test("the editor declares its font and reuses the panel palette — no new fonts or sizes", () => {
   assert.match(CHUNK, /fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"/);
   assert.match(CHUNK, /fontSize: "13px"/);
-  assert.match(CHUNK, /rgba\(156, 210, 255, 0\.22\)/, "selection wears the romp accent, nothing new");
+  assert.match(CHUNK, /color-mix\(in srgb, var\(--accent, #9cd2ff\) 22%, transparent\)/,
+    "selection wears the romp accent, nothing new (via the token, so the light theme re-inks it)");
+  // and the CodeMirror-side dark branch (its base theme for panels/popups) reads the LIVE body
+  // class per mount — hardcoded { dark: true } kept the search panel near-black under
+  // body.theme-light (the user 2026-09-02)
+  assert.match(CHUNK, /document\.body\.classList\.contains\("theme-light"\)/);
+  assert.match(CHUNK, /\{ dark: !light \}/);
 });

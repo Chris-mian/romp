@@ -8,7 +8,10 @@
 
 ROMP_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
+load git-hermetic
+
 setup() {
+    git_hermetic
     TEST_DIR="$(mktemp -d)"
     export HOME="$TEST_DIR/home"
     mkdir -p "$HOME"
@@ -36,14 +39,35 @@ PY
 @test "install.sh: wires hooks, settings.json, and the MCP config on a fresh machine" {
     run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
-    [ -L "$HOME/.claude/hooks/tmux-status.sh" ]
-    [[ "$(readlink "$HOME/.claude/hooks/tmux-status.sh")" == *"/hooks/tmux-status.sh" ]]
-    [ "$(count_cmd Stop tmux-status.sh)" = "1" ]
-    [ "$(count_cmd Stop romp-summarize.sh)" = "1" ]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
+    [[ "$(readlink "$HOME/.claude/hooks/romp-wake.sh")" == *"/hooks/romp-wake.sh" ]]
+    [ "$(count_cmd Stop romp-wake.sh)" = "1" ]
+    [ "$(count_cmd Stop romp-summarize.sh)" = "0" ]   # retired 2026-09-11, never registered again
+    [ "$(count_cmd Stop tmux-status.sh)" = "0" ]      # retired the same day, never registered again
     [ "$(count_cmd Stop romp-postal-drain.sh)" = "1" ]
     [ "$(count_cmd SessionStart romp-postal-ensure.sh)" = "1" ]
-    [ "$(count_cmd PostToolUse tmux-status.sh)" = "1" ]
+    [ "$(count_cmd UserPromptSubmit romp-wake.sh)" = "1" ]
+    # a compaction's END wakes the kernel too: the op parked behind a /compact delivers on this event
+    [ "$(count_cmd PostCompact romp-wake.sh)" = "1" ]
     [ -L "$HOME/.claude/romp-postal.mcp.json" ]
+}
+
+@test "install.sh: registers no status hook — the SDK backend records a session's state itself" {
+    # Until 2026-09-11 a status hook (hooks/tmux-status.sh) sat on seven events. It painted the tmux
+    # status bar; the states/<sid>.jsonl rows of a Claude Code session were always the SDK backend's
+    # own writes, so nothing replaced it. A fresh install links and registers nothing of that shape on
+    # any event, and the three events only it sat on (PostToolUse, Notification, PreCompact) are not
+    # created: an event with no hooks would be `[{"hooks": []}]` litter.
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ -z "$(find "$HOME/.claude/hooks" -name '*-status.sh')" ]
+    python3 - "$HOME/.claude/settings.json" <<'PY'
+import json, sys
+hooks = json.load(open(sys.argv[1]))["hooks"]
+cmds = [(ev, h["command"]) for ev, groups in hooks.items() for g in groups for h in g.get("hooks", [])]
+assert not [c for c in cmds if c[1].endswith("-status.sh")], cmds
+assert sorted(hooks) == ["PostCompact", "SessionStart", "Stop", "UserPromptSubmit"], sorted(hooks)
+PY
 }
 
 @test "install.sh: idempotent — a second run adds no duplicate hook entries" {
@@ -52,8 +76,8 @@ PY
     run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
     [[ "$output" == *"already registered"* ]]
-    [ "$(count_cmd Stop tmux-status.sh)" = "1" ]
-    [ "$(count_cmd UserPromptSubmit romp-summarize.sh)" = "1" ]
+    [ "$(count_cmd Stop romp-wake.sh)" = "1" ]
+    [ "$(count_cmd UserPromptSubmit romp-summarize.sh)" = "0" ]
     # regression: a re-run used to FOLLOW the existing skill dir-symlink and drop a new link INSIDE
     # the repo (claude/skills/romp-postal/romp-postal → an absolute personal path). ln -sfn replaces
     # the link.
@@ -105,19 +129,163 @@ PY
     [ -f "$HOME/.claude/skills/romp/SKILL.md" ]
 }
 
+@test "install.sh: upgrading de-registers the retired announcer hook and unlinks it, leaving other hooks alone" {
+    # hooks/romp-summarize.sh (the live tmux phrase) was removed 2026-09-11 with the tmux backend's
+    # dead leaves. An install from before still registers it on UserPromptSubmit and Stop and holds a
+    # symlink to a file this repo no longer ships; upgrading must clear both, or Claude Code shells a
+    # missing path on every prompt and every turn end. Other hooks, romp's and the user's, stay.
+    mkdir -p "$HOME/.claude/hooks"
+    ln -s "$ROMP_DIR/hooks/romp-summarize.sh" "$HOME/.claude/hooks/romp-summarize.sh"
+    cat > "$HOME/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "UserPromptSubmit": [ { "hooks": [
+      { "type": "command", "command": "~/.claude/hooks/romp-summarize.sh", "timeout": 10, "async": true } ] } ],
+    "Stop": [ { "hooks": [
+      { "type": "command", "command": "my-own-hook.sh" },
+      { "type": "command", "command": "~/.claude/hooks/romp-summarize.sh", "timeout": 10, "async": true } ] } ],
+    "SubagentStop": [ { "hooks": [
+      { "type": "command", "command": "~/.claude/hooks/romp-summarize.sh", "timeout": 10, "async": true } ] } ]
+  }
+}
+JSON
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"romp-summarize.sh"* ]]          # the upgrade says what it removed
+    [ ! -L "$HOME/.claude/hooks/romp-summarize.sh" ]
+    [ ! -e "$HOME/.claude/hooks/romp-summarize.sh" ]
+    [ "$(count_cmd UserPromptSubmit romp-summarize.sh)" = "0" ]
+    [ "$(count_cmd Stop romp-summarize.sh)" = "0" ]
+    [ "$(count_cmd Stop my-own-hook.sh)" = "1" ]       # the user's own hook survives
+    [ "$(count_cmd Stop romp-wake.sh)" = "1" ]         # the live hooks are registered as before
+    python3 - "$HOME/.claude/settings.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert "SubagentStop" not in s["hooks"], list(s["hooks"])   # an event emptied by the removal is pruned, no litter
+PY
+}
+
+@test "install.sh: a real file named like the retired announcer hook is left alone" {
+    # Someone's own hook of that name is theirs; only the symlink install.sh once wrote is removed.
+    mkdir -p "$HOME/.claude/hooks"
+    echo "mine" > "$HOME/.claude/hooks/romp-summarize.sh"
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ -f "$HOME/.claude/hooks/romp-summarize.sh" ]
+    [ "$(cat "$HOME/.claude/hooks/romp-summarize.sh")" = "mine" ]
+}
+
+@test "install.sh: the retired-hook prune leaves a user's own empty and matcher-only groups alone" {
+    # The prune drops only a group OUR removal emptied and an event it left with no groups. A user's
+    # placeholder group (a matcher with no hooks yet, an empty group on an event romp never registers)
+    # is theirs and must survive both a fresh install (which writes the file) and an upgrade re-run.
+    mkdir -p "$HOME/.claude"
+    cat > "$HOME/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "PreToolUse": [ { "matcher": "Bash", "hooks": [] } ],
+    "SubagentStart": [ { "hooks": [] } ],
+    "Stop": [ { "hooks": [
+      { "type": "command", "command": "~/.claude/hooks/romp-summarize.sh", "timeout": 10, "async": true } ] } ]
+  }
+}
+JSON
+    for _pass in fresh upgrade; do
+        run "$ROMP_DIR/install.sh"
+        [ "$status" -eq 0 ]
+        python3 - "$HOME/.claude/settings.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))["hooks"]
+assert s["PreToolUse"] == [{"matcher": "Bash", "hooks": []}], s.get("PreToolUse")
+assert s["SubagentStart"] == [{"hooks": []}], s.get("SubagentStart")
+stop = [h["command"] for g in s["Stop"] for h in g["hooks"]]
+assert not any(c.endswith("romp-summarize.sh") for c in stop), stop
+assert any(c.endswith("romp-wake.sh") for c in stop), stop
+PY
+    done
+}
+
+@test "install.sh: a symlink to someone else's live script of the retired hook's name survives" {
+    # Only a link install.sh could have written goes: one into this checkout, or a dangling one of that
+    # shape (a checkout since moved). A user's own live script linked from their dotfiles is theirs.
+    mkdir -p "$HOME/dotfiles/hooks" "$HOME/.claude/hooks"
+    echo "mine" > "$HOME/dotfiles/hooks/romp-summarize.sh"
+    ln -s "$HOME/dotfiles/hooks/romp-summarize.sh" "$HOME/.claude/hooks/romp-summarize.sh"
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ -L "$HOME/.claude/hooks/romp-summarize.sh" ]
+    [ "$(cat "$HOME/.claude/hooks/romp-summarize.sh")" = "mine" ]
+    [[ "$output" != *"retired romp-summarize.sh"* ]]
+    # ...while a DANGLING link of that shape (a romp checkout that has since moved) is still removed
+    rm "$HOME/.claude/hooks/romp-summarize.sh"
+    ln -s "$HOME/old-romp/hooks/romp-summarize.sh" "$HOME/.claude/hooks/romp-summarize.sh"
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ ! -L "$HOME/.claude/hooks/romp-summarize.sh" ]
+    [ ! -e "$HOME/.claude/hooks/romp-summarize.sh" ]
+}
+
+@test "install.sh: upgrading de-registers the retired status hook on all seven events and unlinks it, wiring nothing in its place" {
+    # hooks/tmux-status.sh, the hook that painted the tmux status bar, left 2026-09-11 with the tmux
+    # backend; nothing replaces it, since the SDK backend records a Claude Code session's state
+    # itself. An install from before registers it on seven events and holds a symlink to a path this
+    # repo no longer ships: left in place, Claude Code would shell a missing path on every one of
+    # those events in every session. Upgrading clears both, prunes the three events only it sat on
+    # rather than leaving empty groups, and links nothing of that shape; the user's own hooks and
+    # romp's other hooks stay.
+    mkdir -p "$HOME/.claude/hooks"
+    ln -s "$ROMP_DIR/hooks/tmux-status.sh" "$HOME/.claude/hooks/tmux-status.sh"
+    python3 - "$HOME/.claude/settings.json" <<'PY'
+import json, sys
+old = {"type": "command", "command": "~/.claude/hooks/tmux-status.sh", "timeout": 5, "async": False}
+events = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "Notification", "PreCompact", "PostCompact")
+hooks = {ev: [{"hooks": [dict(old)]}] for ev in events}
+hooks["Stop"][0]["hooks"].insert(0, {"type": "command", "command": "my-own-hook.sh"})
+json.dump({"hooks": hooks}, open(sys.argv[1], "w"), indent=2)
+PY
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"tmux-status.sh"* ]]              # the upgrade says what it removed
+    [ ! -L "$HOME/.claude/hooks/tmux-status.sh" ]
+    [ ! -e "$HOME/.claude/hooks/tmux-status.sh" ]
+    [ -z "$(find "$HOME/.claude/hooks" -name '*-status.sh')" ]
+    for ev in SessionStart UserPromptSubmit PostToolUse Stop Notification PreCompact PostCompact; do
+        [ "$(count_cmd "$ev" -status.sh)" = "0" ]
+    done
+    python3 - "$HOME/.claude/settings.json" <<'PY'
+import json, sys
+hooks = json.load(open(sys.argv[1]))["hooks"]
+for ev in ("PostToolUse", "Notification", "PreCompact"):
+    assert ev not in hooks, (ev, hooks[ev])       # emptied by the removal, so pruned: no litter
+PY
+    [ "$(count_cmd Stop my-own-hook.sh)" = "1" ]        # the user's own hook survives
+    [ "$(count_cmd Stop romp-postal-drain.sh)" = "1" ]  # romp's other hooks are wired as on a fresh install
+    [ "$(count_cmd Stop romp-wake.sh)" = "1" ]
+}
+
+@test "install.sh: a real file named like the status hook's old name is left alone" {
+    mkdir -p "$HOME/.claude/hooks"
+    echo "mine" > "$HOME/.claude/hooks/tmux-status.sh"
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ -f "$HOME/.claude/hooks/tmux-status.sh" ]
+    [ "$(cat "$HOME/.claude/hooks/tmux-status.sh")" = "mine" ]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]           # romp's own hooks are wired regardless
+}
+
 @test "install.sh: preflight fails clearly when node is missing" {
     ROMP_NODE=romp-test-no-such-node run "$ROMP_DIR/install.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"Node.js not found"* ]]
     [[ "$output" == *"brew install node"* ]]
     # nothing was installed: the preflight runs before any mutation
-    [ ! -e "$HOME/.claude/hooks/tmux-status.sh" ]
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]
 }
 
 @test "install.sh: ROMP_SKIP_PREFLIGHT bypasses the checks" {
     ROMP_NODE=romp-test-no-such-node ROMP_SKIP_PREFLIGHT=1 run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
-    [ -L "$HOME/.claude/hooks/tmux-status.sh" ]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
 }
 
 # The login-service step (the user's rescue_me, 2026-07-21): a webview deploy must never bootout a
@@ -128,8 +296,10 @@ _svc_stub() {   # write a fake romp-service to $1; behavior toggled by ROMP_SVC_
 #!/usr/bin/env bash
 echo "$1" >> "$ROMP_SVC_LOG"
 case "$1" in
-  status) echo "installed: /tmp/plist"; [[ -n "${ROMP_SVC_RUNNING:-}" ]] && echo "running" ;;
-  install) [[ -n "${ROMP_SVC_FAIL:-}" ]] && { echo "romp-service: bootstrap lost the drain-race" >&2; exit 1; } ;;
+  status) echo "installed: /tmp/plist"; [[ -n "${ROMP_SVC_RUNNING:-}" ]] && echo "running"
+          [[ -n "${ROMP_SVC_DYING:-}" ]] && echo "loaded but not running (last exit code: 134); launchd keeps respawning it — check /tmp/manager.log" ;;
+  install) [[ -n "${ROMP_SVC_FAIL:-}" ]] && { echo "romp-service: bootstrap lost the drain-race" >&2; exit 1; }
+           [[ -n "${ROMP_SVC_HELD:-}" ]] && { echo "romp-service: the agent's manager exited at once because a manager is ALREADY serving on :7432 outside the login service" >&2; exit 3; } ;;
 esac
 exit 0
 SH
@@ -148,12 +318,41 @@ SH
     ! grep -qx install "$TEST_DIR/svc.log"
 }
 
+@test "install.sh: a loaded manager that keeps dying is reinstalled, not left up (the status line that is not running)" {
+    # issue 1600, the status fix: romp-service says "loaded but not running (last exit code: N)" for a crash-looping
+    # job; the shortcut keys on the bare line `running` (an exact whole-line grep), so this takes the reinstall branch
+    unset ROMP_NO_SERVICE
+    _svc_stub "$TEST_DIR/romp-service"
+    export ROMP_SVC_LOG="$TEST_DIR/svc.log" ROMP_SVC_DYING=1
+    ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"already running"* ]]
+    grep -qx install "$TEST_DIR/svc.log"
+}
+
 @test "install.sh: installs the service when romp-manager is NOT running" {
     unset ROMP_NO_SERVICE
     _svc_stub "$TEST_DIR/romp-service"
     export ROMP_SVC_LOG="$TEST_DIR/svc.log"   # ROMP_SVC_RUNNING unset -> not running
     ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
+    grep -qx install "$TEST_DIR/svc.log"
+}
+
+@test "install.sh: a manager already serving outside the service is named as such, not as a dead dashboard (romp-service exit 3)" {
+    unset ROMP_NO_SERVICE
+    _svc_stub "$TEST_DIR/romp-service"
+    export ROMP_SVC_LOG="$TEST_DIR/svc.log" ROMP_SVC_HELD=1
+    ROMP_INSTALL_TOKEN_TRIES=1 ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    [ "$status" -ne 0 ]                                            # the service is still not the one running
+    [[ "$output" == *"a manager already serving on the control port holds it"* ]]
+    [[ "$output" == *"most likely a hand-run romp up outside the service"* ]]
+    [[ "$output" != *"dashboard will be dead"* ]]
+    [[ "$output" != *"dashboard is up"* ]]                          # the control port proves a manager, not the dashboard
+    # round two: romp IS serving in this state, so the run goes on to the finish line (the link, or how to print it) and
+    # the end-of-run banner, and exits non-zero at the END, not before them
+    [[ "$output" == *"romp url"* ]]
+    [[ "$output" == *"exiting non-zero"* ]]
     grep -qx install "$TEST_DIR/svc.log"
 }
 
@@ -219,7 +418,7 @@ s = json.load(open(sys.argv[1]))
 assert s["model"] == "opus", "unrelated settings preserved"
 stop = [h["command"] for r in s["hooks"]["Stop"] for h in r["hooks"]]
 assert "my-own-hook.sh" in stop, stop
-assert any(c.endswith("tmux-status.sh") for c in stop), stop
+assert any(c.endswith("romp-wake.sh") for c in stop), stop
 PY
 }
 
@@ -285,11 +484,18 @@ PY
 # ── git pre-push identifier hook ──────────────────────────────────────
 # install.sh symlinks .githooks/pre-push into the shared git hooks dir. The hook
 # reads the banned strings from ~/.config/romp/private-strings.txt (so it arms
-# EVERY worktree, not just the one holding an untracked scanner) and greps each
-# PUSHED commit's tree — the working tree is not what gets published, and a leak
-# in an intermediate commit ships even when the tip is clean. No strings file →
-# a no-op, so a contributor's clone is unaffected. (ROMP_GITHOOK_DIR redirects
-# install.sh's symlink target below; the behaviour tests copy the hook directly.)
+# EVERY worktree, not just the one holding an untracked scanner) and reads the
+# PUSHED commits, not the working tree, which is not what gets published: each
+# pushed ref's TIP tree must be clean, and each commit new to every fetched remote
+# must ADD no banned line — so a leak in an intermediate commit is caught even when
+# the tip is clean, while a tree that only inherits an older one is not refused.
+# The same new commits' metadata is read too (their author and committer address
+# domains, unless the clone is configured to use the address, and their messages;
+# an annotated tag's own tagger and message likewise), which pre-push-identity.bats
+# and pre-push-message.bats drive by hand.
+# No strings file → a no-op, so a contributor's clone is unaffected.
+# (ROMP_GITHOOK_DIR redirects install.sh's symlink target below; the behaviour
+# tests copy the hook directly.)
 
 @test "install.sh: symlinks the pre-push hook into the git hooks dir" {
     run "$ROMP_DIR/install.sh"
@@ -308,6 +514,10 @@ PY
 # remote, with a SYNTHETIC denylist (never a real identifier) via XDG_CONFIG_HOME.
 setup_hook_repo() {
     export XDG_CONFIG_HOME="$TEST_DIR/cfg"
+    # Pin the credential half OFF for the identifier tests: whether the machine
+    # happens to have gitleaks on PATH must not change what they assert. The
+    # gitleaks tests below turn it back on with a stub.
+    export ROMP_NO_GITLEAKS=1
     mkdir -p "$XDG_CONFIG_HOME/romp"
     printf '# synthetic denylist\n\nZZBANNEDZZ\n' > "$XDG_CONFIG_HOME/romp/private-strings.txt"
     git init -q "$TEST_DIR/remote.git" --bare
@@ -386,36 +596,250 @@ setup_hook_repo() {
     [ "$status" -eq 0 ]
 }
 
-# ─── Claude Code version notice ──────────────────────────────────────
+# ── the credential half of the same hook (gitleaks) ───────────────────────
+# A denylist can only catch strings you can enumerate, and nobody can enumerate
+# a token before it leaks, so the hook also runs gitleaks over the pushed
+# commits. These tests stub the scanner via ROMP_GITLEAKS: what is under test is
+# the hook's wiring (which commits it hands over, what it does with the verdict),
+# not gitleaks' own rules, and a stub keeps the suite deterministic on a machine
+# that has never installed it. The rules and .gitleaks.toml are exercised for
+# real in tests/gitleaks-config.bats and by CI's secret-scan job.
 
-_stub_claude() {   # $1 = the version the stub reports; PATH-prepended so install.sh's probe sees it
-    mkdir -p "$TEST_DIR/mock"
-    cat > "$TEST_DIR/mock/claude" <<STUB
+setup_gitleaks_stub() {   # <exit-code>: records its args, then exits that code
+    # 0 is a clean scan; 2 is a finding (the hook asks gitleaks to report one so,
+    # apart from its own failures); 1 is gitleaks failing.
+    unset ROMP_NO_GITLEAKS
+    GL_ARGS="$TEST_DIR/gitleaks.args"
+    export ROMP_GITLEAKS="$TEST_DIR/gitleaks-stub"
+    cat > "$ROMP_GITLEAKS" <<EOF
 #!/usr/bin/env bash
-echo "$1 (Claude Code)"
-STUB
-    chmod +x "$TEST_DIR/mock/claude"
-    export PATH="$TEST_DIR/mock:$PATH"
+echo "\$@" >> "$GL_ARGS"
+echo "stub scanner ran" >&2
+exit $1
+EOF
+    chmod +x "$ROMP_GITLEAKS"
 }
 
-@test "install.sh: an old Claude Code gets the upgrade notice at the end" {
-    _stub_claude "2.1.220"
-    run "$ROMP_DIR/install.sh"
+@test "pre-push hook: a credential found in a pushed commit blocks the push" {
+    setup_hook_repo
+    setup_gitleaks_stub 2
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"BLOCKED"* ]]
+    # The advice has to say rotate: a secret in a commit is already compromised,
+    # and deleting it in a later commit does not un-publish it.
+    [[ "$output" == *"ROTATE"* ]]
+}
+
+@test "pre-push hook: a scanner that fails refuses the push and says so, not that it found something" {
+    # gitleaks exits 1 when it cannot run (an unreadable config, say) and 2, at
+    # the hook's asking, on a finding. Publishing unscanned would be the silent
+    # failure the scan exists to prevent, so a failure refuses too; but the
+    # advice is to fix the scanner, not to rotate a credential nobody found.
+    setup_hook_repo
+    setup_gitleaks_stub 1
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"BLOCKED"* ]]
+    [[ "$output" == *"could not scan"* ]]
+    [[ "$output" != *"ROTATE"* ]]
+    [[ "$output" == *"git push --no-verify"* ]]
+}
+
+@test "pre-push hook: a credential is still refused on a clone with NO denylist" {
+    # Any contributor's clone: no private-strings file. The identifier scan has
+    # nothing to read there and stands down; the credential scan must run all
+    # the same, so a hook that ends when the denylist is missing is wrong.
+    setup_hook_repo
+    rm "$XDG_CONFIG_HOME/romp/private-strings.txt"
+    setup_gitleaks_stub 2
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"gitleaks found a credential"* ]]
+    [ -f "$GL_ARGS" ]      # the scanner really ran
+}
+
+@test "pre-push hook: a credential is still refused when the denylist bans nothing" {
+    # The other way the identifier scan stands down: a file of comments and blanks.
+    setup_hook_repo
+    printf '# just a comment\n\n   \n' > "$XDG_CONFIG_HOME/romp/private-strings.txt"
+    setup_gitleaks_stub 2
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"gitleaks found a credential"* ]]
+}
+
+@test "pre-push hook: a clean scan lets the push through" {
+    setup_hook_repo
+    setup_gitleaks_stub 0
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    run git -C "$WORK" push origin HEAD:main
     [ "$status" -eq 0 ]
-    [[ "$output" == *"2.1.220"* ]]
-    [[ "$output" == *"claude update"* ]]
+    [ -f "$GL_ARGS" ]      # it really did run
+    # --redact keeps the value out of the terminal, -v names the file, line and
+    # rule (without it gitleaks prints a count). tests/gitleaks-config.bats
+    # checks both against the real scanner; this pins the wiring.
+    [[ "$(cat "$GL_ARGS")" == *"--redact -v"* ]]
+    [[ "$(cat "$GL_ARGS")" != *"--config"* ]]   # no .gitleaks.toml in this repo: default rules
 }
 
-@test "install.sh: a current Claude Code gets no upgrade notice" {
-    _stub_claude "2.1.226"
-    run "$ROMP_DIR/install.sh"
+@test "pre-push hook: the repo's .gitleaks.toml is handed to the scanner by name" {
+    # Explicit, not left to gitleaks' own lookup: with no --config it reads a
+    # GITLEAKS_CONFIG from the environment before the source root, and a
+    # developer's own config would replace the repo's rules.
+    setup_hook_repo
+    setup_gitleaks_stub 0
+    printf '[extend]\nuseDefault = true\n' > "$WORK/.gitleaks.toml"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm rules
+    run git -C "$WORK" push origin HEAD:main
     [ "$status" -eq 0 ]
-    [[ "$output" != *"claude update"* ]]
+    root="$(git -C "$WORK" rev-parse --show-toplevel)"
+    [[ "$(cat "$GL_ARGS")" == *"--config $root/.gitleaks.toml"* ]]
 }
 
-@test "install.sh: the version floor matches bin/romp's (no drift)" {
-    a="$(sed -n 's/^ROMP_CLAUDE_FLOOR="\(.*\)"$/\1/p' "$ROMP_DIR/install.sh" | head -1)"
-    b="$(sed -n 's/^ROMP_CLAUDE_FLOOR="\(.*\)"$/\1/p' "$ROMP_DIR/bin/romp" | head -1)"
-    [ -n "$a" ]
-    [ "$a" = "$b" ]
+@test "pre-push hook: only the commits being pushed are handed to the scanner" {
+    # The same rule the identifier scan follows: a secret that already escaped
+    # must not block every later push, and the tip alone is not what ships.
+    setup_hook_repo
+    setup_gitleaks_stub 0
+    echo "old" > "$WORK/old.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm old
+    git -C "$WORK" push --no-verify -q origin HEAD:main
+    old_sha="$(git -C "$WORK" rev-parse HEAD)"
+    echo "new" > "$WORK/new.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm new
+    new_sha="$(git -C "$WORK" rev-parse HEAD)"
+
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -eq 0 ]
+    # The hook hands gitleaks the range the identifier scan walks: the pushed
+    # tip, minus every ref any fetched remote already has and the remote's old
+    # tip (see rev_range in the hook).
+    [[ "$(cat "$GL_ARGS")" == *"--log-opts=$new_sha --not --remotes $old_sha"* ]]
 }
+
+@test "pre-push hook: the scan asks git to show merge-commit diffs" {
+    # `gitleaks git` runs `git log -p`, which shows NO diff for a merge commit by default, so a
+    # secret introduced only in a conflict resolution would be handed to the scanner as empty. The
+    # hook must pass --diff-merges=first-parent so merge content is actually scanned. Wiring only;
+    # the real "the secret is caught" proof is in gitleaks-config.bats against real gitleaks.
+    setup_hook_repo
+    setup_gitleaks_stub 0
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$GL_ARGS")" == *"--diff-merges=first-parent"* ]]
+}
+
+@test "pre-push hook: a brand-new branch is scanned from its first commit" {
+    setup_hook_repo
+    setup_gitleaks_stub 0
+    echo "first" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm first
+    sha="$(git -C "$WORK" rev-parse HEAD)"
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$GL_ARGS")" == *"--log-opts=$sha --not --remotes"* ]]
+}
+
+@test "pre-push hook: a force-push over a remote tip this clone never fetched still scans" {
+    # Another clone moves the branch; this one force-pushes without fetching,
+    # so the remote's tip is a sha git cannot find here. gitleaks handed that
+    # range logs git's error, scans no commits and exits 0, and a secret in the
+    # push would go out unscanned. The hook falls back the way the identifier
+    # scan does, to everything the pushed tip reaches: the unknown sha is not
+    # in what the scanner is given.
+    setup_hook_repo
+    setup_gitleaks_stub 0
+    echo "base" > "$WORK/base.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm base
+    git -C "$WORK" push --no-verify -q origin HEAD:main
+    git clone -q -b main "$TEST_DIR/remote.git" "$TEST_DIR/other"
+    echo "other" > "$TEST_DIR/other/other.txt"
+    git -C "$TEST_DIR/other" add -A && git -C "$TEST_DIR/other" commit -qm other
+    git -C "$TEST_DIR/other" push -q origin HEAD:main
+    other_sha="$(git -C "$TEST_DIR/other" rev-parse HEAD)"
+    echo "mine" > "$WORK/mine.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm mine
+    sha="$(git -C "$WORK" rev-parse HEAD)"
+    run git -C "$WORK" push --force origin HEAD:main
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$GL_ARGS")" == *"--log-opts=$sha --diff-merges=first-parent"* ]]
+    [[ "$(cat "$GL_ARGS")" != *"$other_sha"* ]]
+}
+
+@test "pre-push hook: deleting a remote branch consults no scanner" {
+    # A deletion pushes nothing (the local sha is all zeros); handing that to
+    # gitleaks would only make it log a git error and scan nothing.
+    setup_hook_repo
+    setup_gitleaks_stub 0
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    git -C "$WORK" push --no-verify -q origin HEAD:feat
+    run git -C "$WORK" push origin :feat
+    [ "$status" -eq 0 ]
+    [ ! -e "$GL_ARGS" ]
+}
+
+@test "pre-push hook: no gitleaks installed says so out loud and still pushes" {
+    # Requiring an install to push would break every clone that never asked for
+    # the scanner. Loud, not blocking.
+    setup_hook_repo
+    unset ROMP_NO_GITLEAKS
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    ROMP_GITLEAKS="$TEST_DIR/not-a-binary" run git -C "$WORK" push origin HEAD:main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"gitleaks not installed"* ]]
+    [[ "$output" == *"WITHOUT a secret scan"* ]]
+}
+
+@test "pre-push hook: ROMP_NO_GITLEAKS=1 silences the scan and its notice" {
+    setup_hook_repo
+    setup_gitleaks_stub 2                 # a scanner that WOULD refuse, if consulted
+    export ROMP_NO_GITLEAKS=1             # the pin setup_hook_repo sets; the stub helper unset it
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -eq 0 ]
+    [ ! -e "$GL_ARGS" ]                   # never consulted
+    [[ "$output" != *"secret scan"* ]]    # and no notice about one
+    [[ "$output" != *"romp pre-push"* ]]  # a clean push under the pin says nothing at all
+}
+
+@test "pre-push hook: --no-verify bypasses the credential block too" {
+    setup_hook_repo
+    setup_gitleaks_stub 2
+    echo "whatever" > "$WORK/f.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm work
+    run git -C "$WORK" push --no-verify origin HEAD:main
+    [ "$status" -eq 0 ]
+}
+
+@test "pre-push hook: both scanners report before the push is refused" {
+    # One push, two findings: the developer should learn about both in one go
+    # rather than fixing the identifier, pushing again, and meeting the secret.
+    setup_hook_repo
+    setup_gitleaks_stub 2
+    printf 'leak ZZBANNEDZZ here\n' > "$WORK/leak.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm leak
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"personal identifier"* ]]
+    [[ "$output" == *"gitleaks found a credential"* ]]
+    # One bypass line, after both verdicts.
+    [ "$(grep -c -- 'git push --no-verify' <<<"$output")" -eq 1 ]
+    [[ "${output##*personal identifier}" == *"git push --no-verify"* ]]
+    [[ "${output##*gitleaks found a credential}" == *"git push --no-verify"* ]]
+}
+

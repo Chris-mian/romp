@@ -40,7 +40,7 @@ const CSS =
   "#rpal-back[hidden]{display:none}" +
   "#rpal{width:min(560px,94%);max-height:60vh;display:flex;flex-direction:column;background:#252526;" +
   "border:1px solid #3a3a3a;border-radius:10px;box-shadow:0 12px 36px #000000aa;padding:8px;" +
-  "color:#ccc;font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;box-sizing:border-box}" +
+  "color:#ccc;font:13px/1.6 'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;box-sizing:border-box}" +
   "#rpal-in{flex:0 0 auto;background:#1b1b1c;border:1px solid #3a3a3a;border-radius:6px;color:#e8eaed;" +
   "font:inherit;padding:7px 10px;outline:none;box-sizing:border-box;width:100%}" +
   "#rpal-in:focus{border-color:var(--accent,#9cd2ff)}" +
@@ -50,10 +50,10 @@ const CSS =
   ".rpal-title{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
   ".rpal-title b{color:var(--accent,#9cd2ff);font-weight:600}" +
   // the tabs' identity language, verbatim: .tab.colored .tab-label is 600-weight in the session
-  // color; .host-prefix is dim italic at 0.88em. Matched characters keep the row's own colors
+  // color; .host-prefix is dim italic at 0.86em (the six-rung ladder, 2026-08-26). Matched characters keep the row's own colors
   // (underline marks them) — an accent-blue <b> inside a colored name would fight the identity.
   ".rpal-name{font-weight:600}" +
-  ".rpal-host{color:#9aa0a6;font-weight:400;font-style:italic;font-size:0.88em}" +
+  ".rpal-host{color:#9aa0a6;font-weight:400;font-style:italic;font-size:0.86em}" +
   ".rpal-name b,.rpal-host b{color:inherit;font-weight:inherit;text-decoration:underline}" +
   ".rpal-dim{flex:0 1 auto;color:#9aa0a6;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
   ".rpal-kbd{flex:0 0 auto;color:#9aa0a6;font-size:11px;border:1px solid #3a3a3a;border-radius:4px;padding:0 5px}" +
@@ -239,7 +239,7 @@ export function initPalette(opts?: { onClose?: () => void; kbdFor?: (c: PaletteC
     openPick({
       placeholder: "Type a command…",
       // hidden commands are bindable but not listed (palette.toggle from the palette just blinks it)
-      items: commandList().filter((c) => !c.hidden)
+      items: commandList().filter((c) => !c.hidden && (!c.when || c.when()))
         .map((c) => ({ title: c.title, kbd: opts && opts.kbdFor ? opts.kbdFor(c) : undefined, run: c.run })),
     });
   }

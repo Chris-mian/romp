@@ -51,7 +51,7 @@ test("kernel: the feed payload carries the build id, claimed BEFORE the read it 
   assert.match(KERNEL, /def _next_feed_build_id\(\):/);
   const cached = KERNEL.slice(KERNEL.indexOf("def _cached_feed("), KERNEL.indexOf("def _cached_timeline("));
   const claim = cached.indexOf("bid = _next_feed_build_id()");
-  const build = cached.indexOf("feed = build_feed(now, tmux)");
+  const build = cached.indexOf("feed = build_feed(now, live_map)");
   assert.ok(claim >= 0 && build > claim,
     "claimed before the build: one already in flight when a click lands gets the LOWER id it deserves");
   assert.match(cached, /feed\["buildId"\] = bid/);
@@ -72,7 +72,7 @@ test("client: an ACKED prediction yields only to a payload built AFTER the gestu
   // about the reopen, and taking it as the answer is the bounce back to Completed this replaced
   assert.match(FEED, /const acked = pendingMoveAck\.get\(id\);/);
   assert.match(FEED, /if \(typeof mark === "number" && mark > acked\.buildId\) clearFollowMove\(id, "outranked"\);/);
-  assert.match(FEED, /function reconcileFollowMove\(incoming: AskItem\[\], buildId: number, buildIds\?: Record<string, number>\)/);
+  assert.match(FEED, /function reconcileFollowMove\(incoming: AskItem\[\], buildId: number, buildIds\?: Record<string, number>, cardsUnknown = false\)/);
 });
 
 test("client: 'after' is judged on the CARD's kernel's counter, never another kernel's (2026-08-15)", () => {

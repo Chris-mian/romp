@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """A slash command that fires lifecycle hooks (e.g. /compact) echoes each one back in its OUTPUT as
-"PreCompact [~/.claude/hooks/tmux-status.sh] completed successfully" — internal plumbing the user never wants
+"PreCompact [~/.claude/hooks/tmux-status.sh] completed successfully" (a hook name from before the tmux backend's
+removal on 2026-09-11; the shape is what matters), internal plumbing the user never wants
 to see (the user 2026-06-30, who asked what the pre-compact thing was). build_session strips those notices from a
 command's output text via _strip_hook_notices; when nothing else remains, the atom is dropped entirely (the
 ✦ Compacted boundary already marks the compaction). This tests the stripper directly.
@@ -8,7 +9,7 @@ command's output text via _strip_hook_notices; when nothing else remains, the at
 import inspect
 import os
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -18,7 +19,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-km = SourceFileLoader("romp_kernel_hn", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_hn", os.path.join(BIN, "romp-kernel"))
 
 
 class StripHookNotices(unittest.TestCase):

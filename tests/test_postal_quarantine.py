@@ -6,12 +6,15 @@ feed's blocked card. peer_update carries the per-host trust the gate reads.
 
 Synthetic only — hermetic temp state dir, placeholder mids, invented notes-domain sessions, no real data.
 """
+import errno
 import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
+
+from tests.conftest import restore_env
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -23,7 +26,7 @@ _SESS = os.path.join(os.environ["XDG_STATE_HOME"], "sessions.json")
 Path(_SESS).write_text(json.dumps([{"id": "sess-web", "name": "web", "dir": "/tmp/notes-api",
                                     "state": "waiting", "working": ""}]))
 os.environ["ROMP_SESSIONS_FILE"] = _SESS
-ps = SourceFileLoader("romp_postal_quar", os.path.join(BIN, "romp-postal-service")).load_module()
+ps = load_source("romp_postal_quar", os.path.join(BIN, "romp-postal-service"))
 
 
 def _relay(mid, body="ship it", frm="api", origin=None):
@@ -35,15 +38,20 @@ def _relay(mid, body="ship it", frm="api", origin=None):
 
 class InboundTrustGate(unittest.TestCase):
     def setUp(self):
+        self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = _SESS   # pin OUR sessions seam (read live; a later-collected postal test clobbers it)
         # fresh peer table + empty stores each test
         ps.PEERS.clear()
+        ps._REFUSAL_SAID.clear()                     # no refusal episode left open by an earlier test
         for d in (ps.QUARANTINE, ps.MAILROOT / "sess-web" / "new"):
             try:
                 for f in d.glob("*"):
                     f.unlink()
             except OSError:
                 pass
+
+    def tearDown(self):
+        restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
 
     def _set_trust(self, host, level, up=True):
         ps.peer_update({"host": host, "port": 47101, "up": up, "trust": level})
@@ -68,6 +76,60 @@ class InboundTrustGate(unittest.TestCase):
         self.assertEqual(held[0]["origin"], "TESTHOST")
         self.assertEqual(ps.read_box("sess-web", consume=False), [],
                          "directed mail must NOT reach the session until approved")
+
+    def test_a_hold_that_could_not_be_written_answers_retry_not_ack(self):
+        """_quarantine_put says False when the hold file could not be written (ENOSPC, a permission
+        bit, a store path that is not a directory), and the directed arm ignored it: the sender was
+        ack'd, deleted its record and read 'delivered' forever, the mid was marked seen so the
+        re-relay was deduped away, and no hold existed for anyone to approve. The False is now read
+        the way the trusted arm reads DeliveryNotRecorded: silence on the wire, nothing marked seen,
+        so the sender keeps its record and the re-relay is held once the store writes again. The fault
+        also reaches the USER, the way deliver() says a refused publish: one bell row per episode (the
+        re-relay that meets the same store is said in the log only), re-armed by the next hold that lands."""
+        self._set_trust("TESTHOST", "directed")
+        blocker = ps.QUARANTINE.parent / "hold-blocker"
+        blocker.parent.mkdir(parents=True, exist_ok=True)   # nothing creates the state dir at import
+        blocker.write_text("")                       # a regular file where the store's parent must be
+        saved, saved_log, saved_post, logged, told = ps.QUARANTINE, ps._log, ps._kernel_post, [], []
+        ps.QUARANTINE = blocker / "quarantine"       # every mkdir/write under it fails with ENOTDIR
+        ps._log = lambda line: logged.append(line)
+        ps._kernel_post = lambda path, body, timeout=2: told.append((path, body)) or {"ok": True}
+        try:
+            # twice: the sender re-relays next exchange, and the store is still blocked
+            verdicts = [ps._relay_in("TESTHOST", _relay("q-hold-fail")) for _ in range(2)]
+        finally:
+            ps.QUARANTINE, ps._log, ps._kernel_post = saved, saved_log, saved_post
+            blocker.unlink()
+        self.assertEqual(verdicts, [("retry", None)] * 2, "silence on the wire, both times: the sender keeps it parked and re-relays")
+        cause = [l for l in logged if "q-hold-fail" in l and "could not be written" in l and "[Errno %d]" % errno.ENOTDIR in l]
+        self.assertEqual(len(cause), 2, "the store says WHY the hold did not land, with the errno, on every refusal: %r" % logged)
+        self.assertTrue(any("the sender re-relays" in l for l in logged), "and the arm says what follows: %r" % logged)
+        notices = [b["text"] for path, b in told if path == "/postal-notice"]
+        self.assertEqual(len(notices), 1, "the user hears it once per episode, not once per exchange: %r" % told)
+        self.assertIn("q-hold-fail", notices[0])
+        self.assertIn("could not be written", notices[0])
+        self.assertIn("quarantine", ps._REFUSAL_SAID, "the episode stays open while the store is blocked")
+        self.assertFalse(ps.peer_seen_check("q-hold-fail"), "not marked seen, so the re-relay is processed in full")
+        self.assertEqual(ps.quarantine_list(), [], "nothing is held")
+        self.assertEqual(ps.read_box("sess-web", consume=False), [], "and nothing reached the session")
+        # the re-relay, with the store writing again, is held exactly as a first arrival would be
+        self.assertEqual(ps._relay_in("TESTHOST", _relay("q-hold-fail")), ("ack", None))
+        self.assertEqual([h["mid"] for h in ps.quarantine_list()], ["q-hold-fail"])
+        self.assertTrue(ps.peer_seen_check("q-hold-fail"))
+        self.assertNotIn("quarantine", ps._REFUSAL_SAID, "a hold that landed closes the episode: the next refusal is said again")
+
+    def test_a_mid_no_hold_can_be_named_by_bounces_instead_of_retrying_forever(self):
+        # The hold is a file named by the mid, so _quarantine_put also says False for an id that
+        # cannot be a path component. That False must not read as 'retry': a peer that keeps
+        # sending the crafted id would be re-relaying it every exchange. Final refusal instead,
+        # and (as before) nothing held, nothing delivered; unlike before, not marked seen or ack'd.
+        self._set_trust("TESTHOST", "directed")
+        verdict, bounce = ps._relay_in("TESTHOST", _relay("../q-hold-crafted"))
+        self.assertEqual(verdict, "bounce", "final: silence would have the sender re-relay it every exchange")
+        self.assertEqual(bounce["mid"], "../q-hold-crafted")
+        self.assertFalse(ps.peer_seen_check("../q-hold-crafted"))
+        self.assertEqual(ps.quarantine_list(), [])
+        self.assertEqual(ps.read_box("sess-web", consume=False), [])
 
     def test_isolated_drops(self):
         self._set_trust("TESTHOST", "isolated")
@@ -171,6 +233,7 @@ class TokenProvenDialerGate(InboundTrustGate):
 
     def tearDown(self):
         ps._relay_in = self._orig_relay_in
+        super().tearDown()
 
     def test_unknown_origin_defaults_to_directed(self):
         # OVERRIDES the inherited default-hold test: with the dialer token-proven, unknown-origin
@@ -204,6 +267,7 @@ class ExchangeHandleIsTokenProven(unittest.TestCase):
     gate — so an attached machine's own relays deliver instead of quarantining on the dialed side."""
 
     def setUp(self):
+        self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = _SESS
         os.environ["ROMP_POSTAL_PEERS"] = "1"
         ps.PEERS.clear()
@@ -222,6 +286,7 @@ class ExchangeHandleIsTokenProven(unittest.TestCase):
 
     def tearDown(self):
         os.environ.pop("ROMP_POSTAL_PEERS", None)
+        restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
 
     def test_handle_delivers_unknown_dialers_direct_relay(self):
         req = {"host": "MYSTERY", "epoch": 1, "proto": ps.PEER_PROTO, "presence": [], "holds": [],
@@ -260,6 +325,7 @@ class ExchangeHandleIsTokenProven(unittest.TestCase):
 
 class QuarantineDecide(unittest.TestCase):
     def setUp(self):
+        self._prior_seam = os.environ.get("ROMP_SESSIONS_FILE")
         os.environ["ROMP_SESSIONS_FILE"] = _SESS   # pin OUR sessions seam (see InboundTrustGate.setUp)
         ps.PEERS.clear()
         ps.peer_update({"host": "TESTHOST", "port": 47101, "up": True, "trust": "directed"})
@@ -269,6 +335,9 @@ class QuarantineDecide(unittest.TestCase):
                     f.unlink()
             except OSError:
                 pass
+
+    def tearDown(self):
+        restore_env("ROMP_SESSIONS_FILE", self._prior_seam)
 
     def test_approve_delivers_and_clears(self):
         ps._relay_in("TESTHOST", _relay("q-appr-1", body="original text"))
@@ -319,10 +388,57 @@ class QuarantineDecide(unittest.TestCase):
         for f in (ps.OUTBOX / "TESTHOST").glob("*.json"):
             f.unlink()
 
+    def test_a_refused_approve_leaves_the_hold_in_place(self):
+        # mutant: no except → deliver's refusal propagates out of the approve (or, worse, quarantine_del
+        # runs) and the held message is gone with nothing in new/. Kept at the public-call level on
+        # purpose: another change edits this function's body.
+        ps._relay_in("TESTHOST", _relay("q-appr-refused", body="held text"))
+        self.assertIsNotNone(ps.quarantine_get("q-appr-refused"))
+        fd, path = tempfile.mkstemp()
+        os.close(fd)
+        saved_tl = ps.TLDIR
+        ps.TLDIR = Path(path) / "timeline"                   # under a regular file: the REAL append fails
+        try:
+            ok, err = ps.quarantine_decide("q-appr-refused", "approve")
+        finally:
+            ps.TLDIR = saved_tl
+            ps._TL_FAULT[0] = False
+            os.unlink(path)
+        self.assertFalse(ok)
+        self.assertIn("the held message is untouched", err)
+        self.assertIn("not delivered", err)
+        self.assertIsNotNone(ps.quarantine_get("q-appr-refused"), "the hold stands")
+        box = ps.read_box("sess-web", consume=False)
+        self.assertFalse(any("held text" in (m.get("body") or "") for m in box), "nothing landed in new/")
+
     def test_decide_unknown_mid_errors(self):
         ok, err = ps.quarantine_decide("no-such-mid", "approve")
         self.assertFalse(ok)
         self.assertIn("no held message", err)
+
+    def test_a_deny_whose_note_cannot_park_refuses_and_keeps_the_hold(self):
+        # mutant: outbox_put's False ignored (review find, 2026-09-08) → the hold is dropped, ok is
+        # answered, and the reviewer's note goes nowhere with nothing saying so
+        ps._relay_in("TESTHOST", _relay("q-deny-3", body="please rewrite the ingest job tonight"))
+        saved = ps.outbox_put
+        ps.outbox_put = lambda h, m: False                   # the outbox could not be written
+        try:
+            ok, err = ps.quarantine_decide("q-deny-3", "deny", feedback="not tonight, we freeze before the demo")
+        finally:
+            ps.outbox_put = saved
+        self.assertFalse(ok)
+        self.assertIn("the held message is untouched", err)
+        self.assertIn("deny without a note", err, "the way out is named")
+        self.assertIsNotNone(ps.quarantine_get("q-deny-3"), "the hold stands")
+        self.assertEqual(list((ps.OUTBOX / "TESTHOST").glob("*.json")) if (ps.OUTBOX / "TESTHOST").is_dir() else [],
+                         [], "nothing was parked")
+        ok, err = ps.quarantine_decide("q-deny-3", "deny", feedback="not tonight, we freeze before the demo")
+        self.assertTrue(ok, err)
+        self.assertIsNone(ps.quarantine_get("q-deny-3"), "the retry completes the deny")
+        rows = [json.loads(f.read_text()) for f in (ps.OUTBOX / "TESTHOST").glob("*.json")]
+        self.assertEqual(len(rows), 1, "and parks exactly one note")
+        for f in (ps.OUTBOX / "TESTHOST").glob("*.json"):
+            f.unlink()
 
 
 class PeerUpdateTrust(unittest.TestCase):

@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -25,11 +25,11 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 TOKEN = os.environ["ROMP_SERVE_TOKEN"]
 
@@ -53,6 +53,14 @@ class FilePreviewEndpoint(unittest.TestCase):
         cls.txt = os.path.join(cls.tmp.name, "notes.txt")
         with open(cls.txt, "w") as f:
             f.write("not renderable")
+        # a synthetic SVG — XML on disk, but SERVED as an image (an <img> never runs its scripts)
+        cls.svg = os.path.join(cls.tmp.name, "diagram.svg")
+        with open(cls.svg, "w") as f:
+            f.write('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>')
+        # a minimal synthetic PDF — the media contract's OTHER half (the viewer's isPdf branch)
+        cls.pdf = os.path.join(cls.tmp.name, "report.pdf")
+        with open(cls.pdf, "wb") as f:
+            f.write(b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n")
         # …and something served NEITHER as media nor as text, which is what "off the allowlist" means
         # now that source/text is ON it (2026-08-08 — see tests/test_file_view.py)
         cls.bin = os.path.join(cls.tmp.name, "archive.zip")
@@ -64,9 +72,9 @@ class FilePreviewEndpoint(unittest.TestCase):
         cls.srv.shutdown()
         cls.tmp.cleanup()
 
-    def _req(self, path, method="GET"):
+    def _req(self, path, method="GET", headers=None):
         url = "http://127.0.0.1:%d%s%stoken=%s" % (self.port, path, "&" if "?" in path else "?", TOKEN)
-        req = urllib.request.Request(url, method=method)
+        req = urllib.request.Request(url, method=method, headers=headers or {})
         try:
             with urllib.request.urlopen(req, timeout=3) as r:
                 return r.status, dict(r.headers), r.read()
@@ -78,6 +86,100 @@ class FilePreviewEndpoint(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(hdrs.get("Content-Type"), "image/png")
         self.assertEqual(body, PNG)
+
+    def test_a_pdf_is_served_inline_with_its_name_so_its_own_tab_is_titled_and_a_save_names_it(self):
+        # a PDF opens in its OWN browser tab on a Cmd/Ctrl- or middle-click (ui/webview/preview.ts openPdfTab, the user 2026-09-06/07);
+        # the browser titles that tab and names a Save from Content-Disposition — inline, never
+        # attachment, so the tab renders it instead of downloading. Images carry none: an <img> reads
+        # no disposition, and the header set they always had stays byte-for-byte.
+        code, hdrs, _ = self._req("/file?path=" + urllib.parse.quote(self.pdf))
+        self.assertEqual(code, 200)
+        self.assertEqual(hdrs.get("Content-Type"), "application/pdf")
+        self.assertEqual(hdrs.get("Content-Disposition"), 'inline; filename="report.pdf"')
+        code, hdrs, body = self._req("/file?path=" + urllib.parse.quote(self.pdf), method="HEAD")
+        self.assertEqual(code, 200)
+        self.assertEqual(hdrs.get("Content-Disposition"), 'inline; filename="report.pdf"', "the probe agrees")
+        self.assertEqual(body, b"")
+        for p in (self.png, self.svg):
+            code, hdrs, _ = self._req("/file?path=" + urllib.parse.quote(p))
+            self.assertEqual(code, 200)
+            self.assertIsNone(hdrs.get("Content-Disposition"), p)
+
+    def test_an_oversize_pdf_navigated_to_in_its_own_tab_gets_a_page_with_the_download_as_the_way_out(self):
+        # a modified click opens a PDF in its own tab, decided by extension inside the click — so a PDF over the cap lands
+        # its whole tab on the 413, with no viewer around it to offer the Download button the in-pane path
+        # used to (review find 2026-09-06). A refusal to render is never a dead end: a NAVIGATION
+        # (Sec-Fetch-Dest: document) gets a page with the sentence and a link to the download half; a fetch,
+        # an <iframe>/<img> load or a HEAD probe keeps the plain text they parse.
+        big = os.path.join(self.tmp.name, "thesis <draft> & \"final\".pdf")
+        with open(big, "wb") as f:
+            f.truncate(km._PREVIEW_MAX_BYTES + 1)           # sparse: no bytes written, the cap is on st_size
+        try:
+            sid = "11111111-2222-3333-4444-555555555555"
+            qp = "/file?path=" + urllib.parse.quote(big) + "&sid=" + sid
+            code, hdrs, body = self._req(qp, headers={"Sec-Fetch-Dest": "document"})
+            self.assertEqual(code, 413)
+            self.assertTrue(hdrs.get("Content-Type", "").startswith("text/html"), hdrs.get("Content-Type"))
+            self.assertEqual(hdrs.get("X-Content-Type-Options"), "nosniff")
+            page = body.decode("utf-8")
+            self.assertIn("too large to show:", page)
+            self.assertNotIn("<draft>", page, "the path is escaped — it names a file, never markup")
+            self.assertIn("&lt;draft&gt; &amp; &quot;final&quot;.pdf", page)
+            dq = urllib.parse.urlencode({"path": big, "download": "1", "sid": sid})
+            self.assertIn('href="' + km._html_esc("/file?" + dq) + '"', page, "the way out: this route's download half, same path and sid")
+            self.assertNotIn("<script", page.lower())
+            # the same request without the navigation marker: the plain text the viewer's catch parses, unchanged
+            code, hdrs, body = self._req(qp)
+            self.assertEqual(code, 413)
+            self.assertEqual(hdrs.get("Content-Type"), "text/plain")
+            self.assertTrue(body.startswith(b"too large to show:"), body[:40])
+            code, hdrs, body = self._req(qp, method="HEAD", headers={"Sec-Fetch-Dest": "document"})
+            self.assertEqual((code, body), (413, b""), "a HEAD carries the verdict, never a page")
+            # the lightbox's <iframe> fallback (popup blocked) is shown too, so it gets the page as well
+            code, hdrs, body = self._req(qp, headers={"Sec-Fetch-Dest": "iframe"})
+            self.assertEqual(code, 413)
+            self.assertTrue(hdrs.get("Content-Type", "").startswith("text/html"), "an iframe load is shown, not parsed")
+            self.assertIn('href="' + km._html_esc("/file?" + dq) + '"', body.decode("utf-8"))
+            # Fetch Metadata rides only to trustworthy origins (https, localhost): a dashboard on plain http
+            # sends no Sec-Fetch-Dest, so the Accept header decides — a navigation asks for text/html first
+            # (review find on #959, 2026-09-07), a fetch() sends */* and keeps the text
+            code, hdrs, body = self._req(qp, headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
+            self.assertEqual(code, 413)
+            self.assertTrue(hdrs.get("Content-Type", "").startswith("text/html"), "no Sec-Fetch-Dest, Accept text/html → the page")
+            code, hdrs, body = self._req(qp, headers={"Accept": "*/*"})
+            self.assertEqual((code, hdrs.get("Content-Type")), (413, "text/plain"), "a fetch() keeps the text")
+            code, hdrs, body = self._req(qp, headers={"Sec-Fetch-Dest": "empty", "Accept": "text/html"})
+            self.assertEqual((code, hdrs.get("Content-Type")), (413, "text/plain"), "a present non-shown dest wins over Accept")
+            # an oversize IMAGE navigated to keeps the text — only a PDF can open in its own tab
+            bigpng = os.path.join(self.tmp.name, "huge.png")
+            with open(bigpng, "wb") as f:
+                f.truncate(km._PREVIEW_MAX_BYTES + 1)
+            code, hdrs, _ = self._req("/file?path=" + urllib.parse.quote(bigpng), headers={"Sec-Fetch-Dest": "document"})
+            self.assertEqual((code, hdrs.get("Content-Type")), (413, "text/plain"))
+            os.unlink(bigpng)
+        finally:
+            os.unlink(big)
+
+    def test_a_media_200_carries_its_mime_and_no_text_utf8_marker(self):
+        # The viewer's media branches (ui/webview/file-view.ts) key on exactly this contract: a media
+        # 200 wears its locally-derived mime — image/* for the isImage branch, application/pdf for
+        # the isPdf one — and NOT the text pipeline's X-Romp-Text-Utf8 marker; that header belongs
+        # to the text branch alone, and its absence tells the client no text decode happened. SVG is
+        # the load-bearing image case: XML on disk, image on the wire, nosniff so the browser never
+        # reinterprets it as a document. The PDF trio (mime + marker absence + nosniff) is what the
+        # viewer's iframe arm believes without a client-side extension re-test.
+        for p, mime in ((self.png, "image/png"), (self.svg, "image/svg+xml"),
+                        (self.pdf, "application/pdf")):
+            code, hdrs, _ = self._req("/file?path=" + urllib.parse.quote(p))
+            self.assertEqual(code, 200)
+            self.assertEqual(hdrs.get("Content-Type"), mime)
+            self.assertIsNone(hdrs.get("X-Romp-Text-Utf8"),
+                              "the text marker must never ride a media response")
+            self.assertEqual(hdrs.get("X-Content-Type-Options"), "nosniff")
+        code, hdrs, _ = self._req("/file?path=" + urllib.parse.quote(self.txt))
+        self.assertEqual(code, 200)
+        self.assertEqual(hdrs.get("X-Romp-Text-Utf8"), "1",
+                         "…while the text branch carries its marker — the asymmetry is the signal")
 
     def _req_range(self, path, rng):
         url = "http://127.0.0.1:%d%s&token=%s" % (self.port, path, TOKEN)
@@ -180,9 +282,9 @@ class FileDownloadEndpoint(unittest.TestCase):
         cls.srv.shutdown()
         cls.tmp.cleanup()
 
-    def _req(self, path, method="GET"):
+    def _req(self, path, method="GET", headers=None):
         url = "http://127.0.0.1:%d%s%stoken=%s" % (self.port, path, "&" if "?" in path else "?", TOKEN)
-        req = urllib.request.Request(url, method=method)
+        req = urllib.request.Request(url, method=method, headers=headers or {})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, dict(r.headers), r.read()
@@ -314,6 +416,96 @@ class AttachmentDisposition(unittest.TestCase):
 
     def test_an_empty_name_still_yields_a_usable_filename(self):
         self.assertIn('filename="download"', km._attachment_disposition(""))
+
+# a synthetic SVG that carries the payload the hole is about: markup on disk, a page when a tab navigates
+# to it, and its <script> would run wherever the document lands
+SVG_WITH_SCRIPT = (b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">'
+                   b'<script>document.title = "ran at the kernel origin"</script></svg>')
+
+
+class SvgSandboxPolicy(unittest.TestCase):
+    """An SVG on the media allowlist is ALSO a document: when a tab navigates to /file?path=x.svg the
+    browser parses it as a page and runs its inline <script> at the kernel's origin, with the dashboard's
+    session cookie attached. The own-tab opener (ui/webview/preview.ts openFileTab) hands the route ANY
+    path on a modified click since the PDF-only gate came off, so an agent-written .svg gets there in one
+    gesture (the 1204 review, 2026-09-10). nosniff cannot help: the type is declared, and image/svg+xml is
+    the scriptable one. Every image/svg+xml response therefore carries `Content-Security-Policy: sandbox`,
+    on all three success shapes (200, HEAD, 206): a sandboxed document runs no script and has an opaque
+    origin. An <img> load creates no document and reads no policy, so the chat's thumbnails, the viewer's
+    inline preview and the lightbox keep rendering. Ordinary media and text carry no sandbox."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.svg = os.path.join(cls.tmp.name, "chart.svg")
+        with open(cls.svg, "wb") as f:
+            f.write(SVG_WITH_SCRIPT)
+        cls.png = os.path.join(cls.tmp.name, "plot.png")
+        with open(cls.png, "wb") as f:
+            f.write(PNG)
+        cls.md = os.path.join(cls.tmp.name, "notes.md")
+        with open(cls.md, "w") as f:
+            f.write("# notes\n\nplain text, never a document with script\n")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.tmp.cleanup()
+
+    def _req(self, path, method="GET", headers=None):
+        # returns the raw header MESSAGE, not a dict: a dict keeps one value per name, and the sandbox
+        # policy rides BESIDE _send's frame-ancestors one under the same header name on the 200 branch
+        url = "http://127.0.0.1:%d/file?path=%s&token=%s" % (self.port, urllib.parse.quote(path), TOKEN)
+        req = urllib.request.Request(url, method=method, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                return r.status, r.headers, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+    @staticmethod
+    def _csp(msg):
+        # every Content-Security-Policy header the response carries, joined: a browser enforces them all
+        return "; ".join(msg.get_all("Content-Security-Policy") or [])
+
+    def test_a_get_of_an_svg_is_a_sandboxed_document(self):
+        code, msg, body = self._req(self.svg)
+        self.assertEqual(code, 200)
+        self.assertEqual(msg.get("Content-Type"), "image/svg+xml")
+        self.assertEqual(body, SVG_WITH_SCRIPT, "the bytes are untouched: the policy, not a rewrite, disarms them")
+        self.assertIn("sandbox", msg.get_all("Content-Security-Policy") or [], self._csp(msg))   # the bare policy, exactly: a weakened `sandbox allow-scripts` must fail
+        self.assertIn("frame-ancestors 'self'", self._csp(msg), "_send's framing policy still rides the 200")
+        self.assertEqual(msg.get("X-Content-Type-Options"), "nosniff")
+
+    def test_the_head_probe_carries_the_same_policy(self):
+        code, msg, body = self._req(self.svg, method="HEAD")
+        self.assertEqual((code, body), (200, b""))
+        self.assertEqual(msg.get("Content-Type"), "image/svg+xml")
+        self.assertIn("sandbox", msg.get_all("Content-Security-Policy") or [], self._csp(msg))   # the bare policy, exactly: a weakened `sandbox allow-scripts` must fail
+
+    def test_a_resumed_range_carries_the_same_policy(self):
+        # the resumable retry's 206 is a response a tab can be handed too: the tail of the document
+        code, msg, body = self._req(self.svg, headers={"Range": "bytes=1-"})
+        self.assertEqual(code, 206)
+        self.assertEqual(body, SVG_WITH_SCRIPT[1:])
+        self.assertEqual(msg.get("Content-Range"), "bytes 1-%d/%d" % (len(SVG_WITH_SCRIPT) - 1, len(SVG_WITH_SCRIPT)))
+        self.assertEqual(msg.get("Content-Type"), "image/svg+xml")
+        self.assertIn("sandbox", msg.get_all("Content-Security-Policy") or [], self._csp(msg))   # the bare policy, exactly: a weakened `sandbox allow-scripts` must fail
+
+    def test_ordinary_media_and_text_carry_no_sandbox(self):
+        # a PNG is never a document; text is served as text/plain, which never executes — neither is sandboxed,
+        # so a policy meant for SVG cannot leak onto the viewer's other branches
+        for method, headers in (("GET", None), ("HEAD", None), ("GET", {"Range": "bytes=1-"})):
+            code, msg, _ = self._req(self.png, method=method, headers=headers)
+            self.assertIn(code, (200, 206), (method, headers))
+            self.assertNotIn("sandbox", self._csp(msg), (method, headers, self._csp(msg)))
+        code, msg, _ = self._req(self.md)
+        self.assertEqual(code, 200)
+        self.assertTrue(msg.get("Content-Type", "").startswith("text/plain"), msg.get("Content-Type"))
+        self.assertNotIn("sandbox", self._csp(msg), self._csp(msg))
 
 
 class FeedArtifactsFilter(unittest.TestCase):

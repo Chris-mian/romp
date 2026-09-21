@@ -10,7 +10,8 @@ import json
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -19,11 +20,11 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+jd = load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
-km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 SENDER = "11111111-2222-3333-4444-555555555555"
 RECIP = "66666666-7777-8888-9999-000000000000"
@@ -52,6 +53,10 @@ def _seed_recipient(placed_under_existing=True):
 
 class CourierLinkRepair(unittest.TestCase):
     def setUp(self):
+        # the kernel's judge is one module object shared by every test module in the process, so a store saved at its import-bound GOALDIR outlives the module and reaches every later module's feed for the placeholder sid (T281/T282); a private root for the duration.
+        self._td = tempfile.TemporaryDirectory()
+        self._state = jd.STATE
+        jd._rebind_state(Path(self._td.name))
         self._saved = jd.discover
         jd.discover = lambda now, window=None, forks=True: [
             (SENDER, "/dev/null", None, "web"), (RECIP, "/dev/null", None, "api")]
@@ -60,8 +65,21 @@ class CourierLinkRepair(unittest.TestCase):
 
     def tearDown(self):
         jd.discover = self._saved
-        for f in jd.GOALDIR.glob("*"):
-            f.unlink()
+        jd._rebind_state(self._state)
+        self._td.cleanup()
+
+    def test_the_store_this_module_saves_does_not_outlive_it(self):
+        # The residue pin (T281/T282): a store saved through the shared judge lands under this test's root and
+        # the run-wide root (what every later module's feed reads) is exactly as it was.
+        shared = Path(self._state) / "goals" / (SENDER + ".json")
+        before = (shared.exists(), shared.stat().st_mtime_ns if shared.exists() else None)
+        st = jd.load_goals(SENDER)
+        st["nodes"][SENDER + ":t282"] = jd.GuardedNode({"id": SENDER + ":t282", "text": "a note", "parentId": None, "nodeComplete": False,
+                                                        "blocked": False, "cleared": False, "trail": [], "t": 1, "mt": 1, "log": []})
+        jd.save_goals(SENDER, st)
+        self.assertTrue((Path(self._td.name) / "goals" / (SENDER + ".json")).exists(), "the store lives under this module's root")
+        self.assertEqual((shared.exists(), shared.stat().st_mtime_ns if shared.exists() else None), before,
+                         "the run-wide goals directory is untouched by this module")
 
     def test_link_attaches_to_the_placed_top_and_is_idempotent(self):
         st = jd.load_goals(RECIP)
@@ -125,37 +143,60 @@ class CourierLinkRepair(unittest.TestCase):
 
     def test_courier_scan_carries_the_repair_branch(self):
         src = open(os.path.join(BIN, "romp-judge")).read()
-        self.assertIn("_attach_courier_link(cstore, seg[\"id\"], pm0[1])", src)
+        # the scan asks the read-only view whether the link is missing and loads for the write only then (2026-09-09)
+        self.assertIn("_courier_link_wanted(cstore, seg[\"id\"], pm0[1]) is not None", src)
+        self.assertIn("_attach_courier_link(load_goals(fsid), seg[\"id\"], pm0[1])", src)
         self.assertIn('_seg_peer_kind(seg) == "delegate"', src)
 
 
 class DormantHandoffConverts(unittest.TestCase):
     def setUp(self):
+        self._td = tempfile.TemporaryDirectory()      # a private root: see CourierLinkRepair.setUp
+        self._state = jd.STATE
+        self._shared_before = self._shared_sid_leftovers()   # the run-wide root's state, read before the rebind
+        jd._rebind_state(Path(self._td.name))
         _seed_sender()
         d = jd.STATE / "states"
         d.mkdir(parents=True, exist_ok=True)
         (d / (SENDER + ".jsonl")).write_text(json.dumps({"state": "idle", "t": T + 50}) + "\n")
-        # the names-registry launch record: what marks a reg-less sid as one the owner scan can
-        # answer for — without it the corroborator reads the sid as transcript-derived and stands down
+        # the names-registry launch record: what marks a reg-less sid as dead HISTORY (a session the
+        # kernel once launched that no backend holds a record of) — without it the corroborator reads
+        # the sid as transcript-derived and stands down. No SDK reg and no Codex record exist under
+        # this private root, so the corroboration answers true and the sweep files the block.
         jd.NAMES.mkdir(parents=True, exist_ok=True)
         (jd.NAMES / SENDER).write_text("web\t~/notes-api\t#3355aa\t#ffffff\n")
+        # …and the reg an ENDED SDK session keeps (alive False; the backend never unlinks a reg): with fresh
+        # states rows beside an EMPTY registry the sid would read as a registry moved aside, on which the
+        # corroborator stands down (tests/test_sdk_registry_blind.py); the dead sender's own reg says it ended
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True)
+        (jd.SDKDIR / (SENDER + ".json")).write_text(json.dumps({"sid": SENDER, "alive": False}))
         km._PREV_ALIVE = None
         self.nudged = {}
-        # hermetic liveness (the corroboration the sweep runs since the deadwait-probe change): the
-        # owner scan answers WITHOUT this synthetic sid, so the death is corroborated — the world
-        # these tests assert. Same fixture as test_dead_wait_block.py; without it the corroborator
-        # returns None (reg-less sid, no owner answer) and the sweep rightly stands down.
-        km._TMUX.available = lambda: True
-        km._TMUX.alive_sids = lambda t=3: set()
+        self.addCleanup(self._assert_no_shared_sid_leftovers)   # runs AFTER tearDown: the run-wide root is as it was
+
+    @staticmethod
+    def _shared_sid_leftovers():
+        # the two files the dead-wait block writes under the shared placeholder sid, as (exists, mtime_ns)
+        # at whatever root the judge is bound to: the journal row for SENDER:g1 (append_block) and the
+        # nudge record in auto-nudge.json. Either one left at the run-wide root reaches every later
+        # goal-store test under that sid in this process: load_goals replays the row onto their fresh g1
+        # (blocked) and the distiller takes the staller path instead of distilling. Sixteen test_judge.py
+        # tests (the distiller and procedural-block classes) went red when xdist placed them after this one
+        # in a worker; the two modules in one process, this one first, reproduced it.
+        out = []
+        for p in (jd._overrides_dir() / (SENDER + ".jsonl"), jd.STATE / "auto-nudge.json"):
+            out.append((p.exists(), p.stat().st_mtime_ns if p.exists() else None))
+        return tuple(out)
+
+    def _assert_no_shared_sid_leftovers(self):
+        # checked once tearDown has rebound the judge to the run-wide root: both files land under the
+        # private root and go with the tempdir, so the run-wide root's pair is exactly as setUp read it
+        self.assertEqual(self._shared_sid_leftovers(), self._shared_before,
+                         "the sender's journal row or the nudge record reached the run-wide root")
 
     def tearDown(self):
-        for nm in ("available", "alive_sids"):
-            km._TMUX.__dict__.pop(nm, None)   # instance attrs shadow the class methods; drop them
-        for f in jd.GOALDIR.glob("*"):
-            f.unlink()
-        for f in (jd.STATE / "states").glob("*"):
-            f.unlink()
-        (jd.NAMES / SENDER).unlink(missing_ok=True)
+        jd._rebind_state(self._state)                # the private root goes with the tempdir
+        self._td.cleanup()
 
     def test_dormant_sender_handoff_blocks_with_the_dead_wait_why(self):
         km._dead_wait_sweep(set(), self.nudged, T + 900)

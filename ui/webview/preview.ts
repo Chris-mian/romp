@@ -8,6 +8,8 @@
 
 import { hostOf, bareId } from "./host-prefix";
 import { mediaSrc } from "./media";
+import { ICON_DOWNLOAD, ICON_COPY, ICON_CHECK, ICON_CROSS } from "./icons";   // the shared stroke-family glyphs (T367)
+import * as pz from "./pinch";
 
 // Extensions the kernel's _PREVIEW_MIME serves — keep the two lists in step (tests pin both).
 const IMG_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
@@ -26,6 +28,33 @@ export function previewKind(path: string): PreviewKind | null {
 // resolves nowhere — callers keep the existing openFile behavior there.
 export function canPreview(): boolean {
   return location.protocol === "http:" || location.protocol === "https:";
+}
+
+// Which click means "in a browser tab of its own"? The browser-wide idiom, so there is nothing new to
+// learn and no setting to find: a Cmd/Ctrl-click (the `click` event carries the modifier) or a
+// middle-button press (which arrives as `auxclick`, button 1). A plain click acts inside the dashboard
+// (the user 2026-09-07, who wanted one opening rule for every file: a plain click keeps a PDF inside the
+// dashboard exactly as an image opens; the modifier is the one signal that the browser's own tab, beside
+// the dashboard, is what is wanted). The PDF and folder gestures read this signal, and so do the links
+// inside a file the viewer shows (file-view.ts).
+export function wantsOwnTab(ev?: { metaKey?: boolean; ctrlKey?: boolean; button?: number } | null): boolean {
+  return !!ev && (!!ev.metaKey || !!ev.ctrlKey || ev.button === 1);
+}
+
+// A file in the browser's OWN tab, on the gesture above: ONE window.open aimed at the kernel's /file URL, the
+// same-origin, cookie-authed route the viewer fetches from (a remote session's file relays exactly as the
+// viewer's fetch does), so the browser renders what the kernel serves: a PDF in its viewer, an image, a text
+// file as text. False when nothing opened, and the caller's in-app view takes over: the popup was blocked, or
+// this is the VS Code webview, whose sandbox has no tabs and no kernel origin (canPreview). The tab's opener is
+// severed on the handle: a link inside the opened file may navigate the tab to a foreign site, which must not
+// hold the dashboard. Not the `noopener` feature, which returns null even on success. The one opener behind
+// every own-tab gesture: the viewer's links hand it any file (file-view.ts), openPdfTab below hands it a PDF.
+export function openFileTab(path: string, sid?: string | null): boolean {
+  if (!canPreview()) return false;
+  const w = window.open(fileUrl(path, sid), "_blank");
+  if (!w) return false;                                   // blocked: the caller's in-app view takes over
+  try { w.opener = null; } catch { /* unreachable while the tab is our own initial page */ }
+  return true;
 }
 
 // LOADING CUE (the user 2026-07-31): a remote image's bytes arrive over the ssh tunnel, so for a
@@ -110,9 +139,137 @@ export function fileUrl(path: string, sid?: string | null): string {
   return base + "?path=" + encodeURIComponent(path) + (bare ? "&sid=" + encodeURIComponent(bare) : "");
 }
 
+// A PDF's OWN browser tab — on a Cmd/Ctrl- or middle-click (wantsOwnTab). A plain click keeps the PDF
+// inside the dashboard like an image: the lightbox from the chat card, the in-pane viewer from a path or a
+// file-browser row (the user 2026-09-07). The modified click opens the paper full size in the browser's own
+// viewer, the way one opens from OpenReview or HotCRP (the user 2026-09-06), and it stays open beside the
+// dashboard while the work goes on. Those sites do nothing more than link the PDF's URL with a new-tab
+// target and serve it inline as application/pdf; the browser renders it from its own cache and nothing lands
+// on disk unless the browser is set to download PDFs — no download-then-delete dance is needed. /file
+// already serves exactly that (same-origin, cookie-authed, federation-aware through fileUrl), so the
+// tab is ONE window.open inside the click gesture — synchronous, so a popup blocker reads it as
+// user-initiated; a fetch-then-open would lose the gesture and be blocked everywhere. The opener
+// link is severed by hand (w.opener = null) rather than with the noopener feature: with noopener
+// window.open returns null even on success, which would hide the one signal needed — a null handle
+// means the browser BLOCKED the tab, and the caller falls back to the in-app view (lightbox /
+// viewer) so the PDF is never unreachable. Severed it must be (review find 2026-09-06, reproduced in
+// a real browser): the tab starts on our origin, but a link inside the PDF navigates that SAME tab
+// to a foreign site, and a document holding a live opener may replace the dashboard with a
+// look-alike (reverse tabnabbing) — every other new tab this UI opens is disowned the same way.
+// The flag is set while the tab is still its same-origin initial page and rides every later
+// navigation. Web dashboard only: the VS Code webview cannot window.open, and previews are gated off
+// there anyway (canPreview). The KIND check lives here, by extension — the only fact available inside
+// the gesture — so a caller passes any path and a non-PDF is simply "not mine" (false): the viewer's own
+// media branch keeps keying on the kernel's Content-Type verdict, never on an extension re-test
+// (file-view.test.ts pins that). The tab itself is openFileTab's (above): one window.open, one severed
+// opener, one blocked-popup verdict, shared with the viewer's links, which open any file that way.
+export function openPdfTab(path: string, sid?: string | null): boolean {
+  if (previewKind(path) !== "pdf") return false;
+  return openFileTab(path, sid);
+}
+
+// The PDF card's click, with its gesture: a plain click opens the in-app lightbox, like an image; a
+// Cmd/Ctrl- or middle-click opens the PDF in its own browser tab (openPdfTab), and a BLOCKED popup falls
+// back to the lightbox so the PDF is never unreachable.
+export function openPdf(path: string, sid?: string | null, ev?: MouseEvent | null): void {
+  if (wantsOwnTab(ev) && openPdfTab(path, sid)) return;
+  openLightbox(path, sid);
+}
+
 // Full-view lightbox: dark backdrop, the image at natural-but-capped size or the PDF in the browser's
-// native viewer, filename caption. One singleton element; backdrop click / Esc / ✕ closes. Styles live
+// native viewer (a plain click's PDF view, and the fallback when a modified click's tab was popup-blocked — openPdf),
+// filename caption. One singleton element; backdrop click / Esc / ✕ closes. Styles live
 // in BOTH styles.css and feed.css (each page loads only its own sheet — the .romp-acted precedent).
+// Pinch-zoom on the lightbox image (T162, the user 2026-08-28 on Android). Pointer events only —
+// no gesture library: two pointers pinch around the gesture midpoint (the content point under it
+// held fixed — pinch.ts owns the math, executable-tested), one pointer PANS while zoomed,
+// double-tap toggles home/2.5× around the tap. touch-action:none on the stage (CSS) keeps the
+// browser's own page-zoom out of it. The CLOSE gesture is untouched by construction: dismissal
+// stays tap-on-BACKDROP (target === wrap) and the ✕ — every pinch/pan pointer is CAPTURED by the
+// stage, so a drag that ends anywhere can never read as a backdrop tap.
+function wirePinchZoom(stage: HTMLElement, img: HTMLImageElement): { retarget: (next: HTMLImageElement) => void } {
+  let view = pz.identity();
+  const ptrs = new Map<number, { x: number; y: number }>();
+  let start: { view: pz.PinchView; d: number } | null = null;   // two-pointer gesture snapshot
+  let rest: { left: number; top: number; w: number; h: number; vw: number; vh: number } | null = null;
+  let lastTap = 0, lastTapAt = { x: 0, y: 0 };
+  const apply = () => {
+    img.style.transform = view.s === 1 && !view.tx && !view.ty
+      ? "" : `translate(${view.tx}px, ${view.ty}px) scale(${view.s})`;
+  };
+  // the image's REST frame (its untransformed layout box, q-space origin) — measured at gesture
+  // start by removing the current transform's offset from the live rect; origin 0 0 keeps the
+  // top-left corner exactly translate() away from layout, so the inversion is exact
+  const measure = () => {
+    const r = img.getBoundingClientRect();
+    const box = stage.getBoundingClientRect();
+    rest = { left: r.left - view.tx, top: r.top - view.ty,
+             w: r.width / view.s, h: r.height / view.s,
+             vw: box.width, vh: box.height };
+  };
+  const q = (e: PointerEvent) => ({ x: e.clientX - rest!.left, y: e.clientY - rest!.top });
+  stage.addEventListener("pointerdown", (e) => {
+    if ((e.target as HTMLElement).closest(".romp-lightbox-bar")) return;   // the bar's buttons own their taps
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { stage.setPointerCapture(e.pointerId); } catch { /* a pointer gone between event and capture — the move/up handlers still see bubbled events */ }
+    measure();
+    if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()];
+      start = { view, d: pz.dist(a, b) };
+    } else if (ptrs.size === 1) {
+      // double-tap: a second down within the platform window and radius toggles the zoom. The
+      // 350ms is the GESTURE'S definition (like a double-click), not state logic.
+      const now = e.timeStamp;
+      const p = q(e);
+      if (now - lastTap < 350 && Math.hypot(p.x - lastTapAt.x, p.y - lastTapAt.y) < 30) {
+        view = pz.clampPan(pz.doubleTapToggle(view, p.x, p.y), rest!.w, rest!.h, rest!.vw, rest!.vh);
+        apply();
+        lastTap = 0;
+      } else { lastTap = now; lastTapAt = p; }
+    }
+    if (view.s > 1 || ptrs.size === 2) e.preventDefault();
+  });
+  stage.addEventListener("pointermove", (e) => {
+    const prev = ptrs.get(e.pointerId);
+    if (!prev || !rest) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 2 && start) {
+      const [a, b] = [...ptrs.values()];
+      const m = pz.midpoint(a, b);
+      view = pz.clampPan(
+        pz.zoomAt(start.view, m.x - rest.left, m.y - rest.top, pz.dist(a, b) / start.d),
+        rest.w, rest.h, rest.vw, rest.vh);
+      apply();
+    } else if (ptrs.size === 1 && view.s > 1) {
+      view = pz.clampPan(pz.pan(view, e.clientX - prev.x, e.clientY - prev.y), rest.w, rest.h, rest.vw, rest.vh);
+      apply();
+    }
+  });
+  const lift = (e: PointerEvent) => {
+    ptrs.delete(e.pointerId);
+    if (ptrs.size < 2) start = null;
+    if (ptrs.size === 0) { view = pz.settle(view); apply(); }
+  };
+  stage.addEventListener("pointerup", lift);
+  stage.addEventListener("pointercancel", lift);
+  // stepping the lightbox swaps the img element: re-identity the view for the fresh element —
+  // the stage's listeners are wired ONCE (steps must never stack handlers), only the target moves
+  return { retarget: (next: HTMLImageElement) => { img = next; view = pz.identity(); ptrs.clear(); start = null; apply(); } };
+}
+
+// ── lightbox arrow navigation (the user 2026-08-29: arrow keys step to the previous/next picture
+// in the chat, like a messaging app) ────────────────────────────────────────────────────────────
+// The image sequence comes from a PROVIDER the chat registers (render.ts walks the session's
+// EVENTS oldest→newest — the DOM misses virtualization-windowed images), each entry the same
+// (path, sid, pin) triple the click path passes, so a step shows THAT message's pinned bytes and
+// can never resurrect the history-rewrite the pin store prevents. Surfaces that register no
+// provider (the feed) keep inert arrows.
+export interface LightboxNavEntry { path: string; sid?: string | null; pin?: string; }
+let lightboxNav: ((sid: string | null | undefined) => LightboxNavEntry[]) | null = null;
+export function setLightboxNav(fn: (sid: string | null | undefined) => LightboxNavEntry[]): void {
+  lightboxNav = fn;
+}
+
 export function openLightbox(path: string, sid?: string | null, pin?: string): void {
   document.getElementById("romp-lightbox")?.remove();
   const kind = previewKind(path);
@@ -121,55 +278,175 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
   wrap.id = "romp-lightbox";
   const inner = document.createElement("div");
   inner.className = "romp-lightbox-inner" + (kind === "pdf" ? " pdf" : "");
+  let nav: LightboxNavEntry[] = [];
+  let at = -1;
+  let step: ((delta: number) => void) | null = null;     // arrows step the chat's image sequence (img kind only)
+  let cue: HTMLElement | null = null;                    // the compact position mark ("3/17") in the bar
+  let curImg: (() => HTMLImageElement) | null = null;    // the img on screen NOW (step rebinds it) — the copy source
   if (kind === "pdf") {
+    // a plain click's view (openPdf), and the fallback when a modified click's tab was popup-blocked
     const frame = document.createElement("iframe");
     frame.className = "romp-lightbox-frame";
     frame.src = fileUrl(path, sid);
     frame.title = path;
     inner.appendChild(frame);
   } else {
-    const img = document.createElement("img");
-    img.className = "romp-lightbox-img";
-    img.src = fileUrl(path, sid) + (pin ? "&pin=" + encodeURIComponent(pin) : "");
-    img.alt = path;
+    const mkImg = (e: LightboxNavEntry) => {
+      const im = document.createElement("img");
+      im.className = "romp-lightbox-img";
+      im.src = fileUrl(e.path, e.sid) + (e.pin ? "&pin=" + encodeURIComponent(e.pin) : "");
+      im.alt = e.path;
+      return im;
+    };
+    let img = mkImg({ path, sid, pin });
+    curImg = () => img;
     inner.appendChild(img);
+    const pzc = wirePinchZoom(inner, img);
+    // the chat's image sequence, oldest→newest (empty on surfaces with no provider): the current
+    // position matches by (path, pin) — two messages embedding different VERSIONS of one path are
+    // different entries — falling back to the path alone for pre-pin history
+    nav = (lightboxNav ? lightboxNav(sid) : []).filter((e) => previewKind(e.path) === "img");
+    at = nav.findIndex((e) => e.path === path && (e.pin || "") === (pin || ""));
+    if (at < 0) at = nav.findIndex((e) => e.path === path);
+    step = (delta: number) => {
+      if (at < 0 || nav.length < 2) return;
+      const n = at + delta;
+      if (n < 0 || n >= nav.length) return;              // the ends END (messaging-app feel) — no wrap
+      at = n;
+      const e = nav[at];
+      const next = mkImg(e);
+      img.replaceWith(next);
+      img = next;
+      pzc.retarget(next);                                // a step lands on the fit view, zoom reset
+      setName(e.path);                                   // the two-element title follows the step
+      dl.href = fileUrl(e.path, e.sid) + (e.pin ? "&pin=" + encodeURIComponent(e.pin) : "");
+      dl.download = e.path.slice(e.path.lastIndexOf("/") + 1) || "image";
+      if (cue) cue.textContent = (at + 1) + "/" + nav.length;
+    };
   }
+  // ── the bar, ABOVE the picture (T385, the user 2026-09-12: the controls sit at the top, the way a file opens) ──
+  // It IS the file viewer's bar (file-view.ts, T367): .fileview-bar for the row, .fileview-name as a dimmed directory
+  // and the basename (only the directory may truncate), .fileview-acts holding the file group (download, copy) and the
+  // close cross alone at the end, glyph buttons as .fileview-btn.fileview-icon. One set of rules for both surfaces
+  // (styles.css .fileview-*), so a control added to one wears the same dress in the other. The lightbox's own classes
+  // stay as HOOKS: the bar's placement over the backdrop (styles.css) and the stage's tap rule (wirePinchZoom's
+  // closest(".romp-lightbox-bar")). Prepended to the column below, so it precedes the picture and the PDF frame.
   const bar = document.createElement("div");
-  bar.className = "romp-lightbox-bar";
-  const name = document.createElement("span");
-  name.className = "romp-lightbox-name";
-  name.textContent = path;
-  name.title = path;
+  bar.className = "fileview-bar romp-lightbox-bar";
+  const name = document.createElement("div");
+  name.className = "fileview-name romp-lightbox-name";
+  const dir = document.createElement("span"); dir.className = "fileview-dir";
+  const base = document.createElement("span"); base.className = "fileview-base";
+  name.append(dir, base);
+  const setName = (p: string) => {
+    const cut = p.lastIndexOf("/");
+    dir.textContent = cut >= 0 ? p.slice(0, cut + 1) : "";
+    base.textContent = p.slice(cut + 1);
+    name.title = p;                                       // the full path, one hover away
+  };
+  setName(path);
   // download rides an ANCHOR with the download attribute (the user 2026-08-19): the browser saves
   // the same bytes the lightbox is showing — the pinned URL when a pin rode in, so a re-generated
   // file can't swap the image between viewing and saving. The filename is the path's basename.
+  if (nav.length > 1 && at >= 0) {
+    cue = document.createElement("span");
+    cue.className = "romp-lightbox-cue";
+    cue.textContent = (at + 1) + "/" + nav.length;
+    cue.title = "picture " + (at + 1) + " of " + nav.length + " in this chat — ←/→ to step";
+  }
+  const acts = document.createElement("div");
+  acts.className = "fileview-acts";
+  const group = document.createElement("span");
+  group.className = "fileview-group fileview-group-file";
   const dl = document.createElement("a");
-  dl.className = "romp-lightbox-dl";
+  dl.className = "fileview-btn fileview-icon romp-lightbox-dl";
   dl.href = fileUrl(path, sid) + (pin ? "&pin=" + encodeURIComponent(pin) : "");
   dl.download = path.slice(path.lastIndexOf("/") + 1) || "image";
   // the tray icon every download control should wear (the composer buttons' stroke family) as an
   // inline SVG: the old text glyph (U+2B73, arrow-to-bar) has no coverage in the mac system fonts
   // and rendered as a tofu box instead of an icon (the user 2026-08-19). A literal — no sanitize.
-  dl.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"'
-    + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
-    + '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
-  dl.title = "download";
-  dl.setAttribute("aria-label", "download");
+  dl.innerHTML = ICON_DOWNLOAD;   // icons.ts: the one tray drawing, shared with the file viewer's bar (T367)
+  dl.title = "Download";
+  dl.setAttribute("aria-label", "Download");
   dl.onclick = (ev) => ev.stopPropagation();               // saving must not also dismiss
+  // copy beside download (the user 2026-08-31): the image ITSELF onto the clipboard. It reads the
+  // CURRENT img's src at CLICK time — mkImg bakes the pin param into src and an arrow step rebinds
+  // `img`, so a pinned historical version copies as exactly what is on screen, and stepping needs no
+  // retarget bookkeeping. Rendered only where the clipboard API exists (an insecure-context http
+  // origin drops navigator.clipboard entirely — canPreview's honest-absence precedent: no dead
+  // control). Clipboards take image/png; any other source re-encodes through a canvas. The
+  // ClipboardItem takes the PROMISE form so write() runs synchronously inside the click gesture
+  // (Safari refuses a write that awaits first — the tailnet phone case). Success and failure both
+  // speak in place, the file viewer's glyph swap (T367): the press dims the button in the same tick
+  // (click-safe: every press acknowledges, ui/CLAUDE.md; a large jpeg's decode is not instant), then a
+  // check and "Copied", or a cross whose words name the reason, and the button restores itself either
+  // way on ONE timer that every swap clears (two presses inside the pulse never let the first wipe the
+  // second's check early; the viewer's copyTimer rule).
+  const COPY_SVG = ICON_COPY;   // icons.ts: the one two-sheets drawing, shared with the file viewer's bar (T367)
+  let cp: HTMLButtonElement | null = null;
+  if (curImg && typeof ClipboardItem !== "undefined" && navigator.clipboard && navigator.clipboard.write) {
+    const btn = document.createElement("button");
+    cp = btn;
+    btn.type = "button";
+    btn.className = "fileview-btn fileview-icon romp-lightbox-copy";
+    let copyTimer: number | null = null;                 // window.setTimeout's handle (a number in the page)
+    const say = (icon: string, word: string, cls: string, ms: number | null) => {
+      btn.innerHTML = icon; btn.title = word; btn.setAttribute("aria-label", word);
+      btn.classList.remove("ok", "err", "fileview-busy"); if (cls) btn.classList.add(cls);
+      if (copyTimer) { window.clearTimeout(copyTimer); copyTimer = null; }
+      if (ms !== null) copyTimer = window.setTimeout(() => say(COPY_SVG, "Copy image", "", null), ms);
+    };
+    say(COPY_SVG, "Copy image", "", null);
+    btn.onclick = (ev) => {
+      ev.stopPropagation();                                // copying must not also dismiss
+      say(COPY_SVG, "Copy image", "", null);               // a press inside the last pulse: its check and its restore timer go, so the restore never wipes this press's dim (review, round two)
+      btn.classList.add("fileview-busy");                  // the same-tick acknowledgement
+      const src = curImg!().src;
+      const png = (async () => {
+        const blob = await (await fetch(src)).blob();
+        if (blob.type === "image/png") return blob;
+        const bmp = await createImageBitmap(blob);         // jpeg/webp → decode → png, the one type
+        const cv = document.createElement("canvas");       // every clipboard accepts
+        cv.width = bmp.width; cv.height = bmp.height;
+        cv.getContext("2d")!.drawImage(bmp, 0, 0);
+        return await new Promise<Blob>((res, rej) =>
+          cv.toBlob((b) => (b ? res(b) : rej(new Error("png encode failed"))), "image/png"));
+      })();
+      navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(
+        () => say(ICON_CHECK, "Copied", "ok", 1400),        // the ack pulse, then back to a button
+        (e) => say(ICON_CROSS, "Copy failed: " + ((e && (e as Error).message) || String(e)), "err", 3000));   // loud: the reason, never a silent no-op
+    };
+  }
   const close = document.createElement("button");
-  close.className = "romp-lightbox-close";
+  close.type = "button";
+  close.className = "fileview-btn fileview-close romp-lightbox-close";
   close.textContent = "✕";
-  close.title = "close (Esc)";
-  bar.append(name, dl, close);
-  inner.appendChild(bar);
+  close.title = "Close (Esc)";
+  close.setAttribute("aria-label", "Close the picture");
+  group.append(dl, ...(cp ? [cp] : []));
+  acts.append(group, close);
+  if (cue) bar.append(name, cue, acts); else bar.append(name, acts);
+  inner.prepend(bar);                                      // FIRST in the column: above the picture and the PDF frame
   wrap.appendChild(inner);
   const dismiss = () => { wrap.remove(); document.removeEventListener("keydown", onKey, true); };
-  const onKey = (ev: KeyboardEvent) => { if (ev.key === "Escape") { ev.stopPropagation(); dismiss(); } };
+  const onKey = (ev: KeyboardEvent) => {
+    if (ev.key === "Escape") { ev.stopPropagation(); dismiss(); return; }
+    if ((ev.key === "ArrowLeft" || ev.key === "ArrowRight") && step) {
+      ev.stopPropagation(); ev.preventDefault();         // the chat must not scroll under the lightbox
+      step(ev.key === "ArrowLeft" ? -1 : 1);             // ← older, → newer — the transcript's own order
+    }
+  };
   close.onclick = (ev) => { ev.stopPropagation(); dismiss(); };
   wrap.onclick = (ev) => { if (ev.target === wrap) dismiss(); };   // backdrop closes; content clicks don't
   document.addEventListener("keydown", onKey, true);
   document.body.appendChild(wrap);
+  // the column's FLOOR (review, round two): a picture narrower than the download-and-copy group (about 68px) let the group run
+  // out of the column to the left, since the bar contributes no intrinsic width (contain: inline-size: the picture sets the
+  // column, never the path text). The floor is the GROUP's own width, read off its controls (their widths are intrinsic:
+  // flex 0 0 auto buttons in a constrained box still measure themselves), set once per open as the variable the sheet reads
+  // (.romp-lightbox-inner min-width). The close may wrap beneath the group under a tiny picture; the picture centres under them.
+  const ctl = Array.from(group.children) as HTMLElement[];
+  inner.style.setProperty("--lb-acts-w", Math.ceil(ctl.reduce((a, c) => a + c.getBoundingClientRect().width, 0) + 4 * Math.max(0, ctl.length - 1) + 8) + "px");
 }
 
 // A thumbnail element for `path`: an <img> that REMOVES ITSELF if the kernel can't serve the file
@@ -211,7 +488,8 @@ export function previewThumb(path: string, sid?: string | null): HTMLElement | n
 // thumbnail but a rendered image, like the user messages). Same self-verification as previewThumb —
 // a path the kernel can't serve removes itself — and an image click still opens the lightbox. Images
 // render at the user-image scale (.path-full-img mirrors .user-img's 320px cap, one size per
-// information type). A PDF is a labeled CARD, not an auto-loading inline viewer (click → lightbox):
+// information type). A PDF is a labeled CARD, not an auto-loading inline viewer (click → the
+// lightbox; Cmd/Ctrl- or middle-click → its own browser tab, openPdf):
 // the first cut embedded an <iframe> per mentioned PDF, and a browser set to "Download PDFs" (or one
 // that declines to render inline) saved a FRESH COPY on every chat re-render — the user's Downloads
 // folder silently filled with datasheet copies (2026-07-20). A fetch must be user-initiated, once.
@@ -240,8 +518,10 @@ export function previewFull(path: string, sid?: string | null, verified = false,
     nm.textContent = path.slice(path.lastIndexOf("/") + 1);
     box.append(tag, nm);
     box.style.cursor = "pointer";
-    box.title = "click to view " + path;
-    box.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
+    box.title = "Open " + path + " (Cmd/Ctrl-click or middle-click: a browser tab of its own)";
+    box.onclick = (ev) => { ev.stopPropagation(); openPdf(path, sid, ev); };   // plain: the lightbox; modified: its own tab
+    box.onmousedown = (ev) => { if (ev.button === 1) ev.preventDefault(); };   // the middle press: no autoscroll (it would swallow the auxclick)
+    box.onauxclick = (ev) => { if (ev.button !== 1) return; ev.stopPropagation(); openPdf(path, sid, ev); };
     // a chip can't self-verify like an <img> — HEAD-probe (headers only, no body — never a download)
     // so a missing PDF never shows a dead card. A kernel-VERIFIED card skips the probe: the kernel
     // said the file exists, and a transient probe failure must not erase the card.
@@ -251,8 +531,10 @@ export function previewFull(path: string, sid?: string | null, verified = false,
     // The hidden sentinel keeps the spot healable with zero visual noise when the mention really
     // is dead; a probe that later succeeds unhides the card in place.
     if (!verified) {
+      // a 502 is the relay's link verdict (HEAD carries no body to read): that one waits for the reconnect-class
+      // heal like an image's link failure (T291); any other miss keeps the per-message heal
       const probe = () => fetch(fileUrl(path, sid), { method: "HEAD" })
-        .then((r) => { if (r.ok) { box.style.display = ""; } else { box.style.display = "none"; failedPreviews.set(box, probe); } })
+        .then((r) => { if (r.ok) { box.style.display = ""; } else { box.style.display = "none"; (r.status === 502 ? settledPreviews : failedPreviews).set(box, probe); } })
         .catch(() => { box.style.display = "none"; failedPreviews.set(box, probe); });
       probe();
     }
@@ -283,6 +565,40 @@ export function previewFull(path: string, sid?: string | null, verified = false,
     let total = 0;
     let fetching = false;                            // one managed attempt at a time (a tap mid-fetch no-ops)
     let lastErr = "";                                // the newest attempt's server-side reason, shown verbatim
+    // The wait box is REUSED across attempts (T291, the user 2026-09-09: two figures on a remote session
+    // whose relay was failing re-attempted on every kernel push, and each attempt swapped the box between
+    // the one-line "fetching…" and the five-line failure note — the whole transcript above the reader
+    // moved by four lines, ten times a second, for the length of the streaming turn). One wait element,
+    // one swirl, one note, kept from attempt to attempt; only the note's TEXT changes, and only when the
+    // words do. An attempt therefore never changes the box's layout; the picture landing does.
+    const waitBox = (): { wait: HTMLElement; note: HTMLElement } => {
+      let wait = box.firstElementChild as HTMLElement | null;
+      if (!wait || !wait.classList.contains("path-full-wait")) wait = mkWait(box);
+      const chip = wait.querySelector(".path-full-retry") as HTMLElement | null;
+      if (chip) {
+        // the one new-evidence heal (autoRetries 1) keeps the chip's shape: the chip carries the words while it
+        // runs. A tap or a reconnect heal re-armed the budget (3): the loading persona returns, swirl and note,
+        // inside the same wait element (the 2026-08-16 rule: the chip is the give-up state only)
+        if (autoRetries <= 1) return { wait, note: chip };
+        chip.remove();
+      }
+      let spin = wait.querySelector(".path-load-spin") as HTMLImageElement | null;
+      if (!spin) {
+        spin = document.createElement("img");
+        spin.className = "path-load-spin";
+        spin.src = "/media/romp-swirl-glyph.svg";
+        spin.alt = "loading preview…";
+        wait.appendChild(spin);
+      }
+      let note = wait.querySelector(".path-load-note") as HTMLElement | null;
+      if (!note) {
+        note = document.createElement("span");
+        note.className = "path-load-note";
+        wait.appendChild(note);
+      }
+      return { wait, note };
+    };
+    const setNote = (note: HTMLElement, text: string) => { if (note.textContent !== text) note.textContent = text; };
     const showChip = () => {
       if (!box.isConnected) return;                  // the turn re-rendered; a fresh box owns this spot now
       // ONE continuous narrative while the machinery is still going (the user 2026-08-16, third
@@ -296,26 +612,26 @@ export function previewFull(path: string, sid?: string | null, verified = false,
       // kernel restart — the tunnel re-dial window produces instant "no attached host" 404s and
       // "tunnel not answering" 502s, and three of those spent the whole budget right before the link
       // came back). A failure that names the LINK, not the image, doesn't decrement: the preview
-      // keeps retrying on every kernel push until the tunnel is up, and only real verdicts — a true
-      // not-found from the owning kernel, a transfer that died with zero progress — spend attempts.
+      // re-attempts when the link itself comes back (the reconnect-class heal below, T291), and only
+      // real verdicts — a true not-found from the owning kernel, a transfer that died with zero
+      // progress — spend attempts.
       const transient = /tunnel to .* is not answering|no attached host|re-dialing/i.test(lastErr);
       if (autoRetries > 0 || transient) {
-        if (!transient) autoRetries--;
-        failedPreviews.set(box, () => build(true));
-        const wait = mkWait(box);
+        // A LINK failure heals on the reconnect-class event alone (T291): romp:wsup when this page's
+        // kernel socket comes back, hostUp when the federated tunnel does (the tunnel poll dispatches
+        // it on the down→up transition), romp:hostRelayUp when the host's relay socket reopens (a
+        // remote kernel's restart fires that one and neither of the others), never on the next kernel push. A streaming session pushes
+        // many times a second, and a dead link answered every one of those instantly: the per-push
+        // retry was the flicker. The budget stays untouched, as before; the tap still retries at once.
+        if (transient) settledPreviews.set(box, () => build(true));
+        else { autoRetries--; failedPreviews.set(box, () => build(true)); }
+        const { wait, note } = waitBox();
         wait.title = path + " — tap to retry now";
         wait.style.cursor = "pointer";
         wait.onclick = (ev) => { ev.stopPropagation(); autoRetries = 3; ackTap(ev); build(true); };   // a tap re-arms persistence
-        const spin = document.createElement("img");
-        spin.className = "path-load-spin";
-        spin.src = "/media/romp-swirl-glyph.svg";
-        spin.alt = "loading preview…";
-        const note = document.createElement("span");
-        note.className = "path-load-note";
-        note.textContent = (got > 0 ? "connection dropped at " + fmtBytes(got, total)
-                                    : lastErr || "connection dropped")
-                           + " — retrying · tap to retry now";
-        wait.append(spin, note);
+        setNote(note, (got > 0 ? "connection dropped at " + fmtBytes(got, total)
+                               : lastErr || "connection dropped")
+                      + (transient ? " — retries when the link is back · tap to retry now" : " — retrying · tap to retry now"));
         if (fails > 1) {
           note.classList.add("path-retry-flash");
           note.addEventListener("animationend", () => note.classList.remove("path-retry-flash"), { once: true });
@@ -369,7 +685,8 @@ export function previewFull(path: string, sid?: string | null, verified = false,
       img.className = "path-full-img";
       img.src = src;
       img.alt = path;
-      img.loading = "lazy";
+      img.loading = "lazy";       // off-screen figures don't fetch until scrolled near (eager-all, 2026-08-30)
+      img.decoding = "async";     // and never decode on the main thread mid-scroll
       img.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid, pin); };
       return img;
     };
@@ -445,15 +762,10 @@ export function previewFull(path: string, sid?: string | null, verified = false,
       if (fetching) return;
       fetching = true;
       const started = Date.now();
-      const wait = mkWait(box);
-      const spin = document.createElement("img");
-      spin.className = "path-load-spin";
-      spin.src = "/media/romp-swirl-glyph.svg";
-      spin.alt = "loading preview…";
-      const note = document.createElement("span");
-      note.className = "path-load-note";
-      note.textContent = got > 0 ? "resuming… " + fmtBytes(got, total) : "fetching…";
-      wait.append(spin, note);
+      // the wait box stays as it is while the attempt runs (T291): a note already up keeps its words, so a
+      // retry from a failure note does not shrink the box to one line and grow it back on the next failure
+      const { note } = waitBox();
+      if (!note.textContent) setNote(note, got > 0 ? "resuming… " + fmtBytes(got, total) : "fetching…");
       resumeFetch(note).then((objUrl) => {
         fetching = false;
         lastErr = "";
@@ -482,6 +794,7 @@ export function previewFull(path: string, sid?: string | null, verified = false,
 // as the manual path and the backstop once a box's bounded auto-retries are spent).
 const failedPreviews = new Map<HTMLElement, () => void>();
 export function retryFailedPreviews(): void {
+  retryMdImgProbes();                                // parked markdown images with attempts left (T291c): the budget rides the URL
   if (!failedPreviews.size) return;
   for (const [box, rebuild] of Array.from(failedPreviews.entries())) {
     failedPreviews.delete(box);                      // one attempt per registration; re-registers on error
@@ -494,6 +807,7 @@ export function retryFailedPreviews(): void {
 // never by the per-message heal above, so a dead figure costs one fetch per reconnect, not per push.
 const settledPreviews = new Map<HTMLElement, () => void>();
 export function refreshSettledPreviews(): void {
+  healMdImgs();                                      // parked markdown images ride the same reconnect-class heal (T291c)
   if (!settledPreviews.size) return;
   for (const [box, rebuild] of Array.from(settledPreviews.entries())) {
     settledPreviews.delete(box);                     // one attempt per registration; re-registers on error
@@ -501,14 +815,109 @@ export function refreshSettledPreviews(): void {
   }
 }
 
-// Markdown-inline <img> (a figure pasted as markdown in a message body) had NO failure handling at
-// all: DOMPurify strips inline handlers (correctly — untrusted transcript HTML) and nothing
-// re-attached one, so a load that failed once sat as a dead element in the cached DOM until a send
-// re-rendered the turn (the user 2026-08-24). Error events don't bubble but DO capture: one
-// document-level capture listener covers every md() img on the page — no per-render wiring — and
-// registers the element in the same failedPreviews machinery, so every kernel message re-attempts
-// it. Previews' own <img>s are skipped: their machinery (budgets, resume, chips) owns those.
+// Markdown-inline <img> (a figure written as markdown in a message body): marked leaves `![fig](path)` as
+// <img src="path"> (the chat rewrites no image source), the browser resolves the path against the page's
+// origin, and the kernel answers 404, so the img fails and the browser shows its alt text. The 2026-08-24
+// heal re-set that img's src on every kernel message; each reset hid the alt text while the reload was in
+// flight and the 404 showed it again, so a streaming turn flipped every such caption on and off at the
+// push rate (T291c, the user 2026-09-09: three captions, two to four lines each, ten times a second). A
+// failed markdown image is PARKED instead: its src leaves (into data-md-src), the element wears
+// .md-img-failed, and the browser shows the alt text as a stable caption: no src, no fetch, nothing to
+// flip. No per-message path touches the img on the page: a URL the kernel serves gets a bounded probe OFF the
+// DOM (servedByKernel and retryMdImgProbes, below), every other parked URL waits for a reconnect. A URL that
+// failed is remembered for the page life, and the reconnect-class heal (refreshSettledPreviews: romp:wsup,
+// hostUp, romp:hostRelayUp) probes every remembered URL once OFF the DOM with a detached Image, whether or not
+// an img with it is on the page (a turn evicted from the rendered window, a closed tab): a failure changes
+// nothing on screen, a success lands the picture on every parked img with that URL. The sanitizer post-pass
+// (mdImgPostPass, registered by render.ts) parks a re-rendered img with a remembered URL BEFORE the browser
+// fetches it, so a re-render of the same markdown reuses the state instead of fetching, failing and flipping
+// once more. DOMPurify strips inline handlers
+// (correctly), so the failures are caught by ONE document-level capture listener (error events do not
+// bubble but do capture); previews' own <img>s are skipped: their machinery (budgets, resume, chips) owns those.
+const mdImgFailed = new Set<string>();             // URLs that failed this page life: a re-render parks them before any fetch
+const mdImgProbe = new Map<string, number>();      // served URLs with per-message attempts left: the budget rides the URL, not the img
+const mdImgProbing = new Map<string, number>();    // served URLs with a per-message probe in flight, by that probe's token: one at a time per URL
+let mdImgProbeSeq = 0;                             // the tokens: a failure counts only for the probe whose token is still the URL's
 let mdImgHealOn = false;
+function parkMdImg(img: HTMLImageElement, url: string): void {
+  mdImgFailed.add(url);
+  img.dataset.mdSrc = url;
+  if (img.hasAttribute("src")) img.removeAttribute("src");   // no src: the browser shows the alt text and fetches nothing
+  img.classList.add("md-img-failed");
+}
+/** The chat's post-pass (render.ts runs it on md() and userMd() output after the sanitize, NEVER through the shared
+ *  sanitizer: the file viewer rewrites its images' paths to /file URLs after its own sanitize, and a park inside the
+ *  sanitizer removed the src that rewrite keys on, the review's find): an img whose URL is already known to fail is
+ *  parked at RENDER, before any fetch. */
+export function mdImgPostPass(root: ParentNode): void {
+  if (!mdImgFailed.size) return;
+  for (const img of Array.from(root.querySelectorAll("img")) as HTMLImageElement[]) {
+    const u = img.src || "";
+    if (u && mdImgFailed.has(u)) parkMdImg(img, u);
+  }
+}
+/** A URL the kernel actually answers (/file, a remote relay's /file, /media): a file an agent is still writing or a
+ *  relay behind a blip may come back with no reconnect event, so those get a BOUNDED probe on the per-message path
+ *  (three attempts, off the DOM, so the caption never moves for them). The budget is keyed on the URL, not on the img
+ *  that failed: a streaming turn is re-rendered on every push, so that img is off the page by the next push and the
+ *  post-pass has parked a fresh one, which inherits the attempts left. An origin-resolved path no route serves is
+ *  park-only, since nothing but a reconnect could change its answer. */
+function servedByKernel(u: string): boolean {
+  try {
+    const p = new URL(u, location.href).pathname;
+    return p === "/file" || /^\/remote\/[^/]+\/file$/.test(p) || p.startsWith("/media/");
+  } catch { return false; }
+}
+/** One detached probe of a parked URL. On load the picture lands on every parked img with that URL that is on the
+ *  page NOW, re-queried, not a snapshot: a re-render during the probe parks a fresh img, which a snapshot missed
+ *  (the review's find). On failure nothing on screen changes. */
+function probeMdImgUrl(u: string, onFail?: () => void): void {
+  const probe = new Image();
+  probe.onload = () => {
+    mdImgFailed.delete(u);                           // first: a rebuild from here on fetches normally
+    mdImgProbe.delete(u); mdImgProbing.delete(u);    // a healed URL has no pending budget
+    for (const img of Array.from(document.querySelectorAll("img.md-img-failed[data-md-src]")) as HTMLImageElement[]) {
+      if (img.dataset.mdSrc !== u || !img.isConnected) continue;
+      img.classList.remove("md-img-failed");
+      delete img.dataset.mdSrc;
+      img.src = u;                                   // the bytes are in the browser's cache: the picture lands
+    }
+  };
+  probe.onerror = () => { if (onFail) onFail(); };  // still down: the parked captions stay exactly as they are
+  probe.src = u;
+}
+/** The per-message path for the served URLs with attempts left: one detached probe per URL per push, the next armed
+ *  only once the previous has failed (a push while it is pending fires nothing), whatever img carries the URL now and
+ *  whether or not one is on the page (the probe is off the DOM; a load re-queries the page). Run from
+ *  retryFailedPreviews, so it rides the kernel-message event like the figure previews' own retries. Each probe holds a
+ *  token, and its failure counts only while that token is still the URL's: a load of the URL by any probe retires it,
+ *  and the URL may since have failed again with a fresh budget and a newer probe in flight, so a stale failure spends
+ *  nothing and clears nothing (a bare in-flight check is not enough: the newer probe has re-marked the URL). */
+function retryMdImgProbes(): void {
+  for (const [u, left] of Array.from(mdImgProbe.entries())) {
+    if (mdImgProbing.has(u)) continue;
+    const token = ++mdImgProbeSeq;
+    mdImgProbing.set(u, token);
+    probeMdImgUrl(u, () => {
+      if (mdImgProbing.get(u) !== token) return;   // retired by a load meanwhile: the fresh budget and any newer probe stand
+      mdImgProbing.delete(u);
+      if (left > 1) mdImgProbe.set(u, left - 1);    // still down: one attempt spent
+      else mdImgProbe.delete(u);                     // spent: the reconnect heal alone from here
+    });
+  }
+}
+/** The reconnect-class heal for parked markdown images: one detached probe per remembered URL. The remembered set is
+ *  the source, since a URL whose turn left the rendered window or whose tab was closed has no img on the page, and a
+ *  re-render would park it again for the page life; the page's parked imgs are read too, for one parked under a URL
+ *  the memory no longer holds. */
+export function healMdImgs(): void {
+  const urls = new Set<string>(mdImgFailed);
+  for (const img of Array.from(document.querySelectorAll("img.md-img-failed[data-md-src]")) as HTMLImageElement[]) {
+    const u = img.dataset.mdSrc || "";
+    if (u) urls.add(u);
+  }
+  for (const u of urls) probeMdImgUrl(u);
+}
 export function installMdImgHeal(): void {
   if (mdImgHealOn) return;                           // ensure-once (the click-safety installation rule)
   mdImgHealOn = true;
@@ -518,10 +927,9 @@ export function installMdImgHeal(): void {
     const src = img.src || "";
     if (!src || src.startsWith("data:")) return;     // a broken data: URI has no server to heal
     if (img.onerror || img.closest(".path-full")) return;   // the preview machinery retries its own
-    failedPreviews.set(img, () => {
-      const u = img.src;
-      img.removeAttribute("src");
-      img.src = u;                                   // a fresh attempt; a repeat error re-registers here
-    });
+    parkMdImg(img, src);
+    if (servedByKernel(src)) {                       // bounded and off the DOM: the caption never moves for it
+      if (!mdImgProbe.has(src)) mdImgProbe.set(src, 3);   // the budget rides the URL: a re-rendered turn inherits what is left
+    }
   }, true);
 }

@@ -22,10 +22,54 @@ same-user gate**. Same-user clients (the CLI, hooks, the bus, the VS Code
 extension) read the file and send it as an `X-Romp-Token` header; the browser
 presents it once as `?token=` (print the ready-made link with `romp url`, or
 paste the token into the login page a bare open of the dashboard serves) and
-rides an `HttpOnly` cookie afterwards. An Origin check additionally protects
-the browser surfaces against cross-site requests, including the WebSocket
-upgrade. The only token-exempt routes are the no-side-effect liveness probes:
-`/healthz`, `/version`, `/busy` on the kernel and `/ping` on the bus.
+rides an `HttpOnly` cookie afterwards. That cookie authorizes only when the
+request's Origin is one the gate accepts: the dashboard's own origin (the
+`Host` the request arrived at, or the kernel's own port on `127.0.0.1` or
+`localhost`), any `vscode-webview://` origin (every VS Code webview, not
+only romp's own), or no `Origin` header at all. The check protects the
+browser surfaces, the WebSocket upgrade included, against cross-site
+requests. It is needed because cookies are scoped by host and
+**not by port** (RFC 6265 §8.5): every `http://127.0.0.1:<port>` page on your
+machine is same-site with the dashboard, so anything else you run on loopback
+(a dev server in a repo an agent cloned) would otherwise ride your cookie into
+`/ws`, which streams every session and accepts text to send into any of them. A
+request with no `Origin` header passes on its cookie because a same-origin
+navigation and non-browser clients send none; a page on another loopback port
+loading an `<img>` aimed at the kernel sends none either and still carries the
+cookie, which is why the hold behind `/busy?drain=1` arms only for an
+explicitly presented token (a request without one still gets the count and arms
+nothing): while a `romp refresh --quiet` waits for the sessions to finish their
+turns, that hold keeps every session from starting a new turn, a side effect no
+subresource load may trigger. A token presented explicitly, as `?token=` or
+`X-Romp-Token`, is accepted from any Origin: federated (cross-machine) calls
+need it, and a cross-site page cannot obtain it: the dashboard drops `?token=`
+from its address as it loads, and every page the kernel serves carries
+`Referrer-Policy: same-origin`, so the token never reaches another origin in a
+`Referer`.
+The token-exempt routes are the no-side-effect liveness probes (`/healthz`,
+`/version` and `/busy` on the kernel, `/ping` on the bus) and the install files:
+`/manifest.webmanifest` and the three home-screen icons under `/media/`
+(`romp-touch-180.png`, `romp-app-192.png`, `romp-app-512.png`, a fixed allowlist
+of names, not a path prefix). A browser fetches those with credentials omitted
+when the dashboard is added to a home screen, so a token gate there would break
+the install. They are static and read no session state: the manifest is a
+fixed JSON literal (app name and short name, display mode, colors, start URL
+and icon list) and the icons are three PNG files.
+Two routes sit outside that list. `POST /push/ack`, the push worker's report
+that a notification was shown or tapped, runs ahead of the token check and is
+authenticated by the per-push id instead: 128 random bits the kernel minted for
+one notification and handed only to the device it went to. What a valid id
+reaches is that device's push state: it stamps the row's shown or tapped time
+(the first stamp stands) and records the worker's build string, which every
+report rewrites; a shown report marks the older unsettled, untapped pushes for
+the same session on that device superseded; and the request's origin, read from
+its `Origin` header, else its `Referer`, else the forwarded headers or `Host`,
+is recorded on that device's subscription when none is on file, which matters
+because the `navigate` URL of the device's next declarative Apple push is
+built on that recorded origin. A recorded origin stands and a conflicting one
+is logged, an unknown id is a 404, and the body is capped at 2 KB before it is
+read. And a token-less `GET /` is answered with the login page above rather
+than a 403, so a bare open of the dashboard can paste the token in.
 
 The practical consequence: another local user on a **shared machine** cannot
 reach your kernel or bus — `/send` (which injects text into a live Claude
@@ -57,12 +101,24 @@ UID can read.
   path component under the mail and outbox roots (`_safe_id`), so a crafted
   reference like `../../etc` is rejected before any path join.
 - **No shell interpolation:** subprocess calls use argv lists (no `shell=True`);
-  untrusted message text reaching a tmux pane goes through bracketed paste, not
-  key interpretation; remote `ssh` targets are validated and argv-guarded with
-  `--`.
+  remote `ssh` targets are validated and argv-guarded with `--`.
 - **Output sanitization:** model output and message content rendered in the
   dashboard/webview pass through DOMPurify; the VS Code webview runs under a
   strict nonce CSP with `localResourceRoots` limited to the extension's assets.
+  The profile is modelled on the rules GitHub applies to a README
+  (`ui/webview/md-sanitize.ts`, shared by the chat and the file viewer): no
+  `<style>`, no form controls, no image map, ids and names prefixed
+  `user-content-`, an inline `style` reduced to its color declarations, no
+  `background` attribute; unlike GitHub it keeps that color-only inline `style`
+  and inline SVG. One renderer writes
+  into that sanitized DOM after DOMPurify has run: KaTeX. The sanitizer keeps
+  only color in an inline `style`, and KaTeX's layout is inline style, so a
+  formula's TeX passes through DOMPurify as the text of an inert placeholder
+  and KaTeX renders it there afterwards, under `trust: false` (KaTeX's own
+  safety model: no TeX command writes a link, an image, or an HTML attribute of
+  the author's choosing). That boundary is checked against the code by
+  `ui/webview/md-sanitize-postpass-browser.test.ts`; the profile, as the browser
+  lays a file out, by `ui/webview/md-sanitize-browser.test.ts`.
 - **No unsafe deserialization:** no `pickle`, `eval`, `exec`, or non-safe YAML on
   untrusted data.
 

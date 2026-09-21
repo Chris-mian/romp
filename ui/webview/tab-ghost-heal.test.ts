@@ -10,6 +10,11 @@
 // kernel-owned (`kernelListed`), and a later push omitting it dismisses the tab with the same teardown the
 // `closed` event runs. `closed` stays as the fast path.
 //
+// One difference since T236 (the user 2026-09-03): an OMISSION is an absence, not a report of an end — the
+// same push shape also follows a boot-partial list or a collapsed liveness read — so the teardown it runs
+// keeps the session's unsent composer draft stashed under its id (back with the session if it returns);
+// only a genuine end (the user's ✕, the kernel's own `closed`) clears it. See draft-teardown.test.ts.
+//
 // The executed model below runs the real reconcileTabOrder through the whole miss-and-heal cycle with
 // applyTabOrder's bookkeeping; the source pins hold that wiring in render.ts.
 import { test } from "node:test";
@@ -21,27 +26,29 @@ import { reconcileTabOrder } from "./tab-order";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 
 // A stand-in for the client around a session death: the sessions map, the render order, and applyTabOrder's
-// kernelListed bookkeeping. dismiss() mirrors dismissSession's teardown surface (session + view + draft go).
+// kernelListed bookkeeping. dismiss() mirrors dismissSession's teardown surface (session + view go; the draft
+// goes only for a genuine end, never for an omission).
 function model() {
   let order: string[] = [];
   const sessions = new Map<string, { state: string }>();
   const drafts = new Map<string, string>();
   const kernelListed = new Set<string>();
   const dismissed: string[] = [];
-  const dismiss = (id: string) => {
+  const dismiss = (id: string, why: "end" | "omitted") => {
     dismissed.push(id);
-    sessions.delete(id); drafts.delete(id);
+    sessions.delete(id);
+    if (why === "end") drafts.delete(id);      // a genuine end clears; an omission stashes (T236)
     order = order.filter((x) => x !== id);
   };
   return {
     dismissed,
     session(id: string, state = "working") { sessions.set(id, { state }); if (!order.includes(id)) order.push(id); },
     draft(id: string, text: string) { drafts.set(id, text); },
-    closedEvent(id: string) { dismiss(id); },     // the kernel's one-shot frame, when it DOES arrive
+    closedEvent(id: string) { dismiss(id, "end"); },     // the kernel's one-shot frame, when it DOES arrive
     // a kernel tabOrder push, with applyTabOrder's new bookkeeping: kernel-owned omissions dismiss first,
     // then the reconcile (whose keep no longer applies to kernel-owned ids), then the add-only record.
     push(kernel: string[]) {
-      for (const id of order.slice()) if (kernelListed.has(id) && !kernel.includes(id)) dismiss(id);
+      for (const id of order.slice()) if (kernelListed.has(id) && !kernel.includes(id)) dismiss(id, "omitted");
       order = reconcileTabOrder(kernel, order, (id) => sessions.has(id), (id) => kernelListed.has(id));
       for (const id of kernel) kernelListed.add(id);
     },
@@ -68,13 +75,18 @@ test("a session ended while the socket was down leaves the strip on the reconnec
   assert.deepEqual(m.tabs(), ["web"]);
 });
 
-test("the teardown clears the dead session's composer leftovers too", () => {
+test("the omission teardown KEEPS the session's composer draft — an absence is not the user's close (T236)", () => {
   const m = model();
   m.session("web"); m.session("api");
   m.push(["web", "api"]);
   m.draft("api", "half-typed message");
   m.push(["web"]);
-  assert.equal(m.hasDraft("api"), false, "kernel-driven drop runs the full dismissSession surface");
+  assert.deepEqual(m.tabs(), ["web"], "the tab still goes");
+  assert.equal(m.hasDraft("api"), true, "…but the draft is stashed under its id, back with the session if it returns");
+  // the kernel's own closed frame — the session actually ended — is what clears it
+  m.session("api"); m.push(["web", "api"]);
+  m.closedEvent("api");
+  assert.equal(m.hasDraft("api"), false, "a genuine end clears the draft (the user 2026-08-04)");
 });
 
 test("the closed event remains the fast path; the push after it has nothing left to do", () => {
@@ -114,15 +126,15 @@ test("a create placeholder the kernel has never listed still survives unrelated 
 test("applyTabOrder dismisses kernel-owned omissions BEFORE reconciling, then records add-only", () => {
   // the drop loop sits between ackClosingTabs and the reconcile, and dismissSession is the shared teardown
   assert.match(RENDER,
-    /ackClosingTabs\(kernelOrder\);[\s\S]{0,700}?for \(const id of order\.slice\(\)\) \{\s*\n\s*if \(kernelListed\.has\(id\) && !inKernel\.has\(id\)\) dismissSession\(id\);\s*\n\s*\}/,
+    /ackClosingTabs\(kernelOrder, report\);[\s\S]{0,1600}?const omitted = new Set\(order\.filter\(\(id\) => kernelListed\.has\(id\) && !inKernel\.has\(id\) && !liveSet\.has\(id\)\)\);[^\n]*\n(?:.*\n){0,3}?\s*for \(const id of order\.slice\(\)\) \{\s*\n\s*if \(omitted\.has\(id\)\) dismissSession\(id, "omitted", omitted\);\s*\n\s*\}/,
     "kernel-owned tabs the push stopped carrying get the closed-event teardown");
   // the reconcile passes the kernelListed predicate, so the pure model enforces the same rule
   assert.match(RENDER,
-    /reconcileTabOrder\(kernelOrder, order, \(id\) => sessions\.has\(id\) \|\| tabMeta\.has\(id\),\s*\n\s*\(id\) => kernelListed\.has\(id\)\)/);
+    /reconcileTabOrder\(retainLiveOmitted\(kernelOrder, order, liveSet\), order,\s*\n\s*\(id\) => sessions\.has\(id\) \|\| tabMeta\.has\(id\),\s*\n\s*\(id\) => kernelListed\.has\(id\)\)/);   // the retained order (T258) feeds the reconcile
   // add-only, recorded AFTER the reconcile: dropping entries would hand a late stale `session` frame the
   // never-listed keep and re-mint the ghost
   assert.match(RENDER, /for \(const id of next\) order\.push\(id\);\s*\n\s*for \(const id of kernelOrder\) kernelListed\.add\(id\);/);
-  const body = RENDER.match(/function dismissSession\(id: string\): void \{[\s\S]*?\n\}/);
+  const body = RENDER.match(/function dismissSession\(id: string, why: DismissWhy, doomed\?: ReadonlySet<string>\): void \{[\s\S]*?\n\}/);
   assert.ok(body, "dismissSession not found");
   assert.doesNotMatch(body![0], /kernelListed/, "the record outlives the dismiss (add-only set)");
 });

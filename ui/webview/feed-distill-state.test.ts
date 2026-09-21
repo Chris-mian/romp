@@ -29,7 +29,7 @@ test("the recheck/rejudging swirl is never gated on the brief", () => {
   assert.doesNotMatch(FEED, /it\.recheck && !briefText/);
   assert.doesNotMatch(FEED, /it\.rejudging && !briefText/);
   // the swirl's rule is EXECUTED in spin-caption.test.ts; the line's in distiller-line.test.ts
-  assert.match(FEED, /const spin = spinFor\(it, distillPending\(/);
+  assert.match(FEED, /const spin = spinFor\(it, !it\.notice && distillPending\(/);
 });
 
 test("AskItem carries distillState from the kernel", () => {

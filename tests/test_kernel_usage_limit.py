@@ -9,7 +9,7 @@ import os
 import tempfile
 import time
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -18,11 +18,11 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
-SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
+load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
-km = SourceFileLoader("romp_kernel_ulimit", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_ulimit", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 
@@ -101,19 +101,49 @@ class UsageLimitSignal(unittest.TestCase):
 
 
 class AutoPauseOnLimit(unittest.TestCase):
+    """The flip's delivery: the tick job builds nothing inline. Its writer, _set_retry_paused, marks the
+    views dirty and wakes the pusher, whose next cycle rebuilds and carries the flag in its
+    globalRetryPaused frame; an inline _push_all is the regression the tripwire in setUp catches. The
+    idempotent path (already paused) writes nothing, so it neither wakes nor dirties. _views_dirty is a
+    module global shared across the suite, so each test records its own floor rather than asserting an
+    absolute value."""
+
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         self.saved = jd.STATE
         jd.STATE = Path(self.td.name)
         self._usage = km._usage
         self._push = km._push_all
-        km._push_all = lambda: None
+        km._push_all = lambda *a, **k: self.fail("a tick job built a push inline; it should wake the pusher")
+        self._was_set = km._pusher_wake.is_set()
+        km._pusher_wake.clear()
 
     def tearDown(self):
         jd.STATE = self.saved
         km._usage = self._usage
         km._push_all = self._push
+        if self._was_set:
+            km._pusher_wake.set()
+        else:
+            km._pusher_wake.clear()
         self.td.cleanup()
+
+    def test_the_flip_wakes_the_pusher_and_marks_the_views_dirty(self):
+        km._usage = lambda: {"limited": {"fiveHour": True, "sevenDay": False, "fable": False}}
+        floor = km._views_dirty[0]
+        km._auto_pause_on_limit()
+        self.assertTrue(km._retry_paused_on())
+        self.assertTrue(km._pusher_wake.is_set(), "the flip wakes the pusher; the next cycle carries it")
+        self.assertGreater(km._views_dirty[0], floor, "the writer's own mark: that cycle rebuilds past the sig")
+
+    def test_the_idempotent_path_neither_wakes_nor_dirties(self):
+        km._set_retry_paused(True)                       # already paused: the write is skipped
+        km._pusher_wake.clear()                          # the pre-pause's own wake, not the tick's
+        km._usage = lambda: {"limited": {"fiveHour": True, "sevenDay": False, "fable": False}}
+        floor = km._views_dirty[0]
+        km._auto_pause_on_limit()
+        self.assertFalse(km._pusher_wake.is_set(), "nothing written, nothing to deliver")
+        self.assertEqual(km._views_dirty[0], floor)
 
     def test_hitting_a_limit_engages_the_retry_pause(self):
         km._usage = lambda: {"limited": {"fiveHour": True, "sevenDay": False, "fable": False}}
@@ -141,6 +171,24 @@ class AutoPauseOnLimit(unittest.TestCase):
         km._auto_pause_on_limit()
         self.assertTrue(km._retry_paused_on(), "a real 5h/7d limit still engages the pause")
 
+    def test_the_pause_latches_reason_limit_at_the_event(self):
+        # the bottom bar's API health cell names the pause from the file's reason, never from _retry_resume_at's
+        # clock comparison (which would flip the word at the reset instant with no event)
+        fut = int(time.time()) + 3600
+        km._usage = lambda: {"limited": {"fiveHour": True, "sevenDay": False, "fable": False},
+                             "fiveHour": {"pct": 100, "resetsAt": fut}}
+        km._auto_pause_on_limit()
+        self.assertTrue(km._retry_paused_on())
+        self.assertEqual(km._retry_pause_reason(), "limit")
+        self.assertEqual(km._retry_resume_at(), fut, "the card's countdown is unchanged by the latched reason")
+        self.assertGreater(km._retry_pause_ts(), 0, "the pause's own t is the frame's `since`")
+
+    def test_an_already_paused_flag_keeps_its_reason(self):
+        km._set_retry_paused(True, reason="spend")
+        km._usage = lambda: {"limited": {"fiveHour": True, "sevenDay": False, "fable": False}}
+        km._auto_pause_on_limit()
+        self.assertEqual(km._retry_pause_reason(), "spend", "idempotent: the first cause stays on record")
+
 
 class AutoPauseOnSpendLimit(unittest.TestCase):
     """A monthly SPEND cap auto-engages the global retry-pause — the SPEND twin of AutoPauseOnLimit (the
@@ -153,16 +201,45 @@ class AutoPauseOnSpendLimit(unittest.TestCase):
         self.td = tempfile.TemporaryDirectory()
         self.saved = (jd.STATE, km._alive_sessions, km._api_error, km._push_all)
         jd.STATE = Path(self.td.name)
-        km._push_all = lambda: None
+        km._push_all = lambda *a, **k: self.fail("a tick job built a push inline; it should wake the pusher")
+        self._was_set = km._pusher_wake.is_set()
+        km._pusher_wake.clear()
 
     def tearDown(self):
         jd.STATE, km._alive_sessions, km._api_error, km._push_all = self.saved
+        if self._was_set:
+            km._pusher_wake.set()
+        else:
+            km._pusher_wake.clear()
         self.td.cleanup()
+
+    def test_the_flip_wakes_the_pusher_and_marks_the_views_dirty(self):
+        # the same delivery as AutoPauseOnLimit: the writer's wake and dirty mark, no inline push
+        self._sessions({"spendLimit": True, "text": "spend limit"})
+        floor = km._views_dirty[0]
+        km._auto_pause_on_spend_limit(0, {})
+        self.assertTrue(km._retry_paused_on())
+        self.assertTrue(km._pusher_wake.is_set(), "the flip wakes the pusher; the next cycle carries it")
+        self.assertGreater(km._views_dirty[0], floor, "the writer's own mark: that cycle rebuilds past the sig")
+
+    def test_the_no_op_paths_neither_wake_nor_dirty(self):
+        floor = km._views_dirty[0]
+        self._sessions(None, {"spendLimit": False, "text": "500"})   # no capped session
+        km._auto_pause_on_spend_limit(0, {})
+        self.assertFalse(km._pusher_wake.is_set())
+        self.assertEqual(km._views_dirty[0], floor)
+        km._set_retry_paused(True)                       # already paused: the write is skipped
+        km._pusher_wake.clear()                          # the pre-pause's own wake, not the tick's
+        floor = km._views_dirty[0]
+        self._sessions({"spendLimit": True, "text": "spend limit"})
+        km._auto_pause_on_spend_limit(0, {})
+        self.assertFalse(km._pusher_wake.is_set(), "nothing written, nothing to deliver")
+        self.assertEqual(km._views_dirty[0], floor)
 
     def _sessions(self, *errs):
         sess = [{"sid": "s%d" % i, "path": "/tmp/s%d.jsonl" % i} for i in range(len(errs))]
         emap = {s["path"]: e for s, e in zip(sess, errs)}
-        km._alive_sessions = lambda now, tmux: sess
+        km._alive_sessions = lambda now, live: sess
         km._api_error = lambda p: emap.get(p)
 
     def test_a_spend_cap_engages_the_pause_with_reason_spend(self):

@@ -55,6 +55,23 @@ export function hostNameNodes(name: string, sid: string | null | undefined): Nod
   return [h, document.createTextNode(p.rest)];
 }
 
+/** A session's LABEL as the tab strip paints it (plans/artifacts-pane.md 9.3; the user's ruling of 2026-09-12: the name
+ *  bold in its identity colour, no chip): the quiet "host:" prefix of a remote session (hostNameNodes) and then the name in
+ *  a `.session-name` span, `.colored` with the strip's own token (`--chip-bg`) when the session has a colour; styles.css
+ *  inks it through the T390 lightness floor, so a dark identity colour reads on both themes. Built for the Artifacts
+ *  pane's picker; the strip, the mention pop and the Outline's rows adopt it at the cards owner's word, the placeholder
+ *  and the skeleton tab in the same commit as the strip (the three are one shape since PR 1907). */
+export function sessionLabelNodes(name: string, sid: string | null | undefined, color: { bg: string; fg: string } | null | undefined): Node[] {
+  const nodes = hostNameNodes(name, sid);
+  const text = nodes[nodes.length - 1];
+  const span = document.createElement("span");
+  const bg = color && typeof color.bg === "string" ? color.bg : "";
+  span.className = "session-name" + (bg ? " colored" : "");
+  if (bg) { span.style.setProperty("--chip-bg", bg); if (color && color.fg) span.style.setProperty("--chip-fg", color.fg); }
+  span.textContent = text.textContent || "";
+  return nodes.length > 1 ? [nodes[0], span] : [span];
+}
+
 /** Is this (prefixed) sid's host unreachable right now? Reads the federation manager's published set,
  *  which the KERNEL's own tunnel health fills. False wherever no manager is loaded (a single-kernel
  *  page, the Obsidian panel), so a local session never wears the mark. */
@@ -64,6 +81,31 @@ export function hostIsDown(sid: string | null | undefined): boolean {
   try {
     const fed = (globalThis as any).__rompFed;
     return !!fed && typeof fed.down === "function" && fed.down().indexOf((sid as string).slice(0, i)) >= 0;
+  } catch { return false; }
+}
+
+/** The host-down notice is LIVE (the romp swirl after "Reconnecting" spins) only while romp is actually
+ *  trying to reach the host: the kernel's /tunnels row says `dialing` (an ssh dial spawned and not yet
+ *  confirmed, or the supervisor's health request to the host in flight; kernel.py _row_dialing), or this
+ *  page's relay socket to the host is in its CONNECTING state (readyState 0, from `new WebSocket` until
+ *  the open or close event). Between attempts (the row waiting out its backoff, the socket closed and
+ *  waiting on the redial timer) and while open it is still. Pure over the two states federation
+ *  publishes, so the spinner is keyed on the dial EVENTS, never on a timer (the user 2026-09-10, who
+ *  wanted to see romp actually trying, not a spinner that spins whatever happens). The kernel's row is
+ *  the one that matters for a DOWN host: the browser does not dial a host the kernel reports down. */
+export function hostDialLive(rowDialing: boolean | null | undefined, readyState: number | null | undefined): boolean {
+  return !!rowDialing || readyState === 0;
+}
+
+/** Is a dial to this (prefixed) sid's host in flight right now? Reads the federation manager's published
+ *  state (`dialing`, hostDialLive over the host's socket); false wherever no manager is loaded, for a
+ *  local session, and with a manager too old to publish it. */
+export function hostIsDialing(sid: string | null | undefined): boolean {
+  const i = typeof sid === "string" ? sid.indexOf(":") : -1;
+  if (i <= 0) return false;
+  try {
+    const fed = (globalThis as any).__rompFed;
+    return !!fed && typeof fed.dialing === "function" && !!fed.dialing((sid as string).slice(0, i));
   } catch { return false; }
 }
 
@@ -85,10 +127,11 @@ export function hostDownNote(sid: string | null | undefined): string {
 /** Same rendering when the host rides its OWN field instead of a sid prefix — the feed card's
  *  "↪ from" chip, whose peerSid stays a bare uuid (the sender may live on a third host neither
  *  the viewer nor the card's kernel can address). No host → plain text, identical to a local name. */
-export function hostPartsNodes(host: string | null | undefined, name: string): Node[] {
-  if (!host) return [document.createTextNode(name)];
-  const h = document.createElement("span");
+export function hostPartsNodes(host: string | null | undefined, name: string,
+                               doc: Pick<Document, "createElement" | "createTextNode"> = document): Node[] {   // `doc`: the document to build in (a test's fake through status-chip.ts statusChip); the page's by default
+  if (!host) return [doc.createTextNode(name)];
+  const h = doc.createElement("span");
   h.className = "host-prefix";
   h.textContent = host + ":";
-  return [h, document.createTextNode(name)];
+  return [h, doc.createTextNode(name)];
 }

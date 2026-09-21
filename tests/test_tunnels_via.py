@@ -12,7 +12,7 @@ Synthetic hosts only; hermetic state dir; the transport is stubbed — no ssh, n
 import os
 import tempfile
 import unittest
-from importlib.machinery import SourceFileLoader
+from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -20,7 +20,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
-km = SourceFileLoader("romp_kernel_via", os.path.join(BIN, "romp-kernel")).load_module()
+km = load_source("romp_kernel_via", os.path.join(BIN, "romp-kernel"))
 
 
 class _Stubbed(unittest.TestCase):
@@ -58,7 +58,8 @@ class TunnelsOf(_Stubbed):
         self.assertTrue(d["ok"])
         self.assertEqual(d["of"], "TESTHOST")
         self.assertEqual(d["tunnels"][0]["host"], "third")
-        self.assertEqual(d["tunnels"][0]["behindBy"], 2, "row fields pass through untouched")
+        self.assertEqual(d["tunnels"][0]["behindBy"], 2, "a well-formed row field passes through the whitelist")
+        self.assertNotIn("local", d, "only `tunnels` is relayed — the peer's other sections stay behind (2026-09-08)")
 
     def test_a_failed_read_carries_the_transport_error(self):
         km._remotes["TESTHOST"] = {"host": "TESTHOST", "status": "up", "local_port": 1, "token": "t"}
