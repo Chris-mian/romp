@@ -450,7 +450,7 @@ class ProvisionalLegsMatchBuilt(unittest.TestCase):
         built, light = self._legs(self._row())
         self.assertTrue(built["apiTooLong"])
         self.assertEqual(light, built, "prompt too long: the provisional status differs from the built one")
-        # the yellow ask ring's input (round four): the feed's verdict, both ways and before the first feed build
+        # the Needs you ring's input (round four): the feed's verdict, both ways and before the first feed build
         self._plain_transcript()
         saved_needs = km._feed_needs_input[0]
         try:

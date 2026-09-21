@@ -200,12 +200,20 @@ body.scheme-solarized-dark {
   --st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;
   --st-compacting-bg: #14b8a6; --st-compacting-fg: #ffffff;   /* teal — the compacting accent (text + compression bar) */
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;   /* alarm red — session stopped on an API error */
-  /* purple: a 5xx answer (529 included) in the API-health histograms and counts (T316): distinct from the 429 red
+  /* purple: a 5xx answer (529 included) in the API-health cell's histogram and counts (T316): distinct from the 429 red
      and the retrying amber, so a storm of one kind never reads as the other; and, since 2026-09-21, apart from the
-     Needs you magenta below (OKLab distance x100 19 for the fill, 23 for the ink; theme-parity.test.ts pins both), since
-     the API-health cell sits on the landing page beside every session's state (plans/needs-you.md). --st-5xx-ink is the
-     text form (a count's digits in the cell's tip), readable at 9:1 on the page where the fill would sit under 2.4:1. */
-  --st-5xx-bg: #7e22ce; --st-5xx-fg: #ffffff; --st-5xx-ink: #c4b5fd;
+     Needs you magenta below, since the cell sits on the landing page beside every session's state (plans/needs-you.md).
+     Chosen by the validator's two floors (OKLab x100 at least 15 to full-colour readers, at least 8 under the Machado
+     protan and deutan simulations) against every colour each mark shares a surface with. The FILL (the histogram's 5xx
+     band, a lilac): 6.90:1 on the tip's #1e1e1e ground and 5.94:1 over the bar's wash (the 3:1 floor); from the accent
+     band 15.9 / 10.0, the 429 red 20.2 / 17.6, the other band's lime 29.9 / 25.7, the Needs you magenta 17.0 / 12.0. The
+     INK (a count's digits in the tip's line, a violet): 4.70:1 on the ground (the 4.5 floor); from the accent ink it
+     shares the line with 22.3 / 21.0, the 429 ink 20.3 / 14.0, the words gray 15.7 / 15.6; from the Needs you magenta
+     17.7 in full colour and 5.6 under a deficiency, the ONE pair conceded on purpose (no violet ink clears the accent
+     and the magenta at once under red-green CVD; the two never share a line: the magenta is a session-state colour on
+     rings and chips, the ink a digit in the cell's tip). --st-5xx-fg is a dark ink for text on the fill (7.42:1).
+     theme-parity.test.ts pins every figure; the landing's inline sheet declares the same two tokens. */
+  --st-5xx-bg: #cb94d1; --st-5xx-fg: #1e1030; --st-5xx-ink: #8b7ec8;
   /* amber-orange — the API is backing off and retrying (the tab ring, the chip, the chat's retry notices); the
      hue sat RAW in seven rules until 2026-09-08 (5.38:1 on the chat's card surface) */
   --st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;
@@ -289,7 +297,7 @@ body.theme-light {
   --st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;
   --st-compacting-bg: #0F766E; --st-compacting-fg: #ffffff;
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
-  --st-5xx-bg: #4c1d95; --st-5xx-fg: #ffffff; --st-5xx-ink: #4c1d95;   /* the 5xx purple in the light palette: 9.2:1 on the page, white on it 11:1; 18 from the Needs you magenta */
+  --st-5xx-bg: #4c1b7e; --st-5xx-fg: #ffffff; --st-5xx-ink: #4c1b7e;   /* the 5xx deep violet in the light palette, fill and ink alike: 9.97:1 on the cream page, 11.90:1 on white, white on it 11.90:1; from the Needs you magenta 19.1 / 11.6, the accent 31.6 / 25.6, the 429 red 27.1 / 21.0, the words 19.7 / 18.2, the other band's indigo 18.9 / 18.7 (both floors clear) */
   --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;   /* the retrying amber in the light palette: 4.86:1 on the card, white on it 6.18:1 */
   /* the NEEDS YOU magenta in the light palette (plans/needs-you.md, 2026-09-21; the dark olive of the ask yellow before it):
      the same hue as the dark token, darkened for the cream page. 5.30:1 on the page, white on it 6.32:1; OKLab distance

@@ -264,7 +264,7 @@ registerTabWidget({
 });
 
 // THE RINGS (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear are widgets of slot "ring",
-// each with its own switch in the settings' Tab widgets section, registered in PRECEDENCE order, red over yellow over
+// each with its own switch in the settings' Tab widgets section, registered in PRECEDENCE order, red over magenta over
 // amber (composeTabRing paints the first that is switched on and applies; a stored order never moves a ring). The
 // predicates are tab-state.ts's RING_TEST, the pure twin the folded header's pip reads, so the strip and the pip cannot
 // disagree. The colours are the tokens the tab already wears (styles.css: the red and the amber rings read the state's

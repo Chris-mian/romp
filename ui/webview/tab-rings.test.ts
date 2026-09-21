@@ -95,7 +95,7 @@ test("THE SHEET: the dashed outlines key on the RING classes the strip composes 
   assert.match(CSS, /\.tab-group-pip\.ask \{ background: var\(--st-needs-bg\); \}/);
 });
 
-test("THE GEAR'S SHEET: the ring rows' demos wear the same classes through gear.css fallbacks (its hosts load feed.css and gear.css, not styles.css), and feed.css carries the ask tokens in both themes", () => {
+test("THE GEAR'S SHEET: the ring rows' demos wear the same classes through gear.css fallbacks (its hosts load feed.css and gear.css, not styles.css), and feed.css carries the Needs you tokens in both themes", () => {
   assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab\.ring-needs-you, #rsettings \.rs-preview \.tab\.ring-needs-you \{ outline: 2px dashed var\(--st-awaiting-bg, #c0392b\); outline-offset: -2px; \}/);
   assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab\.ring-waiting-on-you, #rsettings \.rs-preview \.tab\.ring-waiting-on-you \{ outline: 2px dashed var\(--st-needs-bg, #d946ef\); outline-offset: -2px; \}/);
   assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab\.ring-retrying, #rsettings \.rs-preview \.tab\.ring-retrying \{ outline: 2px dashed var\(--st-retrying-bg, #e67e22\); outline-offset: -2px; \}/);

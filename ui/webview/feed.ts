@@ -1999,7 +1999,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
       // 2026-07-11): an ancestor of a blocked sub wears the ⏸ too, so the block is visible even while the
       // branch is collapsed — its tooltip points DOWN to the real ask.
       mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "";
-      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside needs you: expand to find it" : "needs you";
+      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside it needs you: expand to find it" : "needs you";
       const txt = el("span", "fcheck-text"); txt.textContent = s.text; linkifyPrRefs(txt, prRepoOf(it.sid));
       row.append(tri, mark, txt);
       if (s.cleared) row.appendChild(clearedTag());   // the strike alone doesn't say WHY — see CLEARED_TIP
@@ -3327,7 +3327,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   line.appendChild(tri);
   const mark = el("span", "ftree-mark"); mark.textContent = nodeMark(node); line.appendChild(mark);
   // blocked rolls UP (kernel flatten, the user 2026-07-11): a rolled-up ancestor's ⏸ says the block is below
-  if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside needs you: the ⏸ below is the ask" : "needs you";
+  if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside it needs you: the ⏸ below is the ask" : "needs you";
   const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; linkifyPrRefs(txt, prRepoOf(it.sid)); line.appendChild(txt);
   if (node.cleared) line.appendChild(clearedTag());   // same one-word story as the card checklist
   if (node.parked && node.parked.n && !node.cleared) line.appendChild(parkedTag(node.parked.n));   // and the parked hint

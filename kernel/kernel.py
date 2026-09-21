@@ -40076,7 +40076,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     if _session_flag(sid, "hideFromFeed"):       # muted → out of task tracking: the ledger shows no goal tree / current task
         tree, current, recent_tops = [], None, []
     # the FEED's per-session needs-you verdict, read ONCE for this build: the ledger (needsInput, the section
-    # rows' word) and the status (needsYou, the tab's ask ring) both carry it, and two reads could straddle a
+    # rows' word) and the status (needsYou, the tab's Needs you ring) both carry it, and two reads could straddle a
     # concurrent pusher's swap of the set (a connect-thread build races the cycle) — a row saying "needs you"
     # beside a tab with no ring, in the same frame (review find, 2026-09-13)
     needs_you = _feed_needs_input_of(sid)
@@ -40193,7 +40193,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # under needs_input — a judge-filed block (the session asked something, a decision is
                   # pending), a stalled card, a held peer message, a live prompt — False when none, None
                   # before the first feed build since start. The tab wears a dashed magenta ring for it in
-                  # every live state, working included (the ask ring, 2026-09-13: a session with something
+                  # every live state, working included (the Needs you ring, the ask ring of 2026-09-13: a session with a card that
                   # needs you should grab attention without a click, even while it goes on working
                   # in the background; the red ring stays the live prompt's and outranks it; since
                   # 2026-09-14 each ring is a widget with its own switch in the settings). The same
@@ -55860,7 +55860,7 @@ def _build_feed_locked(now, live_map, sig):
     _needs_now = _needs_input_sids(feed)                  # the per-session needs-you the session ledgers read
     if _needs_now != _feed_needs_input[0]:
         # A push builds the chat sessions BEFORE the feed, so the ledger's needsInput and the status's needsYou
-        # (the tab's ask ring) shipped this cycle carry the PREVIOUS build's set; the change lands on the next
+        # (the tab's Needs you ring) shipped this cycle carry the PREVIOUS build's set; the change lands on the next
         # cycle, whose chat signatures (`needs`) rebuild the sessions whose verdict moved. Make that cycle now —
         # the _mark_views_dirty pattern — so the ring and the section row trail the card by one build, not by
         # up to a backstop tick (review find, 2026-09-13: a ring a full tick late is a ring that can be stale
@@ -56665,7 +56665,7 @@ def _card_needs_you(a):
     read from `category` (an older kernel's frame: `column`). The badge (_needs_you_count), the magenta Needs you ring
     (_needs_input_sids, and through it build_session's needsYou) and the pane's lens (feed.ts isNeedsYou(boardOf(card), ...))
     all read this; a board that names no needs-you category has no card that needs the user. A provisional placeholder is
-    a caller's concern (the badge skips it, the ring counts it: the Blocked list shows it)."""
+    a caller's concern (the badge skips it, the ring counts it: the Needs you column shows it)."""
     nb = _board_needs_you(a.get("board"))
     return nb is not None and a.get("category", a.get("column")) == nb
 
@@ -60265,7 +60265,7 @@ _CHAT_MOBILE_CSS = (
     ".mrow .mclose:active{color:#e5484d}"
     ".mrow.active{background:#0d3a5c}"
     # a row whose session has a card that needs you: a magenta bar at its left edge, the desktop tab's
-    # dashed ring (ring-waiting-on-you), in the one ask token, on a list row where a ring would fight the hairlines
+    # dashed ring (ring-waiting-on-you), in the one Needs you token, on a list row where a ring would fight the hairlines
     ".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}"
     # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
     # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
@@ -62450,7 +62450,7 @@ manual:'Auto-retry and the judges are paused: you stopped them.'};
 var RESUME='Resume all auto-retries',STOP='Stop all auto-retries';   // the chat card's own words
 var NOTSENT='Not sent: the dashboard is disconnected. Try again.';
 var LOST='Connection lost before the answer arrived. When it is back, the button shows the current state.';
-// a waiting row's class words (T340, the user 2026-09-11): the status code itself wears its class ink, the 5xx magenta for a
+// a waiting row's class words (T340, the user 2026-09-11): the status code itself wears its class ink, the 5xx purple for a
 // 529 or any other 5xx, the 429 red for a 429, so the number says what it is; the words beside it stay plain
 function clsWords(r){var st=r.status?esc(r.status):'';
 if(r.cls==='429')return '<span class=ah-c-r429>429</span> rate limited';if(r.cls==='529')return '<span class=ah-c-r5xx>529</span> overloaded';
@@ -62511,7 +62511,7 @@ return dup?fam+' · '+(b.label||b.auth||key.split('|')[0]):fam;}
 // window counts every attempt once and says how many of them had no status, with the shares' base named beside them:
 // '15 attempts, 7 of them without a status · 25% 429 · 0% 5xx of the other 8'.
 // the histogram (T316, the user's design): one bar per bin, STACKED bottom-up, successes in the accent, 429 attempts in
-// the blocked red, 5xx (529 included) in the 5xx magenta, and the other band (no connection, another status) in a hue of
+// the blocked red, 5xx (529 included) in the 5xx purple, and the other band (no connection, another status) in a hue of
 // its own only when the range holds any; one ceiling label, no peak text; the timeline's clocks along the bottom. The
 // hover draws the day as 96 quarter-hour bars; the detail draws the chosen range, larger. Colours through the tokens
 // (fallbacks for a var-less harness). EVERY attribute quoted: this goes through innerHTML (the spend chart's lesson).
@@ -65116,7 +65116,7 @@ def _landing():
             "<meta name=apple-mobile-web-app-title content=Romp>"
             "<meta name=theme-color id=meta-theme content='#1e1e1e'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
-            ":root{--accent:#9cd2ff;--accent-fg:#0c1a2e}"
+            ":root{--accent:#9cd2ff;--accent-fg:#0c1a2e;--st-5xx-bg:#cb94d1;--st-5xx-ink:#8b7ec8}"   # the 5xx tokens the API-health cell paints, declared where they resolve (plans/needs-you.md; mirrors styles.css)
             # The menu vocabulary's tokens (CLAUDE.md "Menus and dropdowns wear ONE vocabulary"), defined
             # HERE because the shell loads no sheet: the bell popover reads them, with the same dark
             # literals as var() fallbacks in its rules. Byte-equal to styles.css's :root values.
@@ -65509,18 +65509,18 @@ def _landing():
             ".ah-foot{margin-top:7px;padding-top:5px;border-top:1px solid rgba(255,255,255,0.08);gap:12px}"
             ".ah-link{cursor:pointer;color:var(--accent)}"
             # T316: a machine line's pieces in their class colours (successes the accent, 429 the blocked red, 5xx the 5xx
-            # magenta, no connection and other statuses the other band's hue), the vertical legend with the class tokens in
+            # purple, no connection and other statuses the other band's hue), the vertical legend with the class tokens in
             # those inks (T340: no swatches), the stacked bars (the hover's small, the detail's large), the detail's range
             # chips and width. The other band (T340, the user 2026-09-11): the label gray sat on the accent in the dark; the
             # band is a pale lime in the dark (#d9f99d) and an indigo in the light (#4f46e5), each at least 8 OKLab CVD units
-            # and 15 normal-vision units from the accent, the 429 red and its ink, the 5xx magenta and its ink, the retrying
+            # and 15 normal-vision units from the accent, the 429 red and its ink, the 5xx purple and its ink, the retrying
             # amber and the working yellow of its theme (the dataviz validator, all pairs; no one hue clears both themes:
-            # blues and violets fold into the magenta or its pink ink under red-green CVD in the dark, greens fold into the
+            # blues and violets fold into the 5xx purple or its ink under red-green CVD in the dark, greens fold into the
             # clay accent, the red and the amber in the light, warm neutrals sit within 15 of the pale accent in the dark)
             # the counts' TEXT inks per theme (review find: the chip colours as text sit under 4.5:1 on the tip; the
-            # failure line's precedent is #ef6b6f dark / #B02A1C light): 429 the error-text red, 5xx a lighter magenta in
-            # the dark, a deeper one in the light; the swatches and the bars keep the chip colours
-            ".ah-c-ok{color:var(--accent,#9cd2ff)}.ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:var(--st-5xx-ink,#c4b5fd)}"
+            # failure line's precedent is #ef6b6f dark / #B02A1C light): 429 the error-text red, 5xx a violet ink in
+            # the dark (a lilac fill), a deep violet in the light; the swatches and the bars keep the chip colours
+            ".ah-c-ok{color:var(--accent,#9cd2ff)}.ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:var(--st-5xx-ink,#8b7ec8)}"
             ".ah-c-none{color:#d9f99d}.ah-mline .ah-desc{opacity:1}.ah-mline .ah-c-plain{color:#a9b1ba}"
             ".ah-win,.ah-ago{margin-left:auto}"
             # the legend carries no group opacity (T340 review: a descendant cannot exceed its group's, so a faded legend put every
@@ -65529,7 +65529,7 @@ def _landing():
             ".ah-lrow{display:flex;align-items:center;gap:6px}.ah-lt{font-weight:600}.ah-lrow > span:last-child{opacity:.75}"
             # the bars' fills, one class per stack segment; the other band's hue written out per theme (no token: a class of
             # this popup alone, not a status the rest of the dashboard names)
-            ".ah-seg-ok{fill:var(--accent,#9cd2ff)}.ah-seg-rateLimited{fill:var(--st-blocked-bg,#e5484d)}.ah-seg-serverErrors{fill:var(--st-5xx-bg,#7e22ce)}"
+            ".ah-seg-ok{fill:var(--accent,#9cd2ff)}.ah-seg-rateLimited{fill:var(--st-blocked-bg,#e5484d)}.ah-seg-serverErrors{fill:var(--st-5xx-bg,#cb94d1)}"
             ".ah-seg-noStatus,.ah-seg-other{fill:#d9f99d}"
             # the gridlines as classes too (T338): the ceiling's and the ticks', a hairline the light card can see
             ".ah-gridy{stroke:rgba(255,255,255,0.10)}.ah-gridx{stroke:rgba(255,255,255,0.06)}"
@@ -65932,7 +65932,7 @@ def _landing():
             # chrome's warm-light skin. Pure additive overrides; with the class absent nothing here matches,
             # so the dark rendering is byte-identical. Accent goes clay (#C2410C) via the same --accent var
             # every accent consumer already reads.
-            "body.theme-light{--accent:#C2410C;--accent-fg:#FFF8F2;background:#F1EAE2}"
+            "body.theme-light{--accent:#C2410C;--accent-fg:#FFF8F2;--st-5xx-bg:#4c1b7e;--st-5xx-ink:#4c1b7e;background:#F1EAE2}"
             # the light theme's menu tokens — the values styles.css's body.theme-light block resolves
             # them to, so the bell popover is the same cream card every other menu is
             "body.theme-light{--menu-bg:#FBF6EF;--menu-fg:#1F1E1D;--menu-border:rgba(0,0,0,0.12);--menu-hover:rgba(0,0,0,0.06);"
@@ -66027,10 +66027,10 @@ def _landing():
             # the failure line in the light theme's error-text red (styles.css --err #B02A1C, about 6.6:1 on white;
             # the dark line's #ef6b6f is 3.0:1 there)
             "body.theme-light .ah-err{color:#B02A1C}"
-            # T316, the light tip is white: the counts' inks (the clay accent, the light error red, a deep magenta 6.5:1, the
+            # T316, the light tip is white: the counts' inks (the clay accent, the light error red, a deep purple 10.95:1, the
             # other band's indigo 6.3:1) and the bars' fills in the light palette's chip colours (T340: no swatches)
-            "body.theme-light .ah-c-ok{color:#C2410C}body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1d95)}body.theme-light .ah-c-none{color:#4f46e5}"
-            "body.theme-light .ah-seg-ok{fill:#C2410C}body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1d95)}body.theme-light .ah-seg-noStatus,body.theme-light .ah-seg-other{fill:#4f46e5}"
+            "body.theme-light .ah-c-ok{color:#C2410C}body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}body.theme-light .ah-c-none{color:#4f46e5}"
+            "body.theme-light .ah-seg-ok{fill:#C2410C}body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1b7e)}body.theme-light .ah-seg-noStatus,body.theme-light .ah-seg-other{fill:#4f46e5}"
             "body.theme-light .ah-gridy{stroke:rgba(0,0,0,0.14)}body.theme-light .ah-gridx{stroke:rgba(0,0,0,0.08)}"
             "body.theme-light .ah-word{color:#1F1E1D}"
             "body.theme-light .ah-btn{background:#F1EAE2;border-color:rgba(0,0,0,0.12);color:#1F1E1D}"

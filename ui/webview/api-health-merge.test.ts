@@ -61,7 +61,7 @@ test("the dot is the frames' alone: quiet everywhere reads gray, traffic anywher
   assert.equal(machineText("PEERHOST", { state: "degraded", cls: "offline", waiting: 3 }), "PEERHOST: offline · 3 waiting");
 });
 
-test("a machine's line is its counts in their colours (T316): successes in the accent, 429s red, 5xx magenta, the rest gray; no verdict word", () => {
+test("a machine's line is its counts in their colours (T316): successes in the accent, 429s red, 5xx purple, the rest gray; no verdict word", () => {
   const FINE = readHistory(doc({ ok: 67 })), MIXED = readHistory(doc({ ok: 67, r429: 12, r5xx: 4 })), NONE = readHistory(doc({}));
   const m = mergeFrames(OK, { TESTHOST: OK, PEERHOST: OK }, { "": NONE, PEERHOST: FINE, TESTHOST: MIXED });
   assert.equal(m.machines[0].text, "this machine: no API traffic");
@@ -208,16 +208,25 @@ test("the shell loads the merge module before its API-health script and the bund
   assert.match(read("ui", "webview", "api-health-global.ts"), /__rompApiHealthMerge = \{\s*mergeFrames, readHistory, mergeHistories, documentSeries, documentLedger, rebin, frameDot, machineText, machineLine, countsParts, agoWords, windowWords,/);
 });
 
-test("the 5xx purple is a token in both theme blocks of both sheets (theme parity), the inks ride their own token, and the popup paints through them", () => {
+test("the 5xx purple is a token in both theme blocks of both sheets (theme parity), the inks ride their own token, the landing declares both tokens where it paints them, and the fallbacks equal the tokens per theme", () => {
   // purple, not magenta, since 2026-09-21 (plans/needs-you.md): the API-health cell sits on the landing page beside every session's
-  // state, and the Needs you category took the magenta; theme-parity.test.ts pins the distances
+  // state, and the Needs you category took the magenta; theme-parity.test.ts pins the distances and the contrasts. The landing's
+  // inline sheet declares the two tokens (no page that loads styles.css carries an .ah-* rule), so the var() reads resolve to them;
+  // the literal fallbacks stay equal to the tokens, pinned here per theme, so a re-ink of one without the others reddens
   const STYLES = read("ui", "webview", "styles.css"), FEED = read("ui", "webview", "feed.css"), KERNEL = read("kernel", "kernel.py");
   const root = STYLES.slice(STYLES.indexOf(":root"), STYLES.indexOf("body.theme-light")), light = STYLES.slice(STYLES.indexOf("body.theme-light"));
-  assert.match(root, /--st-5xx-bg: #7e22ce; --st-5xx-fg: #ffffff; --st-5xx-ink: #c4b5fd;/);
-  assert.match(light, /--st-5xx-bg: #4c1d95; --st-5xx-fg: #ffffff; --st-5xx-ink: #4c1d95;/);
-  assert.match(FEED, /--st-5xx-bg: #4c1d95; --st-5xx-fg: #ffffff;/, "mirrored where the feed mirrors the blocked red");
+  assert.match(root, /--st-5xx-bg: #cb94d1; --st-5xx-fg: #1e1030; --st-5xx-ink: #8b7ec8;/, "a lilac fill (6.90:1 on the tip's ground) with a dark ink for text on it and a violet ink for the count");
+  assert.match(light, /--st-5xx-bg: #4c1b7e; --st-5xx-fg: #ffffff; --st-5xx-ink: #4c1b7e;/);
+  assert.match(FEED, /--st-5xx-bg: #cb94d1; --st-5xx-fg: #1e1030;/, "the dark pair mirrored where the feed mirrors the blocked red"); assert.match(FEED, /--st-5xx-bg: #4c1b7e; --st-5xx-fg: #ffffff;/, "and the light pair");
   assert.ok(!KERNEL.includes(".ah-sw-r5xx") && !KERNEL.includes(".ah-lsw"), "no legend swatches (T340): the class tokens wear the inks pinned below");
-  assert.ok(KERNEL.includes(".ah-c-r5xx{color:var(--st-5xx-ink,#c4b5fd)}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1d95)}"), "a 5xx count's text is inked through the token for each theme's tip, the literal its standalone fallback");
-  assert.ok(KERNEL.includes(".ah-seg-serverErrors{fill:var(--st-5xx-bg,#7e22ce)}"), "and so does the 5xx band of the bars (a class per segment, so the light theme can re-ink it)");
-  assert.ok(KERNEL.includes("body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1d95)}"), "the light palette's purple on the bars, through the token");
+  for (const [theme, fill, ink, rootRe, inkRule, fillRule] of [
+    ["dark", "#cb94d1", "#8b7ec8", /:root\{[^"]*--st-5xx-bg:(#[0-9a-f]{6});--st-5xx-ink:(#[0-9a-f]{6})\}/, /\.ah-c-r5xx\{color:var\(--st-5xx-ink,(#[0-9a-f]{6})\)\}/, /\.ah-seg-serverErrors\{fill:var\(--st-5xx-bg,(#[0-9a-f]{6})\)\}/],
+    ["light", "#4c1b7e", "#4c1b7e", /body\.theme-light\{[^"]*--st-5xx-bg:(#[0-9a-f]{6});--st-5xx-ink:(#[0-9a-f]{6});/, /body\.theme-light \.ah-c-r5xx\{color:var\(--st-5xx-ink,(#[0-9a-f]{6})\)\}/, /body\.theme-light \.ah-seg-serverErrors\{fill:var\(--st-5xx-bg,(#[0-9a-f]{6})\)\}/],
+  ] as const) {
+    const decl = KERNEL.match(rootRe); assert.ok(decl, theme + ": the landing's inline sheet declares --st-5xx-bg and --st-5xx-ink");
+    assert.deepEqual([decl![1], decl![2]], [fill, ink], theme + ": the landing's tokens equal styles.css's");
+    const inkFb = KERNEL.match(inkRule), fillFb = KERNEL.match(fillRule);
+    assert.ok(inkFb && fillFb, theme + ": the ink and the fill read their tokens");
+    assert.equal(inkFb![1], ink, theme + ": the ink's fallback equals the token"); assert.equal(fillFb![1], fill, theme + ": the fill's fallback equals the token");
+  }
 });

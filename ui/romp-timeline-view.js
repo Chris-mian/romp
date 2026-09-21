@@ -6296,7 +6296,7 @@ class TimelinePanel {
         plot.appendChild(stripe);
         const sh = el('rect', { x: bx0, y: y - 7, width: Math.max(2, bx1 - bx0), height: 14, fill: 'transparent' }); sh.style.cursor = 'pointer';
         const end = open ? 'now' : clock(b0);
-        const shtml = () => '<div class="r"><span class="chip" style="background:' + BADGE.needs.bg + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">needs you</span></div><div class="b">needed you · ' + clock(a0) + '–' + end + '</div>';   // the stretch's tip agrees with the lane's badge (plans/needs-you.md): the Needs you swatch and word
+        const shtml = () => '<div class="r"><span class="chip" style="background:' + BADGE.needs.bg + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">needs you</span></div><div class="b">' + (open ? 'needs you' : 'needed you') + ' · ' + clock(a0) + '–' + end + '</div>';   // the stretch's tip agrees with the lane's badge (plans/needs-you.md): the Needs you swatch and word
         const grow = (h) => { for (const r of [back, stripe]) { r.setAttribute('y', y - h / 2); r.setAttribute('height', h); } };
         sh.addEventListener('mouseenter', (e) => { grow(eh); this.showTip(shtml(), e); });
         sh.addEventListener('mousemove', (e) => this.moveTip(e));

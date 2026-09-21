@@ -64,6 +64,8 @@ const PAIRS: Array<[string, string, number]> = [
   ["--dim", "--bg", 4.5],
   ["--fg", "--surface-raised", 4.5],
   ["--accent", "--bg", 3],
+  ["--st-5xx-bg", "--bg", 3],      // the API-health cell's 5xx bar on the tip's ground (PR 1935 round three: the first purple sat at 2.39:1)
+  ["--st-5xx-ink", "--bg", 4.5],   // the 5xx digits in the tip
   ["--cmt-hl-outline", "--bg", 3],   // the comment notch (the rail tick's fill): a LINE, so it must read against the page (T310)
   ["--st-awaiting-bg", "--bg", 3],   // the unread passage's dashed box and ring, and the tick's halo (2026-09-12): a line in the needs-you red
   ["--accent-fg", "--accent", 3],
@@ -138,7 +140,7 @@ for (const sheet of ["styles.css", "feed.css"]) {
       }
       // a skip must be loud (PR #763 item 6): pin how many pairs actually ran per sheet/theme —
       // grow these numbers when PAIRS grows, never let them silently shrink
-      const expected = sheet === "styles.css" ? PAIRS.length : 22;   // feed's :root holds a deliberate subset (+ the retrying pair, 2026-09-08; + the two ask pairs, 2026-09-14: the settings' ring demo reads the token there)
+      const expected = sheet === "styles.css" ? PAIRS.length : 23;   // feed's :root holds a deliberate subset (+ the retrying pair, 2026-09-08; + the two ask pairs, 2026-09-14: the settings' ring demo reads the token there)
       // T337: the postal kind words also sit on the PROVISIONAL card (a sent card not yet landed wears the pending
       // bubble's dress: an 8.5% wash of --you over the page, styles.css .queued-bubble, no element opacity since the
       // fade moved into the dress's colours), the darkest ground they meet; each reads at 4.5:1 there too
@@ -238,18 +240,46 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
   assert.match(block(css, "body.theme-light {"), /--st-needs-bg: #a21caf; --st-needs-fg: #ffffff;/);
 });
 
-test("the 5xx marks of the API-health cell stay apart from the Needs you magenta in both themes: the fill and the ink at least 15 from the token by the ring pairs' own floor", () => {
-  // plans/needs-you.md: the cell sits on the landing page beside every session's state, so a 5xx mark must never read as a
-  // needs-you mark; the fill is --st-5xx-bg (the .ah-seg-serverErrors band), the ink --st-5xx-ink (the .ah-c-r5xx digits)
-  const css = read("styles.css");
+test("the 5xx marks of the API-health cell clear the validator's two floors against every colour they share a surface with, in both themes; the one conceded pair is the dark ink against the Needs you magenta under a deficiency, recorded", () => {
+  // plans/needs-you.md: the cell sits on the landing page beside every session's state. The FILL is the histogram's 5xx band (beside the
+  // accent, 429 and other bands); the INK is a count's digits in the tip's line (beside the accent ink, the 429 ink and the words gray);
+  // both against the Needs you token, since the magenta is on the same page. Floors: 15 to full-colour readers, 8 under protan and deutan
+  // (cvdWorst), the ring pairs' own. The ink falls back to the landing sheet's literal when the token is absent, so a tree without the
+  // token reds here on a DISTANCE, not on a missing name.
+  const css = read("styles.css"); const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  const hex = (v: string) => rgbOf(v, [0, 0, 0])!;
+  const pairs: Array<[string, string, string, number, number]> = [];   // theme, a, b, floor full, floor cvd
   for (const theme of [":root {", "body.theme-light {"]) {
-    const b = block(css, theme);
-    const needs = b.match(/--st-needs-bg: (#[0-9a-fA-F]{6});/)![1], fill = b.match(/--st-5xx-bg: (#[0-9a-fA-F]{6});/)![1], ink = b.match(/--st-5xx-ink: (#[0-9a-fA-F]{6});/)![1];
-    for (const [what, v] of [["fill", fill], ["ink", ink]] as const) {
-      const d = deltaE(rgbOf(needs, [0, 0, 0])!, rgbOf(v, [0, 0, 0])!);
-      assert.ok(d >= 15, theme + ": the 5xx " + what + " " + v + " sits " + d.toFixed(1) + " from the Needs you " + needs + " (floor 15)");
-    }
+    const b = block(css, theme), dark = theme === ":root {";
+    const needs = b.match(/--st-needs-bg: (#[0-9a-fA-F]{6});/)![1], fill = b.match(/--st-5xx-bg: (#[0-9a-fA-F]{6});/)![1], accent = b.match(/--accent: (#[0-9a-fA-F]{6});/)![1];
+    const inkTok = b.match(/--st-5xx-ink: (#[0-9a-fA-F]{6});/);
+    const inkLit = KERNEL.match(dark ? /\.ah-c-r5xx\{color:(?:var\(--st-5xx-ink,)?(#[0-9a-fA-F]{6})\)?\}/ : /body\.theme-light \.ah-c-r5xx\{color:(?:var\(--st-5xx-ink,)?(#[0-9a-fA-F]{6})\)?\}/);
+    const ink = inkTok ? inkTok[1] : inkLit![1];
+    // the cell's other colours, the landing's literals (T340): the 429 fill and ink, the other band, the tip's words
+    const red429 = dark ? "#e5484d" : "#B02A1C", ink429 = dark ? "#ef6b6f" : "#B02A1C", other = dark ? "#d9f99d" : "#4f46e5", words = dark ? "#a9b1ba" : "#5D574E";
+    const name = dark ? "dark" : "light";
+    const check = (what: string, a: string, bb: string, floorFull: number, floorCvd: number) => {
+      const full = deltaE(hex(a), hex(bb)), cvd = cvdWorst(hex(a), hex(bb));
+      assert.ok(full >= floorFull, `${name}: ${what} ${a} against ${bb} =${full.toFixed(1)} < ${floorFull} (full colour)`);
+      assert.ok(cvd >= floorCvd, `${name}: ${what} ${a} against ${bb} =${cvd.toFixed(1)} < ${floorCvd} (under a red-green deficiency)`);
+    };
+    check("the 5xx fill against the Needs you token", fill, needs, 15, 8);
+    check("the 5xx fill against the accent band", fill, accent, 15, 8);
+    check("the 5xx fill against the 429 band", fill, red429, 15, 8);
+    check("the 5xx fill against the other band", fill, other, 15, 8);
+    check("the 5xx ink against the accent ink on the same line", ink, accent, 15, 8);
+    check("the 5xx ink against the 429 ink on the same line", ink, ink429, 15, 8);
+    check("the 5xx ink against the tip's words", ink, words, 15, 8);
+    // the ink against the Needs you token: 15 to full-colour readers in both themes; under a deficiency the light clears 8 and the
+    // DARK pair is conceded on purpose at 5.6 (no violet ink clears the accent and the magenta at once there; the two never share a
+    // line), recorded in plans/needs-you.md and styles.css: the floor here is 5, so a drift lower still reddens
+    check("the 5xx ink against the Needs you token", ink, needs, 15, dark ? 5 : 8);
+    // the contrasts the marks need where they sit: the fill 3:1 on the tip's ground, the ink 4.5:1
+    const page = rgbOf(props(b).get("--bg")!, [30, 30, 30])!;   // the dark --bg is a var() with a fallback: the sheet's own parser resolves it
+    assert.ok(contrast(hex(fill), page) >= 3, `${name}: the 5xx fill on the page = ${contrast(hex(fill), page).toFixed(2)} < 3`);
+    assert.ok(contrast(hex(ink), page) >= 4.5, `${name}: the 5xx ink on the page = ${contrast(hex(ink), page).toFixed(2)} < 4.5`);
+    pairs.push([name, fill, ink, 15, 8]);
   }
-  const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
-  assert.ok(KERNEL.includes(".ah-c-r5xx{color:var(--st-5xx-ink,#c4b5fd)}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1d95)}"), "the landing's inks ride the token");
+  assert.equal(pairs.length, 2);
+  assert.ok(KERNEL.includes(".ah-c-r5xx{color:var(--st-5xx-ink,#8b7ec8)}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}"), "the landing's inks ride the token");
 });
