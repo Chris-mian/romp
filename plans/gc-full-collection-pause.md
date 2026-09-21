@@ -44,6 +44,12 @@ The standing design line already aims at this heap from the other side: move the
 
 Measure first, from the stages' own measurements already specified in `plans/process-split.md`: the interpreter-seconds per thread and the pusher cycle percentiles before and after each stage, plus the generation-two collection count and longest pause on the request interpreter before and after. If stage two alone drops the full-collection pause below a second warm, the collector needs nothing of its own. This road is the slowest to build and the one with standing owners; the gc-specific measurement is the new ask, to be read beside those stages rather than duplicating them.
 
-## The decision this note asks for
+## The decision
 
-Which road to measure first. Road B is the most direct at this heap and the fastest to try, and it carries the issue's own safety gate, so it is the natural first measurement; Road C reaches the same lever as work already owned and planned, so its gc-specific numbers should be read as those stages land; Road A is a frequency trade that only helps if it also drops the per-collection time, which the measurement will say. No collector change ships before the chosen road's measurement is in and the user has read it.
+The user chose the road on 2026-09-21 (paraphrased): try whatever we judge most effective for the kernel's speed, the road ours to pick. The pick:
+
+- **Road B first, freezing the decoded records after load, under the lifecycle validation this issue demands.** It is the most direct at this heap and the fastest to try, and it carries the issue's own safety gate.
+- **Road A, the generation-two threshold, as the cheap companion measured in the same run.** A frequency trade that only helps if it also drops the per-collection time; measuring it beside the freeze costs one more arm.
+- **Road C, the split, stays the long road already planned** (see plans/process-split.md); its gc-specific numbers are read as those stages land.
+
+No collector change ships before the measurement is in and the user has heard the numbers. The measurement never touches the live kernel's settings: it runs a hermetic kernel over a synthetic warmed workload of realistic size (recorded shapes with synthetic content, never real transcripts), capped, with the `/perf` gc block as the instrument, one boot per arm (base, freeze, threshold, both), cold and warm distinguished. Beside it, the lifecycle validation the issue names, as tests that fail before the fix: a frozen decoded record still reclaimed after its owner drops it and the freeze lifts (a weakref probe), correct eviction, clear and replacement of sessions and caches under the freeze, no whole-transcript reread churn, and the gc hook still counting. The fix ships only once the measurement shows the pause moving; if the freeze does not move it, that is reported with the numbers and the road turns to the split.
