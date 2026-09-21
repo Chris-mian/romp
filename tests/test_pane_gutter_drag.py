@@ -55,14 +55,19 @@ const WRITES = [];   // every --g-* write on .row, in order: [name, value]
 const ROW = {};      // the current --g-* values (the script's `grow` object is a closure)
 const rowEl = {
   style: { setProperty: (k, v) => { ROW[k] = v; WRITES.push([k, v]); }, removeProperty: (k) => { delete ROW[k]; } },
-  getBoundingClientRect: () => ({ left: 0, top: 24, width: 1007, height: 760 }),
+};   // gutter() reads no rect: the pair's widths are offsetWidth (the landing line that read rects retired, plans/pane-docking.md section 12)
+// the column: the band's --tl height variable, as the band gutter (#gh) reads and writes it (getPropertyValue at the grab, a
+// setter per applied frame, the remover on Escape from a band with no inline height); every write recorded
+const COL = { tl: '' }; const TL_WRITES = [];   // [op, value]
+const colEl = {
+  style: { getPropertyValue: (k) => (k === '--tl' ? COL.tl : ''), setProperty: (k, v) => { if (k === '--tl') { COL.tl = v; TL_WRITES.push(['set', v]); } },
+           removeProperty: (k) => { if (k === '--tl') { COL.tl = ''; TL_WRITES.push(['remove', null]); } } },
+  getBoundingClientRect: () => ({ bottom: 800 }),
 };
-const colEl = { style: { setProperty() {} }, getBoundingClientRect: () => ({ bottom: 800 }) };
 function mkEl(id, w, left, display) {
   return {
     id: id, offsetWidth: w, _left: left, _display: display, _ls: {},
-    style: {},   // a plain record: the script writes top / height / left / display on the ghost
-    getBoundingClientRect() { return { left: this._left, top: 0, width: this.offsetWidth, height: 800 }; },
+    style: {},
     addEventListener(k, f) { (this._ls[k] = this._ls[k] || []).push(f); },
     fire(k, ev) { (this._ls[k] || []).slice().forEach((f) => f(ev)); },
   };
@@ -103,6 +108,7 @@ function snap() {
     listeners: { move: (WL['mousemove'] || []).length, up: (WL['mouseup'] || []).length, esc: (WL['keydown'] || []).length },
     framesArmed: FRAMES.length,
     store: JSON.parse(STORE['romp-pane-grow'] || 'null'), storeWrites: STORE_WRITES,
+    tl: COL.tl, tlWrites: TL_WRITES.length,
   };
 }
 // the browser lays the panes out from the written grows; the stub has no layout engine, so it is told the
@@ -224,6 +230,32 @@ winFire('mousemove', { clientX: 450 }); frame();
 winFire('mouseup', {});
 out.release8Writes = WRITES.slice(out.grab8.writes);
 out.release8 = snap();
+// 9) the BAND's gutter (#gh, the --tl height variable; the column's bottom at 800, the pointer's distance from it is the
+//    height, floored at 48 and capped): a release with the frame still armed lands the height itself and cancels the frame;
+//    Escape with a frame armed cancels it and writes the grab-time height back; a band with NO inline height at the grab
+//    has the variable REMOVED on Escape (the else branch)
+EL['gh'].fire('mousedown', { preventDefault() {}, clientY: 500 });
+out.bandGrab = snap();
+winFire('mousemove', { clientY: 700 });
+out.bandMoved = snap();
+winFire('mouseup', {});
+out.bandFrameless = snap();
+out.bandFramelessLater = frame();
+out.bandAfterLater = snap();
+EL['gh'].fire('mousedown', { preventDefault() {}, clientY: 700 });
+winFire('mousemove', { clientY: 600 });
+out.bandMoved2 = snap();
+winFire('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} });
+out.bandEscaped = snap();
+out.bandEscapedLater = frame();
+COL.tl = '';   // no inline height (a fresh dashboard's band is content-sized by autosize alone)
+EL['gh'].fire('mousedown', { preventDefault() {}, clientY: 700 });
+winFire('mousemove', { clientY: 650 });
+frame();
+out.bandNoTlMoved = snap();
+winFire('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} });
+out.bandNoTlEscaped = snap();
+out.tlWrites = TL_WRITES.slice();
 console.log(JSON.stringify(out));
 """
 
@@ -316,6 +348,30 @@ class PaneGutterDragExecutes(unittest.TestCase):
         self.assertEqual(r["listeners"], {"move": 0, "up": 0, "esc": 0})
         self.assertEqual(self.out["sameFrameLaterFrame"], 0, "no frame left to run")
         self.assertEqual(a["writes"], r["writes"], "a later frame writes nothing")
+
+    def test_the_bands_gutter_lands_a_frameless_release_itself_and_escape_restores_or_removes_the_height(self):
+        # the band's divider (#gh) sizes --tl live per frame like the column gutters: a release with the frame armed writes
+        # the height once and cancels the frame; Escape with a frame armed cancels it and writes the grab-time height back;
+        # from a band with no inline height, Escape REMOVES the variable (the else branch, reached by nothing before)
+        g, m, r, a = self.out["bandGrab"], self.out["bandMoved"], self.out["bandFrameless"], self.out["bandAfterLater"]
+        self.assertTrue(g["drag"], "body.drag for the band's drag too")
+        self.assertEqual(m["framesArmed"], 1, "the move armed a frame and wrote nothing"); self.assertEqual(m["tlWrites"], g["tlWrites"])
+        self.assertEqual(r["tl"], "100px", "the release landed the pointer's height (800 - 700) itself: %r" % r)
+        self.assertEqual(r["tlWrites"], g["tlWrites"] + 1, "one height write, at the release")
+        self.assertEqual(r["framesArmed"], 0, "the armed frame was cancelled"); self.assertEqual(self.out["bandFramelessLater"], 0)
+        self.assertEqual(a["tlWrites"], r["tlWrites"], "a later frame writes nothing")
+        self.assertFalse(r["drag"] or r["dragv"], "the drag classes are gone")
+        m2, e = self.out["bandMoved2"], self.out["bandEscaped"]
+        self.assertEqual(m2["framesArmed"], 1)
+        self.assertEqual(e["tl"], "100px", "Escape writes the grab-time height back: %r" % e)
+        self.assertEqual(e["tlWrites"], m2["tlWrites"] + 1, "one write, the restore")
+        self.assertEqual(e["framesArmed"], 0, "the armed frame was cancelled"); self.assertEqual(self.out["bandEscapedLater"], 0)
+        self.assertEqual(e["listeners"], {"move": 0, "up": 0, "esc": 0})
+        n, ne = self.out["bandNoTlMoved"], self.out["bandNoTlEscaped"]
+        self.assertEqual(n["tl"], "150px", "the frame wrote the height (800 - 650)")
+        self.assertEqual(ne["tl"], "", "Escape from a band with no inline height REMOVES the variable")
+        self.assertEqual(self.out["tlWrites"][-1], ["remove", None], "through the remover: %r" % self.out["tlWrites"][-3:])
+        self.assertEqual(ne["storeWrites"], n["storeWrites"], "the band persists nothing")
 
     def test_a_grab_whose_pane_is_gone_arms_nothing(self):
         # the pair is resolved before anything else happens: no drag classes to leave the col-resize cursor stuck, no

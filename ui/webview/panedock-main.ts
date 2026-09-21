@@ -20,8 +20,8 @@
 // - shows the LIVE ACCENT OUTLINE while a drag is in flight: the rectangle the pane will land in (the
 //   target's half on the nearest edge, section 4), a thin ring following the pointer over no zone, a
 //   refused ring over a chat strip (a pane is not a tab). The drop is a pure tree move plus a recompute.
-// - mounts one divider per internal edge: a horizontal edge drags a deferred landing line and commits once
-//   at release (the row's cost rule, section 2), a vertical edge writes live, the band's edge writes `--tl`.
+// - mounts one divider per internal edge: every edge resizes its pair LIVE, one layout per animation frame, from
+//   the tree as it was at the press; the band's edge writes `--tl` (section 12; the store written once, at release).
 //
 // Tabs as drop payloads (a tab dropped into a zone becomes a pane there; the strip as its join zone) are
 // the plan's second seam and ship in the next pull request; until then the shipped tab-drag zones keep
@@ -31,11 +31,11 @@
 // read stays the shell's own raw-read idiom, split into a PURE `isPaneDockingOn` for the node test.
 import {
   type Edge, type EdgeRect, type Layout, type PaneId, type Rect,
-  edges, has, layout as layoutRects, leaves, move, parse, resize, serialise,
+  edges, has, layout as layoutRects, leaves, move, parse, serialise, setFixed,
 } from "./pane-tree";
 import { paneSourceOk } from "./pane-source";
 import {
-  BAND, CHAT, FEED, FILES, FLEET, GUTTER, LAYOUT_KEY, RING, type Payload, type Shown, type Zone,
+  BAND, CHAT, DEFAULT_BAND_PX, FEED, FILES, FLEET, GUTTER, LAYOUT_KEY, RING, type Payload, type Shown, type Zone,
   bandPxOf, colNumberOf, crossedSlop, dragEdge, edgeClamp, grabbable, growKey, isChatPane, landingRect, planTabDrop, reconcileShown, roundRect, seedLayout, zoneAt,
 } from "./pane-dock";
 
@@ -43,6 +43,9 @@ export const PANE_DOCKING_CLASS = "pane-docking";
 const SETTINGS_KEY = "romp:settings";
 const GROW_KEY = "romp-pane-grow";
 const DRAG_CLASS = "pd-drag", RESIZE_CLASS = "pd-resize", ALT_CLASS = "pd-alt";
+// the cursor a divider drag keeps over EVERY pane (the pane rule below says grab; the resize class alone only makes the iframes
+// pointer-transparent): keyed on the cursor the divider carries, col-resize between columns, row-resize between rows and for the band
+const RESIZE_X_CLASS = "pd-resize-x", RESIZE_Y_CLASS = "pd-resize-y";
 const STYLE_ID = "pd-css";
 const GRAB_SCRIPT_ID = "pd-grab";
 const MIN_PX = 120;      // a pane never resizes below this or a quarter of its pair (the shipped clamp)
@@ -120,6 +123,9 @@ const SHELL_CSS = [
   `body.${PANE_DOCKING_CLASS}.${DRAG_CLASS},body.${PANE_DOCKING_CLASS}.${DRAG_CLASS} .pane,body.${PANE_DOCKING_CLASS}.${DRAG_CLASS} .pd-div{cursor:grabbing}`,
   `body.${PANE_DOCKING_CLASS}.${DRAG_CLASS} iframe,body.${PANE_DOCKING_CLASS}.${RESIZE_CLASS} iframe{pointer-events:none}`,
   `body.${PANE_DOCKING_CLASS}.${ALT_CLASS} .pane,body.${PANE_DOCKING_CLASS}.${ALT_CLASS} iframe{cursor:grab}`,
+  // a divider drag's cursor holds over the panes the pointer crosses (after the pane and Option rules, so it wins)
+  `body.${PANE_DOCKING_CLASS}.${RESIZE_X_CLASS},body.${PANE_DOCKING_CLASS}.${RESIZE_X_CLASS} .pane,body.${PANE_DOCKING_CLASS}.${RESIZE_X_CLASS} .pd-div{cursor:col-resize}`,
+  `body.${PANE_DOCKING_CLASS}.${RESIZE_Y_CLASS},body.${PANE_DOCKING_CLASS}.${RESIZE_Y_CLASS} .pane,body.${PANE_DOCKING_CLASS}.${RESIZE_Y_CLASS} .pd-div{cursor:row-resize}`,
   // the live outline: the accent wash inside a 2 px accent ring (the shipped #col-ghost dress), never a hit target,
   // above the focus ring; `free` while over no zone (a thin ring following the pointer); `refused` over a strip
   `#pd-outline{display:none;position:fixed;pointer-events:none;z-index:41;background:rgba(156,210,255,0.12);box-shadow:inset 0 0 0 2px var(--accent,#9cd2ff);align-items:center;justify-content:center;font:600 11px 'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#8a8a8a;letter-spacing:.04em}`,
@@ -265,7 +271,7 @@ class Engine {
   private stop(): void {
     this.on = false;
     this.cancelPress(); this.endDiv(false); this.endTabDrag();
-    document.body.classList.remove(PANE_DOCKING_CLASS, DRAG_CLASS, RESIZE_CLASS, ALT_CLASS);
+    document.body.classList.remove(PANE_DOCKING_CLASS, DRAG_CLASS, RESIZE_CLASS, RESIZE_X_CLASS, RESIZE_Y_CLASS, ALT_CLASS);
     this.offs.forEach((f) => f()); this.offs = [];
     if (this.obs) { this.obs.disconnect(); this.obs = null; }
     this.dividers.forEach((d) => d.remove()); this.dividers = []; this.divEdges.clear();
@@ -324,11 +330,28 @@ class Engine {
 
   private reconcile(): void {
     if (!this.on || !this.lay) return;
+    const d = this.div;
+    if (d && !d.edge.fixed) {
+      // a reconcile UNDER a column or row drag (a pane toggled by the rail or the gear, the band re-sized by the shell's
+      // autosize): the drag's frames are built from the PRESS tree (applyDiv), so the press tree must learn what changed
+      // or the next frame and the commit discard it (the 1927 read: a pane shown mid-drag missing from the store and
+      // overlapping, one hidden mid-drag persisted docked and parked, the band dropping to its press px). A change of
+      // the LEAF SET ends the drag at its last position, committed: the pointer is still held, but the pair it was
+      // sizing is not the pair on the page any more (new information, section 12). The band's px alone is carried
+      // into the press tree, so every later frame and the commit keep it.
+      const sh = this.shown();
+      const next = reconcileShown(this.lay, sh);
+      if (!sameSet(leaves(next.tree), leaves(this.lay.tree)) || !sameSet(next.parked, this.lay.parked)) this.endDiv(true);
+      else if (sh.band) d.start = { ...d.start, tree: setFixed(d.start.tree, BAND, sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX) };
+    }
     const next = reconcileShown(this.lay, this.shown());
     const changed = serialise(next) !== serialise(this.lay);
     this.lay = next;
-    if (changed) this.persist();
-    this.render();
+    // no store write from a reconcile while a drag is on (the band's px under a column drag reaches the store at the release,
+    // or at Escape when the restored layout differs from the stored one); the band edge's own frames change nothing here
+    // (applyDiv writes the px into the tree before the height variable), so they neither persist nor render twice
+    if (changed && !this.div) this.persist();
+    if (changed || !this.div) this.render();
   }
 
   private persist(): void {
@@ -753,7 +776,7 @@ class Engine {
     const split = this.splitAt(edge.path);
     const a0 = split ? edge.avail * split.ratios[edge.i] : 0, b0 = split ? edge.avail * split.ratios[edge.i + 1] : 0;
     this.div = { edge, x0: e.clientX, y0: e.clientY, want: null, raf: 0, start: parse(serialise(this.lay)) as Layout, tl0, a0, b0 };
-    document.body.classList.add(RESIZE_CLASS);
+    document.body.classList.add(RESIZE_CLASS, edge.dir === "row" && !edge.fixed ? RESIZE_X_CLASS : RESIZE_Y_CLASS);   // the divider's own cursor, over every pane
     const mv = (ev: Event) => this.onDivMove(ev as PointerEvent);
     const up = () => this.endDiv(true);
     // Escape reaches the drag from a focused pane through the engine's own keydown wiring on every pane document (wire, onKey)
@@ -795,7 +818,16 @@ class Engine {
     if (!d) return;
     d.raf = 0;
     if (d.want === null) return;
-    if (d.edge.fixed) { if (this.col) this.col.style.setProperty("--tl", d.want + "px"); return; }
+    if (d.edge.fixed) {
+      // the band's edge: the px into the TREE first and the frame rendered from it, then the height variable (kept for the
+      // shell's autosize and the phone); the style observer's reconcile then reads the same px and sees no change, so the
+      // drag's frames never reach the store (the 1927 read: twelve writes over a twelve-step drag, and Escape leaving the
+      // mid-drag height in the store)
+      if (!this.col || !this.lay) return;
+      this.lay = { ...this.lay, tree: setFixed(this.lay.tree, BAND, d.want) }; this.render();
+      this.col.style.setProperty("--tl", d.want + "px");
+      return;
+    }
     if (!this.lay) return;
     const tree = dragEdge(d.start.tree, d.edge.path, d.edge.i, d.want, d.edge.avail, this.minFrac(d.edge));
     this.lay = { ...this.lay, tree }; this.render();
@@ -804,19 +836,33 @@ class Engine {
   private endDiv(commit: boolean): void {
     const d = this.div;
     if (this.divOff) { this.divOff(); this.divOff = null; }
-    if (!d) { this.div = null; document.body.classList.remove(RESIZE_CLASS); return; }
+    if (!d) { this.div = null; document.body.classList.remove(RESIZE_CLASS, RESIZE_X_CLASS, RESIZE_Y_CLASS); return; }
     if (d.raf) { cancelFrame(d.raf); d.raf = 0; }
-    if (commit) this.applyDiv();   // the last recorded position lands before the write
+    if (commit) this.applyDiv();   // the last recorded position lands (and renders) before the write
     this.div = null;
-    document.body.classList.remove(RESIZE_CLASS);
+    document.body.classList.remove(RESIZE_CLASS, RESIZE_X_CLASS, RESIZE_Y_CLASS);
     if (commit) this.persist();
     else {
-      // Escape (or the kit going off mid-drag): the pre-drag tree and band height, live, nothing written
+      // Escape (or the kit going off mid-drag): the press tree back, live (rebased with what a reconcile changed under the
+      // drag: reconcile). The band's height variable is restored for the BAND'S edge only, and first, so the style observer's
+      // reconcile reads the restored px and sees no change; a column drag never touched the band, so Escape leaves it (the
+      // 1927 read: the band's content growth undone by an Escape on the chat|feed divider). Nothing written unless the
+      // restored layout differs from the stored one (a band re-sized under the drag: the reconcile deferred its write).
+      if (d.edge.fixed && this.col) { if (d.tl0) this.col.style.setProperty("--tl", d.tl0); else this.col.style.removeProperty("--tl"); }
       this.lay = d.start;
-      if (this.col) { if (d.tl0) this.col.style.setProperty("--tl", d.tl0); else this.col.style.removeProperty("--tl"); }
+      let stored: string | null = null;
+      try { stored = localStorage.getItem(LAYOUT_KEY); } catch { stored = null; }
+      if (stored !== serialise(this.lay)) this.persist();
+      this.render();
     }
-    this.render();
   }
+}
+
+/** The same set of ids in any order (a leaf set, a parked list). */
+function sameSet(a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean {
+  if (a.length !== b.length) return false;
+  const sa = a.slice().sort(), sb = b.slice().sort();
+  return sa.every((x, i) => x === sb[i]);
 }
 
 // boot only in a browser TOP document (guards keep an import in node inert, so the pure exports are testable)

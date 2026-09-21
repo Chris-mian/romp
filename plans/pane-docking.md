@@ -521,7 +521,8 @@ Escape is heard wherever the keyboard sits: a divider press prevents the default
 and its document, not the shell's, sees the key; the drag therefore listens on the window and on every same-origin
 pane document for its duration. A URL-source pane (`data-protocol=none`, a foreign origin) cannot be listened in, so
 a keyboard focused there does not end the drag with Escape; the release still lands the sizes, and the shell's
-keyboard is a click away. The kit's clamp for a divider drag holds against the pair's sizes AT THE PRESS and applies
+keyboard is a click away. The same holds for a keyboard inside a frame NESTED in a same-origin pane (the Files
+pane's PDF viewer): the drag listens on one document per shell-level frame, not on their descendants. The kit's clamp for a divider drag holds against the pair's sizes AT THE PRESS and applies
 the pointer's absolute travel to the tree as it was at the press (`edgeClamp`, `dragEdge` in `pane-dock.ts`): the
 first cut clamped each frame's travel against the tree the frame before had rewritten, so the window shrank every
 frame and the edge stopped at half its range.
@@ -529,7 +530,7 @@ The provisional lines retire: `#gv-ghost` and its rules go from the landing, `#p
 drop outline (`#pd-outline`) and the tab drag's `#col-ghost` are drop overlays, not divider lines, and stay. No divider
 keeps a line: the cost that justified one is bounded per frame now, and measured (below).
 
-**Cost, measured on the built page.** The served lab drags the chat|feed gutter across the row with every pane on
+**Cost, measured on the built page.** The served lab drags the chat|Outline gutter (`#gv-a`) across the row with every pane on
 (chat, Outline, feed, Files, the band, chromium, 1500 px), sampling frames per second from the shell's
 `requestAnimationFrame` timestamps during the drag and counting `long-animation-frame` entries (the browser's own
 report, the kind `perf-telemetry.ts` folds) over the drag's span; the PR body states both numbers. If a page cannot

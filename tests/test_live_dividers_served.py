@@ -12,7 +12,13 @@ four divider drags the dashboard has and reads, for each:
   - the chat's reader survives the reflow: one at the true bottom stays within 2 px of it at three samples through a narrowing
     drag (the transcript wraps longer and the view grows under them); one scrolled up keeps the line they read where it was
     ON SCREEN within a pixel (the browser's scroll anchoring holds their turn while the transcript above it re-wraps; the
-    chat's own strip compensation holds it when the tab strip wraps to another row as the pane narrows).
+    chat's own strip compensation holds it when the tab strip wraps to another row as the pane narrows);
+  - Escape is heard from a keyboard inside a pane (the chat's composer focused), and a release with no frame between it and
+    the last move lands that position itself with one store write;
+  - under the kit, a pane toggled mid-drag ends the drag committed and the store parses, matches the screen and survives a
+    reload; the band re-sized by the shell's autosize under a column drag keeps its height through the drag's frames and
+    reaches the store once; the band's own edge writes the store once at release and nothing on Escape; the divider's cursor
+    holds over the panes for the drag.
 The four: (1) the shipped column gutters (kit off), (2) the sessions band's height divider (kit off), (3) the chat's vertical
 split divider (kit off, a session moved down), (4) the docking kit's dividers (kit on: a divider between columns and one
 between rows). The lab also measures the cost the design names: frames per second from the shell's requestAnimationFrame
@@ -183,6 +189,24 @@ out.readerUp = await dragReader([-120, -240, -340], "up");
 out.gutter = await dragH("#gv-a", "#chat-pane", "#fleet-pane", [-120, -60, 80], { key: "romp-pane-grow" });
 out.gutterEscape = await dragH("#gv-a", "#chat-pane", "#fleet-pane", [-90, 60], { escape: true, key: "romp-pane-grow" });
 out.probesAfterGutter = { chat: await probeAlive(chatFr), feed: await probeAlive(feedFr) };
+// (1c) Escape from a keyboard INSIDE a pane: the chat's composer focused, the divider pressed (the press keeps the keyboard where
+// it was), Escape heard by the drag's listener on the pane document; the keyboard handed back to the shell after (focus is sticky)
+const focusComposer = (fr) => fr.evaluate(() => { const t = document.querySelector("#composer textarea") || document.querySelector("textarea"); if (t) t.focus(); return { tag: document.activeElement && document.activeElement.tagName, id: document.activeElement && document.activeElement.id }; });
+const keyboardBack = (pg) => pg.evaluate(() => { const a = document.activeElement; if (a && a.tagName === "IFRAME") a.blur(); return document.activeElement ? document.activeElement.tagName : null; });
+out.composerFocus = await focusComposer(chatFr);
+out.topActiveDuringComposer = await page.evaluate(() => document.activeElement && document.activeElement.id);
+out.gutterEscapeComposer = await dragH("#gv-a", "#chat-pane", "#fleet-pane", [-90, 60], { escape: true, key: "romp-pane-grow" });
+out.keyboardBack = await keyboardBack(page);
+// (1d) a move and a release with NO frame between them: the release lands the position under the pointer itself, one store write
+async function sameTaskH(gutterSel, leftSel, key, dx) {
+  const g = await rect(page, gutterSel); const L0 = await rect(page, leftSel); const w0 = await writes(page);
+  const x0 = g.x + g.w / 2, y0 = g.y + g.h / 2;
+  await page.mouse.move(x0, y0); await page.mouse.down(); await frame(page);
+  await page.mouse.move(x0 + dx, y0); await page.mouse.up();
+  await frame(page); await frame(page);
+  return { before: L0.w, after: (await rect(page, leftSel)).w, dx, writes: ((await writes(page))[key] || 0) - (w0[key] || 0) };
+}
+out.gutterSameTask = await sameTaskH("#gv-a", "#chat-pane", "romp-pane-grow", -70);
 
 // (2) the band's height divider (#gh, --tl): the pointer's distance from the column's bottom is the band's height (clamped to its content)
 async function dragBand(dys, { escape = false } = {}) {
@@ -239,6 +263,9 @@ out.probesAfterAll = { chat: await probeAlive(chatFr), feed: await probeAlive(fe
 {
   const g = await rect(page, "#gv-a");
   const x0 = g.x + g.w / 2, y0 = g.y + g.h / 2;
+  const cdp = await ctxA.newCDPSession(page); await cdp.send("Performance.enable");
+  const metric = async (name) => { const r = await cdp.send("Performance.getMetrics"); const e = (r.metrics || []).find((x) => x.name === name); return e ? e.value : null; };
+  const layouts0 = await metric("LayoutCount"), styles0 = await metric("RecalcStyleCount");
   await page.evaluate(() => { window.__frames = []; window.__loaf = []; window.__framesOn = true; });
   const t0 = Date.now();
   await page.mouse.move(x0, y0); await page.mouse.down();
@@ -247,7 +274,8 @@ out.probesAfterAll = { chat: await probeAlive(chatFr), feed: await probeAlive(fe
   const ms = Date.now() - t0;
   const m = await page.evaluate(() => { const f = window.__frames; window.__framesOn = false; const span = f.length > 1 ? f[f.length - 1] - f[0] : 0; const gaps = []; for (let i = 1; i < f.length; i++) gaps.push(f[i] - f[i - 1]);
     return { frames: f.length, spanMs: Math.round(span), fps: span > 0 ? Math.round((f.length - 1) * 1000 / span) : null, maxGapMs: Math.round(Math.max(0, ...gaps)), loaf: window.__loaf.length, loafMaxMs: Math.round(Math.max(0, ...window.__loaf.map((e) => e.d))), loafErr: window.__loafErr || null }; });
-  out.cost = Object.assign({ dragMs: ms, panes: out.panesOn }, m);
+  const layouts1 = await metric("LayoutCount"), styles1 = await metric("RecalcStyleCount");
+  out.cost = Object.assign({ dragMs: ms, panes: out.panesOn, layouts: layouts1 !== null && layouts0 !== null ? layouts1 - layouts0 : null, styleRecalcs: styles1 !== null && styles0 !== null ? styles1 - styles0 : null }, m);
   if (cfg.shots) { await page.mouse.move(x0, y0); await page.mouse.down(); await page.mouse.move(x0 - 200, y0, { steps: 12 }); await frame(page); await page.screenshot({ path: cfg.shots + "-mid.png" }); await page.mouse.up(); await frame(page); await page.screenshot({ path: cfg.shots + "-after.png" }); }
 }
 await ctxA.close();
@@ -260,33 +288,118 @@ await pb.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("
 await pb.goto(cfg.url);
 await pb.waitForFunction(() => !!(window.__rompPaneDock && window.__rompPaneDock.on() && document.querySelectorAll(".pd-div").length >= 1), null, { timeout: 20000 }).catch(async () => { await die("the kit did not come on"); });
 await pb.waitForTimeout(800);
+await pb.evaluate(() => { window.__rompPaneToggle("fleet", true); window.__rompPaneToggle("files", true); });   // every pane on: the row holds four columns, so dividers between columns survive the dock below
+await pb.waitForTimeout(800);
 await instrument(pb);
 const rectsOf = () => pb.evaluate(() => Object.fromEntries(window.__rompPaneDock.rects().map((r) => [r.pane, r.rect])));
 const layoutStr = () => pb.evaluate(() => JSON.stringify(window.__rompPaneDock.layout()));
 const divs = () => pb.evaluate(() => Array.from(document.querySelectorAll(".pd-div")).map((d) => { const r = d.getBoundingClientRect(); return { dir: d.getAttribute("data-dir"), x: r.left, y: r.top, w: r.width, h: r.height }; }));
 out.kitDivs = await divs();
 out.kitGhost = await pb.evaluate(() => !!document.getElementById("pd-ghost"));
+const chatFrB = frameOfPath(pb, /\/chat(\?|$)/), tlFrB = frameOfPath(pb, /\/timeline(\?|$)/);
+const layoutOf = () => pb.evaluate(() => window.__rompPaneDock.layout());
+const storedLayout = () => pb.evaluate(() => { const s = localStorage.getItem("romp-layout"); try { return { raw: s, parsed: JSON.parse(s) }; } catch (e) { return { raw: s, parsed: null, error: String(e) }; } });
+const tlOf = () => pb.evaluate(() => document.querySelector(".col").style.getPropertyValue("--tl"));
+const cursorOver = (id) => pb.evaluate((i) => { const el = document.getElementById(i); return el ? getComputedStyle(el).cursor : null; }, id);
+const kitWrites = async (w0) => ((await writes(pb))["romp-layout"] || 0) - (w0["romp-layout"] || 0);
+// the pair at a divider: for a vertical divider (dir row) the leaf ending at its left and the leaf starting at its right; for a
+// horizontal one (dir col) the leaf above and the leaf below, at the divider's centre
+const pairAt = (d, rs) => { const es = Object.entries(rs); const x0 = d.x + d.w / 2, y0 = d.y + d.h / 2;
+  if (d.dir === "row") { const L = es.find(([, r]) => Math.abs(r.x + r.w - d.x) <= 8 && r.y <= y0 && r.y + r.h >= y0), R = es.find(([, r]) => Math.abs(r.x - (d.x + d.w)) <= 8 && r.y <= y0 && r.y + r.h >= y0); return { L: L && L[0], R: R && R[0] }; }
+  const T = es.find(([, r]) => Math.abs(r.y + r.h - d.y) <= 8 && r.x <= x0 && r.x + r.w >= x0), B = es.find(([, r]) => Math.abs(r.y - (d.y + d.h)) <= 8 && r.x <= x0 && r.x + r.w >= x0); return { L: T && T[0], R: B && B[0] }; };
 // the divider between the chat and the feed (a row-dir divider is vertical, between columns): the leaves on either side by rect
 async function dragKit(dir, samples, { escape = false } = {}) {
   const ds = (await divs()).filter((d) => d.dir === dir); if (!ds.length) return { error: "no " + dir + " divider" };
   const d = ds[0]; const before = await rectsOf(); const lay0 = await layoutStr(); const w0 = await writes(pb);
   const x0 = d.x + d.w / 2, y0 = d.y + d.h / 2;
-  // the pair: for a vertical divider the leaf ending at its left and the leaf starting at its right; for a horizontal one above and below
-  const pair = (rs) => { const es = Object.entries(rs); if (dir === "row") { const L = es.find(([, r]) => Math.abs(r.x + r.w - d.x) <= 8 && r.y <= y0 && r.y + r.h >= y0), R = es.find(([, r]) => Math.abs(r.x - (d.x + d.w)) <= 8 && r.y <= y0 && r.y + r.h >= y0); return { L: L && L[0], R: R && R[0] }; }
-    const T = es.find(([, r]) => Math.abs(r.y + r.h - d.y) <= 8 && r.x <= x0 && r.x + r.w >= x0), B = es.find(([, r]) => Math.abs(r.y - (d.y + d.h)) <= 8 && r.x <= x0 && r.x + r.w >= x0); return { L: T && T[0], R: B && B[0] }; };
-  const p = pair(before); if (!p.L || !p.R) return { error: "no pair at the divider", div: d, rects: before };
+  const p = pairAt(d, before); if (!p.L || !p.R) return { error: "no pair at the divider", div: d, rects: before };
+  const cursorBefore = await cursorOver(p.L);   // off a drag: the grab hand
   await pb.mouse.move(x0, y0); await pb.mouse.down(); await frame(pb);
-  const rec = { dir, pair: p, before: { L: before[p.L], R: before[p.R] }, points: [] };
+  const rec = { dir, pair: p, before: { L: before[p.L], R: before[p.R] }, points: [], cursorBefore };
   for (const dd of samples) {
     if (dir === "row") await pb.mouse.move(x0 + dd, y0, { steps: 4 }); else await pb.mouse.move(x0, y0 + dd, { steps: 4 });
     await frame(pb);
     const rs = await rectsOf(); const L = rs[p.L], R = rs[p.R];
-    rec.points.push({ d: dd, pointer: dir === "row" ? x0 + dd : y0 + dd, L: L, R: R, edge: dir === "row" ? L.x + L.w : L.y + L.h, sum: dir === "row" ? L.w + R.w : L.h + R.h });
+    rec.points.push({ d: dd, pointer: dir === "row" ? x0 + dd : y0 + dd, L: L, R: R, edge: dir === "row" ? L.x + L.w : L.y + L.h, sum: dir === "row" ? L.w + R.w : L.h + R.h, cursor: await cursorOver(p.L) });
   }
   if (escape) { await pb.keyboard.press("Escape"); await frame(pb); await pb.mouse.up(); await frame(pb); }
   else { await pb.mouse.up(); await frame(pb); }
   const rs = await rectsOf(); const wAfter = await writes(pb);
-  rec.after = { L: rs[p.L], R: rs[p.R], writes: (wAfter["romp-layout"] || 0) - (w0["romp-layout"] || 0), layoutRestored: (await layoutStr()) === lay0 };
+  rec.after = { L: rs[p.L], R: rs[p.R], writes: (wAfter["romp-layout"] || 0) - (w0["romp-layout"] || 0), layoutRestored: (await layoutStr()) === lay0, cursor: await cursorOver(p.L) };
+  return rec;
+}
+// a move and a release with NO frame between them on a kit divider: the release lands the position itself, one store write
+async function sameTaskKit(dir, dd) {
+  const d = (await divs()).filter((x) => x.dir === dir)[0]; if (!d) return { error: "no " + dir + " divider", divs: await divs(), rects: await rectsOf(), layout: await layoutOf() };
+  const before = await rectsOf(); const p = pairAt(d, before); if (!p.L || !p.R) return { error: "no pair", div: d, rects: before }; const w0 = await writes(pb);
+  const x0 = d.x + d.w / 2, y0 = d.y + d.h / 2;
+  await pb.mouse.move(x0, y0); await pb.mouse.down(); await frame(pb);
+  if (dir === "row") await pb.mouse.move(x0 + dd, y0); else await pb.mouse.move(x0, y0 + dd);
+  await pb.mouse.up(); await frame(pb); await frame(pb);
+  const rs = await rectsOf();
+  return { dir, dd, pair: p, before: before[p.L], after: rs[p.L], writes: await kitWrites(w0) };
+}
+// a pane toggled UNDER a kit drag (the rail's toggle: a leaf gone or a leaf new): the drag ends at its last position, committed;
+// the store parses and matches the screen; a release or an Escape after it changes nothing; the pane put back after
+async function toggleMidDrag(dir, dd, paneKey, { escape = false, show = false } = {}) {
+  if (show) { await pb.evaluate((k) => window.__rompPaneToggle(k, false), paneKey); await frame(pb); await frame(pb); }
+  const d = (await divs()).filter((x) => x.dir === dir)[0]; if (!d) return { error: "no " + dir + " divider", divs: await divs(), rects: await rectsOf(), layout: await layoutOf() };
+  const before = await rectsOf(); const p = pairAt(d, before); if (!p.L || !p.R) return { error: "no pair", div: d, rects: before }; const w0 = await writes(pb);
+  const x0 = d.x + d.w / 2, y0 = d.y + d.h / 2;
+  await pb.mouse.move(x0, y0); await pb.mouse.down(); await frame(pb);
+  await pb.mouse.move(x0 + dd, y0, { steps: 4 }); await frame(pb); await frame(pb);
+  const mid = { rects: await rectsOf(), writes: await kitWrites(w0) };
+  await pb.evaluate(({ k, on }) => window.__rompPaneToggle(k, on), { k: paneKey, on: show });
+  await frame(pb); await frame(pb);
+  const afterToggle = { rects: await rectsOf(), layout: await layoutOf(), stored: await storedLayout(), writes: await kitWrites(w0), pressed: await pb.evaluate(() => document.body.classList.contains("pd-resize")) };
+  await pb.mouse.move(x0 + dd - 40, y0, { steps: 2 }); await frame(pb); await frame(pb);   // more travel under the held pointer: the drag is over
+  const afterMore = { rects: await rectsOf(), writes: await kitWrites(w0) };
+  if (escape) { await pb.keyboard.press("Escape"); await frame(pb); }
+  await pb.mouse.up(); await frame(pb); await frame(pb);
+  const afterUp = { rects: await rectsOf(), layout: await layoutOf(), stored: await storedLayout(), writes: await kitWrites(w0) };
+  await pb.evaluate(({ k, on }) => window.__rompPaneToggle(k, on), { k: paneKey, on: !show }); await frame(pb); await frame(pb);   // the pane back as it was
+  return { dir, dd, paneKey, show, escape, pair: p, before, mid, afterToggle, afterMore, afterUp, restored: { rects: await rectsOf(), layout: await layoutOf() } };
+}
+// the band RE-SIZED under a column drag (the shell's autosize follows the band's content, with no gesture on the band): the
+// drag's next frames keep the new height, the release or Escape keeps it, the store gets it once
+async function bandGrowMidDrag({ escape = false } = {}) {
+  const d = (await divs()).filter((x) => x.dir === "row")[0]; if (!d) return { error: "no row divider", divs: await divs(), rects: await rectsOf() };
+  const before = await rectsOf(); const p = pairAt(d, before); if (!p.L || !p.R) return { error: "no pair", div: d, rects: before }; const w0 = await writes(pb);
+  const x0 = d.x + d.w / 2, y0 = d.y + d.h / 2;
+  const tl0 = await tlOf(); const band0 = (await rect(pb, "#tl-pane")).h;
+  await pb.mouse.move(x0, y0); await pb.mouse.down(); await frame(pb);
+  await pb.mouse.move(x0 - 60, y0, { steps: 4 }); await frame(pb); await frame(pb);
+  const mid = { rects: await rectsOf(), tl: await tlOf() };
+  await tlFrB.evaluate(() => { const g = document.createElement("div"); g.id = "lab-grow"; g.style.height = "150px"; document.body.appendChild(g); });
+  await pb.waitForFunction((t) => document.querySelector(".col").style.getPropertyValue("--tl") !== t, tl0, { timeout: 5000 }).catch(() => {});
+  await frame(pb); await frame(pb);
+  const grown = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), writes: await kitWrites(w0) };
+  await pb.mouse.move(x0 - 100, y0, { steps: 4 }); await frame(pb); await frame(pb);   // another frame of the drag
+  const later = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), pointer: x0 - 100, writes: await kitWrites(w0) };
+  if (escape) { await pb.keyboard.press("Escape"); await frame(pb); }
+  await pb.mouse.up(); await frame(pb); await frame(pb);
+  const after = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), stored: await storedLayout(), writes: await kitWrites(w0) };
+  await tlFrB.evaluate(() => { const g = document.getElementById("lab-grow"); if (g) g.remove(); });
+  await pb.waitForFunction((t) => document.querySelector(".col").style.getPropertyValue("--tl") === t, tl0, { timeout: 5000 }).catch(() => {});
+  await frame(pb); await frame(pb);
+  return { escape, pair: p, tl0, band0, mid, grown, later, after, back: { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h } };
+}
+// the kit's BAND edge (the col-dir divider whose bottom meets the band's top): the band's height follows the pointer's distance
+// from its bottom, live per frame; the store is written once at release, never per frame, and nothing on Escape
+async function dragBandKit(dys, { escape = false } = {}) {
+  const band = await rect(pb, "#tl-pane"); if (!band) return { error: "no band" };
+  const ds = (await divs()).filter((d) => d.dir === "col" && Math.abs(d.y + d.h - band.y) <= 8); if (!ds.length) return { error: "no band divider", divs: await divs(), band };
+  const d = ds[0]; const x0 = d.x + d.w / 2, y0 = d.y + d.h / 2; const w0 = await writes(pb);
+  const tl0 = await tlOf();
+  await pb.mouse.move(x0, y0); await pb.mouse.down(); await frame(pb);
+  const rec = { tl0, band0: band.h, bottom: band.bottom, points: [], cursor: await cursorOver("chat-pane") };
+  for (const dy of dys) {
+    await pb.mouse.move(x0, y0 + dy, { steps: 4 }); await frame(pb); await frame(pb);
+    rec.points.push({ dy, pointerY: y0 + dy, wanted: band.bottom - (y0 + dy), tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, writes: await kitWrites(w0) });
+  }
+  if (escape) { await pb.keyboard.press("Escape"); await frame(pb); await pb.mouse.up(); await frame(pb); await frame(pb); }
+  else { await pb.mouse.up(); await frame(pb); await frame(pb); }
+  rec.after = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, writes: await kitWrites(w0), stored: await storedLayout(), cursor: await cursorOver("chat-pane") };
   return rec;
 }
 out.kitRow = await dragKit("row", [-100, -50, 70]);
@@ -306,11 +419,63 @@ out.kitRowFar = await dragKit("row", [1200, -1200], { escape: true });   // past
 out.kitCol = await dragKit("col", [-60, 40, -20]);
 out.kitColEscape = await dragKit("col", [50, -40], { escape: true });
 out.kitColFar = await dragKit("col", [900, -900], { escape: true });
+// the new legs: the same-task release, Escape from the chat's composer (the kit's keydown wiring on the pane document), a pane
+// hidden and one shown under the drag (a release and an Escape each), the band grown under a column drag, the band's own edge
+out.kitSameTask = await sameTaskKit("row", 60);
+out.kitComposerFocus = chatFrB ? await focusComposer(chatFrB) : null;
+out.kitTopActive = await pb.evaluate(() => document.activeElement && document.activeElement.id);
+out.kitEscapeFromPane = await dragKit("row", [-70, 50], { escape: true });
+out.kitKeyboardBack = await keyboardBack(pb);
+out.kitToggleHideRelease = await toggleMidDrag("row", -60, "files");
+out.kitToggleHideEscape = await toggleMidDrag("row", -60, "files", { escape: true });
+out.kitToggleShowRelease = await toggleMidDrag("row", -60, "files", { show: true });
+out.kitBandGrowRelease = tlFrB ? await bandGrowMidDrag() : { error: "no timeline frame" };
+out.kitBandGrowEscape = tlFrB ? await bandGrowMidDrag({ escape: true }) : { error: "no timeline frame" };
+out.kitBand = await dragBandKit([-40, -20, 30]);
+out.kitBandEscape = await dragBandKit([-30, 20], { escape: true });
+// a reload restores the persisted layout: the rects before and after, and the stored string against the layout after
+{
+  const before = await rectsOf(); const storedBefore = await storedLayout();
+  await pb.reload();
+  await pb.waitForFunction(() => !!(window.__rompPaneDock && window.__rompPaneDock.on() && document.querySelectorAll(".pd-div").length >= 1), null, { timeout: 20000 }).catch(() => {});
+  await pb.waitForTimeout(800); await frame(pb); await frame(pb);
+  out.kitReload = { before, after: await rectsOf(), storedBefore: storedBefore.raw, layoutAfter: await layoutOf(), storedAfter: (await storedLayout()).raw };
+}
 await ctxB.close();
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
 process.exit(0);
 """
+
+
+def _leaves(node):
+    return [p for k in node["kids"] for p in _leaves(k)] if "kids" in node else [node["pane"]]
+
+
+def _fixed_px(node, pane):
+    if "kids" not in node:
+        return None
+    for i, k in enumerate(node["kids"]):
+        if "kids" not in k and k.get("pane") == pane:
+            return (node.get("fixed") or [None] * len(node["kids"]))[i]
+    for k in node["kids"]:
+        v = _fixed_px(k, pane)
+        if v is not None:
+            return v
+    return None
+
+
+def _px(tl):
+    return float(str(tl).replace("px", "") or 0)
+
+
+def _overlaps(rects):
+    out, items = [], sorted(rects.items())
+    for i, (a, ra) in enumerate(items):
+        for b, rb in items[i + 1:]:
+            if ra["x"] < rb["x"] + rb["w"] - 1 and rb["x"] < ra["x"] + ra["w"] - 1 and ra["y"] < rb["y"] + rb["h"] - 1 and rb["y"] < ra["y"] + ra["h"] - 1:
+                out.append((a, b))
+    return out
 
 
 class ServedLiveDividers(unittest.TestCase):
@@ -391,6 +556,10 @@ class ServedLiveDividers(unittest.TestCase):
         r = json.loads(line[len("RESULT:"):])
         self.assertNotIn("died", r, "driver aborted early: %r" % {k: r[k] for k in ("died", "errors") if k in r})
         print("LIVE-DIVIDERS COST:", json.dumps(r.get("cost")), file=sys.stderr)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")   # CI's job summary shows a passing test's numbers; pytest's capture hides the print
+        if summary:
+            with open(summary, "a") as f:
+                f.write("LIVE-DIVIDERS COST: %s\n\n" % json.dumps(r.get("cost")))
         return r
 
     def _within(self, a, b, tol, msg):
@@ -405,7 +574,7 @@ class ServedLiveDividers(unittest.TestCase):
         if cls._res is None:
             try:
                 cls._res = ("ok", self._drive())
-            except (AssertionError, unittest.SkipTest) as e:
+            except Exception as e:   # a failure, a skip, a launch error: each cached and re-raised by every test
                 cls._res = ("err", e)
         kind, val = cls._res
         if kind == "err":
@@ -456,10 +625,31 @@ class ServedLiveDividers(unittest.TestCase):
         self._within(ve["after"]["T"]["h"], ve["before"]["T"]["h"], 1.0, "Escape restores the split's heights: %r" % {"before": ve["before"], "after": ve["after"], "points": ve["points"]})
         self.assertEqual(ve["after"]["writes"], 0)
         self.assertEqual(r["probesAfterAll"], {"chat": True, "feed": True}, "the iframes keep their content through every drag")
-        # (5) the cost, measured: reported in the body; asserted only to have been measured
+        # (5) the cost, measured and BOUNDED: the drag holds frame rate (a busy frame in the gutter's apply would halve it) with a
+        # bounded number of long animation frames; the layout and style-recalc counts over CDP are reported beside them
         c = r["cost"]
         self.assertGreater(c["frames"], 10, "frames were sampled during the drag: %r" % c)
         self.assertIsNotNone(c["fps"])
+        self.assertGreaterEqual(c["fps"], 30, "the drag holds at least 30 frames per second with every pane on: %r" % c)
+        self.assertLessEqual(c["loaf"], 5, "a bounded number of long animation frames over the drag: %r" % c)
+        self.assertIsNotNone(c["layouts"], "the shell's layouts over the drag were counted (CDP Performance metrics): %r" % c)
+
+    def test_escape_from_a_keyboard_inside_a_pane_and_a_release_with_no_frame_between_on_the_shipped_gutter(self):
+        # the drag listens on every same-origin pane document (dragKeys): with the chat's composer focused the top document's
+        # active element is the chat frame and the pane hears the Escape; the release with no frame between it and the move lands
+        # the position itself and writes the store once (the same-frame case of tests/test_pane_gutter_drag.py, on the real page)
+        r = self._result()
+        self.assertEqual(r["composerFocus"]["tag"], "TEXTAREA", "the keyboard is in the chat's composer: %r" % r["composerFocus"])
+        self.assertEqual(r["topActiveDuringComposer"], "f-chat", "the top document's active element is the chat frame")
+        e = r["gutterEscapeComposer"]
+        self.assertNotIn("error", e, e)
+        self.assertGreater(abs(e["points"][0]["L"]["w"] - e["before"]["L"]["w"]), 20, "the drag moved the pair before Escape")
+        self._within(e["after"]["L"]["w"], e["before"]["L"]["w"], 1.0, "Escape from the composer restores the pre-drag widths: %r" % e["after"])
+        self.assertEqual(e["after"]["writes"], 0, "and writes nothing")
+        self.assertEqual(r["keyboardBack"], "BODY", "the keyboard handed back to the shell for the legs after")
+        st = r["gutterSameTask"]
+        self._within(st["after"], st["before"] + st["dx"], 1.5, "a release with no frame between lands the position under the pointer: %r" % st)
+        self.assertEqual(st["writes"], 1, "one store write: %r" % st)
 
     def test_the_chats_reader_survives_the_reflow_at_the_bottom_and_scrolled_up(self):
         # the chat's reader through a narrowing drag on the chat | Outline gutter: at the true bottom, and scrolled up
@@ -512,6 +702,106 @@ class ServedLiveDividers(unittest.TestCase):
             self._within(pt["sum"], kc["points"][0]["sum"], 1.5, "the pair trades height")
         self.assertEqual(kc["after"]["writes"], 1)
         self.assertTrue(r["kitColEscape"]["after"]["layoutRestored"])
+
+    def test_the_kits_divider_keeps_its_cursor_over_the_panes_escape_from_a_pane_document_restores_and_a_frameless_release_lands(self):
+        r = self._result()
+        k = r["kitRow"]
+        self.assertEqual(k["cursorBefore"], "grab", "off a drag the pane's cursor is the grab hand")
+        for pt in k["points"]:
+            self.assertEqual(pt["cursor"], "col-resize", "mid-drag on a divider between columns the pane under the pointer shows col-resize: %r" % pt["cursor"])
+        self.assertEqual(k["after"]["cursor"], "grab", "and the hand comes back at the release")
+        kc = r["kitCol"]
+        for pt in kc["points"]:
+            self.assertEqual(pt["cursor"], "row-resize", "between rows, row-resize")
+        st = r["kitSameTask"]
+        self._within(st["after"]["w"], st["before"]["w"] + st["dd"], 1.5, "a release with no frame between lands the position: %r" % st)
+        self.assertEqual(st["writes"], 1, "one store write")
+        self.assertEqual((r["kitComposerFocus"] or {}).get("tag"), "TEXTAREA", "the keyboard in the kit page's chat composer")
+        self.assertEqual(r["kitTopActive"], "f-chat")
+        ke = r["kitEscapeFromPane"]
+        self.assertNotIn("error", ke, ke)
+        self.assertTrue(ke["after"]["layoutRestored"], "Escape heard by the kit's keydown wiring on the pane document restores the layout: %r" % ke["after"])
+        self.assertEqual(ke["after"]["writes"], 0)
+        self.assertEqual(r["kitKeyboardBack"], "BODY")
+
+    def test_a_pane_toggled_under_a_kit_drag_ends_the_drag_committed_and_the_store_parses_and_matches_the_screen(self):
+        r = self._result()
+        for name in ("kitToggleHideRelease", "kitToggleHideEscape", "kitToggleShowRelease"):
+            t = r[name]
+            self.assertNotIn("error", t, t)
+            at = t["afterToggle"]
+            self.assertIsNotNone(at["stored"]["parsed"], "%s: the store parses after the toggle: %r" % (name, at["stored"]))
+            on_screen = sorted(at["rects"].keys()); in_store = sorted(_leaves(at["stored"]["parsed"]["tree"])); in_layout = sorted(_leaves(at["layout"]["tree"]))
+            self.assertEqual(in_store, on_screen, "%s: the store's leaves are the panes on screen" % name)
+            self.assertEqual(in_layout, on_screen)
+            self.assertEqual("files-pane" in on_screen, t["show"], "%s: the toggled pane is %s" % (name, "shown" if t["show"] else "gone"))
+            self.assertEqual(_overlaps(at["rects"]), [], "%s: no two panes overlap after the toggle" % name)
+            self.assertNotIn("files-pane", at["stored"]["parsed"].get("parked", []) if t["show"] else [], "a shown pane is not parked")
+            if not t["show"]:
+                self.assertIn("files-pane", at["stored"]["parsed"].get("parked", []), "a hidden pane is parked, once")
+            self.assertFalse(at["pressed"], "%s: the drag ended at the toggle (new information under the held pointer)" % name)
+            self.assertEqual(at["writes"], 2, "%s: the drag's commit and the reconcile's write: %r" % (name, at["writes"]))
+            # the drag's last position landed: a pane HIDDEN gives its room to every remaining kid in proportion, so the dragged pair keeps
+            # its SHARE; a pane SHOWN docks at the right end and splits the last leaf's share in half (splitAt), so the dragged pair's
+            # left pane keeps its width less its part of the one new gutter
+            L, R = t["pair"]["L"], t["pair"]["R"]
+            if t["show"]:
+                self._within(at["rects"][L]["w"], t["mid"]["rects"][L]["w"], 8.0, "%s: the drag's last position landed (the left pane's width, less the new gutter's share): mid %r after %r" % (name, t["mid"]["rects"], at["rects"]))
+            else:
+                share = lambda rs: rs[L]["w"] / (rs[L]["w"] + rs[R]["w"])
+                self._within(share(at["rects"]), share(t["mid"]["rects"]), 0.01, "%s: the drag's last position landed (the pair's share held through the close): mid %r after %r" % (name, t["mid"]["rects"], at["rects"]))
+            self.assertEqual(t["afterMore"]["rects"], at["rects"], "%s: more travel under the held pointer moves nothing" % name)
+            self.assertEqual(t["afterUp"]["rects"], at["rects"], "%s: the release (or Escape) after changes nothing" % name)
+            self.assertEqual(t["afterUp"]["writes"], 2, "%s: and writes nothing more" % name)
+            self.assertEqual(t["afterUp"]["stored"]["raw"], at["stored"]["raw"])
+            self.assertEqual(sorted(t["restored"]["rects"].keys()), sorted(t["before"].keys()), "%s: the pane put back" % name)
+        # a reload restores the persisted layout: the same panes, the columns at their widths (the band's height is content-sized by the
+        # shell's autosize at boot, so a band left at a dragged height comes back at its content's, and the rows above follow it)
+        rl = r["kitReload"]
+        self.assertEqual(sorted(rl["after"].keys()), sorted(rl["before"].keys()), "a reload shows the same panes: %r" % rl)
+        for k2, v in rl["before"].items():
+            for side in ("x", "w"):
+                self._within(rl["after"][k2][side], v[side], 1.5, "a reload restores %s's %s" % (k2, side))
+        self.assertEqual(sorted(_leaves(rl["layoutAfter"]["tree"])), sorted(_leaves(json.loads(rl["storedBefore"])["tree"])), "the layout after the reload holds the leaves the store held before it")
+
+    def test_the_band_resized_under_a_column_drag_keeps_its_height_through_the_drag_and_reaches_the_store_once(self):
+        r = self._result()
+        for name in ("kitBandGrowRelease", "kitBandGrowEscape"):
+            b = r[name]
+            self.assertNotIn("error", b, b)
+            self.assertNotEqual(b["grown"]["tl"], b["tl0"], "%s: the shell's autosize wrote the band's height under the drag: %r" % (name, b["grown"]["tl"]))
+            grown_px = _px(b["grown"]["tl"])
+            self._within(b["grown"]["band"], grown_px, 1.5, "%s: the band shows the new height mid-drag" % name)
+            self._within(b["later"]["band"], grown_px, 1.5, "%s: the drag's next frame keeps it (the press tree carried the px): %r" % (name, b["later"]))
+            L = b["pair"]["L"]
+            self._within(b["later"]["rects"][L]["x"] + b["later"]["rects"][L]["w"] + 3.5, b["later"]["pointer"], 1.5, "%s: and the edge is still at the pointer" % name)
+            self.assertEqual(b["grown"]["writes"], 0, "%s: no store write from the reconcile under the drag" % name)
+            self._within(b["after"]["band"], grown_px, 1.5, "%s: the release or Escape keeps the band's height (the drag never touched it)" % name)
+            self.assertEqual(b["after"]["tl"], b["grown"]["tl"], "%s: the height variable untouched" % name)
+            self.assertEqual(b["after"]["writes"], 1, "%s: one store write, at the end: %r" % (name, b["after"]["writes"]))
+            self._within(_fixed_px(b["after"]["stored"]["parsed"]["tree"], "tl-pane"), grown_px, 1.5, "%s: the store carries the new band px" % name)
+            self._within(b["back"]["band"], b["band0"], 1.5, "%s: the content shrunk back, the band follows" % name)
+
+    def test_the_kits_band_edge_resizes_live_persists_once_at_release_and_nothing_on_escape(self):
+        r = self._result()
+        b = r["kitBand"]
+        self.assertNotIn("error", b, b)
+        self.assertEqual(b["cursor"], "row-resize", "the band's edge shows row-resize over the panes")
+        for pt in b["points"]:
+            tl = _px(pt["tl"])
+            self._within(tl, pt["wanted"], 4.0, "mid-drag the band's height is the pointer's distance from its bottom, within the gutter's half: %r" % pt)
+            self._within(pt["band"], tl, 1.5, "and the band's element is that height")
+            self.assertEqual(pt["writes"], 0, "no store write per frame: %r" % pt)
+        self._within(b["after"]["band"], b["points"][-1]["band"], 1.5, "the release changes nothing on screen")
+        self.assertEqual(b["after"]["writes"], 1, "the store is written once, at release")
+        self._within(_fixed_px(b["after"]["stored"]["parsed"]["tree"], "tl-pane"), _px(b["after"]["tl"]), 1.5, "the store's band px is the height variable's")
+        self.assertEqual(b["after"]["cursor"], "grab")
+        be = r["kitBandEscape"]
+        self.assertNotIn("error", be, be)
+        self.assertGreater(abs(be["points"][0]["band"] - be["band0"]), 15, "the drag moved the band before Escape")
+        self.assertEqual(be["after"]["tl"], be["tl0"], "Escape restores the height variable")
+        self._within(be["after"]["band"], be["band0"], 1.5, "and the band's height")
+        self.assertEqual(be["after"]["writes"], 0, "and writes nothing: %r" % be["after"]["writes"])
 
     def test_a_far_drag_on_the_kits_dividers_stops_at_the_panes_minimum_with_the_edge_at_the_clamp(self):
         # the kit's clamp against the press geometry: the pushed pane at 120 px both ways on each divider, the edge stopped there

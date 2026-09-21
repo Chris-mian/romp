@@ -97,8 +97,31 @@ test("the engine's divider drag: press geometry, absolute travel, one commit, Es
   assert.match(ENGINE, /d\.want = edgeClamp\(d\.a0, d\.b0, raw, this\.minFrac\(d\.edge\) \* d\.edge\.avail\);/, "a move clamps the absolute travel against the press, with the tree's minimum in px");
   assert.match(ENGINE, /const tree = dragEdge\(d\.start\.tree, d\.edge\.path, d\.edge\.i, d\.want, d\.edge\.avail, this\.minFrac\(d\.edge\)\);/, "the frame applies the travel to the PRESS tree");
   assert.doesNotMatch(ENGINE, /clampDelta|d\.last\b/, "no clamp against the current tree, no incremental step");
-  const endDiv = ENGINE.slice(ENGINE.indexOf("private endDiv(commit: boolean): void {"), ENGINE.indexOf("// boot only in a browser TOP document"));
+  assert.doesNotMatch(ENGINE, /\bresize,?\s*serialise,\n\} from "\.\/pane-tree"/, "the tree's resize is not imported by name: dragEdge is the one caller");
+  const endDiv = ENGINE.slice(ENGINE.indexOf("private endDiv(commit: boolean): void {"), ENGINE.indexOf("/** The same set of ids"));
   assert.match(endDiv, /if \(d\.raf\) \{ cancelFrame\(d\.raf\); d\.raf = 0; \}\n\s*if \(commit\) this\.applyDiv\(\);/, "the release cancels the armed frame and lands the last recorded position itself");
-  assert.equal((endDiv.match(/this\.persist\(\)/g) || []).length, 1, "one persist, on the commit path only");
-  assert.match(endDiv, /if \(commit\) this\.persist\(\);\n\s*else \{[^]*?this\.lay = d\.start;/, "Escape: the press tree back, nothing written");
+  assert.match(endDiv, /if \(commit\) this\.persist\(\);\n\s*else \{/, "one persist on the commit path");
+  assert.match(endDiv, /if \(d\.edge\.fixed && this\.col\) \{ if \(d\.tl0\) this\.col\.style\.setProperty\("--tl", d\.tl0\); else this\.col\.style\.removeProperty\("--tl"\); \}\n\s*this\.lay = d\.start;/, "Escape: the band's height back for the BAND'S edge only, first; then the press tree");
+  assert.match(endDiv, /if \(stored !== serialise\(this\.lay\)\) this\.persist\(\);\n\s*this\.render\(\);\n\s*\}\n\s*\}/, "Escape writes only when the restored layout differs from the stored one, and renders once, on this path only");
+  assert.equal((endDiv.match(/this\.render\(\)/g) || []).length, 1, "a committed release renders in applyDiv alone: no second render");
+});
+
+// A reconcile UNDER a drag (a pane toggled, the band re-sized by the shell's autosize) must reach the press tree the frames are
+// built from, or the next frame and the commit discard it (the 1927 read: a pane shown mid-drag missing from the store and
+// overlapping, one hidden mid-drag persisted docked and parked, the band dropping to its press px, the release persisting it).
+test("the engine's reconcile under a drag: a leaf-set change commits the drag, the band's px is carried into the press tree, no store write mid-drag; the band edge writes its px into the tree first", () => {
+  const rec = ENGINE.slice(ENGINE.indexOf("private reconcile(): void {"), ENGINE.indexOf("private persist(): void {"));
+  assert.match(rec, /const d = this\.div;\n\s*if \(d && !d\.edge\.fixed\) \{/, "the rule runs under a column or row drag, never under the band edge's own frames");
+  assert.match(rec, /if \(!sameSet\(leaves\(next\.tree\), leaves\(this\.lay\.tree\)\) \|\| !sameSet\(next\.parked, this\.lay\.parked\)\) this\.endDiv\(true\);/, "a pane shown or hidden mid-drag ends the drag at its last position, committed");
+  assert.match(rec, /else if \(sh\.band\) d\.start = \{ \.\.\.d\.start, tree: setFixed\(d\.start\.tree, BAND, sh\.bandPx > 0 \? sh\.bandPx : DEFAULT_BAND_PX\) \};/, "the band's px alone is carried into the press tree");
+  assert.match(rec, /if \(changed && !this\.div\) this\.persist\(\);\n\s*if \(changed \|\| !this\.div\) this\.render\(\);/, "no store write and no second render from a reconcile while a drag is on");
+  const applyDiv = ENGINE.slice(ENGINE.indexOf("private applyDiv(): void {"), ENGINE.indexOf("private endDiv(commit: boolean): void {"));
+  assert.match(applyDiv, /this\.lay = \{ \.\.\.this\.lay, tree: setFixed\(this\.lay\.tree, BAND, d\.want\) \}; this\.render\(\);\n\s*this\.col\.style\.setProperty\("--tl", d\.want \+ "px"\);/, "the band edge: the px into the tree and the frame rendered, THEN the height variable, so the observer's reconcile sees no change");
+  // the cursor a divider drag keeps over every pane: the divider's own, keyed on its direction, cleared with the resize class
+  assert.match(ENGINE, /document\.body\.classList\.add\(RESIZE_CLASS, edge\.dir === "row" && !edge\.fixed \? RESIZE_X_CLASS : RESIZE_Y_CLASS\);/, "the press adds the divider's cursor class");
+  assert.match(ENGINE, /\.\$\{RESIZE_X_CLASS\} \.pane,body\.\$\{PANE_DOCKING_CLASS\}\.\$\{RESIZE_X_CLASS\} \.pd-div\{cursor:col-resize\}/, "col-resize over the panes for a divider between columns");
+  assert.match(ENGINE, /\.\$\{RESIZE_Y_CLASS\} \.pane,body\.\$\{PANE_DOCKING_CLASS\}\.\$\{RESIZE_Y_CLASS\} \.pd-div\{cursor:row-resize\}/, "row-resize for a divider between rows and the band's");
+  assert.equal((ENGINE.match(/classList\.remove\(RESIZE_CLASS, RESIZE_X_CLASS, RESIZE_Y_CLASS\)/g) || []).length, 2, "cleared beside the resize class on both ends of endDiv");
+  const alt = ENGINE.indexOf("${ALT_CLASS} iframe{cursor:grab}"), cur = ENGINE.indexOf("${RESIZE_X_CLASS} .pane");
+  assert.ok(alt > 0 && cur > alt, "the cursor rules come after the pane and Option rules, so they win");
 });

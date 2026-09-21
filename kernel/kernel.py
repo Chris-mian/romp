@@ -65705,15 +65705,12 @@ def _landing():
             ".gh:hover{background:linear-gradient(180deg,transparent 3px,#3a4a58 3px,#3a4a58 4px,transparent 4px)}"
             ".gv:hover::after{background:var(--accent,#9cd2ff);height:52px}.gh:hover::after{background:var(--accent,#9cd2ff);width:52px}"
             "body.drag iframe{pointer-events:none}body.dragv{cursor:col-resize}body.dragh{cursor:row-resize}"
-            # the divider drag's landing line: a strip the gutter's width carrying a 1 px accent line, shown by gutter()
-            # in _LANDING_JS while a drag is held. Fixed, so its left is the viewport coordinate the script computes;
-            # never a hit target, so it takes no hover or click of its own and the gutter under it keeps its :hover
-            # at the grab; above the focus ring (.pane-focused::after, z-index 6) so a focused pane does not cover it.
+            # (a divider drag draws no line since plans/pane-docking.md section 12: the panes themselves re-lay every frame)
             ".pane{position:relative;min-width:0;min-height:0;overflow:hidden}"
             # a TAB DRAG's zones and rectangle (the chat split, 2026-09-11; _LANDING_SPLIT_JS mounts them for the gesture's
             # length). A column zone covers its whole pane above the iframe and the cross (z 8); the edge zone at the rightmost
             # pane's right sits above that pane's column zone (z 9), its width and top set inline. #col-ghost is the provisional
-            # rectangle: fixed, never a hit target, above the focus ring like #gv-ghost; the accent wash (the value --accent-wash
+            # rectangle: fixed, never a hit target, at z-index 40 above the focus ring's 6 (.pane-focused::after); the accent wash (the value --accent-wash
             # resolves to in styles.css — the landing sheet defines no such token) inside a 2 px accent ring, one centred line in
             # the rail's label dress: the dragged session's name, no verb, no icon. A column zone under the pointer wears the same
             # dress on itself (.over: no pseudo-element, so it never competes with .pane-focused::after for one property; distinct

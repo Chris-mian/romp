@@ -52,13 +52,11 @@ global.localStorage = {
   removeItem: (k) => { delete STORE[k]; },
 };
 const ROW = {};   // the --g-* vars the script sets on .row (its `grow` object is a closure)
-const rowEl = { style: { setProperty: (k, v) => { ROW[k] = v; }, removeProperty: (k) => { delete ROW[k]; } },
-                getBoundingClientRect: () => ({ top: 0, height: 800, left: 0, bottom: 800 }) };   // the landing line is placed by the row's rect (main, 2026-09)
+const rowEl = { style: { setProperty: (k, v) => { ROW[k] = v; }, removeProperty: (k) => { delete ROW[k]; } } };   // gutter() reads no rect: the pair's widths are offsetWidth
 const colEl = { style: { setProperty() {} }, getBoundingClientRect: () => ({ bottom: 800 }) };
 function mkEl(id, w, display) {
   return {
     id: id, offsetWidth: w, _display: display, _ls: {},
-    getBoundingClientRect() { return { left: 0, top: 0, width: this.offsetWidth, height: 800, bottom: 800 }; },   // the drag's landing line reads the left pane's rect
     addEventListener(k, f) { (this._ls[k] = this._ls[k] || []).push(f); },
     fire(k, ev) { (this._ls[k] || []).slice().forEach((f) => f(ev)); },
   };
