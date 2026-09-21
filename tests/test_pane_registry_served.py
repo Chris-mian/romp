@@ -484,7 +484,7 @@ class ServedPaneRegistry(unittest.TestCase):
         self.assertTrue(r["kitPressed"]["pressed"], "a press on the page's declared empty surface arms the shell's press (data-pane-empty honoured for any app): %r" % r["kitPressed"])
         self.assertTrue(r["kitArmed"], "the ring's press lifts the pane after the slop")
         self.assertEqual(r["kitZone"], {"target": "feed-pane", "edge": "left"}, "the feed's left half-zone: %r" % r["kitZone"])
-        self.assertEqual(r["kitOutline"], {"on": True, "text": "Notes"}, "the live outline names the pane by its record's title: %r" % r["kitOutline"])
+        self.assertEqual(r["kitOutline"], {"on": True, "text": ""}, "the live outline over the feed's half carries no text (the user 2026-09-21: the square says where by its place; the record's title stays in the rail): %r" % r["kitOutline"])
         after = r["kitAfterDrop"]["leaves"]
         self.assertLess(after.index("notes-pane"), after.index("feed-pane"), "dropped into the feed's left half: notes docks left of the feed: %r" % after)
         self.assertLess(r["kitAfterDrop"]["rects"]["notes-pane"]["x"], r["kitAfterDrop"]["rects"]["feed-pane"]["x"])

@@ -586,11 +586,11 @@ class VSplitDrag(_VSplitLab):
         self.assertGreater(bz.get("top", 0), bz["paneTop"] + bz["paneHeight"] / 2,
                            "the zone is a band in the pane's lower half: %r" % bz)
 
-    def test_2_the_ghost_shows_the_panes_bottom_half_with_the_dragged_name(self):
+    def test_2_the_ghost_shows_the_panes_bottom_half_with_no_text(self):
         r = self._result()
         g = r.get("ghost") or {}
         self.assertIn("on", g.get("cls", "").split(), "the rectangle showed over the bottom zone: %r" % g)
-        self.assertEqual(g.get("text"), "web", "the dragged session's name, no verb: %r" % g)
+        self.assertEqual(g.get("text"), "", "no text in the square (the dragged session's name left it, the user 2026-09-21): %r" % g)
         # the ghost is the pane's BOTTOM half, measured against the pane rect AT GHOST TIME
         self.assertAlmostEqual(g.get("top"), round(g["paneTop"] + g["paneHeight"] / 2), delta=2,
                                msg="the ghost's top is the pane's midline: %r" % g)

@@ -772,7 +772,7 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertTrue(t["started"], "the real drag started")
         ol = t["outline"]
         self.assertTrue(ol and ol["on"] and not ol["refused"], "the outline shows the strip as a join zone: %r" % ol)
-        self.assertIn("joins", ol["text"], "the outline says the session joins: %r" % ol)
+        self.assertEqual(ol["text"], "", "the outline over the strip carries no text (the user 2026-09-21: the square says where by its place): %r" % ol)
         self.assertTrue(t["rejoined"], "the tab is back in the first chat's strip, the emptied pane is gone from the page and the tree: %r" % t["leaves"])
         self.assertNotIn("chat-pane-2", t["parked"], "a closed column's park is pruned")
         self._frames_fill(t["rects"], "after the join")
@@ -785,7 +785,7 @@ class ServedPaneDocking(unittest.TestCase):
         self.assertTrue(t.get("col") is not False and t.get("rec"), "the column's pane had a rect to press on: %r" % {k: v for k, v in t.items() if k != "rec"})
         w = t["rec"]["way"][0]
         self.assertTrue(w["outline"]["on"] and not w["outline"]["refused"], "a chat pane over another chat's strip is a join, not a refusal: %r" % w["outline"])
-        self.assertIn("joins", w["outline"]["text"])
+        self.assertEqual(w["outline"]["text"], "", "no text in the square over the strip: %r" % w["outline"])
         self.assertTrue(t["rejoined"], "its session joined the first chat's strip and the emptied column closed: %r" % t["leaves"])
         self._frames_fill(t["rects"], "after the pane joined a strip")
     def test_15_the_outlines_empty_list_blurs_a_focused_field_on_a_click_and_arms_on_a_drag(self):
