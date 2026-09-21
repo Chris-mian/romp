@@ -3111,11 +3111,17 @@ def reg_rev() -> int:
     return REG_REV[0]
 
 
-REG_ROWS_FIELDS = ("lastSid", "threadOf", "alive")   # the registration fields the kernel's /sessions rows read: lastSid on every row
-#                                                       (jd._sdk_last_sid), a comment thread's threadOf and alive (thread_sessions)
+REG_ROWS_FIELDS = ("lastSid", "threadOf", "alive")   # the registration fields the kernel's /sessions rows read THROUGH THIS REVISION:
+#                                                       lastSid on every row (jd._sdk_last_sid), a comment thread's threadOf and alive
+#                                                       (thread_sessions). Not every registration field the rows read: the row's
+#                                                       launchError is read from this registry too (launch_error below), but the
+#                                                       kernel's listing reads it per cycle and keys on the record itself, its text
+#                                                       and stamp, outside this revision, so it is not in the tuple (adding it would
+#                                                       remove no read; and this table's launchError never carries a compaction
+#                                                       notice, the Codex backend's own table does; 2026-09-21)
 REG_ROWS_REV = [0]   # the registry's ROWS revision: advanced only when one of those fields changes for a registration (or the
 _REG_ROWS_SEEN = {}  #  registration is first written in this process), so the listing keyed on it rebuilds once per change the rows
-#                       can see and never on the per-cycle writes of other fields (2026-09-15: keyed on REG_REV, the listing rebuilt
+#                       see through it and never on the per-cycle writes of other fields (2026-09-15: keyed on REG_REV, the listing rebuilt
 #                       every cycle, 778 builds in 776 s of a boot, 767 of them on registry writes no row read).
 
 

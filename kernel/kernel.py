@@ -28145,10 +28145,14 @@ _SESSIONS_LISTING = {"key": None, "rows": None, "json": None, "threads": None, "
 
 
 def _reg_rev():
-    """The SDK registry's ROWS revision (kernel/sdk_backend.py REG_ROWS_REV: moved by a write that changes a field the rows
-    read, lastSid, threadOf or alive, never by the per-cycle writes of other fields), read through the module the backend
-    was loaded as; 0 before the backend module is loaded (nothing has been written). Keyed on every write (REG_REV) the
-    listing rebuilt each cycle (the deploy read of 2026-09-15: built 778 in 776 s, 767 misses on the registry)."""
+    """The SDK registry's ROWS revision (kernel/sdk_backend.py REG_ROWS_REV: moved by a write that changes one of the fields
+    the rows read through it, lastSid, threadOf or alive, never by the per-cycle writes of other fields), read through the
+    module the backend was loaded as; 0 before the backend module is loaded (nothing has been written). Not every field a
+    row reads rides it: the row's launchError is read from the session's backend per cycle (_launch_error_scoped: the SDK
+    registry file for an SDK session, the Codex backend's own record for a Codex session, and only the Codex record ever
+    carries a compaction's end notice) and is a key input of its own, by text and stamp (_launch_error_key), outside this
+    revision (2026-09-21). Keyed on every write (REG_REV) the listing rebuilt each cycle (the deploy read of 2026-09-15: built
+    778 in 776 s, 767 misses on the registry)."""
     return int(getattr(sys.modules.get("romp_sdk_backend"), "reg_rows_rev", lambda: 0)())
 
 
@@ -60038,10 +60042,11 @@ JOBS_PASS_S = 0.5                                  # the jobs thread's pace betw
 
 
 def _jobs_cycle():
-    """ONE pass of the jobs thread: the pass's liveness snapshot and scopes opened exactly as _pusher_cycle opens the pusher's
-    (thread-confined, so the two loops never share a snapshot), _jobs_pass inside them, the scopes closed in the finally, the
-    pass counted under /perf `jobs`, and the boot's first pass sampled and reported to the boot row like the pusher's first
-    cycle."""
+    """ONE pass of the jobs thread: the pass's liveness snapshot and scopes opened as _pusher_cycle opens the pusher's
+    (thread-confined, so the two loops never share a snapshot), less the launch-error memo: only the listing's key and rows
+    read it, and the listing is the pusher's job, so a memo opened here was filled by nothing (2026-09-21); _jobs_pass inside
+    them, the scopes closed in the finally, the pass counted under /perf `jobs`, and the boot's first pass sampled and
+    reported to the boot row like the pusher's first cycle."""
     _t = time.monotonic()
     first = not _BOOT_HEALTH_DONE[0] and _BOOT_FIRST["jobs"] is None
     if first:
@@ -60055,7 +60060,6 @@ def _jobs_cycle():
         _live_scope.paths = {}
         _live_scope.sessions = {}
         _live_scope.auth = {}
-        _live_scope.launch_errors = {}          # the pass's launch-error memo (_launch_error_scoped, 2026-09-21)
         _live_scope.subagent_trees = {}         # the pass's subagents-tree samples (2026-09-18): the reminder walk's
         #                                       _session_awaiting readers and _mark_nudge_failed read the same roots per pass
         _live_scope.msgsum = [_MSGSUM_UNSET]
@@ -60069,7 +60073,6 @@ def _jobs_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
-        _live_scope.launch_errors = None
         _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _live_scope.files_stat = None
