@@ -335,7 +335,9 @@ interface ModelFallback { pick: string; pickValue: string; live: string; cause: 
 // A row of the chat's approval box (#notices): a needs-you notice with actions, as build_session ships status.notices
 // (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19); the actions are of a KIND the kernel defines.
 interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment?: NoticeAttachment | null;
-                       actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[] }
+                       actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[];
+                       kind?: "goal" | "notice";   // "goal": a judge's question on a goal card, Reply / Continue where offered / Clear; absent or "notice": a notice with its stored actions, Clear when it has none (plans/needs-you.md, phase three)
+                       cont?: boolean }             // a goal row offers Continue (the kernel: a live session; the feed card's own rule)
 interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
@@ -14777,7 +14779,7 @@ function renderSubHead(): void {
 // container (installed once, below, like the background box's), so a press lands whatever the rows did meanwhile. The body
 // and the attachment are the notice face the feed card shows (notice-face.ts): one face for both surfaces (low e).
 interface NoticeRowEl extends HTMLElement { _sig?: string; _title?: string; _body?: string; _att?: string }
-function noticeActionsSig(n: ChatNotice): string { return JSON.stringify((n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])); }
+function noticeActionsSig(n: ChatNotice): string { return JSON.stringify([n.kind || "notice", !!n.cont, (n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])]); }
 function noticeRowSelector(itemId: string): string { return '#notices .ntc-row[data-item="' + itemId.replace(/["\\]/g, "\\$&") + '"]'; }
 function noticeButton(label: string, cls: string, act: string, idx: number): HTMLButtonElement {
   const b = document.createElement("button"); b.className = "ntc-btn " + cls; b.textContent = label; (b as any)._idle = label;
@@ -14790,6 +14792,13 @@ function noticeRowPlain(row: HTMLElement, n: ChatNotice): void {
   const acts = row.querySelector<HTMLElement>(".ntc-actions"), note = row.querySelector<HTMLElement>(".ntc-note");
   if (!acts || !note) return;
   acts.replaceChildren(); note.style.display = "none";
+  if (n.kind === "goal") {   // a goal card's row (plans/needs-you.md, phase three): Reply points the composer at the card, Continue where the card offers it, Clear
+    acts.appendChild(noticeButton("Reply", "ntc-ok", "ntc-reply", 0));
+    if (n.cont) acts.appendChild(noticeButton("Continue", "ntc-ok", "ntc-cont", 1));
+    acts.appendChild(noticeButton("Clear", "ntc-clear", "ntc-clear", 2));
+    return;
+  }
+  if (!(n.actions || []).length) { acts.appendChild(noticeButton("Clear", "ntc-clear", "ntc-clear", 0)); return; }   // a notice with no stored action: Clear is its one way to act
   (n.actions || []).forEach((act, i) => {
     const deny = act.kind === "quarantine" && !!act.body && (act.body as any).verdict === "deny";
     acts.appendChild(noticeButton(act.label, deny ? "ntc-deny" : "ntc-ok", deny ? "ntc-deny-step" : "ntc-go", i));
@@ -14825,22 +14834,32 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
     const err = row.querySelector<HTMLElement>(".ntc-err"); if (err) { err.textContent = ""; err.style.display = "none"; }
   }
 }
+// the box's header bar (plans/needs-you.md, phase three): the background box's grammar, the dot in the Needs you token, the title with the count
+function buildNoticeHead(): HTMLElement {
+  const head = document.createElement("div"); head.className = "ntc-head";
+  head.appendChild(el("span", "ntc-dot"));
+  head.appendChild(el("span", "ntc-label"));
+  return head;
+}
 function renderNotices(): void {
   const host = document.getElementById("notices");
   if (!host) return;
   const s = activeId && !snapView ? liveSession(activeId) : null;
   const rows: ChatNotice[] = (s && s.status && s.status.notices) || [];
-  if (!s || !activeId || !rows.length) { host.replaceChildren(); host.style.display = "none"; return; }
+  if (!s || !activeId || !rows.length || !settings.needsBox) { host.replaceChildren(); host.style.display = "none"; return; }   // the gear's Needs you box switch hides it; the ring stays
   host.style.display = "";
+  let head = host.querySelector<HTMLElement>(".ntc-head");
+  if (!head) { head = buildNoticeHead(); host.prepend(head); }
+  const lab = head.querySelector<HTMLElement>(".ntc-label"); if (lab) lab.textContent = "Needs you · " + rows.length;
   const want = new Set(rows.map((n) => n.itemId));
   for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) r.remove();
-  let prev: HTMLElement | null = null;
+  let prev: HTMLElement = head;   // the rows follow the header, in the frame's order
   for (const n of rows) {
     let row = host.querySelector<NoticeRowEl>(noticeRowSelector(n.itemId).replace("#notices ", ""));
-    if (!row) { row = buildNoticeRow(n, s.id); if (prev) prev.after(row); else host.prepend(row); }
+    if (!row) { row = buildNoticeRow(n, s.id); prev.after(row); }
     else {
       updateNoticeRow(row, n, s.id);
-      if (row.previousElementSibling !== prev) { if (prev) prev.after(row); else host.prepend(row); }   // the frame's order; a move only when out of place (a move re-inserts the node, and a press on it would be lost)
+      if (row.previousElementSibling !== prev) prev.after(row);   // the frame's order; a move only when out of place (a move re-inserts the node, and a press on it would be lost)
     }
     prev = row;
   }
@@ -20742,7 +20761,8 @@ function setupSettings(): void {
   applyChatScheme(settings);   // the persisted pick applies at startup — it survives reloads
   // renderTabs too: the tab strip reads settings (the context gauge toggle) but rerenderAll only
   // rebuilds the transcript views, so without it a gear change waited for the next kernel push.
-  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); updateStatusline(); rerenderAll(); refillOpenCommentPop(); });   // updateStatusline: the line's widgets follow a gear switch live (T409), as the strip's do
+  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); updateStatusline(); rerenderAll(); refillOpenCommentPop(); });
+  onExternalSettingsChange(() => renderNotices());   // the Needs you box switch (plans/needs-you.md, phase three): the gear's save hides or shows the box at once   // updateStatusline: the line's widgets follow a gear switch live (T409), as the strip's do
 }
 
 // The feed's click echo (feed.ts focusEcho — the user 2026-08-24, "clicking into a not-shown
@@ -20795,13 +20815,20 @@ setupSettings();
     const s = activeId ? liveSession(activeId) : null;
     return ((s && s.status && s.status.notices) || []).find((n) => n.itemId === row.dataset.item) || null;
   };
-  const go = (row: HTMLElement, n: ChatNotice, act: ChatNotice["actions"][number], clicked: HTMLButtonElement, input?: Record<string, unknown>) => {
-    const kind = act.kind || (act.route === "/send" ? "send" : "");   // the KIND rides the wire; an older frame's route reads as send
-    vscodeApi?.postMessage({ type: "noticeAction", itemId: n.itemId, sid: activeId, kind, body: act.body, ...(input ? { input } : {}) });
+  const latch = (row: HTMLElement, clicked: HTMLButtonElement) => {
     for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) b.disabled = true;   // every button of the row latches: one decision per message
     clicked.textContent = ((clicked as any)._idle || clicked.textContent) + "…";
     const err = row.querySelector<HTMLElement>(".ntc-err"); if (err) err.style.display = "none";
   };
+  const go = (row: HTMLElement, n: ChatNotice, act: ChatNotice["actions"][number], clicked: HTMLButtonElement, input?: Record<string, unknown>) => {
+    const kind = act.kind || (act.route === "/send" ? "send" : "");   // the KIND rides the wire; an older frame's route reads as send
+    vscodeApi?.postMessage({ type: "noticeAction", itemId: n.itemId, sid: activeId, kind, body: act.body, ...(input ? { input } : {}) });
+    latch(row, clicked);
+  };
+  // a goal row's acts (plans/needs-you.md, phase three) and a no-action notice's Clear: the card's own wires (askFollowUp with cont, askClear),
+  // so the kernel's one handler per gesture moves the card and the next frame drops the row; Reply only points the composer at the card
+  // (setCitation, as a feed card click that lands in the chat does) and leaves the row until the reply is judged
+  const item = (el: HTMLElement): [HTMLElement, ChatNotice] | null => { const row = rowOf(el); const n = row && noticeOf(row); return row && n ? [row, n] : null; };
   const pick = (el: HTMLElement): [HTMLElement, ChatNotice, ChatNotice["actions"][number]] | null => {
     const row = rowOf(el); const n = row && noticeOf(row); const act = n && (n.actions || [])[Number(el.dataset.idx)];
     return row && n && act ? [row, n, act] : null;
@@ -20812,6 +20839,9 @@ setupSettings();
     "ntc-deny-note": (el) => { const p = pick(el); if (!p) return; const t = (p[0].querySelector<HTMLTextAreaElement>(".ntc-note")?.value || "").trim(); go(p[0], p[1], p[2], el as HTMLButtonElement, t ? { note: t } : undefined); },
     "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
     "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },
+    "ntc-reply": (el) => { const p = item(el); if (p && activeId) setCitation(activeId, { itemId: p[1].itemId, title: p[1].title }); },
+    "ntc-cont": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askFollowUp", itemId: p[1].itemId, sid: activeId, cont: true }); latch(p[0], el as HTMLButtonElement); },
+    "ntc-clear": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askClear", itemId: p[1].itemId, sid: activeId }); latch(p[0], el as HTMLButtonElement); },
   });
 })();
 // Background-task rows toggle open/closed — delegated to the stable #bg-tasks container (installed once),

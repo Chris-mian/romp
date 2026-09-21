@@ -280,6 +280,20 @@ the chat shows "Reloading session…" and the effort badge shows switching-dots
 until the reload completes, and a session that is mid-turn reloads when the
 turn ends.
 
+### What a session needs from you
+
+Above the composer, a box headed **Needs you** lists what the session you are reading needs from you,
+one line per item with a way to act: a question a judge filed (the card's title and its decision brief,
+with **Reply**, which points the composer at that card the way Follow up does, **Continue** while the
+session is live, and **Clear**), and a held message from another session with its own **Approve** and
+**Deny**. A stop the chat already shows inline, a permission prompt or an API error only you can clear,
+is not listed: the tab's red **Blocked** ring and the card's mark say it. The box wears the Needs you
+colour the way the background box wears the awaiting green while the session waits, and it hides when
+the session has nothing for you. An item leaves with the frame that resolves it: the reply once the
+judges file it, the decision, the clear. The gear's **Needs you box** setting under Chat, on by
+default, hides the box; the tab ring and the feed still say what needs you. It is per browser, like the
+other chat settings.
+
 ### Fast mode, from the chat statusline
 
 The statusline's badges (permission mode, model, effort) are each a small

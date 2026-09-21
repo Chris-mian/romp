@@ -275,6 +275,17 @@ not loaded yet.
 ![Clicking a skeleton tab puts up the loader until its transcript arrives](assets/guide/reconnect-skeleton-click.png){ width="32%" }
 ![The clicked tab, loaded](assets/guide/reconnect-skeleton-loaded.png){ width="32%" }
 
+**What the session needs from you.** Above the composer, a box headed **Needs you** lists what
+the session you are reading needs from you, one line per item with a way to act: a question a
+judge filed, with its decision brief, offers **Reply** (the composer takes that card, as Follow up
+does), **Continue** while the session is live, and **Clear**; a held message from another session
+keeps its own **Approve** and **Deny**. A stop the chat already shows inline, a permission prompt
+or an API error only you can clear, is not listed: the tab's red **Blocked** ring and the card's
+mark say it. The box wears the Needs you colour the way the background box wears the awaiting
+green while the session waits, and hides when the session has nothing for you. The gear's
+**Needs you box** setting under Chat, on by default, hides it; the ring and the feed still say
+what needs you. [More](reference.md#what-a-session-needs-from-you).
+
 **On a small screen.** To keep more of the transcript in view, turn on the gear's
 **Compact tabs and agents** setting. It tightens the rows in the background-work panel above the
 composer (the one headed **Awaiting** or **In the background**) and shows about four of its rows,

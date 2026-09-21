@@ -1,8 +1,11 @@
-// The chat page's APPROVAL BOX (#notices; plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): the
-// active session's needs-you notices with actions (a held peer message's Approve and Deny), listed above the background box,
-// rendered from status.notices on every status change, posting the same noticeAction wire the feed card posts (the action's
-// KIND with the stored body, a deny's optional note as the click's input) and re-armed or removed on noticeActionDone. Source
-// pins (the chat renderer has no jsdom harness); the behaviour rides tests/test_held_mail_chat_served.py.
+// The chat page's NEEDS YOU BOX (#notices; plans/needs-you.md, phase three; the approval box of plans/notice-cards.md, "Action
+// kinds and the held-mail card", 2026-09-19, before it): the active session's Needs you items that are not hard stops, listed
+// above the background box under a "Needs you · N" header, rendered from status.notices on every status change. A goal row
+// (kind "goal") offers Reply (the composer takes the card), Continue where the card offers it and Clear, on the card's own
+// wires; a notice row posts the same noticeAction wire the feed card posts (the action's KIND with the stored body, a deny's
+// optional note as the click's input), re-armed or removed on noticeActionDone, or Clear when it has no stored action. The
+// gear's Needs you box switch hides the box and leaves the ring. Source pins (the chat renderer has no jsdom harness); the
+// behaviour rides tests/test_held_mail_chat_served.py and tests/test_needs_you_box_chat_served.py.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -17,7 +20,7 @@ const fn = (name: string) => { const i = RENDER.indexOf("function " + name + "("
 
 test("the status carries the rows and the box renders on every status change beside the background box", () => {
   assert.match(RENDER, /interface Status \{ state: ChipState; sinceEpoch: number \| null; modelFallback\?: ModelFallback \| null; notices\?: ChatNotice\[\] \| null;/, "the slice on the status, after main's model-fallback field");
-  assert.match(RENDER, /interface ChatNotice \{ itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment\?: NoticeAttachment \| null;\s*\n\s*actions: \{ label: string; kind\?: string; route\?: string; body: Record<string, unknown> \}\[\] \}/, "the row carries the feed card's attachment too (low e)");
+  assert.match(RENDER, /interface ChatNotice \{ itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment\?: NoticeAttachment \| null;\s*\n\s*actions: \{ label: string; kind\?: string; route\?: string; body: Record<string, unknown> \}\[\];\s*\n\s*kind\?: "goal" \| "notice";[^\n]*\n\s*cont\?: boolean \}/, "the row carries the feed card's attachment too (low e), and since phase three its kind and its Continue offer");
   // awaitKey is the status key every status-carrying frame compares (the T225 pins): the rows are part of it, so a hold or a
   // decision repaints the box through the same awaitChanged road as the background box
   assert.match(fn("awaitKey"), /\(st\.notices \|\| \[\]\)\.map\(\(n\) => n\.itemId \+ "\/" \+ \(n\.actions \|\| \[\]\)\.length\)\]\);/);
@@ -30,8 +33,11 @@ test("the box: rows keyed by the notice id and reconciled in place, the shared n
   const r = fn("renderNotices");
   assert.match(r, /const host = document\.getElementById\("notices"\);/);
   assert.match(r, /const rows: ChatNotice\[\] = \(s && s\.status && s\.status\.notices\) \|\| \[\];/);
-  assert.match(r, /if \(!s \|\| !activeId \|\| !rows\.length\) \{ host\.replaceChildren\(\); host\.style\.display = "none"; return; \}/, "hidden with no row");
-  assert.doesNotMatch(r.replace(/if \(!s \|\| !activeId \|\| !rows\.length\) \{ host\.replaceChildren\(\);[^\n]*/, ""), /host\.replaceChildren\(\)/, "with rows, the box is never rebuilt whole: a press must survive a frame (the review of PR 1890, medium 1)");
+  assert.match(r, /if \(!s \|\| !activeId \|\| !rows\.length \|\| !settings\.needsBox\) \{ host\.replaceChildren\(\); host\.style\.display = "none"; return; \}/, "hidden with no row, and under the gear's switch (phase three)");
+  assert.doesNotMatch(r.replace(/if \(!s \|\| !activeId \|\| !rows\.length \|\| !settings\.needsBox\) \{ host\.replaceChildren\(\);[^\n]*/, ""), /host\.replaceChildren\(\)/, "with rows, the box is never rebuilt whole: a press must survive a frame (the review of PR 1890, medium 1)");
+  assert.match(r, /let head = host\.querySelector<HTMLElement>\("\.ntc-head"\);\s*\n\s*if \(!head\) \{ head = buildNoticeHead\(\); host\.prepend\(head\); \}/, "the header is built once and kept");
+  assert.match(r, /lab\.textContent = "Needs you · " \+ rows\.length;/, "the title with the count");
+  assert.match(r, /let prev: HTMLElement = head;/, "the rows follow the header in the frame's order");
   assert.match(r, /for \(const r of Array\.from\(host\.querySelectorAll<HTMLElement>\("\.ntc-row"\)\)\) if \(!want\.has\(r\.dataset\.item \|\| ""\)\) r\.remove\(\);/, "a row that left leaves");
   assert.match(r, /if \(!row\) \{ row = buildNoticeRow\(n, s\.id\);/); assert.match(r, /updateNoticeRow\(row, n, s\.id\);/, "an existing row is updated in place");
   const u = fn("updateNoticeRow");
@@ -78,8 +84,31 @@ test("the kernel's answer re-arms the row on a refusal, saying why in the row, a
   assert.match(FED, /out\.status = \{ \.\.\.out\.status, notices: out\.status\.notices\.map\(\(n: any\) => \(n && typeof n === "object" && typeof n\.itemId === "string"\) \? \{ \.\.\.n, itemId: prefixNoticeId\(host, n\.itemId\) \} : n\) \};/, "the slice's ids wear the host (medium 2)");
 });
 
-test("the box's chrome: the background box's frame with the ask ring's yellow edge, above it, dense-chrome aware", () => {
-  assert.match(CSS, /#notices \{ flex: 0 0 auto; min-height: 0; max-height: min\(40vh, 280px\); overflow: auto; box-sizing: border-box; margin: 8px 10px 0;\s*\n\s*border: 1px solid var\(--box-border\); border-left: 3px solid var\(--st-working-bg\); border-radius: 8px; background: var\(--box-bg\);/);
+test("phase three: a goal row's Reply, Continue and Clear on the card's own wires; a no-action notice's Clear; the kind and the offer ride the row's face and its type", () => {
+  assert.match(RENDER, /kind\?: "goal" \| "notice";/, "the row says its kind"); assert.match(RENDER, /cont\?: boolean \}/, "and whether Continue is offered");
+  assert.match(fn("noticeActionsSig"), /JSON\.stringify\(\[n\.kind \|\| "notice", !!n\.cont, \(n\.actions \|\| \[\]\)\.map/, "the face signature carries the kind and the offer: a Continue that appears rebuilds the buttons");
+  const plain = fn("noticeRowPlain");
+  assert.match(plain, /if \(n\.kind === "goal"\) \{[^]*?acts\.appendChild\(noticeButton\("Reply", "ntc-ok", "ntc-reply", 0\)\);\s*\n\s*if \(n\.cont\) acts\.appendChild\(noticeButton\("Continue", "ntc-ok", "ntc-cont", 1\)\);\s*\n\s*acts\.appendChild\(noticeButton\("Clear", "ntc-clear", "ntc-clear", 2\)\);\s*\n\s*return;/, "a goal row: Reply, Continue where offered, Clear");
+  assert.match(plain, /if \(!\(n\.actions \|\| \[\]\)\.length\) \{ acts\.appendChild\(noticeButton\("Clear", "ntc-clear", "ntc-clear", 0\)\); return; \}/, "a notice with no stored action offers Clear");
+  const i = RENDER.indexOf('const host = document.getElementById("notices");\n  if (!host) return;\n  const rowOf');
+  const d = RENDER.slice(i, RENDER.indexOf("})();", i));
+  assert.match(d, /"ntc-reply": \(el\) => \{ const p = item\(el\); if \(p && activeId\) setCitation\(activeId, \{ itemId: p\[1\]\.itemId, title: p\[1\]\.title \}\); \},/, "Reply points the composer at the card, as a feed card click that lands in the chat does; the row stays until the reply is judged");
+  assert.match(d, /"ntc-cont": \(el\) => \{[^\n]*vscodeApi\?\.postMessage\(\{ type: "askFollowUp", itemId: p\[1\]\.itemId, sid: activeId, cont: true \}\); latch\(p\[0\], el as HTMLButtonElement\); \},/, "Continue is the card's Continue wire, and the row latches");
+  assert.match(d, /"ntc-clear": \(el\) => \{[^\n]*vscodeApi\?\.postMessage\(\{ type: "askClear", itemId: p\[1\]\.itemId, sid: activeId \}\); latch\(p\[0\], el as HTMLButtonElement\); \},/, "Clear is the card's Clear wire, and the row latches");
+  assert.match(fn("buildNoticeHead"), /head\.className = "ntc-head";[^]*?el\("span", "ntc-dot"\)[^]*?el\("span", "ntc-label"\)/, "the header: the dot and the label");
+  assert.match(RENDER, /onExternalSettingsChange\(\(\) => renderNotices\(\)\);/, "a settings save repaints the box: the gear's switch takes effect at once");
+  const SETTINGS = fs.readFileSync(path.join(UI, "settings.ts"), "utf8");
+  assert.match(SETTINGS, /needsBox: boolean;/); assert.match(SETTINGS, /needsBox: true,/, "on by default");
+  const GEAR = fs.readFileSync(path.join(UI, "gear.js"), "utf8");
+  assert.match(GEAR, /<input type=checkbox id=rs-needsbox checked>/, "the row under Chat, on by default");
+  assert.match(GEAR, /<b>Needs you box<\/b>/); assert.match(GEAR, /s\.needsBox = nb\.checked; save\(s\);/, "the save the chat page hears"); assert.match(GEAR, /if \(nb\) nb\.checked = s\.needsBox !== false;/, "a store from before the key reads as on");
+  assert.match(CSS, /\.ntc-head \{[^}]*border-bottom: 1px solid var\(--box-border\);/, "the header bar in the background box's grammar");
+  assert.match(CSS, /\.ntc-head \.ntc-dot \{[^}]*background: var\(--st-needs-bg\); \}/, "the dot in the token");
+  assert.doesNotMatch(CSS.slice(CSS.indexOf("#notices {"), CSS.indexOf("\n", CSS.indexOf("#notices {") + 200)), /--st-working-bg|border-left: 3px/, "the working gold's thick edge is gone: one thin line in the token, the awaiting box's dress");
+});
+
+test("the box's chrome: the background box's frame, its one thin edge in the Needs you token, a header bar with the dot, above the background box, dense-chrome aware", () => {
+  assert.match(CSS, /#notices \{ flex: 0 0 auto; min-height: 0; max-height: min\(40vh, 280px\); overflow: auto; box-sizing: border-box; margin: 8px 10px 0;\s*\n\s*border: 1px solid var\(--st-needs-bg\); border-radius: 8px; background: var\(--box-bg\);/);
   assert.match(CSS, /\.ntc-body \{[^}]*-webkit-line-clamp: 4;/, "the message text clamped");
   assert.match(CSS, /\.ntc-btn\.ntc-deny \{ color: #e5484d;/); assert.match(CSS, /\.ntc-btn\.ntc-ok \{ color: var\(--accent\);/);
   assert.match(CSS, /body\.dense-chrome #notices \{ margin: 4px 10px 0; \}/);

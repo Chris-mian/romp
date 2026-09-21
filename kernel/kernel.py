@@ -24769,20 +24769,25 @@ def _notice_item_id(sid, key, rev):
 
 
 def _chat_notices(sid):
-    """The chat page's approval box (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): this session's
-    standing needs-you notices that carry actions, as the box lists them (today a held peer message with its Approve and Deny).
-    The same projection the feed card reads, the cleared ledger applied, each action with its kind; a decision (the expire row)
-    or a Clear drops the row with the next frame. None before the first feed build since start, as needsYou (the review of PR
-    1890, low d: the box never shows before the ring); [] for a session with none, and on any fault."""
+    """The chat page's NEEDS YOU BOX (plans/needs-you.md, phase three; the approval box of plans/notice-cards.md before it):
+    this session's Needs you items that are not hard stops, each with a way to act. Goal rows first, as the last feed build
+    filed them (_needs_you_rows: kind "goal", the card's text and its decision brief; Reply, Continue where the card offers it,
+    Clear), then the standing needs-you NOTICES from the same projection the feed card reads, the cleared ledger applied
+    (kind "notice": the stored actions each with its kind, as the box listed them from 2026-09-19; a notice without actions
+    offers Clear, its one way to act). A decision (the expire row), a reply the judge files or a Clear drops the row with the
+    next frame. None before the first feed build since start, as needsYou (the review of PR 1890, low d: the box never shows
+    before the ring); [] for a session with none, and on any fault."""
     if _feed_needs_input[0] is None:
         return None
+    if str(sid) == NOTICE_OWNERLESS_SID:
+        return []                                         # the owner-less home is not a session: no chat page, no box
     try:
-        out = []
+        out = [dict(r) for r in ((_feed_needs_rows[0] or {}).get(str(sid)) or [])]
         for r in _notice_projection(sid, int(time.time()), _cleared_ids()):
-            if not r.get("needsYou") or not r.get("actions"):
+            if not r.get("needsYou"):
                 continue
             out.append({"itemId": _notice_item_id(sid, r.get("key"), r.get("rev") or 0), "key": r.get("key"), "rev": int(r.get("rev") or 0),
-                        "title": r.get("title") or "", "body": r.get("body") or "", "producer": r.get("producer") or "",
+                        "kind": "notice", "title": r.get("title") or "", "body": r.get("body") or "", "producer": r.get("producer") or "",
                         "attachment": r.get("attachment"),          # the feed card's pinned picture, on the row too (one face)
                         "actions": [dict(a, kind=_notice_action_kind(a)) for a in (r.get("actions") or [])]})
         return out
@@ -34514,7 +34519,7 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         # row reads the same (needsInput === true). Only True is a verdict.
         sig.append(_feed_needs_input_of(sid) is True)
         # notices: the approval box's rows by id (a hold posted, a decision taken), so the box and the ring move in one frame
-        sig.append(tuple(n["itemId"] for n in (_chat_notices(sid) or ())))
+        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("body") or "", bool(n.get("cont"))) for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing or Continue moving repaints the box; one value per label
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
         # per-push flag), so a payload built from turn 0 is never served from the cache once the floor climbs
         sig.append(bool(getattr(_live_scope, "chat_floor0", False)))
@@ -55426,6 +55431,32 @@ _built_timeline = [None, None, 0.0, 0.0]          # [fleet_sig, payload, built_a
 # the feed, so that is one push cycle). Set by _cached_feed on every rebuild, from the same payload the badge
 # and the bells read (_needs_you_count), never re-derived.
 _feed_needs_input = [None]
+_feed_needs_rows = [None]        # sid -> the Needs you box's GOAL rows from the last feed build (plans/needs-you.md, phase three); None before it
+
+
+def _hard_stop_card(a):
+    """A card the kernel floored to needs-you with a LIVE-BLOCK object (`blocked`: a permission or picker prompt, an on-you
+    API error, the judges' refused credential, a parked handoff): the chat shows the prompt inline and the card carries its
+    own remedy, so the Needs you box lists none of them (plans/needs-you.md: a hard stop is a red mark on the card and the
+    red ring, never a row). A judge's question, a stall floor or an interrupt block ships `blocked` as None."""
+    return isinstance(a.get("blocked"), dict)
+
+
+def _needs_you_rows(feed):
+    """The Needs you box's goal rows per session (plans/needs-you.md, phase three): every GOAL card of the session's in its
+    board's needs-you category (_card_needs_you, the one rule the ring and the badge read) that is not a hard stop
+    (_hard_stop_card), in the frame's order. A placeholder (no stable identity) and a notice card (its row comes from the
+    notice store with its stored actions, see _chat_notices) stay out. Each row: the item id, the card's text as the title,
+    the decision brief as the line (empty until the distiller writes it; the client shows the title alone then), and whether
+    Continue is offered (a live session: the feed card's own rule for its Continue button)."""
+    out = {}
+    for a in (feed.get("asks") or []):
+        sid = a.get("sid")
+        if not sid or not _card_needs_you(a) or a.get("provisional") or a.get("notice") or _hard_stop_card(a):
+            continue
+        out.setdefault(str(sid), []).append({"itemId": a.get("itemId"), "kind": "goal", "title": a.get("text") or "",
+                                             "body": a.get("blockSummary") or "", "cont": bool(a.get("live")), "t": a.get("t")})
+    return out
 
 
 def _needs_input_sids(feed):
@@ -55663,6 +55694,11 @@ def _build_feed_locked(now, live_map, sig):
         # rebuild that moves no verdict cannot chain cycles.
         _pusher_wake.set()
     _feed_needs_input[0] = _needs_now
+    _rows_now = _needs_you_rows(feed)                    # the Needs you box's goal rows (plans/needs-you.md, phase three)
+    if _rows_now != _feed_needs_rows[0]:
+        _pusher_wake.set()                               # a row's line, its Continue or its presence moved with the set unchanged: the box
+        #                                                  follows the card by one build, as the ring does above
+    _feed_needs_rows[0] = _rows_now
     _badge = _needs_you_count(feed)
     _fired = _feed_notifications(feed) if not feed.get("off") else []   # armed bells: fresh builds are the transition event; a
     #                                                       stand-in frame (off, empty) never feeds a writer that prunes by absence: the
