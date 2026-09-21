@@ -202,14 +202,20 @@ class ParagraphHelper(unittest.TestCase):
         self.assertEqual(len(_paragraphs('<video src="a.mp4"></video>\n')), 0,
                          "a page of nothing but a block tag has no prose paragraph")
 
-    # the three shapes the trailing-link rule turns on, each its own page
+    # the four shapes the trailing-link rule turns on, each its own page. NAV_TIGHT has NO blank
+    # line between the heading and the link, the case that separates reading the paragraph's own
+    # line from reading one line further up: with a blank line, the heading is the nearest prose
+    # line above BOTH the link and the blank, so either reading exempts it.
     NAV_UNDER_HEADING = "## License\n\n[Apache-2.0](LICENSE).\n"
+    NAV_TIGHT = "## License\n[Apache-2.0](LICENSE).\n"
     NAV_UNDER_PROSE = "# Title\n\nA paragraph of prose that says something.\n\n[Apache-2.0](LICENSE).\n"
     PARAGRAPH_ON_A_LINK = "# Title\n\nThe mechanics are in\n[How it works](architecture.md).\n"
 
     def test_a_link_only_paragraph_is_exempt_only_directly_under_a_heading(self):
         self.assertEqual(_trailing_link_violations(self.NAV_UNDER_HEADING), [],
                          "a line that is only a link, under its heading, is a navigation line")
+        self.assertEqual(_trailing_link_violations(self.NAV_TIGHT), [],
+                         "the same line on the line directly after its heading, no blank between")
         self.assertEqual(_trailing_link_violations(self.NAV_UNDER_PROSE),
                          [(5, "[Apache-2.0](LICENSE).")],
                          "the same line under prose is the shape the rule forbids, at its file line")
