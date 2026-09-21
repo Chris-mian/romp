@@ -429,11 +429,11 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertTrue(a["midPress"]["pressedSurvived"], "the pressed button is the same element after the frame that added a row (reconciled in place, never replaced)")
         self.assertEqual(a["latched"], [{"label": "Approve…", "disabled": True}, {"label": "Deny", "disabled": True}], "the release was a click: latched (the review of PR 1890, medium 1); read with the request held at the socket, so the kernel's answer cannot beat the read")
         self.assertEqual(a["held"], 1, "exactly one request was held and released: the click's noticeAction")
-        self.assertIn("Refused: postal bus unreachable", a["after"]["err"], "the kernel answered the click")
+        self.assertIn("That action was refused: postal bus unreachable", a["after"]["err"], "the kernel answered the click")
         t = a["afterThird"]
         self.assertEqual(len(t["rows"]), 3, "the third hold's row joined: %r" % t["rows"])
         self.assertEqual(t["rows"][0], "notice:%s:%s:1" % (SID, MID), "the first row kept its place")
-        self.assertIn("Refused: postal bus unreachable", t["err"], "the first row's refusal line survived the frame that added a row")
+        self.assertIn("That action was refused: postal bus unreachable", t["err"], "the first row's refusal line survived the frame that added a row")
         self.assertEqual(t["errShown"], "")
         self.assertTrue(t["settled"], "the box settled after the third row, at its max height or grown (pass: %r)" % t["pass"]); self.assertTrue(t["atBottom"], "still at the bottom with three rows, read settled")
 
@@ -443,7 +443,7 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertIsNotNone(a)
         self.assertEqual(a["latched"], [{"label": "Approve…", "disabled": True}, {"label": "Deny", "disabled": True}], "both latch; the one clicked says what it is doing")
         self.assertEqual(a["after"]["errShown"], "", "the reason shows in the row")
-        self.assertIn("Refused: postal bus unreachable", a["after"]["err"], "no bus in the lab: the act road's own refusal")
+        self.assertIn("That action was refused: postal bus unreachable", a["after"]["err"], "no bus in the lab: the act road's own refusal")
         self.assertEqual(a["after"]["buttons"], [{"label": "Approve", "disabled": False}, {"label": "Deny", "disabled": False}], "re-armed on the kernel's answer")
 
     def test_deny_opens_the_note_inline_with_two_choices_and_a_way_back_and_the_bare_deny_posts_the_verdict(self):
@@ -456,7 +456,7 @@ class HeldMailChatServed(unittest.TestCase):
         self.assertEqual([b["label"] for b in d["back"]["buttons"]], ["Approve", "Deny"], "Back returns to the two actions"); self.assertEqual(d["back"]["note"], "none")
         self.assertTrue(all(b["disabled"] for b in d["latched"]["buttons"]), "latched on the decision (read with the request held at the socket): %r" % d["latched"]["buttons"])
         self.assertEqual(d["held"], 1, "exactly one request was held and released")
-        self.assertIn("Refused: postal bus unreachable", d["after"]["err"])
+        self.assertIn("That action was refused: postal bus unreachable", d["after"]["err"])
         self.assertTrue(all(not b["disabled"] for b in d["after"]["buttons"]), "re-armed")
 
     def test_the_decision_takes_the_row_off_the_box_and_the_ring_off_the_tab(self):
