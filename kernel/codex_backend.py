@@ -553,7 +553,7 @@ class _Session:
         self.mode_lock = threading.Lock()  # guards policy changes against an in-flight turn
         self.color = color            # identity bg — also in names/<sid> (fields 3/4), the shared store
         self.dead = False
-        self.state = "waiting"        # waiting | working (the two states this backend can know)
+        self.state = "waiting"        # waiting | working | compacting (the compaction bracket, CodexBackend.compact, 2026-09-19)
         self.since = time.time()
         self.queue = []               # pending sends (persisted); drained into the next turn
         self.queue_ids = []           # stable durable identity parallel to queue (public API stays text-only)
@@ -1217,18 +1217,23 @@ class CodexBackend:
                         if s.compacting and not s.dead:
                             # the app-server is gone, and the compaction's outcome with it (2026-09-19): the bracket
                             # ends LOUDLY — a red card, as every launch error, cleared by the next accepted turn — and
-                            # no divider is written for an end nobody saw; the failure path rebuilds the client
+                            # no divider is written for an end nobody saw; the failure path rebuilds the client.
+                            # noRetry: nothing retries a compaction, so the card carries no Retry (review, 2026-09-21).
+                            # The save stays under s.lock, _save_registry's rule (the _work handlers' shape): saved after
+                            # the release, a turn accepted in the window cleared the field and saved None, and this
+                            # stale snapshot then committed the red card over it (review find, 2026-09-21).
                             self._end_compact_locked(s)
                             s.launch_error = {"text": "The Codex app-server ended while this conversation was "
                                                       "compacting — %s" % (str(e) or e.__class__.__name__),
-                                              "at": time.time(), "limit": False}
+                                              "at": time.time(), "limit": False, "noRetry": True}
+                            try:
+                                self._save_registry(s, fields=("launchError",))
+                            except Exception:
+                                self.log("compaction end registry save: %s" % traceback.format_exc())
                             ended = True
                         queued = bool(s.queue) and not s.dead
                     if ended:
-                        try:
-                            self._save_registry(s, fields=("launchError",))
-                        except Exception:
-                            self.log("compaction end registry save: %s" % traceback.format_exc())
+                        self.poke()                    # the end is the event a parked message waits on (review find, 2026-09-21)
                         self.push_session(s.sid)
                     if queued:
                         self._ensure_worker(s)
@@ -1690,8 +1695,9 @@ class CodexBackend:
         that slipped through would swap the tid under the bracket — and the pump matches the compaction's active
         and idle statuses to a session by tid, so after the swap they would match nothing and the bracket would
         stand until a kill. "busy" is the kernel's word to park on and is never shown: the parked clear runs at the
-        turn's end poke, at a compacted bracket's end (its boundary write pokes), or within the pusher's half-second
-        backstop after a loud end (systemError or notLoaded only push and kick; 2026-09-19).
+        turn's end poke or at the compaction bracket's end, which pokes whether it ended cleanly (the boundary write)
+        or loudly (systemError, notLoaded, the client's death: they only pushed and kicked until the review of
+        2026-09-21, leaving the parked clear to the pusher's half-second backstop).
 
         The bracket: s.clearing is latched before thread/start and dropped when the new tid is durable (the
         deciding event) or the attempt raises; clearing() publishes it. The swap's order: the fresh file is
@@ -1848,7 +1854,11 @@ class CodexBackend:
         non-blocking take still refuses meanwhile), a raise answered in words and never parked — a compaction has no
         retry queue. A pending-/failed- placeholder has no thread to compact and is refused in words rather than
         minted; a conversation with no records (a fresh spawn, a fresh /clear) is refused before any request, since
-        a compaction the server acks and never takes up would leave the bracket standing until a message probes it.
+        a compaction the server acks and never takes up would leave the bracket standing, and no message typed into
+        the session probes it (the kernel's gates read compacting() and park, and the drain skips the session); what
+        ends such a bracket is a send that bypasses the kernel's gates (a peer's mail, a retry press, a raw-mode save:
+        the worker attempts turn/start under a bracket with no active seen, and the accepted turn ends it), End then
+        Revive, or a kernel restart. docs/codex.md names the two the user can reach.
         The normalizer is built BEFORE the latch and outside norm_lock (_ensure_norm takes it): a session revived or
         restored in this process that has not run a turn has none, and the boundary writer would otherwise meet
         s.norm None inside the pump's try and lose the record silently; built here it also seeds last_uuid from the
@@ -2015,15 +2025,22 @@ class CodexBackend:
             if s.compacting:                           # kill may have ended it meanwhile: one end, one advance
                 self._end_compact_locked(s)
             if loud:
-                s.launch_error = {"text": loud, "at": time.time(), "limit": False}
+                # noRetry: nothing retries a compaction, so the chat's card carries no Retry and no countdown for this
+                # notice (build_session lifts it onto the status as apiNoRetry; review, 2026-09-21). Saved UNDER s.lock,
+                # _save_registry's rule and the _work handlers' shape: saved after the release, a turn accepted in that
+                # window cleared the field and saved None, and this stale snapshot then committed the red card over
+                # it, so the next restart restored a card the turn had cleared (review find, 2026-09-21).
+                s.launch_error = {"text": loud, "at": time.time(), "limit": False, "noRetry": True}
+                try:
+                    self._save_registry(s, fields=("launchError",))
+                except Exception:
+                    self.log("compaction end registry save: %s" % traceback.format_exc())
             queued = bool(s.queue) and not s.dead
-        if wrote:                                      # notify OUTSIDE norm_lock (see _append)
-            self.poke()
+        # Every end pokes, OUTSIDE norm_lock (see _append) and s.lock: the end is the event a message parked on the
+        # bracket waits on. The clean end poked through its boundary write; the loud ends only pushed and kicked, so a
+        # parked message waited for the pusher's half-second backstop instead (review find, 2026-09-21).
+        self.poke()
         if loud:
-            try:
-                self._save_registry(s, fields=("launchError",))
-            except Exception:
-                self.log("compaction end registry save: %s" % traceback.format_exc())
             self.log("compaction of %s ended: %s" % (s.name, loud))
         self.push_session(s.sid)
         if queued:

@@ -19416,6 +19416,17 @@ def _clear_retry_backoff(sid):
     _auto_retry_state.pop(sid, None)   # recovered: the next outage starts at the bottom rung again
 
 
+def _backend_compacting(be, sid):
+    """The backend's own 'a compaction is in progress' verdict (SessionBackend.compacting), True by IDENTITY only
+    (2026-09-21): the interrupt arms read it ahead of busy(), because a compaction reads busy (it is a turn in flight
+    on the server) and interrupt() refuses it (no turn id to stop), so Esc, Stop, POST /interrupt and `romp interrupt`
+    answered "still working" under a chip reading Compacting. Identity, not truth: a double without the verb (a
+    SimpleNamespace, the tmux-era fakes) has no such attribute, and a bare Mock's call answers a truthy Mock; neither
+    is a compaction. Backend-neutral: the SDK backend publishes the same bracket for its /compact."""
+    fn = getattr(be, "compacting", None)
+    return callable(fn) and fn(sid) is True
+
+
 def _fire_api_retry(sid, be, manual=False):
     """Inject a "retry" into an API-error-blocked session, behind every retry gate — the ONE retry
     decision, shared by the apiRetry route (a client's ask: the dashboard's countdown tick or the manual
@@ -19818,6 +19829,12 @@ def _drive(msg, client):
         # is an unknown sid): a backend with no verdict keeps the optimistic chip.
         if be.interrupt(sid) is not False:                # Esc/stop AND settle idle (in the backend)
             _interrupt_clicked[str(sid)] = time.time()    # chip → "interrupting" NOW (event-cleared on settle)
+        elif _backend_compacting(be, sid):
+            # A refusal UNDER A COMPACTION is neither idle nor a dropped stop (review find, 2026-09-21): the backend's
+            # compaction is a turn in flight the server itself refuses to steer or stop, so busy() reads True and the
+            # arm below said "still working" under a chip reading Compacting. Worded for the state, backend-neutral.
+            client["send"](json.dumps({"type": "warn", "text": "the stop was not delivered: the session is compacting its "
+                                                                "conversation, and a compaction runs to its end"}))
         elif be.busy(sid):
             # A refusal WITH work in flight is a stop that did NOT land, not a stop with nothing to stop
             # (review find, 2026-09-11): the Codex backend also answers False while a turn's start is still
@@ -36953,8 +36970,10 @@ def _say_compact_refusal(sid, why, client=None, qid=None):
     """A compaction the backend could not run, said the way _codex_clear_command says a clear's refusal (2026-09-19):
     one warn frame naming the session — and the press, when a copy id rode, so the chat retires the bubble it drew and
     puts the words back in an empty composer — on the delivering socket, or a broadcast to the chat panes when no socket
-    carried the op (a battery click, POST /compact, the pusher's drain); a row on the bell's ring under the refused
-    kind; one stderr line. No cue is stamped for a compaction that never started."""
+    carried the op (a battery click, POST /compact, the pusher's drain), with the timeline panes told on their own
+    settingRefused frame (review find, 2026-09-21; that page drops a warn, and its battery's click stamp ends on the
+    frame); a row on the bell's ring under the refused kind; one stderr line. No cue is stamped for a compaction that
+    never started."""
     frame = {"type": "warn", "text": why, "sid": str(sid)}
     if qid:
         frame["qid"] = qid
@@ -36962,6 +36981,14 @@ def _say_compact_refusal(sid, why, client=None, qid=None):
         client["send"](json.dumps(frame))
     else:
         _send_to_app("chat", dict(frame, id=str(sid)))
+        # the timeline lane that took the battery click hears it too (review find, 2026-09-21): that page's boot drops
+        # a warn, and its click stamp cleared only on a settingRefused frame or its 6 s expiry, so the lane read
+        # compacting for six seconds with no words. The frame the page renders (gesture command, no flag: the shape
+        # the HTTP road builds for a refused compact), sent to every timeline pane the way the model frame is
+        # (_send_to_app), never as the refusal's `client`, which would replace the chat broadcast. `filed`: the ring
+        # row below is the bell's record, so the page posts no second one.
+        _send_to_app("timeline", {"type": "settingRefused", "gesture": "command", "sid": str(sid), "flag": "",
+                                  "text": why, "filed": True})
     _sync_notice("%s: %s" % (_name_of(sid) or str(sid)[:8], why), ok=False, kind="refused")
     sys.stderr.write("compact for %s refused: %s\n" % (sid, why))
 
@@ -37301,8 +37328,9 @@ def _apply_pending_ops(now=None):
                         # the cwd arm's rule, so the chip's ✕ still cancels it) and the pass ends with NO clock hold — the
                         # backend's turn-end poke follows its lock's release (CodexBackend._run_turn), so the cycle that
                         # poke brings finds the lock free, and a cycle that delivers nothing re-wakes nothing, so the
-                        # backstop retries by itself; the move's hold spaces COUNTED retries against a CLI window that
-                        # emits no event, which a clear has not got
+                        # backstop retries by itself; a clear parked behind a compaction bracket gets the bracket's
+                        # end poke, clean or loud (2026-09-21); the move's hold spaces COUNTED retries against a CLI
+                        # window that emits no event, which a clear has not got
                         # the words the op was parked with ride to the verb and its chip (_parked_md: a ("clear", text) op's
                         # text, a pre-upgrade ("command", "/new") op's, the default for a one-slot op from an older mirror),
                         # else a parked /new landed as a "/clear" chip the composer's bubble never matched (2026-09-19)
@@ -37314,10 +37342,12 @@ def _apply_pending_ops(now=None):
                     elif is_compact:
                         # SessionBackend.compact: "" the bracket is up (the backend's compacting() is the cue: no stamp), "busy"
                         # a turn or a compaction already in flight, else the reason. On "busy" the head STAYS with nothing
-                        # recorded in flight and no clock, the clear arm's rule: the backend's turn-end poke, a compacted
-                        # bracket's boundary write (it pokes), or the pusher's half-second backstop after a loud end (a failed
-                        # compaction only pushes and kicks; 2026-09-19) brings the cycle that retries. Words after a typed head are refused with the
-                        # reason (Codex takes no compaction instructions) and popped; a reason rides the parked copy's id.
+                        # recorded in flight and no clock, the clear arm's rule: the backend's turn-end poke or the
+                        # compaction bracket's end poke (every end pokes, the clean one through its boundary write and the
+                        # loud ones directly since the review of 2026-09-21; before it a failed compaction only pushed and
+                        # kicked, leaving the head to the pusher's half-second backstop) brings the cycle that retries.
+                        # Words after a typed head are refused with the reason (Codex takes no compaction instructions)
+                        # and popped; a reason rides the parked copy's id.
                         if len(cmd_words) > 1:
                             compact_why = _CODEX_COMPACT_NO_WORDS
                         else:
@@ -40083,6 +40113,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # 2026-06-24). Mirrors the feed, which gates the same _api_error on `not who_working` and treats awaiting
     # as a working flavor (build_feed).
     aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
+    _launch_no_retry = False   # the launch-error card below is one nothing retries (a failed compaction); status apiNoRetry
     if aerr:
         # While the session is still blocked on THIS error, the live card below carries the same record
         # with the buttons and countdown — drop the durable note so the error doesn't show twice. The
@@ -40111,6 +40142,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
             events.append({"kind": "apiError",
                            "text": _lerr["text"] if _lerr.get("dep") or _codex_lane else
                            "This session's claude process could not start — %s" % _lerr["text"]})
+            # a notice nothing retries (SessionBackend.launch_error's noRetry: the Codex compaction bracket's end
+            # notices, 2026-09-21): the card wears the API-error dress, whose Retry press sent the literal word into
+            # the thread as a turn and compacted nothing, so the status says to draw it with no Retry and no countdown
+            _launch_no_retry = bool(_lerr.get("noRetry"))
     # TOC ledger: archiver headline (the tab tooltip's Summary; the bullets list retired 2026-07-07 —
     # its in-chat readers were deleted with the ledger box, and the tooltip reads recent/tree instead)
     arch = jd.load_archive(sid) or {}
@@ -40288,6 +40323,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # tab), and never auto-retried: a refusal is deterministic on the same input, so a
                   # retry re-sends the same prompt and manufactures the same refusal (12/12 in the
                   # audited storm) — rewrite the ask or drop the thread (the user 2026-08-15)
+                  # the blocking notice is one nothing retries (a compaction that failed on the backend's side, the
+                  # launch error's noRetry): renderApiError draws no Retry, no Stop-all and no retrying-soon meta for
+                  # it, the apiRefusal precedent read off the live status (review find, 2026-09-21)
+                  "apiNoRetry": _launch_no_retry,
                   "apiRefusal": bool(aerr and aerr.get("refusal")),
                   # the FEED's per-session needs-you verdict, on the STATUS so the tab strip's rule reads it
                   # (tab-state.ts RING_TEST, the Waiting-on-you ring widget): True when the last feed build filed a card of this session
@@ -68131,6 +68170,12 @@ class Handler(BaseHTTPRequestHandler):
                     # the WS op's gate: a stop the backend refused (nothing in flight) paints nothing
                     if be.interrupt(sid) is not False:          # Esc/stop AND settle idle (in the backend)
                         _interrupt_clicked[str(sid)] = time.time()  # chip → "interrupting" NOW, same as the WS op
+                    elif _backend_compacting(be, sid):
+                        # …a refusal under a compaction is the WS arm's compacting toast (review find, 2026-09-21):
+                        # said in the state's words, never answered ok, so `romp interrupt` prints it and exits non-zero
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            "the stop was not delivered: %s is compacting its conversation, and a compaction runs to its end"
+                            % who}), "application/json")
                     elif be.busy(sid):
                         # …and a refusal WITH work in flight is a stop that did not land (the WS arm's toast):
                         # said, never answered ok, so `romp interrupt` prints this and exits non-zero — the

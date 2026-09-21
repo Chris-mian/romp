@@ -111,7 +111,7 @@ import { apiErrorReason } from "./api-error-reason";
 import { chatMdExtensions, userMdHtml } from "./chat-md";
 import { setTip, pruneTip } from "./tip";
 import { MetaKind, MetaHooks, metaButton as buildMetaButton, syncMetaControls as syncMetaControlsWith, ctxBar as buildCtxBar, setCtxBar as setCtxBarWith,
-  metaColor, modeIconSvg, riskyMode, prettyMode, prettyFast, fastAvailable, metaCurrent, metaDots, rampOn } from "./status-controls";   // the status line's controls, one renderer for the chat's line, the popovers and the settings card's preview (T415 part two)
+  endCtxBarClick, metaColor, modeIconSvg, riskyMode, prettyMode, prettyFast, fastAvailable, metaCurrent, metaDots, rampOn } from "./status-controls";   // the status line's controls, one renderer for the chat's line, the popovers and the settings card's preview (T415 part two)
 import { agentCount, replyOwed, threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, newCommentCreate, commentCreateFrame,
          pickMarkToOpen, type CommentThread, type CommentCreate, markSkipsParent } from "./comments";
 import { isReplyReady, placeMark, placeWindowed, readyChips, replyLine, chipLabel, chipTip, chipAria, type Dir, type ReadyMark, type ReadyChip } from "./reply-ready";
@@ -336,7 +336,7 @@ interface ModelFallback { pick: string; pickValue: string; live: string; cause: 
 // (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19); the actions are of a KIND the kernel defines.
 interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment?: NoticeAttachment | null;
                        actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[] }
-interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; apiNoRetry?: boolean; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); apiNoRetry = the blocking notice is one nothing retries (a compaction that failed on the backend's side, the launch error's noRetry): the card draws no Retry, no Stop-all and no retrying-soon meta (2026-09-21); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Waiting-on-you ring widget wears a dashed yellow ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring, 2026-09-13); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -5149,6 +5149,17 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   // names the real fix (rewrite the ask, or drop this thread).
   const refusal = !!st?.apiRefusal;
   const spendCap = !!st?.apiSpendLimit || !!st?.apiModelLimit || !!st?.apiAuthErr || refusal;
+  const body = el("div", "notice-md");
+  body.textContent = ev.text || "The session stopped on an API error.";
+  const gist = ev.status ? `error ${ev.status}` : "error";
+  // A notice NOTHING retries (2026-09-21): a compaction that failed on the backend's side rides this card as a
+  // launch error, and its Retry press sent the literal word "retry" into the thread as a turn, cleared the card and
+  // compacted nothing; no auto-retry ever fires for a launch error either, so the retrying-soon meta was false and
+  // Stop-all stopped nothing. The kernel says so on the live status (apiNoRetry, from the launch error's noRetry),
+  // read off the status, not the event, as every flag above is: the same card, the words alone, no meta, no actions.
+  if (st?.apiNoRetry) {
+    return notice({ src: "API", glyph: "api", sev: "err", gist, body, open: true, key: "apierr:" + (ev.uuid || (activeId || "")), cls: "turn-apierror" });
+  }
   const acts: HTMLElement[] = [];
   // every action is a data-act word button on the button vocabulary; the document.body delegate acts
   // (apiRetryNow / stopAllRetries) and acknowledges at once — the tail rebuilds on every
@@ -5169,11 +5180,9 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
     paused ? "resume auto-retrying globally" : "stop the auto-retry loop for all errors globally");
   stop.classList.add("api-stopall");
   acts.push(stop);
-  const body = el("div", "notice-md");
-  body.textContent = ev.text || "The session stopped on an API error.";
   // OPEN by default: the session is BLOCKED and the actions must show (the human is the bottleneck); the
   // error severity is the rail + red dot + 6% wash — the words stay --fg (red text sat at 3.08:1 on cream)
-  return notice({ src: "API", glyph: "api", sev: "err", gist: ev.status ? `error ${ev.status}` : "error", meta: countdown, acts, body,
+  return notice({ src: "API", glyph: "api", sev: "err", gist, meta: countdown, acts, body,
                   open: true, key: "apierr:" + (ev.uuid || (activeId || "")), cls: "turn-apierror" });
 }
 
@@ -19087,8 +19096,11 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     // whatever is in flight. When it also names the press (qid) no echo will ever land for that copy, so the
     // optimistic bubble ends on THIS event, the kernel's verdict, and the words go back into an EMPTY composer (the
     // hostIsDown refusal's idiom: a draft is never overwritten); a refusal that names no press (a battery click, a POST
-    // route, the pusher's drain of a compact op) only toasts.
+    // route, the pusher's drain of a compact op) only toasts. Either way it ends the active session's battery pulse
+    // (2026-09-21): compactActiveSession added ctx-clicked as the press's cue and only a compacting status removed it,
+    // so a refused compaction pulsed until the next status change or a tab switch.
     if (typeof m.sid === "string" && m.sid) {
+      if (m.sid === activeId) endCtxBarClick(document.getElementById("ctx-bar"));
       let back: string | null = null;
       if (typeof m.qid === "string" && m.qid) {
         const list = pendingSent.get(m.sid) || [];

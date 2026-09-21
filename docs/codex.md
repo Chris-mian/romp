@@ -231,11 +231,14 @@ words dropped. Esc does not stop a running compaction, and ending the session
 leaves it to finish on Codex's side. A compaction that fails on Codex's side
 (checked live by giving the thread a model the account cannot use) ends with a
 notice that Codex could not compact the conversation, no divider, and the
-conversation continues as it was. One limit of the signal romp has, because
-Codex sends no notification for a compaction it was asked for and romp keys on
-the thread's status: a compaction Codex acknowledges but never runs leaves the
-session reading "compacting" until the next message probes it (an accepted turn
-clears the cue, and the message goes in).
+conversation continues as it was; the notice offers no Retry, since nothing
+retries a compaction, and the next message you send clears it. One limit of the
+signal romp has, because Codex sends no notification for a compaction it was
+asked for and romp keys on the thread's status: a compaction Codex acknowledges
+but never runs leaves the session reading "compacting", and no message typed
+into the session probes that (each one waits behind the cue, as it would behind
+a real compaction). The way out is End then Revive, which keeps the thread and
+its history and delivers the waiting message, or a kernel restart.
 
 The chat and timeline effort menus use the selected model's supported levels
 from the Codex app-server's model catalog. Romp also validates effort changes

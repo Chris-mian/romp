@@ -193,7 +193,10 @@ class SessionBackend(ABC):
         'waiting', the message the user typed stays in the queue, and nothing anywhere says why (the user
         2026-07-28, whose send into an out-of-usage account simply never flipped to working). `limit` is
         True when the cause is the ACCOUNT being out of usage rather than a broken session — the queue is
-        parked, not lost, and the kernel says so (_limit_hold) instead of showing a red error.
+        parked, not lost, and the kernel says so (_limit_hold) instead of showing a red error. An optional
+        `noRetry` True marks a notice nothing retries (a compaction that failed on the backend's side: the
+        Codex bracket's end notices, 2026-09-21): the chat's card then carries no Retry action and no
+        retry countdown, where every other launch error offers the Retry that resumes a stalled turn.
 
         A backend with no such signal keeps the None default (the tmux backend's CLI launched into a pane
         where the failure was on screen)."""

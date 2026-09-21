@@ -13,7 +13,8 @@ on the delivering socket (or a broadcast when no socket carried the op), in `sta
 ("/tmp is nearly out of space", "/s to skip") is prose to a Codex session and reaches the model as text,
 idle or parked, as it did before the guard existed. The parked-op drain reads the same predicate
 (_codex_refuses) as the route, so a parked known head drains through the refusal and parked slash-shaped
-prose drains to the model; _compact_or_park refuses ahead of any park or stamp; the composer's "/" palette
+prose drains to the model; _compact_or_park pays the one gate, then takes the backend's own verb, and only a
+reason the backend answers refuses (the native compaction, 2026-09-19); the composer's "/" palette
 lists what a Codex session takes. Since the native clear registered its heads (tests/test_codex_clear_route.py)
 and the native compaction its own (tests/test_codex_compact_route.py, where the compaction door's tests live), a
 whole-message /clear, /new or /compact is TAKEN, not refused, and all three heads stay in the known set: the

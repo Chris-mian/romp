@@ -3668,7 +3668,9 @@ class TimelinePanel {
     let shell = false;
     try {
       shell = !!(typeof window !== 'undefined' && window.parent && window.parent !== window);
-      if (shell) window.parent.postMessage({ romp: 'notify', kind: 'refused', text, sid }, '*');
+      // `filed`: the kernel filed the bell row itself (a refused compaction's row rides its ring, beside the chat's
+      // broadcast, 2026-09-21), so this page posts no second one; the HTTP road's own frame still files its row here
+      if (shell && !(m && m.filed)) window.parent.postMessage({ romp: 'notify', kind: 'refused', text, sid }, '*');
     } catch (e) { /* no parent frame (Obsidian, headless) */ }
     if (!shell && m && m.gesture === 'command' && sid) {
       // no shell bell (the Obsidian panel): the lane's gear shows the kernel's words, the row a refused toggle gets

@@ -4079,6 +4079,7 @@ class NativeCompact(unittest.TestCase):
         self.assertIsNotNone(err)
         self.assertIn("app-server", err["text"])
         self.assertIn("compacting", err["text"])
+        self.assertIs(err.get("noRetry"), True, "a bracket's end notice: nothing retries a compaction (the card drops its Retry)")
         self.assertEqual(_boundaries(_records(tmp)), [], "no divider for a compaction whose end was never seen")
         self.assertEqual(be.live_sessions()[sid]["state"], "waiting")
         self.assertIs(be.busy(sid), False)
@@ -4099,6 +4100,7 @@ class NativeCompact(unittest.TestCase):
         self.assertIn("systemError", err["text"])
         self.assertIn("could not compact", err["text"])
         self.assertNotIn("backend", err["text"])
+        self.assertIs(err.get("noRetry"), True, "a bracket's end notice: nothing retries a compaction (the card drops its Retry)")
         self.assertEqual(_boundaries(_records(tmp)), [], "no divider for a compaction that failed")
         self.assertIs(be.busy(sid), False)
         self.assertEqual(be.live_sessions()[sid]["state"], "waiting")
@@ -4123,6 +4125,7 @@ class NativeCompact(unittest.TestCase):
         self.assertIn("notLoaded", err["text"])
         self.assertIn("stopped being available", err["text"])
         self.assertNotIn("backend", err["text"])
+        self.assertIs(err.get("noRetry"), True, "a bracket's end notice: nothing retries a compaction (the card drops its Retry)")
         self.assertEqual(_boundaries(_records(tmp)), [], "no divider: the outcome is unknown")
         self.assertIs(be.busy(sid), False)
 
@@ -4200,9 +4203,10 @@ class NativeCompact(unittest.TestCase):
             self.assertFalse(s.compacting)
             self.assertEqual(s.compact_ends, 1, "kill is an end of the bracket: the counter advances")
         self.assertIsNone(be.compacting(sid), "ended: no signal")
+        n0 = s.compact_idles
         _status(fake, "T-1", "active")
         _status(fake, "T-1", "idle")
-        time.sleep(0.2)
+        self.assertTrue(until(lambda: s.compact_idles > n0), "the pump has read the idle (a wait on the event, not a sleep)")
         self.assertEqual(_boundaries(_records(tmp)), [], "the compaction finishes server-side; romp writes nothing for a session it ended")
 
     def test_an_accepted_turn_ends_a_bracket_the_server_never_took_up(self):
@@ -4224,9 +4228,11 @@ class NativeCompact(unittest.TestCase):
         self.assertEqual(fake.called("turn_start")[-1][1], "T-1")
         self.assertEqual(_boundaries(_records(tmp)), [])
         self.assertTrue(any("started nothing" in m for m in logs), logs)
+        s = be._session(sid)
+        n0 = s.compact_idles
         _status(fake, "T-1", "active")
         _status(fake, "T-1", "idle")
-        time.sleep(0.2)
+        self.assertTrue(until(lambda: s.compact_idles > n0), "the pump has read the idle (a wait on the event, not a sleep)")
         self.assertEqual(_boundaries(_records(tmp)), [], "a late active/idle with no bracket standing writes nothing")
         self.assertIs(be.compacting(sid), False)
 
@@ -4242,8 +4248,10 @@ class NativeCompact(unittest.TestCase):
         fake.push_global("thread/compacted", {"threadId": "T-1", "turnId": "t-9"})
         self.assertTrue(until(lambda: be.compacting(sid) is False))
         self.assertEqual(len(_boundaries(_records(tmp))), 1)
+        s = be._session(sid)
+        n0 = s.compact_idles
         _status(fake, "T-1", "idle")
-        time.sleep(0.2)
+        self.assertTrue(until(lambda: s.compact_idles > n0), "the pump has read the idle (a wait on the event, not a sleep)")
         cbs = _boundaries(_records(tmp))
         self.assertEqual(len(cbs), 1, "written once")
         self.assertEqual(cbs[0]["compactMetadata"], {"trigger": "manual"}, "the compaction romp asked for")
@@ -4338,7 +4346,167 @@ class NativeCompact(unittest.TestCase):
         self.assertIs(be.compacting(sid), False)
         self.assertIs(be.busy(sid), False)
         self.assertEqual(be.compact(sid), "", "the revived row compacts: no stale bracket refuses it")
-        self.assertEqual(fake.called("thread_compact"), [("thread_compact", "T-1")])
+        self.assertEqual(fake.called("thread_compact"), [("thread_compact", "T-1")],
+                         "and the empty answer is a compaction the app-server was asked for, not a stale bracket read as one")
+
+    def test_a_refusal_read_after_a_loud_end_stands_down_on_the_end_counter(self):
+        # The bracket-end counter half of the refusal's staleness check (review find, 2026-09-21): a bracket compact()
+        # latched ends LOUDLY (systemError) while the worker's refused turn/start is in flight, and the pump reads that
+        # end before the refusal handler runs. A failed compaction sends no idle, so the idle count alone would call
+        # the refusal fresh and re-latch a bracket nothing would ever end, parking every send; the end counter, which
+        # the loud end advanced, is what says the compaction the server named is over. Every other stale-refusal case
+        # here also pushes an idle, so this one is what keeps that key honest.
+        be, fake, tmp, sid = self._turned()
+        s = be._session(sid)
+        self.assertEqual(be.compact(sid), "")
+        fake.compacting = True
+
+        def hook():
+            _status(fake, "T-1", "active")
+            _status(fake, "T-1", "systemError")
+            until(lambda: be.compacting(sid) is False)   # the loud end is read before the refusal lands
+            fake.compacting = False                        # over on the server too: the retry lands
+        fake.refusal_hook = hook
+        n_starts = len(fake.called("turn_start"))
+        self.assertTrue(be.send(sid, "into a compaction that failed"))
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)),
+                        "the send landed: the refusal re-latched nothing on a compaction the pump had seen end")
+        starts = fake.called("turn_start")[n_starts:]
+        self.assertEqual([c[4] for c in starts], [None, "t-2"], "one refused attempt, then the retry at once")
+        self.assertIs(be.compacting(sid), False)
+        self.assertEqual(_boundaries(_records(tmp)), [], "a failed compaction gets no divider")
+        with s.lock:
+            self.assertEqual((s.compact_ends, s.compact_idles), (1, 0),
+                             "the loud end advanced the end counter; no idle was ever seen for the thread")
+        self.assertIsNone(be.launch_error(sid), "the accepted turn cleared the failed compaction's notice")
+
+    def test_the_divider_lands_before_the_end_is_published(self):
+        # The order the docstrings promise, pinned (review find, 2026-09-21): a reader that sees the session no longer
+        # compacting also finds the divider, so the boundary record is appended while the bracket still stands and the
+        # end is published after. The polling tests pass in either order; these spies read the sequence. They read the
+        # flag only and push nothing: _append runs under norm_lock, and a push from there self-deadlocks the pump.
+        be, fake, tmp, sid = self._turned()
+        seq = []
+        real_append, real_end = be._append, be._end_compact_locked
+
+        def append(sess, recs):
+            if any(r.get("subtype") == "compact_boundary" for r in recs):
+                seq.append(("boundary", sess.compacting))
+            return real_append(sess, recs)
+
+        def end(sess):
+            seq.append(("end",))
+            return real_end(sess)
+        be._append, be._end_compact_locked = append, end
+        self.assertEqual(be.compact(sid), "")
+        _status(fake, "T-1", "active")
+        _status(fake, "T-1", "idle")
+        self.assertTrue(until(lambda: be.compacting(sid) is False))
+        self.assertEqual(seq, [("boundary", True), ("end",)],
+                         "the record is written while the bracket stands, then the end is published")
+
+    def test_every_end_of_the_bracket_pokes_the_kernel(self):
+        # A message parked on the bracket runs at the kernel's next cycle; the clean end poked through its boundary
+        # write, but the loud ends (systemError, notLoaded, the client's death) only pushed and kicked, so the parked
+        # message waited for the pusher's half-second backstop instead of the end event (review find, 2026-09-21).
+        # Every end pokes now. The recorder reads the bracket at poke time, and only the pokes after the latch count
+        # (the first turn's own pokes ran with no bracket): one that finds the bracket down is the end's.
+        def fresh(tag):
+            pokes = []
+            tmp = tempfile.mkdtemp()
+            fake = FakeClient()
+            be = cb.CodexBackend(tmp, client_factory=lambda: fake, poke=lambda: pokes.append(be.compacting(sid)))
+            sid = be.spawn("web", "/TESTDIR-%s" % tag)
+            self.assertTrue(be.send(sid, "first synthetic turn"))
+            self.assertTrue(_lock_free(be, sid))
+            self.assertEqual(be.compact(sid), "")
+            n0 = len(pokes)
+            _status(fake, "T-1", "active")
+            self.assertTrue(until(lambda: self._active_seen(be, sid)))
+            return be, fake, sid, lambda: pokes[n0:]
+        for kind in ("systemError", "notLoaded"):
+            with self.subTest(kind=kind):
+                be, fake, sid, since_latch = fresh(kind)
+                self.assertNotIn(False, since_latch(), "no poke found the bracket down before its end")
+                _status(fake, "T-1", kind)
+                self.assertTrue(until(lambda: be.compacting(sid) is False))
+                self.assertTrue(until(lambda: False in since_latch()), "the loud end woke the kernel")
+        with self.subTest(kind="death"):
+            be, fake, sid, since_latch = fresh("death")
+            self.assertNotIn(False, since_latch())
+            fake.close()                              # the pump's read raises: the app-server is gone
+            self.assertTrue(until(lambda: be.compacting(sid) is False))
+            self.assertTrue(until(lambda: False in since_latch()), "the client's death woke the kernel")
+
+    def _stale_snapshot_window(self, be, sid, marker, clear, clear_writes):
+        """Open the window the review named at the one place it opens (2026-09-21): _save_registry snapshots the row
+        BEFORE it takes the registry lock, so this spy takes the loud end's snapshot, then starts `clear` (the writer
+        that sets the field back to None and saves) and gives it two seconds to commit first; `clear_writes` is how
+        many commits that writer makes (a send appends its queue entry, then its accepted turn clears the field).
+        Every committed row's launchError is recorded in commit order. With the save under the session lock the
+        clearer cannot take the lock until the loud record is on disk, so its None commits LAST; with the save after
+        the release the stale loud snapshot commits over the None."""
+        real_snapshot, real_write = be._registry_snapshot, be._write_registry_locked
+        armed, writes = [], []
+
+        def write(rows):
+            writes.append((rows.get(sid) or {}).get("launchError"))
+            return real_write(rows)
+
+        def snapshot(sess):
+            snap = real_snapshot(sess)
+            le = snap.get("launchError") or {}
+            if marker in str(le.get("text")) and not armed:
+                n = len(writes)
+                armed.append(threading.Thread(target=clear, daemon=True))
+                armed[0].start()
+                until(lambda: len([w for w in writes[n:] if w is None]) >= clear_writes, timeout=2.0)   # the window
+            return snap
+        be._registry_snapshot, be._write_registry_locked = snapshot, write
+        return armed, writes
+
+    def test_a_loud_ends_record_commits_under_the_lock_before_a_clearing_turn_can(self):
+        # The status handler set launch_error under s.lock and saved the registry after releasing it, against
+        # _save_registry's rule that every mutator keeps the session lock through the transaction; a turn accepted in
+        # that window cleared the field and saved None, and the handler's stale snapshot then committed the red card
+        # over it, so the next restart restored a card the turn had cleared (review find, 2026-09-21).
+        be, fake, tmp, sid = self._turned()
+        self.assertEqual(be.compact(sid), "")
+        _status(fake, "T-1", "active")
+        self.assertTrue(until(lambda: self._active_seen(be, sid)))
+        armed, writes = self._stale_snapshot_window(be, sid, "systemError", lambda: be.send(sid, "after it"), clear_writes=2)
+        _status(fake, "T-1", "systemError")
+        self.assertTrue(until(lambda: be.compacting(sid) is False))
+        self.assertTrue(armed, "the loud end's save took its snapshot")
+        armed[0].join(5)
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)), "the turn after it ran")
+        self.assertIsNone(be.launch_error(sid), "the accepted turn cleared the notice")
+        self.assertTrue(any(w and "systemError" in w["text"] for w in writes), "the loud record was committed")
+        self.assertIsNone(writes[-1], "and the accepted turn's None committed LAST: the loud record never landed over it")
+        self.assertIsNone(json.loads(be._reg_path().read_text())[sid]["launchError"])
+
+    def test_the_client_deaths_record_commits_under_the_lock_too(self):
+        # The pump's client-death end had the same shape (review find, 2026-09-21). No turn can run on a dead client,
+        # so the clearing writer here is the accepted turn's own two lines on another thread.
+        be, fake, tmp, sid = self._turned()
+        s = be._session(sid)
+        self.assertEqual(be.compact(sid), "")
+        _status(fake, "T-1", "active")
+        self.assertTrue(until(lambda: self._active_seen(be, sid)))
+
+        def clear():
+            with s.lock:
+                s.launch_error = None
+                be._save_registry(s, fields=("launchError",))
+        armed, writes = self._stale_snapshot_window(be, sid, "app-server ended", clear, clear_writes=1)
+        fake.close()
+        self.assertTrue(until(lambda: be.compacting(sid) is False))
+        self.assertTrue(armed, "the death's save took its snapshot")
+        armed[0].join(5)
+        self.assertTrue(until(lambda: len(writes) >= 2 and not armed[0].is_alive()), "both writers committed")
+        self.assertIsNone(be.launch_error(sid))
+        self.assertTrue(any(w and "app-server ended" in w["text"] for w in writes), "the loud record was committed")
+        self.assertIsNone(writes[-1], "the None commits last: the stale record never overwrote it")
 
 
 if __name__ == "__main__":

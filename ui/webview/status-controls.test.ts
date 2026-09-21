@@ -170,3 +170,14 @@ test("the battery: filled to its percentage in the colour given, the number insi
   assert.deepEqual(swept[1], ["ctx-scan", false], "a reused scan keeps its phase");
   const clicked: N[] = []; const live = SC.ctxBar((b: N) => clicked.push(b)); live.dispatch("click"); assert.equal(clicked[0], live, "the chat's hook gets the bar");
 });
+
+test("the battery's click pulse ends on a refusal too (2026-09-21): endCtxBarClick drops the class the click added, a missing bar is a no-op, and the compacting state still ends it", () => {
+  const bar = SC.ctxBar(() => { /* the chat's hook */ });
+  bar.classList.add("ctx-clicked");
+  SC.endCtxBarClick(bar);
+  assert.equal(bar.classList.contains("ctx-clicked"), false, "the pulse ends on the refusal, not on the next status change or a tab switch");
+  SC.endCtxBarClick(null);                                   // no bar on the page yet: nothing to end
+  bar.classList.add("ctx-clicked");
+  SC.setCtxBar(bar, "62%", true, [1, 2, 3], false);
+  assert.equal(bar.classList.contains("ctx-clicked"), false, "the compacting state takes the cue over, through the same remover");
+});

@@ -187,6 +187,10 @@ class CodexCompactDoor(_Base):
         self.assertEqual(state, {"refused": why})
         self.assertEqual(self._warns(), [{"type": "warn", "id": SID, "sid": SID, "text": why}],
                          "no socket reaches this door: the chat panes hear a broadcast naming the session")
+        self.assertEqual([msg for app, msg in self.broadcast if app == "timeline"],
+                         [{"type": "settingRefused", "gesture": "command", "sid": SID, "flag": "", "text": why, "filed": True}],
+                         "the timeline lane that took the battery click hears it on the frame that page renders (a warn it "
+                         "drops), so its click stamp ends on this event; `filed` says the bell row below is already the ring's")
         self.assertEqual(self._last_notice()["kind"], "refused")
         self.assertEqual(self.marked, [], "no cue for a compaction that never started")
         self.assertNotIn(SID, km._pending_ops, "a refusal is not an op")
@@ -287,6 +291,7 @@ class CodexCompactRoute(_Base):
         self.assertEqual(self.sent, [{"type": "warn", "text": why, "sid": SID, "qid": QID}],
                          "the frame names the session and the press: the chat retires the bubble it drew and puts the words back")
         self.assertEqual(self._warns(), [], "the socket carried it: no broadcast")
+        self.assertEqual(self.broadcast, [], "no timeline frame either: no lane clicked, and the words rode the socket")
         self.assertEqual(self._last_notice()["kind"], "refused")
         self.assertNotIn(SID, km._pending_ops)
         self.assertEqual(self.marked, [])
@@ -365,6 +370,10 @@ class CodexCompactDrain(_Base):
         self.assertEqual(self.be.calls, [("compact", SID), ("effort", "high")], "popped; the setting behind it still delivers")
         self.assertNotIn(SID, km._pending_ops)
         self.assertEqual(self._warns(), [{"type": "warn", "id": SID, "sid": SID, "text": why}])
+        self.assertEqual([msg for app, msg in self.broadcast if app == "timeline"],
+                         [{"type": "settingRefused", "gesture": "command", "sid": SID, "flag": "", "text": why, "filed": True}],
+                         "a parked click is a click: the lane whose battery press parked still holds its stamp, so the drain's "
+                         "refusal reaches the timeline on the same frame the door's does (2026-09-21)")
         self.assertEqual(self._last_notice()["kind"], "refused")
         self.assertEqual(self.marked, [])
         self.assertFalse(any("backend refused it" in str(m.get("text")) for _, m in self.broadcast),
@@ -488,6 +497,34 @@ class RealBackendCompact(unittest.TestCase):
         last = self.fake.called("turn_start")[-1]
         self.assertEqual((last[1], [i["text"] for i in last[2]]), ("T-1", ["typed meanwhile"]))
         self.assertEqual(km.Sessions.live()[sid]["state"], "waiting")
+
+    def test_a_failed_compactions_card_carries_no_retry_action(self):
+        # The failed compaction rides the launch-error card, which wears the API-error dress: a retrying-soon meta and
+        # two Retry buttons, and the press sent the word "retry" into the thread as a turn (review find, 2026-09-21).
+        # Nothing retries a compaction, so the bracket's end notices carry noRetry and the built status says so
+        # (apiNoRetry, the apiRefusal precedent): the chat renders the card with no meta and no actions. Scoped to the
+        # bracket's ends: a failed turn's card keeps its button.
+        sid = self.be.spawn("web", "/TESTDIR-compact-failed", sid=SID_REAL)
+        self.assertTrue(self.be.send(sid, "first synthetic turn"))
+        self.assertTrue(self.cbt._lock_free(self.be, sid))
+        self.assertIs(km._compact_or_park(self.be, sid), False, "fired now, through the one door")
+        self._status("active")
+        self._status("systemError")
+        self.assertTrue(until(lambda: km._compacting_now(sid) is False), "the loud end")
+        err = self.be.launch_error(sid)
+        self.assertIn("could not compact", err["text"])
+        self.assertIs(err.get("noRetry"), True, "the notice says nothing retries it")
+        out = km.build_session(sid, time.time())
+        cards = [e for e in out["events"] if e.get("kind") == "apiError"]
+        self.assertEqual(len(cards), 1, cards)
+        self.assertIn("could not compact", cards[0]["text"])
+        self.assertIs(out["status"]["apiNoRetry"], True, "the flag the card reads off the live status: no Retry, no countdown")
+        s = self.be._session(sid)
+        with s.lock:
+            s.launch_error = {"text": "codex turn rejected: model gpt-x is not supported", "at": time.time(), "limit": False}
+        out = km.build_session(sid, time.time())
+        self.assertEqual(len([e for e in out["events"] if e.get("kind") == "apiError"]), 1)
+        self.assertIs(out["status"]["apiNoRetry"], False, "a failed turn's card keeps its button")
 
 
 if __name__ == "__main__":
