@@ -5049,11 +5049,28 @@ _namefp_memo = {}    # names/ entry -> (its mtime, resolved project dir or None)
 #                      the number of live names/ entries, never by uptime.
 
 
+def _in_window(pdir, fsid, now=None):
+    """True iff this session's current transcript was touched inside WINDOW.
+
+    discover() drops rows whose transcript predates its cutoff, so a session WAKING after a dormant
+    spell changes the output with no directory entry added — the one input a plain append can move.
+    The BOOLEAN is signed rather than the mtime: appends to a live session leave it True, so the cache
+    still survives them, while a dormant session crossing the line invalidates on its next call."""
+    if pdir is None:
+        return False
+    now = time.time() if now is None else now
+    try:
+        return os.stat(pdir / (fsid + ".jsonl")).st_mtime >= now - WINDOW
+    except OSError:
+        return False
+
+
 def _discover_fingerprint():
     """A cheap structural signature of the transcript namespace that changes EXACTLY when discover()'s
-    output would: a session ADDED/RENAMED (a names/ entry's set or mtime changes) or a FORK appearing (a
-    .jsonl added to a project dir bumps that dir's mtime). A plain transcript APPEND adds no directory entry,
-    so it leaves this unchanged — which is the whole point: discover()'s LIST doesn't change on an append, so
+    output would: a session ADDED/RENAMED (a names/ entry's set or mtime changes), a FORK appearing (a
+    .jsonl added to a project dir bumps that dir's mtime), or a session crossing discover()'s WINDOW in
+    either direction (_in_window above). A plain transcript APPEND to a session already inside the window
+    leaves this unchanged — which is the whole point: discover()'s LIST doesn't change on such an append, so
     we must not re-walk ~80 project dirs + read every fork's head 2-4× per push for nothing. Same (mtime)
     change-detection idiom as the parse cache; NOT a time heuristic. ~2ms vs ~60-250ms for a full discover.
     The signature also carries each session's diverged SDK lastSid (mtime-memoized, see _sdk_last_sid): an
@@ -5096,7 +5113,8 @@ def _discover_fingerprint():
                 pm = os.stat(pdir).st_mtime                     # a new fork in this project bumps the DIR mtime
             except OSError:
                 pm = 0
-        fp.append((f.name, mt, pm, _sdk_last_sid(f.name) or ""))
+        last = _sdk_last_sid(f.name) or ""
+        fp.append((f.name, mt, pm, last, _in_window(pdir, last or f.name)))
     if len(_namefp_memo) > len(fp):                             # a retired session's entry is gone from the
         live = {row[0] for row in fp}                           # walk → evict it, so the memo stays bounded
         for name in [k for k in _namefp_memo if k not in live]:  # by the sessions that currently EXIST

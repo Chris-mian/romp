@@ -139,7 +139,9 @@ class FingerprintMemoTest(unittest.TestCase):
                         pm = os.stat(jd._proj_dir(cdir)).st_mtime
                     except OSError:
                         pm = 0
-                out.append((f.name, mt, pm, jd._sdk_last_sid(f.name) or ""))
+                last = jd._sdk_last_sid(f.name) or ""
+                out.append((f.name, mt, pm, last,
+                            jd._in_window(jd._proj_dir(cdir) if cdir else None, last or f.name)))
             return tuple(out)
 
         (jd.NAMES / OTHER).write_text("%s\t%s" % ("TESTHOST-two", self.cdir))
@@ -172,6 +174,32 @@ class FingerprintMemoTest(unittest.TestCase):
         b = jd._discover_fingerprint()
         self.assertNotEqual(a, b)
         self.assertIn(OTHER, [row[0] for row in b])
+
+    def test_a_woken_dormant_session_re_enters_discover(self):
+        """A session whose transcript aged out of WINDOW and is then touched again must reappear.
+
+        Nothing structural changes when it wakes — no names/ entry moves, no dir entry is added — so the
+        fingerprint held and discover() kept serving the cached list that had already dropped the row.
+        Every surface keyed on it (a comment thread's session lookup among them) then denied the session
+        existed while its transcript sat right there, appended seconds earlier."""
+        anchor = self.proj / (SID + ".jsonl")
+        dormant = time.time() - (jd.WINDOW + 3600)
+        os.utime(anchor, (dormant, dormant))
+        now = int(time.time())
+        self.assertEqual(jd.discover(now), [], "the aged-out session is out of the window")
+        cold = jd._discover_fingerprint()
+        os.utime(anchor, None)                                  # the wake: an append, and nothing else
+        self.assertNotEqual(jd._discover_fingerprint(), cold,
+                            "crossing back into the window moves the fingerprint")
+        self.assertEqual([row[0] for row in jd.discover(now)], [SID],
+                         "...so discover() re-walks and the session is listed again")
+
+    def test_an_append_inside_the_window_still_serves_the_cache(self):
+        """The counterpart: a live session's append must NOT invalidate, or the cache buys nothing."""
+        now = int(time.time())
+        listed = jd.discover(now)
+        os.utime(self.proj / (SID + ".jsonl"), None)
+        self.assertIs(jd.discover(now), listed, "an append inside the window is still a cache hit")
 
     def test_discover_still_serves_its_cached_list(self):
         """End to end: the memo sits UNDER discover()'s cache, so an unchanged namespace still short-circuits."""
