@@ -20,6 +20,6 @@ def slices(html):
         "phone_tabs": "".join(re.findall(r"<button data-pane=[^>]*>[^<]*</button>", html)),
         "pane_row": html[row_a:row_b] if 0 <= row_a < row_b else "",
         "column_css": "".join(r for css in re.findall(r"<style>(.*?)</style>", html, re.S)
-                              for r in re.findall(r"(?<=[};])[^{};]*(?:-pane|#gv-|\.m-on)[^{}]*\{[^}]*\}", css)),   # the STYLE blocks only: the inline scripts name panes too; .m-on: the phone's shown-frame rules (the 1922 read: #f-artifacts.m-on fell outside the slice)
+                              for r in re.findall(r"(?<=[};])[^{};]*(?:-pane\b|#gv-|\.m-on)[^{}]*\{[^}]*\}", css)),   # -pane\b: never -panel (the 1919 read: four unrelated panels' rules rode in the panes' slice)   # the STYLE blocks only: the inline scripts name panes too; .m-on: the phone's shown-frame rules (the 1922 read: #f-artifacts.m-on fell outside the slice)
         "gutter_calls": "\n".join(re.findall(r"gutter\('gv-[a-z]',[^\n]*", html)),
     }

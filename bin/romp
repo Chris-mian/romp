@@ -1250,8 +1250,7 @@ if [[ "${1:-}" == "pane" ]]; then
             || { echo "romp pane: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
         if [[ "$_pn_verb" == "list" ]]; then
             printf '%s' "$_resp" | python3 -c 'import json,sys
-rows = json.load(sys.stdin).get("panes") or []
-if not rows: print("romp pane: the kernel lists no panes"); raise SystemExit
+rows = json.load(sys.stdin).get("panes") or []   # never empty: the door lists the shipped panes first (the 1919 read: an empty-list line here was unreachable)
 for b in rows:
     print("%s  %s  %s  %s%s%s" % (b.get("id", ""), b.get("title", ""), b.get("source", ""), b.get("protocol", ""), "  experimental" if b.get("experimental") else "", "  [builtin]" if b.get("builtin") else ""))'
             exit 0

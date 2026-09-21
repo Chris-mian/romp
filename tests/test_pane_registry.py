@@ -295,7 +295,7 @@ class TheDoors(unittest.TestCase):
         self.assertIn('var LOADEDPV="%s";' % r["rev"], shim, "baked with the pane set's revision the door reports")
         self.assertIn("notePanes", shim, "and it hands a moved revision to the reload core")
         self.assertIn("var NOSTALE=true;", shim, "no pushed view reaches a state-root page, so the stale prompt is never armed for it (the 1919 read: the banner after every reconnect, never retired); the Files pane's rule, tests/test_files_pane.py")
-        self.assertIn('_shim(pid, _dist_ver(), no_stale=True, pv=snap["rev"])', KSRC, "served with the stale prompt off and the same listing's revision")
+        self.assertIn('_shim(pid, _dist_ver(), no_stale=True, pv=snap["rev"], data=snap["data"])', KSRC, "served with the stale prompt off and the same listing's revision")
         st, ct, body = self._req("/pane/notes/theme.css"); self.assertEqual((st, ct), (200, "text/css")); self.assertTrue(body.startswith(b"@font-face"), body[:40])
         self.assertEqual(self._req("/pane/notes/missing.js")[0], 404)
         self.assertEqual(self._req("/pane/notes/..%2F..%2Fsecret.txt")[0], 404, "no path leaves the pane's directory")
@@ -303,6 +303,38 @@ class TheDoors(unittest.TestCase):
         self.assertEqual(self._req("/pane/lab/")[0], 404, "a route-source pane has no state-root page")
         self.assertEqual(self._req("/pane/feed/")[0], 404, "nor a shipped one")
         self.assertNotEqual(self._req("/pane/notes/", token=False)[0], 200, "behind the token like every route")
+
+    def test_the_state_root_shim_bakes_the_routes_one_snapshot_into_both_its_revision_slots(self):
+        # the 1952 read (round two): the shim's keepalive gate LOADEDPV was baked from a second read while the reload core's PANES0
+        # took the route's snapshot, so across a define the two disagreed and the gate never called notePanes for the very revision
+        # that changed. Executed: the listing is hooked to define a second record after its first call; the route lists once, and the
+        # shim's two slots carry that one revision
+        self.w.seed(NOTES)
+        pdir = self.w.pdir / "notes"; pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "index.html").write_text("<!doctype html><script src=shim.js></script>")
+        real = km._panes_snapshot
+        calls, who = [], []
+
+        def hooked():
+            snap = real()
+            if not who:
+                who.append(threading.get_ident())
+            if threading.get_ident() != who[0]:   # the keepalive thread's own listing is not the route's
+                return snap
+            calls.append(snap["rev"])
+            if len(calls) == 1:
+                self.w.seed(DOCS)
+            return snap
+        km._panes_snapshot = hooked
+        try:
+            st, ct, body = self._req("/pane/notes/shim.js")
+        finally:
+            km._panes_snapshot = real
+        shim = body.decode()
+        self.assertEqual(st, 200); self.assertEqual(len(calls), 1, "the route lists once and hands the revision down: %r" % calls)
+        self.assertIn('PANES0="%s"' % calls[0], shim, "the reload core's revision is the route's snapshot's")
+        self.assertIn('var LOADEDPV="%s";' % calls[0], shim, "and so is the keepalive gate's (a second read would have baked the define's revision here)")
+        self.w.unseed("docs")
 
     def test_a_page_baked_with_one_revision_is_offered_a_reload_when_the_keepalive_carries_another(self):
         # the reload core the shim embeds, executed: notePanes with the baked revision says nothing, another revision stands
@@ -351,7 +383,7 @@ class TheStore(unittest.TestCase):
         src = inspect.getsource(km._landing)
         self.assertIn("snap = _panes_snapshot()", src); self.assertIn('panes = _pane_order(snap["data"]); pv = snap["rev"]', src, "one listing: the list and the revision from it")
         self.assertIn("_stale_block(v, pv)", src, "the reload core takes that revision")
-        self.assertIn("def _stale_block(v, pv=None):", KSRC); self.assertIn("def _shim(app, v=0, no_stale=False, pv=None):", KSRC)
+        self.assertIn("def _stale_block(v, pv=None):", KSRC); self.assertIn("def _shim(app, v=0, no_stale=False, pv=None, data=None):", KSRC)
 
     def test_a_build_offer_and_a_pane_set_offer_stand_together_and_a_decline_covers_both(self):
         core = km._reload_core_js(3, boot="b1", code="C0")
@@ -369,6 +401,48 @@ class TheStore(unittest.TestCase):
         self.assertEqual((r2["panes"]["pv"], r2["panes"]["code"], r2["panes"]["text"]), ("B", "", km.RELOAD_OFFER_PANES_MSG), "the revision alone: the panes words: %r" % r2["panes"])
         self.assertIsNone(r2["declined"], "declined, the same revision offers nothing")
         self.assertEqual((r2["moved"]["pv"], r2["moved"]["text"]), ("C", km.RELOAD_OFFER_PANES_MSG), "another revision offers again")
+
+    def test_one_listing_per_build_executed_a_define_forced_between_the_former_reads_changes_neither_the_set_nor_the_baked_revision(self):
+        # the 1952 read (round two): the one-listing item was pinned by source strings alone; here the listing is HOOKED: the first
+        # snapshot call defines a second record after it returns, so a build that listed again would render or bake the new set.
+        # The landing: one call, the rows the first snapshot's, PANES0 its revision, one PANES0 occurrence. The shim: the route's
+        # snapshot handed through, no further call, PANES0 and LOADEDPV equal; _shim handed nothing reads once and bakes both from it.
+        self.w.seed(NOTES)
+        real = km._panes_snapshot
+        calls, who = [], []
+
+        def hooked():
+            snap = real()
+            if not who:
+                who.append(threading.get_ident())
+            if threading.get_ident() != who[0]:   # the keepalive thread's own listing is not this build's
+                return snap
+            calls.append(snap["rev"])
+            if len(calls) == 1:
+                self.w.seed(DOCS)   # a define landing between two listings, if a build made two
+            return snap
+        km._panes_snapshot = hooked
+        try:
+            html = km._landing()
+        finally:
+            km._panes_snapshot = real
+        self.assertEqual(len(calls), 1, "one listing per landing build: %r" % calls)
+        rows = json.loads(html_mod.unescape(re.search(r' data-panes="([^"]*)"', html).group(1)))
+        self.assertEqual([r["id"] for r in rows if not r.get("builtin")], ["notes"], "the rendered set is the first snapshot's (the define landed after it): %r" % rows)
+        self.assertEqual(html.count('PANES0="'), 1, "one baked revision on the page")
+        self.assertIn('PANES0="%s"' % calls[0], html, "the reload core's revision is the same snapshot's")
+        self.w.unseed("docs")
+        # _shim handed no revision: ONE read, both slots from it
+        calls.clear()
+        km._panes_snapshot = hooked
+        try:
+            direct = km._shim("notes", 3)
+        finally:
+            km._panes_snapshot = real
+        self.assertEqual(len(calls), 1, "one read when handed none: %r" % calls)
+        self.assertIn('PANES0="%s"' % calls[0], direct); self.assertIn('var LOADEDPV="%s";' % calls[0], direct)
+        self.w.unseed("docs")
+        self.assertIn('var LOADEDPV="abc";', km._shim("notes", 3, pv="abc"), "handed a revision, the shim's gate bakes it too")
 
     def test_the_revision_rides_the_keepalive_beside_the_build_token_and_moves_on_a_change(self):
         def frame():

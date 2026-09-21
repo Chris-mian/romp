@@ -36,7 +36,7 @@ shell repeats the five keys by hand:
 - the routes (`/feed`, `/fleet`, `/files`, `/timeline`, each its own page builder around `_shim(app)`),
   the pusher's view audiences (a pane app named in code gets pushed views; any other app on the socket gets
   keepalives and its own ops' replies, as the Files pane and the gear do), the conserve-memory viewer set;
-- the docking kit's lists: `ROW_ORDER`, `growKey`, `defaultDock` (`pane-dock.ts`), `paneTitle`
+- the docking kit's lists: `growKey`, `defaultDock` (`pane-dock.ts`; the row order is read off the DOM, the fixed `ROW_ORDER` list retired 2026-09-21), `paneTitle`
   (`panedock-main.ts`), and the grab detector's per-app empty backgrounds (`pane-grab.ts` `EMPTY_BY_APP`).
 
 What the user can do with this: show or hide a pane (the rail, `romp-panes`), decide a pane's membership in
@@ -54,6 +54,10 @@ reader on the directory's stat (`_boards()`), and code winning an id collision t
 ## 1. The model: a pane is a record
 
 **Decision: a pane is a definition in ONE schema; the shipped panes (six since the Artifacts pane, 2026-09-19) are code constants in that schema
+(an id the shell's derived element names already take, `tl`, `a` to `d`, `ghost`, `col`, or one beginning `chat-`, is refused at
+the door since 2026-09-21; a pane file already written under such an id is skipped at the next listing with one stderr line
+naming the file and the rule, the fail-loud convention, and its page is gone from the dashboards until it is re-defined under
+another id)
 and every other pane is a JSON document in the same schema under the state root.** The renderer of the
 shell (the rail, the tabs, the markup, the CSS, the broadcast, the gear) is a function of the list.
 

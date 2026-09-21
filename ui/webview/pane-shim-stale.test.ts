@@ -25,7 +25,7 @@ import * as vm from "node:vm";
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 
 function shimJs(app: string, noStale = false, core = ""): string {
-  const def = KERNEL.indexOf("def _shim(app, v=0, no_stale=False, pv=None):");
+  const def = KERNEL.indexOf("def _shim(app, v=0, no_stale=False, pv=None, data=None):");
   assert.ok(def > 0, "the shim renderer exists");
   const start = KERNEL.indexOf('return """', def) + 'return """'.length;
   // the tuple's first slot is the reload core (T265, its own executed test in tests/test_dashboard_auto_reload.py);
@@ -36,7 +36,7 @@ function shimJs(app: string, noStale = false, core = ""): string {
   // chat, so it substitutes the false the other panes carry, and the dial line compiles against it.
   // the tuple's head is pinned; its tail may or may not carry the label slot (a copy-aside run at an older base lacks it), so the
   // arguments follow the slots the slice actually has
-  const end = KERNEL.indexOf('""" % (_reload_core(v, pv), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app,', start);
+  const end = KERNEL.indexOf('""" % (_reload_core(v, pvv), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app,', start);
   assert.ok(end > start, "the template's format tuple is the one the test substitutes");
   const slice = KERNEL.slice(start, end);
   // the label slot: _pane_label's word for the key (kernel.py _PANE_ORDER), the capitalised key outside that list

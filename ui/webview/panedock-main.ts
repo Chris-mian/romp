@@ -48,9 +48,6 @@ const GRAB_SCRIPT_ID = "pd-grab";
 const MIN_PX = 120;      // a pane never resizes below this or a quarter of its pair (the shipped clamp)
 const BAND_MIN = 48;     // the band's floor (the shipped #gh clamp)
 
-/** Whether the gear's per-browser `paneDocking` switch is on, from the raw `romp:settings` JSON. Only the
- *  literal `true` turns it on: a store from before the key, a missing value, or any other type reads OFF
- *  (the fail-safe default for an opt-in that gates a whole layout engine). Pure; never throws. */
 /** A CHAT COLUMN's frame by the id the split script mints (`f-chat`, `f-chat-<n>`, kernel.py `frameId`): the chat's transcript
  *  keeps the shell's strip style and gets no grab detector (a press-drag there is a text selection). By the exact shape, never
  *  the prefix (the 1920 read): a registry pane whose id begins `chat-` renders as `f-chat-<id>` and is an ordinary pane. */
@@ -65,6 +62,9 @@ export function speaksProtocol(f: { getAttribute(name: string): string | null })
   return f.getAttribute("data-protocol") !== "none";
 }
 
+/** Whether the gear's per-browser `paneDocking` switch is on, from the raw `romp:settings` JSON. Only the
+ *  literal `true` turns it on: a store from before the key, a missing value, or any other type reads OFF
+ *  (the fail-safe default for an opt-in that gates a whole layout engine). Pure; never throws. */
 export function isPaneDockingOn(rawSettings: string | null): boolean {
   try {
     const o = JSON.parse(rawSettings || "{}");

@@ -56301,7 +56301,8 @@ def _panes_snapshot():
     """ONE listing of STATE/panes -> {"data": {id: defn}, "rev": digest}: the data-defined panes and the pane set's revision
     from the same directory listing and file stats, memoized on the directory's stat and each file's (mtime_ns, size), the
     board store's rule (_boards_data). A file that fails the check is skipped and named on stderr once per (file, reason).
-    The landing takes the list once per build (_landing: `panes = _pane_order()`) and hands it to every builder, so a
+    The landing takes ONE snapshot per build (_landing: `snap = _panes_snapshot()`, its records to `_pane_order`, its revision to the
+    reload core) and hands the list to every builder, so a
     build costs one listing (the 1919 read, low b), not one per builder."""
     d = _pane_dir()
     st = _stat_key(d)
@@ -59698,7 +59699,13 @@ def _reload_core_js(v=0, boot=None, code=None):
     return js[i + len(a):j]
 
 
-def _shim(app, v=0, no_stale=False, pv=None):
+def _shim(app, v=0, no_stale=False, pv=None, data=None):
+    # ONE listing for the page (the 1952 read: two reads could disagree across a define, and the keepalive gate then never called
+    # notePanes for the very revision that changed): the route hands its snapshot's revision and records; handed none, one snapshot
+    # here serves the reload core's PANES0, the shim's LOADEDPV gate and the label alike
+    snap = _panes_snapshot() if (pv is None or data is None) else None
+    pvv = snap["rev"] if pv is None else pv
+    label = _pane_label(app, _pane_order(snap["data"] if data is None else data))
     # `v` = the dist build token this page was served with (its ?v= urls). The shim compares it against the
     # `dv` riding every keepalive and, on drift, hands it to the reload core it embeds as the template's first slot
     # (window.__rompReload, _RELOAD_CORE_JS), which OFFERS a reload (the user 2026-09-16, superseding the 2026-09-08
@@ -60131,7 +60138,7 @@ pendingWhy="foreground";freshPending=true;armFresh();   // the reconnect's arm r
 if(ws&&ws.readyState===1)abandon();else{try{if(ws&&ws.readyState===0)ws.close();}catch(e){}}   // OPEN-but-quiet → abandoned + redialed below, now; stuck-CONNECTING → aborted, onclose retries
 if(!ws||ws.readyState===3)connect();
 returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial so it queues for the new socket instead of vanishing into the dead one
-""" % (_reload_core(v, pv), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, _pane_label(app), int(v), "true" if no_stale else "false", json.dumps(_panes_rev()), app, app)
+""" % (_reload_core(v, pvv), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, label, int(v), "true" if no_stale else "false", json.dumps(pvv), app, app)
 
 
 # The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
@@ -61266,11 +61273,12 @@ setTimeout(hide,5000);})();
 _PANE_ORDER = (*((p["id"], p["title"]) for p in _CODE_PANES),)   # the shipped panes, (key, label), from _CODE_PANES (plans/panes-as-data.md: the data panes join through _pane_order())
 
 
-def _pane_label(app):
+def _pane_label(app, panes=None):
     """The label a pane wears on every surface (the rail, the tabs, a line that names it): _PANE_ORDER's word for its key,
     the key's own capitalised form for a page outside that list (Settings). The shim bakes it as LABEL so a line a pane
-    says about itself never shows an internal key (the round-three review read the Outline pane's key in such a line)."""
-    return dict((p["id"], p["title"]) for p in _pane_order()).get(str(app or ""), str(app or "").capitalize())
+    says about itself never shows an internal key (the round-three review read the Outline pane's key in such a line).
+    `panes`: a _pane_order() list already in hand (the shim's one listing); listed here when None."""
+    return dict((p["id"], p["title"]) for p in (_pane_order() if panes is None else panes)).get(str(app or ""), str(app or "").capitalize())
 
 _LANDING_ERRS_JS = """
 (function(){var icon=document.getElementById('rail-errs'),micon=document.getElementById('merr'),
@@ -67424,7 +67432,7 @@ class Handler(BaseHTTPRequestHandler):
                     # no pushed view reaches a state-root page (request/response only, like the Files pane), so the "may be
                     # stale" prompt is never armed for it (the 1919 read: after any reconnect the dashboard wore the banner
                     # and nothing retired it); the revision baked is the same listing's
-                    return self._send(200, _shim(pid, _dist_ver(), no_stale=True, pv=snap["rev"]), "text/javascript", cache="no-cache")
+                    return self._send(200, _shim(pid, _dist_ver(), no_stale=True, pv=snap["rev"], data=snap["data"]), "text/javascript", cache="no-cache")
                 if sub == "theme.css":
                     return self._send(200, THEME_CSS, "text/css", cache="no-cache")
                 base = (_pane_dir() / pid).resolve()
