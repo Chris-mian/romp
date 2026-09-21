@@ -128,7 +128,11 @@ class TheBrowserNeverWaitsOnTheHousekeeping(_LabCycles):
         self.addCleanup(setattr, km, "_auto_nudge_tick", self.saved_jobs.get("_auto_nudge_tick", km._auto_nudge_tick))
         t0 = time.monotonic(); km._pusher_cycle(); cycle = time.monotonic() - t0
         self.assertEqual(calls, [], "the pusher's cycle ran no walk")
-        self.assertLess(cycle, 0.3, "and did not carry its sleep: %.3f s" % cycle)
+        # a wall-clock bound: when it reds, the message names the stages that carried the time (the cycle's own split), so a
+        # loaded runner's red says WHAT waited rather than only that something did (round three of PR 1951, 2026-09-21)
+        stages = km._PERF_STATS.snapshot()["stages_ms"]
+        carried = sorted(((ms, name) for name, ms in stages.items() if ms), reverse=True)[:6]
+        self.assertLess(cycle, 0.3, "and did not carry its sleep: %.3f s; the stages that carried the time (ms): %r" % (cycle, carried))
         t0 = time.monotonic(); km._jobs_cycle(); pas = time.monotonic() - t0
         self.assertEqual(calls, [1], "the jobs pass ran it once")
         self.assertGreaterEqual(pas, 0.4)
