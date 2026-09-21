@@ -454,7 +454,7 @@ class Census(unittest.TestCase):
             own = ast.parse(textwrap.dedent(inspect.getsource(f)))
             for k in ("ctxTokens", "lastTool"):
                 self.assertFalse(_key_reads(own, k),
-                                 "%s is dropped from the row component, so no chat reader may read it; %s does"
+                                 "%s is dropped from the row component, so no chat reader may name it as a key; %s does"
                                  % (k, f.__name__))
         text, permits = _unkeyed_field_permits()
         lines = text.splitlines()
@@ -464,9 +464,9 @@ class Census(unittest.TestCase):
         self.assertIn("def _chat_row_sig", block, "the projection sits between _chat_sig_deps and _chat_build_sig")
         tree = ast.parse(text)
         self.assertEqual(sorted(_reads_outside(tree, "lastTool", permits["lastTool"])), [],
-                         "lastTool is read outside the projection and the key: a reader the row component holds against")
+                         "lastTool is named as a key outside the projection and the key: a reader there would serve a stale payload under an unchanged key")
         self.assertEqual(sorted(_reads_outside(tree, "ctxTokens", permits["ctxTokens"])), [],
-                         "ctxTokens is read beyond the projection, the key, the compaction tick and the merge writing it")
+                         "ctxTokens is named as a key beyond the projection, the key, the compaction tick and the merge writing it")
 
     def test_the_read_census_counts_reads_not_mentions(self):
         """The census behind the previous test tells a read from prose (2026-09-21). A synthetic body first: the helper
