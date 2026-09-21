@@ -61718,22 +61718,35 @@ _LANDING_JS = """
 (function(){var col=document.querySelector('.col'),row=document.querySelector('.row'),
 tf=document.getElementById('f-timeline');
 // ── timeline BOTTOM BAND (the user 2026-06-25): the rail's Timeline toggle (body.po-timeline) shows/hides a
-// full-width band below the pane row. It AUTO-FITS its content height (--tl, capped 70vh); the gh gutter
-// resizes it. Both band + gutter are hidden by CSS unless po-timeline.
+// full-width band below the pane row. It AUTO-FITS its content height (--tl, capped 70vh) until the user drags
+// it; the gh gutter resizes it. Both band + gutter are hidden by CSS unless po-timeline.
 function tlContentH(){try{return tf?tf.contentDocument.body.scrollHeight:0;}catch(e){return 0;}}
 function cap(){return Math.round(window.innerHeight*0.7);}
-function autosize(){if(!document.body.classList.contains('po-timeline'))return;var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
+// a height the USER dragged to is persisted (romp-tl-h), applied at boot, and autosize stands down for it: an
+// explicit gesture outranks the content fit (the user 2026-09-01, who wanted the dragged band height remembered;
+// before this the band forgot it on every reload). Standing down still CLAMPS it to the window: autosize is the
+// 'resize' handler, and a band dragged to the 0.85 share of a tall window would otherwise keep that height when
+// the window shrinks, collapsing the pane row to 0px until the next drag (review find 2026-09-21). The clamp is
+// applied, never stored, so growing the window back restores the dragged height.
+var TLK='romp-tl-h',tlUser=null;try{tlUser=parseInt(localStorage.getItem(TLK)||'',10)||null;}catch(e){}
+function tlClamp(px){return Math.max(48,Math.min(Math.round(window.innerHeight*0.85),px));}   // the band's floor and viewport-share ceiling, spelled once for the boot, the drag and the re-clamp
+function applyUser(){col.style.setProperty('--tl',tlClamp(tlUser)+'px');}
+if(tlUser)applyUser();
+function autosize(){if(!document.body.classList.contains('po-timeline'))return;if(tlUser){applyUser();return;}var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
 var ghh=document.getElementById('gh');
 if(ghh)ghh.addEventListener('mousedown',function(e){e.preventDefault();document.body.classList.add('drag','dragh');
-var tl0=col.style.getPropertyValue('--tl'),want=null,raf=0;   // live already; since section 12 one write per animation frame, and Escape restores the grab-time height
+var tl0=col.style.getPropertyValue('--tl'),user0=tlUser,want=null,raf=0;   // live already; since section 12 one write per animation frame, and Escape restores the grab-time height (and the remembered one)
 function apply(){raf=0;if(want===null)return;col.style.setProperty('--tl',want+'px');}
-function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;var ch=tlContentH();var mx=ch?ch+2:cap();
-want=Math.max(48,Math.min(mx,px));if(!raf)raf=frameOnce(apply);}
+// max = the viewport share, NEVER the iframe document's scrollHeight: the timeline document fills whatever
+// height the band has, so 'content height' always equals the CURRENT height, and clamping the drag to it made
+// every drag shrink-only, a downward ratchet (2026-09-01)
+function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;
+want=tlClamp(px);tlUser=want;if(!raf)raf=frameOnce(apply);}
 var keysOff=null;
 function end(){document.body.classList.remove('drag','dragh');if(raf)cancelFrame(raf);raf=0;
 window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);if(keysOff){keysOff();keysOff=null;}}
-function up(){end();apply();}   // end() first: the armed frame is cancelled on this path too, then the last recorded position lands itself
-function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=null;end();if(tl0)col.style.setProperty('--tl',tl0);else col.style.removeProperty('--tl');}
+function up(){end();apply();try{if(tlUser)localStorage.setItem(TLK,String(tlUser));}catch(e){}}   // end() first: the armed frame is cancelled on this path too, then the last recorded position lands itself and is remembered
+function esc(ev){if(ev.key!=='Escape')return;ev.preventDefault();ev.stopPropagation();want=null;tlUser=user0;end();if(tl0)col.style.setProperty('--tl',tl0);else col.style.removeProperty('--tl');}
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);keysOff=dragKeys(esc);});
 // ── pane gutters (chat|outline|feed|files, fixed order) sized by flex-grow. gv-a is always chat|outline; gv-b's
 // left neighbour is the outline when shown else chat (so it's the chat|feed gutter when the outline is off);
@@ -61763,7 +61776,12 @@ function shown(id){var p=document.getElementById(id);return p&&getComputedStyle(
 // bottom BAND now (fixed-height var, not a row grow), so it's excluded.
 window.__rompGrowFair=function(k){if(k==='timeline')return;var v=PANES.filter(shown).map(function(id){return grow[key(id)];})
 .filter(function(g){return typeof g==='number'&&isFinite(g);});   // a pane with no grow yet (a split column being made) must not average in as NaN (review find 2026-09-08: the first split opened 0px wide)
-var avg=v.length?v.reduce(function(a,b){return a+b;},0)/v.length:50;setGrow(k,avg);
+// a REOPENED pane KEEPS its remembered width (the user 2026-09-01, who wanted a dragged width to survive a rail
+// toggle): fairness fires only when the remembered grow would re-enter under a 12% share of what is shown, the
+// sliver this function was made for, not on every reopen. The rail's toggle runs this while the pane is still hidden.
+var sum=v.reduce(function(a,b){return a+b;},0),g=grow[k]||0;
+if(g>0&&sum>0&&g/(g+sum)>=0.12)return;
+var avg=v.length?sum/v.length:50;setGrow(k,avg);
 try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}};
 // a split column keeps the width it was dragged to across reloads: fair only when the store holds nothing for it
 window.__rompGrowFairIfNew=function(k){if(typeof grow[k]==='number'&&isFinite(grow[k])){setGrow(k,grow[k]);return;}window.__rompGrowFair(k);};

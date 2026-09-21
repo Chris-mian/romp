@@ -18,6 +18,12 @@ against a re-seeded store; a drag on a chat|chat gutter moving only that pair; g
 column with the outline (fleet) pane; unregistering a closed column; and the unregistered fallback keys. The stub records
 the `--g-*` vars the script sets on .row, because the script's `grow` object is a closure.
 
+Two more stories ride the same run (2026-09-21): a pane reopened from the rail keeps the width it was dragged
+to, with the fair average reserved for a genuine sliver; and the timeline band's drag persists its height
+(`romp-tl-h`), applies it on a reload ahead of the content fit, and takes the viewport share as its maximum
+rather than the iframe's content height. The stub records the `--tl` var on .col for those. A remembered height
+still re-clamps to the window on resize (review find 2026-09-21): standing down for it is not skipping the clamp.
+
 Synthetic only: no network, no real DOM, invented widths.
 """
 import json
@@ -37,7 +43,7 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 km = load_source("romp_kernel_gutters", os.path.join(BIN, "romp-kernel"))
 
-# Everything _LANDING_JS touches, and nothing else: .col (the timeline band's --tl var, never driven here),
+# Everything _LANDING_JS touches, and nothing else: .col (records the timeline band's --tl var),
 # .row (records the --g-* vars), the gutters + panes by id, getComputedStyle(el).display for shown(),
 # body.classList (po-fleet / po-timeline reads, drag/dragv writes), localStorage, and the window's
 # mousemove/mouseup listeners a drag installs and removes. f-timeline is stubbed PRESENT (the served
@@ -52,8 +58,11 @@ global.localStorage = {
   removeItem: (k) => { delete STORE[k]; },
 };
 const ROW = {};   // the --g-* vars the script sets on .row (its `grow` object is a closure)
-const rowEl = { style: { setProperty: (k, v) => { ROW[k] = v; }, removeProperty: (k) => { delete ROW[k]; } } };   // gutter() reads no rect: the pair's widths are offsetWidth
-const colEl = { style: { setProperty() {} }, getBoundingClientRect: () => ({ bottom: 800 }) };
+const rowEl = { style: { setProperty: (k, v) => { ROW[k] = v; }, removeProperty: (k) => { delete ROW[k]; } },
+                getBoundingClientRect: () => ({ top: 0, height: 800, left: 0, bottom: 800 }) };   // the landing line is placed by the row's rect (main, 2026-09)
+const COL = {};   // the --tl var the timeline band's drag and content fit set on .col
+const colEl = { style: { setProperty: (k, v) => { COL[k] = v; }, getPropertyValue: (k) => COL[k] || '', removeProperty: (k) => { delete COL[k]; } },   // the band's drag reads the grab-time height back (main's Escape restore)
+                getBoundingClientRect: () => ({ bottom: 800 }) };
 function mkEl(id, w, display) {
   return {
     id: id, offsetWidth: w, _display: display, _ls: {},
@@ -77,6 +86,7 @@ function resetDom() {
   EL['chat-pane-2'] = mkEl('chat-pane-2', 500, 'flex');   // the split's client-made column (shown once made)
   EL['chat-pane-3'] = mkEl('chat-pane-3', 450, 'flex');
   for (const k in ROW) delete ROW[k];
+  for (const k in COL) delete COL[k];
 }
 const BODY = new Set(['po-chat', 'po-feed']);
 // the browser's animation frames, as a queue the driver drains with frame(): a divider move arms ONE callback and the frame
@@ -192,6 +202,74 @@ out.splitShrink = { wrote: window.__rompSplitShrink('chat-pane', 'chat-pane-2'),
                     hiddenLeft: window.__rompSplitShrink('fleet-pane', 'chat-pane-2'), missingGone: window.__rompSplitShrink('chat-pane', 'chat-pane-77'), after: grows() };
 window.__rompUnregisterPane('chat-pane-2');
 out.splitShrink.unregistered = { grows: grows(), store: store() };
+// 10) a pane REOPENED from the rail KEEPS its remembered width: __rompGrowFair averaged EVERY reopen, so a width
+//     the user had dragged was lost the moment the pane was toggled off and on. Fairness now fires only when the
+//     remembered grow would re-enter under a 12% share of what is shown, the sliver it was made for. The rail's
+//     togglePane calls it while the pane is still HIDDEN (fair first, then po[k] and apply), so the stub hides feed
+//     for the call: chat (60) is the only shown pane the share is measured against.
+resetDom();
+STORE['romp-pane-grow'] = JSON.stringify({ chat: 60, fleet: 34, feed: 40, files: 40 });
+BOOT();
+EL['feed-pane']._display = 'none';
+window.__rompGrowFair('feed');   // 40 / (40 + 60) = 0.4 >= 0.12 → kept, not averaged
+EL['feed-pane']._display = 'flex';
+out.reopenKept = { feed: ROW['--g-feed'], store: store() };
+resetDom();
+STORE['romp-pane-grow'] = JSON.stringify({ chat: 60, fleet: 34, feed: 2, files: 40 });
+BOOT();
+EL['feed-pane']._display = 'none';
+window.__rompGrowFair('feed');   // 2 / (2 + 60) = 0.03 < 0.12 → re-faired to the shown average, chat alone: 60
+EL['feed-pane']._display = 'flex';
+out.reopenSliver = { feed: ROW['--g-feed'], store: store() };
+// 11) the timeline band's drag persists its height (romp-tl-h), and its max is the viewport share, not the iframe's
+//     content height: the timeline document fills the band, so that equals the CURRENT height and the old clamp made
+//     every drag shrink-only. The stub's col.bottom is 800 and innerHeight 900: a pointer at y=100 asks for 700,
+//     under the 0.85 * 900 = 765 max (the old 0.7 cap was 630, and the content clamp smaller still).
+resetDom();
+delete STORE['romp-tl-h'];
+BOOT();
+BODY.add('po-timeline');
+EL['gh'].fire('mousedown', { preventDefault() {}, clientX: 0, clientY: 400 });
+winFire('mousemove', { clientY: 100 });
+frame();   // main's band drag writes once per animation frame (section 12): the armed frame lands the position
+out.tlDrag = { live: COL['--tl'] };   // the band drag re-lays out live (no landing line)
+winFire('mouseup', {});
+out.tlDrag.stored = STORE['romp-tl-h'] || null;
+out.tlDrag.dragAfterUp = BODY.has('drag') || BODY.has('dragh');
+// …and a RELOAD applies the stored height at boot, ahead of the content fit, which stands down for it: a 300px
+//    document (a 302px fit) must not overwrite a height the user chose
+resetDom();
+BOOT();
+out.tlReload = { applied: COL['--tl'] };
+EL['f-timeline'].contentDocument = { body: { scrollHeight: 300 } };
+winFire('romp-panes', {});   // the Timeline toggle's re-fit → autosize()
+out.tlReload.afterAutosize = COL['--tl'];
+// with NO stored height the content fit rules, as it always did
+resetDom();
+delete STORE['romp-tl-h'];
+BOOT();
+EL['f-timeline'].contentDocument = { body: { scrollHeight: 300 } };
+winFire('romp-panes', {});
+out.tlReload.noUser = COL['--tl'] || null;
+// 12) a remembered height still CLAMPS to the window on resize (review find 2026-09-21): autosize is the window's
+//     'resize' handler (and the band's ResizeObserver's and the romp-panes hook's), and standing down for a dragged
+//     height returned before ANY clamp. A band dragged to 1020 in a 1200px window (exactly its 0.85 share) kept 1020
+//     when the window shrank to 700, and #tl-pane{flex:0 0 var(--tl)} then collapsed the pane row to 0px, recoverable
+//     only by another drag. The stored height is kept as dragged, so growing the window back restores it.
+resetDom();
+STORE['romp-tl-h'] = '1020';
+window.innerHeight = 1200;
+BOOT();
+out.tlResize = { boot: COL['--tl'] };
+window.innerHeight = 700;
+winFire('resize', {});
+out.tlResize.shrunk = COL['--tl'];   // round(700 * 0.85) = 595
+window.innerHeight = 1200;
+winFire('resize', {});
+out.tlResize.restored = COL['--tl'];
+out.tlResize.stored = STORE['romp-tl-h'];
+window.innerHeight = 900;
+BODY.delete('po-timeline');
 console.log(JSON.stringify(out));
 """
 
@@ -319,6 +397,43 @@ class PaneGuttersExecute(unittest.TestCase):
         u = a["unregistered"]
         self.assertEqual(u["grows"], {"--g-chat": 1107, "--g-feed": 400, "--g-fleet": 34, "--g-files": 40}, "the unregister that follows drops the closing column's key alone")
         self.assertEqual(u["store"], {"chat": 1107, "fleet": 34, "feed": 400, "files": 40})
+
+    def test_10_a_reopened_pane_keeps_a_remembered_width_and_re_fairs_only_a_sliver(self):
+        # a rail toggle reopens through __rompGrowFair, which averaged EVERY reopen and so lost the width the
+        # user had dragged (the user 2026-09-01, who wanted it kept). Fairness now fires only under a 12% share,
+        # the sliver it was made for, and a remembered width at a normal share survives untouched
+        kept = self.out["reopenKept"]
+        self.assertEqual(kept["feed"], 40, "a remembered width at a normal share survives the reopen: no averaging")
+        self.assertEqual(kept["store"], {"chat": 60, "fleet": 34, "feed": 40, "files": 40}, "and nothing is rewritten")
+        sliver = self.out["reopenSliver"]
+        self.assertEqual(sliver["feed"], 60, "a 2px sliver is re-faired to the shown average (chat alone): a reopened pane is never invisible")
+        self.assertEqual(sliver["store"], {"chat": 60, "fleet": 34, "feed": 60, "files": 40}, "and the fair width persists")
+
+    def test_11_the_timeline_band_drag_persists_and_is_not_shrink_only(self):
+        # the band forgot a dragged height on every reload, and the drag clamped to the iframe's content height,
+        # which equals the CURRENT band height, so growing was impossible: a downward ratchet (the user 2026-09-01,
+        # who wanted the drag to work both ways and the height remembered). Now the max is the viewport share and
+        # the height persists as romp-tl-h, applied at boot ahead of the content fit
+        a = self.out["tlDrag"]
+        self.assertEqual(a["live"], "700px", "the pointer's 700 lands: under the 765 viewport-share max, over the old 630 cap")
+        self.assertEqual(a["stored"], "700", "the release persists it as romp-tl-h")
+        self.assertFalse(a["dragAfterUp"], "body.drag / body.dragh are removed on mouseup")
+        r = self.out["tlReload"]
+        self.assertEqual(r["applied"], "700px", "a reload applies the stored height at boot")
+        self.assertEqual(r["afterAutosize"], "700px", "and the content fit stands down for it (302px would have won before)")
+        self.assertEqual(r["noUser"], "302px", "with no stored height the content fit rules, as before")
+
+    def test_12_a_remembered_height_still_clamps_to_the_window_on_resize(self):
+        # autosize is the window's 'resize' handler (and the band's ResizeObserver's and the romp-panes hook's), and
+        # standing down for a dragged height returned before ANY clamp: a band dragged to 85% of a tall window kept
+        # that height when the window shrank, and #tl-pane{flex:0 0 var(--tl)} collapsed the pane row to 0px,
+        # recoverable only by another drag (review find 2026-09-21). The boot's clamp now runs on every stand-down;
+        # the stored height is untouched, so growing the window back restores it
+        a = self.out["tlResize"]
+        self.assertEqual(a["boot"], "1020px", "1020 in a 1200px window is exactly the 0.85 share: applied as stored")
+        self.assertEqual(a["shrunk"], "595px", "the window shrinks to 700: re-clamped to round(700 * 0.85), not left at 1020")
+        self.assertEqual(a["restored"], "1020px", "growing the window back restores the remembered height")
+        self.assertEqual(a["stored"], "1020", "the clamp is applied, never persisted: romp-tl-h still holds the dragged height")
 
 
 if __name__ == "__main__":
