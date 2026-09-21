@@ -65581,6 +65581,7 @@ try{tf.contentWindow.focus();}catch(e){}return tf;}
 // and its grow go; the Log drops its connection state; the ring moves to the column on its left. `keep` skips the
 // store write (a reconcile of another dashboard tab's write, which is already the truth).
 function close(n,keep){var i=idx(n);if(i<0)return;
+endDragFrom(n);   // a tab drag from this column ends with it: the source page's dragend dies with its frame (the user 2026-09-21, a tab dragged back onto the first strip left this script's zones over the first chat)
 if(isBelow(cols[i]))return closeBelow(i,keep);   // a bottom pane un-nests, it is not a column in the row
 var f=document.getElementById(frameId(n)),home=document.getElementById('f-chat');
 if(!keep&&busy(f)){notify(BUSY);return;}   // a create in flight would die with the document (its queued text with it)
@@ -65603,6 +65604,7 @@ try{pf&&pf.contentWindow.focus();}catch(e){}}
 // parent returns from a two-pane split to a single iframe. Reached when a bottom pane empties (colEmpty -> close) or a
 // close targets it directly.
 function closeBelow(i,keep){var ce=cols[i];var topId=ce.parent===1?'f-chat':frameId(ce.parent),pid=ce.parent===1?'chat-pane':paneId(ce.parent);
+endDragFrom(ce.n);   // as close(): a drag from the bottom pane ends with the pane
 var bf=document.getElementById(frameId(ce.n)),home=document.getElementById(topId);
 if(!keep&&busy(bf)){notify(BUSY);return;}   // a busy bottom pane a PEER's write drops is DEFERRED upstream by reconcile (frameOfCol resolves it), so this direct-close busy gate is the by-hand path
 if(bf&&home)ce.ids.forEach(function(sid){adopt(home,sid,take(bf,sid));});
@@ -65654,9 +65656,14 @@ function showGhost(z){if(!ghost)return;if(!z||!drag){ghost.classList.remove('on'
 var pr=z.parentElement.getBoundingClientRect(),bottom=z.classList.contains('col-drop-bottom');
 var r=bottom?ghostRectBottom(pr):ghostRect(pr,row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
 ghost.style.top=r.top+'px';ghost.style.height=r.height+'px';ghost.style.left=r.left+'px';ghost.style.width=r.width+'px';
-ghost.textContent=refused?'Four panes at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
+ghost.textContent=refused?'Four panes at most':'';ghost.classList.toggle('refused',refused);ghost.classList.add('on');}   // no name in the square (the user 2026-09-21: the rectangle says where by its place; the refusal keeps its line, a thin ring alone cannot say why)
 function cue(z,on){if(z.classList.contains('col-drop-edge')||z.classList.contains('col-drop-bottom'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge/bottom, .over on a column zone itself
 function unmountZones(){zones.forEach(function(z){z.remove();});zones=[];showGhost(null);}   // idempotent: every drop and the page's dragend call it
+// A COLUMN CLOSING UNDER A DRAG FROM IT ends the drag here (the user 2026-09-21): the kit's hit areas sit above these zones and take
+// the drop of a tab on another chat's strip; the join closes the emptied source column INSIDE that drop handler, so the source
+// page's dragend, the one event that called unmountZones, never runs (its frame is gone). The zones stayed mounted over the
+// first chat: no tab could be clicked and the pointer wore the zone's arrow. The close is the event; nothing is timed.
+function endDragFrom(n){if(drag&&drag.from===n){drag=null;unmountZones();}}
 function zone(p,cls,col,onDrop){var z=document.createElement('div');z.className='col-drop'+(cls?' '+cls:'');if(col!==null)z.setAttribute('data-col',col===1?'':String(col));
 z.addEventListener('dragenter',function(ev){ev.preventDefault();cue(z,true);});
 z.addEventListener('dragover',function(ev){ev.preventDefault();try{if(ev.dataTransfer)ev.dataTransfer.dropEffect='move';}catch(e){}cue(z,true);});
