@@ -15,6 +15,8 @@ This test is the mechanical half of that rule. It pins:
 - a paragraph budget, since a page can be short and still unreadable in slabs (code blocks,
   tables, admonitions and raw HTML are not prose and are not counted);
 - the install command inside the first screen of the install page, before anything optional;
+- one pointer from the guide to the reference, in its opening line, so a feature's paragraph
+  stops ending with a link that sends the reader off the page they are reading;
 - process documents out of the site's top-level navigation (docs/pr-tiers.md is contributor
   process, reachable by path and by URL, not a section of the site).
 
@@ -121,6 +123,16 @@ class FrontPagesStayShort(unittest.TestCase):
             hits[0], INSTALL_CMD_LINE_CAP,
             "the install command is at line %d of docs/install.md: a visitor came for it, so "
             "nothing optional goes above it (cap %d)" % (hits[0], INSTALL_CMD_LINE_CAP))
+
+    def test_the_guide_points_at_the_reference_once(self):
+        text = (DOCS / "guide.md").read_text(encoding="utf-8")
+        hits = [n for n, line in enumerate(text.split("\n"), 1) if "reference.md" in line]
+        self.assertEqual(
+            len(hits), 1,
+            "docs/guide.md links to the reference %d times (lines %s): the opening points "
+            "there once, and a feature's paragraph states what the feature does rather than "
+            "ending in a link" % (len(hits), hits))
+        self.assertLessEqual(hits[0], 12, "that one pointer belongs in the opening, not down the page")
 
     def test_pr_tiers_is_not_a_navigation_entry(self):
         mkdocs = (REPO / "mkdocs.yml").read_text(encoding="utf-8")

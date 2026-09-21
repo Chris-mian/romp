@@ -218,6 +218,7 @@ CTX = {
     "jauth_map": ("sig", ("jauth",)),
     "jactive": ("sig", ("jactive",)),
     "ps": ("sig", ("parse", "transcript", "live", "cut", "states")),   # the cache-only, live-merged parse, re-read in place for a warm entry gone stale
+    "leaf_ok": ("sig", ("transcript",)),               # the transcript's stat succeeded (2026-09-21): a gone leaf asks the warmer for nothing
     "who_working": ("sig", ("downtime", "parse")),     # _session_working over the open turn, suspension-aware
     "interrupting": ("sig", ("interrupting",)),
     "store": ("sig", ("store",)),                      # _feed_goals_keyed(fsid), read once in the key
