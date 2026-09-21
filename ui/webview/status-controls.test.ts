@@ -178,6 +178,8 @@ test("the battery's click pulse ends on a refusal too (2026-09-21): endCtxBarCli
   assert.equal(bar.classList.contains("ctx-clicked"), false, "the pulse ends on the refusal, not on the next status change or a tab switch");
   SC.endCtxBarClick(null);                                   // no bar on the page yet: nothing to end
   bar.classList.add("ctx-clicked");
+  SC.setCtxBar(bar, "62%", false, [1, 2, 3], false);
+  assert.equal(bar.classList.contains("ctx-clicked"), true, "a non-compacting bar refresh keeps the cue: the one-second refresh runs before any status frame or refusal, and a remover hoisted above the compacting check would erase the click within a tick (2026-09-21)");
   SC.setCtxBar(bar, "62%", true, [1, 2, 3], false);
   assert.equal(bar.classList.contains("ctx-clicked"), false, "the compacting state takes the cue over, through the same remover");
 });

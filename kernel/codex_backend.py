@@ -581,7 +581,8 @@ class _Session:
         self.loaded_client_generation = None  # ...on WHICH app-server (client generation): a
                                               # replacement server has never seen the thread, so
                                               # `loaded` counts only while this matches the current one
-        self.launch_error = None      # {text, at, limit} — why the session can't run, or None
+        self.launch_error = None      # {text, at, limit, an optional noRetry (SessionBackend.launch_error's contract,
+                                      # kernel/session_backend.py)}: why the session can't run, or None
         self.norm = None              # ThreadNormalizer, built by the worker on first need
         self.worker = None
         self.kick = threading.Event() # wake the worker (new send / resume / shutdown)
@@ -1857,8 +1858,12 @@ class CodexBackend:
         a compaction the server acks and never takes up would leave the bracket standing, and no message typed into
         the session probes it (the kernel's gates read compacting() and park, and the drain skips the session); what
         ends such a bracket is a send that bypasses the kernel's gates (a peer's mail, a retry press, a raw-mode save:
-        the worker attempts turn/start under a bracket with no active seen, and the accepted turn ends it), End then
-        Revive, or a kernel restart. docs/codex.md names the two the user can reach.
+        the worker attempts turn/start under a bracket with no active seen, and the accepted turn ends it), a kernel
+        restart, which loses the in-memory bracket and delivers the parked message from the kernel's disk mirror, or
+        End then Revive, which keeps the thread and its history but hands a parked message the user typed back as
+        not delivered and drops the rest of the parked queue with the session, logged (the kernel's End doors cancel
+        the ending session's parked ops, 2026-09-21). docs/codex.md names the two the user can reach, and which of
+        them keeps the message.
         The normalizer is built BEFORE the latch and outside norm_lock (_ensure_norm takes it): a session revived or
         restored in this process that has not run a turn has none, and the boundary writer would otherwise meet
         s.norm None inside the pump's try and lose the record silently; built here it also seeds last_uuid from the

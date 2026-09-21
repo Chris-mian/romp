@@ -39,6 +39,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 os.environ["ROMP_MANAGER_PORT"] = "1"             # a dead port, never an inherited live one
 km = load_source("romp_kernel_codex_compact", os.path.join(BIN, "romp-kernel"))
+_REAL_SEND_TO_APP = km._send_to_app                # the broadcast as shipped, for the one test that pins its reach
 # Per-session hosts are on by default: a state root without this file starts a real host for any session a
 # backend connects. Nothing here connects one; the rule is unconditional for a module that mints its own root.
 _HOSTS = Path(os.environ["XDG_STATE_HOME"], "romp", "session-hosts")
@@ -380,6 +381,67 @@ class CodexCompactDrain(_Base):
                          "the backend's own words, never the generic toast")
 
 
+class EndHandbackTargets(_Base):
+    """Where the End doors' handback lands and which parked ops it takes (2026-09-21), over the module's stub backend: the
+    queue is the kernel's own, so no backend is driven."""
+
+    def _restore_undelivered(self):
+        path = km.jd.STATE / "undelivered.jsonl"
+        before = path.read_bytes() if path.exists() else None
+
+        def restore():
+            if before is None:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                path.write_bytes(before)
+        self.addCleanup(restore)
+
+    def test_a_socketless_end_hands_the_message_to_one_chat_pane_the_one_watching_the_session_first(self):
+        # The socket-less doors (the end route, the self-close sweep) broadcast to every chat pane: two chat columns
+        # drew two modals and two bell entries for one message (review find, 2026-09-21). One chat client hears it,
+        # the one watching the session when there is one.
+        self._restore_undelivered()
+        km._park_op(SID, ("send", "words the user typed", "human", QID, True))
+        frames = {"first": [], "watching": []}
+        first = {"app": "chat", "alive": True, "send": lambda t: frames["first"].append(json.loads(t))}
+        watching = {"app": "chat", "alive": True, "active": SID, "send": lambda t: frames["watching"].append(json.loads(t))}
+        with km._clients_lock:
+            km._clients.extend([first, watching])
+
+        def unregister():
+            with km._clients_lock:
+                km._clients[:] = [c for c in km._clients if c is not first and c is not watching]
+        self.addCleanup(unregister)
+        with mock.patch.object(km, "_send_to_app", _REAL_SEND_TO_APP):   # the shipped broadcast, so its reach is what is pinned
+            self.assertEqual(km._drop_parked_on_end(SID), 1)
+        errs = [f for f in frames["first"] + frames["watching"] if f.get("type") == "err"]
+        self.assertEqual(len(errs), 1, "one modal for one message: %r" % [f.get("copy") for f in errs])
+        self.assertEqual(errs[0]["copy"], "words the user typed")
+        self.assertEqual([f["type"] for f in frames["watching"]], ["err"], "the pane watching the session shows it")
+        self.assertEqual(frames["first"], [], "the other chat column hears nothing")
+        self.assertNotIn(SID, km._pending_ops)
+
+    def test_the_in_flight_op_is_kept_by_slot_so_a_second_compact_press_behind_it_is_dropped(self):
+        # _compact_or_park parks the literal ("compact",), one interned tuple, so a second press `is` the first; an
+        # identity filter kept both behind the in-flight one (review find, 2026-09-21). The slot the drain holds is the
+        # one kept, as _cancel_parked finds it.
+        import contextlib, io
+        km._park_op(SID, ("compact",))
+        km._park_op(SID, ("compact",))
+        ops = km._pending_ops[SID]
+        self.assertEqual(len(ops), 2)
+        self.assertIs(ops[0], ops[1], "one interned tuple, two slots")
+        km._inflight_ops[SID] = ops[0]
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            self.assertEqual(km._drop_parked_on_end(SID), 0, "a compact press carries no text to hand back")
+        self.assertEqual(km._pending_ops.get(SID), [("compact",)], "exactly the in-flight slot remains")
+        self.assertEqual(log.getvalue().count("parked compact op dropped with the ending session %s" % SID), 1)
+
+
 class RealBackendCompact(unittest.TestCase):
     """The route, the gates and the drain over the REAL CodexBackend with the codex-backend module's own scripted
     client, installed as the kernel's singleton so `be is _codex()` holds against the real object, Sessions.backend_for
@@ -407,7 +469,7 @@ class RealBackendCompact(unittest.TestCase):
             self._saved_singleton = km._codex_backend
             km._codex_backend = self.be
         self.sent, self.marked = [], []
-        self.client = {"send": lambda t: self.sent.append(json.loads(t))}
+        self.client = {"app": "chat", "send": lambda t: self.sent.append(json.loads(t))}   # a chat pane's socket: it renders err
         for name, stub in {"_sdk": lambda: None, "_push_soon": lambda *a, **k: None, "_limit_hold": lambda sid: None,
                            "_mark_compacting": lambda sid: self.marked.append(str(sid))}.items():
             p = mock.patch.object(km, name, stub)
@@ -525,6 +587,152 @@ class RealBackendCompact(unittest.TestCase):
         out = km.build_session(sid, time.time())
         self.assertEqual(len([e for e in out["events"] if e.get("kind") == "apiError"]), 1)
         self.assertIs(out["status"]["apiNoRetry"], False, "a failed turn's card keeps its button")
+
+    def _restore_file(self, path):
+        """Leave `path` as found after the test: the bytes it held, or absent."""
+        before = path.read_bytes() if path.exists() else None
+
+        def restore():
+            if before is None:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                path.write_bytes(before)
+        self.addCleanup(restore)
+
+    def _parked_behind_a_bracket_nothing_ends(self, text, where):
+        """The second review's probe (2026-09-21): a compaction the server acks and never runs (the bracket stands with
+        no status seen), then a message typed under it, parked in the kernel's queue. Returns the sid; the files End
+        records and the refusal keeps are restored after the test."""
+        for name in ("gone/%s.json" % SID_REAL, "states/%s.jsonl" % SID_REAL, "undelivered.jsonl", "end-on-idle.json"):
+            self._restore_file(self.root / name)
+        sid = self.be.spawn("web", where, sid=SID_REAL)
+        self.assertTrue(self.be.send(sid, "first synthetic turn"))
+        self.assertTrue(self.cbt._lock_free(self.be, sid))
+        self.assertIs(km._compact_or_park(self.be, sid), False, "fired now: the ack, and no status ever follows")
+        self.assertIs(km._compacting_now(sid), True, "the bracket stands with no active seen")
+        self.assertIs(km._send_or_park(self.be, sid, text, user=True, qid=QID), True, "parks behind the bracket")
+        self.assertEqual([op[:2] for op in km._pending_ops[sid]], [("send", text)])
+        return sid
+
+    def _after_end(self, sid, text, n0, where, errs):
+        """What every End door owes the parked message: the drain's pass in End's own wake (the push-soon), then a
+        Revive and another pass, and the text reaches the not-delivered frame exactly once and the thread never; the
+        undelivered file keeps it once; the queue and its disk mirror no longer hold the sid."""
+        self.assertIs(self.be.owns(sid), False, "End killed the row")
+        km._apply_pending_ops()
+        self.assertTrue(self.be.resume("web", sid, cwd=where))
+        self.assertIs(self.be.owns(sid), True)
+        km._apply_pending_ops()
+        delivered = [c for c in self.fake.called("turn_start")[n0:] if any(i.get("text") == text for i in c[2])]
+        self.assertTrue(delivered or errs, "the text reached neither the thread nor the not-delivered frame: dropped silently")
+        self.assertEqual(delivered, [], "nothing typed under the cue runs unasked on the row End killed or the revived one")
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual((errs[0]["sid"], errs[0]["op"]), (sid, "sendMessage"))
+        self.assertIn("not delivered", errs[0]["title"])
+        self.assertIn("ended", errs[0]["text"])
+        rows = [json.loads(l) for l in (self.root / "undelivered.jsonl").read_text().splitlines() if l.strip()]
+        self.assertEqual([(r["sid"], r["text"]) for r in rows if r.get("sid") == sid], [(sid, text)], "kept verbatim, once")
+        self.assertNotIn(sid, km._pending_ops, "the ending session's queue is gone with it")
+        mirror = json.loads(km._PENDING_OPS_FILE.read_text()) if km._PENDING_OPS_FILE.exists() else {}
+        self.assertNotIn(sid, mirror, "and the disk mirror does not replay it into a restart")
+        self.assertEqual(self.be.pending_queued(sid), [], "the backend's own queue never had it")
+
+    def test_end_hands_a_message_parked_behind_a_bracket_the_server_never_ran_back_as_not_delivered(self):
+        # The probe replayed through the dashboard's End (the WS op): End killed the row and woke the drain, which
+        # popped the send and handed it to a row that read as unowned, whose refusal the delivery ignored, so the chat
+        # heard nothing, and Revive drains only the backend's own queue, which is empty: the message was gone, while
+        # the doc said End then Revive delivered it. The End doors now cancel the ending session's parked sends
+        # through the not-delivered path: the err frame hands the text back in its copy slot on the ending pane.
+        text = "typed behind a cue nothing ends"
+        sid = self._parked_behind_a_bracket_nothing_ends(text, "/TESTDIR-compact-end")
+        n0 = len(self.fake.called("turn_start"))
+        self.assertTrue(km._drive({"type": "endSession", "id": sid}, self.client))
+        self._after_end(sid, text, n0, "/TESTDIR-compact-end",
+                        [f for f in self.sent if f.get("type") == "err" and f.get("copy") == text])
+
+    def test_an_end_from_a_pane_that_cannot_show_the_modal_hands_it_to_a_chat_pane(self):
+        # The Sessions pane's End arrives on that pane's own socket, whose bundle has no err arm: handed there, the
+        # frame showed nothing and reached no chat pane either, since a client was supplied (review find, 2026-09-21).
+        # A client whose app does not render err falls to the chat target.
+        text = "typed behind a cue, ended from the sessions pane"
+        sid = self._parked_behind_a_bracket_nothing_ends(text, "/TESTDIR-compact-end-fleet")
+        n0 = len(self.fake.called("turn_start"))
+        fleet_frames, broadcast = [], []
+        fleet = {"app": "fleet", "send": lambda t: fleet_frames.append(json.loads(t))}
+        with mock.patch.object(km, "_send_to_app", lambda app, m: broadcast.append((app, m))):
+            self.assertTrue(km._drive({"type": "endSession", "id": sid}, fleet))
+        self.assertEqual([f for f in fleet_frames if f.get("type") == "err"], [], "the pane that cannot show it gets no frame")
+        self._after_end(sid, text, n0, "/TESTDIR-compact-end-fleet",
+                        [m for app, m in broadcast if app == "chat" and m.get("type") == "err" and m.get("copy") == text])
+
+    def test_end_drops_a_machines_send_parked_beside_the_typed_one_with_no_modal(self):
+        # A machine's send parks through the same road (a watch notice, the spend-ceiling body, a tagged romp send):
+        # handed back as the user's words, End would offer to copy text they never typed and file it in the
+        # undelivered file as theirs, a false interrupt (review find, 2026-09-21). Only the typed one comes back;
+        # the machine's is dropped with a log line naming the kind and never the body.
+        import contextlib, io
+        text = "typed behind a cue nothing ends"
+        sid = self._parked_behind_a_bracket_nothing_ends(text, "/TESTDIR-compact-end-machine")
+        machine = "a watch notice the kernel composed"
+        self.assertIs(km._send_or_park(self.be, sid, machine), True, "the machine's send parks behind the typed one")
+        self.assertEqual([op[:2] for op in km._pending_ops[sid]], [("send", text), ("send", machine)])
+        self.assertFalse(km._op_user(km._pending_ops[sid][1]) or km._op_qid(km._pending_ops[sid][1]), "no user flag, no press id")
+        n0 = len(self.fake.called("turn_start"))
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            self.assertTrue(km._drive({"type": "endSession", "id": sid}, self.client))
+        errs = [f for f in self.sent if f.get("type") == "err"]
+        self.assertEqual([f.get("copy") for f in errs], [text], "exactly one modal, carrying the typed text")
+        self.assertIn("parked send op dropped with the ending session %s" % sid, log.getvalue())
+        self.assertNotIn(machine, log.getvalue(), "the log names the kind, never the body")
+        self._after_end(sid, text, n0, "/TESTDIR-compact-end-machine", errs)
+        rows = [json.loads(l) for l in (self.root / "undelivered.jsonl").read_text().splitlines() if l.strip()]
+        self.assertEqual([r["text"] for r in rows if r.get("sid") == sid], [text], "the machine's text is not filed as the user's")
+        self.assertEqual([c for c in self.fake.called("turn_start")[n0:] if any(i.get("text") == machine for i in c[2])], [])
+
+    def test_the_end_route_hands_the_parked_message_to_the_chat_panes(self):
+        # romp end lands here with no socket: the not-delivered frame goes to every chat pane (the broadcast the
+        # kernel-parked ops already use), the same shape the WS op sends its pane.
+        import threading
+        from http.server import ThreadingHTTPServer
+        import urllib.request
+        text = "typed behind a cue, ended from the shell"
+        sid = self._parked_behind_a_bracket_nothing_ends(text, "/TESTDIR-compact-end-route")
+        n0 = len(self.fake.called("turn_start"))
+        broadcast = []
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        req = urllib.request.Request("http://127.0.0.1:%d/end" % srv.server_address[1], method="POST",
+                                     data=json.dumps({"id": sid}).encode(),
+                                     headers={"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
+        with mock.patch.object(km, "_send_to_app", lambda app, m: broadcast.append((app, m))):
+            with urllib.request.urlopen(req, timeout=10) as r:
+                self.assertEqual((r.status, json.loads(r.read().decode())), (200, {"ok": True}))
+        self.assertIn(("chat", {"type": "closed", "id": sid}), broadcast, "the tab closes as before")
+        self._after_end(sid, text, n0, "/TESTDIR-compact-end-route",
+                        [m for app, m in broadcast if app == "chat" and m.get("type") == "err" and m.get("copy") == text])
+
+    def test_the_self_close_sweep_hands_the_parked_message_to_the_chat_panes(self):
+        # romp end self defers to idle; the pusher's sweep kills at the turn's settle and takes the same road as the
+        # other two doors. The sweep's own transcript read is stubbed quiet (tests/test_kernel_end_on_idle.py's
+        # shape); the parked queue, the kill and the frames are real.
+        text = "typed behind a cue, ended by the session itself"
+        sid = self._parked_behind_a_bracket_nothing_ends(text, "/TESTDIR-compact-end-sweep")
+        n0 = len(self.fake.called("turn_start"))
+        broadcast = []
+        km._end_on_idle_save({sid})
+        with mock.patch.object(km, "_send_to_app", lambda app, m: broadcast.append((app, m))), \
+             mock.patch.object(km, "_parse", lambda path, sid, now: {"turns": []}), \
+             mock.patch.object(km, "_session_working", lambda turns: False):
+            km._end_on_idle_sweep(int(time.time()), km.Sessions.live())
+        self.assertEqual(km._end_on_idle_load(), set(), "the wish is spent")
+        self.assertIn(("chat", {"type": "closed", "id": sid}), broadcast)
+        self._after_end(sid, text, n0, "/TESTDIR-compact-end-sweep",
+                        [m for app, m in broadcast if app == "chat" and m.get("type") == "err" and m.get("copy") == text])
 
 
 if __name__ == "__main__":
