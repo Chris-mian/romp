@@ -238,7 +238,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.match(GEAR, /function paintWidgets\(\) \{ tabSection\.paint\(\); ringSection\.paint\(\); statusSection\.paint\(\); \}/, "one repaint covers the three sections");
   // THE RINGS (2026-09-14): a third section of the same builder over the registry's rings, under the title rows and their
   // preview, sharing the tab section's store and save (settings.tabWidgets, the tabCtx mirror, the repaint); no divider,
-  // no grip and no drag (reorder: false — the order is the precedence, red over yellow over amber, the registry's); the
+  // no grip and no drag (reorder: false: the order is the precedence, red over magenta over amber, the registry's); the
   // demo is a miniature tab wearing the ring its predicate lights on its demo status, a plain tab once switched off
   const chatPane = panes().chat;
   assert.ok(chatPane.indexOf("id=rs-widgets") < chatPane.indexOf("Rings around the tab. One at a time: the first that applies wins, in this order.") && chatPane.indexOf("Rings around the tab.") < chatPane.indexOf("id=rs-rings") && chatPane.indexOf("id=rs-rings") < chatPane.indexOf("data-section=statusline"), "the hint and the rings' host follow the title rows, before the Status line section");

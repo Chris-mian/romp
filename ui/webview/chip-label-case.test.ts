@@ -1,5 +1,5 @@
 // Status chips read as sentence case, not ALL CAPS (the user 2026-07-03): "Working", "Ready",
-// "Blocked", "Compacting", … — first letter capitalized, the rest lowercase (acronyms like "API"
+// "Needs you", "Compacting", …: first letter capitalized, the rest lowercase (acronyms like "API"
 // stay). Pins the CHIP_LABEL map + its fallback, which live in status-chip.ts since T322b (the bar under the
 // transcript and the tag overview's rows import the one map), and that render.ts keeps no map of its own.
 import { test } from "node:test";

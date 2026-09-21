@@ -73,7 +73,7 @@ test("executed: the pip's tooltip counts several sessions — never a singular p
 // The three rings are widgets with a switch each; this is the pure twin of the registry's composition (tab-widgets.ts
 // composeTabRing, pinned equal to tabRingId over every status and switch set in tab-widgets.test.ts).
 const off = (...ids: string[]) => (id: string) => !ids.includes(id);
-test("executed: tabRingId — the yellow ring for the feed's needs-you verdict in every live state, red over yellow over amber, one ring at a time", () => {
+test("executed: tabRingId: the magenta ring for the feed's needs-you verdict in every live state, red over magenta over amber, one ring at a time", () => {
   assert.deepEqual(RING_ORDER, ["ring-needs-you", "ring-waiting-on-you", "ring-retrying"], "the precedence: red, yellow, amber");
   // the common case the state rule never sees: a session that asked something and went idle
   assert.equal(tabRingId({ state: "ready", needsYou: true }), "ring-waiting-on-you");
@@ -151,7 +151,7 @@ test("executed: the pip's tooltip names the members by the ring their tab wears 
     { name: "tests", status: { state: "needsInput", needsYou: true } },
     { name: "docs", status: { state: "working" } },
   ];
-  assert.deepEqual(sectionPipMembers("ask", members), ["web", "api"], "the two whose tab wears the yellow ring; not the red one");
+  assert.deepEqual(sectionPipMembers("ask", members), ["web", "api"], "the two whose tab wears the magenta ring; not the red one");
   assert.deepEqual(sectionPipMembers("working", members), ["web", "docs"], "the working dot is still theirs");
   assert.deepEqual(sectionPipMembers("blocked", members), ["tests"]);
   assert.deepEqual(sectionPipMembers("ask", members, off("ring-needs-you")), ["web", "api", "tests"], "the red ring switched off: the prompt's tab wears the yellow, so the yellow pip names it");
