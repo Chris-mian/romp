@@ -120,9 +120,6 @@ test("the reference says what the Needs you ring means, when it shows (idle, wai
   assert.match(REF, prose("A ring switched off leaves the tab with its dot; the small dot on a folded group's header and the phone's picker follow the same switches."));
   assert.match(REF, prose("the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name"), "the strip paragraph's Tab widgets sentence");
   assert.match(REF, prose("One colour, the Needs you colour, marks the category everywhere"), "the one-colour sentence");
-  // the tag overview's paragraph (moved into the reference by the docs restoration) names the chip Needs you, so a later move cannot drop the word again (PR 1935 round two, M1)
-  assert.match(REF, prose("with the same words and colours: **Needs you** when the feed shows one of the session's cards under Needs you or the session is stopped on a prompt"));
-  assert.match(REF, prose("the **Needs you** chip follows the feed, one refresh behind it at most"));
 });
 
 test("the phone's session picker scrapes the Needs you ring's class off the desktop strip and paints it on the row and the current-session chip, so it follows the ring's switch for free", () => {

@@ -1,7 +1,7 @@
 // THE SESSION STATUS CHIP: one vocabulary (the words) and one dress (the classes) for every surface that says a
 // session's state in a pill. The bar under the transcript wears it for the session you are reading (render.ts
 // updateStatusline), the comment popover's statusline mirrors its anatomy (cmtStateChip), and the tag overview's
-// rows wear it beside a session's name (fillSnapshotRow) for the two states a row says in words: on you (Blocked,
+// rows wear it beside a session's name (fillSnapshotRow) for the two states a row says in words: on you (Needs you,
 // the feed's column word; API error when that is the state) and awaiting background work ("Awaiting 3 agents",
 // "Awaiting watch", the one peer's name). T322b (the user 2026-09-10, screenshot): the overview had grown a grey
 // outlined pill of its own reading "waiting" while the bar said "Awaiting agents" in await-green for the same

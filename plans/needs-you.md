@@ -83,8 +83,8 @@ Every claim the design leans on, read at `upstream/main` 55d8e8f0.
   modal's chip, `--err`), `--st-blocked-bg #e5484d` (an API stop: the tab state, the API-error badge on a card, the
   group pip's `blocked`), and the alarm fill on a blocked tab. Magenta existed once more, as `--st-5xx-bg` (`#c026d3`
   dark, `#A21CAF` light) and the two literal inks of `.ah-c-r5xx` (`#e879f9` dark, `#86198F` light): the 5xx marks of
-  the API-health cell, which sits on the LANDING page beside every session's state (`/perf` and `/api-health` answer
-  JSON). Phase two moved the 5xx hue to a purple apart from the Needs you magenta and routed the inks through a token
+  the API-health cell's hover tip and detail (and the legend, on every hover), which sit on the LANDING page beside
+  every session's state (`/perf` and `/api-health` answer JSON). Phase two moved the 5xx hue to a purple apart from the Needs you magenta and routed the inks through a token
   (below).
 - **Notifications.** The bell and the phone push fire on a card ENTERING `needs_input` or `completed`
   (`_feed_notifications`, `notify: ["needs_input", "completed"]`); their copy names the card, not the column.
@@ -140,10 +140,11 @@ has its own root; every state token is mirrored there today); the mobile page's 
 
 Both clear the ring and pair floors `theme-parity.test.ts` holds (3:1), and the dark hue sits apart from the working
 gold, the retrying amber and both reds under a red-green deficiency (the test's pairwise pins extend to it). The 5xx
-marks of the API-health cell on the landing page (`--st-5xx-bg`, the `.ah-seg-serverErrors` fill; `--st-5xx-ink`, the
-`.ah-c-r5xx` text) are a purple apart from the Needs you magenta in both themes (`#7e22ce` and `#c4b5fd` dark, `#4c1d95`
-light; OKLab distance x100 at least 15 from the token, the categorical floor), so nobody reads a 5xx mark as a needs-you
-mark; theme-parity.test.ts pins the token against the fill and the ink per theme.
+marks of the API-health cell's tip and detail on the landing page (`--st-5xx-bg`, the `.ah-seg-serverErrors` fill;
+`--st-5xx-ink`, the `.ah-c-r5xx` text) are a purple apart from the Needs you magenta in both themes: measured, OKLab
+distance x100, dark fill `#7e22ce` 19.3 and ink `#c4b5fd` 22.8 from `#d946ef`, light fill and ink `#4c1d95` 18.0 from
+`#a21caf` (the light 5xx value had been byte-identical to the token, the dark fill 7.5 away); theme-parity.test.ts pins
+the token against the fill and the ink per theme at the categorical floor of 15.
 
 Where the token paints, and only there:
 
@@ -163,7 +164,9 @@ Where the token paints, and only there:
 
 Red stays on: the Blocked ring and its translucent fill, the hard-stop marks on a card (the ⏸ live-block badge, the
 ⚠ API-error badge), the chat chip's **API error**, the unread passage's dashed box (a different meaning, the same
-family, left alone by this note).
+family, left alone by this note). Two card badges LEFT the red family in phase two, since neither is a hard stop: the
+⚠ retrying badge (`.fask-retrying`) wears the retrying amber its ring, chip and lane badge already wear, and the
+⚠ credential badge (`.fask-jauth`) is filled in the Needs you pair, filled against outlined kept.
 
 ### The status chip: Needs you on every surface
 

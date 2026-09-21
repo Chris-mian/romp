@@ -694,4 +694,7 @@ test("executed: the guide describes the fold rule and the view", () => {
   assert.match(REF, prose("Clicking a tag section's header also shows the section in the transcript's place"));
   assert.match(REF, prose("The transcript comes back when you pick a session, press Escape, or click that header again while its section is open and holds the tab you are reading."));
   assert.match(REF, prose("a session that has published a note of what it is working on shows the note as a quieter second line."));
+  // the paragraph's chip word (plans/needs-you.md; the docs restoration moved the paragraph here with the old word once)
+  assert.match(REF, prose("with the same words and colours: **Needs you** when the feed shows one of the session's cards under Needs you or the session is stopped on a prompt"));
+  assert.match(REF, prose("the **Needs you** chip follows the feed, one refresh behind it at most"));
 });

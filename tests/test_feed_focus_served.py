@@ -2,7 +2,7 @@
 """T347 (the user 2026-09-11, who wanted the focused session's cards on top of the feed): THE FOCUSED SESSION SECTION.
 
 When a session tab has focus in the chat pane, the feed shows that session's cards ABOVE a horizontal divider — the
-board's three columns (Working / Blocked / Completed), a miniature of the feed for one session, headed by the session's
+board's three columns (Working / Needs you / Completed), a miniature of the feed for one session, headed by the session's
 name — while the board below stays exactly as it is, so those cards appear twice. OFF by default; the View menu's
 fourth row ("Show focused session") switches it, persisted in the feed's view state under `focused`; the kernel relays
 the chat pane's active tab to the feed clients of the same window as {type:"activeChat", id}. EVENT-based: the section

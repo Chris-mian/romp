@@ -5039,7 +5039,7 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
 
 // ── THE FOCUSED SESSION SECTION (T347, the user 2026-09-11, who wanted the focused session's cards on top) ──
 // When a tab has focus in the chat pane, the feed puts that session's cards ABOVE the board: the session's
-// name as the head, the board's three columns (Working / Blocked / Completed, the same chips), a horizontal
+// name as the head, the board's three columns (Working / Needs you / Completed, the same chips), a horizontal
 // rule under it. The board below stays exactly as it is, so those cards appear twice. A VIEW, not a move:
 // the section has its own elements and caches (fsAskEls / fsGroupEls, keys "f:a:…" / "f:g:…"), and
 // nothing below is touched by it — the FLIP capture reads #feed-cols, the modal's and the keyboard scope's

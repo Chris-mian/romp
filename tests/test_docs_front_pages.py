@@ -151,5 +151,20 @@ class FrontPagesStayShort(unittest.TestCase):
                       "CLAUDE.md is where the rule lives; this test only enforces it")
 
 
+class DocsChipClassesHaveRules(unittest.TestCase):
+    """Every `romp-chip-<name>` class a docs page draws has a rule in docs/stylesheets/extra.css (the site does not load the
+    app's sheets, so a class without a rule is an unstyled word: the Needs you chip glyph, `romp-chip-needs`, renamed off
+    the retired `romp-chip-blocked` in plans/needs-you.md's phase two)."""
+
+    def test_every_chip_class_in_the_docs_has_a_rule(self):
+        used = set()
+        for page in DOCS.glob("*.md"):
+            used |= set(re.findall(r"romp-chip-([a-z]+)", page.read_text(encoding="utf-8")))
+        ruled = set(re.findall(r"\.romp-chip-([a-z]+)\b", (DOCS / "stylesheets" / "extra.css").read_text(encoding="utf-8")))
+        self.assertTrue(used, "the docs draw at least one chip")
+        self.assertEqual(sorted(used - ruled), [], "a chip class the docs draw with no rule in extra.css")
+        self.assertNotIn("blocked", used, "the retired chip glyph: the category reads Needs you (plans/needs-you.md)")
+
+
 if __name__ == "__main__":
     unittest.main()
