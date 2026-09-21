@@ -399,6 +399,27 @@ class EndHandbackTargets(_Base):
                 path.write_bytes(before)
         self.addCleanup(restore)
 
+    def _connect(self, *panes):
+        """Register `panes` as this kernel's live dashboard sockets for the test, gone at its end."""
+        with km._clients_lock:
+            km._clients.extend(panes)
+
+        def unregister():
+            with km._clients_lock:
+                km._clients[:] = [c for c in km._clients if not any(c is pane for pane in panes)]
+        self.addCleanup(unregister)
+
+    def _name(self, sid, name):
+        """A names-registry row for `sid` in the kernel's tab format (name, cwd, colors), gone at the test's end. Over the
+        kernel's own NAMES, which _name_of reads, not a root another module's load may have rebound jd.STATE to."""
+        km.NAMES.mkdir(parents=True, exist_ok=True)
+        (km.NAMES / sid).write_text("%s\t/TESTDIR-compact-end\t#112233\t#ffffff\n" % name)
+        self.addCleanup(lambda: (km.NAMES / sid).unlink(missing_ok=True))
+
+    def _pane(self, app, frames, **slots):
+        """A connected pane of `app` whose frames land in `frames`; `slots` are the liveness and tab bookkeeping."""
+        return dict({"app": app, "alive": True, "send": lambda t: frames.append(json.loads(t))}, **slots)
+
     def test_a_socketless_end_hands_the_message_to_one_chat_pane_the_one_watching_the_session_first(self):
         # The socket-less doors (the end route, the self-close sweep) broadcast to every chat pane: two chat columns
         # drew two modals and two bell entries for one message (review find, 2026-09-21). One chat client hears it,
@@ -423,6 +444,105 @@ class EndHandbackTargets(_Base):
         self.assertEqual([f["type"] for f in frames["watching"]], ["err"], "the pane watching the session shows it")
         self.assertEqual(frames["first"], [], "the other chat column hears nothing")
         self.assertNotIn(SID, km._pending_ops)
+
+    def test_a_socketless_end_with_no_chat_pane_hands_the_message_to_a_pane_that_renders_the_frame(self):
+        # romp end or the self-close sweep with a feed pane connected and no chat pane: the pick considered chat clients
+        # only, so the frame went to the empty chat broadcast, though the feed's bundle reads an err frame (review find,
+        # 2026-09-21): it hands the frame to the shell's bell through the notify bridge, so the words reach the person
+        # where a shell hosts the pane (the standalone feed page and the extension's feed webview have no bridge), and
+        # its own dialog leaves its box unattached, a pre-existing feed.ts defect fixed separately (PR 1967). With no
+        # live chat client the pick is a live client of a pane whose bundle reads the frame; a pane whose bundle drops
+        # it (the timeline) is never the target, however fresh its socket.
+        self._restore_undelivered()
+        text = "words typed with only the feed open"
+        km._park_op(SID, ("send", text, "human", QID, True))
+        feed_frames, timeline_frames = [], []
+        self._connect(self._pane("timeline", timeline_frames, lastIn=20.0), self._pane("feed", feed_frames, lastIn=10.0))
+        self.assertEqual(km._drop_parked_on_end(SID), 1)
+        self.assertEqual([(f["type"], f.get("copy")) for f in feed_frames], [("err", text)], "the feed pane shows the one dialog")
+        self.assertEqual(timeline_frames, [], "a pane that cannot show it is never the target")
+        self.assertEqual([m for app, m in self.broadcast if m.get("type") == "err"], [],
+                         "the empty chat broadcast is not the road")
+        self.assertNotIn(SID, km._pending_ops)
+
+    def test_the_dialog_lands_on_the_freshest_socket_among_the_panes_watching_the_session(self):
+        # The pick took the first chat socket watching the session, and _client_send answers True on the enqueue, so a
+        # chat pane whose peer went silent without closing (a forwarder holding the kernel's end open) took the one
+        # dialog until the heartbeat dropped it, three beats, while a pane whose peer was answering heard nothing
+        # (review find, 2026-09-21). The socket whose peer proved itself alive last (lastIn, stamped on every inbound
+        # frame, a pong each beat included) is the pick, and a fresher socket showing another session does not outrank
+        # a watching one.
+        self._restore_undelivered()
+        km._park_op(SID, ("send", "words for the freshest watching pane", "human", QID, True))
+        stale, fresh, elsewhere = [], [], []
+        self._connect(self._pane("chat", stale, active=SID, lastIn=100.0),
+                      self._pane("chat", fresh, active=SID, lastIn=200.0),
+                      self._pane("chat", elsewhere, active=SID_REAL, lastIn=300.0))
+        self.assertEqual(km._drop_parked_on_end(SID), 1)
+        self.assertEqual([f["type"] for f in fresh], ["err"], "the freshest pane watching the session shows it")
+        self.assertEqual((stale, elsewhere), ([], []), "the silent watcher and the fresher pane on another session hear nothing")
+
+    def test_with_no_pane_watching_the_session_the_freshest_live_chat_socket_takes_the_dialog_before_any_feed_pane(self):
+        # The fallback took the oldest chat socket, the same silent-peer window as the watching set's (review find,
+        # 2026-09-21): the freshest live chat socket is the pick; a chat pane outranks a feed pane however fresh the
+        # feed's socket, and a socket already marked dead is skipped whatever its stamp, as before.
+        self._restore_undelivered()
+        km._park_op(SID, ("send", "words for the freshest chat pane", "human", QID, True))
+        stale, fresh, feed, dead = [], [], [], []
+        self._connect(self._pane("chat", stale, lastIn=100.0),
+                      self._pane("chat", fresh, active=SID_REAL, lastIn=200.0),
+                      self._pane("feed", feed, lastIn=300.0),
+                      self._pane("chat", dead, alive=False, lastIn=400.0))
+        self.assertEqual(km._drop_parked_on_end(SID), 1)
+        self.assertEqual([f["type"] for f in fresh], ["err"], "the freshest live chat socket shows it")
+        self.assertEqual((stale, feed, dead), ([], [], []),
+                         "the oldest chat socket, the fresher feed pane and the dead socket hear nothing")
+
+    def test_two_equal_stamps_keep_the_older_socket_the_order_the_pick_had(self):
+        # Two panes watching the session whose peers proved themselves alive at the same instant: neither is fresher,
+        # and the older socket takes the frame, the order the pick had before it read the stamps (2026-09-21). Green at
+        # the base by construction, where the first watching socket was always the pick.
+        self._restore_undelivered()
+        km._park_op(SID, ("send", "words for two panes of one stamp", "human", QID, True))
+        older, newer = [], []
+        self._connect(self._pane("chat", older, active=SID, lastIn=100.0),
+                      self._pane("chat", newer, active=SID, lastIn=100.0))
+        self.assertEqual(km._drop_parked_on_end(SID), 1)
+        self.assertEqual([f["type"] for f in older], ["err"], "the older socket takes the frame")
+        self.assertEqual(newer, [], "the newer of two equal stamps hears nothing")
+
+    def test_the_dialogs_detail_names_the_ended_session_as_the_person_knows_it(self):
+        # The frame lands on one pane, and on a chat column showing another session the detail named the ended one by
+        # its uuid alone (review find, 2026-09-21): now the registered name, as moveFailed names a session. The frame's
+        # sid slot and the undelivered file's row keep the uuid; those are read by machines.
+        self._restore_undelivered()
+        self._name(SID, "web")
+        text = "words for a named session"
+        km._park_op(SID, ("send", text, "human", QID, True))
+        frames = []
+        self._connect(self._pane("chat", frames, active=SID_REAL))
+        self.assertEqual(km._drop_parked_on_end(SID), 1)
+        self.assertEqual([f["type"] for f in frames], ["err"])
+        self.assertIn("(session web)", frames[0]["text"], "the detail names the session as the person knows it")
+        self.assertNotIn(SID, frames[0]["text"], "and not by its uuid")
+        self.assertEqual(frames[0]["sid"], SID, "the machine-read slot keeps the uuid")
+        rows = [json.loads(l) for l in (km.jd.STATE / "undelivered.jsonl").read_text().splitlines() if l.strip()]
+        self.assertEqual([(r["sid"], r["text"]) for r in rows if r.get("sid") == SID], [(SID, text)], "the file keys by uuid")
+
+    def test_a_session_no_row_names_is_named_by_its_uuid_on_every_refusal_that_says_why(self):
+        # No registry row (a session this kernel never named): the uuid, as before. The askFollowUp refusal shares the
+        # why branch, so a card reply refused for a session no backend owns names the session the same way.
+        self._restore_undelivered()
+        frames = []
+        pane = {"send": lambda t: frames.append(json.loads(t))}
+        km._refuse_drive(pane, "askFollowUp", SID, {"text": "a reply typed on a card", "itemId": "g1"},
+                         why="No running backend owns this session")
+        self.assertIn("(session %s)" % SID, frames[0]["text"], "no name registered: the uuid")
+        self._name(SID, "api")
+        km._refuse_drive(pane, "askFollowUp", SID, {"text": "a reply typed on a card", "itemId": "g1"},
+                         why="No running backend owns this session")
+        self.assertIn("(session api)", frames[1]["text"], "the card reply's refusal names it too")
+        self.assertEqual((frames[1]["op"], frames[1]["itemId"]), ("askFollowUp", "g1"))
 
     def test_the_in_flight_op_is_kept_by_slot_so_a_second_compact_press_behind_it_is_dropped(self):
         # _compact_or_park parks the literal ("compact",), one interned tuple, so a second press `is` the first; an
