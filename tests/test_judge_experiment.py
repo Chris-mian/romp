@@ -211,7 +211,7 @@ class Harness(unittest.TestCase):
         self.assertTrue(list(Path(dest, "claude", "projects").glob("*/%s.jsonl" % eid)), "each ending is its own truncated transcript")
         self.assertTrue(Path(dest, "state", "romp", "names", eid).exists(), "each ending has its names entry")
         self.assertEqual(Path(dest, "state", "romp", "session-hosts").read_text(), "off")
-        self.assertEqual(m.get("skipped"), {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0}, "skips are counted, never named")
+        self.assertEqual(m.get("skipped"), {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0}, "skips are counted, never named")
         # the journal is cut at the turn's start: a row before it stays, in the ending's own re-keyed journal; a later one goes
         e0 = self._ending(m, SIDS[0], 0)
         (self.state / "overrides" / (SIDS[0] + ".jsonl")).write_text(
@@ -764,7 +764,7 @@ class Harness(unittest.TestCase):
         (self.state / "names" / short).write_text("short\t%s\t#abcdef\n" % self.cwd)
         m = self._corpus(name="skips")[1]
         self.assertIn("skipped", m, "the manifest counts skips (the base wrote none)")
-        self.assertEqual(m["skipped"], {"no-transcript": 1, "few-turns": 1, "unreadable-names-entry": 1})
+        self.assertEqual(m["skipped"], {"no-transcript": 1, "few-turns": 1, "unreadable-names-entry": 1, "parse-failed": 0})
         self.assertNotIn("nowhere", json.dumps(m["skipped"]))
 
     def test_the_label_entry_takes_no_default_binary(self):
@@ -785,6 +785,46 @@ class Harness(unittest.TestCase):
         finally:
             os.environ.clear(); os.environ.update(saved_env)
         self.assertIs(em._CKPT_DIR_FN, provider_before, "the arm's judge left the shared provider as it was, not its own scratch-rooted one")
+
+    def test_a_parse_failure_is_counted_and_logged_never_swallowed(self):
+        """The manager's round-three fold: session_endings must not swallow a parse failure (the repo's fail-loud rule). A
+        transcript that makes the event model raise is counted under skipped['parse-failed'] with no sid, and its type logged."""
+        import io, contextlib
+        sid = "11111111-2222-3333-4444-eeeeeeeeee05"
+        (self.pdir / (sid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in
+            [uline(sid, T0, "ask", "u1"), aline(sid, T0 + 30, "answer", "a1", "u1"), uline(sid, T0 + 600, "again", "u2", "a1"), aline(sid, T0 + 630, "ok", "a2", "u2")]))
+        (self.state / "names" / sid).write_text("boom\t%s\t#abcdef\n" % self.cwd)
+        real = self.je._event_model()
+        class _Boom:
+            def parse_session(self, path, **k):
+                if sid in str(path):
+                    raise ValueError("a transcript the fold cannot read")
+                return real.parse_session(path, **k)
+        self.je._EM[0] = _Boom()
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                m = self._corpus(name="parsefail")[1]
+        finally:
+            self.je._EM[0] = real
+        self.assertEqual(m["skipped"]["parse-failed"], 1, "the unparseable session is counted, not dropped in silence")
+        self.assertIn("could not parse", err.getvalue()); self.assertIn("ValueError", err.getvalue())
+        self.assertNotIn(sid, json.dumps(m["skipped"]) + json.dumps([e["id"] for e in m["endings"]]))
+        # session_endings itself does not catch: the builder is the one that counts and logs
+        import inspect
+        self.assertNotIn("except", inspect.getsource(self.je.session_endings).split("parse_session")[1].split("out = []")[0],
+                         "session_endings lets a parse failure propagate; the builder counts and logs it")
+
+    def test_the_event_model_load_leaves_no_scratch_root_behind(self):
+        """The manager's round-three fold: the scratch state root the event-model load mints is removed once the module has
+        bound its roots, so a build leaves no je-em-* directory."""
+        import glob, tempfile as _tf
+        self.je._EM[0] = None                                    # force a fresh load
+        before = set(glob.glob(os.path.join(_tf.gettempdir(), "je-em-*")))
+        dest, m = self._corpus(name="noscratch")
+        self.assertTrue(m["endings"], "the build parsed through the freshly loaded event model")
+        after = set(glob.glob(os.path.join(_tf.gettempdir(), "je-em-*")))
+        self.assertEqual(after - before, set(), "no je-em-* scratch root is left behind: %r" % (after - before))
 
 
 if __name__ == "__main__":

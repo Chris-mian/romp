@@ -163,6 +163,8 @@ def _event_model():
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+            shutil.rmtree(scratch, ignore_errors=True)   # the module has bound its roots; parse_session reads the explicit path,
+            #                                              and the roots reach only absent postal-log/states files (handled as absence)
     return _EM[0]
 
 
@@ -171,10 +173,8 @@ def session_endings(path, fsid):
     `end_index` is the record index of the turn's last atom (the truncation point); `start_t` is the turn's own start."""
     records = _records(path)
     uuid_idx = {r.get("uuid"): i for i, r in enumerate(records) if r.get("uuid")}
-    try:
-        sess = _event_model().parse_session(str(path), rompuuid=fsid)
-    except Exception:
-        return records, []
+    sess = _event_model().parse_session(str(path), rompuuid=fsid)   # a parse that raises is surfaced (the repo's fail-loud rule): the
+    #                                                                 builder counts it under `skipped["parse-failed"]` and logs the type
     out = []
     for turn in sess.get("turns") or []:
         if not turn.get("ended"):
@@ -402,7 +402,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
     names_dir = state_root / "names"
     picked = {c: [] for c in CLASSES}
     candidates = []
-    skipped = {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0}
+    skipped = {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0}
     for entry in sorted(names_dir.iterdir()) if names_dir.is_dir() else []:
         try:
             fields = entry.read_text(encoding="utf-8").strip().split("\t")
@@ -429,7 +429,12 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
             if not transcript.is_file():
                 continue
             found = True
-            records, endings = session_endings(transcript, fsid)
+            try:
+                records, endings = session_endings(transcript, fsid)
+            except Exception as e:
+                skipped["parse-failed"] += 1
+                sys.stderr.write("judge-experiment: the event model could not parse a transcript (%s); skipped\n" % type(e).__name__)
+                continue
             if len(endings) < min_turns:
                 skipped["few-turns"] += 1
                 continue
