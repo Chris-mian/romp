@@ -133,8 +133,8 @@ const out = {};
       await page.mouse.move(2, 2); await setF.waitForTimeout(100);   // the pointer off the rows (the mouse is the page's, not the frame's)
       out.automationRows[theme] = { rest, hoverCard: hover.card, theme };
     }
-    out.panesLabels = await setF.evaluate(() => ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); return row ? row.querySelector("b").textContent : null; }));
-    out.panesRowClasses = await setF.evaluate(() => ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); return row ? row.className : null; }));
+    out.panesLabels = await setF.evaluate(() => ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-pane-artifacts"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); return row ? row.querySelector("b").textContent : null; }));
+    out.panesRowClasses = await setF.evaluate(() => ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-pane-artifacts"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); return row ? row.className : null; }));
     // the popover stays inside the card (the T408 read): four rows near their pane's bottom sent it past the card's edge, which grew a
     // scrollbar for it and clipped it; hovered, each must leave the card unscrollable with the popover inside the card's rect
     const hoverRow = async (tab, id) => {
@@ -192,7 +192,7 @@ const out = {};
     // each reads display none and height 0; shown again, display flex (its trigger is the VS Code host, ownPage false, not this page)
     out.panesHide = await setF.evaluate(() => {
       const els = Array.from(document.querySelectorAll("#rs-panes-sec,.rs-panes-row"));
-      const rows = ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-panedock"].map((id) => { const el = document.getElementById(id); return el ? el.closest("label") : null; });   // a row the gear lacks reads as not covered, never a dead driver
+      const rows = ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-pane-artifacts", "rs-panedock"].map((id) => { const el = document.getElementById(id); return el ? el.closest("label") : null; });   // a row the gear lacks reads as not covered, never a dead driver
       const covered = rows.every((r) => !!r && els.includes(r));
       els.forEach((el) => { el.hidden = true; });
       const hidden = rows.filter(Boolean).map((r) => ({ display: getComputedStyle(r).display, height: r.getBoundingClientRect().height }));
@@ -447,16 +447,16 @@ class ServedSettingsTabs(unittest.TestCase):
     def test_the_files_row_reads_files_like_the_pane_rows_above_it(self):
         # T407 (the user 2026-09-13, a screenshot of the Panes section): the row read "Files control in the dashboard bar"
         r = self._run(); table = "\n  " + json.dumps(r.get("panesLabels"))
-        self.assertEqual(r.get("panesLabels"), ["Sessions", "Outline", "Feed", "Files"], table)
+        self.assertEqual(r.get("panesLabels"), ["Sessions", "Outline", "Feed", "Files", "Artifacts"], table)   # the generic row for the shipped Artifacts record, after the Files row
 
     def test_the_off_dashboard_hide_takes_all_five_panes_rows(self):
         # round two, low 4: the outcome, not the class: hidden by the selector the hide uses, every row reads display none and height 0
         r = self._run(); h = r["panesHide"]; table = "\n  " + json.dumps(h) + " classes: " + json.dumps(r.get("panesRowClasses"))
-        self.assertTrue(h["covered"], "the hide's selector reaches all five Panes rows (the Files row since the T404 tidy, the Pane docking switch since phase two)" + table)
+        self.assertTrue(h["covered"], "the hide's selector reaches all six Panes rows (the Files row since the T404 tidy, the generic Artifacts row and the Pane docking switch since phase two and three)" + table)
         self.assertEqual(h["count"], PANES_ROWS + GENERIC_ROWS + 1, "the head, the five hand-written rows and the one generic row (the Artifacts record), nothing else" + table)
         for x in h["hidden"]:
             self.assertEqual((x["display"], x["height"]), ("none", 0), "hidden: display none, height 0" + table)
-        self.assertEqual(h["shown"], ["flex"] * PANES_ROWS, "shown again: display flex" + table)
+        self.assertEqual(h["shown"], ["flex"] * (PANES_ROWS + GENERIC_ROWS), "shown again: display flex" + table)
 
     def test_the_fast_mode_boxes_popovers_stay_inside_the_card_at_a_short_window(self):
         # round two, the medium: the box's own popover, nested in the judge row, ran 15 px past the card at 380 px (48 at 300)

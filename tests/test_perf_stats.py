@@ -452,16 +452,17 @@ class Collector(unittest.TestCase):
         added counter reaches the doc or fails here. The slice runs from the `memo` phrase to the `sends` bullet, not the
         whole `builds` bullet, so a `failed` mentioned elsewhere cannot satisfy it; the keys are the runtime report's unioned
         with every counter literal the kernel's source passes to _feed_memo_count and every literal it subscripts the stats
-        dict with directly (the failed count's shape, 2026-09-21, from the post-merge review of #1938: a counter written that
-        way with no seed reaches neither the report nor the helper scan), so a counter minted at a site this process never
+        dict with directly or seeds through setdefault, each read in either quote style (the failed count's shape, 2026-09-21, from the
+        post-merge reviews of #1938 and #1945: a counter written that way with no seed reaches neither the report nor the
+        helper scan, and a scan keyed on one quote style would miss the other), so a counter minted at a site this process never
         exercises still has to reach the doc, which is what makes that claim hold by mechanism; the floor keeps a shrunken
         report from passing vacuously."""
         doc = Path(HERE).parent.joinpath("docs", "reference.md").read_text()
         i = doc.index("`memo`, the per-session card memo inside `build_feed`")
         para = doc[i:doc.index("\n- `sends`:", i)]
         src = inspect.getsource(km)
-        keys = (set(km._feed_memo_report()) | set(re.findall(r'_feed_memo_count\("(\w+)"', src))
-                | set(re.findall(r'_FEED_MEMO_STATS\["(\w+)"\]', src)))
+        keys = (set(km._feed_memo_report()) | set(re.findall(r'''_feed_memo_count\(\s*["'](\w+)["']''', src))
+                | set(re.findall(r'''_FEED_MEMO_STATS(?:\[|\.setdefault\()\s*["'](\w+)["']''', src)))
         self.assertGreaterEqual(len(keys), 13, sorted(keys))
         self.assertEqual(sorted(k for k in keys if "`%s`" % k not in para), [],
                          "memo counters the reference's passage never backticks (the review found coldFlip, coldLive, "

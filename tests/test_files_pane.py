@@ -264,7 +264,7 @@ class Shell(unittest.TestCase):
         _has(self, "<input type=checkbox id=rs-filesctl>", gear)
         self.assertNotIn("id=rs-filesctl checked", gear, "off by default: the box is not pre-checked")
         self.assertEqual(gear.count("showFilesControl: false, stripGroupRows"), 2, "the gear's load defaults (the assign and its catch) say off")
-        _has(self, "delete o.filesControl; delete o.fileLinkPane; return o; } catch (e) {", gear)   # load() drops the T317-era key and the T404-era file-links key, so the next save leaves both behind
+        _has(self, "delete o.filesControl; delete o.fileLinkPane; delete o.showArtifactsControl; return o; } catch (e) {", gear)   # load() drops the T317-era key, the T404-era file-links key and the Artifacts control's retired key, so the next save leaves them behind
         # the box has a NAME OF ITS OWN in the gear's one var list (review find: a second `fc` shadowed the feed's
         # collapsed box, so the new row was dead and the feed box wrote this setting)
         _has(self, "fsc = document.getElementById('rs-filesctl')", gear)
