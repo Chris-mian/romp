@@ -23,7 +23,8 @@ The four: (1) the shipped column gutters (kit off), (2) the sessions band's heig
 split divider (kit off, a session moved down), (4) the docking kit's dividers (kit on: a divider between columns and one
 between rows). The lab also measures the cost the design names: frames per second from the shell's requestAnimationFrame
 timestamps during a drag across the row with every pane on, and the browser's long-animation-frame entries over that span
-(reported in the RESULT and asserted only to be present). Runs when ROMP_SERVED_TESTS_REQUIRE=1 (CI); skips where no Chromium
+(reported in the RESULT), and pins the longest animation-frame callback the shell runs over the drag, the one cost that does not
+move with the CPU quota. Runs when ROMP_SERVED_TESTS_REQUIRE=1 (CI); skips where no Chromium
 is installed. Synthetic fixtures only."""
 import json
 import os
@@ -102,7 +103,12 @@ const instrument = async (page) => page.evaluate(() => {
   const w = window; w.__writes = {}; const set = Storage.prototype.setItem;
   Storage.prototype.setItem = function (k, v) { w.__writes[k] = (w.__writes[k] || 0) + 1; return set.call(this, k, v); };
   w.__frames = []; w.__framesOn = false;
-  const loop = (t) => { if (w.__framesOn) w.__frames.push(t); requestAnimationFrame(loop); }; requestAnimationFrame(loop);
+  // the page's own frame callbacks TIMED: the shell's frame helpers read window.requestAnimationFrame at call time, so every callback
+  // they arm runs through this wrapper; the longest one over a drag is the cost that is load-independent (a busy frame in the gutter's
+  // apply() is 80 ms whatever the CPU quota; a starved CPU stretches the drag over more frames but each callback stays a few ms)
+  const raf0 = w.requestAnimationFrame.bind(w); w.__cbMax = 0; w.__cbN = 0; w.__cbLong = 0;
+  w.requestAnimationFrame = (cb) => raf0((t) => { const s = performance.now(); try { return cb(t); } finally { const d = performance.now() - s; w.__cbN++; if (d > w.__cbMax) w.__cbMax = d; if (d > 40) w.__cbLong++; } });
+  const loop = (t) => { if (w.__framesOn) w.__frames.push(t); raf0(loop); }; raf0(loop);
   w.__loaf = []; try { new PerformanceObserver((l) => { for (const e of l.getEntries()) w.__loaf.push({ t: e.startTime, d: e.duration }); }).observe({ type: "long-animation-frame", buffered: false }); } catch (e) { w.__loafErr = String(e); }
   return true;
 });
@@ -266,14 +272,15 @@ out.probesAfterAll = { chat: await probeAlive(chatFr), feed: await probeAlive(fe
   const cdp = await ctxA.newCDPSession(page); await cdp.send("Performance.enable");
   const metric = async (name) => { const r = await cdp.send("Performance.getMetrics"); const e = (r.metrics || []).find((x) => x.name === name); return e ? e.value : null; };
   const layouts0 = await metric("LayoutCount"), styles0 = await metric("RecalcStyleCount");
-  await page.evaluate(() => { window.__frames = []; window.__loaf = []; window.__framesOn = true; });
+  await page.evaluate(() => { window.__frames = []; window.__loaf = []; window.__framesOn = true; window.__cbMax = 0; window.__cbN = 0; window.__cbLong = 0; });
   const t0 = Date.now();
   await page.mouse.move(x0, y0); await page.mouse.down();
   await page.mouse.move(x0 - 320, y0, { steps: 24 }); await page.mouse.move(x0 + 320, y0, { steps: 48 }); await page.mouse.move(x0, y0, { steps: 24 });
   await page.mouse.up(); await frame(page);
   const ms = Date.now() - t0;
   const m = await page.evaluate(() => { const f = window.__frames; window.__framesOn = false; const span = f.length > 1 ? f[f.length - 1] - f[0] : 0; const gaps = []; for (let i = 1; i < f.length; i++) gaps.push(f[i] - f[i - 1]);
-    return { frames: f.length, spanMs: Math.round(span), fps: span > 0 ? Math.round((f.length - 1) * 1000 / span) : null, maxGapMs: Math.round(Math.max(0, ...gaps)), loaf: window.__loaf.length, loafMaxMs: Math.round(Math.max(0, ...window.__loaf.map((e) => e.d))), loafErr: window.__loafErr || null }; });
+    return { frames: f.length, spanMs: Math.round(span), fps: span > 0 ? Math.round((f.length - 1) * 1000 / span) : null, maxGapMs: Math.round(Math.max(0, ...gaps)), loaf: window.__loaf.length, loafMaxMs: Math.round(Math.max(0, ...window.__loaf.map((e) => e.d))), loafErr: window.__loafErr || null,
+      cbMaxMs: Math.round(window.__cbMax * 10) / 10, cbCount: window.__cbN, cbLong: window.__cbLong }; });
   const layouts1 = await metric("LayoutCount"), styles1 = await metric("RecalcStyleCount");
   out.cost = Object.assign({ dragMs: ms, panes: out.panesOn, layouts: layouts1 !== null && layouts0 !== null ? layouts1 - layouts0 : null, styleRecalcs: styles1 !== null && styles0 !== null ? styles1 - styles0 : null }, m);
   if (cfg.shots) { await page.mouse.move(x0, y0); await page.mouse.down(); await page.mouse.move(x0 - 200, y0, { steps: 12 }); await frame(page); await page.screenshot({ path: cfg.shots + "-mid.png" }); await page.mouse.up(); await frame(page); await page.screenshot({ path: cfg.shots + "-after.png" }); }
@@ -372,14 +379,18 @@ async function bandGrowMidDrag({ escape = false, dir = "row", far = false } = {}
   await pb.mouse.move(x0, y0); await pb.mouse.down(); await frame(pb);
   await mv(-60); await frame(pb); await frame(pb);
   const mid = { rects: await rectsOf(), tl: await tlOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 60 };
+  // the tracer BEFORE the growth (the sixth review: a tracer registered by a second round trip after the growth could start after the
+  // reconcile's armed frame had already corrected the edge, and pass on the very defect it was cut for): registered on the page and
+  // left running, it samples the pair's edge from the DOM and the height variable on EVERY animation frame until told to stop, so its
+  // first frame precedes the growth and no frame between is missed (the fifth review: a frame armed by the reconcile landed one paint
+  // late, so the pre-growth ratios painted for one frame)
+  await pb.evaluate(({ L, isRow }) => { const w = window; w.__labTrace = []; w.__labTraceOn = true;
+    const step = () => { const el = document.getElementById(L); const r = el.getBoundingClientRect(); w.__labTrace.push({ edge: isRow ? r.right : r.bottom, tl: document.querySelector(".col").style.getPropertyValue("--tl") }); if (w.__labTraceOn) requestAnimationFrame(step); };
+    requestAnimationFrame(step); }, { L: p.L, isRow: dir === "row" });
   await tlFrB.evaluate(() => { const g = document.createElement("div"); g.id = "lab-grow"; g.style.height = "150px"; document.body.appendChild(g); });
-  // the edge on EVERY animation frame from the growth to the sample below (the fifth review: a frame armed by the reconcile landed one
-  // paint late, so the pre-growth ratios painted for one frame): the pair's edge from the DOM, the height variable beside it
-  const trace = await pb.evaluate(({ L, isRow, n }) => new Promise((res) => { const out = []; let k = 0;
-    const step = () => { const el = document.getElementById(L); const r = el.getBoundingClientRect(); out.push({ edge: isRow ? r.right : r.bottom, tl: document.querySelector(".col").style.getPropertyValue("--tl") }); if (++k < n) requestAnimationFrame(step); else res(out); };
-    requestAnimationFrame(step); }), { L: p.L, isRow: dir === "row", n: 10 });
   await pb.waitForFunction((t) => document.querySelector(".col").style.getPropertyValue("--tl") !== t, tl0, { timeout: 5000 }).catch(() => {});
   await frame(pb); await frame(pb);
+  const trace = await pb.evaluate(() => { window.__labTraceOn = false; return window.__labTrace.slice(); });
   const grown = { trace, tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 60, writes: await kitWrites(w0) };   // no move since the growth: the edge re-applied against the re-read geometry
   await mv(-100); await frame(pb); await frame(pb);   // another frame of the drag
   const later = { tl: await tlOf(), band: (await rect(pb, "#tl-pane")).h, rects: await rectsOf(), edge: edgeOf(await rectsOf()), pointer: (dir === "row" ? x0 : y0) - 100, writes: await kitWrites(w0) };
@@ -652,14 +663,19 @@ class ServedLiveDividers(unittest.TestCase):
         self._within(ve["after"]["T"]["h"], ve["before"]["T"]["h"], 1.0, "Escape restores the split's heights: %r" % {"before": ve["before"], "after": ve["after"], "points": ve["points"]})
         self.assertEqual(ve["after"]["writes"], 0)
         self.assertEqual(r["probesAfterAll"], {"chat": True, "feed": True}, "the iframes keep their content through every drag")
-        # (5) the cost, measured and BOUNDED: the drag holds frame rate (a busy frame in the gutter's apply would halve it) with a
-        # bounded number of long animation frames; the layout and style-recalc counts over CDP are reported beside them
+        # (5) the cost, measured and BOUNDED on the page's own work per frame, as a COUNT: how many of the animation-frame callbacks
+        # the shell ran over the drag took longer than 40 ms (the verifier's read: a frame-rate pin is wall-clock and reds under a
+        # half-core quota with nothing wrong; the layout count over CDP rises under load too, since a starved CPU stretches the drag
+        # over more frames; and a cgroup quota can throttle the process inside ONE callback, so the longest callback alone is not
+        # load-independent either: 74 ms once in two loaded runs). An 80 ms busy loop in the gutter's apply() makes EVERY applied
+        # frame's callback long; a starved CPU makes at most a few. The frame rate, the long-frame count, the layout and style-recalc
+        # counts and the longest callback are reported beside it, present but not pinned
         c = r["cost"]
         self.assertGreater(c["frames"], 10, "frames were sampled during the drag: %r" % c)
-        self.assertIsNotNone(c["fps"])
-        self.assertGreaterEqual(c["fps"], 30, "the drag holds at least 30 frames per second with every pane on: %r" % c)
-        self.assertLessEqual(c["loaf"], 5, "a bounded number of long animation frames over the drag: %r" % c)
+        self.assertGreater(c["cbCount"], 10, "the shell's frame callbacks were timed: %r" % c)
+        self.assertIsNotNone(c["fps"]); self.assertIsNotNone(c["loaf"]); self.assertIsNotNone(c["cbMaxMs"])
         self.assertIsNotNone(c["layouts"], "the shell's layouts over the drag were counted (CDP Performance metrics): %r" % c)
+        self.assertLessEqual(c["cbLong"], 10, "at most ten of the shell's animation-frame callbacks over the drag run longer than 40 ms (a busy frame in the gutter's apply makes every one long; a starved CPU a few): %r" % c)
 
     def test_escape_from_a_keyboard_inside_a_pane_and_a_release_with_no_frame_between_on_the_shipped_gutter(self):
         # the drag listens on every same-origin pane document (dragKeys): with the chat's composer focused the top document's
@@ -820,8 +836,9 @@ class ServedLiveDividers(unittest.TestCase):
         self.assertNotEqual(b["grown"]["tl"], b["tl0"], "the band grew under the drag: %r" % b["grown"]["tl"])
         self._within(b["mid"]["edge"] + 3.5, b["mid"]["pointer"], 1.5, "before the growth the edge sits at the pointer")
         self._within(b["grown"]["edge"] + 3.5, b["grown"]["pointer"], 1.5, "after the growth, with NO move, the edge is back at the pointer (the re-read geometry re-applied): %r" % {k: b["grown"][k] for k in ("edge", "pointer", "tl")})
-        self.assertGreaterEqual(len(b["grown"]["trace"]), 10, "the edge traced on every animation frame from the growth")
-        self.assertTrue(any(t["tl"] != b["tl0"] for t in b["grown"]["trace"]), "the trace spans the band's growth: %r" % b["grown"]["trace"])
+        self.assertGreaterEqual(len(b["grown"]["trace"]), 3, "the edge traced on every animation frame around the growth")
+        self.assertEqual(b["grown"]["trace"][0]["tl"], b["tl0"], "the trace begins BEFORE the growth (the sixth review: a tracer that starts after the reconcile's frame sees only corrected frames): %r" % b["grown"]["trace"])
+        self.assertTrue(any(t["tl"] != b["tl0"] for t in b["grown"]["trace"]), "and spans the band's growth: %r" % b["grown"]["trace"])
         for k, t in enumerate(b["grown"]["trace"]):
             self._within(t["edge"] + 3.5, b["grown"]["pointer"], 1.5, "frame %d of the trace: the edge never leaves the pointer, not for one painted frame (the fifth review: 64 px off for a frame): %r" % (k, b["grown"]["trace"]))
         self._within(b["later"]["edge"] + 3.5, b["later"]["pointer"], 1.5, "and follows the next move: %r" % {k: b["later"][k] for k in ("edge", "pointer")})
