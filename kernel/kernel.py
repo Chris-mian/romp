@@ -61307,16 +61307,25 @@ _LANDING_JS = """
 (function(){var col=document.querySelector('.col'),row=document.querySelector('.row'),
 tf=document.getElementById('f-timeline');
 // ── timeline BOTTOM BAND (the user 2026-06-25): the rail's Timeline toggle (body.po-timeline) shows/hides a
-// full-width band below the pane row. It AUTO-FITS its content height (--tl, capped 70vh); the gh gutter
-// resizes it. Both band + gutter are hidden by CSS unless po-timeline.
+// full-width band below the pane row. It AUTO-FITS its content height (--tl, capped 70vh) until the user drags
+// it; the gh gutter resizes it. Both band + gutter are hidden by CSS unless po-timeline.
 function tlContentH(){try{return tf?tf.contentDocument.body.scrollHeight:0;}catch(e){return 0;}}
 function cap(){return Math.round(window.innerHeight*0.7);}
-function autosize(){if(!document.body.classList.contains('po-timeline'))return;var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
+// a height the USER dragged to is persisted (romp-tl-h), applied at boot, and autosize stands down for it: an
+// explicit gesture outranks the content fit (the user 2026-09-01, who wanted the dragged band height remembered;
+// before this the band forgot it on every reload)
+var TLK='romp-tl-h',tlUser=null;try{tlUser=parseInt(localStorage.getItem(TLK)||'',10)||null;}catch(e){}
+if(tlUser)col.style.setProperty('--tl',Math.max(48,Math.min(Math.round(window.innerHeight*0.85),tlUser))+'px');
+function autosize(){if(!document.body.classList.contains('po-timeline'))return;if(tlUser)return;var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
 var ghh=document.getElementById('gh');
 if(ghh)ghh.addEventListener('mousedown',function(e){e.preventDefault();document.body.classList.add('drag','dragh');
-function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;var ch=tlContentH();var mx=ch?ch+2:cap();
-col.style.setProperty('--tl',Math.max(48,Math.min(mx,px))+'px');}
+// max = the viewport share, NEVER the iframe document's scrollHeight: the timeline document fills whatever
+// height the band has, so 'content height' always equals the CURRENT height, and clamping the drag to it made
+// every drag shrink-only, a downward ratchet (2026-09-01)
+function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;var mx=Math.round(window.innerHeight*0.85);
+var v=Math.max(48,Math.min(mx,px));tlUser=v;col.style.setProperty('--tl',v+'px');}
 function up(){document.body.classList.remove('drag','dragh');
+try{if(tlUser)localStorage.setItem(TLK,String(tlUser));}catch(e){}
 window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);}
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});
 // ── pane gutters (chat|outline|feed|files, fixed order) sized by flex-grow. gv-a is always chat|outline; gv-b's
@@ -61347,7 +61356,12 @@ function shown(id){var p=document.getElementById(id);return p&&getComputedStyle(
 // bottom BAND now (fixed-height var, not a row grow), so it's excluded.
 window.__rompGrowFair=function(k){if(k==='timeline')return;var v=PANES.filter(shown).map(function(id){return grow[key(id)];})
 .filter(function(g){return typeof g==='number'&&isFinite(g);});   // a pane with no grow yet (a split column being made) must not average in as NaN (review find 2026-09-08: the first split opened 0px wide)
-var avg=v.length?v.reduce(function(a,b){return a+b;},0)/v.length:50;setGrow(k,avg);
+// a REOPENED pane KEEPS its remembered width (the user 2026-09-01, who wanted a dragged width to survive a rail
+// toggle): fairness fires only when the remembered grow would re-enter under a 12% share of what is shown, the
+// sliver this function was made for, not on every reopen. The rail's toggle runs this while the pane is still hidden.
+var sum=v.reduce(function(a,b){return a+b;},0),g=grow[k]||0;
+if(g>0&&sum>0&&g/(g+sum)>=0.12)return;
+var avg=v.length?sum/v.length:50;setGrow(k,avg);
 try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}};
 // a split column keeps the width it was dragged to across reloads: fair only when the store holds nothing for it
 window.__rompGrowFairIfNew=function(k){if(typeof grow[k]==='number'&&isFinite(grow[k])){setGrow(k,grow[k]);return;}window.__rompGrowFair(k);};
