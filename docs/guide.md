@@ -280,8 +280,10 @@ access token over ssh so your browser can authorize against it.
 A row reading **kernel not answering** means no Romp kernel is running there:
 click **Start**, which brings that machine's Romp up to date with this one's
 and boots it. Romp never starts a remote kernel by itself, since a stopped one
-may be stopped on purpose. Detaching keeps the machine under **Previously
-attached**, so re-linking later is one click.
+may be stopped on purpose.
+
+Detaching keeps the machine under **Previously attached**, so re-linking later
+is one click, and the machine comes back with the trust level you last gave it.
 
 #### Mail across linked machines
 
@@ -331,6 +333,10 @@ Because the laptop is the end that connects, the always-on machine never holds a
 way in to it; untick the box and it forgets you. Romp calls this checking in,
 and the always-on machine the hub, which is where `romp checkin` and
 `romp checkout` get their names.
+
+Restarting Romp from the hub's interface restarts the machines linked to it as
+well. A machine that checked in is asked to restart itself only, so anything
+attached to that machine alone is restarted from its own interface.
 
 #### Hand the connection to a different machine
 

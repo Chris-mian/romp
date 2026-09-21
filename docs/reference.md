@@ -4928,9 +4928,9 @@ empty background (the feed between cards, the Sessions band outside its lanes,
 the Outline below its rows, the Files pane's empty state). The pointer is an
 open hand over a surface you can grab and a closed hand while you hold one. A
 press lifts only after a few pixels of travel, so a click, a text selection and
-a scroll are never a drag, and Escape cancels. A blue outline shows where the
-pane will land: the left, right, top or bottom half of the pane under the
-pointer. Dropping splits that pane, and every internal edge becomes a divider
+a scroll are never a drag, and Escape cancels. An outline in the accent color
+shows where the pane will land: the left, right, top or bottom half of the pane
+under the pointer. Dropping splits that pane, and every internal edge becomes a divider
 you can drag.
 
 A session tab is a payload too. Drag one into a pane's half and it becomes a
@@ -5052,6 +5052,15 @@ tab. Focus moves to a different session only when
 you pick a tab, or when you close the active tab yourself (then the pane returns
 to the tab you used before it).
 
+## A postal card's head and its delivery mark
+
+The head names both ends, the other session and this one, each in its session's
+color, and carries the delivery mark at its right edge: sent, delivered, read,
+parked while the recipient is unreachable, bounced, or recalled. A send that
+failed has no mark at all, and the tool call's result says what happened. An
+incoming message that waited while the session was offline wears the parked
+mark. Hovering a mark gives the state and when it was reached.
+
 ## A comment thread's mail
 
 A comment thread's mail is off, both directions, until you break it out: peers
@@ -5087,6 +5096,11 @@ Not the same tools: romp peers are discovered only through the postal service's 
 
 ## The VS Code port forwarder and the browser dashboard
 
+The dashboard's panes are long-lived sockets, and how a forwarder treats them
+decides whether a closed pane is really closed. OpenSSH forwards each
+browser socket one-to-one and propagates closes, so a pane that goes away is
+gone on both ends.
+
 !!! warning "The VS Code port forwarder is not a good path for the browser dashboard"
 
     VS Code's Remote and Tunnels port forwarder multiplexes every forwarded
@@ -5103,11 +5117,15 @@ Not the same tools: romp peers are discovered only through the postal service's 
     previous socket at once, and the timeline and feed cross the wire as
     deltas instead of whole payloads. That keeps a forwarded dashboard usable,
     but the forwarder still carries every byte over a channel it shares with
-    your editor, so prefer one of the two paths above. The VS Code romp view
-    is a different case: its sockets run on the kernel's own machine and close
-    when a panel closes, so it never leaks connections, but under Remote or
-    Tunnels the extension still relays each whole view payload to the local
-    window as it changes. It does not yet take the deltas the browser panes do.
+    your editor, so prefer a path that gives each pane its own socket: plain ssh
+    port forwarding, which the guide sets up under
+    [From another machine](guide.md#from-another-machine), or
+    [Tailscale](#reaching-romp-from-a-phone-the-full-tailscale-setup). The VS
+    Code romp view is a different case: its sockets run on the kernel's own
+    machine and close when a panel closes, so it never leaks connections, but
+    under Remote or Tunnels the extension still relays each whole view payload
+    to the local window as it changes. It does not yet take the deltas the
+    browser panes do.
     A pane that falls 16 MB behind is dropped and reconnects on its own; the
     drop is logged in the kernel log and shows in the Log (the settings panel's "Open log" button carries the unread count on the desktop; the phone's bottom bar reddens its bell), so a
     link that cannot keep up reads as what it is rather than as a flaky network.
@@ -5264,6 +5282,16 @@ be read, or a symlink at that path, refuses to start instead of minting a
 replacement nobody else holds. Under the service that refusal repeats in
 `manager.log` every 10 seconds until you repair the file; the kernel then comes
 back on its own.
+
+A few routes answer without the token: the liveness probes `/healthz`,
+`/version` and `/busy` on the kernel and `/ping` on the bus, and the install
+files `/manifest.webmanifest` and the three home-screen icons under `/media/`
+(`romp-touch-180.png`, `romp-app-192.png`, `romp-app-512.png`, a fixed list of
+names rather than a path prefix). They are fixed files that read no session
+state, and a browser fetches the manifest and its icons with credentials
+omitted, so a gate there would refuse them at the moment an install consults
+them. `/busy`'s count is exempt as a probe; its drain hold is a write and takes
+the token like any other.
 
 ## Switches
 
