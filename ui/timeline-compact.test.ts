@@ -30,7 +30,7 @@ test("the compacting battery sweep is a persistent CSS-animated overlay div, not
 test("the working-chip breathe is a persistent CSS overlay div too (no in-SVG SMIL) — the user 2026-07-01", () => {
   // same fix as the compacting sweep: a persistent overlay label the compositor breathes, repositioned by draw()
   assert.match(SRC, /this\._workLabels = new Map\(\)/);
-  assert.match(SRC, /@keyframes romp-tl-workpulse\{0%,100%\{color:#1a1a1a\}50%\{color:#0d9488\}\}/);
+  assert.match(SRC, /@keyframes romp-tl-workpulse\{0%,100%\{opacity:0\}50%\{opacity:1\}\}/);   // an opacity crossfade since 2026-09-21 (work-oscillation.test.ts)
   assert.match(SRC, /animation:romp-tl-workpulse 1\.5s cubic-bezier\(0\.37,0,0\.63,1\) infinite/);
   assert.match(SRC, /this\._positionWorkLabel\(s\.id,/);
   assert.match(SRC, /this\._reapWorkLabels\(workSeen\)/);
