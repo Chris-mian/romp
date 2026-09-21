@@ -535,6 +535,8 @@ class _PerfStats:
             self.gc_errors = 0                        # gc_event bodies that raised: counted, never propagated into the collector
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0, "coldSkipped": 0,   # coldSkipped: see build_chat_cold_skip
+                                        "baselineRaced": 0, "baselineRepaired": 0,      # the chat delta baseline's detector and its repair
+                                        #                                                  (2026-09-21): build_chat_baseline_raced / _repaired
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
             self.chat_by_session = {}                 # sid -> {first, last, max, n, cached, bytes}: the per-session chat build
             #                                           timer (2026-09-14); a row leaves with its session's certified death
@@ -965,6 +967,23 @@ class _PerfStats:
         and this counts the cost so a tab that never settles shows up in /perf."""
         with self.lock:
             self.builds["chat"]["moved"] += 1
+
+    def build_chat_baseline_raced(self):
+        """The chat wire's shared delta baseline was popped by the seed's detector and the sid marked (_seed_chat_baseline,
+        2026-09-21): two whole-frame senders raced on a baseline-less sid, or the detector's accepted false positive (the
+        cycle's write landing inside a newer sender's build). The pop's only other trace was the next cycle's changeAt0
+        rows, filed only for a base holder alive then whose repair did not dedup, so the rate was not countable; with the
+        perf log off by default this counter is the primary meter. Decided under _chat_baseline_lock, counted after it."""
+        with self.lock:
+            self.builds["chat"]["baselineRaced"] += 1
+
+    def build_chat_baseline_repaired(self):
+        """A cycle whose loop read the baseline absent sent every base holder the full and its write took a standing mark
+        off (2026-09-21): the repair of a pop. Decided under _chat_baseline_lock at the write, counted after it. Raced
+        minus repaired is the marks still standing plus the tabs that left the strip, whose eviction clears the mark
+        with no repair (standing marks = raced minus repaired minus evicted)."""
+        with self.lock:
+            self.builds["chat"]["baselineRepaired"] += 1
 
     def send(self, key, kind, nbytes, road=None):
         slot = key[0] if isinstance(key, tuple) else key
@@ -33529,9 +33548,12 @@ _chat_baseline_lock = threading.Lock()           # held for the seed's read-back
 #                                                  get and set were two steps, so two whole-frame senders that both read the map
 #                                                  absent both wrote, the last writer won, the detector never fired, and a client
 #                                                  holding the first writer's list was stranded (the review's two-thread probe)
-_chat_baseline_raced = set()                     # sids whose baseline the detector POPPED and no every-client sender has written
-#                                                  since (2026-09-19). A pop leaves clients holding bases with NO baseline, the
-#                                                  state a never-seeded sid is in too, and a seed that could not tell them apart
+_chat_baseline_raced = {}                        # sid -> the popped list's length, for every sid whose baseline the detector POPPED
+#                                                  and no every-client sender has written since (2026-09-19; a dict since
+#                                                  2026-09-21, so the empty-build guard can name the count at the pop, raised
+#                                                  by every whole frame handed under the mark: _chat_prior_n). A pop leaves
+#                                                  clients holding bases with NO
+#                                                  baseline, the state a never-seeded sid is in too, and a seed that could not tell them apart
 #                                                  re-seeded from the next single-client connect push (a needFull, an idle-prefetch
 #                                                  release: one per released tab at a boot, while a cold cycle takes 30-84 s), so
 #                                                  the cycle diffed equal lists and the other holders of the older build kept a
@@ -33881,10 +33903,25 @@ WIRE_CHUNK = 250                                 # events per loadOlder (chatHea
 _EMPTY_BUILD_NOTED = set()      # sids inside an empty-build episode (one stderr line per episode)
 
 
-def _empty_build_regresses(m, prev_events):
+def _empty_build_regresses(m, prev_events, marked=False):
     """Would sending build `m` blank a session the clients hold WITH content? True when the build carries no events
-    while the previous push's build for the sid did."""
-    return not (m.get("events") or []) and bool(prev_events)
+    while the previous push's build for the sid did, or while the sid is `marked` (2026-09-21): the detector popped its
+    baseline (_seed_chat_baseline, _chat_baseline_raced) after whole-frame senders handed every base holder content, so
+    an absent baseline under the mark is not a never-seeded sid. Read as one before, the empty frame went to every base
+    holder, counted `empty` with a chatFull row each and no stderr line, and the cycle's write put [] over the pop, where
+    the seeded case took the stand-in road (tests 35 and 36 of the skeleton-reconnect module)."""
+    return not (m.get("events") or []) and (bool(prev_events) or marked)
+
+
+def _chat_prior_n(sid):
+    """How many events the clients holding `sid` with content hold, for the empty-build note: the baseline's length, or,
+    for a sid the detector marked (its baseline popped), the count at the pop, raised by every whole frame handed under
+    the mark (2026-09-21; the seed's declining arm does the raising). Read outside _chat_baseline_lock, like the guard's
+    own reads beside it."""
+    prev = _prev_chat_events.get(sid)
+    if prev:
+        return len(prev)
+    return int(_chat_baseline_raced.get(sid) or 0)
 
 
 def _note_empty_build(sid, path, n_prev):
@@ -33979,29 +34016,39 @@ def _seed_chat_baseline(sid, m, seen):
     for, and the first content frame seeds instead). `seen` absent or empty but a DIFFERENT non-empty list in the map
     now: another whole-frame sender wrote while this one was sending; per-client delivery order is whichever thread
     reached each client's lock first, so some client may hold the OLDER build and no one list describes every base
-    holder; the entry is POPPED and the sid MARKED (_chat_baseline_raced), and the next cycle's full repairs every client,
-    as it did before the seed (the correctness review's two orderings, tests 23 and 24 of the skeleton-reconnect module;
+    holder; the entry is POPPED and the sid MARKED (_chat_baseline_raced, the popped list's length stashed under it for the
+    empty-build note and raised by every whole frame handed under the mark), and the next cycle whose loop reads the baseline absent sends every base holder the full and takes
+    the mark off with its write, the repair the cycle made before the seed (the correctness review's two orderings, tests
+    23 and 24 of the skeleton-reconnect module;
     a seed that only wrote when absent kept the newer list and stranded the older holder for good). The sid marked:
     nothing, whatever the map holds. A pop leaves clients holding bases with NO baseline, the state a never-seeded sid is
     in too, and a seed that could not tell them apart was undone by the next single-client push (a needFull, an
     idle-prefetch release: one connect push per released tab at a boot, while a cold cycle takes 30-84 s), which read
     the map absent, repaired its own client with a changeAt0 full and seeded from its build, so the cycle then diffed
     equal lists and the other holders of the older build kept a stale card, with no row (test 25). The contract: a raced
-    pop is repaired by the next sender that reaches every client, the cycle, whose write-after-deliver clears the mark
-    with the write, and is never re-seeded by a single-client push in between; until that cycle every base holder is
-    served the full, as before the seed. The targeted push's loop reaches every alive chat client too, but its seed
+    pop is repaired by the next cycle whose loop read the baseline absent, a full to every base holder, and that cycle's
+    write takes the mark off, while a cycle that read it present sent tails and leaves the mark for the next one (test
+    27); no single-client push re-seeds in between, and until the repair every base holder is served the full, as
+    before the seed. The targeted push's loop reaches every alive chat client too, but its seed
     declines while the mark stands all the same: a single-client sender that read the map absent may still be
     mid-flight, its older full landing on some client after the targeted push's and its own seed already declined, so
-    only the cycle's unconditional write re-establishes the baseline (the residual the cycle's write carries today,
-    not widened). The lock is what makes the read-back a guard (test 26): unlocked, two seeds that both read the map
+    only the write of a cycle whose loop read the baseline absent re-establishes the baseline (the residual that write
+    carries today, not widened). The lock is what makes the read-back a guard (test 26): unlocked, two seeds that both read the map
     absent both wrote, the last writer won, and the detector never fired. Nothing else is held inside it; the cycle's
     write and the strip-exit eviction take the same lock."""
     evs = m.get("events") or []
     if seen or not evs:
         return
+    popped = False
     with _chat_baseline_lock:
         if sid in _chat_baseline_raced:
-            return                                   # popped by the detector: no seed writes until the cycle's write clears the mark
+            # popped by the detector: no seed writes until a cycle's full to every base holder clears the mark. The stash
+            # under the mark is raised to this list's length (2026-09-21): the seed runs after the sends, for a list some
+            # client took whole, so under a standing mark the base holders were handed at least this many events, and a
+            # stash left at the pop's count named the shorter list once a whole-frame sender had handed a longer one
+            # (test 36 of the skeleton-reconnect module).
+            _chat_baseline_raced[sid] = max(_chat_baseline_raced[sid], len(evs))
+            return
         cur = _prev_chat_events.get(sid)
         if not cur:
             _prev_chat_events[sid] = evs
@@ -34009,7 +34056,10 @@ def _seed_chat_baseline(sid, m, seen):
         elif cur is not evs and (len(cur) != len(evs) or _chat_diff(cur, evs) < len(evs)):
             _prev_chat_events.pop(sid, None)
             _prev_chat_ledger.pop(sid, None)
-            _chat_baseline_raced.add(sid)
+            _chat_baseline_raced[sid] = max(len(cur), len(evs))   # the mark, with the popped list's length (_chat_prior_n)
+            popped = True
+    if popped:
+        _PERF_STATS.build_chat_baseline_raced()      # decided under the lock, counted after it (2026-09-21)
 
 
 def _chat_ident(path):
@@ -54856,11 +54906,19 @@ def _push(targets, connect=False, live_map=None):
                     if _claimed:
                         _chat_inflight_done(s["sid"])
                     continue
-                if _empty_build_regresses(m, _prev_chat_events.get(m["id"])):
+                if _empty_build_regresses(m, _prev_chat_events.get(m["id"]), marked=m["id"] in _chat_baseline_raced):
                     # a failed read, not a conversation that emptied (see _empty_build_regresses): the last cached
                     # build stands in — same events, so the diff below finds nothing to send — or, with nothing
-                    # cached, this cycle sends nothing for the sid; the file's return busts the stat key and rebuilds
-                    _note_empty_build(s["sid"], s.get("path"), len(_prev_chat_events.get(m["id"]) or ()))
+                    # cached, this cycle sends nothing for the sid; the file's return busts the stat key and rebuilds.
+                    # A sid the detector MARKED (its baseline popped, every base holder holding content) is one whose
+                    # clients hold content too (2026-09-21): with nothing cached the `continue` skips the write block
+                    # below, so the mark stands and the baseline stays absent for the next cycle's repair, where the
+                    # empty frame used to reach every base holder, counted `empty` with a row each, and the write put []
+                    # over the pop; with a cached hit the stand-in goes to every base holder as a change-0 full (`_seen`
+                    # read absent above) and the write below takes the mark off, a consistent repair from an older
+                    # list, the road the seeded case takes (test 22, test 37 for this road). The note names the count at
+                    # the pop, raised by every whole frame handed under the mark.
+                    _note_empty_build(s["sid"], s.get("path"), _chat_prior_n(m["id"]))
                     if hit is None:
                         if _claimed:
                             _chat_inflight_done(s["sid"])
@@ -54910,12 +54968,15 @@ def _push(targets, connect=False, live_map=None):
                 # repair, so the write and the clear are both skipped: the next cycle reads the baseline absent, sends every
                 # base holder the full, writes and clears then. Cleared here unconditionally, the mark was lost and the
                 # stale holder kept its older card until a reconnect, with no row.
+                _repaired = False                        # a standing mark this write takes off: decided under the lock, counted after it (2026-09-21)
                 if not connect:
                     with _chat_baseline_lock:
                         if not (_seen and m["id"] in _chat_baseline_raced):
                             _prev_chat_events[m["id"]] = m.get("events") or []
                             _prev_chat_ledger[m["id"]] = m.get("ledger")
-                            _chat_baseline_raced.discard(m["id"])
+                            _repaired = _chat_baseline_raced.pop(m["id"], None) is not None
+                    if _repaired:
+                        _PERF_STATS.build_chat_baseline_repaired()
                 else:
                     # A connect push does not ADVANCE the baseline (above); it ESTABLISHES one when none exists (2026-09-19,
                     # _seed_chat_baseline). A sid whose first whole frame since the boot came from this road (the redial's
@@ -54953,20 +55014,26 @@ def _push(targets, connect=False, live_map=None):
             # detector's marks (2026-09-19), since a baseline the seed established for a sid no cycle cached (a targeted
             # push caches nothing) has no cache entry to be found by, and a sid the detector popped has neither; either
             # would otherwise outlive the tab. One step under _chat_baseline_lock, the mark's clear included: once the
-            # loop below has forgotten every client's base, the sid is a never-seeded one again
+            # loop below has forgotten every client's base, the sid is a never-seeded one again (test 34 of the
+            # skeleton-reconnect module pins the walk's third member and the clear: a marked sid with neither entry)
             with _chat_baseline_lock:
-                gone = [sid for sid in set(_built_chat) | set(_prev_chat_events) | _chat_baseline_raced if sid not in shown_sids]
+                gone = [sid for sid in set(_built_chat) | set(_prev_chat_events) | set(_chat_baseline_raced) if sid not in shown_sids]
                 for sid in gone:
                     _built_chat.pop(sid, None)
                     _prev_chat_events.pop(sid, None)
                     _prev_chat_ledger.pop(sid, None)
-                    _chat_baseline_raced.discard(sid)
+                    _chat_baseline_raced.pop(sid, None)
             if gone:
                 # ...and every alive chat client's base and dedup slot for it (2026-09-19). The page tears a tab down the
                 # moment the strip stops listing it (applyTabOrder), so a base the kernel still believed held was false
                 # from then on, and harmless only because the popped baseline forced a full on re-entry; with the seed, a
                 # re-entering tab's first whole frame would have established a baseline over clients holding an OLDER
-                # base, the 2026-07-28 shape. Forgotten, a tab that left is a never-seeded one again (no client's base, no
+                # base, the 2026-07-28 shape. One exception, stated not fixed (2026-09-21): the page KEEPS a strip-omitted
+                # tab the frame's `live` field lists (render.ts's retainLiveOmitted, a live-omitted-kept client-diag row),
+                # while the alive list omits a live sid whose stub is None (no names entry, no transcript, no SDK owner),
+                # so for such a sid this walk forgets bases the page still holds, and its re-listing is a row-less noBase
+                # full to every client (the dedup slot is popped with the base below, so the re-listing always costs one
+                # full per client), where the kernel before the seed sent a named changeAt0 full with a row. Forgotten, a tab that left is a never-seeded one again (no client's base, no
                 # baseline, no mark), and its re-entry is a noBase full for everyone, filed nowhere. Lock order as
                 # _push_session_now's: the client list snapshotted under _clients_lock and released, then each client's
                 # slot lock, outside any chatFull outbox; a needFull racing this for a leaving sid ends either way with a
@@ -55384,7 +55451,9 @@ def _push_session_now(sid):
     in lock order some client may hold the older build, so the seed pops the entry and marks the sid
     (_chat_baseline_raced). While the
     mark stands no seed writes, this push's included, and every base holder is served the full, as before the seed,
-    until the next cycle's full repairs every client and its write clears the mark; a single-client connect push
+    until a cycle whose loop read the baseline absent sends every base holder the full and takes the mark off with its
+    write (a cycle that sent tails leaves it for the next one, test 27 of the skeleton-reconnect module); a
+    single-client connect push
     between the race and that cycle used to re-seed from its own build and strand the other holders of the older
     one. Those changeAt0 fulls, with both edges held and change 0, are the residual the meter still shows (the
     cycle's [] write over a seed for a session whose transcript is not there yet is the other: one redundant full
@@ -55499,9 +55568,11 @@ def _push_session_now(sid):
         #   the first is the cold build; a boot where a history ask came first would read a warm first (round four, 2026-09-15)
         if not m:
             return
-        if _empty_build_regresses(m, _prev_chat_events.get(sid)):
-            _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None),
-                              len(_prev_chat_events.get(sid) or ()))
+        if _empty_build_regresses(m, _prev_chat_events.get(sid), marked=sid in _chat_baseline_raced):
+            # a marked sid's clients hold content though its baseline is popped (2026-09-21): no empty frame to any base
+            # holder, the mark and the absent baseline stand for the cycle's repair; the note names the count at the pop,
+            # raised by every whole frame handed under the mark
+            _note_empty_build(sid, next((s.get("path") for s in chat_list if s["sid"] == sid), None), _chat_prior_n(sid))
             return                                   # the periodic pusher owns the sid until content returns
         change_from = _chat_diff(_seen, m.get("events") or [])   # against the baseline read before the build (above)
         led_changed = m.get("ledger") != _prev_chat_ledger.get(sid)
