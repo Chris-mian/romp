@@ -33,7 +33,7 @@ The pilot showed that the user's own action on a card is not a truth about the e
 - **The labeller** (a strong model over the ending's last turn: its final assistant text and the user's ask that opened it, the card titles not sent) answers one of the four classes with a one-line reason, run twice with the class order shuffled (never the same order twice). Its label is the agreement of the two runs, and its OWN gate is STABILITY, not agreement with anything: the fraction of endings that get the same class in both orders must reach 90 percent (54 of 60, 90.0 percent, on the pilot's corpus). The class is a stratification frame only: it groups endings so a leak or a false interrupt can be read per class, never a ground truth a measure is scored against.
 - **The user's own recorded actions** are the ground truth the measures use (below). They need no labeller: they are the events the journals hold.
 
-## The harness## The harness
+## The harness
 
 A script under `scripts/` (or a `--experiment` road in the judge module, whichever the read prefers) that, per arm:
 
@@ -56,11 +56,11 @@ The change is about the user's habit of clearing Completed without reading, so t
 3. **Flaps**: scored cards whose column differs between the two builds of the same ending (the settled gate is the same for both builds, so only verdict differences count). Every ending contributes, with or without a later gesture.
 4. **Cost per pass** in dollars, and the mean call time, from the ledger. Every ending contributes.
 
-Endings with NO later user gesture (the journals record nothing after the placement) contribute to flaps and cost only; they cannot score a leak or a false interrupt, since there is no user action to compare. On the pilot's corpus that is 60 endings in all, 21 with a later gesture (15 read "finished" by the user, 4 "not finished", the rest a mix the per-node match resolves); the full corpus of 300 endings will carry proportionally more. A failed call or a reply the parser rejects still marks the arm's row not comparable, as before.
+Endings with NO later user gesture (the journals record nothing after the placement) contribute to flaps and cost only; they cannot score a leak or a false interrupt, since there is no user action to compare. On the pilot's corpus that is 60 endings in all, 21 with a later gesture (15 read "finished" by the user, 4 "not finished", 2 with gestures on more than one node the per-node match resolves); the full corpus of 300 endings will carry proportionally more. A failed call or a reply the parser rejects still marks the arm's row not comparable, as before.
 
 A candidate lands only when, on the full corpus, its leaks are zero, its false interrupts are at or below the baseline, and its flaps are at or below the baseline; the result is a row in this note and the prompt change files as its own fix pull request with the figure (a cleanplots figure: horizontal bars from zero, one panel per measure, the arms as bars, the exact numbers annotated, counts and dollars only, never a line of the corpus).
 
-## Roads not taken## Roads not taken
+## Roads not taken
 
 - **A synthetic corpus.** Invented endings would measure the prompt against the author's idea of an offer, not the user's history; the tests use synthetic fixtures, the experiment uses the real endings, under `~/.cache/romp-judge-experiments` only.
 - **An A/B on the live kernel.** The judges' passes would move the user's real cards under two prompts at once; the harness runs on copies and the kernel never sees them.
