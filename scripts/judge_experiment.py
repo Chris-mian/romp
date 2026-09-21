@@ -287,12 +287,17 @@ def in_turn_window(t, start_t, cut_t):
     """Whether a verdict time belongs to the ending: from the turn's start (or FALLBACK_TURN_S before the cut) to SETTLE_S
     after the cut, the moment the closer files."""
     lo = start_t if start_t is not None else cut_t - FALLBACK_TURN_S
-    return lo <= t <= cut_t + SETTLE_S
+    return lo <= t <= cut_t          # no closer or planner done carries an evidence time after its own cut; a later one is the next turn's
 
 
+DROP_STORE_FIELDS = ("seams", "closeFails", "confirming", "groupedSig", "consolidatedSig", "rewindSwept", "summaryQuote",
+                     "summaryAnchors", "summaryQuoteOff", "warns", "unblockFails", "parseFails", "courierDeferred")   # store-level
+#   state from after the cut (a re-key makes the id-keyed ones live under the ending id); the arm's rollup remakes what it needs
 DROP_NODE_FIELDS = ("nodeComplete", "blocked", "cleared", "doneWhy", "settledAt", "settledDone", "rolledUp", "summary",
                     "summaryParts", "summaryAnchor", "distilledMt")          # the flag cache and the sealing fields: the arm's rollup remakes them
-TIME_STAMPS = ("blockCheckT", "blockCheckDoneT", "closerLookT", "awaitingAt")   # gate stamps: one from after the cut hides a node from the unblocker
+DROP_STAMPS = ("blockCheckT", "blockCheckDoneT", "delegLookT", "closerLookT", "awaitingAt")   # gate stamps: kept only when before the
+#   turn start, else dropped (a blockCheckT at or before the cut hides a node from the unblocker's strict gate, so clamping is not enough)
+CLAMP_STAMPS = ("titledT", "servingT")   # capped at the cut, never dropped: dropping titledT buys a title call per node per build
 
 
 def deep_rekey(obj, old, new):
@@ -316,8 +321,10 @@ def store_before(store, cut_t, start_t=None, eid=None):
     placements to turns and segments before it; the ending turn's own prompt-run placement (`#p`, and a delegation's `#d`)
     and the node it points to are kept, so the planner runs the turn's work-run once, as the live pass would; the flag
     cache and the sealing fields are dropped for the arm's rollup (kept, they sealed the seeded top out of the menu and a
-    twin was minted); gate stamps from after the cut are dropped; nodes whose first trail entry is a dropped segment go,
-    and the orphan pass runs to a fixed point. Nothing from the turn or later survives except that prompt-run node."""
+    twin was minted); gate stamps at or after the turn start are dropped (`titledT`/`servingT` clamped, never dropped, to spare a re-title);
+    store-level state from after the cut (`seams`, `confirming`, the *Sig and *Fails records) is dropped; nodes whose first
+    trail entry is a dropped segment go, and the orphan pass runs to a fixed point. Nothing keyed to the turn or later
+    survives except that prompt-run node; what stays is re-keyed to the ending id."""
     sid = str(store.get("rompUuid") or "")
     src = deep_rekey(store, sid, eid) if (eid and sid) else store
     lo = start_t if start_t is not None else cut_t - FALLBACK_TURN_S
@@ -348,10 +355,16 @@ def store_before(store, cut_t, start_t=None, eid=None):
         nd2 = {k: v for k, v in nd.items() if k not in DROP_NODE_FIELDS}
         nd2["log"] = log
         nd2["trail"] = [t for t in trail if (id_epoch(t) or 0) < lo or (target and (id_epoch(t) or 0) <= cut_t)]
-        for stamp in TIME_STAMPS:
+        for stamp in DROP_STAMPS:
             try:
                 if nd2.get(stamp) is not None and float(nd2[stamp]) >= lo:
                     nd2.pop(stamp)
+            except (TypeError, ValueError):
+                nd2.pop(stamp, None)
+        for stamp in CLAMP_STAMPS:
+            try:
+                if nd2.get(stamp) is not None and float(nd2[stamp]) > cut_t:
+                    nd2[stamp] = cut_t
             except (TypeError, ValueError):
                 nd2.pop(stamp, None)
         if nd2.get("mt") and float(nd2["mt"]) > cut_t:
@@ -364,7 +377,8 @@ def store_before(store, cut_t, start_t=None, eid=None):
             parent = nodes[nid].get("parentId")
             if parent is not None and parent not in nodes:
                 nodes.pop(nid); changed = True
-    out = {k: v for k, v in src.items() if k not in ("nodes", "status", "closedTurns", "closedSig", "placements", "lastNode")}
+    out = {k: v for k, v in src.items()
+           if k not in ("nodes", "status", "closedTurns", "closedSig", "placements", "lastNode") + DROP_STORE_FIELDS}
     out["rompUuid"] = eid or sid
     out["nodes"] = nodes
     out["status"] = {}
@@ -377,9 +391,33 @@ def store_before(store, cut_t, start_t=None, eid=None):
     return out
 
 
+def store_with_archive(state_root, sid):
+    """The session's live goal store with the CLEARED tops the kernel's compaction moved into goals-archive/<sid>.json unioned
+    back into its nodes (they carry their full verdict log there). The four readers of a session's cards (the done times, the
+    eligibility mark, tier one and the seed) all take this, so a top the user crossed off is not invisible for being archived."""
+    state_root = Path(state_root)
+    try:
+        store = json.loads((state_root / "goals" / (sid + ".json")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        store = {}
+    if not isinstance(store, dict):
+        store = {}
+    nodes = dict(store.get("nodes") or {})
+    try:
+        arch = json.loads((state_root / "goals-archive" / (sid + ".json")).read_text(encoding="utf-8"))
+        for nid, nd in (arch.get("nodes") or {}).items():
+            nodes.setdefault(nid, nd)                # the live store wins a shared key; a cleared top lives only in the archive
+    except (OSError, ValueError):
+        pass
+    store = dict(store)
+    store["nodes"] = nodes
+    store.setdefault("rompUuid", sid)
+    return store
+
+
 def top_done_times(store):
-    """The evidence times of every closer or planner `done` on a top-level node of a live store: the endings these fall
-    within are the ones the user's later card actions can label (tier one)."""
+    """The evidence times of every closer or planner `done` on a top-level node (of a store already unioned with its archive):
+    the endings these fall within are the ones the user's later card actions can label (tier one)."""
     out = []
     for nid, nd in (store.get("nodes") or {}).items():
         if nd.get("parentId") is not None:
@@ -415,11 +453,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
         name, cwd = fields[0], fields[1]
         color = fields[2] if len(fields) > 2 else "#888888"
         sid = entry.name
-        store_path = state_root / "goals" / (sid + ".json")
-        try:
-            live_store = json.loads(store_path.read_text(encoding="utf-8")) if store_path.is_file() else {}
-        except ValueError:
-            live_store = {}
+        live_store = store_with_archive(state_root, sid)
         dones = top_done_times(live_store)
         found = False
         fsids = known_fsids(state_root, sid)
@@ -477,13 +511,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                 for r in records:
                     fh.write(json.dumps(r) + "\n")
             (dest / "state" / "romp" / "names" / eid).write_text("%s\t%s\t%s\n" % (name, cwd, color))
-            store_path = state_root / "goals" / (sid + ".json")
-            store = {}
-            if store_path.is_file():
-                try:
-                    store = json.loads(store_path.read_text(encoding="utf-8"))
-                except ValueError:
-                    store = {}
+            store = store_with_archive(state_root, sid)
             before = store_before(store, cut_t, start_t, eid) if store.get("nodes") else None
             if before is not None:                        # a session with no store yet starts the arm fresh (load_goals mints the shape)
                 (dest / "state" / "romp" / "goals" / (eid + ".json")).write_text(json.dumps(before))
@@ -774,17 +802,22 @@ NOT_FINISHED_OPS = ("followup", "unclear", "restore")
 FINISHED_OPS = ("clear", "resolve")
 
 
-def tier_one_label(live_state, sid, cut_t, start_t=None):
+def tier_one_label(live_state, sid, cut_t, start_t=None, faults=None):
     """The user's own recorded verdict on the cards the judges completed at this ending, keyed on events: a top-level closer
     or planner `done` within the turn's window (the turn's start to SETTLE_S after the cut) names the card; the user's later
     gestures on that node in the override journal decide (a followup, an unclear or a restore says not finished; a hand clear
     or a resolve with no later one of those, at build time, says finished). None when the journals record nothing that
     applies. The caller records the observation span, so labels can be read by how long the user had to act."""
     live_state = Path(live_state)
-    try:
-        store = json.loads((live_state / "goals" / (sid + ".json")).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    live_path = live_state / "goals" / (sid + ".json")
+    if live_path.is_file():
+        try:
+            json.loads(live_path.read_text(encoding="utf-8"))   # a corrupt LIVE store is a fault, recorded, never read as "nothing applies"
+        except (OSError, ValueError) as e:
+            if faults is not None:
+                faults.append((hashlib.sha256(str(sid).encode()).hexdigest()[:12], type(e).__name__))
+            return None
+    store = store_with_archive(live_state, sid)          # the archive alone may hold a session's tops (all cleared); it carries the clear the label reads
     ops = []
     p = live_state / "overrides" / (sid + ".jsonl")
     if p.is_file():
@@ -801,7 +834,12 @@ def tier_one_label(live_state, sid, cut_t, start_t=None):
             t = event_time(ev)
             if ev.get("kind") != "done" or ev.get("src") not in ("closer", "planner") or t is None or not in_turn_window(t, start_t, cut_t):
                 continue
-            later = [o for o in ops if str(o.get("node") or "").split(":")[-1] == nid.split(":")[-1] and float(o.get("t") or 0) > t]
+            def on_node(o):
+                if o.get("node") == nid:
+                    return True
+                nn = o.get("nodes")                      # the restore row carries `nodes`, a dict, not `node`
+                return isinstance(nn, dict) and nid in nn
+            later = [o for o in ops if on_node(o) and float(o.get("t") or 0) > t]
             if any(o.get("op") in NOT_FINISHED_OPS for o in later):
                 labels.append("not finished")
             elif any(o.get("op") in FINISHED_OPS and o.get("src") in (None, "user") for o in later):
@@ -813,12 +851,18 @@ def tier_one_label(live_state, sid, cut_t, start_t=None):
 
 def _last_assistant_text(path, cap=6000):
     last = ""
+    first_ask = ""
     for r in _records(path):
         if r.get("type") == "assistant":
             t = _text_of(r)
             if t.strip():
                 last = t
-    return last[-cap:]
+        elif r.get("type") == "user" and not r.get("isMeta") and not first_ask:
+            t = _text_of(r)
+            if t.strip():
+                first_ask = t
+    ask = ("\nThe user's ask that opened the last turn: %s" % first_ask[:1500]) if first_ask else ""
+    return (last[-cap:] + ask)
 
 
 def ask_class(claude_bin, model, text, order, ledger_path):
@@ -864,14 +908,16 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         sid_of[hashlib.sha256(n.encode()).hexdigest()[:12]] = n
     ledger = run_root / "labeller-ledger.jsonl"
     rng = random.Random(seed)
-    rows, spent = [], 0.0
+    rows, spent, faults = [], 0.0, []
     for e in manifest["endings"]:
         sid = sid_of.get(e["session"])
-        t1 = tier_one_label(live_state, sid, float(e["cutT"] or 0), e.get("startT")) if sid else None
+        t1 = tier_one_label(live_state, sid, float(e["cutT"] or 0), e.get("startT"), faults=faults) if sid else None
         path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % e["id"])), None)
         text = _last_assistant_text(path) if path else ""
         a, c1 = ask_class(claude_bin, model, text, list(CLASSES), ledger)
         order = list(CLASSES); rng.shuffle(order)
+        if order == list(CLASSES):
+            order = list(reversed(CLASSES))          # a four-class shuffle is the identity 1 in 24; never ask the same order twice
         b, c2 = ask_class(claude_bin, model, text, order, ledger)
         spent += c1 + c2
         rows.append({"id": e["id"], "class": e["class"], "tierOne": t1, "labelA": a, "labelB": b, "label": a if a == b else None,
@@ -883,7 +929,8 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
     summary = {"endings": len(rows), "tierOneLabelled": sum(1 for r in rows if r["tierOne"]),
                "labellerStable": sum(1 for r in rows if r["label"]), "both": len(both), "agree": agree, "agreementPct": pct,
                "gatePct": AGREEMENT_GATE_PCT, "gatePassed": bool(both) and pct >= AGREEMENT_GATE_PCT,
-               "heuristicMatchesLabel": sum(1 for r in rows if r["label"] and r["label"] == r["class"]), "spentUsd": round(spent, 4)}
+               "heuristicMatchesLabel": sum(1 for r in rows if r["label"] and r["label"] == r["class"]), "spentUsd": round(spent, 4),
+               "tierOneErrors": [{"session": h, "error": ex} for h, ex in faults]}
     (run_root / "labels-summary.json").write_text(json.dumps(summary, indent=1))
     return summary
 

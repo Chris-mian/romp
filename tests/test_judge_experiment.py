@@ -135,7 +135,7 @@ class Harness(unittest.TestCase):
         # the "live" roots the corpus builder reads as files: two sessions, two endings each
         self.live = Path(self.td, "live-state")
         self.state = self.live / "romp"; self.claude = Path(self.td, "live-claude")
-        for sub in ("names", "goals", "overrides", "sdk", "states", "episodes"):
+        for sub in ("names", "goals", "goals-archive", "overrides", "sdk", "states", "episodes"):
             (self.state / sub).mkdir(parents=True)
         (self.state / "session-hosts").write_text("off")
         self.cwd = os.path.join(self.td, "proj"); os.makedirs(self.cwd)
@@ -291,7 +291,7 @@ class Harness(unittest.TestCase):
                "trail": [seg0, segp, segl], "blockCheckT": cut_t + 700, "closerLookT": start_t - 4000,
                "log": [{"ev_t": start_t - 5000, "at": start_t - 4999, "src": "planner", "kind": "mint"},
                        {"ev_t": start_t - 4000, "at": start_t - 3999, "src": "planner", "kind": "block", "why": "synthetic"},
-                       {"ev_t": cut_t + 2, "at": cut_t + 9, "src": "closer", "kind": "done", "why": "synthetic"},
+                       {"ev_t": start_t, "at": cut_t + 9, "src": "closer", "kind": "done", "why": "synthetic"},
                        {"ev_t": cut_t + 4000, "at": cut_t + 4001, "src": "closer", "kind": "block", "why": "synthetic later"}]}
         new = {"id": sid + ":g2", "text": "The turn's own goal", "parentId": None, "t": start_t, "mt": cut_t + 10, "nodeComplete": True,
                "blocked": False, "cleared": False, "doneWhy": "synthetic", "trail": [segp],
@@ -641,7 +641,7 @@ class Harness(unittest.TestCase):
         (self.state / "names" / sid3).write_text("api\t%s\t#abcdef\n" % self.cwd)
         # every offer of the third session completed by the judges in its own turn
         ends = self.je.turn_ends(recs)
-        log = [{"ev_t": self.je._ts(recs[i]) + 1, "at": self.je._ts(recs[i]) + 2, "src": "closer", "kind": "done", "why": "x"} for i in ends]
+        log = [{"ev_t": self.je._ts(recs[i]), "at": self.je._ts(recs[i]) + 2, "src": "closer", "kind": "done", "why": "x"} for i in ends]
         store = {"rompUuid": sid3, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
                  "nodes": {sid3 + ":g1": {"id": sid3 + ":g1", "text": "The goal", "parentId": None, "t": T0 + 49000, "trail": [], "log": log}}}
         (self.state / "goals" / (sid3 + ".json")).write_text(json.dumps(store))
@@ -825,6 +825,133 @@ class Harness(unittest.TestCase):
         self.assertTrue(m["endings"], "the build parsed through the freshly loaded event model")
         after = set(glob.glob(os.path.join(_tf.gettempdir(), "je-em-*")))
         self.assertEqual(after - before, set(), "no je-em-* scratch root is left behind: %r" % (after - before))
+
+    # ── round on ksarma's review of 1937 (folded on main after 1946) ──
+    def _archive_cleared_top(self, sid, cut_t, cleared_at):
+        """A cleared top in goals-archive (where the kernel's compaction moves it), with a closer done before the cut and the
+        user's clear at `cleared_at`; the clear also rides the override journal, as append_clear writes it."""
+        node = {"id": sid + ":gA", "text": "A goal the user cleared", "parentId": None, "t": cut_t - 5000, "cleared": True,
+                "trail": ["%s:%d:aaaaaaaa" % (sid, cut_t - 5000)],
+                "log": [{"ev_t": cut_t - 5000, "at": cut_t - 4999, "src": "planner", "kind": "mint"},
+                        {"ev_t": cut_t - 3, "at": cut_t - 2, "src": "closer", "kind": "done", "why": "delivered"},
+                        {"ev_t": cleared_at, "at": cleared_at + 1, "src": "user", "kind": "clear", "why": "seen"}]}
+        arch = {"rompUuid": sid, "nodes": {node["id"]: node}, "status": {node["id"]: "cleared"}}
+        (self.state / "goals-archive" / (sid + ".json")).write_text(json.dumps(arch))
+        with (self.state / "overrides" / (sid + ".jsonl")).open("a") as f:
+            f.write(json.dumps({"node": sid + ":gA", "op": "clear", "src": "user", "why": "seen", "t": cleared_at}) + "\n")
+        return node
+
+    def test_a_cleared_top_in_the_archive_is_visible_to_all_four_readers(self):
+        """ksarma's review: the kernel's compaction moves a cleared top into goals-archive/<sid>.json, and the harness read only
+        the live store, so the top was missing from the done times, the eligibility mark, tier one and the seed (the plan counts
+        640 clears against 22 resolves, so the finished signal lived mostly there). store_with_archive unions the archive in."""
+        fn = getattr(self.je, "store_with_archive", None)
+        self.assertIsNotNone(fn, "the harness unions the archive into the store its readers take (the base read only the live store)")
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 1)
+        start, cut = float(e["startT"]), float(e["cutT"])
+        self._archive_cleared_top(sid, cut, cut + 3600)      # cleared an hour after this ending's cut
+        merged = fn(self.state, sid)
+        self.assertIn(sid + ":gA", merged["nodes"], "the archived cleared top is in the store the readers see")
+        self.assertIn(cut - 3, self.je.top_done_times(merged), "its done is among the done times, so an ending in its window is eligible")
+        # tier one: the closer's done in the window, then the user's clear with nothing after → finished
+        self.assertEqual(self.je.tier_one_label(self.state, sid, cut, start), "finished",
+                         "a cleared top the judges completed labels the ending finished, though it lives in the archive")
+        # the seed: a top cleared AFTER the cut was open at the cut, so it returns to the seed
+        dest, m2 = self._corpus(name="corpus-archive")
+        seed = json.loads(Path(dest, "state", "romp", "goals", self._ending(m2, sid, 1)["id"] + ".json").read_text())
+        self.assertIn(self._ending(m2, sid, 1)["id"] + ":gA", seed["nodes"], "the top cleared after the cut is in the ending's seed")
+
+    def test_the_window_excludes_the_next_turns_done(self):
+        """ksarma's review: the window ran to cut + SETTLE_S, but no done carries an evidence time after its own cut, so a done
+        in that tail is the next turn's; the window ends at the cut."""
+        self.assertTrue(self.je.in_turn_window(1000.0, 900.0, 1000.0), "a done at the cut is in the window")
+        self.assertFalse(self.je.in_turn_window(1000.5, 900.0, 1000.0), "a done after the cut belongs to the next turn")
+        self.assertTrue(self.je.in_turn_window(950.0, 900.0, 1000.0))
+        self.assertFalse(self.je.in_turn_window(899.0, 900.0, 1000.0), "before the turn start is not the ending's")
+
+    def test_tier_one_matches_the_journals_full_node_key(self):
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 0)
+        start, cut = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, start, cut, [{"node": sid + ":g1", "op": "followup", "t": cut + 100}])
+        self.assertEqual(self.je.tier_one_label(self.state, sid, cut, start), "not finished",
+                         "the override's full <sid>:g1 key matches the node (the base compared only the tail, so a real journal matched none)")
+
+    def test_the_restore_op_carries_a_nodes_dict(self):
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 0)
+        start, cut = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, start, cut, [{"op": "clear", "src": "user", "node": sid + ":g1", "t": cut + 100},
+                                                     {"op": "restore", "nodes": {sid + ":g1": {"text": "back"}}, "t": cut + 200}])
+        self.assertEqual(self.je.tier_one_label(self.state, sid, cut, start), "not finished",
+                         "a restore keyed by its `nodes` dict, not a `node` field, still reads as not finished")
+
+    def test_the_gate_stamps_are_dropped_or_clamped_by_rule(self):
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 0)
+        start, cut = float(e["startT"]), float(e["cutT"])
+        seg = "%s:%d:aaaaaaaa" % (sid, start - 5000)
+        node = {"id": sid + ":g1", "text": "older", "parentId": None, "t": start - 5000, "trail": [seg],
+                "blockCheckT": cut, "blockCheckDoneT": cut + 50, "delegLookT": cut + 60, "titledT": cut + 70, "servingT": start - 20,
+                "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"}]}
+        store = {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":g1"}, "status": {}, "nodes": {node["id"]: node},
+                 "seams": [1, 2, 3], "confirming": [sid + ":g1"], "groupedSig": {"x": "y"}, "closeFails": 4}
+        before = self.je.store_before(store, cut, start, e["id"])
+        g1 = before["nodes"][e["id"] + ":g1"]
+        self.assertNotIn("blockCheckT", g1, "a blockCheckT at or after the turn start is dropped (the strict gate hides the node otherwise)")
+        self.assertNotIn("blockCheckDoneT", g1); self.assertNotIn("delegLookT", g1, "the arrival-domain stamps from after the cut are dropped")
+        self.assertEqual(g1["titledT"], cut, "titledT is clamped to the cut, not dropped (dropping buys a title call)")
+        self.assertEqual(g1["servingT"], start - 20, "a stamp from before the turn stays")
+        for k in ("seams", "confirming", "groupedSig", "closeFails"):
+            self.assertNotIn(k, before, "%s is store-level state from after the cut, dropped" % k)
+
+    def test_the_labeller_never_asks_the_same_order_twice_and_reads_the_ask(self):
+        # the identity shuffle falls back to the reversed class list
+        seen = []
+        real = self.je.ask_class
+        def spy(claude_bin, model, text, order, ledger):
+            seen.append(tuple(order)); return "finished", 0.0
+        self.je.ask_class = spy
+        # force rng to yield the identity order first: patch random inside label via a tiny corpus of one ending
+        try:
+            dest, m = self._corpus(name="shuffle")
+            import random
+            saved = random.Random
+            class _Ident(random.Random):
+                def shuffle(self, x, *a): pass          # leave the order as CLASSES
+            random.Random = _Ident
+            try:
+                self.je.label(dest, os.path.join(self.td, "runs-shuffle"), self.state, claude_bin=self.fake, model="fake")
+            finally:
+                random.Random = saved
+        finally:
+            self.je.ask_class = real
+        pairs = [(seen[i], seen[i + 1]) for i in range(0, len(seen) - 1, 2)]
+        self.assertTrue(pairs, "the labeller ran")
+        for a, b in pairs:
+            self.assertNotEqual(a, b, "the two orders differ even when the shuffle is the identity: %r vs %r" % (a, b))
+        # the input carries the user's ask, not the assistant text alone
+        sid = SIDS[0]; e = self._ending(m, sid, 0)
+        path = next(iter((Path(dest) / "claude" / "projects").glob("*/%s.jsonl" % e["id"])))
+        txt = self.je._last_assistant_text(str(path))
+        self.assertIn("The user's ask", txt, "the labeller reads the ending's ask as well as the final assistant text")
+
+    def test_a_faulted_store_is_recorded_not_swallowed(self):
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        (self.state / "goals" / (sid + ".json")).write_text("{ not json")
+        faults = []
+        out = self.je.tier_one_label(self.state, sid, float(self._ending(m, sid, 0)["cutT"]), float(self._ending(m, sid, 0)["startT"]), faults=faults)
+        self.assertIsNone(out)
+        self.assertEqual([f[0] for f in faults], [hashlib.sha256(sid.encode()).hexdigest()[:12]], "the fault is recorded by session hash, never the sid or path")
+        self.assertNotIn(sid, json.dumps(faults))
+        summary = self.je.label(self._corpus(name="faulted")[0], os.path.join(self.td, "runs-fault"), self.state, claude_bin=self.fake, model="fake")
+        self.assertIn("tierOneErrors", summary, "the summary counts faulted sessions")
 
 
 if __name__ == "__main__":
