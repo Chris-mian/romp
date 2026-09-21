@@ -42634,9 +42634,10 @@ def _feed_session_key(s, tm, ctx, prev_entry):
                 # (jd._judge_candidates), which the store treats as immutable after the fork (jd._note_leaf retires the
                 # old leaf as discover hands out the new one); were that contract to break, add the anchor's identity
                 # to the `transcript` component (same label, no census change).
-                # ONLY FOR A LEAF THE KERNEL CAN STAT (2026-09-21). A transcript gone from disk under a warm entry has
-                # no slot in the shared store: jd.parse_cached returns None because the file-set key's stat raises,
-                # and jd.parsed_session parses the missing leaf under a None key and stores nothing, so the next
+                # ONLY FOR A LEAF THE KERNEL CAN STAT (2026-09-21). A transcript gone from disk under a warm entry
+                # cannot be keyed live: jd.parse_cached returns None because the file-set key's stat raises, so no
+                # slot the store keeps from before the removal matches, and jd.parsed_session parses the missing leaf
+                # under a None key and stores nothing, so the next
                 # build's cache-only read missed again and the re-read ran again, forever: parses.kernel and coldFlip
                 # (the regression watch for this very block) moved every build, and the empty parse it produced
                 # painted the card's sessState quiet, a settled state for a transcript the kernel cannot read, where
