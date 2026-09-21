@@ -1,0 +1,80 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>the feed, annotated</title>
+<!--
+  The guide's annotated feed (docs/guide.md, "The feed"): the three columns, their header chips on the live
+  feed sheet (ui/webview/feed.css, linked, not copied, so the chips follow the sheet: .fcol-chip-working,
+  .fcol-chip-blocked, the Needs you column's chip in the category's colour, .fcol-chip-completed), and a
+  composed card per column in the card's anatomy (the title row, the Background and Summary buttons, Clear,
+  the distiller's line; the border in the session's colour), with the callouts drawn in the page. The
+  cards are composed rather than the live card DOM, which lays out only inside the feed's grid. Synthetic:
+  the notes-api demo world, invented tasks. Render from this directory with:
+    chrome --headless=new --screenshot=../feed-annotated.png --window-size=1324,350 \
+           --force-device-scale-factor=2 --hide-scrollbars file://.../feed-annotated.html
+-->
+<link rel="stylesheet" href="../../../../ui/webview/feed.css">
+<style>
+  html, body { margin: 0; background: #0f1218; }
+  body { font: 15px/1.4 "Liberation Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #d6d9de; }
+  #fig { position: relative; width: 1324px; height: 350px; overflow: hidden; }
+  .board { position: absolute; left: 24px; top: 56px; width: 1276px; padding: 14px 12px 20px; background: #1c1e22; border-radius: 10px; box-sizing: border-box; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .head { display: flex; align-items: center; gap: 10px; margin: 0 0 14px 2px; }
+  .head .fcol-chip { font-size: 12px; }
+  .head .n { color: #9a9fa8; font-size: 13px; font-weight: 600; }
+  .sess { display: flex; align-items: center; gap: 7px; margin: 0 0 8px 8px; font-weight: 700; font-size: 16px; }
+  .sess .stdot { width: 8px; height: 8px; border-radius: 50%; background: #e0b020; }
+  .card { border: 1.5px solid var(--c); border-radius: 10px; padding: 12px 14px; background: rgba(28, 40, 60, 0.55); }
+  .r1 { display: flex; align-items: baseline; gap: 10px; }
+  .title { font-weight: 700; font-size: 15.5px; flex: 1 1 auto; }
+  .time { color: #9a9fa8; font-size: 13px; white-space: nowrap; }
+  .clear { font: inherit; font-size: 12.5px; color: #9a9fa8; background: transparent; border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 3px 10px; white-space: nowrap; }
+  .r2 { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+  .sec { font: inherit; font-size: 12.5px; color: #9a9fa8; background: transparent; border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; padding: 3px 10px; }
+  .sec.on { color: #9cd2ff; border-color: #9cd2ff; }
+  .line { margin-top: 10px; color: #b7bcc4; font-size: 13.5px; line-height: 1.45; }
+  .call { position: absolute; background: #fff; color: #000; font-weight: 700; font-size: 14px; padding: 5px 11px; border-radius: 9px; white-space: nowrap; }
+  .box { position: absolute; border: 2px solid #fff; border-radius: 6px; }
+  svg.leaders { position: absolute; left: 0; top: 0; width: 1324px; height: 350px; pointer-events: none; }
+  svg.leaders line { stroke: #fff; stroke-width: 2; }
+</style>
+<div id="fig">
+  <div class="board">
+    <div class="cols">
+      <div>
+        <div class="head"><span class="fcol-chip fcol-chip-working">Working</span><span class="n">1</span></div>
+        <div class="sess" style="color:#1EA1EB"><span class="stdot"></span>api</div>
+        <div class="card" style="--c:#1EA1EB">
+          <div class="r1"><span class="title">Add GET /notes/search endpoint with tests</span><span class="time">43s ago</span><button class="clear">Clear</button></div>
+        </div>
+      </div>
+      <div>
+        <div class="head"><span class="fcol-chip fcol-chip-blocked">Needs you</span><span class="n">1</span></div>
+        <div class="sess" style="color:#e5484d"><span class="stdot"></span>web</div>
+        <div class="card" style="--c:#e5484d">
+          <div class="r1"><span class="title">Continuing: choose auth approach for notes API</span><span class="time">9m ago</span></div>
+          <div class="r2"><button class="sec">Background</button><button class="sec on">Summary</button><span style="flex:1 1 auto"></span><button class="clear">Clear</button></div>
+          <div class="line">Decide the authentication approach for the notes API: API keys or session tokens.</div>
+        </div>
+      </div>
+      <div>
+        <div class="head"><span class="fcol-chip fcol-chip-completed">Completed</span><span class="n">1</span></div>
+        <div class="sess" style="color:#8f9a7c">tests</div>
+        <div class="card" style="--c:#8f9a7c">
+          <div class="r1"><span class="title">Unit test for storage.all_notes()</span><span class="time">2m ago</span><button class="clear">Clear</button></div>
+          <div class="r2"><button class="sec">Background</button><button class="sec on">Summary</button></div>
+          <div class="line">Two tests were added to tests/test_storage.py covering the empty and multiple-notes cases, with an autouse fixture that resets storage between tests. The full suite (7 tests) passed.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="box" style="left:30px;top:98px;width:54px;height:26px"></div>
+  <div class="box" style="left:470px;top:201px;width:92px;height:30px"></div>
+  <div class="box" style="left:566px;top:201px;width:84px;height:30px"></div>
+  <svg class="leaders">
+    <line x1="57" y1="124" x2="150" y2="306"/><line x1="516" y1="231" x2="480" y2="306"/><line x1="608" y1="231" x2="760" y2="306"/>
+  </svg>
+  <div class="call" style="left:64px;top:302px">The session that owns it</div>
+  <div class="call" style="left:392px;top:302px">Background: the why</div>
+  <div class="call" style="left:688px;top:302px">Summary: the what</div>
+</div>

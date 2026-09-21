@@ -4784,8 +4784,8 @@ row per session, with its color, a dot for its state (yellow working, red stoppe
 API error only you can clear, amber retrying an API error on its own, teal compacting, green waiting
 on background work, none while it is idle), a state chip when the state is worth a word, what it is
 doing now in a few words, and how long ago it last did anything. The chip is the one the bar under
-the transcript wears for the session you are reading, with the same words and colours: **Blocked**
-when the feed shows one of the session's cards under Blocked or the session is stopped on a prompt
+the transcript wears for the session you are reading, with the same words and colours: **Needs you**
+when the feed shows one of the session's cards under Needs you or the session is stopped on a prompt
 (**API error** when it is stopped on one only you can clear), and **Awaiting** with what is awaited
 (**Awaiting 3 agents**, **Awaiting watch**, the peer's name) when it is waiting on background work.
 A session that asked a question and went quiet shows the chip with no dot: the dot follows the
@@ -4794,7 +4794,7 @@ its work so far, else from the last task it had; a session that has published a 
 working on shows the note as a quieter second line. Hover a row for its last message, shown without
 its formatting; click one to open that session, which also opens its section if the section is
 folded (with several tags, the first folded group of them). The rows update as the sessions work and
-change only when something about a session changes; the **Blocked** chip follows the feed, one
+change only when something about a session changes; the **Needs you** chip follows the feed, one
 refresh behind it at most. The transcript comes back when you pick a session, press Escape, or click
 that header again while its section is open and holds the tab you are reading.
 

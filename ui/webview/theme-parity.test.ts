@@ -173,19 +173,17 @@ for (const sheet of ["styles.css", "feed.css"]) {
   });
 }
 
-// THE RING HUES, ALL PAIRS PER THEME (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear
-// (the two reds, the yellow, the amber) are told apart by colour alone — same shape, same dash, on different tabs — so
-// every pair of ring hues must stay apart for full-colour readers (OKLab distance x100 at least 15) AND under the two
-// red-green deficiencies (at least 8 after the Machado, Oliveira and Fernandes 2009 simulation at severity 1.0), the
-// floors the dataviz palette validator applies to categorical marks; the Needs you ring against the two DOTS it can sit
-// beside (the working gold and the await-green, a 7px disc inside a 2px outline: shape and position tell them apart
-// too) needs the deficiency floor only. The light palette's convention (the same hue darkened to lightness 0.5 for 3:1
-// on cream) puts a second yellow on the working gold, and hue alone does not survive a red-green deficiency, so the
-// light ring yellow leaves by LIGHTNESS: #504100 (hue 94, lightness 0.38) is the only axis left that clears every
-// pair; a lighter olive collides with the amber under a deficiency (the branch's #7a6400: 0.1 against #9C4A0C).
-// The dark lemon stands as the author left it: 9.5 from the working gold to full-colour readers (a known pair, the
-// dot and the ring differ in shape and position), every other pair well over the floors. The ring also reads at 3:1
-// on the hovered tab and the selected tab's fill, the two washes a ring can sit on besides the page.
+// THE RING HUES, ALL PAIRS PER THEME (the rings-as-widgets change, 2026-09-14; the Needs you magenta, 2026-09-21): the three
+// dashed rings a tab can wear (the two reds, the magenta, the amber) are told apart by colour alone (same shape, same dash,
+// on different tabs), so every pair of ring hues must stay apart for full-colour readers (OKLab distance x100 at least 15)
+// AND under the two red-green deficiencies (at least 8 after the Machado, Oliveira and Fernandes 2009 simulation at severity
+// 1.0), the floors the dataviz palette validator applies to categorical marks; the Needs you ring against the two DOTS it can
+// sit beside (the working gold and the await-green, a 7px disc inside a 2px outline: shape and position tell them apart too)
+// needs the deficiency floor only. The magenta clears every floor with room in both themes: dark #d946ef sits 24 to 31 from
+// the other rings for full-colour readers, 23.7 to 28.7 under the deficiencies, 27.5 to 32.5 from the dots, 38.6 from the
+// working gold; light #a21caf 22 to 25 from the rings, 21.7 to 22.3 under the deficiencies, 22.7 to 30.2 from the dots, 29.4
+// from the gold (the yellow it replaced sat 9.5 from the gold in the dark theme and needed a lightness trick in the light one).
+// The ring also reads at 3:1 on the hovered tab and the selected tab's fill, the two washes a ring can sit on besides the page.
 function oklab(rgb: [number, number, number]): [number, number, number] {
   const lin = rgb.map((c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }) as [number, number, number];
   return oklabFromLin(lin);
@@ -238,4 +236,20 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
   }
   // the light value itself, so a re-ink is a deliberate change here and in feed.css (tab-rings.test.ts pins the two sheets equal)
   assert.match(block(css, "body.theme-light {"), /--st-needs-bg: #a21caf; --st-needs-fg: #ffffff;/);
+});
+
+test("the 5xx magenta of the API-health histogram is deliberately near the Needs you magenta: another page, no session state; the pair stays pinned so a shift is a decision", () => {
+  // plans/needs-you.md left phase two the choice of shifting the 5xx dark hue or pinning the pair as near by design. Pinned: the
+  // histogram segment (`--st-5xx-bg`, T316) shows only on the /perf page, which shows no session state, so nobody reads it as a
+  // needs-you mark beside a ring or a chip; the light values are byte-identical and the dark ones one step apart on purpose. The
+  // distance sits under the categorical floor the ring pairs must clear, which is the point: these two never share a surface.
+  const css = read("styles.css");
+  for (const theme of [":root {", "body.theme-light {"]) {
+    const b = block(css, theme);
+    const needs = b.match(/--st-needs-bg: (#[0-9a-fA-F]{6});/)![1], five = b.match(/--st-5xx-bg: (#[0-9a-fA-F]{6});/)![1];
+    const d = deltaE(rgbOf(needs, [0, 0, 0])!, rgbOf(five, [0, 0, 0])!);
+    assert.ok(d < 15, theme + ": the two magentas are near by design (" + needs + " against " + five + ", " + d.toFixed(1) + ")");
+  }
+  const light = block(css, "body.theme-light {");
+  assert.equal(light.match(/--st-5xx-bg: (#[0-9a-fA-F]{6});/)![1].toLowerCase(), light.match(/--st-needs-bg: (#[0-9a-fA-F]{6});/)![1].toLowerCase(), "light: byte-identical");
 });

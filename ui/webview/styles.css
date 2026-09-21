@@ -1037,7 +1037,7 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .ledger-tnode.cleared .ledger-ttext { text-decoration: line-through; text-decoration-color: var(--dim); }
 /* blocked = a red ⏸ ring (only when not done; render gates the .blocked class the same way). The current
    node is NO LONGER excluded — its checkbox matches every other blocked item (the user 2026-06-17). */
-.ledger-tnode.blocked .ledger-tmark { border-color: var(--err); color: var(--err); }
+.ledger-tnode.blocked .ledger-tmark { border-color: var(--st-needs-bg); color: var(--st-needs-bg); }   /* the outline's Needs you mark in the category's colour (plans/needs-you.md); red stays the hard stop's */
 .ledger-ttext { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 /* (the ⊕ distiller-summary expander + its .ledger-tsum panel were removed 2026-06-27 — the Fleet tree shows
    just the goals now, no distiller takeaway / decision-brief line.) */
