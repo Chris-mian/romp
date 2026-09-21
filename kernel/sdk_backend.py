@@ -9115,6 +9115,31 @@ class SdkSession:
 
     # ---- the awaiting overlay (bugz's event-model overlay) ----
 
+    def _record_transcript_path(self, inp):
+        """Record where the CLI says it WRITES (every hook payload carries transcript_path) — the
+        authoritative location once a session relocates its transcript: Claude Code's
+        --worktree/EnterWorktree moves it to the WORKTREE cwd's projects dir, the launch-dir
+        derivation then finds nothing, and every surface read a working session as 'opening'
+        (the user 2026-08-20). Discovery prefers this record (judge._sdk_transcript_path). Written
+        only when the value changes. Two callers: the Stop hook, and the PostToolUse hook on the
+        two worktree tools — the CLI renames the transcript INSIDE the EnterWorktree / ExitWorktree
+        call, so a record written only at turn end left the session invisible for the whole turn
+        that entered the worktree (review find)."""
+        tp = inp.get("transcript_path") if isinstance(inp, dict) else None
+        if tp and tp != getattr(self, "_last_transcript_path", None):
+            self._last_transcript_path = tp
+            try:
+                self.backend._update_reg(self.sid, transcriptPath=str(tp))
+            except Exception as e:
+                self.backend._log("transcriptPath record (%s) failed: %s" % (self.name, e))
+
+    async def _worktree_tool_hook(self, inp, tool_use_id, context):
+        """PostToolUse on EnterWorktree / ExitWorktree: the call itself relocates the transcript and
+        the payload already names the new location, so record it now rather than at the turn's Stop
+        hook. Records nothing else; the same empty result as the other PostToolUse hooks."""
+        self._record_transcript_path(inp)
+        return {}
+
     async def _stop_hook(self, inp, tool_use_id, context):
         """At turn-end, CLEAR the awaiting overlay (awaiting:false). Background SHELL tasks don't ride
         this overlay: they were excluded from awaiting entirely on 2026-07-07 (a leftover dev server /
@@ -9124,6 +9149,7 @@ class SdkSession:
         (see _on_task_event), terminal-status-cleared, no overlay records needed. So this hook still
         ignores inp['background_tasks'] and just clears any stale awaiting:true — keeping the overlay
         channel available for signals that need durability across a backend restart."""
+        self._record_transcript_path(inp)   # where the CLI writes, for discovery (see the helper)
         append_awaiting(self.backend.state_dir, self.sid, False)
         # Record the ARMED TIMER SET (the hook payload's session_crons: CronCreate crons, ScheduleWakeup
         # wakeups, /loop ticks). Session-scoped timers live ONLY in the CLI process's memory — the tool
@@ -13122,7 +13148,11 @@ class SdkBackend:
                                                hooks=[sess._ledger_tool_hook]),
                                    # interaction facts: store-poke + attribution, push mirror, role
                                    HookMatcher(matcher="TaskCreate|TaskUpdate|PushNotification|Skill",
-                                               hooks=[sess._facts_tool_hook])],
+                                               hooks=[sess._facts_tool_hook]),
+                                   # the worktree tools relocate the transcript inside the call: record
+                                   # where the CLI writes now, not at the turn's Stop hook
+                                   HookMatcher(matcher="EnterWorktree|ExitWorktree",
+                                               hooks=[sess._worktree_tool_hook])],
                    # a launch whose ack errored never started — drop it before it phantom-waits
                    "PostToolUseFailure": [HookMatcher(matcher="Bash|Monitor",
                                                       hooks=[sess._ledger_fail_hook])]},

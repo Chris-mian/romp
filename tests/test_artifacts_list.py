@@ -554,7 +554,7 @@ class Shell(unittest.TestCase):
         _has(self, "<div class=rail-btn data-pane=artifacts>Artifacts</div>", h)
         self.assertNotIn("<button data-pane=artifacts>", h, "experimental: no phone tab")
         _has(self, '<div class=gv id=gv-artifacts></div><div class=pane id=artifacts-pane><iframe id=f-artifacts data-src="/artifacts" data-protocol=romp></iframe></div>', h)
-        self.assertLess(h.index("id=files-pane"), h.index("id=gv-artifacts")); self.assertLess(h.index("id=artifacts-pane"), h.index("id=gv-ghost"))
+        self.assertLess(h.index("id=files-pane"), h.index("id=gv-artifacts")); self.assertLess(h.index("id=artifacts-pane"), h.index("id=col-ghost"))
         _has(self, "#artifacts-pane{flex:var(--g-artifacts,40) 1 0}body:not(.po-artifacts) #artifacts-pane{display:none}", h)
         _has(self, "body:not(.po-artifacts) #gv-artifacts,body:not(.po-chat):not(.po-fleet):not(.po-feed):not(.po-files) #gv-artifacts{display:none}", h)
         m = re.search(r"<body class='po-chat po-feed po-timeline' data-panes=\"([^\"]*)\">", h)
