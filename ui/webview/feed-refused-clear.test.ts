@@ -26,6 +26,7 @@ test("client: the err handler releases the ids a refused clear names and repaint
   assert.match(h, /\} else if \(op === "undoClear" && refusedIds\.length\) \{/);
   assert.match(h, /for \(const id of refusedIds\) \{ pendingRestored\.delete\(id\); pendingCleared\.add\(id\); \}/);
   assert.match(h, /if \(back\.length\) clearedStack\.push\(back\);/);
+  assert.match(h, /if \(Array\.isArray\(m\.owedIds\) && m\.owedIds\.length\) clearedStack\.push\(\[\]\);/, "an entry standing for the owed ids above the last clear's (the sixth executed review): the next pop matches the kernel's");
   assert.match(h, /for \(const id of refusedIds\) pendingCleared\.delete\(id\);/, "the click's suppression lets go");
   assert.match(h, /for \(const it of clearedStack\.splice\(i, 1\)\[0\]\) \{/, "and the optimistic Undo entry for a clear that never happened goes, its items back on the board");
   assert.ok(h.indexOf("render();") > h.indexOf("pendingCleared.delete(id)"), "then the board repaints from the payload that still lists the card");
@@ -42,10 +43,14 @@ test("kernel: the clears-log refusal names the request the way _refuse_drive's f
   // the double-fault window's other side (round four): the re-journal-first refusal fills the batch too, so the feed's revert has ids
   assert.match(KERNEL, /named = popped \+ \[i for i in owed_ids if i not in popped\][^\n]*\n\s+if batch_out is not None:\s+batch_out\.extend\(named\)\s+skipped\[LEDGER_REJOURNAL_AGAIN_KEY\] = \{"fault": _store_fault_copy\(e\), "ids": named\}\s+return skipped/);
   // the landed reorder tells the feed the popped batch was not restored this press (the third review's medium): an err frame, op undoClear, the popped ids
-  assert.match(KERNEL, /skipped\[LEDGER_REORDER_KEY\] = \{"fault": "", "ids": popped, "landed": bool\(landed\)\}/, "filed by _reorder after the flag step, worded for what happened (the fourth review)");
+  assert.match(KERNEL, /skipped\[LEDGER_REORDER_KEY\] = \{"fault": "", "ids": popped, "landed": bool\(landed\), "owed": \[\] if landed else list\(owed_ids\)\}/, "filed by _reorder after the flag step, worded for what happened (the fourth review)");
   assert.match(KERNEL, /_reorder\(set\(owed_ids\) <= \(set\(restored \+ notices\) - set\(_rj\)\)\)/, "the owed cards came back only if every undo row landed and its flag step ran");
   assert.match(KERNEL, /_send\("Undo brought back earlier cards first",[\s\S]{0,400}ok=True\)/);
-  assert.match(KERNEL, /_send\("Undo went to earlier cards first",[\s\S]{0,400}ok=True\)/, "the words for an owed store still refusing");
+  assert.match(KERNEL, /_send\("Undo went to earlier cards first",[\s\S]{0,600}ok=True, owed=value\.get\("owed"\)/, "the words for an owed store still refusing, naming the owed ids");
+  assert.match(KERNEL, /They still need one more Undo; the last clear comes back on the press after that\./, "the words name the press (the sixth executed review)");
+  assert.match(KERNEL, /"owed": \[\] if landed else list\(owed_ids\)/);
+  assert.match(KERNEL, /frame\["owedIds"\] = \[str\(i\) for i in owed\]/);
+  assert.doesNotMatch(KERNEL, /The owed cards came back, but romp could not clear the note/, "the owed-write account, filed before the flag step, claims nothing about the restore");
   // the owed note (lows 3 and 4 of the fourth review, the round-four verifier's medium): one lock across the section, the rewrite with what is still owed, none after an unreadable note
   assert.match(KERNEL, /_OWED_LOCK = threading\.RLock\(\)/);
   assert.match(KERNEL, /    with _OWED_LOCK:\n[\s\S]{0,900}_rerr = _owed_load\(\)/, "the read under the lock _undo_clear holds across the section");

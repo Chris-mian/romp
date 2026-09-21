@@ -104,6 +104,7 @@ test("a refused act re-arms the row the kernel's reply names, with the reason in
   const KERNEL = fs.readFileSync(path.join(UI, "..", "..", "kernel", "kernel.py"), "utf8");
   assert.match(KERNEL, /def _gesture_store_refusal\(client, gesture, skipped, ids=None, op=""\):/);
   assert.match(KERNEL, /"itemId": acct_ids\[0\] if acct_ids else "", "itemIds": list\(acct_ids\)\}/, "every account's frame names the request and the account's own ids (the third review: not the whole batch)");
+  assert.match(RENDER, /if \(m\.ok !== true\) notifyShell\("undelivered", copy \? title \+ ": " \+ copy : title, typeof m\.sid === "string" \? m\.sid : ""\);/, "the chat page's err handler files no bell entry for an information frame, as the feed's does not (the round-six verifier)");
   assert.match(KERNEL, /_send\(title, text, "", _ids\)\s+continue\s+notices = key\.startswith\("notice:"\)/, "the ledger's refusal names the whole batch");
   // the op is the request's own type (a pin elsewhere splits the dispatcher's source on the quoted op name, so no arm repeats its literal)
   for (const arm of ['_gesture_store_refusal(client, "clear", _skipped, ids=[str(msg["itemId"])], op=str(msg.get("type") or ""))',

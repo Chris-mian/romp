@@ -409,6 +409,31 @@ test("a store gesture's session account re-arms nothing and brings nothing back:
   posted.splice(sent0);
 });
 
+test("a reorder whose owed cards did not come back names them: an empty entry above the last clear's, so the next Undo restores nothing optimistically (the kernel's is the owed card) and the one after is the last clear's (the sixth executed review of PR 1967)", async () => {
+  const sent0 = posted.length;
+  const c3 = card("g3");
+  c3._clr.onclick(ev);                                                      // Clear g3: the stack holds its entry
+  body.byId("feed-undoclear")!.onclick!(ev);                                // Undo: g3 back optimistically, the kernel asked
+  assert.ok(!c3.classList.contains("dismissing")); assert.equal(posted.slice(sent0).filter((m) => m.type === "undoClear").length, 1);
+  mock.timers.tick(200);
+  // the kernel went to an owed card first and its store refused: the reorder frame names g3 as not restored and the owed id
+  await dispatch({ type: "err", ok: true, op: "undoClear", itemId: "g3", itemIds: ["g3"], owedIds: [API + ":g9"], title: "Undo went to earlier cards first",
+                   text: "They still need one more Undo; the last clear comes back on the press after that." });
+  mock.timers.tick(700);
+  assert.ok(!card("g3"), "the last clear's card is off the board again");
+  const undo = body.byId("feed-undoclear")!;
+  undo.onclick!(ev);                                                        // the next Undo is the owed card's (the kernel's newest batch): the entry standing for it pops
+  assert.ok(!card("g3"), "nothing restored optimistically: the last clear's entry sits below it");
+  assert.ok(undo.classList.contains("undo-busy"), "the round-trip cue: the payload brings the owed card");
+  undo.onclick!(ev);                                                        // the press after: the last clear's entry
+  mock.timers.tick(700);
+  assert.ok(card("g3"), "g3 back optimistically, matching the kernel's press");
+  assert.equal(posted.slice(sent0).filter((m) => m.type === "undoClear").length, 3);
+  await dispatch(frame([g1, card("g2")._it, card("g3")._it], { working: ["web"] }));   // the payload: the cue clears, the board as before
+  mock.timers.tick(7000);
+  posted.splice(sent0);
+});
+
 test("the bell: a click acknowledges at once and its optimistic state is a paint input, so that card alone repaints on the next frame; a refused toggle releases the latch and repaints that card alone", async () => {
   const before = nameRebuilds();
   const bell = card("g1")._bell;

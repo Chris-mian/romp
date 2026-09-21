@@ -6678,6 +6678,10 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       for (const id of refusedIds) { pendingRestored.delete(id); pendingCleared.add(id); }
       asks = asks.filter((a) => !refusedIds.includes(a.itemId));
       if (back.length) clearedStack.push(back);
+      // a reorder whose owed cards did not come back (`owedIds`; the sixth executed review of PR 1967): their re-journal is the kernel's newest
+      // batch, so the NEXT Undo is theirs; an empty entry above the last clear's stands for them (that pop restores nothing optimistically and
+      // takes the round-trip cue, the payload bringing them), and the pop after matches the kernel's: the last clear
+      if (Array.isArray(m.owedIds) && m.owedIds.length) clearedStack.push([]);
       render();
     }
     if (op === "apiRetry" && sid) rearmLatches({ kind: "retry", sid });

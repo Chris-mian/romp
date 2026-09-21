@@ -41381,11 +41381,13 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
         fault = value.get("fault", "") if isinstance(value, dict) else value
         own = [str(i) for i in (value.get("ids") or [])] if isinstance(value, dict) else None
 
-        def _send(title, text, sid_, acct_ids, ok=False):
+        def _send(title, text, sid_, acct_ids, ok=False, owed=None):
             frame = {"type": "err", "sid": sid_, "title": title, "text": text, "op": op or "",
                      "itemId": acct_ids[0] if acct_ids else "", "itemIds": list(acct_ids)}
             if ok:
                 frame["ok"] = True                    # information, not a refusal: the feed shows the dialog and files no bell entry (the round-four verifier)
+            if owed:
+                frame["owedIds"] = [str(i) for i in owed]   # the owed ids the NEXT Undo is for: the feed holds an entry above the last clear's for them (the sixth executed review)
             try:
                 client["send"](json.dumps(frame))
             except Exception:
@@ -41416,9 +41418,14 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                       "Some cards were still owed from an earlier undo, so Undo brought them back first. The last clear stands: press Undo "
                       "again for it.", "", own or [], ok=True)
             else:
+                # the words name the press (the sixth executed review, 2026-09-21: "press Undo again for it" promised the last clear while the owed
+                # ids' re-journal was the newest batch, so the next Undo was theirs again, quietly, and the last clear came the press after; on the
+                # feed the reverted entry sat on top and that click restored it optimistically while the kernel restored the owed card). The frame
+                # names the owed ids too, so the feed keeps the last clear's entry BELOW an entry standing for them and its next pop matches
                 _send("Undo went to earlier cards first",
                       "Some cards were still owed from an earlier undo, so Undo went to them first, and that did not fully land (the other "
-                      "message says which). The last clear stands: press Undo again for it.", "", own or [], ok=True)
+                      "message says which). They still need one more Undo; the last clear comes back on the press after that.", "", own or [],
+                      ok=True, owed=value.get("owed") if isinstance(value, dict) else None)
             continue
         if key == LEDGER_OWED_READ_KEY:
             _send("romp could not read its note of earlier owed cards",
@@ -41426,9 +41433,11 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                   "stay hidden after this, press Undo again once romp can read it." % fault, "", [])
             continue
         if key == LEDGER_OWED_WRITE_KEY:
+            # filed at the rewrite, BEFORE the flag step, so it claims nothing about the restore (the sixth executed review, 2026-09-21: "the owed
+            # cards came back" contradicted the store's account and the reorder frame when the owed store refused on the same press)
             _send("romp could not update its note of earlier owed cards",
-                  "The owed cards came back, but romp could not clear the note it kept of them (%s). Until it can, a restart may bring "
-                  "them back first once more; nothing else changed." % fault, "", [])
+                  "The undo went ahead, but romp could not rewrite the note it keeps of cards an earlier undo left owed (%s). Until it can, "
+                  "a restart may bring those cards back first once more." % fault, "", [])
             continue
         _ids = _batch
         if key == LEDGER_KEY:
@@ -41588,7 +41597,7 @@ def _undo_clear(batch_out=None):
         # saying whether the owed cards came back (the fourth review: filed when the re-journal landed, it said "brought back" while the owed
         # store was refusing, and both frames read cleared)
         if popped:
-            skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped, "landed": bool(landed)}
+            skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped, "landed": bool(landed), "owed": [] if landed else list(owed_ids)}
     cur = _cleared_ids()
     if not cur:
         _reorder(False)

@@ -1197,16 +1197,61 @@ class ActsUnderAFailedWrite(_World):
                          "the owed store's account, then the reorder worded for what happened: %r" % errs)
         self.assertEqual((errs[1]["itemIds"], errs[1].get("ok"), "ok" in errs[0]), ([A + ":g1"], True, False))
         self.assertNotIn("brought them back", errs[1]["text"], "no restore is claimed while the owed store refuses")
+        self.assertIn("They still need one more Undo; the last clear comes back on the press after that.", errs[1]["text"], "the words name the press (the sixth executed review)")
+        self.assertEqual(errs[1]["owedIds"], [B + ":g1"], "and the frame names the owed ids: the feed holds an entry for them above the last clear's")
         self.assertTrue(self._flag(B, B + ":g1"), "B still hidden"); self.assertTrue(self._flag(A, A + ":g1"), "the last clear stands")
         sent = self._dispatch({"type": "undoClear"})        # B's store writable: its re-journal row is the newest batch, so it comes back, quietly
         self.assertEqual([m for m in sent if m.get("type") == "err"], [])
         self.assertFalse(self._flag(B, B + ":g1")); self.assertTrue(self._flag(A, A + ":g1"))
+        sent = self._dispatch({"type": "undoClear"})        # the press after that: the last clear, as the frame said
+        self.assertEqual([m for m in sent if m.get("type") == "err"], []); self.assertFalse(self._flag(A, A + ":g1"))
         self._two_fault_undo_leaves_b_owed()                # the same shape with B's store writable at the re-journal-first press
         self._dispatch({"type": "askClear", "itemId": A + ":g1"})
         sent = self._dispatch({"type": "undoClear"})
         errs = [m for m in sent if m.get("type") == "err"]
         self.assertEqual([(m["title"], m["itemIds"], m.get("ok")) for m in errs], [("Undo brought back earlier cards first", [A + ":g1"], True)], "%r" % errs)
+        self.assertNotIn("owedIds", errs[0], "the owed cards came back: nothing stands above the last clear's entry")
         self.assertFalse(self._flag(B, B + ":g1"), "the owed card came back"); self.assertTrue(self._flag(A, A + ":g1"), "the last clear stands")
+
+    def test_the_reorder_is_filed_when_the_undo_rows_refuse_after_the_re_journal_landed_and_names_the_owed_ids(self):
+        """The sixth executed review's second low: the reorder frame's undo-rows-refused exit had no test. Owed B, A cleared, then Undo with
+        the log taking the re-journal-first rows and refusing the undo rows: the ledger's account first (nothing restored), then the reorder,
+        worded for what happens next (B's re-journal is the newest batch: the next Undo is B's, the last clear the press after), naming A as
+        not restored and B as owed. The presses after do as the frame says, quietly."""
+        self._two_fault_undo_leaves_b_owed()
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        with _nth_append_faults(jd.STATE / "cleared.jsonl", 2):
+            sent = self._dispatch({"type": "undoClear"})    # append 1: the re-journal-first rows land; append 2: the undo rows refused
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["That undo did not land", "Undo went to earlier cards first"], "%r" % errs)
+        self.assertEqual((errs[1]["itemIds"], errs[1].get("ok"), errs[1]["owedIds"]), ([A + ":g1"], True, [B + ":g1"]))
+        self.assertIn("They still need one more Undo", errs[1]["text"])
+        self.assertTrue(self._flag(A, A + ":g1") and self._flag(B, B + ":g1"), "nothing restored this press")
+        sent = self._dispatch({"type": "undoClear"})        # the next Undo: B, quietly
+        self.assertEqual([m for m in sent if m.get("type") == "err"], []); self.assertFalse(self._flag(B, B + ":g1")); self.assertTrue(self._flag(A, A + ":g1"))
+        sent = self._dispatch({"type": "undoClear"})        # the press after: the last clear
+        self.assertEqual([m for m in sent if m.get("type") == "err"], []); self.assertFalse(self._flag(A, A + ":g1"))
+
+    def test_the_owed_write_account_claims_nothing_about_the_restore_when_the_owed_store_refuses_too(self):
+        """The sixth executed review's first low: filed at the rewrite, before the flag step, the account said "The owed cards came back", and
+        with the owed store refusing on the same press three frames contradicted each other. It says what it knows: the undo went ahead and
+        the note could not be rewritten; the store's account and the reorder frame say the rest."""
+        under_fault = self._two_fault_undo_leaves_b_owed()
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        owed_file = jd.STATE / km.OWED_FILE
+        orig_write = Path.write_text
+
+        def refusing_write(p, *a, **kw):
+            if p == owed_file:
+                raise OSError(errno.EROFS, "Read-only file system", str(p))
+            return orig_write(p, *a, **kw)
+        with mock.patch.object(Path, "write_text", refusing_write), mock.patch.object(km, "_mark_nodes_cleared", under_fault):
+            sent = self._dispatch({"type": "undoClear"})    # the re-journal lands; the note's rewrite refuses; B's store refuses its flag step
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["romp could not update its note of earlier owed cards", "That undo did not land for api", "Undo went to earlier cards first"], "%r" % errs)
+        self.assertNotIn("came back", errs[0]["text"], "no restore is claimed by the note's account")
+        self.assertIn("could not rewrite the note", errs[0]["text"])
+        self.assertTrue(self._flag(B, B + ":g1"), "B still flag-cleared, as the other two frames say")
 
     def test_a_stale_note_across_a_restart_does_not_name_a_card_this_press_restores(self):
         """The fourth review's second low: the note's rewrite refused (its stale row stays), a restart, the card re-cleared, Undo: the

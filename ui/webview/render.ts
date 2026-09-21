@@ -19205,7 +19205,8 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "err" && typeof m.text === "string" && m.text) {
     const copy = typeof m.copy === "string" ? m.copy : "";
     const title = typeof m.title === "string" && m.title ? m.title : "That action was not delivered";
-    notifyShell("undelivered", copy ? title + ": " + copy : title, typeof m.sid === "string" ? m.sid : "");
+    // an information frame (`ok`) is a dialog and no bell entry, as on the feed page (the round-six verifier of PR 1967): no live route sends one to the chat socket today, and the next producer would file "not sent" for an act that landed
+    if (m.ok !== true) notifyShell("undelivered", copy ? title + ": " + copy : title, typeof m.sid === "string" ? m.sid : "");
     showConfirm(title, m.text,
                 copy ? [{ label: "Copy my text", value: "copy" }, { label: "Dismiss", value: "ok" }]
                      : [{ label: "Dismiss", value: "ok" }],
