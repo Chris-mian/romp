@@ -41990,9 +41990,11 @@ _feed_memo = {}                                  # sid → (key, entry_json, siz
 _feed_memo_lock = threading.Lock()               # the dict ops and the counters only; the derivation runs outside it
 _FEED_MEMO_STATS = {"hit": 0, "miss": 0, "evict": 0, "entries": 0, "bytes": 0, "bound": 0, "derived": 0, "failed": 0,
                     "coldLive": 0, "coldFlip": 0,   # coldLive: a living session with a transcript whose cache-only parse
-                    #                                  read MISSED, per session per build; a session no client and no judge
-                    #                                  has parsed rides it EVERY build, so a standing count is those
-                    #                                  cold-by-design sessions, not a fault. coldFlip: those the memo held
+                    #                                  read MISSED, per session per build; a session nothing has parsed at its
+                    #                                  current version rides it EVERY build, whatever the reader (the condition
+                    #                                  the counting site in _feed_session_key states; 2026-09-21), and the warm gate
+                    #                                  leaves an unmoved, idle session cold by design, so a standing count is
+                    #                                  those sessions, not a fault. coldFlip: those the memo held
                     #                                  WARM-keyed and the key re-read in place through _parse instead of
                     #                                  deriving cold (one kernel parse each, also under /perf parses.kernel;
                     #                                  2026-09-18, the re-read comment in _feed_session_key). Watch: coldFlip

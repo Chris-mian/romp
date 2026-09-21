@@ -2562,8 +2562,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   hidden from the feed, with a transcript, whose cache-only parse read
   missed; a session nothing has parsed at its current version (no client's
   tab, no judge, no background warm, none of the card build's own parse
-  paths) rides it every build, and the warm gate leaves an unmoved, idle
-  session cold by design, so a standing count is those sessions, not a fault.
+  paths, nor any other road that parses through the parse store) rides it
+  every build, and the warm gate leaves an unmoved, idle session cold by
+  design, so a standing count is those sessions, not a fault.
   `coldFlip` counts the subset the memo held warm and re-read in place with
   one kernel parse (also under `parses.kernel`) instead of deriving cold;
   `coldFlip` climbing every build for one session with no appends means its
