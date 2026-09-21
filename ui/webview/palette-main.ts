@@ -167,8 +167,9 @@ installMenuEcho();
   // boot-time look at the iframe's src: a pane enabled later gains its command with the gear save, and a pane
   // hidden later loses it, no reload either way (review, 2026-09-10).
   const panes: Array<[string, string]> = [["chat", "chat"], ["timeline", "timeline"], ["fleet", "outline"], ["feed", "feed"], ["files", "files"]];
-  // the REGISTRY panes (plans/panes-as-data.md): the shell emits the data panes as a body attribute when the registry
-  // holds any, and each gets the same toggle command under its title; its availability rides romp:settings.panes[id]
+  // the REGISTRY panes (plans/panes-as-data.md): the shell emits its pane list beyond the hand-written five as a body attribute
+  // (the shipped Artifacts record on every kernel, the data panes beside it), and each gets the same toggle command under its
+  // title; its availability rides romp:settings.panes[id]
   const registry: Array<{ id: string; title: string; experimental: boolean }> = (() => {
     try { const raw = document.body.getAttribute("data-panes"); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr.filter((p) => p && typeof p.id === "string").map((p) => ({ id: String(p.id), title: String(p.title || p.id), experimental: p.experimental === true })) : []; } catch { return []; }
   })();

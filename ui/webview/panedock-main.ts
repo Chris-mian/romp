@@ -48,9 +48,13 @@ const GRAB_SCRIPT_ID = "pd-grab";
 const MIN_PX = 120;      // a pane never resizes below this or a quarter of its pair (the shipped clamp)
 const BAND_MIN = 48;     // the band's floor (the shipped #gh clamp)
 
-/** Whether the gear's per-browser `paneDocking` switch is on, from the raw `romp:settings` JSON. Only the
- *  literal `true` turns it on: a store from before the key, a missing value, or any other type reads OFF
- *  (the fail-safe default for an opt-in that gates a whole layout engine). Pure; never throws. */
+/** A CHAT COLUMN's frame by the id the split script mints (`f-chat`, `f-chat-<n>`, kernel.py `frameId`): the chat's transcript
+ *  keeps the shell's strip style and gets no grab detector (a press-drag there is a text selection). By the exact shape, never
+ *  the prefix (the 1920 read): a registry pane whose id begins `chat-` renders as `f-chat-<id>` and is an ordinary pane. */
+export function isChatFrame(id: string): boolean {
+  return id === "f-chat" || /^f-chat-\d+$/.test(id);
+}
+
 /** Whether a pane frame speaks the pane protocol (plans/panes-as-data.md, section 3): every pane does unless the shell
  *  marked its iframe `data-protocol=none` (a URL-source pane: a foreign, sandboxed document). The kit's mark, its detector
  *  and its message handling are for protocol panes only; the pure read, so the exclusion is pinned without a DOM. */
@@ -58,6 +62,9 @@ export function speaksProtocol(f: { getAttribute(name: string): string | null })
   return f.getAttribute("data-protocol") !== "none";
 }
 
+/** Whether the gear's per-browser `paneDocking` switch is on, from the raw `romp:settings` JSON. Only the
+ *  literal `true` turns it on: a store from before the key, a missing value, or any other type reads OFF
+ *  (the fail-safe default for an opt-in that gates a whole layout engine). Pure; never throws. */
 export function isPaneDockingOn(rawSettings: string | null): boolean {
   try {
     const o = JSON.parse(rawSettings || "{}");
@@ -407,7 +414,7 @@ class Engine {
         d.addEventListener("keydown", (e) => this.onKey(e), true);
         d.addEventListener("keyup", (e) => this.onKey(e), true);
       }
-      if (this.on && (f.id === "f-chat" || f.id.indexOf("f-chat-") === 0 || f.id === "f-files") && !d.getElementById(STYLE_ID)) {
+      if (this.on && (isChatFrame(f.id) || f.id === "f-files") && !d.getElementById(STYLE_ID)) {
         const st = d.createElement("style"); st.id = STYLE_ID; st.textContent = PANE_CSS; (d.head || d.documentElement).appendChild(st);
       }
       if (this.on) this.markDoc(d, f);
@@ -437,7 +444,7 @@ class Engine {
     if (!speaksProtocol(f)) return;   // a URL-source pane: a foreign, sandboxed document; it gets no mark and no detector (and could not be read anyway)
     if (!d.body) return;
     d.body.classList.add(PANE_DOCKING_CLASS);
-    if (f.id === "f-chat" || f.id.indexOf("f-chat-") === 0 || d.getElementById(GRAB_SCRIPT_ID)) return;
+    if (isChatFrame(f.id) || d.getElementById(GRAB_SCRIPT_ID)) return;
     const sc = d.createElement("script"); sc.id = GRAB_SCRIPT_ID; sc.src = "/dist/pane-grab.js" + this.distVer();
     (d.head || d.documentElement).appendChild(sc);
   }
