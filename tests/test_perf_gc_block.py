@@ -56,7 +56,7 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
 km = load_source("romp_kernel_perf_gc", os.path.join(BIN, "romp-kernel"))
 
 GC_KEYS = {"gen", "thresholds", "counts", "frozen", "errors", "hooked", "freeze"}
-FREEZE_KEYS = {"enabled", "frozen", "loadTrees", "freezes", "reclaims", "lastReconcileMs", "lastReconcileKind", "totalReconcileMs", "errors"}
+FREEZE_KEYS = {"enabled", "active", "loadTrees", "freezes", "reclaims", "lastReconcileMs", "lastReconcileKind", "totalReconcileMs", "errors"}
 GEN_KEYS = {"collections", "msSum", "msMax", "msLast", "collectedLast"}
 ROW_GC_KEYS = {"n0", "n1", "n2", "ms2"}
 

@@ -2030,16 +2030,25 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the last freeze is folded in cheaply (`collect` then `freeze`, walking only
   the unfrozen), and a release is reclaimed with an `unfreeze`, a full
   collection and a re-freeze so a released reference cycle is collected. The
-  sub-block carries `enabled`, `frozen`, `loadTrees` (the insert count that
-  counts as a material load), `freezes` and `reclaims` (each ran one
-  collection, so the organic full collections are `gen."2".collections` less
-  their sum), `lastReconcileMs` and `lastReconcileKind` (`initial`, `load` or
-  `release`), `totalReconcileMs` and `errors` (a reconcile that raised is
-  counted here and said once on stderr, never ending the pusher). The freeze
-  is on by default; `ROMP_GC_FREEZE=off` (or `0`/`false`) turns it off for a
-  measurement, and `ROMP_GC_FREEZE_LOAD_TREES` sets the load threshold. A
-  request that arrives during a reconcile waits that one collection; the idle
-  boundary is the best moment for it, not a guarantee none arrives. To read a slow cycle: find
+  sub-block carries `enabled`, `active` (whether a freeze is held now; named
+  apart from the integer `frozen` above, which is `gc.get_freeze_count()`),
+  `loadTrees` (the insert count that counts as a material load), `freezes` and
+  `reclaims` (each ran one collection, so the organic full collections are
+  `gen."2".collections` less their sum), `lastReconcileMs` and
+  `lastReconcileKind` (`initial`, `load` or `release`), `totalReconcileMs` and
+  `errors` (a reconcile that raised is counted here and said once on stderr,
+  never ending the pusher). The release trigger reads the record cache's
+  `released` counter, which moves on EVERY pop (an eviction, a re-read
+  replacing an appended transcript's entry, an OSError pop of a deleted one, a
+  quiescent drop), plus a shared note the atom LRU and the judges' parse store
+  raise when they release a tree; so the commonest warm release, a re-read
+  replacement, is seen. The freeze is on by default; `ROMP_GC_FREEZE=off` (or
+  `0`/`false`) turns it off for a measurement, and `ROMP_GC_FREEZE_LOAD_TREES`
+  sets the load threshold (a value that is not a positive integer falls back to
+  the default, said once and counted under `errors`, and it is floored at 1 so
+  it cannot make the reconcile fire every idle cycle). A request that arrives
+  during a reconcile waits that one collection; the idle boundary is the best
+  moment for it, not a guarantee none arrives. To read a slow cycle: find
   its row in `pusher.stageRing` (or `jobs.stageRing`) and read the row's `gc`
   (`null` when the cycle closed without an opening mark): `n0`, `n1` and
   `n2`, the collections per generation that ran anywhere in the process

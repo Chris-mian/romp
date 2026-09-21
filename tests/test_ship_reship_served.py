@@ -164,7 +164,11 @@ RELAUNCH_ENV_EXCLUDED_PREFIXES = ("ROMP_TESTS_",)
 RELAUNCH_ENV_NAMES = frozenset(("CLAUDE_CONFIG_DIR", "PATH", "HOME", "TMPDIR",
                                 "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"))
 KERNEL_ENV_NAMES = RELAUNCH_ENV_NAMES | frozenset(("ROMP_SERVICE_ENV_FILE", "ROMP_SERVICE_ENV",
-                                                    "ROMP_CLAUDE_BIN", "ROMP_CLI_SCOPE"))
+                                                    "ROMP_CLAUDE_BIN", "ROMP_CLI_SCOPE",
+                                                    # #1735: so the suite's ROMP_GC_FREEZE=off floor reaches every lab
+                                                    # kernel (no silent collector change across the served labs); a lab
+                                                    # that means to exercise the freeze sets it on in its own kernel env
+                                                    "ROMP_GC_FREEZE", "ROMP_GC_FREEZE_LOAD_TREES"))
 
 
 def kernel_env(lab, claude, dist, port, token, **seams):
@@ -549,6 +553,7 @@ class LabKernelEnv(unittest.TestCase):
     FLOOR = {"ROMP_SERVICE_ENV_FILE": os.path.join(LAB, "no-such-service.env"),
              "ROMP_SERVICE_ENV": os.path.join(LAB, "no-such-service.env"),
              "ROMP_CLAUDE_BIN": "/bin/false", "ROMP_CLI_SCOPE": "0",
+             "ROMP_GC_FREEZE": "off",   # #1735: the run's freeze floor reaches every lab kernel (no silent collector change)
              "TMPDIR": os.path.join(LAB, "tmp"),
              "GIT_CONFIG_GLOBAL": os.path.join(LAB, "gitconfig"), "GIT_CONFIG_NOSYSTEM": "1"}
     # an XDG_ name of the runner's: a lab kernel takes the XDG_* names (kernel/credentials.py resolves the service.env

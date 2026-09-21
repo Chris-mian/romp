@@ -1233,25 +1233,26 @@ _PERF_STATS = _PerfStats()
 # 2.83 s to 0.1 ms once frozen; plans/gc-full-collection-pause.md); it reconciles at the idle boundary, keyed on
 # the record cache's load and release counters, so the reconcile's own collection pause is paid with no browser
 # waiting. Default on; ROMP_GC_FREEZE=off turns it off for a measurement.
-_GC_FREEZE = gcf.GcFreeze(enabled=gcf.enabled_from_env(),
-                          load_trees=int(os.environ.get("ROMP_GC_FREEZE_LOAD_TREES") or gcf.DEFAULT_LOAD_TREES))
 _GC_FREEZE_ERRORS = [0]
 _GC_FREEZE_SAID = [False]
-
-
-def _gc_freeze_tick():
-    """One idle-boundary check: reconcile the frozen set with the loaded set when the record cache's counters say
-    a material load or a release happened since the last freeze. Cheap when nothing is due (arithmetic on the
-    counters). A failure never ends the pusher: it is counted for /perf and said once on stderr."""
-    if not _GC_FREEZE.enabled:
-        return
+_GC_FREEZE_LOAD_TREES, _gc_freeze_bad_knob = gcf.load_trees_from_env()   # parsed with a fallback, never a bare int() at import (#1735 high)
+_GC_FREEZE = gcf.GcFreeze(enabled=gcf.enabled_from_env(), load_trees=_GC_FREEZE_LOAD_TREES)
+em.set_release_note(gcf.note_release)   # #1735: the atom LRU and the judge's parse store note releases the record cache's counter cannot see
+if _gc_freeze_bad_knob is not None:     # a bad ROMP_GC_FREEZE_LOAD_TREES fell back to the default: said once, counted, never fatal
+    _GC_FREEZE_ERRORS[0] += 1
     try:
-        st = em.record_cache_stats()
-        inserts = int(st.get("inserts") or 0)
-        releases = int(st.get("evictions") or 0) + int(st.get("dropped") or 0)
-        if _GC_FREEZE.due(inserts, releases):
-            _GC_FREEZE.reconcile(inserts, releases)
-    except Exception as e:
+        sys.stderr.write("gc-freeze: ROMP_GC_FREEZE_LOAD_TREES=%r is not a positive integer; using the default %d\n"
+                         % (_gc_freeze_bad_knob[:80], gcf.DEFAULT_LOAD_TREES))
+    except Exception:
+        pass
+
+
+def _gc_freeze_tick(idle, first):
+    """The pusher's idle-boundary call (the reconcile logic is gcf.pusher_tick, pinned in-process): reconcile the
+    frozen set with the loaded set when the record cache's counters say a material load or a release happened since
+    the last freeze. Cheap when nothing is due. A failure never ends the pusher: it is counted for /perf and said
+    once on stderr."""
+    def on_error(e):
         _GC_FREEZE_ERRORS[0] += 1
         if not _GC_FREEZE_SAID[0]:
             _GC_FREEZE_SAID[0] = True
@@ -1260,6 +1261,7 @@ def _gc_freeze_tick():
                                  % (type(e).__name__, repr(e)[:200]))
             except Exception:
                 pass
+    gcf.pusher_tick(_GC_FREEZE, idle, first, em.record_cache_stats, on_error)
 
 
 _STAGE_TL = threading.local()     # the calling thread's current stage name (T401): set by _job_stage and the push, read by the
@@ -59871,8 +59873,7 @@ def _pusher_cycle():
             _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
         elif not _BOOT_HEALTH_DONE[0]:
             _boot_health_row_backstop(time.monotonic())         # the jobs pass still open long after: the row without it
-        if _cycle_idle and not first:
-            _gc_freeze_tick()                                   # #1735: reconcile the freeze at the idle boundary, after the cycle closed
+        _gc_freeze_tick(_cycle_idle, first)                     # #1735: reconcile the freeze at the idle boundary (the guard is inside pusher_tick)
 
 
 @contextlib.contextmanager

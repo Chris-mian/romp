@@ -82,6 +82,71 @@ class TriggerLogic(unittest.TestCase):
         self.assertIsNone(c.reconcile(inserts=100, releases=5))
         self.assertEqual(fake.calls, [], "a disabled controller never touches the collector")
 
+    def test_the_load_threshold_parses_safely_and_floors_at_one(self):
+        # the #1735 high: a bad ROMP_GC_FREEZE_LOAD_TREES must not kill the kernel at import; it falls back, named
+        self.assertEqual(gf.load_trees_from_env({}), (gf.DEFAULT_LOAD_TREES, None), "absent: the default, no complaint")
+        self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "  "}), (gf.DEFAULT_LOAD_TREES, None), "whitespace: the default")
+        self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "abc"}), (gf.DEFAULT_LOAD_TREES, "abc"), "a bad value falls back and is named")
+        self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "20"}), (20, None))
+        self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "0"})[0], 1, "floored at 1: a 0 would make due() fire every idle cycle")
+        self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "-5"})[0], 1, "a negative is floored at 1 too")
+        self.assertEqual(gf.GcFreeze(load_trees=0).load_trees, 1, "the controller floors its threshold too")
+
+
+class DoubleController:
+    """Records the reconcile calls, so the pusher tick's guard and error handling are pinned without the collector."""
+    def __init__(self, enabled=True, due=True):
+        self.enabled = enabled
+        self._due = due
+        self.reconciled = []
+    def due(self, inserts, releases):
+        return self._due
+    def reconcile(self, inserts, releases):
+        self.reconciled.append((inserts, releases))
+        return "load"
+
+
+class PusherTick(unittest.TestCase):
+    """MEDIUM 1: the pusher wiring had no teeth (removing the call or the guard left the suite green). pusher_tick
+    is the extracted seam the kernel calls; these pin its guard and its never-die error handling in-process."""
+    def setUp(self):
+        gf._NOTED_RELEASES[0] = 0
+        self.addCleanup(lambda: gf._NOTED_RELEASES.__setitem__(0, 0))
+
+    def _stats(self, inserts=10, released=0):
+        return lambda: {"inserts": inserts, "released": released}
+
+    def test_it_reconciles_only_on_an_idle_non_first_cycle(self):
+        errs = []
+        c = DoubleController()
+        gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(), on_error=errs.append)
+        self.assertEqual(len(c.reconciled), 1, "an idle, non-first cycle reconciles")
+        c = DoubleController()
+        gf.pusher_tick(c, idle=True, first=True, stats_fn=self._stats(), on_error=errs.append)
+        self.assertEqual(c.reconciled, [], "the boot's first cycle never reconciles")
+        c = DoubleController()
+        gf.pusher_tick(c, idle=False, first=False, stats_fn=self._stats(), on_error=errs.append)
+        self.assertEqual(c.reconciled, [], "a busy cycle (marks or writes) never reconciles")
+        c = DoubleController(enabled=False)
+        gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(), on_error=errs.append)
+        self.assertEqual(c.reconciled, [], "a disabled controller never reconciles")
+        self.assertEqual(errs, [], "no errors on the happy paths")
+
+    def test_it_reads_the_record_release_counter_plus_the_noted_releases(self):
+        c = DoubleController()
+        gf.note_release(); gf.note_release()                      # two releases from other stores
+        gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(inserts=4, released=3), on_error=lambda e: None)
+        self.assertEqual(c.reconciled, [(4, 5)], "the release count is the record cache's `released` plus the noted releases")
+
+    def test_a_raising_stats_read_is_handed_to_on_error_and_never_propagates(self):
+        errs = []
+        def boom():
+            raise RuntimeError("cache stats read failed")
+        c = DoubleController()
+        gf.pusher_tick(c, idle=True, first=False, stats_fn=boom, on_error=errs.append)   # must not raise
+        self.assertEqual(len(errs), 1, "the failure is counted once")
+        self.assertEqual(c.reconciled, [], "and no reconcile ran")
+
 
 class Cyclic:
     """A weakref-able node so a reference cycle can be watched by a weakref oracle."""
@@ -207,6 +272,53 @@ class NoRereadChurn(unittest.TestCase):
         frozen_before = gc.get_freeze_count()
         self.assertEqual(c.reconcile(inserts, releases), "initial")
         self.assertGreater(gc.get_freeze_count(), frozen_before, "the reconcile froze the loaded objects out of the collector's walk")
+
+
+class RecordCacheRelease(unittest.TestCase):
+    """MEDIUM 3: the release trigger reads the record cache's unified `released` counter, so the commonest warm
+    release moves it: a re-read that REPLACES an appended transcript's cache entry, and an OSError pop of a
+    deleted transcript, both increment `released` (they went through _cache_pop_locked); a fresh insert does not."""
+    def _write(self, d, sid, rows):
+        p = os.path.join(d, sid + ".jsonl")
+        Path(p).write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return p
+
+    def test_a_reread_replacement_and_an_oserror_pop_count_as_releases(self):
+        em = load_source("romp_event_model_rel", os.path.join(BIN, "romp-event-model"))
+        d = tempfile.mkdtemp()
+        sid = "11111111-2222-3333-4444-cccccccc0001"
+        rows = [_uline(sid, 1_700_000_000, "ask", "u1"), _aline(sid, 1_700_000_030, "answer", "a1", "u1"),
+                _uline(sid, 1_700_000_600, "again", "u2", "a1"), _aline(sid, 1_700_000_630, "ok", "a2", "u2")]
+        p = self._write(d, sid, rows)
+        em.parse_session(p, rompuuid=sid)
+        rel0 = em.record_cache_stats()["released"]
+        # append a turn and re-parse: the cache entry is REPLACED (popped, re-inserted), a release the old counters miss
+        rows += [_uline(sid, 1_700_001_200, "more", "u3", "a2"), _aline(sid, 1_700_001_230, "done", "a3", "u3")]
+        Path(p).write_text("".join(json.dumps(r) + "\n" for r in rows))
+        em.parse_session(p, rompuuid=sid)
+        rel1 = em.record_cache_stats()["released"]
+        self.assertGreater(rel1, rel0, "the re-read replacement popped the old entry: a release")
+        # an OSError pop: delete the cached file and re-read; the reader pops the stale entry
+        os.unlink(p)
+        try:
+            em.parse_session(p, rompuuid=sid)
+        except Exception:
+            pass
+        rel2 = em.record_cache_stats()["released"]
+        self.assertGreater(rel2, rel1, "the OSError pop of a deleted transcript counts as a release too")
+
+    def test_the_injected_release_note_reaches_event_model(self):
+        em = load_source("romp_event_model_note", os.path.join(BIN, "romp-event-model"))
+        seen = []
+        em.set_release_note(lambda: seen.append(1))
+        self.addCleanup(lambda: em.set_release_note(None))
+        em._note_release()
+        self.assertEqual(seen, [1], "a store's _note_release() reaches the injected gcf.note_release")
+        gf._NOTED_RELEASES[0] = 0
+        em.set_release_note(gf.note_release)
+        em._note_release()
+        self.assertEqual(gf.noted_releases(), 1, "wired to gcf.note_release, it increments the shared release count")
+        gf._NOTED_RELEASES[0] = 0
 
 
 if __name__ == "__main__":

@@ -677,6 +677,10 @@ _JSONL_CACHE_BUDGET_BYTES = (int(float(os.environ["ROMP_RECORD_CACHE_BUDGET_MB"]
                              if os.environ.get("ROMP_RECORD_CACHE_BUDGET_MB") else _record_cache_default_budget_bytes())
 _JSONL_CACHE_BYTES = [0]          # the sum of every held entry's weight, kept in step with _JSONL_CACHE under its lock
 _RECORD_CACHE_STATS = {"inserts": 0, "evictions": 0, "evictedBytes": 0, "budgetEvictions": 0, "dropped": 0, "droppedBytes": 0,
+                       "released": 0,   # #1735: EVERY pop that removed an entry, whatever the cause (eviction, a re-read
+                       #                   replacement, an OSError pop, a quiescent drop); the gc-freeze release trigger reads this,
+                       #                   because the commonest warm release (a re-read replacing an appended transcript's entry)
+                       #                   moves neither `evictions` nor `dropped` (it only re-inserts)
                        "wholeReads": {}}   # "kind<-caller" -> {"count", "bytes"}: every read that pulled a file WHOLE (from zero, or a
 #                                          tail entry upgraded to the whole file), named by the reader's kind and the first frame
 #                                          outside this module (T384: the way hydratedBy named the planner; the 0.8 GB of whole
@@ -711,13 +715,36 @@ def _entry_weight(ent) -> int:
 
 
 def _cache_pop_locked(path):
-    """Under _JSONL_CACHE_LOCK: drop `path`'s entry and its weight; returns the weight (0 when absent)."""
+    """Under _JSONL_CACHE_LOCK: drop `path`'s entry and its weight; returns the weight (0 when absent). Every pop
+    that actually removed an entry counts under `released` (the gc-freeze release trigger, #1735): a removed
+    decoded tree may be a frozen cycle that now needs an unfreeze to collect."""
     ent = _JSONL_CACHE.pop(path, None)
     if ent is None:
         return 0
+    _RECORD_CACHE_STATS["released"] += 1
     w = _entry_weight(ent)
     _JSONL_CACHE_BYTES[0] = max(0, _JSONL_CACHE_BYTES[0] - w)
     return w
+
+
+# #1735: a release note for stores whose release the record cache's `released` counter does not see (the atom LRU
+# eviction here; a goal store replacement and a judge's per-session teardown in judge.py). The kernel injects
+# gcf.note_release through set_release_note at boot; a release point calls _note_release() so a gc-freeze release
+# reclaim runs after it. A no-op until injected, so a bare parse (a test, a tool) needs no wiring.
+_RELEASE_NOTE = [None]
+
+
+def set_release_note(fn):
+    _RELEASE_NOTE[0] = fn
+
+
+def _note_release():
+    fn = _RELEASE_NOTE[0]
+    if fn is not None:
+        try:
+            fn()
+        except Exception:
+            pass
 
 
 def _cache_insert_locked(path, ent):
@@ -5131,6 +5158,7 @@ def _mat_trim():
         else:
             list.__setitem__(lz, j, _UNMAT)
             _ASM_INDEX_STATS["evictions"] += 1
+            _note_release()                          # #1735: a materialized atom left the LRU; a released frozen cycle needs a reclaim
 
 
 class LazyIndex:
