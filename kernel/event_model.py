@@ -4087,7 +4087,16 @@ class _LazyBody(dict):
         return True
 
     def __eq__(self, other):
-        return isinstance(other, _LazyBody) and other.uuid == self.uuid
+        # the source slot and the uuid, not the class (2026-09-21): __hash__ keys on ("lazy", uuid) with no class in it, and
+        # a class check resolved _LazyBody from the module's globals at call time, so across the loader's re-execution
+        # (see is_lazy) two old sentinels of one uuid compared unequal, and an old one equaled a new one of its uuid that
+        # did not equal it back. Only this class declares the slot here; _Unhydrated has a uuid alone and stays unequal
+        return hasattr(other, "source_path") and getattr(other, "uuid", None) == self.uuid
+
+    def __ne__(self, other):
+        # the dict base's own __ne__ sits before object's in the lookup, so without this != compared storage, two distinct
+        # _Unhydrated values, and a same-uuid pair answered both == True and != True (2026-09-21)
+        return not self.__eq__(other)
 
     def __hash__(self):
         return hash(("lazy", self.uuid))
@@ -4097,7 +4106,11 @@ class _LazyBody(dict):
 
 
 def is_lazy(atom):
-    return isinstance(atom.get("message"), _LazyBody)
+    # the source slot, not the class, the one test the first loop of hydrate keys on (2026-09-21): the module loader
+    # re-executes this file into the same module object at every import and rebinds _LazyBody, so a sentinel built
+    # before a re-execution is no instance of the current class, and a class check answered False for a lazy body.
+    # A plain dict and None have no slot and answer False as before
+    return hasattr(atom.get("message"), "source_path")
 
 
 def _text_hash8(atom):
@@ -7174,9 +7187,11 @@ def hydrate(atoms, rompuuid=None, by=None):
                 _hydrate_one(a, hit[0])                     #  popped marker) may still be in flight: finish it from the memo as the
             filled += 1                                     #  hit branch does, or count it filled when the entry is gone already.
             continue                                        #  Entry gone with the marker present: the peer's pop is in flight, its
-        #                                                      put having left the memo at once (a cap the record does not fit
-        #                                                      under); the body stands whole, since _hydrate_one writes the message
-        #                                                      last, and readers key on the body type, not the marker (2026-09-20).
+        #                                                      put having left the memo already, self-evicted under a cap the record
+        #                                                      does not fit under or evicted by later puts from any thread between
+        #                                                      the peer's put and its fill (2026-09-21); the body stands whole, since
+        #                                                      _hydrate_one writes the message last, and readers key on the body
+        #                                                      type, not the marker (2026-09-20).
         #                                                      The test is the source slot, not the class: the module loader
         #                                                      re-executes this file into the same module object at every import,
         #                                                      rebinding _LazyBody, and a sentinel built before that fails isinstance
@@ -7185,7 +7200,8 @@ def hydrate(atoms, rompuuid=None, by=None):
         #                                                      body built before the re-execution is read now; an unbound one still
         #                                                      fails loudly below, its stale source sentinel being no path (the
         #                                                      product re-executes only at import, before any body exists). A None
-        #                                                      message has no slot either and counts filled as before (2026-09-20)
+        #                                                      message has no slot either and counts filled as before (2026-09-20).
+        #                                                      is_lazy and the sentinel's __eq__ key on the same slot (2026-09-21)
         # Resolve from the held body's document, not the last document restored for this session (2026-09-17).
         # A shallow atom copy keeps its sentinel and source. A missing bound source stays a loud failure; it must
         # never borrow a path from a different snapshot. Legacy unbound descriptors retain the old lookup.
