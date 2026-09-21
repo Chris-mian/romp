@@ -30,6 +30,7 @@ import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, Fleet
 import { citeText, sessionsForWorkspace, SessionInfo } from "./workspace-sessions";
 import { parsePorcelain } from "./session-diff";
 import { buildMenu, usageSummary } from "./romp-menu";
+import { resolveOpenPath, needsSessionDir } from "./open-path";   // a clicked path, resolved the way the kernel resolves it (2026-09-21)
 import {
   resolveInstallScript, driftNotice, UPDATE_ACTION, COPY_ACTION, INSTALL_COMMAND, CANT_REBUILD, MANUAL_REMEDY,
 } from "./update-target";
@@ -623,7 +624,7 @@ function wirePanel(p: vscode.WebviewPanel) {
     if (!m) return;
     // CLIENT capabilities — VS Code does these locally; the browser shim has
     // its own versions. Everything else goes to the kernel verbatim.
-    if (m.type === "openFile" && m.path) { openFileInEditor(String(m.path), m.line); return; }
+    if (m.type === "openFile" && m.path) { void openFileResolved(String(m.path), m.line, typeof m.id === "string" ? m.id : undefined); return; }
     if (m.type === "openLink" && typeof m.href === "string") { openLink(String(m.href)); return; }
     if (m.type === "openPane") { openPaneByKey(String(m.pane)); return; }   // strip quick-open
     if (m.type === "settingsSync") { broadcastSettings(m.settings, p.webview); return; }   // gear save → other panes
@@ -1096,9 +1097,24 @@ async function diffSessionChanges() {
 
 // ---- client capabilities ----
 
+// A clicked path, resolved BEFORE it opens (open-path.ts, the kernel's rule): `~` against the remote home,
+// a file:// link to its path, a relative path against the SESSION's dir — one /sessions read, only when the
+// path is still relative after the cheap steps, since the webview names the session (`id`) and the kernel's
+// list carries each session's dir. Until 2026-09-21 the raw string went to vscode.Uri.file, so a `~/` link
+// (clickable since T351 stage 2) and any relative link failed here while the web dashboard opened them.
+async function openFileResolved(raw: string, line?: number, sid?: string): Promise<void> {
+  let file = resolveOpenPath(raw, os.homedir());
+  if (needsSessionDir(file) && sid) {
+    const s = (await fetchSessions()).find((x) => x.id === sid);
+    file = resolveOpenPath(file, os.homedir(), s ? s.dir : null);
+  }
+  openFileInEditor(file, line, raw);
+}
+
 // Open a file (that a tool touched) in the real editor — in the main group,
-// NOT the locked romp group beside it. {type:"openFile", path, line?} (1-based).
-function openFileInEditor(file: string, line?: number) {
+// NOT the locked romp group beside it. {type:"openFile", path, line?} (1-based). `raw` is the path as the
+// webview posted it, named beside the resolved one in the warning when the two differ.
+function openFileInEditor(file: string, line?: number, raw?: string) {
   try {
     const uri = vscode.Uri.file(file);
     const opts: vscode.TextDocumentShowOptions = { preview: true, viewColumn: vscode.ViewColumn.One };
@@ -1107,7 +1123,7 @@ function openFileInEditor(file: string, line?: number) {
       opts.selection = new vscode.Range(pos, pos);
     }
     vscode.window.showTextDocument(uri, opts).then(undefined, () => {
-      vscode.window.showWarningMessage(`romp: couldn't open ${file}`);
+      vscode.window.showWarningMessage(`romp: couldn't open ${file}${raw && raw !== file ? ` (from ${raw})` : ""}`);
     });
   } catch { /* ignore */ }
 }
