@@ -8,7 +8,7 @@ phasing is built so nothing before it changes a persisted record or the feed pro
 
 A design line for an ask on the user's list (the user, 2026-09-18, about 12:50 PM PT: they want
 romp's cards made wholly generic, so that they can create a system of cards with categories other
-than the feed's Blocked, Completed and Working, different sub-sorts, and different buttons than
+than the feed's Needs you, Completed and Working, different sub-sorts, and different buttons than
 Background and Summary, with today's feed becoming one instantiation of the card UI; they suspected
 it might already be so and asked for another pass). The manager's ruling on the one question the
 draft asked (2026-09-18): a board the user can make without a release is the destination, not a
@@ -200,7 +200,7 @@ FEED_BOARD: Board = {
   id: "feed", title: "Feed",
   categories: [
     { id: "working",     title: "Working",   chip: "working"   },   // feed.ts:4782, local key "asks"
-    { id: "needs_input", title: "Blocked",   chip: "blocked"   },   // local key "needsInput"
+    { id: "needs_input", title: "Needs you", chip: "blocked"   },   // local key "needsInput"; the title since plans/needs-you.md, the chip name a schema value
     { id: "completed",   title: "Completed", chip: "completed" },
   ],
   defaultCategory: "working",

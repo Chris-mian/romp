@@ -35,7 +35,7 @@ const P = (p: Partial<TabWidgetPrefs> = {}): TabWidgetPrefs => ({ on: {}, order:
 test("the six built-in widgets register in order: the dot before the name, the context bar and the hot key after it, then the three rings in precedence order; all on by default", () => {
   assert.deepEqual(W.tabWidgets().map((w) => [w.id, w.slot, w.defaultOn]),
     [["dot", "before", true], ["ctx", "after", true], ["hotkey", "after", true], ["ring-needs-you", "ring", true], ["ring-waiting-on-you", "ring", true], ["ring-retrying", "ring", true]]);
-  assert.deepEqual(W.tabWidgets().map((w) => w.label), ["Status dot", "Context bar", "Hot key", "Needs you", "Waiting on you", "Retrying"]);
+  assert.deepEqual(W.tabWidgets().map((w) => w.label), ["Status dot", "Context bar", "Hot key", "Blocked", "Needs you", "Retrying"]);
   assert.ok(W.tabWidgets().every((w) => w.description.length > 0 && !/\bfleet\b/i.test(w.description)));
   assert.deepEqual(W.titleWidgets().map((w) => w.id), ["dot", "ctx", "hotkey"], "the settings' Tab widgets rows: the widgets that render into the title");
   assert.deepEqual(W.ringWidgets().map((w) => [w.id, w.ring]), [["ring-needs-you", "ring-needs-you"], ["ring-waiting-on-you", "ring-waiting-on-you"], ["ring-retrying", "ring-retrying"]], "each ring's class is its id");

@@ -699,7 +699,7 @@ test("the header's structure and gestures read as a label: the tag's chip, then 
   assert.equal(CSS.match(/\.tab-group-pip\.retrying \{ background: (var\(--st-retrying-bg\)); \}/)![1], CSS.match(/\.tab\.tab-retrying \{ --state: (var\(--st-retrying-bg\)); \}/)![1],
     "the pip's retrying amber IS the tab's — the same status token");
   const toks = new Set((rules.map((m) => m[2]).join(" ").match(/var\((--[a-z-]+)/g) || []).map((m) => m.slice(4)));
-  for (const t of toks) assert.ok(["--fg", "--dim", "--accent", "--accent-wash", "--box-border", "--st-working-bg", "--st-blocked-bg", "--st-retrying-bg", "--st-ask-bg", "--tab-active-bg", "--chip-bg"].includes(t), "a token the strip does not already wear: " + t);   // --st-ask-bg: the ask ring's yellow, on the tab AND the pip (2026-09-13)
+  for (const t of toks) assert.ok(["--fg", "--dim", "--accent", "--accent-wash", "--box-border", "--st-working-bg", "--st-blocked-bg", "--st-retrying-bg", "--st-needs-bg", "--tab-active-bg", "--chip-bg"].includes(t), "a token the strip does not already wear: " + t);   // --st-ask-bg: the ask ring's yellow, on the tab AND the pip (2026-09-13)
 });
 
 // SHOW WHEN FOLDED (the user 2026-09-06): a member pinned to its section keeps its tab on the strip

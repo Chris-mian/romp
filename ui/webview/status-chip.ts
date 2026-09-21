@@ -21,8 +21,8 @@ export type ChipState = "working" | "ready" | "needsInput" | "awaiting" | "await
 /** The state words, sentence case (the user 2026-07-03: never ALL CAPS), one per chip state: a state added to the union
  *  without a word here fails to compile (the exhaustiveness main's render.ts map had, kept). */
 export const CHIP_LABEL = {
-  working: "Working", ready: "Ready", needsInput: "Blocked",
-  awaiting: "Blocked",   // the legacy name for needsInput — an older remote kernel still sends it
+  working: "Working", ready: "Ready", needsInput: "Needs you",   // the Needs you chip (plans/needs-you.md, the user 2026-09-20): the category's word on every surface that shows the chip; the hard stop is the ring and the card's red marks, never the chip's word
+  awaiting: "Needs you",   // the legacy name for needsInput: an older remote kernel still sends it
   awaitingBg: "Awaiting",   // idle, waiting on background work it dispatched — the romp await-green, not working-yellow (the user 2026-07-13; recolored from straw 2026-07-22)
   idle: "Idle", closed: "Closed", compacting: "Compacting", clearing: "Clearing", blocked: "API error",
   retrying: "API retrying…",   // a live session stalled on an API rate-limit/overload auto-retry (api 2026-06-23)

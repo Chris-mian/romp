@@ -206,13 +206,12 @@ body.scheme-solarized-dark {
   /* amber-orange — the API is backing off and retrying (the tab ring, the chip, the chat's retry notices); the
      hue sat RAW in seven rules until 2026-09-08 (5.38:1 on the chat's card surface) */
   --st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;
-  /* the ASK yellow (the ask ring, 2026-09-13): something of a session's is waiting on you — a card of the session's
-     in the feed's needs-you column — while the session may be idle, awaiting or still working. A clear lemon, not
-     Working's mustard gold (#e0b020) and not the retrying amber, so the dashed ring and the folded header's
-     pip read as their own state; 11.3:1 on the page (theme-parity.test.ts pins the pair, the ring on the page and
-     every pair of ring hues per theme: 9.5 from the gold to full-colour readers, a known pair, the dot and the
-     ring differing in shape and position; 9.2 under a red-green deficiency; every other pair well clear). */
-  --st-ask-bg: #f5d33f; --st-ask-fg: #332600;
+  /* the NEEDS YOU magenta (plans/needs-you.md, the user 2026-09-20): a card of a session's in the feed's Needs you column,
+     while the session may be idle, awaiting or still working: the tab's dashed ring, the folded header's pip, the column's
+     chip, the card's question marks, the phone picker's border and bar. One colour for the category everywhere; red is the
+     hard stop's alone. 4.8:1 on the page; apart from both reds, the amber and the gold to full-colour readers and under a
+     red-green deficiency (theme-parity.test.ts pins every pair). */
+  --st-needs-bg: #d946ef; --st-needs-fg: #2a0a2a;
 
   /* the assistant's READING face (.assistant): the UI face in dark, mono in light (the light block re-points it).
      --font-doc is the file viewer's face for a rendered document (.fileview-md): sans in both themes, since the mono
@@ -295,7 +294,7 @@ body.theme-light {
      amber (#9C4A0C); lightness is the axis left. 8.40:1 on the page, white on it 10.01:1; OKLab distance x100 from the
      other rings and dots, full colour / under a deficiency: working 16.4 / 15.3, retrying 15.4 / 8.3, awaiting 22.7 /
      8.6, blocked 30.7 / 16.1, await-green 33.6 / 30.3 (theme-parity.test.ts pins every pair, both themes). */
-  --st-ask-bg: #504100; --st-ask-fg: #ffffff;
+  --st-needs-bg: #a21caf; --st-needs-fg: #ffffff;
   --radius-menu: 6px;
   --shadow-menu: 0 4px 12px rgba(31, 26, 20, 0.16);
   --menu-bg: #FBF6EF;
@@ -482,7 +481,7 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .tab-group-pip { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--st-working-bg); }
 .tab-group-pip.blocked { background: var(--st-blocked-bg); }
 .tab-group-pip.retrying { background: var(--st-retrying-bg); }
-.tab-group-pip.ask { background: var(--st-ask-bg); }   /* yellow — a hidden member has something waiting on you (the ask ring, 2026-09-13) */
+.tab-group-pip.ask { background: var(--st-needs-bg); }   /* the Needs you magenta: a hidden member has a card that needs you (plans/needs-you.md) */
 /* ONE GROUP PER LINE (T264, the user 2026-09-08: the grouped strip read as one long concatenation).
    A break is a zero-height flex item spanning the whole row, so the item after it — a group's header,
    or the untagged trail's first tab — opens a new line: the chip sits at the left edge and its tabs
@@ -586,7 +585,7 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    (tab-widgets.ts composeTabRing, red over yellow over amber, one class at a time), so this rule needs no :not chain
    and no specificity above the red and amber rule's; a stopped session with the red ring switched off wears this one
    when it has a card, which is true of that tab. tab-rings.test.ts pins the rules and the tokens. */
-.tab.ring-waiting-on-you { outline: 2px dashed var(--st-ask-bg); outline-offset: -2px; }
+.tab.ring-waiting-on-you { outline: 2px dashed var(--st-needs-bg); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
 .tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the await-green chip (the user 2026-07-13) */
@@ -1584,8 +1583,8 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    2026-06-16), distinct from the green ✓ a finished tool gets, so a dispatched agent reads as "still going". */
 .dot.working { background: var(--st-working-bg); border: none; }
 .chip-ready { background: var(--st-ready-bg); color: var(--st-ready-fg); }
-.chip-needsInput { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
-.chip-awaiting { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }   /* legacy name — an older remote kernel */
+.chip-needsInput { background: var(--st-needs-bg); color: var(--st-needs-fg); }   /* the Needs you chip in the category's colour (plans/needs-you.md); red is the hard stop's ring and marks alone */
+.chip-awaiting { background: var(--st-needs-bg); color: var(--st-needs-fg); }   /* legacy name: an older remote kernel */
 /* the awaiting chip's peer NAME wears the identity colour itself (the user 2026-08-26, round two —
    the dot retired). The backing is ~85% black: opaque enough that any colour reads on it regardless
    of the chip hue behind (their green-on-green case), translucent enough to keep the chip's flavor.

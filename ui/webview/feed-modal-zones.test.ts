@@ -88,16 +88,17 @@ test("an OPEN node no longer shows a creation 'why' line (removed 2026-06-27 —
   assert.doesNotMatch(CSS, /\.ftree-why/);
 });
 
-test("modal BLOCKED node: white-on-red 'Blocked' chip + red '?' in a red ring; tooltip says 'marked blocked' (the user 2026-06-17)", () => {
-  // rolled-up ancestors (qderived) say "Blocked inside"; the actual ask says "Blocked" (the user 2026-07-11)
-  assert.match(FEED, /meta\.textContent = node\.status === "question" \? \(node\.qderived \? "Blocked inside" : "Blocked"\)/);
+test("modal NEEDS YOU node: a 'Needs you' chip and a '?' in a ring, both in the category's colour; tooltip says 'marked blocked' (the user 2026-06-17; the colour the category's since 2026-09-20)", () => {
+  // rolled-up ancestors (qderived) say "Needs you inside"; the actual ask says "Needs you" (the user 2026-07-11; the word the category's since 2026-09-20)
+  assert.match(FEED, /meta\.textContent = node\.status === "question" \? \(node\.qderived \? "Needs you inside" : "Needs you"\)/);
   assert.doesNotMatch(FEED, /"needs you" :/);                                  // the old amber label is gone
-  // the BLOCKED label is a white-on-red chip (same red as the feed's Blocked column header)
-  assert.match(CSS, /\.st-question \.ftree-meta \{[^}]*background: #c0392b;[^}]*color: #ffffff/);
-  // the ? mark is a RED ring, 13px (same as the done ✓ disc), with the ? visible in red — always rendered
+  // the label is a chip in the Needs you colour (the same token as the feed's Needs you column header; plans/needs-you.md)
+  assert.match(CSS, /\.st-question \.ftree-meta \{[^}]*background: var\(--st-needs-bg\);[^}]*color: var\(--st-needs-fg\)/);
+  // the ? mark is a ring in the same colour, 13px (same as the done ✓ disc), with the ? visible; red is the hard stop's alone
   assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*width: 13px/);
-  assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*border: 1\.5px solid var\(--err\)/);
-  assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*color: var\(--err\)/);
+  assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*border: 1\.5px solid var\(--st-needs-bg\)/);
+  assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*color: var\(--st-needs-bg\)/);
+  assert.doesNotMatch(CSS, /\.st-question \.ftree-mark \{[^}]*var\(--err\)/, "no red on a question mark");
   // the mark/time tooltip on a node blocked in its OWN right says "marked blocked", not "checked off"
   assert.match(FEED, /node\.status === "question" && !node\.qderived \? "jump to where this got marked blocked"/);
 });

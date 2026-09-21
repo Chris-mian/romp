@@ -36,7 +36,7 @@ test("the label map is exhaustive over the chip states at compile time, and the 
 
 test("stateLabel: the map's word in sentence case, a state the map lacks in sentence case, nothing for none", () => {
   assert.deepEqual(["working", "ready", "needsInput", "awaiting", "awaitingBg", "blocked", "retrying", "closed"].map(stateLabel),
-    ["Working", "Ready", "Blocked", "Blocked", "Awaiting", "API error", "API retrying…", "Closed"]);
+    ["Working", "Ready", "Needs you", "Needs you", "Awaiting", "API error", "API retrying…", "Closed"]);   // the Needs you chip (plans/needs-you.md)
   assert.equal(stateLabel("frobnicating"), "Frobnicating", "an unknown state: its own name, first letter up, the rest down");
   assert.equal(stateLabel("SHOUTING"), "Shouting"); assert.equal(stateLabel(""), ""); assert.equal(stateLabel(null), ""); assert.equal(stateLabel(undefined), "");
   assert.equal(CHIP_LABEL.awaitingBg, "Awaiting");
@@ -44,7 +44,7 @@ test("stateLabel: the map's word in sentence case, a state the map lacks in sent
 
 test("chipWords: every state but awaitingBg is its label; the Awaiting chip words WHAT is awaited by the one rule, and names a single peer", () => {
   assert.deepEqual(chipWords({ state: "working" }), { state: "working", text: "Working", peer: null });
-  assert.deepEqual(chipWords({ state: "needsInput" }), { state: "needsInput", text: "Blocked", peer: null });
+  assert.deepEqual(chipWords({ state: "needsInput" }), { state: "needsInput", text: "Needs you", peer: null });
   assert.deepEqual(chipWords({ state: "blocked" }), { state: "blocked", text: "API error", peer: null });
   assert.deepEqual(chipWords({}), { state: "", text: "", peer: null }, "no state: an empty chip, never a throw");
   assert.deepEqual(chipWords({ state: "awaitingBg" }), { state: "awaitingBg", text: "Awaiting agents", peer: null }, "kindless, countless: the historic default word");
@@ -67,7 +67,7 @@ test("chipWords: every state but awaitingBg is its label; the Awaiting chip word
 
 test("statusChip: `chip chip-<state>` wearing the words; a span by default, a button on request; the one peer's name on its own coloured node through the shared host renderer", () => {
   const blocked = statusChip(chipWords({ state: "needsInput" }), "span", doc) as unknown as FakeNode;
-  assert.deepEqual([blocked.tag, blocked.className, blocked.textContent, blocked.children.length], ["span", "chip chip-needsInput", "Blocked", 0]);
+  assert.deepEqual([blocked.tag, blocked.className, blocked.textContent, blocked.children.length], ["span", "chip chip-needsInput", "Needs you", 0]);
   const bar = statusChip(chipWords({ state: "awaitingBg", awaitingKind: "agents", awaitingCount: 3 }), "button", doc) as unknown as FakeNode;
   assert.deepEqual([bar.tag, bar.className, bar.textContent], ["button", "chip chip-awaitingBg", "Awaiting 3 agents"]);
   const plain = statusChip(chipWords({ state: "ready" }), undefined, doc) as unknown as FakeNode;
@@ -106,7 +106,7 @@ test("pinned: the bar and the tag overview's rows both build from this module; n
   // the dress is the chip's, once: the size rule and the per-state fills in the one sheet
   assert.equal((CSS.match(/^\.chip \{/gm) || []).length, 1);
   assert.match(CSS, /\.chip-awaitingBg \{ background: var\(--st-awaitbg-bg\); color: var\(--st-awaitbg-fg\); \}/);
-  assert.match(CSS, /\.chip-needsInput \{ background: var\(--st-awaiting-bg\); color: var\(--st-awaiting-fg\); \}/);
+  assert.match(CSS, /\.chip-needsInput \{ background: var\(--st-needs-bg\); color: var\(--st-needs-fg\); \}/, "the Needs you chip in the category's colour (plans/needs-you.md)");
   assert.match(CSS, /\.chip-blocked \{ background: var\(--st-blocked-bg\); color: var\(--st-blocked-fg\); \}/);
   assert.doesNotMatch(CSS, /\.snap-row \.chip|\.snap-item \.chip|#tab-snapshot \.chip/, "the overview adds no rule of its own for the chip");
 });

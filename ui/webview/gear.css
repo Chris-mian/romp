@@ -327,7 +327,7 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
    status) wear the strip's dashed outline through this sheet's fallbacks: the gear's hosts load feed.css and gear.css,
    not styles.css. The classes are the ones the strip composes (tab-widgets.ts), the colours the status tokens. */
 #rsettings .rs-widget-demo .tab.ring-needs-you, #rsettings .rs-preview .tab.ring-needs-you { outline: 2px dashed var(--st-awaiting-bg, #c0392b); outline-offset: -2px; }
-#rsettings .rs-widget-demo .tab.ring-waiting-on-you, #rsettings .rs-preview .tab.ring-waiting-on-you { outline: 2px dashed var(--st-ask-bg, #f5d33f); outline-offset: -2px; }
+#rsettings .rs-widget-demo .tab.ring-waiting-on-you, #rsettings .rs-preview .tab.ring-waiting-on-you { outline: 2px dashed var(--st-needs-bg, #d946ef); outline-offset: -2px; }
 #rsettings .rs-widget-demo .tab.ring-retrying, #rsettings .rs-preview .tab.ring-retrying { outline: 2px dashed var(--st-retrying-bg, #e67e22); outline-offset: -2px; }
 
 /* A control that depends on the Task tracking switch while it is off (T404): the row greys by token (the fast-mode box's

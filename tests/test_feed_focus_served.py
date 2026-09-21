@@ -361,7 +361,7 @@ class ServedFocusedSessionSection(unittest.TestCase):
         self.assertFalse(on["emptyShown"], "no quiet line while the session has cards: %r" % on["emptyText"])
         self.assertTrue(on["colsShown"])
         # the board's three columns, the board's chips, one fold caret per block (T410); each column counts its one card
-        self.assertEqual(on["chips"], ["Working", "Blocked", "Completed"], "the same column chips as the board: %r" % on["chips"])
+        self.assertEqual(on["chips"], ["Working", "Needs you", "Completed"], "the same column chips as the board: %r" % on["chips"])
         self.assertEqual(on["folds"], 3, "one fold caret per block (T410), the label's caret aside")
         self.assertEqual(on["counts"], {"asks": "1", "needsInput": "1", "completed": "1"}, "one card per column: %r" % on["counts"])
         # exactly web's cards, per column the same titles as web's cards on the board, under the section's own keys

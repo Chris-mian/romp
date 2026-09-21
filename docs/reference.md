@@ -1895,7 +1895,7 @@ variables bound this:
   the default is `1800`, thirty minutes. A message older than this at the
   restart is not re-fed: it is kept in the chat marked never delivered, where
   it can be restored or dismissed, and a notice card (the section above) is
-  posted for the session, under Blocked, one per session per restart, naming
+  posted for the session, under Needs you, one per session per restart, naming
   how many messages were dropped and, for each, its time and its text. The
   card offers **Send again** for each message (up to three; with two or more
   there is also **Send all again**, which re-sends them as one message in

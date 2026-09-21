@@ -62,7 +62,7 @@ test("the status carries needsYou: the kernel's build_session puts the feed's pe
 
 test("THE SHEET: the dashed outlines key on the RING classes the strip composes (two-class selectors, after the peek ring), never on the state class; no :not chain, no raw hex; the blocked fill rides the red ring", () => {
   assert.match(CSS, /\n\.tab\.ring-needs-you, \.tab\.ring-retrying \{ outline: 2px dashed var\(--state\); outline-offset: -2px; \}/, "the red and the amber read the state's --state");
-  assert.match(CSS, /\n\.tab\.ring-waiting-on-you \{ outline: 2px dashed var\(--st-ask-bg\); outline-offset: -2px; \}/, "the yellow reads its own token");
+  assert.match(CSS, /\n\.tab\.ring-waiting-on-you \{ outline: 2px dashed var\(--st-needs-bg\); outline-offset: -2px; \}/, "the Needs you ring reads its own token (plans/needs-you.md)");
   // the state classes still set --state (the colour the red and amber rings read), and nothing else paints an outline off them
   assert.match(CSS, /\.tab\.tab-awaiting \{ --state: var\(--st-awaiting-bg\); \}/);
   assert.match(CSS, /\.tab\.tab-retrying \{ --state: var\(--st-retrying-bg\); \}/);
@@ -89,42 +89,42 @@ test("THE SHEET: the dashed outlines key on the RING classes the strip composes 
   assert.match(CSS, /\.tab\.tab-blocked\.ring-needs-you\.active \{\s*\n\s*background: linear-gradient/);
   assert.doesNotMatch(CSS, /\.tab\.tab-blocked \{[^}]*background/, "no fill off the state alone");
   // the tokens, in both themes; the folded header's pip wears the same yellow (tab-groups.test.ts pins the pip's other colours)
-  assert.match(CSS, /--st-ask-bg: #f5d33f; --st-ask-fg: #332600;/, "the dark ask yellow — a lemon apart from Working's gold and the retrying amber");
-  assert.match(CSS, /\.tab-group-pip\.ask \{ background: var\(--st-ask-bg\); \}/);
+  assert.match(CSS, /--st-needs-bg: #d946ef; --st-needs-fg: #2a0a2a;/, "the dark Needs you magenta, apart from both reds, the amber and the gold (theme-parity pins the pairs)");
+  assert.match(CSS, /\.tab-group-pip\.ask \{ background: var\(--st-needs-bg\); \}/);
 });
 
 test("THE GEAR'S SHEET: the ring rows' demos wear the same classes through gear.css fallbacks (its hosts load feed.css and gear.css, not styles.css), and feed.css carries the ask tokens in both themes", () => {
   assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab\.ring-needs-you, #rsettings \.rs-preview \.tab\.ring-needs-you \{ outline: 2px dashed var\(--st-awaiting-bg, #c0392b\); outline-offset: -2px; \}/);
-  assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab\.ring-waiting-on-you, #rsettings \.rs-preview \.tab\.ring-waiting-on-you \{ outline: 2px dashed var\(--st-ask-bg, #f5d33f\); outline-offset: -2px; \}/);
+  assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab\.ring-waiting-on-you, #rsettings \.rs-preview \.tab\.ring-waiting-on-you \{ outline: 2px dashed var\(--st-needs-bg, #d946ef\); outline-offset: -2px; \}/);
   assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab\.ring-retrying, #rsettings \.rs-preview \.tab\.ring-retrying \{ outline: 2px dashed var\(--st-retrying-bg, #e67e22\); outline-offset: -2px; \}/);
   assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab \{[^}]*border-radius: 6px;/, "the demo tab has the strip's radius, so the ring follows it");
   const block = (css: string, opener: string) => css.slice(css.indexOf(opener), css.indexOf("\n}", css.indexOf(opener)));
-  assert.match(block(FEED_CSS, ":root {"), /--st-ask-bg: #f5d33f; --st-ask-fg: #332600;/, "feed.css :root mirrors the dark pair");
-  assert.match(block(FEED_CSS, "body.theme-light {"), /--st-ask-bg: #[0-9a-f]{6}; --st-ask-fg: #ffffff;/, "…and the light block re-inks it (theme-parity pins the value's contrast)");
-  const styLight = block(CSS, "body.theme-light {").match(/--st-ask-bg: (#[0-9a-f]{6});/)![1], feedLight = block(FEED_CSS, "body.theme-light {").match(/--st-ask-bg: (#[0-9a-f]{6});/)![1];
+  assert.match(block(FEED_CSS, ":root {"), /--st-needs-bg: #d946ef; --st-needs-fg: #2a0a2a;/, "feed.css :root mirrors the dark pair");
+  assert.match(block(FEED_CSS, "body.theme-light {"), /--st-needs-bg: #[0-9a-f]{6}; --st-needs-fg: #ffffff;/, "…and the light block re-inks it (theme-parity pins the value's contrast)");
+  const styLight = block(CSS, "body.theme-light {").match(/--st-needs-bg: (#[0-9a-f]{6});/)![1], feedLight = block(FEED_CSS, "body.theme-light {").match(/--st-needs-bg: (#[0-9a-f]{6});/)![1];
   assert.equal(feedLight, styLight, "the two sheets agree on the light value");
 });
 
-test("the guide says what the yellow ring means, when it shows (idle, waiting or still working), what outranks it, and that the notification is the same event", () => {
-  const prose = (t: string) => new RegExp(t.replace(/[.()]/g, "\\$&").split(" ").join("\\s+"));   // the guide wraps its lines
-  assert.match(GUIDE, prose("A tab wears a dashed red ring while its session is stopped on a permission or picker prompt."));
-  assert.match(GUIDE, prose("the tab wears a dashed yellow ring instead, whether the session is idle, waiting on background work or still working, so the sessions that need you stand out in the strip without a click"));
-  assert.match(GUIDE, prose("A red ring outranks the yellow one; the amber ring of a session retrying an API error on its own gives way to it."));
-  assert.match(GUIDE, prose("With notifications on, the card entering Blocked is also what notifies you"));
-  assert.match(GUIDE, prose("the session picker marks the same sessions with a yellow bar at the row's left edge"), "the phone's picker carries the mark too");
+test("the guide says what the Needs you ring means, when it shows (idle, waiting or still working), what outranks it, and that the notification is the same event", () => {
+  const prose = (t: string) => new RegExp(t.replace(/[.()*]/g, "\\$&").split(" ").join("\\s+"));   // the guide wraps its lines; the bold markers are literal
+  assert.match(GUIDE, prose("A tab wears a dashed red ring, **Blocked**, while its session is stopped: on a permission or picker prompt, or on an API error only you can clear."));
+  assert.match(GUIDE, prose("the tab wears a dashed magenta ring instead, **Needs you**, whether the session is idle, waiting on background work or still working, so the sessions that need you stand out in the strip without a click"));
+  assert.match(GUIDE, prose("A red ring outranks the magenta one; the amber ring of a session retrying an API error on its own gives way to it."));
+  assert.match(GUIDE, prose("With notifications on, the card entering Needs you is also what notifies you"));
+  assert.match(GUIDE, prose("the session picker marks the same sessions with a magenta bar at the row's left edge"), "the phone's picker carries the mark too");
   // the rings as widgets (2026-09-14): the three rows, their switches, the one-at-a-time rule and what a switched-off ring leaves
-  assert.match(GUIDE, prose("each with its own switch, listed in that order because a tab wears one ring at a time and the first that applies wins: red over yellow over amber."));
-  assert.match(GUIDE, /\*\*Tab widgets\*\* \(\*\*Needs you\*\*, \*\*Waiting on\s+you\*\*, \*\*Retrying\*\*\)/, "the rows by their labels, in precedence order");
+  assert.match(GUIDE, prose("each with its own switch, listed in that order because a tab wears one ring at a time and the first that applies wins: red over magenta over amber."));
+  assert.match(GUIDE, /\*\*Tab widgets\*\* \(\*\*Blocked\*\*, \*\*Needs\s+you\*\*, \*\*Retrying\*\*\)/, "the rows by their labels, in precedence order");
   assert.match(GUIDE, prose("A ring switched off leaves the tab with its dot; the small dot on a folded group's header and the phone's picker follow the same switches."));
   assert.match(GUIDE, prose("the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name"), "the strip paragraph's Tab widgets sentence");
 });
 
-test("the phone's session picker scrapes the yellow ring's class off the desktop strip and paints it on the row and the current-session chip, so it follows the ring's switch for free", () => {
+test("the phone's session picker scrapes the Needs you ring's class off the desktop strip and paints it on the row and the current-session chip, so it follows the ring's switch for free", () => {
   assert.match(KERNEL, /ask:t\.classList\.contains\('ring-waiting-on-you'\),/, "scraped beside working/awaitbg (the picker reads the real strip, not a copy; a switched-off ring puts no class on the tab)");
   assert.equal(KERNEL.split("'tab-ask'").length - 1, 0, "the branch's class is gone from the picker");
   assert.match(KERNEL, /row\.classList\.toggle\('ask',!!s\.ask\);/, "the row");
   assert.match(KERNEL, /cur\.classList\.toggle\('ask',!!\(act&&act\.ask\)\);/, "the current chip");
-  assert.match(KERNEL, /"\.mrow\.ask\{border-left:3px solid var\(--st-ask-bg,#f5d33f\);padding-left:9px\}"/, "a yellow bar at the row's left edge, in the one ask token");
-  assert.match(KERNEL, /"#mcur\.ask\{border-color:var\(--st-ask-bg,#f5d33f\);border-style:dashed\}"/, "the chip's border takes the dashed yellow ring");
+  assert.match(KERNEL, /"\.mrow\.ask\{border-left:3px solid var\(--st-needs-bg,#d946ef\);padding-left:9px\}"/, "a magenta bar at the row's left edge, in the one Needs you token");
+  assert.match(KERNEL, /"#mcur\.ask\{border-color:var\(--st-needs-bg,#d946ef\);border-style:dashed\}"/, "the chip's border takes the dashed magenta ring");
   assert.ok(KERNEL.indexOf('"#mcur.colored{') < KERNEL.indexOf('"#mcur.ask{'), "after #mcur.colored, so the ring wins the border over the identity colour at equal specificity");
 });

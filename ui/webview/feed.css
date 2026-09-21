@@ -93,7 +93,7 @@
                        white outline (background→transparent, border→currentColor, the user 2026-07-25).
                        feed-css-vars.test.ts now holds the whole file to "define it here or carry a fallback". */
   --st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;   /* the RETRYING amber — mirrors styles.css (tokenised 2026-09-08) */
-  --st-ask-bg: #f5d33f; --st-ask-fg: #332600;   /* the ASK yellow (the tab's Waiting-on-you ring, 2026-09-13): mirrors styles.css, so the settings' ring demo resolves it in every theme (the gear's hosts load this sheet, not styles.css) */
+  --st-needs-bg: #d946ef; --st-needs-fg: #2a0a2a;   /* the NEEDS YOU magenta (plans/needs-you.md): mirrors styles.css, so the column chip, the question marks and the settings' ring demo resolve it in every theme */
 
   /* Card background + border are set inline per card (the hawaii recency tint).
      These neutral tokens are for the chrome that frames them (header, detail box,
@@ -175,7 +175,7 @@ body.theme-light {
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
   --st-5xx-bg: #A21CAF; --st-5xx-fg: #ffffff;   /* the 5xx magenta (T316), mirrors styles.css */
   --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;
-  --st-ask-bg: #504100; --st-ask-fg: #ffffff;   /* the ask yellow in the light palette (a dark olive: the one lightness apart from the gold and the amber under a red-green deficiency), mirrors styles.css */
+  --st-needs-bg: #a21caf; --st-needs-fg: #ffffff;   /* the Needs you magenta in the light palette, mirrors styles.css */
   --radius-menu: 6px;
   --shadow-menu: 0 4px 12px rgba(31, 26, 20, 0.16);
   --menu-bg: #FBF6EF;
@@ -326,7 +326,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   display: flex; align-items: baseline; gap: 7px;
   padding: 2px 2px 7px;
   /* sentence case, matching the chat/timeline status chips (the user 2026-07-03) — the labels
-     ("Working"/"Blocked"/"Completed") are already cased in feed.ts; no text-transform here. */
+     ("Working"/"Needs you"/"Completed") are already cased in feed.ts; no text-transform here. */
   font-size: 0.72em; font-weight: 700; letter-spacing: 0.07em;
   color: var(--dim); background: var(--bg);
 }
@@ -370,7 +370,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   font-weight: 700; letter-spacing: 0.07em;
 }
 .fcol-chip-working   { background: #e0b020; color: #332600; }
-.fcol-chip-blocked   { background: #c0392b; color: #ffffff; }
+.fcol-chip-blocked   { background: var(--st-needs-bg); color: var(--st-needs-fg); }   /* the Needs you column's chip: the category's colour, one everywhere (plans/needs-you.md); the class keeps its schema name */
 .fcol-chip-completed { background: #2b7fb8; color: #ffffff; }
 
 /* responsive: stack the three columns when the panel is too narrow for them to
@@ -838,21 +838,21 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .ftree-summary-link:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-underline-offset: 2px; }
 .ftree-relaynote { font-size: 0.86em; line-height: 1.45; margin: 0 0 6px; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }   /* the modal's twin of .fask-relaynote */
 .st-done .ftree-mark { color: var(--rel-done); }
-/* a BLOCKED (needs-you) node: the "?" is RED inside a RED ring the SAME 13px size as the ✓ checkbox disc,
-   and its label reads "BLOCKED" in red (the user 2026-06-17) — a stronger, unmistakable block signal than
-   the old amber "needs you". The ring mirrors the st-open hollow ring, recoloured red, with the ? visible. */
+/* a NEEDS YOU node (a judge's question): the "?" inside a ring the SAME 13px size as the ✓ checkbox disc, and its label
+   reads "Needs you", both in the category's colour (plans/needs-you.md, the user 2026-09-20; red since 2026-06-17 until then,
+   red being the hard stop's alone now). The ring mirrors the st-open hollow ring, recoloured, with the ? visible. */
 .st-question .ftree-mark {
   width: 13px; height: 13px; min-width: 13px; box-sizing: border-box; align-self: center;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: 1.5px solid var(--err); background: transparent;
-  color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
+  border-radius: 50%; border: 1.5px solid var(--st-needs-bg); background: transparent;
+  color: var(--st-needs-bg); font-size: 9px; font-weight: 700; line-height: 1;
 }
 /* (the modal mark no longer doubles as a "cross it off" override — it's pure nav now, like the card; the old
    resolve-on-hover-preview rule was removed 2026-06-29 in favour of explicit Done / Follow up buttons.) */
-/* a BLOCKED node's label is a white-on-red CHIP — the same red as the feed's "Blocked" column header
-   (.fcol-chip-blocked), so a blocked step in the modal reads with the same weight as the column (the user
-   2026-06-17). */
-.st-question .ftree-meta { background: #c0392b; color: #ffffff; padding: 1px 7px; border-radius: 10px; font-weight: 700; letter-spacing: 0.05em; }
+/* a NEEDS YOU node's label is a CHIP in the category's colour, the same as the feed's Needs you column header
+   (.fcol-chip-blocked), so a step that needs you in the modal reads with the same weight as the column (the user
+   2026-06-17; the colour the category's since 2026-09-20). */
+.st-question .ftree-meta { background: var(--st-needs-bg); color: var(--st-needs-fg); padding: 1px 7px; border-radius: 10px; font-weight: 700; letter-spacing: 0.05em; }
 /* not-yet-done = a hollow ring the SAME 13px size as the ✓ disc it'll become (the user 2026-06-16) —
    an empty checkbox, not a tiny ○ glyph. The "○" text is hidden; the border IS the circle. */
 .st-open .ftree-mark {
@@ -926,7 +926,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fgroup-member { display: flex; align-items: baseline; gap: 7px; font-size: 0.92em; line-height: 1.35; }
 .fgroup-dot { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
 .fgroup-member.st-done .fgroup-dot { color: var(--rel-done); }
-.fgroup-member.st-question .fgroup-dot { color: var(--err); }   /* red ⏸ block mark (was an amber ?) */
+.fgroup-member.st-question .fgroup-dot { color: var(--st-needs-bg); }   /* the ⏸ question mark in the Needs you colour (plans/needs-you.md) */
 .fgroup-member.st-open .fgroup-dot { color: var(--dim); }
 /* completed marker = a filled disc with a white ✓ (the user: distinct from a plain
    dot, which other states + recency tints also use). One badge for EVERY "done" mark
@@ -1315,14 +1315,14 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   display: inline-flex; align-items: center; justify-content: center; align-self: center; line-height: 1;
 }
 .fcheck.done .fcheck-text { color: var(--dim); }
-/* blocked = a RED ⏸ inside a RED ring — the SAME 13px circle as the done ✓ disc above and the modal tree's
+/* needs you = a ⏸ inside a ring in the category's colour: the SAME 13px circle as the done ✓ disc above and the modal tree's
    .st-question ⏸-ring, so a blocked sub-goal on a CARD reads with the same weight as everywhere else (the
    user 2026-06-25: the card mark was getting only the red glyph, missing the ring). Hollow (transparent bg),
    recoloured-red mirror of the not-done hollow ring. */
 .fcheck.question .fcheck-mark {
   width: 13px; height: 13px; min-width: 13px; box-sizing: border-box;
-  border-radius: 50%; border: 1.5px solid var(--err); background: transparent;
-  color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
+  border-radius: 50%; border: 1.5px solid var(--st-needs-bg); background: transparent;
+  color: var(--st-needs-bg); font-size: 9px; font-weight: 700; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center; align-self: center;
 }
 /* not-done = an empty 13px HOLLOW RING, the SAME size as the done ✓ disc + the modal's .st-open ring (the

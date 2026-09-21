@@ -59,7 +59,7 @@ export interface SnapRow {
   waiting: boolean;
   /** the state chip the row wears beside the name, or null for none: the SHARED status chip's words and class
    *  (status-chip.ts chipWords), the same the bar under the transcript shows for the session you are reading.
-   *  Only the states a row says in words: on you (needsInput's "Blocked", the feed's column word; the tab's own
+   *  Only the states a row says in words: on you (needsInput's "Needs you", the feed's column word; the tab's own
    *  "API error" when its rule sees an API error only you can clear) and awaiting background work ("Awaiting 3 agents", "Awaiting watch", the
    *  one peer's name). Working, ready and the rest ride the pip alone: a blank beside the name means alive and
    *  quiet, the Sessions pane's rule (T322b, the user 2026-09-10). */
@@ -190,7 +190,7 @@ export function snapshotRow(id: string, s: SnapSessionLike | null | undefined, l
   const feedBlock = lg?.needsInput === true;
   // the chip: on you → "API error" when the tab's own rule sees an API error only you can clear (tab-blocked: the
   // flags ride beside the state; a flagless API error is the kernel's transient, auto-retried one, and with a feed-filed
-  // block it reads "Blocked" like every other on-you row), else the feed's column word ("Blocked", needsInput's chip);
+  // block it reads "Needs you" like every other on-you row), else the feed's column word ("Needs you", needsInput's chip);
   // awaiting → the awaiting chip's words from the status's kind, count, rows and peers; otherwise none
   const chip = (feedBlock || st.needsYou) ? chipWords({ state: s?.status && tabStateClass(s.status) === "tab-blocked" ? "blocked" : "needsInput" })
     : st.waiting ? chipWords(s?.status || {}) : null;
@@ -199,7 +199,7 @@ export function snapshotRow(id: string, s: SnapSessionLike | null | undefined, l
     name: memberName(src),
     color: src?.color && src.color.bg && src.color.fg ? { bg: src.color.bg, fg: src.color.fg } : null,
     pip: s ? st.pip : "unknown",
-    state: st.state,   // the tab's own phrase; a feed-filed block on a quiet session has none, its chip ("Blocked") is the word (T322b)
+    state: st.state,   // the tab's own phrase; a feed-filed block on a quiet session has none, its chip ("Needs you") is the word (T322b)
     needsYou: feedBlock || st.needsYou,
     waiting: st.waiting,
     chip,

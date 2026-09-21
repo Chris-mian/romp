@@ -290,8 +290,8 @@ test("executed: the view paints one row per member from the model: heading, keye
   assert.equal(web.children[2].textContent, "Add the notes list page");
   assert.deepEqual([web.children[3].dataset.t, web.children[3].textContent, web.children[3].style.color], [String(T0 - 40), "40s ago", "age-40"], "the model carries the epoch; the renderer formats it");
   assert.equal(web.children[4].textContent, "editing the list page");
-  assert.deepEqual(api_.children.map((c) => c.className), ["snap-pip", "snap-sess", "chip chip-needsInput", "snap-now", "snap-when"], "an idle session the feed files under needs-you: no pip, the bar's Blocked chip (T322b)");
-  assert.deepEqual([api_.children[2].tag, api_.children[2].textContent], ["span", "Blocked"], "the shared status chip, a span inside the row's button");
+  assert.deepEqual(api_.children.map((c) => c.className), ["snap-pip", "snap-sess", "chip chip-needsInput", "snap-now", "snap-when"], "an idle session the feed files under needs-you: no pip, the bar's Needs you chip (plans/needs-you.md; T322b)");
+  assert.deepEqual([api_.children[2].tag, api_.children[2].textContent], ["span", "Needs you"], "the shared status chip, a span inside the row's button");
   assert.equal(H.delegates.length, 1, "one delegate, on the stable host, installed with it");
   assert.equal(H.delegates[0].root, host);
 });
@@ -670,7 +670,7 @@ test("executed: the row's state words are the SHARED status chip (T322b): the aw
   assert.deepEqual(tests.children.map((c) => c.className), ["snap-pip waiting", "snap-sess", "chip chip-awaitingBg", "snap-now", "snap-when"], "the green pip stays; the chip beside the name");
   assert.deepEqual([tests.children[2].tag, tests.children[2].textContent], ["span", "Awaiting 3 agents"], "the bar's words: the kind, agreeing in number");
   assert.equal(tests.getAttribute("aria-label"), "tests; Awaiting 3 agents", "spoken as shown");
-  assert.deepEqual([api_.children[2].className, api_.children[2].textContent], ["chip chip-needsInput", "Blocked"], "on you: the feed's column word, the bar's chip");
+  assert.deepEqual([api_.children[2].className, api_.children[2].textContent], ["chip chip-needsInput", "Needs you"], "on you: the feed's column word in its colour, the bar's chip");
   assert.equal(web.querySelector(".chip"), null, "a working row says it with the pip alone");
   assert.equal(host.querySelector(".snap-flag"), null, "no pill of the view's own");
   // new information: the kind and count change → the button stands, the chip re-texts

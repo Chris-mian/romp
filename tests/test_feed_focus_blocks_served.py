@@ -720,7 +720,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         # no grip (the user 2026-09-14): the chip is the handle, as on the board — focusable, the arrow keys promised,
         # grab cursor, touch-action none
         self.assertEqual(fr["grips"], 0, "no grip on the section's heads")
-        for k, label in (("asks", "Working"), ("needsInput", "Blocked"), ("completed", "Completed")):
+        for k, label in (("asks", "Working"), ("needsInput", "Needs you"), ("completed", "Completed")):
             g = fr["chips"][k]
             self.assertEqual((g["tag"], g["tabindex"], g["text"], g["keys"], g["title"], g["cursor"], g["touch"]),
                              ("SPAN", "0", label, "ArrowLeft ArrowRight", "Drag to reorder, or press the arrow keys", "grab", "none"), "the %s chip: %r" % (label, g))
@@ -863,7 +863,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         self.assertEqual(r["keyBack"]["stored"]["focusOrder"], [], "ArrowLeft back: the section FOLLOWS the board again, nothing stored: %r" % r["keyBack"]["stored"])
         self.assertEqual(r["keyBack"]["secOrder"], ["asks", "needsInput", "completed"], "…and on screen the board's arrangement: %r" % r["keyBack"]["secOrder"])
         # ── (p) a click on the chip focuses it; the arrow keys then work without a Tab (review, low 2) ──
-        self.assertEqual(r["clickFocused"], "feed-col-name fcol-chip|Blocked", "the clicked chip holds focus: %r" % r["clickFocused"])
+        self.assertEqual(r["clickFocused"], "feed-col-name fcol-chip|Needs you", "the clicked chip holds focus: %r" % r["clickFocused"])
         self.assertEqual(r["clickArrow"]["stored"]["focusOrder"], ["asks", "completed", "needsInput"], "ArrowRight right after the click moves Blocked one slot on: %r" % r["clickArrow"]["stored"])
         # ── (x) (y) (z) round three: a click and a there-and-back drag keep a key-minted order walkable; a slip is a click ──
         self.assertEqual(r["keyClickKey"]["stored"]["focusOrder"], [], "key out, click, key back: the section FOLLOWS again, nothing stored (a click changed no order, so the keys' provenance stands): %r" % r["keyClickKey"]["stored"])
@@ -890,7 +890,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         rk = r["rowKeyAfterStackedPin"]
         self.assertEqual(rk["stored"]["focusOrder"], ["completed", "needsInput", "asks"], "row layout: ArrowRight on Blocked moves it one slot; the pin stands as an explicit order: %r" % rk["stored"])
         # ── (q) (r) (s) (t) native focus (review round two, mediums 2 and 3) ──
-        self.assertEqual((r["clickRing"]["active"], r["clickRing"]["visible"], r["clickRing"]["outline"]), ("feed-col-name fcol-chip|Blocked", False, "none"),
+        self.assertEqual((r["clickRing"]["active"], r["clickRing"]["visible"], r["clickRing"]["outline"]), ("feed-col-name fcol-chip|Needs you", False, "none"),
                          "a mouse click focuses the chip without the keyboard ring: %r" % r["clickRing"])
         self.assertNotEqual((r["dragRing"]["active"] or "").split("|")[0], "feed-col-name fcol-chip", "after a drag the chip no longer holds focus: %r" % r["dragRing"])
         self.assertEqual(r["dragArrow"]["stored"]["focusOrder"], ["needsInput", "asks", "completed"], "ArrowRight after a drag moves nothing (the keys went back to the card cursor): %r" % r["dragArrow"]["stored"])

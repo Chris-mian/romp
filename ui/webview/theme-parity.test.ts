@@ -82,8 +82,8 @@ const PAIRS: Array<[string, string, number]> = [
   ["--st-ready-fg", "--st-ready-bg", 3],
   ["--st-blocked-fg", "--st-blocked-bg", 3],
   ["--st-retrying-fg", "--st-retrying-bg", 3],       // 2026-09-08: the retrying amber tokenised (#e67e22/#2a1500 dark, #9C4A0C/#fff light)
-  ["--st-ask-fg", "--st-ask-bg", 3],                 // 2026-09-13: the ask yellow (#f5d33f/#332600 dark, #7a6400/#fff light)
-  ["--st-ask-bg", "--bg", 3],                        // …and the ask RING is a line on the page (the tab's dashed outline, the folded header's pip)
+  ["--st-needs-fg", "--st-needs-bg", 3],             // 2026-09-20: the Needs you magenta (#d946ef/#2a0a2a dark, #a21caf/#fff light; plans/needs-you.md)
+  ["--st-needs-bg", "--bg", 3],                      // …and the Needs you RING is a line on the page (the tab's dashed outline, the folded header's pip)
   // (--st-compacting-fg on --st-compacting-bg is deliberately NOT paired: the dark teal + white pairing predates
   // this file and sits at 2.49:1, and decision 3 of the 2026-09-08 notice audit keeps dark byte-identical; the
   // light re-ink — #0F766E, 4.30:1 on the card, white on it 5.47:1 — is pinned by value in notice-vocab.test.ts)
@@ -177,7 +177,7 @@ for (const sheet of ["styles.css", "feed.css"]) {
 // (the two reds, the yellow, the amber) are told apart by colour alone — same shape, same dash, on different tabs — so
 // every pair of ring hues must stay apart for full-colour readers (OKLab distance x100 at least 15) AND under the two
 // red-green deficiencies (at least 8 after the Machado, Oliveira and Fernandes 2009 simulation at severity 1.0), the
-// floors the dataviz palette validator applies to categorical marks; the yellow ring against the two DOTS it can sit
+// floors the dataviz palette validator applies to categorical marks; the Needs you ring against the two DOTS it can sit
 // beside (the working gold and the await-green, a 7px disc inside a 2px outline: shape and position tell them apart
 // too) needs the deficiency floor only. The light palette's convention (the same hue darkened to lightness 0.5 for 3:1
 // on cream) puts a second yellow on the working gold, and hue alone does not survive a red-green deficiency, so the
@@ -210,32 +210,32 @@ function deltaE(a: [number, number, number], b: [number, number, number], kind?:
 }
 const cvdWorst = (a: [number, number, number], b: [number, number, number]) => Math.min(deltaE(a, b, "protan"), deltaE(a, b, "deutan"));
 
-test("the ring hues stay apart in BOTH themes, every pair: rings against rings for full-colour readers and under red-green deficiencies, the yellow ring against the dots under the deficiencies; the yellow reads on every tab ground", () => {
+test("the ring hues stay apart in BOTH themes, every pair: rings against rings for full-colour readers and under red-green deficiencies, the Needs you ring against the dots under the deficiencies; the yellow reads on every tab ground", () => {
   const css = read("styles.css");
   for (const [name, theme] of [["dark", props(block(css, ":root {"))], ["light", props(block(css, "body.theme-light {"))]] as const) {
     const page = rgbOf(theme.get("--bg")!, [30, 30, 30])!;
     const tok = (t: string) => rgbOf(theme.get(t)!, page)!;
-    const rings: Record<string, [number, number, number]> = { awaiting: tok("--st-awaiting-bg"), blocked: tok("--st-blocked-bg"), ask: tok("--st-ask-bg"), retrying: tok("--st-retrying-bg") };
+    const rings: Record<string, [number, number, number]> = { awaiting: tok("--st-awaiting-bg"), blocked: tok("--st-blocked-bg"), ask: tok("--st-needs-bg"), retrying: tok("--st-retrying-bg") };
     const dots: Record<string, [number, number, number]> = { working: tok("--st-working-bg"), awaitbg: tok("--st-awaitbg-bg") };
     for (const other of ["awaiting", "blocked", "retrying"]) {
       const n = deltaE(rings.ask, rings[other]), c = cvdWorst(rings.ask, rings[other]);
-      assert.ok(n >= 15, `${name}: the yellow ring against the ${other} ring reads ${n.toFixed(1)} to full-colour readers (floor 15)`);
-      assert.ok(c >= 8, `${name}: the yellow ring against the ${other} ring reads ${c.toFixed(1)} under a red-green deficiency (floor 8)`);
+      assert.ok(n >= 15, `${name}: the Needs you ring against the ${other} ring reads ${n.toFixed(1)} to full-colour readers (floor 15)`);
+      assert.ok(c >= 8, `${name}: the Needs you ring against the ${other} ring reads ${c.toFixed(1)} under a red-green deficiency (floor 8)`);
     }
     for (const dot of Object.keys(dots)) {
       const c = cvdWorst(rings.ask, dots[dot]);
-      assert.ok(c >= 8, `${name}: the yellow ring against the ${dot} dot reads ${c.toFixed(1)} under a red-green deficiency (floor 8)`);
+      assert.ok(c >= 8, `${name}: the Needs you ring against the ${dot} dot reads ${c.toFixed(1)} under a red-green deficiency (floor 8)`);
     }
-    // the light theme clears the full-colour floor against the dots too; the dark lemon's known 9.5 against the gold is pinned so it cannot slide
+    // the light theme clears the full-colour floor against the dots too; the dark magenta clears the full-colour floor against the gold as well
     const gold = deltaE(rings.ask, dots.working);
-    assert.ok(gold >= (name === "light" ? 15 : 9), `${name}: the yellow ring against the working gold reads ${gold.toFixed(1)}`);
+    assert.ok(gold >= 15, `${name}: the Needs you ring against the working gold reads ${gold.toFixed(1)}`);
     // the grounds a ring sits on: the page (PAIRS above), the hovered tab (a 6% white wash) and the selected tab's fill
     const hover = [0, 1, 2].map((i) => Math.round(255 * 0.06 + page[i] * 0.94)) as [number, number, number];
     const active = rgbOf(theme.get("--tab-active-bg")!, page)!;
     for (const [g, ground] of [["hovered tab", hover], ["selected tab", active]] as const) {
-      assert.ok(contrast(rings.ask, ground) >= 3, `${name}: the yellow ring on the ${g} = ${contrast(rings.ask, ground).toFixed(2)} < 3`);
+      assert.ok(contrast(rings.ask, ground) >= 3, `${name}: the Needs you ring on the ${g} = ${contrast(rings.ask, ground).toFixed(2)} < 3`);
     }
   }
   // the light value itself, so a re-ink is a deliberate change here and in feed.css (tab-rings.test.ts pins the two sheets equal)
-  assert.match(block(css, "body.theme-light {"), /--st-ask-bg: #504100; --st-ask-fg: #ffffff;/);
+  assert.match(block(css, "body.theme-light {"), /--st-needs-bg: #a21caf; --st-needs-fg: #ffffff;/);
 });

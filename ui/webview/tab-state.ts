@@ -47,7 +47,7 @@ export const RING_TEST: Record<RingId, (s: TabStateLike | null | undefined) => b
   // the RED ring: a LIVE prompt (a permission or picker prompt, tab-awaiting), or an API stop only you can clear
   // (tab-blocked: prompt too long, a spend cap, a spent model allowance, an auth failure, a refusal)
   "ring-needs-you": (s) => { const c = tabStateClass(s); return c === "tab-awaiting" || c === "tab-blocked"; },
-  // the YELLOW ring (the ask ring, 2026-09-13): the feed filed a card of this session under needs-you (status.needsYou,
+  // the MAGENTA ring (the Needs you ring; yellow until 2026-09-21, the ask ring of 2026-09-13): the feed filed a card of this session under needs-you (status.needsYou,
   // the kernel's per-session read of the feed's needs_input column in build_session, the same verdict the
   // section-at-a-glance row's chip and the feed's Blocked list speak, so the three can never disagree) and the tab is
   // not dead. The session may be idle, awaiting background work or still WORKING while the card waits, and the ring
@@ -72,7 +72,7 @@ export type SectionPip = "blocked" | "ask" | "retrying" | "working";
 
 /** A folded header's ONE pip for its members' states, in the tab's own colours and by the tab's own rule, under the
  *  same ring switches (`on`) the members' tabs wear, so a fold never shows a colour no unfolded tab would: red when a
- *  member wears the red ring (blocked on you or waiting for you); else yellow when one wears the yellow ring (something
+ *  member wears the red ring (blocked on you or waiting for you); else magenta when one wears the magenta ring (something
  *  waiting on you, whatever else it is doing); else gold when one is working; else amber when one wears the amber ring
  *  (stalled on an API error that is auto-retrying: shown only when nothing in the group is making progress, since it
  *  is not on you); null when nothing is happening. */

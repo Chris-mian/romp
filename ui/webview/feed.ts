@@ -3307,7 +3307,7 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
 function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: Map<string, AskTreeNode>, briefs: Map<string, AskQuestion>, seen: Set<string>, depth: number, parentWho: string) {
   const repeat = seen.has(node.id);
   // An optimistically-done sub-goal reads as done for this whole render, by rewriting the node rather
-  // than patching the DOM after the fact: the mark, the strike-through class, the "Blocked" label and
+  // than patching the DOM after the fact: the mark, the strike-through class, the "Needs you" label and
   // the action buttons all derive from status, so one substitution keeps them agreeing instead of three
   // separate edits that can drift from how a genuinely-done node draws (see pendingDone).
   if (!repeat && pendingDone.has(node.id) && node.status !== "done") node = { ...node, status: "done" };
@@ -3344,9 +3344,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     line.appendChild(who);
   }
   const meta = el("span", "ftree-meta");
-  // a node needing the user reads as "Blocked" (red) — the marker + this label are the block
+  // a node needing the user reads as "Needs you" (the category's colour): the marker + this label are the block
   // signal, distinct from a recency-tinted age (the user 2026-06-17). Other states show "(Xm ago)".
-  meta.textContent = node.status === "question" ? (node.qderived ? "Blocked inside" : "Blocked") : "(" + relAge(hostNow - node.last) + ")";
+  meta.textContent = node.status === "question" ? (node.qderived ? "Needs you inside" : "Needs you") : "(" + relAge(hostNow - node.last) + ")";   // the category's word (plans/needs-you.md)
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
   // Whole-line click NAVIGATES into the chat. PREFERRED: node.anchorUuid (kernel 996ebd7) deep-links to

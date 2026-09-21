@@ -40040,7 +40040,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # (tab-state.ts RING_TEST, the Waiting-on-you ring widget): True when the last feed build filed a card of this session
                   # under needs_input — a judge-filed block (the session asked something, a decision is
                   # pending), a stalled card, a held peer message, a live prompt — False when none, None
-                  # before the first feed build since start. The tab wears a dashed yellow ring for it in
+                  # before the first feed build since start. The tab wears a dashed magenta ring for it in
                   # every live state, working included (the ask ring, 2026-09-13: a session with something
                   # waiting on you should grab attention without a click, even while it goes on working
                   # in the background; the red ring stays the live prompt's and outranks it; since
@@ -49815,7 +49815,7 @@ def _light_status(sid, path, tm, now):
     stops = cm.stops_for(_colormap())
     return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "provisional": True,
             "faded": _idle_faded(chip, since, now),      # the built status's own fact (T155), so the chip reads it the same
-            "needsYou": _feed_needs_input_of(sid),       # the yellow ask ring's one input (round four): the feed's verdict, a membership read
+            "needsYou": _feed_needs_input_of(sid),       # the magenta Needs you ring's one input (round four): the feed's verdict, a membership read
             # the painter's context gauge and tints (round three): the row carries the context, the colours are the built
             # status's own derivations over it (cm.ramp on the global colormap, cm.context_rgb), so a cold tab's gauge and
             # its model and effort tints paint as built for as long as the tab stays unbuilt
@@ -55811,7 +55811,7 @@ _CODE_BOARDS = {
     "feed": {
         "id": "feed", "title": "Feed",
         "categories": [{"id": "working", "title": "Working", "chip": "working"},
-                       {"id": "needs_input", "title": "Blocked", "chip": "blocked"},
+                       {"id": "needs_input", "title": "Needs you", "chip": "blocked"},   # the category everything you can act on files under (plans/needs-you.md); the chip class name is a schema value and stays
                        {"id": "completed", "title": "Completed", "chip": "completed"}],
         "defaultCategory": "working",
         "rules": [],                                   # the feed's category rule is code: the expression in _feed_session_entry
@@ -56452,7 +56452,7 @@ def _board_needs_you(board):
 
 def _card_needs_you(a):
     """THE one rule for "this card needs the user" (the 1861 read, medium): the card sits in its OWN board's needs-you category,
-    read from `category` (an older kernel's frame: `column`). The badge (_needs_you_count), the yellow ask ring
+    read from `category` (an older kernel's frame: `column`). The badge (_needs_you_count), the magenta Needs you ring
     (_needs_input_sids, and through it build_session's needsYou) and the pane's lens (feed.ts isNeedsYou(boardOf(card), ...))
     all read this; a board that names no needs-you category has no card that needs the user. A provisional placeholder is
     a caller's concern (the badge skips it, the ring counts it: the Blocked list shows it)."""
@@ -60017,10 +60017,10 @@ _CHAT_MOBILE_CSS = (
     "#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     "#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}"   # green when idle-waiting-on-bg-work
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
-    # something of the current session's is waiting on you (the desktop tab's dashed yellow ring, the class ring-waiting-on-you):
-    # the chip's border takes the ring — dashed, in the ask yellow — over the identity color (declared after
+    # something of the current session's is waiting on you (the desktop tab's dashed magenta ring, the class ring-waiting-on-you):
+    # the chip's border takes the ring, dashed, in the Needs you magenta, over the identity color (declared after
     # #mcur.colored so it wins at equal specificity)
-    "#mcur.ask{border-color:var(--st-ask-bg,#f5d33f);border-style:dashed}"
+    "#mcur.ask{border-color:var(--st-needs-bg,#d946ef);border-style:dashed}"
     "#mtag-slot{flex:0 0 auto;display:flex;align-items:center;gap:5px}"   # T161: the tag control's slot, sized by the shared button's own inline metrics
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
     "background:var(--btn-bg,#2a2a2a);color:#bbbbbb;border:1px solid var(--hairline,#3a3a3a);border-radius:6px;font-size:16px;line-height:1}"
@@ -60056,7 +60056,7 @@ _CHAT_MOBILE_CSS = (
     ".mrow.active{background:#0d3a5c}"
     # a row whose session has something waiting on you: a yellow bar at its left edge — the desktop tab's
     # dashed ring (ring-waiting-on-you), in the one ask token, on a list row where a ring would fight the hairlines
-    ".mrow.ask{border-left:3px solid var(--st-ask-bg,#f5d33f);padding-left:9px}"
+    ".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}"
     # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
     # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
     # (cloned) and the count; no caret and no pointer, since the phone folds nothing
@@ -60139,7 +60139,7 @@ function rowUpdate(row,s){row.classList.toggle('active',!!s.active);
 // who tapped a remote session on the phone and nothing happened)
 row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
 row.classList.toggle('pending',pendingId===s.id);
-row.classList.toggle('ask',!!s.ask);   // the desktop tab's yellow ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): something of this session's is waiting on you
+row.classList.toggle('ask',!!s.ask);   // the desktop tab's magenta ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): something of this session's is waiting on you
 var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
 wd.classList.toggle('await',!s.working&&!!s.awaitbg);}
@@ -60171,7 +60171,7 @@ if(!act)act=first;   // the first SESSION row, never a heading
 var nm=cur.querySelector('.nm');
 var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg))?'':'none';   // gold working / green awaiting dot, matching desktop
 wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working));
-cur.classList.toggle('ask',!!(act&&act.ask));   // the current chip wears the yellow ring too
+cur.classList.toggle('ask',!!(act&&act.ask));   // the current chip wears the magenta ring too
 if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}

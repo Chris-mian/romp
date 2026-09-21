@@ -274,7 +274,7 @@
 }
 
 .romp-chip-working   { background: #e0b020; color: #332600; }
-.romp-chip-blocked   { background: #c0392b; color: #ffffff; }
+.romp-chip-needs     { background: #a21caf; color: #ffffff; }   /* the Needs you chip (plans/needs-you.md); the docs render on a light page */
 .romp-chip-completed { background: #2b7fb8; color: #ffffff; }
 .romp-chip-ready     { background: #2b7fb8; color: #ffffff; }
 .romp-chip-await     { background: #54b204; color: #0c1a00; }

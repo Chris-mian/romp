@@ -6336,10 +6336,10 @@ function applyTabStatus(tab: HTMLElement, s: { id?: string; status: Partial<Stat
   if (stateCls) tab.classList.add(stateCls);
   // …and the RING beside it (the rings-as-widgets change, 2026-09-14): the dashed outline is a WIDGET of the
   // registry now, one of three with a switch each in the settings (red for a live prompt or an API stop only
-  // you can clear, yellow for a card of the session's under needs-you, in every live state the ask ring of
+  // you can clear, magenta for a card of the session's under needs-you, in every live state the ask ring of
   // 2026-09-13 rides working included, amber for an API retry on its own), and the tab wears ONE at a time:
   // composeTabRing takes every ring class off, then puts on the first switched-on ring whose predicate
-  // holds, red over yellow over amber. The predicates are tab-state.ts's (RING_TEST), shared with the
+  // holds, red over magenta over amber. The predicates are tab-state.ts's (RING_TEST), shared with the
   // folded header's pip; the strip's signature reads the inputs (the state, the flags, needsYou) and
   // settings.tabWidgets, so a card entering or leaving the column, and a switch flipped, always repaint.
   composeTabRing(tab, s.id || "", s.status, settings.tabWidgets);

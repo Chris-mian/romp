@@ -17,7 +17,7 @@ test("CHIP_LABEL uses sentence case, never ALL-CAPS status words", () => {
   const map = m![0];
   assert.match(map, /working: "Working"/);
   assert.match(map, /ready: "Ready"/);
-  assert.match(map, /awaiting: "Blocked"/);
+  assert.match(map, /awaiting: "Needs you"/);
   assert.match(map, /compacting: "Compacting"/);
   assert.match(map, /idle: "Idle"/);
   assert.match(map, /closed: "Closed"/);

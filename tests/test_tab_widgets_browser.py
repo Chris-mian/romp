@@ -144,7 +144,7 @@ const readRings = () => setF.evaluate(() => {
   const probe = document.createElement("span"); document.body.appendChild(probe);
   const tokens = {};
   // the expressions gear.css itself reads: feed.css's :root holds a subset of the strip's tokens (the awaiting red is light-only there), so the demo resolves the fallback where the token is absent, and so does this probe
-  for (const [id, expr] of [["ring-needs-you", "var(--st-awaiting-bg, #c0392b)"], ["ring-waiting-on-you", "var(--st-ask-bg, #f5d33f)"], ["ring-retrying", "var(--st-retrying-bg, #e67e22)"]]) { probe.style.color = expr; tokens[id] = getComputedStyle(probe).color; }
+  for (const [id, expr] of [["ring-needs-you", "var(--st-awaiting-bg, #c0392b)"], ["ring-waiting-on-you", "var(--st-needs-bg, #d946ef)"], ["ring-retrying", "var(--st-retrying-bg, #e67e22)"]]) { probe.style.color = expr; tokens[id] = getComputedStyle(probe).color; }
   probe.remove();
   const rows = Array.from(document.querySelectorAll("#rs-rings .rs-widget[data-widget]")).map((r) => {
     const sw = r.querySelector(".rs-switch"); const demo = r.querySelector(".rs-widget-demo .tab"); const cs = demo ? getComputedStyle(demo) : null;
@@ -187,9 +187,9 @@ await flip("hotkey");
 // a RING's switch (2026-09-14): the Waiting-on-you ring off writes the same tabWidgets prefs, its demo goes plain, the title rows stand
 const flipRing = async (id) => { await setF.click('#rs-rings .rs-widget[data-widget="' + id + '"] .rs-switch'); await setF.waitForTimeout(400); };
 await flipRing("ring-waiting-on-you");
-out.afterYellowOff = { rings: await readRings(), store: (await readStrip()).store, panel: await readPanel() };
+out.afterNeedsRingOff = { rings: await readRings(), store: (await readStrip()).store, panel: await readPanel() };
 await flipRing("ring-waiting-on-you");
-out.afterYellowOn = { rings: await readRings(), store: (await readStrip()).store };
+out.afterNeedsRingOn = { rings: await readRings(), store: (await readStrip()).store };
 // the pills: Feed hides Chat; Escape closes; the next open remembers the tab
 await setF.click('#rsettings .rs-tab[data-tab="feed"]'); await setF.waitForTimeout(150);
 out.feedPane = await readPanel();
@@ -609,13 +609,13 @@ class ServedTabWidgets(unittest.TestCase):
 
     def test_the_ring_rows_list_the_three_rings_in_precedence_order_with_a_switch_and_a_live_demo_each_and_no_grip(self):
         # THE RINGS (2026-09-14): the three dashed rings are widgets with a switch each, their rows under the title rows and
-        # their preview in the same Tab widgets section; no grip (the order is the precedence, red over yellow over amber);
+        # their preview in the same Tab widgets section; no grip (the order is the precedence, red over magenta over amber);
         # each demo is a miniature tab wearing its ring in the theme's own token, dark and light
         r = self._run()
         g = r["rings0"]
         table = "\n  " + json.dumps(g)[:2500]
         self.assertEqual([x["id"] for x in g["rows"]], ["ring-needs-you", "ring-waiting-on-you", "ring-retrying"], "precedence order" + table)
-        self.assertEqual([x["label"] for x in g["rows"]], ["Needs you", "Waiting on you", "Retrying"], table)
+        self.assertEqual([x["label"] for x in g["rows"]], ["Blocked", "Needs you", "Retrying"], table)
         for x in g["rows"]:
             self.assertEqual((x["sw"]["role"], x["sw"]["checked"], x["sw"]["on"], x["off"]), ("switch", "true", True, False), x["id"] + " is on by default" + table)
             self.assertFalse(x["grip"], "no grip: nothing to drag" + table)
@@ -637,11 +637,11 @@ class ServedTabWidgets(unittest.TestCase):
             for x in t["rows"]:
                 self.assertEqual(x["demo"]["outlineColor"], t["tokens"][x["id"]], theme + ": " + x["id"] + "'s ring is its status token" + tt)
             self.assertEqual(len(set(t["tokens"].values())), 3, theme + ": three distinct ring colours" + tt)
-        self.assertNotEqual(r["ringsByTheme"]["dark"]["tokens"]["ring-waiting-on-you"], r["ringsByTheme"]["light"]["tokens"]["ring-waiting-on-you"], "the yellow is re-inked for the light theme")
+        self.assertNotEqual(r["ringsByTheme"]["dark"]["tokens"]["ring-waiting-on-you"], r["ringsByTheme"]["light"]["tokens"]["ring-waiting-on-you"], "the magenta is re-inked for the light theme")
 
     def test_a_ring_switch_writes_the_shared_prefs_and_its_demo_goes_plain(self):
         r = self._run()
-        a = r["afterYellowOff"]
+        a = r["afterNeedsRingOff"]
         table = "\n  " + json.dumps(a)[:2500]
         row = next(x for x in a["rings"]["rows"] if x["id"] == "ring-waiting-on-you")
         self.assertEqual((row["sw"]["checked"], row["sw"]["on"], row["off"]), ("false", False, True), "the Waiting-on-you switch is off" + table)
@@ -652,8 +652,8 @@ class ServedTabWidgets(unittest.TestCase):
                 self.assertEqual((x["sw"]["checked"], x["demo"]["outlineStyle"]), ("true", "dashed"), x["id"] + " stands" + table)
         self.assertIs(a["store"]["tabWidgets"]["on"].get("ring-waiting-on-you"), False, "the store: the same tabWidgets prefs, the ring's own flag" + table)
         self.assertEqual([x["sw"]["checked"] for x in a["panel"]["rows"]], ["true", "true", "true"], "the title rows untouched" + table)
-        self.assertIs(r["afterYellowOn"]["store"]["tabWidgets"]["on"].get("ring-waiting-on-you"), True, "…and back on: " + json.dumps(r["afterYellowOn"]["store"]))
-        self.assertEqual(next(x for x in r["afterYellowOn"]["rings"]["rows"] if x["id"] == "ring-waiting-on-you")["demo"]["outlineStyle"], "dashed")
+        self.assertIs(r["afterNeedsRingOn"]["store"]["tabWidgets"]["on"].get("ring-waiting-on-you"), True, "…and back on: " + json.dumps(r["afterNeedsRingOn"]["store"]))
+        self.assertEqual(next(x for x in r["afterNeedsRingOn"]["rings"]["rows"] if x["id"] == "ring-waiting-on-you")["demo"]["outlineStyle"], "dashed")
 
     def test_a_store_from_before_the_widgets_reads_its_gauge_setting_and_an_unrelated_save_leaves_it_alone(self):
         # round one, HIGH: an injected default for tabWidgets won over tabCtx (the row read on at 50 percent whatever the user had

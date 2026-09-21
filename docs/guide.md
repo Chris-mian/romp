@@ -185,25 +185,24 @@ paths found in the text wear a dotted underline that turns solid under the point
 link that names a file keeps the ordinary link look. Selecting text across a link works as
 before, and a click that lands while text is selected inside a link opens nothing.
 
-**A session that needs you.** A tab wears a dashed red ring while its session is stopped on a
-permission or picker prompt. When the feed shows one of the session's cards under Blocked (it
-asked you something, it is waiting on a decision, a peer's message is waiting for your say, or
-a stalled task needs a look), the tab wears a dashed yellow ring instead, whether the session
-is idle, waiting on background work or still working, so the sessions that need you stand out
-in the strip without a click through each of them; a working session keeps its gold dot inside
-the ring. The ring follows the feed, one refresh behind it at most, and goes when the card
-does: answer it, resolve it or clear it and the tab is plain again. A red ring outranks the
-yellow one; the amber ring of a session retrying an API error on its own gives way to it. The
-three rings are rows of **Settings**, **Chat**, **Tab widgets** (**Needs you**, **Waiting on
-you**, **Retrying**), each with its own switch, listed in that order because a tab wears one
-ring at a time and the first that applies wins: red over yellow over amber. A ring switched off
-leaves the tab with its dot; the small dot on a folded group's header and the phone's picker
-follow the same switches. With
-notifications on, the card entering Blocked is also what notifies you (see [Notifications on
-your phone](#notifications-on-your-phone)): the ring is that card, shown in the strip, and it
-stays as long as the card does, including across a kernel restart, which announces nothing. On
-a phone, the session picker marks the same sessions with a yellow bar at the row's left edge,
-and the button that names the current session wears the dashed yellow border.
+**A session that needs you.** A tab wears a dashed red ring, **Blocked**, while its session is stopped: on a
+permission or picker prompt, or on an API error only you can clear. When the feed shows one of the session's cards
+under Needs you (it asked you something, it is waiting on a decision, a peer's message is waiting for your say, or
+a stalled task needs a look), the tab wears a dashed magenta ring instead, **Needs you**, whether the session is
+idle, waiting on background work or still working, so the sessions that need you stand out in the strip without a
+click through each of them; a working session keeps its gold dot inside the ring. The ring follows the feed, one
+refresh behind it at most, and goes when the card does: answer it, resolve it or clear it and the tab is plain
+again. A red ring outranks the magenta one; the amber ring of a session retrying an API error on its own gives way
+to it. The three rings are rows of **Settings**, **Chat**, **Tab widgets** (**Blocked**, **Needs you**, **Retrying**),
+each with its own switch, listed in that order because a tab wears one ring at a time and the first that applies
+wins: red over magenta over amber. A ring switched off leaves the tab with its dot; the small dot on a
+folded group's header and the phone's picker follow the same switches. With notifications on, the card entering
+Needs you is also what notifies you (see [Notifications on your phone](#notifications-on-your-phone)): the ring is
+that card, shown in the strip, and it stays as long as the card does, including across a kernel restart, which
+announces nothing. On a phone, the session picker marks the same sessions with a magenta bar at the row's left
+edge, and the button that names the current session wears the dashed magenta border. One colour, the Needs you
+magenta, means the category wherever it shows: the feed's column chip and header, the card's question marks, the
+ring, the phone picker's marks; red is the hard stop's alone.
 
 **Tags and groups.** A tag is a named, colored set of sessions; a session can be in
 several. Right-click a tab and open **Tags** to add or remove them. Tags filter every
@@ -248,8 +247,8 @@ row per session, with its color, a dot for its state (yellow working, red stoppe
 API error only you can clear, amber retrying an API error on its own, teal compacting, green waiting
 on background work, none while it is idle), a state chip when the state is worth a word, what it is
 doing now in a few words, and how long ago it last did anything. The chip is the one the bar under
-the transcript wears for the session you are reading, with the same words and colours: **Blocked**
-when the feed shows one of the session's cards under Blocked or the session is stopped on a prompt
+the transcript wears for the session you are reading, with the same words and colours: **Needs you**
+when the feed shows one of the session's cards under Needs you or the session is stopped on a prompt
 (**API error** when it is stopped on one only you can clear), and **Awaiting** with what is awaited
 (**Awaiting 3 agents**, **Awaiting watch**, the peer's name) when it is waiting on background work.
 A session that asked a question and went quiet shows the chip with no dot: the dot follows the
@@ -258,7 +257,7 @@ its work so far, else from the last task it had; a session that has published a 
 working on shows the note as a quieter second line. Hover a row for its last message, shown without
 its formatting; click one to open that session, which also opens its section if the section is
 folded (with several tags, the first folded group of them). The rows update as the sessions work and
-change only when something about a session changes; the **Blocked** chip follows the feed, one
+change only when something about a session changes; the **Needs you** chip follows the feed, one
 refresh behind it at most. The transcript comes back when you pick a session, press Escape, or click
 that header again while its section is open and holds the tab you are reading.
 
@@ -327,7 +326,7 @@ Cards sit in three columns:
 
 - <span class="romp-chip romp-chip-working">Working</span> — the session is
   actively working on the task.
-- <span class="romp-chip romp-chip-blocked">Blocked</span> — it needs your
+- <span class="romp-chip romp-chip-needs">Needs you</span>: it needs your
   input to move on.
 - <span class="romp-chip romp-chip-completed">Completed</span> — done, ready
   for you to review and clear.
@@ -417,7 +416,7 @@ Romp asks the agent, item by item, where each open piece stands: continue what
 it can, and say what blocks the rest.
 
 - If the agent can keep going, it does, and you were never interrupted.
-- If something needs you, the card flips to <span class="romp-chip romp-chip-blocked">Blocked</span> and names exactly what
+- If something needs you, the card flips to <span class="romp-chip romp-chip-needs">Needs you</span> and names exactly what
   it needs.
 
 Nudging engages only when you are not actively messaging the session, so it

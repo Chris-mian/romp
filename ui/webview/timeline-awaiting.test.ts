@@ -27,7 +27,7 @@ test("an awaitingBg lane renders an Awaiting badge in the romp brand green (the 
 });
 
 test("precedence: blocked-on-you beats awaiting, awaiting beats Ready", () => {
-  const blocked = TL.indexOf("m = { label: 'Blocked', kind: 'attention' }");
+  const blocked = TL.indexOf("m = { label: 'Needs you', kind: 'needs' }");
   const awaiting = TL.indexOf("label: 'Awaiting'");
   const ready = TL.indexOf("m = { label: 'Ready', kind: 'ready' }");
   assert.ok(blocked > 0 && awaiting > 0 && ready > 0, "all three badge branches exist");
@@ -36,7 +36,8 @@ test("precedence: blocked-on-you beats awaiting, awaiting beats Ready", () => {
 });
 
 test("needsInput maps to Blocked, and the legacy 'awaiting' name (an older remote kernel) still does too", () => {
-  assert.match(TL, /s\.state === 'permission' \|\| s\.state === 'needsInput' \|\| s\.state === 'awaiting'\) m = \{ label: 'Blocked', kind: 'attention' \}/);
+  assert.match(TL, /s\.state === 'permission' \|\| s\.state === 'needsInput' \|\| s\.state === 'awaiting'\) m = \{ label: 'Needs you', kind: 'needs' \}/);   // the Needs you chip on the lane (plans/needs-you.md)
+  assert.match(TL, /needs: \{ bg: '#d946ef', fg: '#2a0a2a' \}/, "the lane chip's colour is the category's token value (the file loads standalone)");
 });
 
 test("an idle awaitingBg lane draws a full-thickness FADED stretch (0.4 alpha), not a thin dash (the user 2026-07-13)", () => {
