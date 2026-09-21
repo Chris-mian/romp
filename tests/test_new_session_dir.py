@@ -404,8 +404,10 @@ class CreateSessionTags(_Wire):
         side = " ".join(open(os.path.join(root, "docs", "read-side.md")).read().split())
         self.assertIn("Opening a running session inherits nothing: `/new` re-asserts an explicit `--in` on it, "
                       "while the picker's createSession op warns and leaves the running session's tags alone", side)
-        guide = open(os.path.join(root, "docs", "guide.md")).read()
-        self.assertIn("from\nthe picker, a name that already runs is focused and the Tags row is not applied", guide)
+        # the inherit rules moved to the reference with the rest of the interface detail
+        # (CLAUDE.md "The documentation front pages"): the pin follows the sentence
+        ref = open(os.path.join(root, "docs", "reference.md")).read()
+        self.assertIn("from\nthe picker, a name that already runs is focused and the Tags row is not applied", ref)
 
 
 class NativeDialogAvailability(unittest.TestCase):

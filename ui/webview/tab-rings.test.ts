@@ -19,7 +19,8 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const GEAR_CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.css"), "utf8");
 const FEED_CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
-const GUIDE = fs.readFileSync(path.resolve(process.cwd(), "..", "docs", "guide.md"), "utf8");
+// the tab strip's own detail moved to the reference (CLAUDE.md "The documentation front pages")
+const REF = fs.readFileSync(path.resolve(process.cwd(), "..", "docs", "reference.md"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const RINGS = ["ring-needs-you", "ring-waiting-on-you", "ring-retrying"];
 
@@ -107,16 +108,16 @@ test("THE GEAR'S SHEET: the ring rows' demos wear the same classes through gear.
 
 test("the guide says what the yellow ring means, when it shows (idle, waiting or still working), what outranks it, and that the notification is the same event", () => {
   const prose = (t: string) => new RegExp(t.replace(/[.()]/g, "\\$&").split(" ").join("\\s+"));   // the guide wraps its lines
-  assert.match(GUIDE, prose("A tab wears a dashed red ring while its session is stopped on a permission or picker prompt."));
-  assert.match(GUIDE, prose("the tab wears a dashed yellow ring instead, whether the session is idle, waiting on background work or still working, so the sessions that need you stand out in the strip without a click"));
-  assert.match(GUIDE, prose("A red ring outranks the yellow one; the amber ring of a session retrying an API error on its own gives way to it."));
-  assert.match(GUIDE, prose("With notifications on, the card entering Blocked is also what notifies you"));
-  assert.match(GUIDE, prose("the session picker marks the same sessions with a yellow bar at the row's left edge"), "the phone's picker carries the mark too");
+  assert.match(REF, prose("A tab wears a dashed red ring while its session is stopped on a permission or picker prompt."));
+  assert.match(REF, prose("the tab wears a dashed yellow ring instead, whether the session is idle, waiting on background work or still working, so the sessions that need you stand out in the strip without a click"));
+  assert.match(REF, prose("A red ring outranks the yellow one; the amber ring of a session retrying an API error on its own gives way to it."));
+  assert.match(REF, prose("With notifications on, the card entering Blocked is also what notifies you"));
+  assert.match(REF, prose("the session picker marks the same sessions with a yellow bar at the row's left edge"), "the phone's picker carries the mark too");
   // the rings as widgets (2026-09-14): the three rows, their switches, the one-at-a-time rule and what a switched-off ring leaves
-  assert.match(GUIDE, prose("each with its own switch, listed in that order because a tab wears one ring at a time and the first that applies wins: red over yellow over amber."));
-  assert.match(GUIDE, /\*\*Tab widgets\*\* \(\*\*Needs you\*\*, \*\*Waiting on\s+you\*\*, \*\*Retrying\*\*\)/, "the rows by their labels, in precedence order");
-  assert.match(GUIDE, prose("A ring switched off leaves the tab with its dot; the small dot on a folded group's header and the phone's picker follow the same switches."));
-  assert.match(GUIDE, prose("the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name"), "the strip paragraph's Tab widgets sentence");
+  assert.match(REF, prose("each with its own switch, listed in that order because a tab wears one ring at a time and the first that applies wins: red over yellow over amber."));
+  assert.match(REF, /\*\*Tab widgets\*\* \(\*\*Needs you\*\*, \*\*Waiting on\s+you\*\*, \*\*Retrying\*\*\)/, "the rows by their labels, in precedence order");
+  assert.match(REF, prose("A ring switched off leaves the tab with its dot; the small dot on a folded group's header and the phone's picker follow the same switches."));
+  assert.match(REF, prose("the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name"), "the strip paragraph's Tab widgets sentence");
 });
 
 test("the phone's session picker scrapes the yellow ring's class off the desktop strip and paints it on the row and the current-session chip, so it follows the ring's switch for free", () => {

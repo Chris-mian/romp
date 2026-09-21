@@ -1,3 +1,4 @@
+<!-- Front page: keep it short and human. Rules in CLAUDE.md, "The documentation front pages". -->
 # Install
 
 ## Requirements
@@ -11,43 +12,8 @@
     sudo apt install python3 nodejs npm    # Ubuntu / Debian
     ```
 
-### Which Python runs the kernel
-
-`romp-serve` chooses the interpreter each time it starts the kernel, and the
-choice follows the Agent SDK venv (`sdkvenv` under the state directory), whose
-compiled extensions import into the kernel process and so must be built for the
-interpreter the kernel runs. The order is: `ROMP_PYTHON` if set, refused with
-one line when it is not an executable interpreter; otherwise the interpreter
-the venv's `pyvenv.cfg` records, if it still runs and still reports the venv's
-version and build; otherwise another Python of that same minor and build on
-`PATH` or in `~/.local/bin`, which the venv still matches; otherwise the newest
-`python3.X` on `PATH` or in `~/.local/bin`, then `python3`, the rule for a
-machine that has no venv yet (`pick_python` in `bin/romp-serve`;
-`bin/romp-sdk-setup` and `bin/romp-codex-setup` carry the same function, so
-each venv is built with the interpreter the kernel runs). `install.sh` runs
-that same pick as its preflight and stops, naming the interpreter and the
-install command, when it is older than 3.10, the floor the kernel and the Agent
-SDK share; `bin/romp-serve` refuses to start the kernel on one below it, so a
-manager never respawns a kernel that cannot run. The full rules, and what the
-kernel reports when the two disagree, are in the
-[reference](reference.md#the-kernels-python).
-
-Because the venv comes first, installing another interpreter does not move the
-kernel onto it. One hazard remains: `uv python install <version>` puts a
-`python3.X` shim in `~/.local/bin`, which the newest-first fallback searches, so
-on a machine with no SDK venv (or a venv whose recorded interpreter is gone) the
-next restart runs the newest Python it finds. Install extra interpreters with
-`uv python install --no-bin <version>` and reach them through `uv python find
-<version>` or a venv, never as a bare `python3.X` on `PATH`. To move the kernel
-to another Python on purpose, whether another version or the free-threaded build
-(`3.14t`) of the same one, go in this order: set `ROMP_PYTHON` to the new
-interpreter (in `~/.config/romp/service.env` for the login service), rebuild the
-SDK venv for it with `ROMP_PYTHON=<path> bin/romp-sdk-setup` (the same value the
-service reads; run plainly, the script follows the existing venv's interpreter
-and rebuilds nothing), run the test suite there, then restart.
-Skipping a step leaves a kernel that cannot start sessions; the setup script says
-from what to what it rebuilds, and the kernel names the mismatch on every
-session's card if it comes up on the wrong interpreter anyway.
+On a machine with several Pythons, [which one runs the
+kernel](reference.md#the-kernels-python) matters.
 
 ## Install
 
@@ -57,14 +23,6 @@ curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | ba
 
 Open a new terminal afterwards, so `~/romp/bin` is on your `PATH`, and type
 `romp` to launch the user interface in a browser.
-
-On macOS the login agent runs the manager under its own copy of `node`
-(`romp-node`, in the state directory), so Full Disk Access can be granted to romp
-alone; a `node` that cannot run from a copy (Homebrew's build is one) is
-detected and the system `node` used instead, and `ROMP_NO_NODE_COPY=1` in
-`~/.config/romp/service.env` skips the copy (`0`, `false`, `no` and `off` are off; any
-other non-empty value, `disabled` and `none` included, is on). See the
-[reference](reference.md#service-environment-and-credentials).
 
 The same command updates Romp later. To remove Romp, run `romp uninstall` (add
 `--purge` to delete recorded sessions too).
@@ -106,3 +64,6 @@ open Romp from the sidebar.
 ### Start a session
 
 <video src="../assets/guide/first-session.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
+
+Next: the [guide](guide.md), which walks through the interface one feature at a
+time.

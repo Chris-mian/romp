@@ -352,17 +352,21 @@ class Relay(unittest.TestCase):
         route = (UI / "file-route.ts").read_text()
         _has(self, "export function fileLinkRoute(framed: boolean, filesOpen: boolean, filesAvail: boolean = true): FileRoute {", route)   # no setting since T404
 
-    def test_the_gear_and_the_guide_say_the_open_pane_wins(self):
+    def test_the_gear_and_the_docs_say_the_open_pane_wins(self):
         # T404: the file-links row is gone from the gear; the Files control row and the pane's own hint say the rule
         gear = (UI / "gear.js").read_text()
         _has(self, "closes the Files pane if it is open; file links then open over the pane you clicked.", gear)
         self.assertNotIn("<option value=chat>The pane you clicked</option>", gear, "the setting's options are gone")
         _has(self, "While this pane is open, a file or folder clicked in the chat opens here. Closed, they open over the pane you clicked.", (UI / "files.ts").read_text())
+        # the pane's own paragraph moved to the reference with the rest of the interface detail
+        # (CLAUDE.md "The documentation front pages"); the guide introduces the pane and links there
+        ref = (Path(ROOT) / "docs" / "reference.md").read_text()
+        _has(self, "## The Files pane\n", ref)
+        _has(self, "While the pane is open, a file link clicked in the chat opens in it.", ref.replace("\n", " "))
         guide = (Path(ROOT) / "docs" / "guide.md").read_text()
-        _has(self, "### Files\n", guide)
-        _has(self, "While the pane is open, a file link clicked in the chat opens in it.", guide.replace("\n", " "))
-        self.assertLess(guide.index("### The outline"), guide.index("### Files"))
-        self.assertLess(guide.index("### Files"), guide.index("## Automatic nudges"))
+        _has(self, "**Files** keeps the file viewer in a column of its own", guide.replace("\n", " "))
+        self.assertLess(guide.index("### The outline"), guide.index("### The other panes"))
+        self.assertLess(guide.index("### The other panes"), guide.index("## Automatic nudges"))
 
 
 # ── the browseFiles relay's pane branch, executed ──────────────────────────────────────────────────
@@ -585,14 +589,14 @@ class BrowseRelay(unittest.TestCase):
         _has(self, "export function browseRoute(web: boolean, framed: boolean, filesOpen: boolean, filesAvail: boolean = true): BrowseRoute {", route)
         _has(self, 'export type BrowseRoute = FileRoute | "editor";', route)
 
-    def test_the_gear_and_the_guide_name_the_folder(self):
+    def test_the_gear_and_the_docs_name_the_folder(self):
         gear = (UI / "gear.js").read_text()
         self.assertNotIn("Where a file or folder clicked in the chat opens.", gear, "the file-links row is gone (T404)")
         _has(self, "closes the Files pane if it is open; file links then open over the pane you clicked.", gear)
-        guide = (Path(ROOT) / "docs" / "guide.md").read_text().replace("\n", " ")
-        _has(self, "open a listing of that folder by the same rule: in this pane while it is open, otherwise over the chat.", guide)
-        _has(self, "Pick a file in the listing and it opens where the listing is.", guide)
-        _has(self, "While the pane is open, a file link clicked in the chat opens in it.", guide, "the file sentence stands")
+        ref = (Path(ROOT) / "docs" / "reference.md").read_text().replace("\n", " ")
+        _has(self, "open a listing of that folder by the same rule: in this pane while it is open, otherwise over the chat.", ref)
+        _has(self, "Pick a file in the listing and it opens where the listing is.", ref)
+        _has(self, "While the pane is open, a file link clicked in the chat opens in it.", ref, "the file sentence stands")
 
 
 if __name__ == "__main__":
