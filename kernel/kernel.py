@@ -33959,32 +33959,67 @@ def _chat_diff(prev, cur):
     return i
 
 
-def _chat_handed_whole(sid, clients):
-    """Whether some client in `clients` holds a base for `sid` once a sender's per-client loop has run: the delivery
-    signal the seed below is gated on (2026-09-21). A loop hands a build to a client whole through _send_chat_locked
-    alone, and that road's write of the client's echat entry is the base it records; a skeleton holder takes the status
-    road instead (_send_chat_or_status), a withheld client (skeletonOnReady, an armed reconnect) and a socket before its
-    ready (handshake False) take none, so a loop whose every client did one of those handed the build to nobody. Both
-    seed call sites ran the seed all the same, and a baseline seeded from such a loop described no client's base: a list
-    no client holds is no lower bound on any base holder, and with another whole-frame sender's list already in the map
-    the seed's detector read a race, popped that sender's list and marked a sid nobody raced on, whose repair was the
-    next cycle's changeAt0 full with a chatFull row to every base holder, the frame the seed exists to remove; as the
-    newer writer it left a concurrent whole-frame sender's client on the older card with no row (that sender read the
-    map present, diffed its older list against the newer one and declined its own seed). Exact today because a skeleton
-    sid never reaches _send_chat_locked (the set's one writer excludes a sid the client holds whole), a withheld or
-    pre-ready socket is a fresh client or one whose ready reset cleared its bases, and the strip-exit eviction pops the
-    base of a tab that left. Read under each client's slot lock, one client at a time, every lock released before the
-    caller takes _chat_baseline_lock (the seed holds nothing else inside it; the eviction's order is the same)."""
-    for c in clients:
-        with _client_lock(c):
-            if sid in (c.get("echat") or {}):
-                return True
-    return False
+# The chat send loop's delivery ledger (2026-09-21): the sids a per-client send loop wrote a client's echat entry for,
+# recorded on the sending thread by the two SESSION-FRAME senders that write one (_send_chat_locked and the proto-2
+# sender it delegates to, _note_chat_handed beside each of their entry writes) and read by the loop's owner once the
+# loop has run, the delivery signal the baseline seed below is gated on. The entry has a third writer, the history
+# reply's edge advance in the dispatcher (the loadOlder, loadAround, loadNewer and loadTurns road), which only rewrites
+# an entry the client already holds, on a handler thread with no ledger open, and hands the client a history reply and
+# no session frame: deliberately not a delivery, and it records nothing. A loop hands a build to a client whole through
+# _send_chat_locked alone, and that
+# road's write of the client's echat entry is the base it records; a skeleton holder takes the status road instead
+# (_send_chat_or_status), a withheld client (skeletonOnReady, an armed reconnect) and a socket before its ready (handshake
+# False) take none, and the proto-2 sender writes no entry for an empty list, so a loop whose every client did one of
+# those handed the build to nobody and records nothing. Both seed call sites once ran the seed all the same, and a
+# baseline seeded from such a loop described no client's base: a list no client holds is no lower bound on any base
+# holder, and with another whole-frame sender's list already in the map the seed's detector read a race, popped that
+# sender's list and marked a sid nobody raced on, whose repair was the next cycle's changeAt0 full with a chatFull row
+# to every base holder, the frame the seed exists to remove (tests 29 to 33 and the third part of test 11_d of the
+# skeleton-reconnect module). The signal that replaced it first was a read of the clients' bases AFTER the loop, whether
+# some loop client held a base for the sid then, a state read and not the loop's own event: a base another whole-frame
+# sender wrote on a loop client between that client's status send and the read (a targeted push on a backend thread,
+# every target a skeleton holder, preempted after its last status send while a page's reader thread answered that page's
+# needFull for the sid with a connect push) counted as this loop's delivery, so the status-only pass seeded, and its
+# list differing from the map's, popped the other sender's list and marked the sid: one pop and mark, the next cycle's
+# change-0 full with a row to every base holder (test 38). Written where the entry is, on the sending thread, inside the
+# loop that sends, the ledger records this loop's writes and no other thread's; per thread, a stack by the call stack,
+# so a sender that runs inside another's loop on the same thread (the test harness's shape) records on its own ledger
+# and hands the enclosing one back untouched.
+_CHAT_HANDED = threading.local()
+
+
+@contextlib.contextmanager
+def _chat_delivery():
+    """Open this thread's delivery ledger for one per-client send loop and hand back the set the loop's echat writes
+    record their sid on (2026-09-21): `sid in handed` once the block has closed is whether THIS loop wrote some client's
+    entry for the sid, the loop's own event, and nothing another thread or an enclosing loop did. What it is not: a read
+    of the clients' bases after the loop (a racing sender's write on a loop client reads as delivery there), or the lazy
+    serialization's state (`ms` is materialized by the index wire's untrimmed full alone; the proto-2 sender never
+    materializes it). A status frame to a skeleton holder, a withheld client, a socket before its ready and the proto-2
+    sender's empty list write no entry and record nothing."""
+    prev = getattr(_CHAT_HANDED, "sids", None)
+    handed = _CHAT_HANDED.sids = set()
+    try:
+        yield handed
+    finally:
+        _CHAT_HANDED.sids = prev
+
+
+def _note_chat_handed(sid):
+    """Record on the open delivery ledger that a client's echat entry for `sid` was just written (2026-09-21): called
+    beside each entry write, under the client's slot lock, by the two SESSION-FRAME senders that write one
+    (_send_chat_locked and _send_chat_proto2). Not called by the entry's third writer, the history reply's edge advance
+    in the dispatcher, which only rewrites an entry the client already holds and hands the client no session frame:
+    deliberately not a delivery. A thread with no ledger open (the test-facing entry _send_chat, a caller outside the
+    two send loops) records nothing."""
+    handed = getattr(_CHAT_HANDED, "sids", None)
+    if handed is not None:
+        handed.add(sid)
 
 
 def _seed_chat_baseline(sid, m, seen):
-    """Establish the shared delta baseline (_prev_chat_events, _prev_chat_ledger) at a sid's first whole frame; never
-    advance it (2026-09-19). `seen` is the baseline the sender read BEFORE its build and diffed against before its sends
+    """Establish the shared delta baseline (_prev_chat_events, _prev_chat_ledger) at a sid's first whole frame to reach a
+    client; never advance it (2026-09-19). `seen` is the baseline the sender read BEFORE its build and diffed against before its sends
     (read before the build since 2026-09-21: read after it, a seed that landed during the build read as a present
     baseline the sender's older list was then sent against, one this seed declines to touch, so the map held the newer
     list, some client the older card, and the next cycle diffed equal lists, with no row and no mark; test 28 of the
@@ -34005,10 +34040,15 @@ def _seed_chat_baseline(sid, m, seen):
     in the three minutes after a restart with 22 sessions and a dashboard, none after. The deciding event is the send
     itself: a build was handed to at least one client whole while no baseline existed, so from that instant the list it
     was handed is a lower bound on every base holder's state. A loop that handed it to nobody (status frames to skeleton
-    holders, withheld clients, a socket before its ready) does not reach this function (2026-09-21, the call sites'
-    _chat_handed_whole guard): a list no client holds is no lower bound on any base holder, and with a racing sender's
-    list in the map it read below as a race that never happened, the pop and the mark included (tests 29 to 32 of the
-    skeleton-reconnect module). The cases, one step under _chat_baseline_lock. `seen` present:
+    holders, withheld clients, a socket before its ready) does not reach this function (2026-09-21): both call sites gate
+    the call on their loop's delivery ledger (_chat_delivery), which the senders write where they write a client's echat
+    entry, on the sending thread inside the loop that sends, so the signal is the loop's own event. A list no client
+    holds is no lower bound on any base holder, and with a racing sender's list in the map it read below as a race that
+    never happened, the pop and the mark included (tests 29 to 33 and the third part of test 11_d of the
+    skeleton-reconnect module). The signal was first a read of the clients' bases after the loop, and a base another
+    whole-frame sender wrote on a loop client between that client's status send and that read counted as this loop's
+    delivery: a status-only pass seeded, popped the other sender's list and marked a sid nobody raced on (test 38). The
+    cases, one step under _chat_baseline_lock. `seen` present:
     nothing; a present baseline is never replaced here, since only a push that reaches every client may ADVANCE it (the
     2026-07-28 stranded-delta lesson: a connect push that moved it left every other client behind the next diff's
     change_from), and seeding when absent is not advancing. `seen` absent or empty and the map still so: the list becomes
@@ -51577,6 +51617,7 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                     tail["ledger"] = m.get("ledger")
                 _send_client(c, ("chat", sid), tail, kind="delta")
                 st[sid] = {"first": pc["first"], "last": _last_anchor(evs)}
+                _note_chat_handed(sid)                    # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
                 return ms
     if isinstance(pc, dict) and os.environ.get("ROMP_READER_TRACE"):
         pos = _uuid_positions(evs, sid)
@@ -51654,9 +51695,15 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     # its `reconnect` or `skeletonOnReady` is armed, and an armed client holds no base for any session, empty or not (the
     # ready reset clears echat under the lock that re-arms the flag, a redial's client starts empty, and
     # _send_chat_or_status withholds every session frame while armed), so a stat-able but empty transcript is skeletoned
-    # for a reconnecting client exactly as before. A reader of the key set on an unarmed client would be the first to see it.
+    # for a reconnecting client exactly as before. The third reader is the baseline seed's delivery signal (2026-09-21),
+    # recorded beside each entry write of the two session-frame senders (_note_chat_handed, here and in the index wire's
+    # sender) and never at this pop: to the seed's gate an empty list was handed to nobody, so it seeds nothing, and the
+    # first content frame seeds instead (_seed_chat_baseline). The history reply's edge advance in the dispatcher, the
+    # entry's one other writer, rewrites only an entry the client already holds and hands it no session frame, so it is
+    # deliberately no delivery and records nothing.
     if total:
         st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
+        _note_chat_handed(sid)                        # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     else:
         st.pop(sid, None)
     return ms
@@ -51744,6 +51791,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
             tail["ledger"] = m.get("ledger")
         _send_client(c, ("chat", sid), tail, kind="delta")   # the chat's delta form, for /perf's sends split
         st[sid] = (pc[0], pc[1])                       # same tail base, now caught up through `total`
+        _note_chat_handed(sid)                         # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
         return ms
     head_from = max(0, total - WIRE_TAIL)
     _release_skeleton_locked(c, sid)                  # a full send loads a skeleton tab, whoever sent it (2026-09-07)
@@ -51756,6 +51804,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
         m_send = dict(m); m_send["events"] = evs[head_from:]; m_send["headFrom"] = head_from; m_send["headTotal"] = total
         _send_client(c, ("chat", sid), m_send)
     st[sid] = ((evs[head_from].get("uuid") if head_from < total else None), head_from)
+    _note_chat_handed(sid)                            # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     return ms
 
 
@@ -54936,11 +54985,12 @@ def _push(targets, connect=False, live_map=None):
                 # drops from the whole events array to just what changed.
                 change_from = _chat_diff(_seen, m.get("events") or [])   # against the baseline read before the build (above)
                 led_changed = m.get("ledger") != _prev_chat_ledger.get(m["id"])
-                for c in chat_clients:
-                    # flush as built → the active tab lands first; a full send materializes the lazy
-                    # serialization ONCE and every later client (and the cache below) reuses it. A tab the
-                    # client holds as a skeleton gets only its status (2026-09-07)
-                    ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
+                with _chat_delivery() as _handed:        # this loop's echat writes, the seed's gate below (2026-09-21)
+                    for c in chat_clients:
+                        # flush as built → the active tab lands first; a full send materializes the lazy
+                        # serialization ONCE and every later client (and the cache below) reuses it. A tab the
+                        # client holds as a skeleton gets only its status (2026-09-07)
+                        ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
                 # The baseline is SHARED by every client, so only a push that reaches them all may advance it.
                 # A connect push targets ONE client (_push_one → _push([client], connect=True)); when it moved
                 # the baseline, everything written since the last full push fell BELOW the next diff's
@@ -54987,8 +55037,11 @@ def _push(targets, connect=False, live_map=None):
                     # whole-frame sender's list is popped, not kept, and the sid marked: no seed, this road's least of all (a
                     # needFull, an idle-prefetch release), re-seeds it before the next cycle's full has repaired every client.
                     # A build handed to no client, every target a skeleton holder (a status frame each) or withheld, seeds
-                    # nothing (2026-09-21, _chat_handed_whole): a list no client holds is no lower bound on any base holder.
-                    if not _seen and _chat_handed_whole(m["id"], chat_clients):
+                    # nothing (2026-09-21): a list no client holds is no lower bound on any base holder. Delivery is read
+                    # off the loop's own ledger, written where each client's echat entry is, not off the clients' bases
+                    # after the loop, where a racing sender's write on a loop client read as this loop's (test 38 of the
+                    # skeleton-reconnect module).
+                    if not _seen and m["id"] in _handed:
                         _seed_chat_baseline(m["id"], m, _seen)
                 # cache AFTER the sends, so a serialization a full send just paid for is kept — the next
                 # connect-push for this unchanged tab reuses it instead of dumping again
@@ -55577,11 +55630,13 @@ def _push_session_now(sid):
         change_from = _chat_diff(_seen, m.get("events") or [])   # against the baseline read before the build (above)
         led_changed = m.get("ledger") != _prev_chat_ledger.get(sid)
         ms = None                                    # lazy: the first full send materializes it, the rest reuse
-        for c in targets:                            # the strip went above, before the gate; here the session frame
-            ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
-        if not _seen and _chat_handed_whole(sid, targets):   # a build every page took as a status frame seeds nothing (2026-09-21)
-            _seed_chat_baseline(sid, m, _seen)       # established when absent, never advanced, declined while the detector's mark
-        #                                              stands (the docstring); after the sends
+        with _chat_delivery() as _handed:            # this loop's echat writes, the seed's gate below (2026-09-21)
+            for c in targets:                        # the strip went above, before the gate; here the session frame
+                ms = _send_chat_or_status(c, m, ms, change_from, led_changed)
+        if not _seen and sid in _handed:             # a build every page took as a status frame seeds nothing (2026-09-21): the
+            _seed_chat_baseline(sid, m, _seen)       # loop's own writes, not the bases after it, where a racing sender's write
+        #                                              on a target read as this loop's (test 38); established when absent, never
+        #                                              advanced, declined while the detector's mark stands (the docstring)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
     finally:
