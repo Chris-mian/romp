@@ -211,7 +211,7 @@ class Harness(unittest.TestCase):
         self.assertTrue(list(Path(dest, "claude", "projects").glob("*/%s.jsonl" % eid)), "each ending is its own truncated transcript")
         self.assertTrue(Path(dest, "state", "romp", "names", eid).exists(), "each ending has its names entry")
         self.assertEqual(Path(dest, "state", "romp", "session-hosts").read_text(), "off")
-        self.assertEqual(m.get("skipped"), {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0}, "skips are counted, never named")
+        self.assertEqual(m.get("skipped"), {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0, "store-unreadable": 0}, "skips are counted, never named")
         # the journal is cut at the turn's start: a row before it stays, in the ending's own re-keyed journal; a later one goes
         e0 = self._ending(m, SIDS[0], 0)
         (self.state / "overrides" / (SIDS[0] + ".jsonl")).write_text(
@@ -764,7 +764,7 @@ class Harness(unittest.TestCase):
         (self.state / "names" / short).write_text("short\t%s\t#abcdef\n" % self.cwd)
         m = self._corpus(name="skips")[1]
         self.assertIn("skipped", m, "the manifest counts skips (the base wrote none)")
-        self.assertEqual(m["skipped"], {"no-transcript": 1, "few-turns": 1, "unreadable-names-entry": 1, "parse-failed": 0})
+        self.assertEqual(m["skipped"], {"no-transcript": 1, "few-turns": 1, "unreadable-names-entry": 1, "parse-failed": 0, "store-unreadable": 0})
         self.assertNotIn("nowhere", json.dumps(m["skipped"]))
 
     def test_the_label_entry_takes_no_default_binary(self):
@@ -872,13 +872,16 @@ class Harness(unittest.TestCase):
         self.assertFalse(self.je.in_turn_window(899.0, 900.0, 1000.0), "before the turn start is not the ending's")
 
     def test_tier_one_matches_the_journals_full_node_key(self):
-        sid = SIDS[0]
+        """A cross-session tail collision: a followup on ANOTHER session's g1 and a clear on this one. The tail compare (the base)
+        matches both by 'g1' and reads not finished; the full-key compare matches only this session's clear and reads finished."""
+        sid = SIDS[0]; other = SIDS[1]
         m = self._corpus()[1]
         e = self._ending(m, sid, 0)
         start, cut = float(e["startT"]), float(e["cutT"])
-        self._live_store_with_done(sid, start, cut, [{"node": sid + ":g1", "op": "followup", "t": cut + 100}])
-        self.assertEqual(self.je.tier_one_label(self.state, sid, cut, start), "not finished",
-                         "the override's full <sid>:g1 key matches the node (the base compared only the tail, so a real journal matched none)")
+        self._live_store_with_done(sid, start, cut, [{"node": other + ":g1", "op": "followup", "t": cut + 100},
+                                                     {"node": sid + ":g1", "op": "clear", "src": "user", "why": "seen", "t": cut + 120}])
+        self.assertEqual(self.je.tier_one_label(self.state, sid, cut, start), "finished",
+                         "only this session's clear matches the full key; the other session's followup does not (the base's tail compare read not finished)")
 
     def test_the_restore_op_carries_a_nodes_dict(self):
         sid = SIDS[0]
@@ -952,6 +955,103 @@ class Harness(unittest.TestCase):
         self.assertNotIn(sid, json.dumps(faults))
         summary = self.je.label(self._corpus(name="faulted")[0], os.path.join(self.td, "runs-fault"), self.state, claude_bin=self.fake, model="fake")
         self.assertIn("tierOneErrors", summary, "the summary counts faulted sessions")
+
+    def test_a_clear_before_the_turn_reads_cleared_and_one_inside_the_turn_is_open(self):
+        """M1: the seed is the store as at the turn's open. A top the user cleared BEFORE the turn start keeps its clear log and
+        rolls up cleared; a clear INSIDE the turn is dropped with the turn's verdicts, so the card is open at the seed, the
+        arm's to rule on."""
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 1)
+        start, cut = float(e["startT"]), float(e["cutT"])
+        seg = "%s:%d:aaaaaaaa" % (sid, start - 5000)
+        def store_with_clear(clear_t):
+            node = {"id": sid + ":gA", "text": "A cleared top", "parentId": None, "t": start - 5000, "cleared": True, "trail": [seg],
+                    "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"},
+                            {"ev_t": clear_t, "at": clear_t + 1, "src": "user", "kind": "clear", "why": "seen"}]}
+            return {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":gA"}, "status": {}, "nodes": {node["id"]: node}}
+        before_start = self.je.store_before(store_with_clear(start - 100), cut, start, e["id"])
+        ga = before_start["nodes"][e["id"] + ":gA"]
+        self.assertEqual([ev["kind"] for ev in ga["log"]], ["mint", "clear"], "a clear before the turn start survives in the seed")
+        jd = self.je.load_judge(Path(self.td) / "rollup-state", Path(self.td) / "noclaude", self.fake)   # roll it up as the arm would
+        try:
+            st = {"rompUuid": e["id"], "seq": 1, "placementsV": 14, "placements": {}, "status": {}, "nodes": before_start["nodes"]}
+            jd.rollup_status(st, True)
+            self.assertEqual(st["status"].get(e["id"] + ":gA"), "cleared", "it rolls up cleared: %r" % st.get("status"))
+        finally:
+            pass
+        inside = self.je.store_before(store_with_clear(cut - 1), cut, start, e["id"])   # a clear one second before the cut, inside the turn
+        gi = inside["nodes"][e["id"] + ":gA"]
+        self.assertEqual([ev["kind"] for ev in gi["log"]], ["mint"], "a clear inside the turn is dropped: the card is open at the seed, the arm's to make")
+
+    def test_a_corrupt_store_is_counted_never_swallowed(self):
+        """M-low: store_with_archive swallowed a corrupt goals or goals-archive file, so a session lost its seed unseen. A
+        corrupt store is counted under skipped['store-unreadable'] and its type logged; the reader raises."""
+        sid = SIDS[0]
+        (self.state / "goals" / (sid + ".json")).write_text("{ not json")
+        with self.assertRaises(ValueError, msg="store_with_archive raises on a corrupt store (the caller counts it)"):
+            self.je.store_with_archive(self.state, sid)
+        import io, contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            m = self._corpus(name="corruptstore")[1]
+        self.assertGreaterEqual(m["skipped"]["store-unreadable"], 1, "the session with the corrupt store is counted")
+        self.assertIn("could not be read", err.getvalue())
+        self.assertNotIn(sid, json.dumps(m["skipped"]))
+        # a corrupt archive is caught too
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps({"rompUuid": sid, "nodes": {}, "status": {}}))
+        (self.state / "goals-archive" / (sid + ".json")).write_text("{ not json either")
+        with self.assertRaises(ValueError):
+            self.je.store_with_archive(self.state, sid)
+
+    def test_the_dropped_blockcheckt_lets_the_unblocker_examine_the_node(self):
+        """M-low: the drop-list pin was key absence; drive it by the unblocker's own due gate. A blocked top's seed, rolled up
+        the arm's way, is a re-examine candidate; the judge's due formula (`newest > max(bt, blockCheckT)`) fires with the
+        stamp dropped (the head) and does not with a blockCheckT at the turn start surviving (the base). The real candidate
+        finder and the real formula, over the store_before'd seed."""
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 1)
+        start, cut = float(e["startT"]), float(e["cutT"])
+        seg = "%s:%d:aaaaaaaa" % (sid, start - 5000)
+        node = {"id": sid + ":g1", "text": "A blocked top waiting on the user", "parentId": None, "t": start - 5000, "blocked": True,
+                "blockCheckT": start, "trail": [seg],
+                "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"},
+                        {"ev_t": start - 4000, "at": start - 3999, "src": "planner", "kind": "block", "why": "your call?"}]}
+        store = {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":g1"}, "status": {}, "nodes": {node["id"]: node},
+                 "closedTurns": [], "closedSig": {}}
+        before = self.je.store_before(store, cut, start, e["id"])
+        gid = e["id"] + ":g1"
+        self.assertNotIn("blockCheckT", before["nodes"][gid], "the stamp at the turn start is dropped from the seed")
+        jd = self.je.load_judge(Path(self.td) / "ub-state", Path(self.td) / "ub-noclaude", self.fake)
+        rolled = {"rompUuid": e["id"], "seq": 1, "placementsV": 14, "placements": {}, "status": {}, "nodes": dict(before["nodes"])}
+        jd.rollup_status(rolled, True)                    # the arm's rollup sets the blocked flag from the diary
+        cands = jd._blocked_sub_candidates(rolled)
+        self.assertEqual([c[0] for c in cands], [gid], "the seeded blocked top is a re-examine candidate: %r" % cands)
+        bt = cands[0][2]
+        newest = start                                    # the ending turn's start, the newest ended turn the arm parses
+        head_due = newest > max(bt, rolled["nodes"][gid].get("blockCheckT") or 0)
+        base_due = newest > max(bt, start)                # the base kept blockCheckT == the turn start
+        self.assertTrue(head_due, "with the stamp dropped the unblocker's gate fires (newest > the block time)")
+        self.assertFalse(base_due, "with a surviving blockCheckT at the turn start the strict gate holds it: no examine")
+
+    def test_the_agreement_gate_reds_below_the_threshold(self):
+        """M-low: the gate was pinned only at 100 percent. A disagreeing ending (tier one finished, the labeller a non-finished
+        class) drops the agreement below 90 and the gate does not pass."""
+        dest, m = self._corpus()
+        by = {(e["session"], e["turn"]): e for e in m["endings"]}
+        h0 = hashlib.sha256(SIDS[0].encode()).hexdigest()[:12]
+        h1 = hashlib.sha256(SIDS[1].encode()).hexdigest()[:12]
+        # SIDS[0] turn 0 (offer): tier one finished (a clear, nothing after), but the labeller reads it "offer"
+        e0 = by[(h0, 0)]
+        self._live_store_with_done(SIDS[0], float(e0["startT"]), float(e0["cutT"]), [{"node": SIDS[0] + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e0["cutT"]) + 60}])
+        # SIDS[1] turn 1 (finished): tier one finished and the labeller finished too (agreement)
+        e1 = by[(h1, 1)]
+        self._live_store_with_done(SIDS[1], float(e1["startT"]), float(e1["cutT"]), [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e1["cutT"]) + 60}])
+        summary = self.je.label(dest, os.path.join(self.td, "runs-gate"), self.state, claude_bin=self.fake, model="fake")
+        self.assertEqual(summary["both"], 2, "two endings carry both a tier-one and a stable label: %r" % summary)
+        self.assertEqual(summary["agree"], 1, "the offer disagrees (finished vs offer); the finished agrees")
+        self.assertEqual((summary["agreementPct"], summary["gatePassed"]), (50.0, False), "below the 90 percent gate: %r" % summary)
 
 
 if __name__ == "__main__":

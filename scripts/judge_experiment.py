@@ -40,8 +40,7 @@ UNDONE_RE = re.compile(r"\b(not (yet )?done|left (undone|for later|open)|to ?do|
 QUESTION_RE = re.compile(r"\?\s*$")
 BUDGET_OVERRUN = 1.2          # a run stops once its ledger passes this multiple of its budget
 COLUMN_OF = {"blocked": "needs_input", "completed": "completed", "cleared": "cleared"}   # the store-derivable part of the feed's rule
-SETTLE_S = 120                # a top-level done filed this soon after an ending's cut still belongs to the ending (the closer files at the turn's end)
-FALLBACK_TURN_S = 900         # an ending whose turn start the transcript does not show: the window reaches this far back
+FALLBACK_TURN_S = 900         # an ending whose turn start the transcript does not show: the window's start reaches this far back
 AGREEMENT_GATE_PCT = 90.0     # the labeller's agreement with the user's recorded actions must reach this before its labels count
 FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",
                  "unregistered-caller", "history-unreadable", "store-quarantined")   # judge-errors rows that mean the ending was not judged:
@@ -284,8 +283,9 @@ def known_fsids(state_root, sid):
 
 
 def in_turn_window(t, start_t, cut_t):
-    """Whether a verdict time belongs to the ending: from the turn's start (or FALLBACK_TURN_S before the cut) to SETTLE_S
-    after the cut, the moment the closer files."""
+    """Whether a verdict time belongs to the ending's turn: from the turn's start (or FALLBACK_TURN_S before the cut when the
+    transcript shows no start) to the cut. No closer or planner done carries an evidence time after its own cut, so a done
+    past the cut is the next turn's."""
     lo = start_t if start_t is not None else cut_t - FALLBACK_TURN_S
     return lo <= t <= cut_t          # no closer or planner done carries an evidence time after its own cut; a later one is the next turn's
 
@@ -322,9 +322,11 @@ def store_before(store, cut_t, start_t=None, eid=None):
     and the node it points to are kept, so the planner runs the turn's work-run once, as the live pass would; the flag
     cache and the sealing fields are dropped for the arm's rollup (kept, they sealed the seeded top out of the menu and a
     twin was minted); gate stamps at or after the turn start are dropped (`titledT`/`servingT` clamped, never dropped, to spare a re-title);
-    store-level state from after the cut (`seams`, `confirming`, the *Sig and *Fails records) is dropped; nodes whose first
-    trail entry is a dropped segment go, and the orphan pass runs to a fixed point. Nothing keyed to the turn or later
-    survives except that prompt-run node; what stays is re-keyed to the ending id."""
+    store-level state from after the cut (the fields in DROP_STORE_FIELDS) is dropped; nodes whose first trail entry is a
+    dropped segment go, and the orphan pass runs to a fixed point. Nothing keyed to the turn or later survives except that
+    prompt-run node; what stays is re-keyed to the ending id. A node the user CLEARED before the turn start keeps its clear
+    log row (its rollup reads `cleared`); a clear INSIDE the turn is dropped with the rest of the turn's verdicts, so that
+    card is the arm's to rule on, open at the seed."""
     sid = str(store.get("rompUuid") or "")
     src = deep_rekey(store, sid, eid) if (eid and sid) else store
     lo = start_t if start_t is not None else cut_t - FALLBACK_TURN_S
@@ -396,19 +398,18 @@ def store_with_archive(state_root, sid):
     back into its nodes (they carry their full verdict log there). The four readers of a session's cards (the done times, the
     eligibility mark, tier one and the seed) all take this, so a top the user crossed off is not invisible for being archived."""
     state_root = Path(state_root)
-    try:
-        store = json.loads((state_root / "goals" / (sid + ".json")).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        store = {}
+    store = {}
+    live = state_root / "goals" / (sid + ".json")
+    if live.is_file():
+        store = json.loads(live.read_text(encoding="utf-8"))   # a corrupt live store RAISES (fail loud): the caller counts store-unreadable
     if not isinstance(store, dict):
         store = {}
     nodes = dict(store.get("nodes") or {})
-    try:
-        arch = json.loads((state_root / "goals-archive" / (sid + ".json")).read_text(encoding="utf-8"))
+    arch_path = state_root / "goals-archive" / (sid + ".json")
+    if arch_path.is_file():
+        arch = json.loads(arch_path.read_text(encoding="utf-8"))   # a corrupt archive RAISES too
         for nid, nd in (arch.get("nodes") or {}).items():
             nodes.setdefault(nid, nd)                # the live store wins a shared key; a cleared top lives only in the archive
-    except (OSError, ValueError):
-        pass
     store = dict(store)
     store["nodes"] = nodes
     store.setdefault("rompUuid", sid)
@@ -440,7 +441,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
     names_dir = state_root / "names"
     picked = {c: [] for c in CLASSES}
     candidates = []
-    skipped = {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0}
+    skipped = {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0, "store-unreadable": 0}
     for entry in sorted(names_dir.iterdir()) if names_dir.is_dir() else []:
         try:
             fields = entry.read_text(encoding="utf-8").strip().split("\t")
@@ -453,7 +454,12 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
         name, cwd = fields[0], fields[1]
         color = fields[2] if len(fields) > 2 else "#888888"
         sid = entry.name
-        live_store = store_with_archive(state_root, sid)
+        try:
+            live_store = store_with_archive(state_root, sid)
+        except (OSError, ValueError) as e:
+            skipped["store-unreadable"] += 1
+            sys.stderr.write("judge-experiment: a goal store could not be read (%s); the session is skipped\n" % type(e).__name__)
+            continue
         dones = top_done_times(live_store)
         found = False
         fsids = known_fsids(state_root, sid)
@@ -511,7 +517,10 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                 for r in records:
                     fh.write(json.dumps(r) + "\n")
             (dest / "state" / "romp" / "names" / eid).write_text("%s\t%s\t%s\n" % (name, cwd, color))
-            store = store_with_archive(state_root, sid)
+            try:
+                store = store_with_archive(state_root, sid)
+            except (OSError, ValueError):
+                continue                              # already counted above for this session
             before = store_before(store, cut_t, start_t, eid) if store.get("nodes") else None
             if before is not None:                        # a session with no store yet starts the arm fresh (load_goals mints the shape)
                 (dest / "state" / "romp" / "goals" / (eid + ".json")).write_text(json.dumps(before))
@@ -804,7 +813,7 @@ FINISHED_OPS = ("clear", "resolve")
 
 def tier_one_label(live_state, sid, cut_t, start_t=None, faults=None):
     """The user's own recorded verdict on the cards the judges completed at this ending, keyed on events: a top-level closer
-    or planner `done` within the turn's window (the turn's start to SETTLE_S after the cut) names the card; the user's later
+    or planner `done` within the turn's window (the turn's start to the cut) names the card; the user's later
     gestures on that node in the override journal decide (a followup, an unclear or a restore says not finished; a hand clear
     or a resolve with no later one of those, at build time, says finished). None when the journals record nothing that
     applies. The caller records the observation span, so labels can be read by how long the user had to act."""
@@ -817,7 +826,12 @@ def tier_one_label(live_state, sid, cut_t, start_t=None, faults=None):
             if faults is not None:
                 faults.append((hashlib.sha256(str(sid).encode()).hexdigest()[:12], type(e).__name__))
             return None
-    store = store_with_archive(live_state, sid)          # the archive alone may hold a session's tops (all cleared); it carries the clear the label reads
+    try:
+        store = store_with_archive(live_state, sid)      # the archive alone may hold a session's tops (all cleared); it carries the clear the label reads
+    except (OSError, ValueError) as e:
+        if faults is not None:
+            faults.append((hashlib.sha256(str(sid).encode()).hexdigest()[:12], type(e).__name__))
+        return None
     ops = []
     p = live_state / "overrides" / (sid + ".jsonl")
     if p.is_file():
@@ -930,7 +944,7 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
                "labellerStable": sum(1 for r in rows if r["label"]), "both": len(both), "agree": agree, "agreementPct": pct,
                "gatePct": AGREEMENT_GATE_PCT, "gatePassed": bool(both) and pct >= AGREEMENT_GATE_PCT,
                "heuristicMatchesLabel": sum(1 for r in rows if r["label"] and r["label"] == r["class"]), "spentUsd": round(spent, 4),
-               "tierOneErrors": [{"session": h, "error": ex} for h, ex in faults]}
+               "tierOneErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
     (run_root / "labels-summary.json").write_text(json.dumps(summary, indent=1))
     return summary
 
