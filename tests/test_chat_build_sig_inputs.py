@@ -464,14 +464,17 @@ class Census(unittest.TestCase):
         self.assertIn("def _chat_row_sig", block, "the projection sits between _chat_sig_deps and _chat_build_sig")
         tree = ast.parse(text)
         self.assertEqual(sorted(_reads_outside(tree, "lastTool", permits["lastTool"])), [],
-                         "lastTool is mentioned outside the projection and the key: a reader the row component holds against")
+                         "lastTool is read outside the projection and the key: a reader the row component holds against")
         self.assertEqual(sorted(_reads_outside(tree, "ctxTokens", permits["ctxTokens"])), [],
-                         "ctxTokens is mentioned beyond the projection, the key, the compaction tick and the merge writing it")
+                         "ctxTokens is read beyond the projection, the key, the compaction tick and the merge writing it")
 
     def test_the_read_census_counts_reads_not_mentions(self):
         """The census behind the previous test tells a read from prose (2026-09-21). A synthetic body first: the helper
         returns the lines of the reads, through a get, a subscript, an `in` test and a tuple a loop reads through, on
-        any receiver, and none of the comment, the docstring or the sentence literal that name the fields. Then the
+        any receiver, plus an f-string's real subscript, and none of the comment, the docstring, the sentence literal or
+        the percent-format key that name the fields (2026-09-21, the post-merge review of #1939: the counted and uncounted
+        shapes the census helper's docstring claims are asserted here, so an interpreter that moves f-string nodes or a
+        helper change that starts counting placeholders fails this line rather than the docstring). Then the
         pin on the real kernel text with a comment naming both fields and a single-quoted get appended past every
         permitted range: the comment is no hit (under the word-regex mention count it was one per field, which is how
         two PRs went green alone and red together) and the get is exactly one, so the census is not blind to the
@@ -486,11 +489,14 @@ class Census(unittest.TestCase):
                 for k in ("ctxTokens",):
                     d = tm.get(k)
                 note = "the raw ctxTokens count, which the payload renders as a percent"
-                return a, b, c, d, note
+                e = f"{tm['ctxTokens']}"
+                f = "%(ctxTokens)s" % tm
+                return a, b, c, d, note, e, f
         ''')
         line = lambda frag: next(i for i, l in enumerate(src.splitlines(), 1) if frag in l)
         self.assertEqual(_key_reads(src, "lastTool"), {line('t.get("lastTool")'), line('"lastTool" in row')})
-        self.assertEqual(_key_reads(src, "ctxTokens"), {line('["ctxTokens"]'), line('for k in ("ctxTokens",)')})
+        self.assertEqual(_key_reads(src, "ctxTokens"),
+                         {line('["ctxTokens"]'), line('for k in ("ctxTokens",)'), line("f\"{tm['ctxTokens']}\"")})
         text, permits = _unkeyed_field_permits()
         tail = text + "\n# a note naming lastTool\n# and ctxTokens\ndef _probe(t):\n    return t.get('lastTool')\n"
         tree = ast.parse(tail)
