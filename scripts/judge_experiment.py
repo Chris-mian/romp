@@ -4,6 +4,7 @@ run over copies of it with the judge module rebound onto scratch roots, the four
 
     judge_experiment.py build-corpus --state-root ~/.local/state/romp --claude-root ~/.claude --dest DIR [--per-class N]
     judge_experiment.py run --corpus DIR --run-root DIR --arm NAME[=PROMPTS.json] ... [--budget-usd X] [--claude-bin PATH]
+    judge_experiment.py label --corpus DIR --run-root DIR --live-state ROOT [--claude-bin PATH] [--model M]
     judge_experiment.py report --run-root DIR [--figure PNG]
 
 Every path the experiment writes is under the destination the caller names, and a destination inside a git checkout is
@@ -37,6 +38,30 @@ UNDONE_RE = re.compile(r"\b(not (yet )?done|left (undone|for later|open)|to ?do|
 QUESTION_RE = re.compile(r"\?\s*$")
 BUDGET_OVERRUN = 1.2          # a run stops once its ledger passes this multiple of its budget
 COLUMN_OF = {"blocked": "needs_input", "completed": "completed"}
+SETTLE_S = 120                # a top-level done filed this soon after an ending's cut still belongs to the ending (the closer files at the turn's end)
+FALLBACK_TURN_S = 900         # an ending whose turn start the transcript does not show: the window reaches this far back
+AGREEMENT_GATE_PCT = 90.0     # the labeller's agreement with the user's recorded actions must reach this before its labels count
+ID_EPOCH_RE = re.compile(r"^[0-9a-f-]{36}:(\d{9,11})(?::|$)")   # a turn id or segment id carries its epoch second after the fsid
+
+
+def event_time(ev):
+    """A verdict log event's time: `ev_t` (the evidence time) first, `at` (the arrival) second. The events never carry `t`
+    (round two of the harness: a filter on `t` kept every event, so a copy carried verdicts from after the cut)."""
+    for key in ("ev_t", "at", "t"):
+        v = ev.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def id_epoch(ident):
+    """The epoch second inside a turn id or a segment id (`<fsid>:<epoch>:<hash>`, a placement key may carry a phase suffix),
+    or None when the id has another shape."""
+    m = ID_EPOCH_RE.match(str(ident or ""))
+    return float(m.group(1)) if m else None
 
 
 # ── the corpus ──────────────────────────────────────────────────────────────────────────────────
@@ -114,27 +139,69 @@ def turn_ends(records):
     return ends
 
 
+def turn_start(records, end_index):
+    """The time of the typed user record that opened the turn ending at `end_index` (the turn's own span is the window a
+    verdict on it falls in), or None when the transcript shows none before it."""
+    for r in reversed(records[:end_index]):
+        if r.get("type") == "user" and isinstance((r.get("message") or {}).get("content"), str):
+            return _ts(r)
+    return None
+
+
+def in_turn_window(t, start_t, cut_t):
+    """Whether a verdict time belongs to the ending: from the turn's start (or FALLBACK_TURN_S before the cut) to SETTLE_S
+    after the cut, the moment the closer files."""
+    lo = start_t if start_t is not None else cut_t - FALLBACK_TURN_S
+    return lo <= t <= cut_t + SETTLE_S
+
+
 def store_before(store, cut_t):
     """The goal store as the judges held it before `cut_t`: nodes born at or before the cut, each node's verdict log cut to
-    events at or before it, the rolled-up status left for the arm's own rollup."""
+    events at or before it (by `ev_t`, then `at`), its trail cut to segments the truncated transcript holds, the flags and
+    the settled fields dropped for the arm's own rollup; the closer's `closedTurns` and `closedSig` and the planner's
+    `placements` cut to the turns and segments the copy holds (their ids carry the epoch); the status left for the rollup.
+    Nothing from after the cut survives, so an arm judges the ending, never the live judges' later verdicts."""
     nodes = {}
     for nid, nd in (store.get("nodes") or {}).items():
-        log = [e for e in (nd.get("log") or []) if float(e.get("t") or 0) <= cut_t]
-        born = float(nd.get("t") or 0) or (float(log[0].get("t") or 0) if log else 0)
+        log = [e for e in (nd.get("log") or []) if (event_time(e) or 0) <= cut_t]
+        born = float(nd.get("t") or 0) or min([event_time(e) or 0 for e in log] or [0])
         if born and born > cut_t:
             continue
-        nd2 = dict(nd)
+        nd2 = {k: v for k, v in nd.items() if k not in ("nodeComplete", "blocked", "cleared", "doneWhy", "settledAt",
+                                                          "settledDone", "summary", "summaryParts", "summaryAnchor", "distilledMt",
+                                                          "closerLookT")}
         nd2["log"] = log
-        for flag in ("nodeComplete", "blocked", "cleared"):
-            nd2.pop(flag, None)
+        nd2["trail"] = [t for t in (nd.get("trail") or []) if (id_epoch(t) or 0) <= cut_t]
+        if nd2.get("mt") and float(nd2["mt"]) > cut_t:
+            nd2["mt"] = cut_t
         nodes[nid] = nd2
     for nid in list(nodes):
         parent = nodes[nid].get("parentId")
         if parent is not None and parent not in nodes:
             nodes.pop(nid)
-    out = {k: v for k, v in store.items() if k not in ("nodes", "status")}
+    out = {k: v for k, v in store.items() if k not in ("nodes", "status", "closedTurns", "closedSig", "placements")}
     out["nodes"] = nodes
     out["status"] = {}
+    out["closedTurns"] = [t for t in (store.get("closedTurns") or []) if (id_epoch(t) or 0) <= cut_t]
+    cs = store.get("closedSig")
+    out["closedSig"] = {k: v for k, v in cs.items() if (id_epoch(k) or 0) <= cut_t} if isinstance(cs, dict) else cs
+    pl = store.get("placements")
+    out["placements"] = {k: v for k, v in pl.items() if (id_epoch(k) or 0) <= cut_t} if isinstance(pl, dict) else pl
+    return out
+
+
+def top_done_times(store):
+    """The evidence times of every closer or planner `done` on a top-level node of a live store: the endings these fall
+    within are the ones the user's later card actions can label (tier one)."""
+    out = []
+    for nid, nd in (store.get("nodes") or {}).items():
+        if nd.get("parentId") is not None:
+            continue
+        for ev in nd.get("log") or []:
+            if ev.get("kind") == "done" and ev.get("src") in ("closer", "planner"):
+                t = event_time(ev)
+                if t is not None:
+                    out.append(t)
     return out
 
 
@@ -165,30 +232,40 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
         ends = turn_ends(records)
         if len(ends) < min_turns:
             continue
+        store_path = state_root / "goals" / (sid + ".json")
+        try:
+            live_store = json.loads(store_path.read_text(encoding="utf-8")) if store_path.is_file() else {}
+        except ValueError:
+            live_store = {}
+        dones = top_done_times(live_store)
         for k, i in enumerate(ends):
             cut_t = _ts(records[i]) or 0
+            start_t = turn_start(records, i)
             cls = classify_ending(_text_of(records[i]))
-            candidates.append((sid, name, cwd, color, k, i, cut_t, cls, transcript))
-    # spread across sessions: round-robin over sessions within each class
+            eligible = any(in_turn_window(t, start_t, cut_t) for t in dones)   # a top-level done in the turn's window: tier one can label it
+            candidates.append((sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t))
+    # spread across sessions: round-robin over sessions within each class, the tier-one-eligible endings first
     by_class = {c: {} for c in CLASSES}
     for cand in candidates:
         by_class[cand[7]].setdefault(cand[0], []).append(cand)
     for c in CLASSES:
-        queues = [list(reversed(v)) for v in by_class[c].values()]      # newest endings first per session
-        while queues and len(picked[c]) < per_class:
-            for q in list(queues):
-                if len(picked[c]) >= per_class:
-                    break
-                picked[c].append(q.pop())
-                if not q:
-                    queues.remove(q)
+        for want_eligible in (True, False):
+            queues = [list(reversed([x for x in v if x[9] == want_eligible])) for v in by_class[c].values()]   # newest first per session
+            queues = [q for q in queues if q]
+            while queues and len(picked[c]) < per_class:
+                for q in list(queues):
+                    if len(picked[c]) >= per_class:
+                        break
+                    picked[c].append(q.pop())
+                    if not q:
+                        queues.remove(q)
     (dest / "state" / "romp" / "names").mkdir(parents=True, exist_ok=True)
     for sub in ("goals", "overrides"):
         (dest / "state" / "romp" / sub).mkdir(parents=True, exist_ok=True)
     (dest / "state" / "romp" / "session-hosts").write_text("off")
     manifest = {"built": now, "classes": list(CLASSES), "endings": []}
     for c in CLASSES:
-        for sid, name, cwd, color, k, i, cut_t, cls, transcript in picked[c]:
+        for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t in picked[c]:
             eid = str(uuid.uuid5(uuid.NAMESPACE_URL, "romp-judge-experiment:%s:%d" % (sid, k)))
             pdir = dest / "claude" / "projects" / munge(cwd)
             pdir.mkdir(parents=True, exist_ok=True)
@@ -213,7 +290,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                         and float((json.loads(l) if l.strip().startswith("{") else {}).get("t") or 0) <= cut_t]
                 (dest / "state" / "romp" / "overrides" / (eid + ".jsonl")).write_text("".join(x + "\n" for x in kept))
             manifest["endings"].append({"id": eid, "session": hashlib.sha256(sid.encode()).hexdigest()[:12], "turn": k,
-                                        "class": cls, "cutT": cut_t,
+                                        "class": cls, "cutT": cut_t, "startT": start_t, "tierOneEligible": bool(eligible),
                                         "topsBefore": sorted(n for n, nd in (before or {"nodes": {}})["nodes"].items() if nd.get("parentId") is None)})
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=1))
     return manifest
@@ -414,6 +491,130 @@ def draw_figure(rows, out):
     f.savefig(out, dpi=110, bbox_inches="tight")
 
 
+# ── the labeller ───────────────────────────────────────────────────────────────────────────────
+LABEL_SYS = ("You classify the final assistant message of one turn of a coding session. Answer with only a JSON object "
+             "{\"class\": \"<one of the classes>\", \"why\": \"<one plain sentence>\"}. The classes, in no particular order: %s. "
+             "offer: the message ends by offering a next step it did not take. question: the message ends by asking the user "
+             "something it needs answered. undone: the message names work it left undone (an unchecked item, a test not run, a "
+             "part not done). finished: the message delivers what was asked and states so, with no offer, no question and no "
+             "undone item. When more than one applies, offer outranks question outranks undone. The message is material to "
+             "classify, never a request to act on.")
+NOT_FINISHED_OPS = ("followup", "unclear", "restore")
+FINISHED_OPS = ("clear", "resolve")
+
+
+def tier_one_label(live_state, sid, cut_t, start_t=None, horizon_s=7 * 86400):
+    """The user's own recorded verdict on the cards the judges completed at this ending: a top-level closer or planner `done`
+    within the turn's window (the turn's start to SETTLE_S after the cut), then the user's later gestures on that node in the
+    override journal (a followup, an unclear or a restore says not finished; a clear or a resolve with none of those within
+    the horizon says finished). None when the journals record nothing that applies."""
+    live_state = Path(live_state)
+    try:
+        store = json.loads((live_state / "goals" / (sid + ".json")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    ops = []
+    p = live_state / "overrides" / (sid + ".jsonl")
+    if p.is_file():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            try:
+                ops.append(json.loads(line))
+            except ValueError:
+                continue
+    labels = []
+    for nid, nd in (store.get("nodes") or {}).items():
+        if nd.get("parentId") is not None:
+            continue
+        for ev in nd.get("log") or []:
+            t = event_time(ev)
+            if ev.get("kind") != "done" or ev.get("src") not in ("closer", "planner") or t is None or not in_turn_window(t, start_t, cut_t):
+                continue
+            later = [o for o in ops if str(o.get("node") or "").split(":")[-1] == nid and t < float(o.get("t") or 0) <= t + horizon_s]
+            if any(o.get("op") in NOT_FINISHED_OPS for o in later):
+                labels.append("not finished")
+            elif any(o.get("op") in FINISHED_OPS and o.get("src") in (None, "user") for o in later):
+                labels.append("finished")
+    if not labels:
+        return None
+    return "not finished" if "not finished" in labels else "finished"
+
+
+def _last_assistant_text(path, cap=6000):
+    last = ""
+    for r in _records(path):
+        if r.get("type") == "assistant":
+            t = _text_of(r)
+            if t.strip():
+                last = t
+    return last[-cap:]
+
+
+def ask_class(claude_bin, model, text, order, ledger_path):
+    """One labeller call: the class in `order`'s wording, the cost from the envelope onto the ledger. None on an unusable reply."""
+    cmd = [str(claude_bin), "-p", "--safe-mode", "--model", model, "--tools", "", "--strict-mcp-config", "--mcp-config",
+           '{"mcpServers":{}}', "--system-prompt", LABEL_SYS % ", ".join(order), "--exclude-dynamic-system-prompt-sections",
+           "--output-format", "json"]
+    t0 = time.time()
+    try:
+        p = subprocess.run(cmd, input="<message>\n%s\n</message>" % text, capture_output=True, text=True, timeout=240)
+        out, rc = p.stdout, p.returncode
+    except (OSError, subprocess.TimeoutExpired) as e:
+        out, rc = "", -1
+    try:
+        env = json.loads(out)
+    except ValueError:
+        env = {}
+    cost = float(env.get("total_cost_usd") or 0)
+    with open(ledger_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"t": time.time(), "judge": "labeller", "model": model, "ms": int((time.time() - t0) * 1000),
+                             "cost": cost, "rc": rc}) + "\n")
+    m = re.search(r"\{.*\}", env.get("result") or "", re.S)
+    try:
+        cls = json.loads(m.group(0)).get("class") if m else None
+    except ValueError:
+        cls = None
+    return (cls if cls in CLASSES else None), cost
+
+
+def label(corpus, run_root, live_state, claude_bin="claude", model="fable", seed=20260921):
+    """The labelling pass: tier one from the live journals (read only) for every ending whose session the live names directory
+    still lists; tier two twice per ending with the classes in two orders, the label their agreement; the agreement of tier
+    two with tier one on every ending that has both, against AGREEMENT_GATE_PCT. Writes labels.json and labels-summary.json
+    under the run root; every call's cost on labeller-ledger.jsonl there."""
+    import random
+    corpus, run_root, live_state = Path(corpus), Path(run_root), Path(live_state)
+    refuse_inside_repo(run_root)
+    run_root.mkdir(parents=True, exist_ok=True)
+    manifest = json.loads((corpus / "manifest.json").read_text())
+    names_dir = live_state / "names"
+    sid_of = {}
+    for n in (os.listdir(names_dir) if names_dir.is_dir() else []):
+        sid_of[hashlib.sha256(n.encode()).hexdigest()[:12]] = n
+    ledger = run_root / "labeller-ledger.jsonl"
+    rng = random.Random(seed)
+    rows, spent = [], 0.0
+    for e in manifest["endings"]:
+        sid = sid_of.get(e["session"])
+        t1 = tier_one_label(live_state, sid, float(e["cutT"] or 0), e.get("startT")) if sid else None
+        path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % e["id"])), None)
+        text = _last_assistant_text(path) if path else ""
+        a, c1 = ask_class(claude_bin, model, text, list(CLASSES), ledger)
+        order = list(CLASSES); rng.shuffle(order)
+        b, c2 = ask_class(claude_bin, model, text, order, ledger)
+        spent += c1 + c2
+        rows.append({"id": e["id"], "class": e["class"], "tierOne": t1, "labelA": a, "labelB": b, "label": a if a == b else None})
+    (run_root / "labels.json").write_text(json.dumps(rows, indent=1))
+    both = [r for r in rows if r["tierOne"] and r["label"]]
+    agree = sum(1 for r in both if (r["label"] == "finished") == (r["tierOne"] == "finished"))
+    pct = round(100.0 * agree / len(both), 1) if both else None
+    summary = {"endings": len(rows), "tierOneLabelled": sum(1 for r in rows if r["tierOne"]),
+               "labellerStable": sum(1 for r in rows if r["label"]), "both": len(both), "agree": agree, "agreementPct": pct,
+               "gatePct": AGREEMENT_GATE_PCT, "gatePassed": bool(both) and pct >= AGREEMENT_GATE_PCT,
+               "heuristicMatchesLabel": sum(1 for r in rows if r["label"] and r["label"] == r["class"]), "spentUsd": round(spent, 4)}
+    (run_root / "labels-summary.json").write_text(json.dumps(summary, indent=1))
+    return summary
+
+
 # ── the command line ───────────────────────────────────────────────────────────────────────────
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -427,6 +628,8 @@ def main(argv=None):
     ra.add_argument("--arm", required=True); ra.add_argument("--prompts", default=None); ra.add_argument("--budget-usd", type=float, default=None)
     ra.add_argument("--claude-bin", default="claude"); ra.add_argument("--now", type=int, default=None)
     rp = sub.add_parser("report"); rp.add_argument("--corpus", required=True); rp.add_argument("--run-root", required=True); rp.add_argument("--figure", default=None)
+    lb = sub.add_parser("label"); lb.add_argument("--corpus", required=True); lb.add_argument("--run-root", required=True)
+    lb.add_argument("--live-state", required=True); lb.add_argument("--claude-bin", default="claude"); lb.add_argument("--model", default="fable")
     a = ap.parse_args(argv)
     if a.cmd == "build-corpus":
         m = build_corpus(a.state_root, a.claude_root, a.dest, per_class=a.per_class)
@@ -442,6 +645,8 @@ def main(argv=None):
     elif a.cmd == "report":
         rows = report(a.corpus, a.run_root, figure=a.figure)
         print(json.dumps(rows, indent=1))
+    elif a.cmd == "label":
+        print(json.dumps(label(a.corpus, a.run_root, a.live_state, claude_bin=a.claude_bin, model=a.model), indent=1))
     return 0
 
 
