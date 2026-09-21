@@ -61,6 +61,10 @@ const isChat = (u) => /\/chat(\?|$)/.test(u), colOf = (u) => { const m = /[?&]co
 const boot = async () => {
   // every frame records its outbound frames by type and sid (installed before any navigation: the reload's boot is read whole)
 await page.addInitScript(() => { window.__sends = []; const orig = WebSocket.prototype.send;
+  // the pane's accepted listings, per session (artifacts.ts: one romp:artifacts-listing event per accepted answer): a read of the rows
+  // after a selection change holds on the followed session's NEXT answer, the page's own event (the flake of 2026-09-21 on main read the
+  // rows once the bar wore the name, before the answer had landed: [] where the file was expected, on a loaded runner)
+  window.__labListings = {}; window.addEventListener("romp:artifacts-listing", (e) => { const d = e.detail || {}; window.__labListings[d.sid] = ((window.__labListings[d.sid] || 0) + 1); });
   WebSocket.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type) window.__sends.push({ type: m.type, sid: m.sid || null }); } catch (e) {} return orig.call(this, d); }; });
 await page.goto(cfg.landing);
   await page.waitForSelector("#f-chat", { timeout: 30000 });
@@ -79,6 +83,11 @@ const shown = () => fr.evaluate(() => { const b = document.getElementById("art-p
   return { name: n ? n.textContent : null, notOpen: !!(b && b.querySelector(".art-not-open")), lock: l ? l.getAttribute("aria-pressed") : null, sid: localStorage.getItem("romp:artifacts:sid"), stored: localStorage.getItem("romp:artifacts:lock"),
     chip: n ? n.style.getPropertyValue("--chip-bg") : null, weight: n ? getComputedStyle(n).fontWeight : null, rows: Array.from(document.querySelectorAll(".art-row .art-name")).map((x) => x.textContent) }; });
 const waitShown = (name) => fr.waitForFunction((nm) => { const b = document.getElementById("art-pick"); const n = b && b.querySelector(".session-name"); return !!n && n.textContent === nm; }, name, { timeout: 30000 }).then(() => true).catch(() => false);
+// the listing answers a session has received so far, and the hold for its next one: the rows are read only after it
+const listings = (sid) => fr.evaluate((s) => (window.__labListings || {})[s] || 0, sid);
+const waitListing = (sid, n0) => fr.waitForFunction((a) => ((window.__labListings || {})[a.sid] || 0) > a.n0, { sid, n0 }, { timeout: 30000 }).then(() => true).catch(() => false);
+// a selection change driven from outside the pane, then the read: the bar's name (the selection) AND the followed session's answer (the rows)
+const followed = async (sid, drive) => { const n0 = await listings(sid); await drive(); const ok = await waitShown(cfg.names[sid]); const answered = await waitListing(sid, n0); return { want: cfg.names[sid], ok, answered, ...(await shown()) }; };
 const openCard = async () => { await fr.click("#art-pick", { timeout: 15000 }).catch(() => {}); await fr.waitForSelector("#art-picker", { timeout: 15000 }).catch(() => {});
   const card = await fr.evaluate(() => { const card = document.getElementById("art-picker"); if (!card) return null;
     const probe = document.createElement("div"); probe.style.background = "var(--menu-bg)"; probe.style.position = "absolute"; document.body.appendChild(probe); const menuBg = getComputedStyle(probe).backgroundColor; probe.remove();
@@ -102,17 +111,17 @@ if (fr) {
   out.initial = await shown();
   // (2) follow, unlocked: a switch in the first column moves the pane; a pick shows its session until a switch in the OTHER column replaces it
   const a1 = await activeOf(c1); const f1 = otherIn(a1, [cfg.web, cfg.tests]);
-  await switchTo(c1, f1); out.follow = { want: cfg.names[f1], ok: await waitShown(cfg.names[f1]), ...(await shown()) };
-  await switchTo(c1, a1); out.followBack = { want: cfg.names[a1], ok: await waitShown(cfg.names[a1]), ...(await shown()) };
+  out.follow = await followed(f1, () => switchTo(c1, f1));
+  out.followBack = await followed(a1, () => switchTo(c1, a1));
   // (2b) the bar's buttons are built once: a repaint keeps the focused button and its identity (the reviewers of PR 1925). The repaint
   // is an active-chat relay for the shown session posted to the pane's own window (a click in another frame would take the focus
   // itself, so it cannot be the repaint's cause here); the pane repaints its bar on it, and the button under the focus is the same node
   await fr.evaluate(() => { const b = document.getElementById("art-pick"); b.__labMark = 1; b.focus(); window.postMessage({ romp: "activeChat", id: localStorage.getItem("romp:artifacts:sid") }, "*"); });
   await page.waitForTimeout(400);
   out.focusKeep = await fr.evaluate(() => ({ active: document.activeElement ? document.activeElement.id : null, sameNode: document.getElementById("art-pick").__labMark === 1 }));
-  await pick(f1); out.pickUnlocked = { want: cfg.names[f1], ok: await waitShown(cfg.names[f1]), ...(await shown()) };
+  out.pickUnlocked = await followed(f1, () => pick(f1));
   const a2 = await activeOf(c2); const s2 = otherIn(a2, [cfg.api, cfg.docs]);
-  await switchTo(c2, s2); out.replaced = { want: cfg.names[s2], ok: await waitShown(cfg.names[s2]), ...(await shown()) };
+  out.replaced = await followed(s2, () => switchTo(c2, s2));
   // (3) the lock: a switch leaves the pane; a pick replaces the locked session and the lock stays on
   await fr.click("#art-lock", { timeout: 15000 }).catch(() => {});
   await fr.waitForFunction(() => { const l = document.getElementById("art-lock"); return !!l && l.getAttribute("aria-pressed") === "true"; }, null, { timeout: 10000 }).catch(() => {});
@@ -311,6 +320,7 @@ class ArtifactsFollowServed(unittest.TestCase):
         self.assertTrue(r["followBack"]["ok"], "and back: %r" % r["followBack"])
         self.assertEqual((r["pickUnlocked"]["ok"], r["pickUnlocked"]["lock"]), (True, "false"), "a pick shows its session and does NOT lock: %r" % r["pickUnlocked"])
         self.assertTrue(r["replaced"]["ok"], "a switch in the OTHER column replaced the pick (the follow continues): %r" % r["replaced"])
+        self.assertTrue(r["replaced"]["answered"], "the followed session's listing answer arrived (the page's own event) before the rows were read: %r" % r["replaced"])
         self.assertEqual(r["replaced"]["rows"], [r["replaced"]["want"] + "-notes.md"], "the listing followed the session")
 
     def test_the_bars_buttons_are_built_once_so_a_repaint_keeps_the_focused_button_and_its_identity(self):

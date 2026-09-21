@@ -111,6 +111,7 @@ test("the page: the picker in the strip's label and the menu card, the lock, the
   assert.match(ART, /window\.addEventListener\("romp:wsdown", \(\) => \{ downSeen\.add\(""\); \}\);/, "the local drop");
   assert.match(ART, /if \(hostIsDown\(sel\.sid\)\) \{ downSeen\.add\(h\); if \(!listing\) requestListing\(\); \}/, "a host down while the wait shows: the note in its place, on the down set's event (B)");
   assert.match(ART, /if \(bar && body\) return \{ bar, body \};/, "the bar's buttons are built once and updated in place: the focus and an open card stay (the lab reads the element across a repaint)");
+  assert.match(ART, /window\.dispatchEvent\(new CustomEvent\("romp:artifacts-listing", \{ detail: \{ sid: next\.sid, reqId: m\.reqId, n: answers, same \} \}\)\);/, "an accepted listing is an event on the page: the follow lab holds its reads on the followed session's answer, never on the bar's name or a wall-clock wait (the flake of 2026-09-21 on main)");
   assert.match(ART, /const shown = shownRow\(tabs, sel\.sid, known\);/, "the last known name for a closed tab (low d)");
   assert.doesNotMatch(ART, /art-refresh|"Refresh"|createElement\("select"\)|art-dot/, "no Refresh button, no native select, no identity dot");
   assert.match(ART, /localStorage\.setItem\(LOCK_KEY, on \? "1" : "0"\)/, "the lock persists per browser");

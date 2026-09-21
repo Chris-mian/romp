@@ -327,6 +327,9 @@ window.addEventListener("message", (ev) => {
     listing = next;
     if (root) root.dataset.answers = String(++answers);
     if (same) paintBar(); else paint();   // the same rows: the body's nodes and the reader's place untouched (the count alone re-read)
+    // the accepted answer is an EVENT on the page (one per accepted listing, naming the session and the ask it answered): a lab reading
+    // the rows after a selection change holds on it, never on a wall-clock wait or on the bar's name, which repaints before the answer
+    window.dispatchEvent(new CustomEvent("romp:artifacts-listing", { detail: { sid: next.sid, reqId: m.reqId, n: answers, same } }));
     if (stale && onScreen()) requestListing();   // a growth signalled while this ask was in flight: one re-ask, now that its answer landed
   }
 });
