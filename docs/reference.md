@@ -2579,8 +2579,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   hidden from the feed, with a transcript, whose cache-only parse read
   missed; a session nothing has parsed at its current version (no client's
   tab, no judge, no background warm, none of the card build's own parse
-  paths) rides it every build, and the warm gate leaves an unmoved, idle
-  session cold by design, so a standing count is those sessions, not a fault.
+  paths, nor any other road that parses through the parse store) rides it
+  every build, and the warm gate leaves an unmoved, idle session cold by
+  design, so a standing count is those sessions, not a fault.
   `coldFlip` counts the subset the memo held warm and re-read in place with
   one kernel parse (also under `parses.kernel`) instead of deriving cold;
   `coldFlip` climbing every build for one session with no appends means its
@@ -5338,13 +5339,22 @@ the token like any other.
 
 Two routes answer outside that shape. `POST /push/ack`, which the push worker
 uses to report that a notification was shown or tapped, is served ahead of the
-token check and authenticated by the per-push id instead: the id is 128 random
-bits the kernel minted for one notification and handed only to the device that
-notification went to, it stamps two timestamps on that one ledger row and buys
-nothing else, an unknown id is a 404, and the body is capped at 2 KB before a
-byte of it is read. A token-less `GET /` is not refused either: the gate runs
-and fails, and the answer is the page that asks for the token rather than a
-403, so a bare open of the dashboard has somewhere to paste it.
+token check and authenticated by the per-push id instead: 128 random bits the
+kernel minted for one notification and handed only to the device that
+notification went to. A report on a valid id stamps that row's shown or tapped
+time, where the first stamp stands so a repeated report changes nothing, and
+records the worker's build string, which every report rewrites. A shown report
+also marks the older unsettled, untapped pushes for the same session on that
+device superseded, since the show replaced their notifications. And the
+request's origin, read from its `Origin` header, else its `Referer`, else the
+forwarded headers or `Host`, is recorded on that device's subscription when
+none is on file; a recorded origin stands, and a different one is logged as a
+conflict. An unknown id is a 404, and the body is capped at 2 KB before a byte
+of it is read.
+
+A token-less `GET /` is not refused either: the gate runs and fails, and the
+answer is the page that asks for the token rather than a 403, so a bare open of
+the dashboard has somewhere to paste it.
 
 ## Switches
 

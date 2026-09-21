@@ -1447,7 +1447,14 @@ class AWarmEntryIsNeverDerivedCold(_Board):
     background warmer (_warm_fleet_bg) for it whenever _warm_wanted held, so under a feed-only client the warmer
     parsed the missing leaf every build (a None key, nothing stored), dropped the feed cache and woke the pusher,
     a build-warm-drop-wake loop at build speed for as long as the transcript was gone. The module's board has no
-    client, so that test appends a fake feed client and stubs the live map the warmer reads."""
+    client, so that test appends a fake feed client and stubs the live map the warmer reads.
+
+    The warmer's OWN loop is gated too (the post-merge review of that gate, 2026-09-21). It filtered on _warm_wanted
+    alone, which a gone leaf satisfies through its goal store's or states log's mtime since boot, so once any OTHER
+    cold session kicked the warmer, the warm thread parsed the missing path once per kick (a None store key, nothing
+    stored, one kernel parse counted, nothing on stderr); the body's ask being closed only kept the gone leaf from
+    kicking it alone. The multi-cold test below leaves a second session unparsed before the removal, so its cold road
+    asks, and reads a _parse recorder: the warm that answers parses the asker and never the gone path."""
 
     def test_an_append_after_the_chats_parse_derives_the_session_warm_once_and_the_chats_next_parse_hits(self):
         self._build()                                              # cold: three derivations, no parse
@@ -1603,6 +1610,65 @@ class AWarmEntryIsNeverDerivedCold(_Board):
                 self.assertFalse(km._pusher_wake.is_set(), "build %d: the pusher is not woken" % i)
                 self.assertEqual(km._PERF_STATS.parses["kernel"] - p0, 0, "build %d: nothing parsed the gone leaf" % i)
                 self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "unknown")
+
+    def test_a_warm_that_another_cold_session_kicked_skips_the_gone_leaf(self):
+        """The multi-cold shape under a FEED-ONLY client (the post-merge review of the leaf_ok gate, 2026-09-21): api
+        is left unparsed before web's transcript is removed, so api's cold road asks for a warm, and the warm that
+        answers walks every warm-wanted row, web among them (its goal store moved since boot). The gone leaf must be
+        skipped on the warm thread, so a _parse recorder never sees its path and the kernel parse count moves by the
+        stat-able sessions' misses alone (api's one; tests holds its slot and hits). The first two builds run under
+        a swallowed warm ask, so the fixture, not the warmer, decides which sessions are parsed before the removal."""
+        real, calls, parsed = km._warm_fleet_bg, [], []
+
+        def recording_warm(now):
+            calls.append(now)
+            real(now)
+            deadline = time.monotonic() + 10
+            while km._warming[0] and time.monotonic() < deadline:
+                time.sleep(0.01)
+        real_parse = km._parse
+
+        def recording_parse(path, sid, now):
+            parsed.append(str(path))
+            return real_parse(path, sid, now)
+        with km._clients_lock:
+            km._clients.append({"app": "feed", "wid": "w2", "send": lambda *a, **k: None, "alive": True})
+        saved_feed = list(km._built_feed)
+
+        def restore():
+            with km._clients_lock:
+                km._clients[:] = [c for c in km._clients if c.get("wid") != "w2"]
+            km._built_feed[:] = saved_feed
+            km._pusher_wake.clear()
+        self.addCleanup(restore)
+        with mock.patch.object(km, "_warm_fleet_bg", lambda now: None):
+            self._build()                                          # cold: three derivations, the warm ask swallowed
+            for sid in (WEB, TESTS):
+                km._parse(str(self.tpath[sid]), sid, NOW)          # the chat's parses of web and tests; api left cold
+            d, f = self._delta(self._build)
+            self.assertEqual((d["derived"], d["hit"]), (2, 1), d)  # web and tests flip warm; api stays a cold read
+            self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "quiet")
+        self.tpath[WEB].unlink()                                   # the leaf is gone from disk while the session lives
+        with mock.patch.object(km, "_live_map", lambda: self.live), \
+                mock.patch.object(km, "_warm_fleet_bg", recording_warm), \
+                mock.patch.object(km, "_parse", recording_parse):
+            p0 = km._PERF_STATS.parses["kernel"]
+            d, f = self._delta(self._build)
+            self.assertEqual((d["derived"], d["hit"]), (1, 2), d)  # web's one cold derivation
+            self.assertEqual(len(calls), 1, "api, unparsed and stat-able, kicks the warmer once")
+            self.assertIn(str(self.tpath[API]), parsed, "the warm parsed the session that asked")
+            self.assertNotIn(str(self.tpath[WEB]), parsed,
+                             "a leaf the warm thread cannot stat is skipped, never handed to _parse")
+            self.assertEqual(km._PERF_STATS.parses["kernel"] - p0, 1,
+                             "the kernel parse count moves by the stat-able sessions' misses alone: api's")
+            self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "unknown")
+            p1, n1 = km._PERF_STATS.parses["kernel"], len(parsed)
+            d, f = self._delta(self._build)                        # api flips warm on the warm's parse; web hits, gone
+            self.assertEqual((d["derived"], d["hit"]), (1, 2), d)
+            self.assertEqual(len(calls), 1, "nothing cold is left to ask")
+            self.assertEqual((km._PERF_STATS.parses["kernel"] - p1, len(parsed) - n1), (0, 0),
+                             "no parse per build while the leaf is gone")
+            self.assertEqual(self._cards(f)[WEB + ":g1"]["sessState"], "unknown")
 
     def test_a_cold_kernels_first_paint_still_parses_nothing(self):
         p0 = km._PERF_STATS.parses["kernel"]

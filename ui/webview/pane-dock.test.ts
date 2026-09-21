@@ -11,6 +11,7 @@ import {
   bandPxOf, roundRect, colNumberOf, ownerColumn, planTabDrop, type Shown,
 } from "./pane-dock";
 import { layout, leaves, isSplit, has, type Split, type Layout } from "./pane-tree";
+import * as PDockNS from "./pane-dock";
 
 const R = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
 const chat = { pane: CHAT, rect: R(0, 0, 600, 800) }, fleet = { pane: FLEET, rect: R(607, 0, 300, 800) }, feed = { pane: FEED, rect: R(914, 0, 400, 800) };
@@ -214,6 +215,11 @@ test("seedLayout weights a data pane by its own grow key, and reconcileShown ope
   assert.deepEqual(defaultDock(next.tree, "later-pane"), { target: "notes-pane", edge: "right" }, "the right end: the pane this module never heard of docks after the last leaf");
   const off = reconcileShown(next, { row: [CHAT, FEED, "notes-pane"], band: false, bandPx: 0, grow: {}, present: [CHAT, FEED, "artifacts-pane", "docs-pane", "notes-pane"] });
   assert.deepEqual(leaves(off.tree), [CHAT, FEED, "notes-pane"]); assert.deepEqual(off.parked.sort(), ["artifacts-pane", "docs-pane"], "a data pane toggled off parks like any pane");
+  // the ROW's order is read off the DOM, not a fixed list (the 1920 read: the earlier row put every shipped column before a data pane
+  // whatever the DOM said, and a test over a row in the fixed order could not tell the two apart): an INTERLEAVED row opens as written
+  const inter = reconcileShown(seedLayout({ row: [CHAT], band: false, bandPx: 0, grow: {} }), { row: [CHAT, "notes-pane", FILES], band: false, bandPx: 0, grow: {} });
+  assert.deepEqual(leaves(inter.tree), [CHAT, "notes-pane", FILES], "notes before files, as the row lists them (the fixed list opened files first)");
+  assert.equal((PDockNS as unknown as Record<string, unknown>).ROW_ORDER, undefined, "no fixed row list is exported any more");
 });
 
 test("seedLayout: a pane the grow store never named takes the mean of the named weights, never a sliver", () => {

@@ -86,7 +86,8 @@ test("data-pane-empty: a page-declared surface grabs for an unknown app; a contr
 test("install wires a page for any app: a registry pane's document gets the style, the wired flag and the read-only hook", () => {
   const listeners: string[] = [];
   const body = { classList: { contains: () => false, toggle() {}, remove() {} } };
-  const head = { appendChild() {} };
+  const appended: Array<{ id: string; textContent: string }> = [];
+  const head = { appendChild(n: { id: string; textContent: string }) { appended.push(n); } };
   const doc = { body, head, documentElement: head, getElementById: () => null, createElement: () => ({ id: "", textContent: "" }), addEventListener: (k: string) => { listeners.push(k); } };
   const win = { document: doc, parent: {} } as unknown as Window;
   install(win, "notes");
@@ -95,4 +96,6 @@ test("install wires a page for any app: a registry pane's document gets the styl
   assert.equal(w.__rompPaneGrab && w.__rompPaneGrab.app, "notes");
   assert.deepEqual(listeners.sort(), ["pointerdown", "pointerleave", "pointermove"]);
   assert.equal(w.__rompPaneGrab!.empty(fake(["[data-pane-empty]"]) as unknown as Element), true, "the hook answers by the declared surface");
+  assert.equal(appended.length, 1, "the hand's style is appended to the page (the 1920 read: the fake recorded nothing, so a dropped ensureStyle passed)");
+  assert.equal(appended[0].id, "pd-grab-css"); assert.match(appended[0].textContent, /cursor:grab/);
 });

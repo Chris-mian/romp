@@ -30,7 +30,6 @@ export const CHAT = "chat-pane", FLEET = "fleet-pane", FEED = "feed-pane", FILES
  *  is rendered from the pane registry in rail order (plans/panes-as-data.md, phase two), and the engine reads it off
  *  the DOM (`Shown.row`, in document order), so a data pane or a shipped pane this module never heard of takes its
  *  place from that order alone. */
-export const ROW_ORDER: PaneId[] = [CHAT, FLEET, FEED, FILES];
 
 export interface Pt { x: number; y: number }
 export type Payload = "pane" | "tab";
@@ -125,8 +124,9 @@ export function crossedSlop(dx: number, dy: number, slop: number = SLOP): boolea
   return Math.abs(dx) >= slop || Math.abs(dy) >= slop;
 }
 
-/** What the shell shows, read by the engine from the DOM: the panes on screen in row order (the chat, its
- *  side columns, then the outline, feed and files as toggled on), whether the band is on, the band's px. */
+/** What the shell shows, read by the engine from the DOM: every row pane on screen in DOCUMENT order (the chat and its
+ *  side columns, the outline, the feed, the files pane, the Artifacts pane and the data panes, as the shell renders and
+ *  toggles them), whether the band is on, the band's px. */
 export interface Shown {
   row: PaneId[]; band: boolean; bandPx: number; grow: Record<string, number>;
   /** the pane ids whose ELEMENTS exist (shown or hidden); absent, every parked id is kept. A park keeps a MOUNTED
