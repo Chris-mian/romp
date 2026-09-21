@@ -6243,8 +6243,8 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
   head.appendChild(n);
   if (collapsed) {
     // the folded gist, MEMBER-derived: one pip by the TAB's own ring rule (tab-state.ts) — red for a
-    // hidden member blocked on you or waiting for you, yellow for one with something waiting on you (the
-    // ask ring, 2026-09-13 — a fold must not hide it), gold for working, amber for an API error
+    // hidden member stopped on you, magenta for one with a card that needs you (the Needs you ring,
+    // the ask ring of 2026-09-13; a fold must not hide it), gold for working, amber for an API error
     // retrying on its own (the tab renders that amber too; a red pip there was a false interrupt).
     // After the count and small, so the header still reads as a label; the tooltip names the sessions.
     // Over the HIDDEN members only: a pinned member's own tab shows its state. Not the header's own

@@ -121,9 +121,10 @@ Board {
   kinds: string[]      // the card kinds this board renders, from the fixed set below; default ["notice"]
 }
 Category  { id: string /* the id grammar */; title: string /* <= 40, default: the id upper-cased */; chip: Chip /* default "neutral" */ }
-Chip      = "working" | "blocked" | "completed" | "neutral"     // the state-chip classes styles.css has (.chip-working,
-                                                               //   .chip-blocked, .chip-completed; neutral = the dim .chip);
-                                                               //   a fifth colour is a release
+Chip      = "working" | "blocked" | "completed" | "neutral"     // the column-chip classes feed.css has (.fcol-chip-working gold,
+                                                               //   .fcol-chip-blocked the Needs you magenta, the name a schema value,
+                                                               //   .fcol-chip-completed blue; neutral = the dim chip); no chip value
+                                                               //   paints red, the hard stop's alone; a fifth colour is a release
 SortKey   { key: "t" | "session" | "owner" | "title"; dir: "asc" | "desc" }   // the fixed set; a fifth key is a release
 Rule      { when: Predicate; category: string /* one of the board's ids */ }
 Predicate { needsYou?: boolean; producer?: string; keyPrefix?: string }       // every present member must hold (AND);

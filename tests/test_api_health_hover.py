@@ -822,10 +822,10 @@ class Script(unittest.TestCase):
         # each with its light twin; the bars' fills as classes with their light twins; the swatches keep the chip colours
         for dark, light in ((".ah-c-ok{color:var(--accent,#9cd2ff)}", "body.theme-light .ah-c-ok{color:#C2410C}"),
                             (".ah-c-r429{color:#ef6b6f}", "body.theme-light .ah-c-r429{color:#B02A1C}"),
-                            (".ah-c-r5xx{color:#e879f9}", "body.theme-light .ah-c-r5xx{color:#86198F}"),
+                            (".ah-c-r5xx{color:var(--st-5xx-ink,#c4b5fd)}", "body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1d95)}"),   # the inks through the token since 2026-09-21 (plans/needs-you.md: apart from the Needs you magenta)
                             (".ah-c-none{color:#d9f99d}", "body.theme-light .ah-c-none{color:#4f46e5}"),   # T340: the other band's hue as ink
                             (".ah-seg-ok{fill:var(--accent,#9cd2ff)}", "body.theme-light .ah-seg-ok{fill:#C2410C}"),
-                            (".ah-seg-serverErrors{fill:var(--st-5xx-bg,#c026d3)}", "body.theme-light .ah-seg-serverErrors{fill:#A21CAF}"),
+                            (".ah-seg-serverErrors{fill:var(--st-5xx-bg,#7e22ce)}", "body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1d95)}"),
                             (".ah-seg-noStatus,.ah-seg-other{fill:#d9f99d}", "body.theme-light .ah-seg-noStatus,body.theme-light .ah-seg-other{fill:#4f46e5}")):
             self.assertIn(dark, html, dark)
             self.assertIn(light, html, "the light twin: " + light)

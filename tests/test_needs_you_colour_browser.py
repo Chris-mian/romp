@@ -1,10 +1,14 @@
 """The Needs you colour and word on every surface (plans/needs-you.md, phase two): a hermetic kernel over two synthetic sessions
-in the notes-api demo world (one with a goal blocked on the user, so its card files under Needs you and its tab wears the ring),
-the real pages served from a copy of the built bundle, driven by Playwright in BOTH themes. The COMPUTED colours read: the feed's
-column header chip, the modal's question label and mark, the tab's ring outline, the settings' ring demo, the phone picker's
-current-session border and row bar; the WORDS read: the column header, the modal's label, the settings' three ring rows. The chat
-chip's word for a live prompt and the sessions pane's lane chip are pinned by their unit tests (a live prompt needs a backend;
-the lane draws on a canvas). Synthetic only (placeholder ids, invented text)."""
+(web, under one tag, with a judge's question and a blocked sub-goal under it; api idle) in the notes-api demo world, the real
+pages served from a copy of the built bundle, driven by Playwright in BOTH themes. What it reads, computed, never as source:
+the feed's column header chip (its word and its colours), the card face's checklist mark for the blocked sub-goal, the modal's
+question label and mark; the landing page's chat tab ring (class and outline), the folded tag header's pip for the hidden web,
+the section's overview row for web (the shared status chip's word and fill), the settings frame's three ring rows (their
+labels, in precedence order) and the Needs you ring's demo tab; the outline page's row mark for the question; the phone
+picker's current-session border and its row's bar. Not read here: the bar under the transcript, whose chip says Needs you only
+for a live prompt (the kernel's _session_chip; status-chip.test.ts and tab-snapshot.test.ts pin the word), and the sessions
+pane's lane chip (drawn on a canvas, pinned by timeline-awaiting.test.ts). Synthetic only: placeholder ids, invented text,
+hostname TESTHOST."""
 import json
 import os
 import re
@@ -64,6 +68,9 @@ const feed = await ctx.newPage(); feed.on("pageerror", (e) => errors.push("feed:
 await feed.goto(cfg.feed);
 const cardSel = '[data-key="a:' + cfg.web + ':gw"]';
 await feed.waitForSelector(cardSel, { state: "attached", timeout: 60000 });
+// the card face's sub-goal checklist shows under its Sub-goals section: open it (the button's own click(), inside the card) before the modal
+await feed.evaluate((sel) => { const b = Array.from(document.querySelector(sel).querySelectorAll(".fask-secbtn")).find((x) => /sub-goal/.test(x.textContent || "")); if (b) b.click(); }, cardSel);   // the button counts its sub-goals ("1 sub-goal")
+await feed.waitForSelector(cardSel + " .fcheck.question .fcheck-mark", { timeout: 20000 }).catch(async () => { errors.push("card: no sub-goal checklist mark on the card face: " + (await feed.evaluate((sel) => { const c = document.querySelector(sel); if (!c) return "no card"; const secs = c.querySelector(".fask-secs"); const cl = c.querySelector(".fask-checklist, .fcheck"); const it = c._it || {}; return "btns=" + JSON.stringify(Array.from(c.querySelectorAll(".fask-secbtn")).map((b) => [b.textContent, b.style.display, b.className])) + " turnId=" + it.turnId + " tree=" + JSON.stringify((it.tree || []).map((n) => [n.id.slice(-3), n.status, n.children, n.kind, n.reviewedEarlier])) + " checklist=" + (cl ? cl.outerHTML.slice(0, 200) : "none"); }, cardSel))); });
 await feed.evaluate((sel) => document.querySelector(sel).click(), cardSel);   // the card element itself: a click on the title would open the session instead
 await feed.waitForSelector("#feed-modal-body .st-question .ftree-meta", { state: "attached", timeout: 20000 }).catch(async () => {
   errors.push("modal: " + (await feed.evaluate(() => { const b = document.getElementById("feed-modal-body"); return b ? b.innerHTML.slice(0, 600) : "no modal body; modal=" + !!document.getElementById("feed-modal"); })));
@@ -73,10 +80,12 @@ for (const t of themes) {
   out.feed[t] = await feed.evaluate((sel) => {
     const chip = document.querySelector(".feed-col.col-needsInput .fcol-chip"); const card = document.querySelector(sel);
     const meta = document.querySelector("#feed-modal-body .st-question .ftree-meta"), mark = document.querySelector("#feed-modal-body .st-question .ftree-mark");
+    const cmark = card ? card.querySelector(".fcheck.question .fcheck-mark") : null;   // the card face's checklist mark for the blocked sub-goal
     const cs = (e) => e ? getComputedStyle(e) : null;
     return { headText: chip ? chip.textContent : null, headBg: chip ? cs(chip).backgroundColor : null, headFg: chip ? cs(chip).color : null,
              cardCol: card ? card.parentElement.id : null, metaText: meta ? meta.textContent : null, metaBg: meta ? cs(meta).backgroundColor : null,
-             markBorder: mark ? cs(mark).borderTopColor : null, markColor: mark ? cs(mark).color : null };
+             markBorder: mark ? cs(mark).borderTopColor : null, markColor: mark ? cs(mark).color : null,
+             cardMarkBorder: cmark ? cs(cmark).borderTopColor : null, cardMarkColor: cmark ? cs(cmark).color : null };
   }, cardSel);
 }
 // ── the landing: the chat frame's tab ring and the settings frame's ring rows and demo ──
@@ -94,15 +103,35 @@ if (!setF) errors.push("settings: no frame opened");
 await chatF.waitForFunction((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); return !!t && t.classList.contains("ring-waiting-on-you"); }, cfg.web, { timeout: 30000 }).catch(async () => {
   errors.push("strip: " + (await chatF.evaluate((id) => Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.dataset.id.slice(0, 8) + ":" + t.className).join(" | "), cfg.web)));
 });
+// the outline page's tree row for the question wears the mark in the token
+const outline = await ctx.newPage(); outline.on("pageerror", (e) => errors.push("outline: " + String(e).slice(0, 200)));
+await outline.goto(cfg.outline);
+await outline.waitForSelector(".ledger-tnode.blocked .ledger-tmark", { timeout: 30000 }).catch(() => { errors.push("outline: no blocked row mark"); });
+out.pip = {}; out.overview = {}; out.outline = {};
 for (const t of themes) {
-  await setTheme(chatF, t); if (setF) await setTheme(setF, t); await setTheme(page, t); await page.waitForTimeout(200);
+  await setTheme(chatF, t); if (setF) await setTheme(setF, t); await setTheme(page, t); await setTheme(outline, t); await page.waitForTimeout(200);
   out.strip[t] = await chatF.evaluate((id) => { const tab = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const cs = getComputedStyle(tab);
     return { cls: tab.className, outlineColor: cs.outlineColor, outlineStyle: cs.outlineStyle }; }, cfg.web);
+  out.outline[t] = await outline.evaluate(() => { const m = document.querySelector(".ledger-tnode.blocked .ledger-tmark"); const cs = m ? getComputedStyle(m) : null;
+    return { color: cs ? cs.color : null, border: cs ? cs.borderTopColor : null }; });
   out.settings[t] = !setF ? { rows: [] } : await setF.evaluate(() => {
     const rows = Array.from(document.querySelectorAll("#rs-rings .rs-widget[data-widget]")).map((r) => { const d = r.querySelector(".rs-widget-demo .tab"); const cs = d ? getComputedStyle(d) : null;
       return { id: r.dataset.widget, label: r.querySelector(".rs-widget-name b").textContent, demoOutline: cs ? cs.outlineColor : null, demoStyle: cs ? cs.outlineStyle : null }; });
     return { rows };
   });
+}
+// the folded group pip and the overview row: web sits alone under one tag; a click on its header (by the element's own click(), since the
+// settings frame intercepts pointer events once open) folds the section, so the header's pip reads web's ring, and shows the section's
+// overview in the transcript's place, whose row wears the shared status chip with the category's word
+await chatF.waitForSelector('#tabs .tab-group-head[data-group="notes"]', { timeout: 30000 }).catch(() => { errors.push("strip: no tag section header"); });
+await chatF.evaluate(() => { const h = document.querySelector('#tabs .tab-group-head[data-group="notes"]'); if (h) h.click(); });
+await chatF.waitForSelector('#tabs .tab-group-head[data-group="notes"] .tab-group-pip.ask', { timeout: 20000 }).catch(() => { errors.push("pip: the folded header shows no ask pip"); });
+await chatF.waitForSelector('.snap-row .chip.chip-needsInput', { timeout: 20000 }).catch(() => { errors.push("overview: no Needs you chip on the section's row"); });
+for (const t of themes) {
+  await setTheme(chatF, t); await page.waitForTimeout(200);
+  out.pip[t] = await chatF.evaluate(() => { const p = document.querySelector('#tabs .tab-group-head[data-group="notes"] .tab-group-pip'); return p ? { cls: p.className, bg: getComputedStyle(p).backgroundColor } : null; });
+  out.overview[t] = await chatF.evaluate((id) => { const row = Array.from(document.querySelectorAll(".snap-row")).find((r) => (r.querySelector(".snap-sess") || {}).textContent === "web");
+    const c = row ? row.querySelector(".chip") : null; const cs = c ? getComputedStyle(c) : null; return { text: c ? c.textContent : null, bg: cs ? cs.backgroundColor : null, cls: c ? c.className : null }; }, cfg.web);
 }
 await setTheme(chatF, "dark"); if (setF) await setTheme(setF, "dark"); await setTheme(page, "dark");
 // ── the phone: the picker's current-session border and the row's bar ──
@@ -175,12 +204,19 @@ class NeedsYouColourServed(unittest.TestCase):
         # The diary entry is in the fold's shape (ev_t/src/kind/at): the rollup rederives every flag from the log at
         # boot, so a bare `blocked` flag with no diary event behind it is cleared before the first frame.
         g = WEB + ":gw"
+        gc = WEB + ":gc"   # the blocked sub-goal: the card face's checklist mark (.fcheck.question), the modal's second question row
         Path(state, "goals", WEB + ".json").write_text(json.dumps(
             {"rompUuid": WEB, "seq": 3, "lastNode": g, "closedTurns": [],
-             "nodes": {g: {"id": g, "text": "wire the fixtures directory into the integration suite", "parentId": None,
+             "nodes": {gc: {"id": gc, "text": "pick the database the fixtures load into", "parentId": g, "nodeComplete": False, "blocked": True,
+                            "blockWhy": "which database?", "cleared": False, "trail": [], "t": t0 + 5,
+                            "log": [{"ev_t": t0 + 62, "src": "planner", "kind": "block", "why": "asked which database", "at": t0 + 62}]},
+                       g: {"id": g, "text": "wire the fixtures directory into the integration suite", "parentId": None,
                            "nodeComplete": False, "blocked": True, "blockWhy": "which database does the suite target?", "cleared": False, "trail": [], "t": t0,
                            "log": [{"ev_t": t0 + 61, "src": "planner", "kind": "block", "why": "asked which database the suite targets", "at": t0 + 61}]}},
-             "placements": {}, "status": {g: "blocked"}}))
+             "placements": {}, "status": {g: "blocked", gc: "blocked"}}))
+        # one tag holding web: the strip groups by tag, so its header can be folded (the pip) and clicked (the overview row)
+        Path(state, "timeline-views.json").write_text(json.dumps(
+            {"tags": [{"id": "t-notes", "name": "notes", "color": "#9088F0", "members": [WEB]}], "tagOrder": ["notes"]}))
         cls.port, cls.token = _free_port(), "testtok-needsyou"
         env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token, ROMP_HOST_NAME="TESTHOST")
         cls.klog = os.path.join(cls.lab, "kernel.log")
@@ -210,7 +246,7 @@ class NeedsYouColourServed(unittest.TestCase):
             cfg = os.path.join(self.lab, "needsyou.json")
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
-                json.dump({"feed": base + "/feed?token=" + self.token, "landing": base + "/?token=" + self.token, "chat": base + "/chat?token=" + self.token,
+                json.dump({"outline": base + "/fleet?token=" + self.token, "feed": base + "/feed?token=" + self.token, "landing": base + "/?token=" + self.token, "chat": base + "/chat?token=" + self.token,
                            "token": self.token, "web": WEB, "api": API}, f)
             driver = os.path.join(self.lab, "needsyou.mjs")
             Path(driver).write_text(DRIVER)
@@ -236,11 +272,16 @@ class NeedsYouColourServed(unittest.TestCase):
             self.assertEqual(f["headText"], "Needs you", "%s: the column header's word" % t)
             self.assertEqual(f["headBg"], TOKEN[t], "%s: the column chip wears the Needs you token: %r" % (t, f))
             self.assertEqual(f["metaText"], "Needs you", "%s: the modal's question label reads the category's word" % t)
+            self.assertEqual((f["cardMarkBorder"], f["cardMarkColor"]), (TOKEN[t], TOKEN[t]), "%s: the card face's checklist mark for the blocked sub-goal wears the token: %r" % (t, f))
             self.assertEqual(f["metaBg"], TOKEN[t], "%s: the label's chip wears the token: %r" % (t, f))
             self.assertEqual((f["markBorder"], f["markColor"]), (TOKEN[t], TOKEN[t]), "%s: the question mark's ring and glyph wear the token, never red: %r" % (t, f))
 
     def test_the_tab_ring_and_the_settings_demo_wear_the_token_and_the_ring_rows_read_blocked_needs_you_retrying(self):
         r = self._result()
+        for t in ("dark", "light"):
+            self.assertEqual(r["pip"][t], {"cls": "tab-group-pip ask", "bg": TOKEN[t]}, "%s: the folded header's pip for the hidden web wears the token" % t)
+            self.assertEqual(r["overview"][t], {"text": "Needs you", "bg": TOKEN[t], "cls": "chip chip-needsInput"}, "%s: the section's overview row for web wears the shared chip with the category's word in the token" % t)
+            self.assertEqual(r["outline"][t], {"color": TOKEN[t], "border": TOKEN[t]}, "%s: the outline page's row mark for the question wears the token" % t)
         for t in ("dark", "light"):
             s = r["strip"][t]
             self.assertIn("ring-waiting-on-you", s["cls"].split(), "%s: the tab wears the Needs you ring: %r" % (t, s))

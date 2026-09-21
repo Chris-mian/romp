@@ -247,7 +247,7 @@ export function snapshotHeading(name: string, n: number): { count: string; label
 }
 
 /** A row's spoken label (name, the chip's words, the state phrase, what it is doing, its own note) and its hover
- *  title. The CHIP's words are spoken whenever the row wears one ("Blocked", "API error", "Awaiting 3 agents"),
+ *  title. The CHIP's words are spoken whenever the row wears one ("Needs you", "API error", "Awaiting 3 agents"),
  *  once, where the painted chip sits beside the pip: an awaiting row's state phrase IS the chip's words, so it is
  *  not repeated; an on-you row's tab phrase ("needs you: waiting on your answer") follows the word. The button's
  *  aria-label replaces its content for a reader, so a word only the chip carried would never be spoken, and a

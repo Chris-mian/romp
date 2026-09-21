@@ -3427,7 +3427,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     // "Follow up": re-target the footer composer at THIS sub so the answer files under it and unblocks just
     // this branch (the judge reopens + force-files under any node id — no kernel change).
     const fu = el("button", "ftree-act-btn ftree-act-fup"); fu.textContent = "Follow up";
-    fu.title = node.status === "question" ? "follow up on this specific blocked sub-goal" : "follow up on this specific sub-goal";
+    fu.title = node.status === "question" ? "follow up on this sub-goal that needs you" : "follow up on this specific sub-goal";
     fu.onclick = (ev) => { ev.stopPropagation(); openSubFollowUp?.(node.id, node.text || "(sub-goal)"); };
     acts.append(fu);
     line.appendChild(acts);

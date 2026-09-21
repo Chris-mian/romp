@@ -200,9 +200,12 @@ body.scheme-solarized-dark {
   --st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;
   --st-compacting-bg: #14b8a6; --st-compacting-fg: #ffffff;   /* teal — the compacting accent (text + compression bar) */
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;   /* alarm red — session stopped on an API error */
-  /* magenta — a 5xx answer (529 included) in the API-health histograms and counts (T316): distinct from the 429 red
-     and the retrying amber, so a storm of one kind never reads as the other */
-  --st-5xx-bg: #c026d3; --st-5xx-fg: #ffffff;
+  /* purple: a 5xx answer (529 included) in the API-health histograms and counts (T316): distinct from the 429 red
+     and the retrying amber, so a storm of one kind never reads as the other; and, since 2026-09-21, apart from the
+     Needs you magenta below (OKLab distance x100 19 for the fill, 23 for the ink; theme-parity.test.ts pins both), since
+     the API-health cell sits on the landing page beside every session's state (plans/needs-you.md). --st-5xx-ink is the
+     text form (a count's digits in the cell's tip), readable at 9:1 on the page where the fill would sit under 2.4:1. */
+  --st-5xx-bg: #7e22ce; --st-5xx-fg: #ffffff; --st-5xx-ink: #c4b5fd;
   /* amber-orange — the API is backing off and retrying (the tab ring, the chip, the chat's retry notices); the
      hue sat RAW in seven rules until 2026-09-08 (5.38:1 on the chat's card surface) */
   --st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;
@@ -286,14 +289,13 @@ body.theme-light {
   --st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;
   --st-compacting-bg: #0F766E; --st-compacting-fg: #ffffff;
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
-  --st-5xx-bg: #A21CAF; --st-5xx-fg: #ffffff;   /* the 5xx magenta in the light palette: 5.3:1 on the card, white on it 6.7:1 */
+  --st-5xx-bg: #4c1d95; --st-5xx-fg: #ffffff; --st-5xx-ink: #4c1d95;   /* the 5xx purple in the light palette: 9.2:1 on the page, white on it 11:1; 18 from the Needs you magenta */
   --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;   /* the retrying amber in the light palette: 4.86:1 on the card, white on it 6.18:1 */
-  /* the ask yellow in the light palette (2026-09-14): a dark olive at OKLCH lightness 0.38, hue 94, because the light
-     palette's convention (the same hue darkened to lightness 0.5 for 3:1 on cream) would put a second yellow on the
-     working gold (#8B6914), and hue alone does not survive a red-green deficiency against the gold or the retrying
-     amber (#9C4A0C); lightness is the axis left. 8.40:1 on the page, white on it 10.01:1; OKLab distance x100 from the
-     other rings and dots, full colour / under a deficiency: working 16.4 / 15.3, retrying 15.4 / 8.3, awaiting 22.7 /
-     8.6, blocked 30.7 / 16.1, await-green 33.6 / 30.3 (theme-parity.test.ts pins every pair, both themes). */
+  /* the NEEDS YOU magenta in the light palette (plans/needs-you.md, 2026-09-21; the dark olive of the ask yellow before it):
+     the same hue as the dark token, darkened for the cream page. 5.30:1 on the page, white on it 6.32:1; OKLab distance
+     x100 from the other rings and dots, full colour / under a red-green deficiency: working 29.4 / 22.7, retrying
+     25.2 / 22.3, awaiting 22.3 / 22.3, blocked 23.5 / 21.7, await-green 45.7 / 30.2 (theme-parity.test.ts pins every
+     pair, both themes, at the floors 15 and 8). */
   --st-needs-bg: #a21caf; --st-needs-fg: #ffffff;
   --radius-menu: 6px;
   --shadow-menu: 0 4px 12px rgba(31, 26, 20, 0.16);
@@ -555,10 +557,10 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    override died with the ring it overrode, 2026-08-26.) */
 /* THE RINGS on all four sides, no layout jitter: WIDGETS since 2026-09-14 (tab-widgets.ts), one per row of the
    settings' Tab widgets section with a switch each, and a tab wears ONE at a time (composeTabRing: the first
-   switched-on ring in precedence order, red over yellow over amber). The rules below key on the RING class the strip
+   switched-on ring in precedence order, red over magenta over amber). The rules below key on the RING class the strip
    composes, never on the state class, so a ring switched off leaves the tab with its state's dot and hover title
    alone, and no :not chain or specificity game decides which ring shows. WORKING shows a gold dot (.tab-dot)
-   instead; the dashed YELLOW ring is the ASK ring (a card of the session's under needs-you, 2026-09-13), which rides
+   instead; the dashed MAGENTA ring is the Needs you ring (a card of the session's under Needs you; the ask ring of 2026-09-13), which rides
    beside any live state, working included; COMPACTING intentionally gets NO outline (the user: it's
    transient plumbing, not something to flag — the statusline's scan bar is the
    compacting cue); a selected compacting tab keeps its normal active styling.
@@ -578,11 +580,11 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .tab.tab-peek { outline: 1.5px dashed rgba(255, 255, 255, 0.35); outline-offset: -2px; }
 .tab.tab-peek .tab-label { font-style: italic; opacity: 0.85; }
 .tab.ring-needs-you, .tab.ring-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }   /* the red (--state from .tab-awaiting / .tab-blocked) and the amber (from .tab-retrying) */
-/* THE ASK RING (2026-09-13): the same dashed ring in the ask YELLOW when the feed files a card of this session under
+/* THE NEEDS YOU RING (the ask ring of 2026-09-13, magenta since 2026-09-21): the same dashed ring in the Needs you MAGENTA when the feed files a card of this session under
    needs-you — it asked something, a decision is pending, a peer's message waits for a say — so the sessions that need
    you stand out in the strip without a click. It rides beside any live state: the session may be idle, awaiting or
    still WORKING while the card waits, composed with the working dot. Which ring shows is the composition's call
-   (tab-widgets.ts composeTabRing, red over yellow over amber, one class at a time), so this rule needs no :not chain
+   (tab-widgets.ts composeTabRing, red over magenta over amber, one class at a time), so this rule needs no :not chain
    and no specificity above the red and amber rule's; a stopped session with the red ring switched off wears this one
    when it has a card, which is true of that tab. tab-rings.test.ts pins the rules and the tokens. */
 .tab.ring-waiting-on-you { outline: 2px dashed var(--st-needs-bg); outline-offset: -2px; }

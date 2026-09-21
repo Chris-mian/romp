@@ -173,7 +173,7 @@ body.theme-light {
   --st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;
   --st-compacting-bg: #0F766E; --st-compacting-fg: #ffffff;
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
-  --st-5xx-bg: #A21CAF; --st-5xx-fg: #ffffff;   /* the 5xx magenta (T316), mirrors styles.css */
+  --st-5xx-bg: #4c1d95; --st-5xx-fg: #ffffff;   /* the 5xx purple (T316; apart from the Needs you magenta since 2026-09-21), mirrors styles.css */
   --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;
   --st-needs-bg: #a21caf; --st-needs-fg: #ffffff;   /* the Needs you magenta in the light palette, mirrors styles.css */
   --radius-menu: 6px;
@@ -1094,7 +1094,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    inverted: the outlined chips say "the session hit trouble", this one says "romp can't even look". */
 .fask-jauth {
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
-  color: #fff; background: #c0392b; border: 1px solid #c0392b; border-radius: 5px; padding: 1px 6px;
+  color: var(--st-needs-fg); background: var(--st-needs-bg); border: 1px solid var(--st-needs-bg); border-radius: 5px; padding: 1px 6px;   /* the Needs you token (plans/needs-you.md): the session runs, romp's analysis is down, the fix is yours; not a hard stop, so not red */
 }
 .fdismiss.fretry { color: #e5484d; border-color: #e5484d; }
 .fdismiss.fretry:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
