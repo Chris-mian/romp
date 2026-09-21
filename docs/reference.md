@@ -2090,19 +2090,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   only a sender that read the shared baseline absent produces (a sid's first
   whole frame to reach a client seeds the baseline, whichever sender sent it,
   so its later senders diff against it instead of re-sending the whole
-  session), in two faces: the cycle's repair after two whole-frame senders
-  raced on a baseline-less sid (two senders that both read it absent before
-  their builds leave none and mark the session, no single-client push re-seeds
-  it in between, and the next cycle whose loop reads the baseline absent sends
-  every base holder the full and takes the mark off with its write; a cycle
-  that sent tails leaves it for the next one), and the detector's accepted
-  false positive, a sender whose build the
-  cycle's write landed inside with its own list the newer one: it sends every
-  base holder the full, pops the cycle's baseline and marks the session with
-  no client stale, and the next cycle sends every base holder the full once
-  more (the boot's attach handshake beside the cycle's cold build of the same
-  tab, two frames and two rows per client where a tail went before; a stamp
-  of the build's start beside the baseline, its own item, removes it); in the
+  session), in three faces, the boot's ordinary interleaving in either order
+  (the cycle's cold build of the watched tab beside the attach handshake's
+  targeted push): a strand's repair, when the sender's list was the older one
+  and a whole-frame writer landed inside its build, so its seed popped the
+  baseline and marked the session, and the next cycle whose loop reads the
+  baseline absent sends every base holder the full and takes the mark off
+  with its write (a cycle that sent tails leaves it for the next one); the
+  detector's accepted false positive, when the sender's list was the newer
+  one, so it marks the session with no client stale and sends one full and
+  one row per client where a tail went before, and the next cycle's full
+  goes once more only when the session frame moved or the 60-second repost
+  window passed since, else it dedups on the client's slot and files no row;
+  and the cycle itself as the sender that read the baseline absent with a
+  seed landing inside its build, a race the detector does not mark (nothing
+  marked, no strand), one full and one row per base holder where a tail went
+  before, and tails with no new row at the next cycle; in the
   `chatFull` row below every change-0 face has `changeFrom` 0 with both edges
   held, the floor's has `firstHeld` false);
   `changeBelowFirst` for a change at or before the held first edge;
