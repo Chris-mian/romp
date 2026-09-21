@@ -47,13 +47,17 @@ test("kernel: the clears-log refusal names the request the way _refuse_drive's f
   assert.match(KERNEL, /_reorder\(not _not_back, _not_back, len\(\{_cur2\.get\(i\) for i in _not_back\}\) or 1\)/, "the owed cards came back only if every one did; the frame names the ones that did not and how many batches they sit in");
   assert.match(KERNEL, /_send\("Undo brought back earlier cards first",[\s\S]{0,400}ok=True\)/);
   assert.match(KERNEL, /_send\("Undo went to earlier cards first",[\s\S]{0,600}ok=True, owed=value\.get\("owed"\)/, "the words for an owed store still refusing, naming the owed ids");
-  assert.match(KERNEL, /They still need one more Undo; the last clear comes back on the press after that\./, "the words name the press (the sixth executed review)");
+  assert.match(KERNEL, /Once that session's store can be read, one Undo brings them back and the next the last clear\./, "the words name the press (the sixth executed review)");
   assert.match(KERNEL, /"owed": \[\] if landed else list\(not_back\), "stamps": int\(stamps\)/, "the ids that did NOT come back, and how many batches they sit in (the seventh executed review)");
-  assert.match(KERNEL, /They were left at different points, so they take more than one Undo; the last clear comes back after them\./, "no press count when they hold more than one stamp");
+  assert.match(KERNEL, /Once their stores can be read they take more than one Undo, since they were left at different points, and the last clear comes back after them\./, "no press count when they hold more than one stamp");
   // round eight: the kernel's stack rides every account and the page takes it as its own; a batch this page makes goes under the owed entries
-  assert.match(KERNEL, /def _ledger_batches\(\):/);
   assert.match(KERNEL, /frame\["batches"\], frame\["owedBatch"\] = _lb\[0\]/, "every account carries the kernel's stack");
-  assert.match(FEED, /if \(storeOp && Array\.isArray\(m\.batches\)\) \{/, "a frame with the stack reconciles; the branches below are an old kernel's road");
+  assert.match(FEED, /if \(storeOp && Array\.isArray\(m\.batches\) && !fromHost\) \{/, "the LOCAL kernel's frame with the stack reconciles; an old kernel's and a remote host's take the branches below (the eighth executed review)");
+  assert.match(FEED, /const isLocal = \(id: string\) => \{ const it = known\.get\(id\); return !it \|\| hostOf\(it\.sid\) === ""; \};/, "the reconcile touches local entries and suppressions alone");
+  assert.match(FEED, /if \(hidden\.has\(id\) \|\| !isLocal\(id\)\) continue;/);
+  assert.match(KERNEL, /^LEDGER_BATCHES_ON_WIRE = 20/m, "the stack on the wire is bounded (plans\/needs-you.md)");
+  assert.match(KERNEL, /def _ledger_batches\(limit=LEDGER_BATCHES_ON_WIRE\):/);
+  assert.match(KERNEL, /for t in sorted\(by, reverse=True\)\[:limit\]\]/);
   assert.match(FEED, /reconcileClearedStack\(m\.batches\.map/);
   assert.match(FEED, /function pushClearedEntry\(entry: AskItem\[\]\): void \{\n  let i = clearedStack\.length;\n  const owedIds = new Set<string>\(\);\n  while \(i > 0 && \(clearedStack\[i - 1\] as any\)\._owed\) \{/, "a batch this page makes goes under the owed entries, and an id they hold counts once");
   assert.match(FEED, /const rest = entry\.filter\(\(it\) => !owedIds\.has\(it\.itemId\)\);\n  if \(rest\.length\) clearedStack\.splice\(i, 0, rest\);/);

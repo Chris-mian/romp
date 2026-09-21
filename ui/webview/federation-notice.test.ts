@@ -94,6 +94,9 @@ test("a remote notice card's item id is host-prefixed on the way in, in the rows
   assert.equal(gerr.itemId, SID + ":g1", "a goal id in a reply stays bare (T287)");
   const cit = prefixInbound("TESTHOST", { type: "dropCitation", itemId: SID + ":g1", itemIds: ["notice:notes:k:1", SID + ":g2"] });
   assert.deepEqual([cit.itemId, cit.itemIds], [SID + ":g1", ["TESTHOST:notice:notes:k:1", SID + ":g2"]], "a list of ids: the notice ones alone");
+  const acct = prefixInbound("TESTHOST", { type: "err", op: "undoClear", sid: "notes", itemIds: ["notice:notes:k:1"], batches: [["notice:notes:k:1", SID + ":g2"], [SID + ":g3"]], owedBatch: ["notice:notes:k:1"], title: "t", text: "x" });
+  assert.deepEqual([acct.batches, acct.owedBatch, acct.host], [[["TESTHOST:notice:notes:k:1", SID + ":g2"], [SID + ":g3"]], ["TESTHOST:notice:notes:k:1"], "TESTHOST"],
+    "the kernel's stack on an account names notice ids the pane's way, and the account wears its host (the eighth executed review of PR 1967)");
   const r = routeOutbound({ type: "noticeAction", itemId: inb.asks[0].itemId, sid: inb.asks[0].sid, route: "/send", body: {} }, new Set(["TESTHOST"]));
   assert.deepEqual(r.map((x: any) => [x.host, x.msg.itemId, x.msg.sid]), [["TESTHOST", "notice:notes:k:1", "notes"]], "the action reaches the owning kernel with bare ids");
   const c = routeOutbound({ type: "askClear", itemId: inb.asks[0].itemId, sid: inb.asks[0].sid }, new Set(["TESTHOST"]));

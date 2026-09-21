@@ -207,6 +207,13 @@ titled **Needs you** with the count. It shows when the session has such an item 
 frame that drops it (the answer, the judge's re-file, the clear). A settings row under Chat, **Needs you box**, on by default,
 hides it; with the box off the tab ring and the feed still say it.
 
+Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
+clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone), and the feed takes it as its own stack, so the
+optimistic Undo restores what the kernel restores; the two are proven equal by enumeration over every press sequence of a
+two-card world under every fault (tests/fixtures/undo-stack-transitions.json). The stack on the wire is bounded to the newest
+20 log batches (`LEDGER_BATCHES_ON_WIRE`): an Undo past them is the round trip, with nothing cached to restore optimistically.
+On a merged pane a remote kernel's account is taken by its ids, and the local kernel's frame rebuilds the local entries alone.
+
 ### Completed is safe to clear unread
 
 Nothing left undone, offered as a next step, or asked about may land in Completed: those are Needs you's. That is the

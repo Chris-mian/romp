@@ -1197,7 +1197,7 @@ class ActsUnderAFailedWrite(_World):
                          "the owed store's account, then the reorder worded for what happened: %r" % errs)
         self.assertEqual((errs[1]["itemIds"], errs[1].get("ok"), "ok" in errs[0]), ([A + ":g1"], True, False))
         self.assertNotIn("brought them back", errs[1]["text"], "no restore is claimed while the owed store refuses")
-        self.assertIn("They still need one more Undo; the last clear comes back on the press after that.", errs[1]["text"], "the words name the press (the sixth executed review)")
+        self.assertIn("Once that session's store can be read, one Undo brings them back and the next the last clear.", errs[1]["text"], "the words name the condition, not a press count (the sixth executed review; the round-eight verifier)")
         self.assertEqual(errs[1]["owedIds"], [B + ":g1"], "and the frame names the owed ids: the feed holds an entry for them above the last clear's")
         self.assertTrue(self._flag(B, B + ":g1"), "B still hidden"); self.assertTrue(self._flag(A, A + ":g1"), "the last clear stands")
         sent = self._dispatch({"type": "undoClear"})        # B's store writable: its re-journal row is the newest batch, so it comes back, quietly
@@ -1225,7 +1225,7 @@ class ActsUnderAFailedWrite(_World):
         errs = [m for m in sent if m.get("type") == "err"]
         self.assertEqual([m["title"] for m in errs], ["That undo did not land", "Undo went to earlier cards first"], "%r" % errs)
         self.assertEqual((errs[1]["itemIds"], errs[1].get("ok"), errs[1]["owedIds"]), ([A + ":g1"], True, [B + ":g1"]))
-        self.assertIn("They still need one more Undo", errs[1]["text"])
+        self.assertIn("one Undo brings them back and the next the last clear", errs[1]["text"])
         self.assertTrue(self._flag(A, A + ":g1") and self._flag(B, B + ":g1"), "nothing restored this press")
         sent = self._dispatch({"type": "undoClear"})        # the next Undo: B, quietly
         self.assertEqual([m for m in sent if m.get("type") == "err"], []); self.assertFalse(self._flag(B, B + ":g1")); self.assertTrue(self._flag(A, A + ":g1"))
@@ -1296,7 +1296,7 @@ class ActsUnderAFailedWrite(_World):
         errs = [m for m in sent if m.get("type") == "err"]
         ro = next(m for m in errs if m["title"] == "Undo went to earlier cards first")
         self.assertEqual(sorted(ro["owedIds"]), sorted([A + ":g1", B + ":g1"]), "both did not come back: %r" % errs)
-        self.assertIn("more than one Undo", ro["text"]); self.assertNotIn("one more Undo", ro["text"])
+        self.assertIn("more than one Undo", ro["text"]); self.assertNotIn("one Undo brings them back", ro["text"])
         self.assertEqual(ro["itemIds"], [A + ":g2"])
         self.assertEqual(ro["batches"], [[B + ":g1"], [A + ":g1"], [A + ":g2"]], "the kernel's stack rides the frame: B at a fresh stamp, A at the re-journal-first's, the last clear")
         self.assertEqual(ro["owedBatch"], [], "nothing owed in memory once the re-journal landed")
@@ -1316,7 +1316,7 @@ class ActsUnderAFailedWrite(_World):
         errs = [m for m in sent if m.get("type") == "err"]
         ro = next(m for m in errs if m["title"] == "Undo went to earlier cards first")
         self.assertEqual(ro["owedIds"], [B + ":g1"], "A came back: not named: %r" % errs)
-        self.assertIn("one more Undo", ro["text"])
+        self.assertIn("one Undo brings them back and the next the last clear", ro["text"])
         self.assertFalse(self._flag(A, A + ":g1"), "A is back"); self.assertTrue(self._flag(B, B + ":g1"), "B is not")
         self.assertEqual(ro["batches"], [[B + ":g1"], [A + ":g2"]])
 

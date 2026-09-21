@@ -41355,7 +41355,11 @@ def _owed_note():
 _owed_mem_only = [False]         # the last persist refused: the owing is in memory alone (the dialog says so)
 
 
-def _ledger_batches():
+LEDGER_BATCHES_ON_WIRE = 20   # the newest log batches an account carries (the eighth executed review of PR 1967: unbounded, a 1500-card log put 71 KB
+#                              on every refusal frame); a page's Undo past them is the round trip (nothing cached to restore optimistically)
+
+
+def _ledger_batches(limit=LEDGER_BATCHES_ON_WIRE):
     """The kernel's Undo stack as the feed holds its own: the ids an earlier undo left owed (the next Undo writes their rows first, so they
     are the newest batch though the log has no row for them yet), then the clears log's batches by stamp, newest first, each a sorted id
     list; and the owed ids on their own. Every gesture account carries both (`batches`, `owedBatch`) and the feed takes them as its stack,
@@ -41367,7 +41371,7 @@ def _ledger_batches():
         if iid in _rejournal_owed:
             continue                                  # an owed id counts once, as owed: its re-journal-first row supersedes any log row it holds (a card re-cleared while owed), and one Undo restores it whole
         by.setdefault(ct, []).append(iid)
-    out = [sorted(by[t]) for t in sorted(by, reverse=True)]
+    out = [sorted(by[t]) for t in sorted(by, reverse=True)[:limit]]   # the newest `limit` batches: the tail is the round trip (plans/needs-you.md)
     owed = sorted(_rejournal_owed)
     return ([owed] if owed else []) + out, owed
 
@@ -41439,15 +41443,17 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                       "Some cards were still owed from an earlier undo, so Undo brought them back first. The last clear stands: press Undo "
                       "again for it.", "", own or [], ok=True)
             else:
-                # the words name the press (the sixth executed review, 2026-09-21: "press Undo again for it" promised the last clear while the owed
+                # the words name the CONDITION, not a press count (the sixth executed review, 2026-09-21: "press Undo again for it" promised the last clear while the owed
+                # ids' re-journal was the newest batch; the round-eight verifier: a count is pushed out by a second refusal, so the words say what one Undo
+                # does once the store reads). The sixth review's shape, for the record: the frame promised the last clear while the owed
                 # ids' re-journal was the newest batch, so the next Undo was theirs again, quietly, and the last clear came the press after; on the
                 # feed the reverted entry sat on top and that click restored it optimistically while the kernel restored the owed card). The frame
                 # names the owed ids too, so the feed keeps the last clear's entry BELOW an entry standing for them and its next pop matches
                 _n = value.get("stamps", 1) if isinstance(value, dict) else 1
                 _send("Undo went to earlier cards first",
                       "Some cards were still owed from an earlier undo, so Undo went to them first, and that did not fully land (the other "
-                      "message says which). " + ("They still need one more Undo; the last clear comes back on the press after that." if _n <= 1 else
-                                                 "They were left at different points, so they take more than one Undo; the last clear comes back after them."),
+                      "message says which). " + ("Once that session's store can be read, one Undo brings them back and the next the last clear." if _n <= 1 else
+                                                 "Once their stores can be read they take more than one Undo, since they were left at different points, and the last clear comes back after them."),
                       "", own or [], ok=True, owed=value.get("owed") if isinstance(value, dict) else None)
             continue
         if key == LEDGER_OWED_READ_KEY:

@@ -164,6 +164,10 @@ export function prefixInbound(host: string, msg: any): any {
   // four of PR 1831: a remote card's dismissing action stayed on the board with its button latched until the next push)
   if (typeof out.itemId === "string") out.itemId = prefixNoticeId(host, out.itemId);
   if (Array.isArray(out.itemIds)) out.itemIds = out.itemIds.map((x: any) => prefixNoticeId(host, x));
+  // the kernel's Undo stack on a gesture account (`batches`, `owedBatch`; round eight of PR 1967) names notice ids the same way (the eighth
+  // executed review: unprefixed, a refused undo of a remote notice batch reverted nothing and the card stayed a phantom until reload)
+  if (Array.isArray(out.batches)) out.batches = out.batches.map((b: any) => (Array.isArray(b) ? b.map((x: any) => prefixNoticeId(host, x)) : b));
+  if (Array.isArray(out.owedBatch)) out.owedBatch = out.owedBatch.map((x: any) => prefixNoticeId(host, x));
   // a session frame's approval-box rows (status.notices, the chat's #notices box) carry notice ids too: prefixed like the feed's
   // cards, so a remote host's noticeActionDone (prefixed above) finds the row it answers (the review of PR 1890, medium 2)
   if (out.status && typeof out.status === "object" && !Array.isArray(out.status) && Array.isArray(out.status.notices))
@@ -191,6 +195,9 @@ export function prefixInbound(host: string, msg: any): any {
   // prefixed), but its buildId only means something on THAT kernel's counter — stamp the host so the
   // feed pane compares it against the same host's frame in the merged payload, never the local counter
   if (out.type === "cardMoveAck" || out.type === "cardPredict") out.host = host;
+  // a gesture account (err) carries its kernel's Undo stack, which is that kernel's alone: stamped with the host so the feed reconciles only
+  // the local kernel's frames against its own entries and takes a remote one by its ids (the eighth executed review of PR 1967)
+  if (out.type === "err") out.host = host;
   // a remote kernel's stand-down reply to a settings gesture (settingStale) cannot name its own host;
   // the gear folds one flush's N refusals into one toast and names the refusing machines. The local
   // host ("") took the identity exit above, so a local frame has no host key: the gear words it as

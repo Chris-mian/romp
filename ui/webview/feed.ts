@@ -271,6 +271,9 @@ function reconcileClearedStack(batches: string[][], owedBatch: string[]): void {
   for (const e of clearedStack) for (const it of e) known.set(it.itemId, it);
   for (const it of pendingRestored.values()) known.set(it.itemId, it);
   for (const a of asks) known.set(a.itemId, a);
+  // the LOCAL kernel's stack names local cards alone: a remote host's entries and suppressions on a merged pane are that host's (the eighth
+  // executed review); an id this page holds no item for is the local kernel's, since only its frames reach here
+  const isLocal = (id: string) => { const it = known.get(id); return !it || hostOf(it.sid) === ""; };   // "" is the local host's key (federation.ts LOCAL)
   const owed = new Set(owedBatch);
   const cleared = new Set<string>();
   for (const b of batches) for (const id of b) cleared.add(id);
@@ -282,17 +285,26 @@ function reconcileClearedStack(batches: string[][], owedBatch: string[]): void {
   for (const id of cleared) if (!owed.has(id)) hidden.add(id);
   for (const id of cleared) { pendingRestored.delete(id); if (hidden.has(id)) pendingCleared.add(id); }
   asks = asks.filter((a) => !hidden.has(a.itemId));
-  // what this page suppressed and no log batch hides (a refused clear, an owed card that shows) comes back where it was, its collapse undone
+  // what this page suppressed and no log batch hides (a refused clear, an owed card that shows) comes back where it was, its collapse undone;
+  // a remote card's suppression is its own kernel's to lift
   for (const id of Array.from(pendingCleared)) {
-    if (hidden.has(id)) continue;
+    if (hidden.has(id) || !isLocal(id)) continue;
     pendingCleared.delete(id);
     const it = known.get(id);
     if (!it) continue;
     for (const c of cardTwins(id)) c.classList.remove("dismissing");
     if (!asks.some((a) => a.itemId === id)) asks.push(it);
   }
+  // the local entries go, the remote hosts' stay where they are (their own kernels' frames rebuild them), and the local kernel's batches take
+  // the top, oldest first, so its newest batch ends on top
+  const kept: AskItem[][] = [];
+  for (const e of clearedStack) {
+    const rest = e.filter((it) => !isLocal(it.itemId));
+    if (rest.length) { const ids = ((e as any)._ids as string[] | undefined)?.filter((id) => !isLocal(id)); if (ids) (rest as any)._ids = ids; kept.push(rest); }
+  }
   clearedStack.length = 0;
-  for (const ids of batches.slice().reverse()) {          // oldest first, so the newest batch ends on top
+  clearedStack.push(...kept);
+  for (const ids of batches.slice().reverse()) {
     const e: AskItem[] = [];
     for (const id of ids) { const it = known.get(id); if (it) e.push(it); }
     (e as any)._ids = ids.slice();                         // the batch's ids, whether or not this page holds their items
@@ -302,9 +314,14 @@ function reconcileClearedStack(batches: string[][], owedBatch: string[]): void {
   render();
 }
 
-// test hooks (the enumeration in feed-render-incremental.test.ts): the stack's ids top first, and a reset between sequences
+// test hooks (the enumeration in feed-render-incremental.test.ts): the stack's entries by the ITEMS they hold, top first; the ids each
+// entry took from the kernel's frame, apart (the eighth executed review: one hook returning the frame's ids made the equality hold by
+// construction); and a reset between sequences
 export function _clearedStackIdsForTests(): string[][] {
-  return clearedStack.map((e) => ((e as any)._ids as string[] | undefined) ?? e.map((it) => it.itemId)).reverse();
+  return clearedStack.map((e) => e.map((it) => it.itemId)).reverse();
+}
+export function _clearedStackFrameIdsForTests(): (string[] | null)[] {
+  return clearedStack.map((e) => ((e as any)._ids as string[] | undefined) ?? null).reverse();
 }
 export function _resetClearGestureStateForTests(): void { clearedStack.length = 0; pendingCleared.clear(); pendingRestored.clear(); }
 // Finish an optimistic dismiss: the 180ms fade just removed the card element, so drop the item(s) from the
@@ -6724,11 +6741,13 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // Undo entry, and the board repaints them where they were, as the dialog says nothing changed
     const refusedIds = Array.isArray(m.itemIds) ? m.itemIds.map(String) : (op === "askClear" && itemId ? [itemId] : []);
     const storeOp = op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll" || op === "undoClear";
-    if (storeOp && Array.isArray(m.batches)) {
+    const fromHost = typeof m.host === "string" ? m.host : "";   // federation stamps a remote kernel's account with its host (prefixInbound); the local kernel's has none
+    if (storeOp && Array.isArray(m.batches) && !fromHost) {
       // the kernel's stack rides every gesture account (round eight of PR 1967): this page takes it as its own, which covers a refused clear (its
       // ids are not in the batches: back where they were), a refused undo (the batch the click popped is still the newest: back on top), a
       // reorder (the owed batch restored, the last clear's entry back on top) and ids this page never held (an entry standing for them). The
-      // branches below are the road for an older kernel's frame, which carries no stack
+      // branches below are the road for an older kernel's frame, which carries no stack, and for a REMOTE kernel's: each kernel's stack is its
+      // own, and a merged pane's is every host's together, so one host's frame must not rebuild it whole (the eighth executed review)
       reconcileClearedStack(m.batches.map((b: any) => (Array.isArray(b) ? b.map(String) : [])), Array.isArray(m.owedBatch) ? m.owedBatch.map(String) : []);
     } else if ((op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll") && refusedIds.length) {
       for (const id of refusedIds) pendingCleared.delete(id);

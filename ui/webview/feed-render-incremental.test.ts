@@ -420,7 +420,7 @@ test("a reorder whose owed cards did not come back names them: an empty entry ab
   mock.timers.tick(200);
   // the kernel went to an owed card first and its store refused: the reorder frame names g3 as not restored and the owed id
   await dispatch({ type: "err", ok: true, op: "undoClear", itemId: "g3", itemIds: ["g3"], owedIds: [API + ":g9"], title: "Undo went to earlier cards first",
-                   text: "They still need one more Undo; the last clear comes back on the press after that." });
+                   text: "Once that session's store can be read, one Undo brings them back and the next the last clear." });
   mock.timers.tick(700);
   assert.ok(!card("g3"), "the last clear's card is off the board again");
   const undo = body.byId("feed-undoclear")!;
@@ -1555,10 +1555,41 @@ test("a notice card on a data-defined board is not on the feed: its own board's 
   await dispatch(frame([g1, g2, g3]));
 });
 
+test("a merged pane: a remote kernel's account takes the per-id road and leaves the local kernel's entries and suppressions alone, and the local kernel's frame rebuilds only its own (the eighth executed review of PR 1967)", async () => {
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const reset = hooks._resetClearGestureStateForTests as () => void;
+  const sent0 = posted.length;
+  const g2it = card("g2")._it;
+  reset();
+  const R = "22222222-3333-4444-5555-666666666666";
+  const remote = cardOf(R + ":g1", "TESTHOST:" + R, "TESTHOST:api", "#cc6633", "a remote host's card", "needs_input", { live: true, tree: [] });
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"] })); mock.timers.tick(700);
+  card("g3")._clr.onclick(ev);                                              // a local clear: suppressed, its entry on the stack
+  body.byId("feed-clearall")!.onclick!(ev);                                  // Clear all fans out to every host: one entry for what was still open
+  assert.deepEqual(stackIds(), [["g1", "g2", R + ":g1"], ["g3"]]);
+  // the remote kernel refused its Clear all: its account, host-stamped by federation, names its card and carries ITS stack (empty)
+  await dispatch({ type: "err", host: "TESTHOST", op: "clearAll", sid: "TESTHOST:" + R, itemId: R + ":g1", itemIds: [R + ":g1"], batches: [], owedBatch: [], title: "That clear did not land", text: "Nothing was cleared." });
+  mock.timers.tick(700);
+  assert.ok(card(R + ":g1"), "the remote card is back where it was");
+  assert.ok(!card("g3"), "the local clear stands: the remote's frame did not re-show it");
+  assert.deepEqual(stackIds(), [["g3"]], "the local entry stands; the Clear all's entry went with the refusal (the per-id road), the merged stack not rebuilt from one host's frame");
+  // the local kernel's account (no host): its Clear all landed for g1 and g2 with one store refusing; its stack rebuilds the local entries alone
+  await dispatch({ type: "err", op: "clearAll", sid: WEB, itemId: "", itemIds: [], batches: [["g1", "g2"], ["g3"]], owedBatch: [], title: "That clear did not fully land for web", text: "The cards are off the board; the session's own record of them could not be written." });
+  mock.timers.tick(700);
+  assert.deepEqual(stackIds(), [["g1", "g2"], ["g3"]], "the local kernel's stack, as its frame carries it");
+  assert.ok(!card("g1") && !card("g2"), "the local kernel's cleared cards are off the board"); assert.ok(card(R + ":g1"), "the remote card, another kernel's, stays");
+  reset(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+  mock.timers.reset();
+});
+
 test("the feed's Undo stack equals the kernel's batches after every press, by enumeration over tests/fixtures/undo-stack-transitions.json (the boundary harness writes it; round eight of PR 1967)", async () => {
   mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });   // the test before this one reset them
   const hooks = (await import("./feed")) as any;
   const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const frameIds = hooks._clearedStackFrameIdsForTests as () => (string[] | null)[];
   const reset = hooks._resetClearGestureStateForTests as () => void;
   const T = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "..", "tests", "fixtures", "undo-stack-transitions.json"), "utf8"));
   const sent0 = posted.length;
@@ -1577,10 +1608,18 @@ test("the feed's Undo stack equals the kernel's batches after every press, by en
     else if (action === "clearAll") body.byId("feed-clearall")!.onclick!(ev);
     else body.byId("feed-undoclear")!.onclick!(ev);
     for (const f of t.frames) await dispatch(f);                              // the kernel's real frames for this press
+    settle();
+    const where = "after " + t.input.join("/") + " from " + t.from;
+    // BEFORE the payload: the stack the clicks and the frames built, by the ITEMS its entries hold; the ids the entries took from the frame,
+    // apart (the eighth executed review: one hook returning the frame's ids made the equality hold by construction); and the cards the kernel
+    // restored this press already on the board, the optimistic restore
+    assert.deepEqual(stackIds(), t.after, where + " (before the payload): the feed's stack by its items, top first, is the kernel's batches");
+    if (t.frames.length) assert.deepEqual(frameIds(), t.after, where + ": the ids the entries took from the frame are the kernel's batches");
+    const before = T.states[t.from].visible as string[];
+    for (const id of t.visible.filter((x: string) => !before.includes(x))) assert.ok(card(id), where + " (before the payload): " + id + " is on the board, restored optimistically");
     await dispatch(frame(t.visible.map((id: string) => card(id)?._it ?? cards[id])));   // the payload after it
     settle(); mock.timers.tick(7000);
-    const where = "after " + t.input.join("/") + " from " + t.from;
-    assert.deepEqual(stackIds(), t.after, where + ": the feed's stack, top first, is the kernel's batches");
+    assert.deepEqual(stackIds(), t.after, where + ": the feed's stack by its items, top first, is the kernel's batches");
     for (const id of [T.cards.A, T.cards.B]) assert.equal(!!card(id), t.visible.includes(id), where + ": " + id + " is on the board iff the kernel shows it");
   };
   let n = 0;

@@ -38,8 +38,9 @@ test("a mid-dismiss card is NOT removed by a push — its own timer finishes the
 test("Undo clear is OPTIMISTIC + acknowledges instantly (the user 2026-06-27)", () => {
   // every Clear caches the card data so Undo can restore it without a round-trip
   assert.match(FEED, /const clearedStack: AskItem\[\]\[\] = \[\];/);
-  const caches = FEED.match(/clearedStack\.push\(/g) || [];
-  assert.ok(caches.length >= 2, "ask card and group-member clears both cache their data (standalone card removed 2026-07-07)");
+  // the writers by name (the eighth executed review of PR 1967: a count of clearedStack.push went hollow once the stack's one writer took over)
+  assert.match(FEED, /pushClearedEntry\(\[\(card as any\)\._it \?\? it\]\);/, "the ask card's Clear caches its data");
+  assert.match(FEED, /pushClearedEntry\(cur\.members\.slice\(\)\);/, "a group member's Clear caches the whole batch");
   // instant press acknowledgment before any round-trip
   assert.match(FEED, /b\.classList\.add\("romp-acted"\);/);
   // pop the latest batch, un-suppress + re-insert it NOW, then re-render
