@@ -1075,10 +1075,6 @@ type LatchReply =
   | { kind: "retry"; sid: string }
   | { kind: "followup"; itemId: string }
   | { kind: "session"; sid: string };
-// the requests whose per-session refusal account (the kernel's _gesture_store_refusal) says that session's goals store
-// refused a write; such an account re-arms the session's Retry and Revive as the no-request reply always did
-const STORE_GESTURE_OPS = new Set(["askClear", "askClearMany", "nodeOverride", "clearAll", "undoClear"]);
-
 function rearmLatches(reply: LatchReply): number {
   let n = 0;
   const arm = (b: HTMLButtonElement | undefined, label: string) => {
@@ -6639,19 +6635,21 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // the fact that a message never landed. Same {romp:'notify'} bridge the card-badge mirror below uses.
     const title = typeof m.title === "string" && m.title ? m.title : "That action was not delivered";
     const copy = typeof m.copy === "string" ? m.copy : "";
-    window.parent?.postMessage({ romp: "notify", kind: "undelivered",
-                                 text: copy ? title + ": " + copy : title,
-                                 sid: typeof m.sid === "string" ? m.sid : "" }, "*");
+    // an information frame (`ok`: the landed reorder, "the last clear stands") is a dialog and no bell entry: nothing went undelivered (the round-four verifier of PR 1967)
+    if (m.ok !== true) window.parent?.postMessage({ romp: "notify", kind: "undelivered",
+                                                   text: copy ? title + ": " + copy : title,
+                                                   sid: typeof m.sid === "string" ? m.sid : "" }, "*");
     showErrDialog(title, m.text, copy);
     const sid = typeof m.sid === "string" ? m.sid : typeof m.id === "string" ? m.id : "";
     // the kernel's reply IS the event, for the request it names (rearmLatches): a refused apiRetry releases
     // that session's Retry; a refused askFollowUp releases that card's Continue, and its predicted move yields
     // to the kernel's answer (revertFollowMove; the no-answer backstop would have bounced it later with a toast
     // that blamed silence). A reply naming a session and no request is an older kernel's: the session's Retry
-    // and Revive, as before; a store gesture's session account (STORE_GESTURE_OPS) does the same whether or not `op`
-    // rides (the round-three verifier of PR 1967: keyed on op being empty, a landed clear's account with op skipped it),
-    // and a reply to a DIFFERENT request on the session (a send) is not those buttons' reply and leaves them latched.
-    // One naming neither answers no request here.
+    // and Revive, as before. A store gesture's session account (a clear, a drop, an undo: `op` rides) re-arms NOTHING:
+    // no feed latch belongs to those requests, and a latch is released only by the reply to the request that made it
+    // (the fourth review of PR 1967 and the manager's ruling, 2026-09-21, reversing the round-three verifier's ask to
+    // re-arm on the session: the `!op` branch is for old kernels' frames, not because a store's refusal is those
+    // buttons' reply). One naming neither answers no request here.
     const op = typeof m.op === "string" ? m.op : "";
     const itemId = typeof m.itemId === "string" ? m.itemId : "";
     // a clear the clears log refused (the second review of PR 1967, 2026-09-21): the reply names the batch's ids; they leave pendingCleared
@@ -6686,7 +6684,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     else if (op === "askFollowUp" && itemId) {
       rearmLatches({ kind: "followup", itemId });
       if (pendingFollowMove.has(itemId)) revertFollowMove(itemId);
-    } else if (sid && (!op || STORE_GESTURE_OPS.has(op))) rearmLatches({ kind: "session", sid });   // a store gesture's session account re-arms the session's Retry and Revive whether or not `op` rides; a reply to a different request leaves them
+    } else if (!op && sid) rearmLatches({ kind: "session", sid });   // an old kernel's reply naming a session and no request; a store gesture's account (op rides) re-arms nothing (the fourth review of PR 1967)
   } else if (m.type === "pickerOptions" && typeof m.name === "string") {
     // the host read the blocked session's live resume-picker screen — show the
     // same options in-page; a choice goes back as keystrokes (transport only,

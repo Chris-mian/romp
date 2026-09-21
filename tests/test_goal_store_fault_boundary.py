@@ -1081,6 +1081,7 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual([m["title"] for m in errs], ["That undo did not land"])
         self.assertIn("Nothing changed", errs[0]["text"], "the account for its own case: nothing new was marked undone this press")
         self.assertNotIn("were marked undone", errs[0]["text"], "not the first fault's words")
+        self.assertNotIn("ok", errs[0], "a refusal carries no `ok`")
         self.assertEqual((errs[0]["op"], sorted(errs[0]["itemIds"])), ("undoClear", sorted([A + ":g1", B + ":g1"])),
                          "the newest clear the feed restored on the click, plus the owed card")
         self.assertTrue(self._flag(A, A + ":g1"), "the last clear stands")
@@ -1091,6 +1092,7 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual([m["title"] for m in errs], ["Undo brought back earlier cards first"], "the reorder is told (the third review): %r" % errs)
         self.assertEqual(errs[0]["itemIds"], [A + ":g1"], "naming the batch the feed restored on the click, not restored this press")
         self.assertIn("press Undo again for it", errs[0]["text"])
+        self.assertIs(errs[0].get("ok"), True, "information, not a refusal: the feed shows the dialog and files no bell entry (the round-four verifier)")
         self.assertFalse(self._flag(B, B + ":g1"), "the owed card comes back ahead of the last clear (the reorder the dialog names)")
         self.assertTrue(self._flag(A, A + ":g1"), "the last clear stands")
         sent = self._dispatch({"type": "undoClear"})
@@ -1167,6 +1169,122 @@ class ActsUnderAFailedWrite(_World):
         titles = [m["title"] for m in sent if m.get("type") == "err"]
         self.assertEqual(titles, ["romp could not read its note of earlier owed cards"], "an unreadable note is said, a missing one is not")
         self.assertFalse(self._flag(A, A + ":g1"), "and the undo went ahead")
+
+    def _two_fault_undo_leaves_b_owed(self):
+        """Two cards cleared in one batch, then Undo with B's store faulting at its flag step and the log refusing the re-journal: A back,
+        B owed (in memory and in the note beside the log). Returns the faulting flag step for a later press."""
+        self._dispatch({"type": "askClearMany", "itemIds": [A + ":g1", B + ":g1"]})
+        orig = km._mark_nodes_cleared
+
+        def flag_step_under_fault(ids, value, **kw):
+            with _fault_on(self.b_file):
+                return orig(ids, value, **kw)
+        with mock.patch.object(km, "_mark_nodes_cleared", flag_step_under_fault), _nth_append_faults(jd.STATE / "cleared.jsonl", 2):
+            self._dispatch({"type": "undoClear"})
+        self.assertEqual(km._rejournal_owed, {B + ":g1": None})
+        return flag_step_under_fault
+
+    def test_the_reorder_account_is_filed_after_the_owed_batchs_flag_step_and_says_whether_they_came_back(self):
+        """The fourth review's first low: filed when the re-journal landed, the reorder frame said "brought back" while the owed store was
+        refusing, and both frames read cleared. Filed after the flag step, its words say the owed cards did not come back, beside the owed
+        store's own account; with the store writable at that press the words say they did. Either way it is information (`ok`)."""
+        under_fault = self._two_fault_undo_leaves_b_owed()
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})   # the last clear: what the feed's Undo restores on the click
+        with mock.patch.object(km, "_mark_nodes_cleared", under_fault):
+            sent = self._dispatch({"type": "undoClear"})    # the re-journal lands; B's store refuses its flag step again
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["That undo did not land for api", "Undo went to earlier cards first"],
+                         "the owed store's account, then the reorder worded for what happened: %r" % errs)
+        self.assertEqual((errs[1]["itemIds"], errs[1].get("ok"), "ok" in errs[0]), ([A + ":g1"], True, False))
+        self.assertNotIn("brought them back", errs[1]["text"], "no restore is claimed while the owed store refuses")
+        self.assertTrue(self._flag(B, B + ":g1"), "B still hidden"); self.assertTrue(self._flag(A, A + ":g1"), "the last clear stands")
+        sent = self._dispatch({"type": "undoClear"})        # B's store writable: its re-journal row is the newest batch, so it comes back, quietly
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [])
+        self.assertFalse(self._flag(B, B + ":g1")); self.assertTrue(self._flag(A, A + ":g1"))
+        self._two_fault_undo_leaves_b_owed()                # the same shape with B's store writable at the re-journal-first press
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        sent = self._dispatch({"type": "undoClear"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([(m["title"], m["itemIds"], m.get("ok")) for m in errs], [("Undo brought back earlier cards first", [A + ":g1"], True)], "%r" % errs)
+        self.assertFalse(self._flag(B, B + ":g1"), "the owed card came back"); self.assertTrue(self._flag(A, A + ":g1"), "the last clear stands")
+
+    def test_a_stale_note_across_a_restart_does_not_name_a_card_this_press_restores(self):
+        """The fourth review's second low: the note's rewrite refused (its stale row stays), a restart, the card re-cleared, Undo: the
+        re-journal-first step named the newest batch as not restored, and that batch IS the owed card, which this press restores, so the
+        feed parked a live card. A re-journaled id is left out of the batch the frame names."""
+        self._two_fault_undo_leaves_b_owed()
+        owed_file = jd.STATE / km.OWED_FILE
+        orig_write = Path.write_text
+
+        def refusing_write(p, *a, **kw):
+            if p == owed_file:
+                raise OSError(errno.EROFS, "Read-only file system", str(p))
+            return orig_write(p, *a, **kw)
+        with mock.patch.object(Path, "write_text", refusing_write):
+            self._dispatch({"type": "undoClear"})           # B comes back; the note's rewrite refuses: the stale row stays on disk
+        self.assertFalse(self._flag(B, B + ":g1"))
+        km._rejournal_owed.clear(); km._owed_settled.clear()   # a restart: memory empty, the stale note on disk
+        self._dispatch({"type": "askClear", "itemId": B + ":g1"})   # B re-cleared: the newest batch
+        sent = self._dispatch({"type": "undoClear"})
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [], "the owed id is the newest batch too: restored this press, nothing named as parked")
+        self.assertFalse(self._flag(B, B + ":g1"), "B is back")
+
+    def test_an_unreadable_note_is_left_as_it_is_when_the_re_journal_lands(self):
+        """The fourth review's third low: after an unreadable note a landed re-journal rewrote the note with a literal empty list, wiping rows
+        memory never read (X on disk, the read refused: the note ended empty and X stayed flag-cleared with no ledger row). Nothing is
+        rewritten after a refused read; the rows stay for the next read that lands, the settled id kept out of it."""
+        self._two_fault_undo_leaves_b_owed()
+        owed_file = jd.STATE / km.OWED_FILE
+        X = "11111111-2222-3333-4444-999999999999:g7"       # a row an earlier life of the kernel owed: on disk, never in this memory
+        owed_file.write_text(json.dumps({"id": X}) + "\n" + json.dumps({"id": B + ":g1"}) + "\n")
+        orig_read = Path.read_text
+
+        def refusing_read(p, *a, **kw):
+            if p == owed_file:
+                raise OSError(errno.EACCES, "Permission denied", str(p))
+            return orig_read(p, *a, **kw)
+        with mock.patch.object(Path, "read_text", refusing_read):
+            sent = self._dispatch({"type": "undoClear"})    # memory owes B; the note cannot be read; the re-journal lands and B comes back
+        self.assertEqual([m["title"] for m in sent if m.get("type") == "err"], ["romp could not read its note of earlier owed cards"])
+        self.assertFalse(self._flag(B, B + ":g1"), "B came back")
+        rows = [json.loads(l)["id"] for l in owed_file.read_text().splitlines() if l.strip()]
+        self.assertEqual(rows, [X, B + ":g1"], "the note is not rewritten after a refused read: the unread row survives (before: an empty note)")
+        self.assertEqual(km._owed_settled, {B + ":g1"}, "and B's stale row is kept out of the next read that lands")
+
+    def test_a_peers_owing_between_the_notes_read_and_its_rewrite_waits_and_is_kept(self):
+        """The fourth review's fourth low, the round-four verifier's medium: the lock covered each call, not the section, and the rewrite
+        wrote a literal empty list, so a peer socket's persist between the read and the rewrite was truncated off disk (a restart then owed
+        nothing and that card stayed flag-cleared with no ledger row). One lock spans the section, so the peer's persist waits for the
+        rewrite, and the rewrite writes what is still owed."""
+        import threading
+        self._two_fault_undo_leaves_b_owed()
+        owed_file = jd.STATE / km.OWED_FILE
+        X = "11111111-2222-3333-4444-999999999999:g7"
+
+        def peer():                                       # another socket's undo owing a new card: the note (the helper takes the lock), then memory
+            km._owed_persist([X])
+            km._rejournal_owed[X] = None
+        t = threading.Thread(target=peer, daemon=True)
+        orig_ids = km._cleared_ids
+        seen = []
+
+        def hooked(*a, **kw):                             # inside the section (the read done, the rewrite ahead): the peer arrives
+            if not seen:
+                seen.append(1)
+                t.start(); t.join(0.4)
+                seen.append(t.is_alive())
+            return orig_ids(*a, **kw)
+        with mock.patch.object(km, "_cleared_ids", hooked):
+            sent = self._dispatch({"type": "undoClear"})
+        t.join(5)
+        self.assertEqual(seen, [1, True], "the peer's persist waited: one lock spans the read-modify-write (before: it landed between them)")
+        self.assertFalse(t.is_alive())
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [])
+        self.assertFalse(self._flag(B, B + ":g1"), "B came back")
+        rows = [json.loads(l)["id"] for l in owed_file.read_text().splitlines() if l.strip()]
+        self.assertEqual(rows, [X], "the peer's row is on disk after the rewrite (before: truncated off)")
+        self.assertEqual(km._rejournal_owed, {X: None}, "and owed in memory")
+        km._rejournal_owed.clear()
 
     def test_an_undo_whose_re_journal_refuses_says_so_and_the_next_undo_re_journals_first(self):
         """Two cards cleared in one batch; the undo's rows land, one store faults at its flag step, and the clears log refuses the

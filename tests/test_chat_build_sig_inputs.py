@@ -1057,16 +1057,25 @@ class Differential(_World):
         # _NEEDS_ROW_UNKEYED by value, as _CHAT_ROW_UNKEYED is; and every field a goal row carries but the unkeyed one is in the
         # signature's tuple, so a field added to _needs_you_rows without a place in the key fails here (the third review of PR 1967)
         self.assertEqual(km._NEEDS_ROW_UNKEYED, {"t"})
-        # the row literals' keys from the AST of _needs_you_rows (the third executed review: a closed list of names let a field under a
-        # new name pass), so a field added under any name fails the equality below until the key reads it or the set declares it
+        # the rows BUILT on a synthetic frame (the fourth executed review: the AST read kept only literals whose keys are all string constants,
+        # so a spread or a subscripted field passed it), so a field added under any name, by any shape, fails the equality below until the key
+        # reads it or the set declares it; both row shapes, the plain row and the credential row
+        feed = {"asks": [{"itemId": SID + ":g1", "sid": SID, "text": "wire the fixtures", "category": "needs_input", "blockSummary": "which database does the suite target?", "live": True, "t": 5},
+                         {"itemId": SID + ":g2", "sid": SID, "text": "fix the key", "category": "needs_input", "live": True, "t": 6,
+                          "blocked": {"state": "judgeAuth", "what": "the judges' credential was refused"}}]}
+        rows = km._needs_you_rows(feed).get(SID) or []
+        self.assertEqual([r["itemId"] for r in rows], [SID + ":g1", SID + ":g2"], "the plain row and the credential row: %r" % rows)
+        fields = set().union(*(set(r) for r in rows))
+        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"}, "every field a built row carries is keyed or declared unkeyed")
+        # and the row literals' keys from the AST (the third review) read the same set: a second reading of the same rows
         tree = ast.parse(inspect.getsource(km._needs_you_rows).lstrip())
-        fields = set()
+        lit = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Dict) and node.keys and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in node.keys):
                 keys = {k.value for k in node.keys}
                 if "itemId" in keys:
-                    fields |= keys
-        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"}, "every field the row literals carry is keyed or declared unkeyed")
+                    lit |= keys
+        self.assertEqual(lit, fields, "the literals and the built rows carry the same fields")
         tup = inspect.getsource(km._chat_build_sig)
         for f in sorted(fields - km._NEEDS_ROW_UNKEYED):
             self.assertIn(('n["%s"]' % f) if f == "itemId" else ('n.get("%s")' % f), tup, "the key reads the row's %s" % f)

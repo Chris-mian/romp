@@ -295,7 +295,9 @@ inline, a permission prompt or an API error only you can clear, is not listed: t
 **Blocked** ring and the card's mark say it. The box wears the Needs you
 colour the way the background box wears the awaiting green while the session waits, and it hides when
 the session has nothing for you. An item leaves with the frame that resolves it: the reply once the
-judges file it, the decision, the clear. The gear's **Needs you box** setting under Chat, on by
+judges file it, the decision, the clear. A clear is a row in the state directory's `cleared.jsonl`, the
+clears log; a card an undo could not finish bringing back is noted in `cleared-owed.jsonl` beside it, so
+the next Undo brings that card back first, across a restart. The gear's **Needs you box** setting under Chat, on by
 default, hides the box; the tab ring and the feed still say what needs you. It is per browser, like the
 other chat settings.
 

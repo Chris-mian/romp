@@ -41289,7 +41289,9 @@ OWED_FILE = "cleared-owed.jsonl"   # STATE/cleared-owed.jsonl: the owed ids pers
 #                                    flag-cleared with no ledger row, hidden and then archived); truncated once the re-journal lands
 
 
-_OWED_LOCK = threading.Lock()   # one writer of the note at a time: a peer socket's persist landing between a read and the rewrite is kept (the third executed review of PR 1967, 2026-09-21)
+_OWED_LOCK = threading.RLock()  # ONE lock across the note's read, the re-journal-first write, the memory update and the rewrite (_undo_clear holds it; the helpers take it
+#                                 again, re-entrant): a peer socket's persist between a read and the rewrite waits its turn, so no rewrite truncates a row memory never
+#                                 read (the third executed review of PR 1967 asked for one writer; lows 3 and 4 of the fourth and the round-four verifier's medium, 2026-09-21, the span)
 _owed_settled = set()           # ids whose re-journal LANDED while the note's rewrite refused: the stale rows are not owed again until the file rewrites
 
 
@@ -41379,10 +41381,13 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
         fault = value.get("fault", "") if isinstance(value, dict) else value
         own = [str(i) for i in (value.get("ids") or [])] if isinstance(value, dict) else None
 
-        def _send(title, text, sid_, acct_ids):
+        def _send(title, text, sid_, acct_ids, ok=False):
+            frame = {"type": "err", "sid": sid_, "title": title, "text": text, "op": op or "",
+                     "itemId": acct_ids[0] if acct_ids else "", "itemIds": list(acct_ids)}
+            if ok:
+                frame["ok"] = True                    # information, not a refusal: the feed shows the dialog and files no bell entry (the round-four verifier)
             try:
-                client["send"](json.dumps({"type": "err", "sid": sid_, "title": title, "text": text, "op": op or "",
-                                           "itemId": acct_ids[0] if acct_ids else "", "itemIds": list(acct_ids)}))
+                client["send"](json.dumps(frame))
             except Exception:
                 sys.stderr.write("gesture refusal (%s %s): %s\n" % (gesture, key[:24], traceback.format_exc()))
         if key == LEDGER_REJOURNAL_AGAIN_KEY:
@@ -41402,11 +41407,18 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                   "again once romp can write and they come back, ahead of the last clear. %s" % (fault, _owed_note()), "", own or [])
             continue
         if key == LEDGER_REORDER_KEY:
-            # not a refusal: the undo LANDED, for the cards an earlier undo left owed, which come back first; the batch the feed restored
-            # on the click (the last clear) is not restored this press, so the frame names it and the feed puts it back as it was
-            _send("Undo brought back earlier cards first",
-                  "Some cards were still owed from an earlier undo, so Undo brought them back first. The last clear stands: press Undo "
-                  "again for it.", "", own or [])
+            # not a refusal: the undo went to the cards an earlier undo left owed, which come first; the batch the feed restored on the click
+            # (the last clear) is not restored this press, so the frame names it and the feed puts it back as it was. `ok` rides: a dialog and
+            # no bell entry, since nothing went undelivered (the round-four verifier). The words say whether the owed cards came back: filed
+            # after the flag step, so an owed store's refusal (its own account beside this one) is not called a restore (the fourth review)
+            if (value.get("landed", True) if isinstance(value, dict) else True):
+                _send("Undo brought back earlier cards first",
+                      "Some cards were still owed from an earlier undo, so Undo brought them back first. The last clear stands: press Undo "
+                      "again for it.", "", own or [], ok=True)
+            else:
+                _send("Undo went to earlier cards first",
+                      "Some cards were still owed from an earlier undo, so Undo went to them first, and that did not fully land (the other "
+                      "message says which). The last clear stands: press Undo again for it.", "", own or [], ok=True)
             continue
         if key == LEDGER_OWED_READ_KEY:
             _send("romp could not read its note of earlier owed cards",
@@ -41522,46 +41534,64 @@ def _undo_clear(batch_out=None):
     archive could not be read is owed the same way, its fault keyed "notice:<sid>" so the refusal names the store that
     faulted and not the session's every card. Returns {sid | "notice:"+sid: fault} for the sessions skipped."""
     skipped = {}
-    _rerr = _owed_load()                                  # a restart's memory is empty; the file beside the log is not (the third review of PR 1967, 2026-09-21)
-    if _rerr:
-        skipped[LEDGER_OWED_READ_KEY] = {"fault": _rerr, "ids": []}   # a present, unreadable note: said, and the undo goes ahead on what memory holds
-    elif _owed_settled:
-        _owed_rewrite(list(_rejournal_owed))              # a note still carrying settled ids (its last rewrite refused): rewritten now that it reads, quietly (the refusal was said then)
     popped = []                                           # the newest batch BEFORE the re-journal-first step: what the feed restored on the click
-    if _rejournal_owed:
-        # the re-journal a past undo could not write (the log refused after its undo rows landed; the second review of PR 1967, 2026-09-21): written FIRST,
-        # so those ids are the newest batch again and this very Undo restores them, AHEAD of the last clear (a reorder the dialog names);
-        # refused again, said under an account of its own, naming the batch the feed restored on the click (the newest clear as the
-        # ledger reads now) plus the owed ids, so the feed reverts exactly that (the manager's read of round three, 2026-09-21); nothing else runs
-        _cur0 = _cleared_ids()
-        if _cur0:
-            _nw = max(_cur0.values())
-            popped = [i for i, ct in _cur0.items() if ct == _nw]
-        owed_ids = list(_rejournal_owed)
-        t = time.time()
-        try:
-            with (jd.STATE / "cleared.jsonl").open("a") as f:
-                for iid in owed_ids:
-                    f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
-        except OSError as e:
-            named = popped + [i for i in owed_ids if i not in popped]   # what the feed restored on the click, plus the owed: the revert's ids
-            if batch_out is not None:
-                batch_out.extend(named)
-            skipped[LEDGER_REJOURNAL_AGAIN_KEY] = {"fault": _store_fault_copy(e), "ids": named}
-            return skipped
-        _files_stat_mark()
-        _rejournal_owed.clear()
-        _owed_settled.update(owed_ids)
-        _owed_mem_only[0] = False
-        _werr = _owed_rewrite([])                         # the note rewritten with what is still owed: nothing
-        if _werr:
-            skipped[LEDGER_OWED_WRITE_KEY] = {"fault": _werr, "ids": []}
+    owed_ids = []                                         # the ids this press re-journaled first (none when nothing was owed)
+    with _OWED_LOCK:
+        # ONE lock across the note's read, the re-journal-first write, the memory update and the rewrite (lows 3 and 4 of the fourth review of
+        # PR 1967 and the round-four verifier's medium, 2026-09-21): a peer socket's persist between the read and the rewrite waits, so a row it
+        # owes is never truncated off disk by a rewrite that never read it
+        _rerr = _owed_load()                              # a restart's memory is empty; the file beside the log is not (the third review of PR 1967, 2026-09-21)
+        if _rerr:
+            skipped[LEDGER_OWED_READ_KEY] = {"fault": _rerr, "ids": []}   # a present, unreadable note: said, and the undo goes ahead on what memory holds
+        elif _owed_settled:
+            _owed_rewrite(list(_rejournal_owed))          # a note still carrying settled ids (its last rewrite refused): rewritten now that it reads, quietly (the refusal was said then)
+        if _rejournal_owed:
+            # the re-journal a past undo could not write (the log refused after its undo rows landed; the second review of PR 1967, 2026-09-21): written FIRST,
+            # so those ids are the newest batch again and this very Undo restores them, AHEAD of the last clear (a reorder the dialog names, filed after
+            # the flag step below so its words match what happened); refused again, said under an account of its own, naming the batch the feed
+            # restored on the click (the newest clear as the ledger reads now) plus the owed ids, so the feed reverts exactly that (the manager's
+            # read of round three, 2026-09-21); nothing else runs
+            _cur0 = _cleared_ids()
+            if _cur0:
+                _nw = max(_cur0.values())
+                popped = [i for i, ct in _cur0.items() if ct == _nw]
+            owed_ids = list(_rejournal_owed)
+            t = time.time()
+            try:
+                with (jd.STATE / "cleared.jsonl").open("a") as f:
+                    for iid in owed_ids:
+                        f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+            except OSError as e:
+                named = popped + [i for i in owed_ids if i not in popped]   # what the feed restored on the click, plus the owed: the revert's ids
+                if batch_out is not None:
+                    batch_out.extend(named)
+                skipped[LEDGER_REJOURNAL_AGAIN_KEY] = {"fault": _store_fault_copy(e), "ids": named}
+                return skipped
+            _files_stat_mark()
+            for iid in owed_ids:
+                _rejournal_owed.pop(iid, None)            # the ids THIS press re-journaled, no other: a peer's new owing stays in memory and on disk
+            _owed_settled.update(owed_ids)
+            _owed_mem_only[0] = False
+            if not _rerr:
+                # the note rewritten with what is STILL owed, never a literal empty list (a peer's row is kept); after an UNREADABLE note nothing is
+                # rewritten, since a rewrite would wipe the rows memory never read (the fourth review of PR 1967: X on disk, the read refused, the note
+                # ended empty and X stayed flag-cleared with no ledger row); the settled ids keep the stale rows out until a read lands
+                _werr = _owed_rewrite(list(_rejournal_owed))
+                if _werr:
+                    skipped[LEDGER_OWED_WRITE_KEY] = {"fault": _werr, "ids": []}
+            popped = [i for i in popped if i not in owed_ids]   # an owed id in the newest batch too (a stale note across a restart, the card re-cleared) is
+            #                                                     restored THIS press: naming it as not restored parked a live card (the fourth review)
+
+    def _reorder(landed):
+        # the undo goes on to restore the OWED batch (newest now), not the one the feed restored on the click: the frame names that one as not
+        # restored this press, so the feed puts it back as it was (the third review, the manager's read). Filed AFTER the flag step, its words
+        # saying whether the owed cards came back (the fourth review: filed when the re-journal landed, it said "brought back" while the owed
+        # store was refusing, and both frames read cleared)
         if popped:
-            # the undo goes on to restore the OWED batch (newest now), not the one the feed restored on the click: the frame names that
-            # one as not restored this press, so the feed puts it back as it was (the third review, the manager's read)
-            skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped}
+            skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped, "landed": bool(landed)}
     cur = _cleared_ids()
     if not cur:
+        _reorder(False)
         return skipped
     newest = max(cur.values())
     restored = [i for i, ct in cur.items() if ct == newest]
@@ -41581,10 +41611,12 @@ def _undo_clear(batch_out=None):
         # newest and the next Undo retries exactly it (the tops the archive restore pulled back a moment ago sit flag-cleared
         # in the live store, hidden as before, and the retry's restore passes them over as not archived); said on the socket
         skipped[LEDGER_KEY] = _store_fault_copy(e)
+        _reorder(False)                               # the owed batch did not come back either: the reorder frame says so
         return skipped
     _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     late = _mark_nodes_cleared(restored, False) if restored else {}   # so this finds the nodes → un-set the durable flag → real status
     nlate = _restore_notice_archive(notices)          # a notice card's rows come back OUT of notices-archive now its undo row is down
+    _rj = []                                          # the ids re-journaled at the flag step (their undo did not land in full)
     if late or nlate:
         # The store read fine (or held nothing archived) a moment ago and faults NOW, after the undo row
         # landed (at the flag step's read, or at its publish): the node is restored flag-cleared, which
@@ -41605,10 +41637,12 @@ def _undo_clear(batch_out=None):
             # the store and the log both refusing, AFTER the undo rows landed: those ids read as undone with their flags standing,
             # so the ledger alone reaches them no more. Owed in memory, written first by the next Undo, and said under an account of
             # its own beside the stores' faults (the second review of PR 1967, 2026-09-21; LEDGER_KEY's wording says nothing was recorded, which is false here)
-            _rejournal_owed.update({iid: None for iid in _rj})
-            _owed_mem_only[0] = bool(_owed_persist(_rj))   # beside the log (a restart keeps it); refused too: memory alone, said (the third review of PR 1967, 2026-09-21)
+            with _OWED_LOCK:                          # the memory update and the persist under the one lock a peer's read-rewrite section holds
+                _rejournal_owed.update({iid: None for iid in _rj})
+                _owed_mem_only[0] = bool(_owed_persist(_rj))   # beside the log (a restart keeps it); refused too: memory alone, said (the third review of PR 1967, 2026-09-21)
             skipped[LEDGER_REJOURNAL_KEY] = {"fault": _store_fault_copy(e), "ids": list(_rj)}   # the account names the ids it owes, not the batch
         skipped.update(late); skipped.update({"notice:" + s: f for s, f in nlate.items()})   # keyed apart: the refusal is worded per store
+    _reorder(set(owed_ids) <= (set(restored + notices) - set(_rj)))   # the owed cards came back only if every one's undo row landed and its flag step ran
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
 

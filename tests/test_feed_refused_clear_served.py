@@ -3,7 +3,10 @@ kernel over one synthetic session with one card, the real feed page served from 
 clears log is made read-only, Clear is pressed, and the page must show the refusal AS A DIALOG THE USER CAN READ AND DISMISS (the title,
 the detail and a Dismiss button in the DOM: the dialog's box used to be built and never attached to its overlay, so a refusal painted a
 bare dim sheet that swallowed the next click) and put the card back where it was (the second review of PR 1967: the click's suppression
-let go and the collapse undone, in either window). Dismiss closes the dialog; with the write bit back, Clear takes the card off.
+let go and the collapse undone, in either window). Dismiss closes the dialog; with the write bit back, Clear takes the card off. Then Undo with a card an earlier undo left OWED
+(flag-cleared, its id in the note beside the log): the kernel brings THAT card back first and names the last clear as not restored in a
+frame that is information (`ok`): a dialog to read, no bell entry, the last clear's card staying off with its Undo entry, and the press
+after bringing it back (the round-four verifier of PR 1967).
 Synthetic only: a placeholder id, invented text, hostname TESTHOST."""
 import json
 import os
@@ -78,6 +81,19 @@ fs.chmodSync(cfg.ledger, 0o644);
 await page.locator(cardSel + " .fdismiss", { hasText: /^Clear$/ }).first().click();
 out.landed = await page.waitForFunction((sel) => !document.querySelector(sel), cardSel, { timeout: 60000 }).then(() => true).catch(() => false);
 out.noDialog = await readDialog();
+// 4. Undo with a card an earlier undo left owed: the kernel brings THAT card back first; the frame naming the last clear as not restored is
+//    information (`ok`): a dialog, no bell entry, the last clear's card off with its Undo entry standing; the press after brings it back
+await page.evaluate(() => { window.__notifies = []; window.addEventListener("message", (e) => { if (e.data && e.data.romp === "notify") window.__notifies.push(e.data); }); });
+await page.locator("#feed-undoclear").click();
+out.reorder = { dialog: await page.waitForSelector("#err-dialog .pickdlg-box .pickdlg-title", { timeout: 30000 }).then(() => true).catch(() => false) };
+out.reorder.read = await readDialog();
+out.reorder.owedBack = await page.waitForSelector('[data-key="a:' + cfg.gid2 + '"]', { state: "attached", timeout: 60000 }).then(() => true).catch(() => false);
+out.reorder.lastStays = await readCard();
+out.reorder.notifies = await page.evaluate(() => window.__notifies);
+await page.locator("#err-dialog button", { hasText: /^Dismiss$/ }).click();
+await page.waitForSelector("#err-dialog", { state: "detached", timeout: 10000 }).catch(() => null);
+await page.locator("#feed-undoclear").click();
+out.reorder.lastBack = await page.waitForSelector(cardSel, { state: "attached", timeout: 60000 }).then(() => true).catch(() => false);
 process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
 """
@@ -124,11 +140,15 @@ class FeedRefusedClearServed(unittest.TestCase):
         Path(proj, SID + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         Path(state, "states", SID + ".jsonl").write_text(json.dumps({"t": t0 + 10, "state": "idle"}) + "\n")
         cls.gid = SID + ":g1"
+        cls.gid2 = SID + ":g2"                            # a card an earlier undo left OWED: flag-cleared with no ledger row, its id in the note beside the log
+        node = lambda nid, text, cleared: {"id": nid, "text": text, "parentId": None, "nodeComplete": False, "blocked": True, "blockWhy": QUESTION,
+                                           "cleared": cleared, "trail": [], "t": t0,
+                                           "log": [{"ev_t": t0 + 5, "src": "planner", "kind": "block", "why": "asked: " + QUESTION, "at": t0 + 5}]}
         Path(state, "goals", SID + ".json").write_text(json.dumps(
-            {"rompUuid": SID, "seq": 1, "lastNode": cls.gid, "closedTurns": [], "placements": {}, "status": {cls.gid: "blocked"},
-             "nodes": {cls.gid: {"id": cls.gid, "text": "wire the fixtures directory into the integration suite", "parentId": None, "nodeComplete": False,
-                                 "blocked": True, "blockWhy": QUESTION, "cleared": False, "trail": [], "t": t0,
-                                 "log": [{"ev_t": t0 + 5, "src": "planner", "kind": "block", "why": "asked: " + QUESTION, "at": t0 + 5}]}}}))
+            {"rompUuid": SID, "seq": 2, "lastNode": cls.gid2, "closedTurns": [], "placements": {}, "status": {cls.gid: "blocked", cls.gid2: "blocked"},
+             "nodes": {cls.gid: node(cls.gid, "wire the fixtures directory into the integration suite", False),
+                       cls.gid2: node(cls.gid2, "decide the migration order for the notes table", True)}}))
+        Path(state, "cleared-owed.jsonl").write_text(json.dumps({"id": cls.gid2}) + "\n")
         cls.ledger = os.path.join(state, "cleared.jsonl")
         Path(cls.ledger).write_text("")                       # present, so the leg can take its write bit away and give it back
         cls.port = _free_port()
@@ -160,7 +180,7 @@ class FeedRefusedClearServed(unittest.TestCase):
         if self._r is None:
             cfg = os.path.join(self.lab, "refused.json")
             with open(cfg, "w") as f:
-                json.dump({"feed": "http://127.0.0.1:%d/feed?token=%s" % (self.port, self.token), "gid": self.gid, "ledger": self.ledger}, f)
+                json.dump({"feed": "http://127.0.0.1:%d/feed?token=%s" % (self.port, self.token), "gid": self.gid, "gid2": self.gid2, "ledger": self.ledger}, f)
             driver = os.path.join(self.lab, "refused.mjs")
             Path(driver).write_text(DRIVER)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=600,
@@ -192,6 +212,17 @@ class FeedRefusedClearServed(unittest.TestCase):
         self.assertTrue(r["dismissed"], "Dismiss closes the dialog (the overlay used to swallow the next click with nothing to press)")
         self.assertTrue(r["landed"], "with the write bit back, Clear takes the card off")
         self.assertIsNone(r["noDialog"], "and no dialog for a clear that landed")
+
+
+    def test_an_undo_that_brings_an_owed_card_back_first_is_information_and_files_no_bell_entry(self):
+        r = self._result()
+        self.assertTrue(r["reorder"]["dialog"], "the reorder is told in the dialog: %r" % r["reorder"])
+        self.assertEqual((r["reorder"]["read"] or {}).get("title"), "Undo brought back earlier cards first")
+        self.assertTrue(r["reorder"]["owedBack"], "the owed card is back on the board first")
+        self.assertFalse(r["reorder"]["lastStays"]["present"], "the last clear stands: its card stays off, back on the Undo stack")
+        self.assertEqual([n for n in r["reorder"]["notifies"] if n.get("kind") == "undelivered"], [],
+                         "information, not a refusal: no bell entry of kind undelivered (the round-four verifier): %r" % r["reorder"]["notifies"])
+        self.assertTrue(r["reorder"]["lastBack"], "the press after brings the last clear back")
 
 
 if __name__ == "__main__":

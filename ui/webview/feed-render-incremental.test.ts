@@ -377,19 +377,36 @@ test("Revive latches on the click and re-arms on the kernel's reviveFailed for t
   assert.ok(!card("parked:m1"));
 });
 
-test("a store gesture's session account re-arms the session's Revive whether or not `op` rides: a clear the ledger took and the session's store refused names no card and lets the button go (the round-three verifier of PR 1967)", async () => {
+test("a store gesture's session account re-arms nothing and brings nothing back: a latched Retry and Revive stay latched across it (so a second click posts once), a cleared card stays hidden and its Undo entry stands (the fourth review of PR 1967, the manager's ruling)", async () => {
+  const sent0 = posted.length;                                            // this test's posts leave the shared list at its end: the tests after it count posts over the whole run
+  const blockedG1 = { ...g1, blocked: { state: "apiError", what: "the API returned 529", status: 529 } };
   const p1 = cardOf("parked:m1", API, "api", "#cc6633", "Hand-off parked for api (offline)", "needs_input",
     { live: false, tree: [], blocked: { state: "parkedHandoff", toSid: API, toName: "api", what: "a handoff from web is parked: revive api to deliver it" } });
-  await dispatch(frame([g1, card("g2")._it, g3, p1], { working: ["web"] }));
-  const revive = card("parked:m1")._revive;
-  revive.onclick(ev);
-  assert.equal(revive.disabled, true); assert.equal(revive.textContent, "Reviving\u2026");
-  await dispatch({ type: "err", sid: API, op: "askClear", itemId: "", itemIds: [], title: "That clear did not fully land for api", text: "The card is off the board; the session's own record of it could not be written." });
-  assert.equal(revive.disabled, false, "the account names the session and a store request, so the session's latches let go (before: keyed on op being empty)");
-  assert.equal(revive.textContent, "Revive api", "\u2026with the label it wore before the click");
-  assert.ok(card("g1") && card("g2") && card("g3"), "and, naming no card, it brings nothing back");
-  await dispatch(frame([g1, card("g2")._it, g3], { working: ["web"] }));
+  await dispatch(frame([blockedG1, card("g2")._it, card("g3")._it, p1]));   // web is NOT working: its Retry shows; api's parked card carries Revive
+  const c3 = card("g3");
+  c3._clr.onclick(ev);                                                      // Clear FIRST (the sixth low: an assertion over a board with nothing cleared could not fail)
+  assert.ok(c3.classList.contains("dismissing"), "the cleared card hides"); assert.ok(body.byId("feed-undoclear"), "and its Undo entry stands");
+  const retry = card("g1")._apiRetry, revive = card("parked:m1")._revive;
+  const sent = posted.length;
+  retry.onclick(ev); revive.onclick(ev);
+  assert.equal(posted.slice(sent).filter((m) => m.type === "apiRetry").length, 1); assert.equal(posted.slice(sent).filter((m) => m.type === "reviveSession").length, 1);
+  assert.equal(retry.disabled, true); assert.equal(revive.disabled, true);
+  // the store gestures' per-session accounts: a landed clear's (no ids), for each latched button's session; op rides on each
+  await dispatch({ type: "err", sid: WEB, op: "askClear", itemId: "", itemIds: [], title: "That clear did not fully land for web", text: "The card is off the board; the session's own record of it could not be written." });
+  await dispatch({ type: "err", sid: API, op: "askClearMany", itemId: "", itemIds: [], title: "That clear did not fully land for api", text: "The cards are off the board; the session's own record of them could not be written." });
+  assert.equal(retry.disabled, true, "a store gesture's account is not the Retry's reply: it stays latched (before: re-armed on the session, and a second click posted twice)");
+  assert.equal(revive.disabled, true, "nor the Revive's");
+  assert.equal(posted.length - sent, 2, "one post each: the buttons stay disabled, so a second click posts nothing");
+  assert.ok(c3.classList.contains("dismissing"), "the cleared card stays hidden: the account names no card"); assert.ok(body.byId("feed-undoclear"), "and its Undo entry stands");
+  body.byId("feed-undoclear")!.onclick!(ev);                                // the entry is still there to undo
+  assert.ok(!c3.classList.contains("dismissing"), "Undo brings the cleared card back from the entry the account left alone");
+  mock.timers.tick(200);
+  await dispatch({ type: "retryRefused", sid: WEB, text: "Couldn't retry: the session isn't connected right now." });   // the replies to THOSE requests release them
+  await dispatch({ type: "reviveFailed", id: API, name: "api", text: "the SDK backend could not resume it" });
+  assert.equal(retry.disabled, false); assert.equal(revive.disabled, false);
+  await dispatch(frame([g1, card("g2")._it, card("g3")._it], { working: ["web"] }));   // the board as the tests around this one expect it
   assert.ok(!card("parked:m1"));
+  posted.splice(sent0);
 });
 
 test("the bell: a click acknowledges at once and its optimistic state is a paint input, so that card alone repaints on the next frame; a refused toggle releases the latch and repaints that card alone", async () => {

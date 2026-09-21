@@ -30,19 +30,28 @@ test("client: the err handler releases the ids a refused clear names and repaint
   assert.match(h, /for \(const it of clearedStack\.splice\(i, 1\)\[0\]\) \{/, "and the optimistic Undo entry for a clear that never happened goes, its items back on the board");
   assert.ok(h.indexOf("render();") > h.indexOf("pendingCleared.delete(id)"), "then the board repaints from the payload that still lists the card");
   assert.ok(h.indexOf("refusedIds") < h.indexOf('if (op === "apiRetry" && sid)'), "ahead of the latch re-arms the frame already drove");
-  assert.match(h, /\} else if \(sid && \(!op \|\| STORE_GESTURE_OPS\.has\(op\)\)\) rearmLatches\(\{ kind: "session", sid \}\);/, "a store gesture's session account re-arms the session's latches whether or not op rides (the round-three verifier); a reply to a different request on the session leaves them (the revive test)");
-  assert.match(FEED, /const STORE_GESTURE_OPS = new Set\(\["askClear", "askClearMany", "nodeOverride", "clearAll", "undoClear"\]\);/, "the five requests the kernel's accounts ride");
-  assert.doesNotMatch(h, /else if \(!op && sid\)/);
+  assert.match(h, /\} else if \(!op && sid\) rearmLatches\(\{ kind: "session", sid \}\);/, "an old kernel's reply naming a session and no request re-arms the session's latches; a store gesture's account (op rides) re-arms nothing (the fourth review of PR 1967, the manager's ruling: a latch is released only by the reply to the request that made it)");
+  assert.doesNotMatch(FEED, /STORE_GESTURE_OPS/, "no request set widens the session re-arm");
+  assert.match(h, /if \(m\.ok !== true\) window\.parent\?\.postMessage\(\{ romp: "notify", kind: "undelivered",/, "an information frame (the landed reorder) is a dialog and no bell entry (the round-four verifier)");
 });
 
 test("kernel: the clears-log refusal names the request the way _refuse_drive's frame does", () => {
-  assert.match(KERNEL, /client\["send"\]\(json\.dumps\(\{"type": "err", "sid": sid_, "title": title, "text": text, "op": op or "",\s+"itemId": acct_ids\[0\] if acct_ids else "", "itemIds": list\(acct_ids\)\}\)\)/, "one frame shape for every account, each with its own ids");
+  assert.match(KERNEL, /frame = \{"type": "err", "sid": sid_, "title": title, "text": text, "op": op or "",\s+"itemId": acct_ids\[0\] if acct_ids else "", "itemIds": list\(acct_ids\)\}/, "one frame shape for every account, each with its own ids");
+  assert.match(KERNEL, /if ok:\s+frame\["ok"\] = True/, "and `ok` on an information frame alone (the round-four verifier)");
   assert.ok(KERNEL.includes('_gesture_store_refusal(client, "undo", _undo_clear(batch_out=_ub), ids=_ub, op=str(msg.get("type") or ""))'), "an undo names its op (the request's type) and the batch it reached for (the verifier's medium A)");
   // the double-fault window's other side (round four): the re-journal-first refusal fills the batch too, so the feed's revert has ids
   assert.match(KERNEL, /named = popped \+ \[i for i in owed_ids if i not in popped\][^\n]*\n\s+if batch_out is not None:\s+batch_out\.extend\(named\)\s+skipped\[LEDGER_REJOURNAL_AGAIN_KEY\] = \{"fault": _store_fault_copy\(e\), "ids": named\}\s+return skipped/);
   // the landed reorder tells the feed the popped batch was not restored this press (the third review's medium): an err frame, op undoClear, the popped ids
-  assert.match(KERNEL, /skipped\[LEDGER_REORDER_KEY\] = \{"fault": "", "ids": popped\}/);
-  assert.match(KERNEL, /_send\("Undo brought back earlier cards first",/);
+  assert.match(KERNEL, /skipped\[LEDGER_REORDER_KEY\] = \{"fault": "", "ids": popped, "landed": bool\(landed\)\}/, "filed by _reorder after the flag step, worded for what happened (the fourth review)");
+  assert.match(KERNEL, /_reorder\(set\(owed_ids\) <= \(set\(restored \+ notices\) - set\(_rj\)\)\)/, "the owed cards came back only if every undo row landed and its flag step ran");
+  assert.match(KERNEL, /_send\("Undo brought back earlier cards first",[\s\S]{0,400}ok=True\)/);
+  assert.match(KERNEL, /_send\("Undo went to earlier cards first",[\s\S]{0,400}ok=True\)/, "the words for an owed store still refusing");
+  // the owed note (lows 3 and 4 of the fourth review, the round-four verifier's medium): one lock across the section, the rewrite with what is still owed, none after an unreadable note
+  assert.match(KERNEL, /_OWED_LOCK = threading\.RLock\(\)/);
+  assert.match(KERNEL, /    with _OWED_LOCK:\n[\s\S]{0,900}_rerr = _owed_load\(\)/, "the read under the lock _undo_clear holds across the section");
+  assert.match(KERNEL, /if not _rerr:\n[\s\S]{0,700}_werr = _owed_rewrite\(list\(_rejournal_owed\)\)/, "the rewrite with the ids still owed, skipped after an unreadable note");
+  assert.doesNotMatch(KERNEL, /_owed_rewrite\(\[\]\)/, "never a literal empty list");
+  assert.match(KERNEL, /popped = \[i for i in popped if i not in owed_ids\]/, "a re-journaled id in the newest batch is restored this press, not named as parked");
   // each account names only its own ids (the third review's high): a skipped session's frame carries its own out of the batch
   assert.match(KERNEL, /_ids = \[i for i in _batch if \(i\.startswith\("notice:%s:" % sid\) if notices else \(not i\.startswith\("notice:"\) and i\.rsplit\(":", 1\)\[0\] == sid\)\)\]/, "a skipped session's own ids out of the batch");
   // the dialogs attach their box (the verifier's medium B, pre-existing on main): the behaviour rides the feed lab; this pins both functions carry the append
