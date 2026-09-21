@@ -212,16 +212,17 @@ test("the 5xx purple is a token in both theme blocks of both sheets (theme parit
   // purple, not magenta, since 2026-09-21 (plans/needs-you.md): the API-health cell sits on the landing page beside every session's
   // state, and the Needs you category took the magenta; theme-parity.test.ts pins the distances and the contrasts. The landing's
   // inline sheet declares the two tokens (no page that loads styles.css carries an .ah-* rule), so the var() reads resolve to them;
-  // the literal fallbacks stay equal to the tokens, pinned here per theme, so a re-ink of one without the others reddens
+  // the literal fallbacks stay equal to the tokens, pinned here per theme, so a re-ink of one without the others reddens; the tokens sit in
+  // rules of their own beside the accent's, whose lines other tests pin byte for byte
   const STYLES = read("ui", "webview", "styles.css"), FEED = read("ui", "webview", "feed.css"), KERNEL = read("kernel", "kernel.py");
   const root = STYLES.slice(STYLES.indexOf(":root"), STYLES.indexOf("body.theme-light")), light = STYLES.slice(STYLES.indexOf("body.theme-light"));
-  assert.match(root, /--st-5xx-bg: #cb94d1; --st-5xx-fg: #1e1030; --st-5xx-ink: #8b7ec8;/, "a lilac fill (6.90:1 on the tip's ground) with a dark ink for text on it and a violet ink for the count");
+  assert.match(root, /--st-5xx-bg: #cb94d1; --st-5xx-fg: #1e1030; --st-5xx-ink: #8a8aff;/, "a lilac fill (6.90:1 on the tip's ground) with a dark ink for text on it and a periwinkle ink for the count (4.76:1 on the detail's hover wash)");
   assert.match(light, /--st-5xx-bg: #4c1b7e; --st-5xx-fg: #ffffff; --st-5xx-ink: #4c1b7e;/);
   assert.match(FEED, /--st-5xx-bg: #cb94d1; --st-5xx-fg: #1e1030;/, "the dark pair mirrored where the feed mirrors the blocked red"); assert.match(FEED, /--st-5xx-bg: #4c1b7e; --st-5xx-fg: #ffffff;/, "and the light pair");
   assert.ok(!KERNEL.includes(".ah-sw-r5xx") && !KERNEL.includes(".ah-lsw"), "no legend swatches (T340): the class tokens wear the inks pinned below");
   for (const [theme, fill, ink, rootRe, inkRule, fillRule] of [
-    ["dark", "#cb94d1", "#8b7ec8", /:root\{[^"]*--st-5xx-bg:(#[0-9a-f]{6});--st-5xx-ink:(#[0-9a-f]{6})\}/, /\.ah-c-r5xx\{color:var\(--st-5xx-ink,(#[0-9a-f]{6})\)\}/, /\.ah-seg-serverErrors\{fill:var\(--st-5xx-bg,(#[0-9a-f]{6})\)\}/],
-    ["light", "#4c1b7e", "#4c1b7e", /body\.theme-light\{[^"]*--st-5xx-bg:(#[0-9a-f]{6});--st-5xx-ink:(#[0-9a-f]{6});/, /body\.theme-light \.ah-c-r5xx\{color:var\(--st-5xx-ink,(#[0-9a-f]{6})\)\}/, /body\.theme-light \.ah-seg-serverErrors\{fill:var\(--st-5xx-bg,(#[0-9a-f]{6})\)\}/],
+    ["dark", "#cb94d1", "#8a8aff", /:root\{--st-5xx-bg:(#[0-9a-f]{6});--st-5xx-ink:(#[0-9a-f]{6})\}/, /\.ah-c-r5xx\{color:var\(--st-5xx-ink,(#[0-9a-f]{6})\)\}/, /\.ah-seg-serverErrors\{fill:var\(--st-5xx-bg,(#[0-9a-f]{6})\)\}/],
+    ["light", "#4c1b7e", "#4c1b7e", /body\.theme-light\{--st-5xx-bg:(#[0-9a-f]{6});--st-5xx-ink:(#[0-9a-f]{6})\}/, /body\.theme-light \.ah-c-r5xx\{color:var\(--st-5xx-ink,(#[0-9a-f]{6})\)\}/, /body\.theme-light \.ah-seg-serverErrors\{fill:var\(--st-5xx-bg,(#[0-9a-f]{6})\)\}/],
   ] as const) {
     const decl = KERNEL.match(rootRe); assert.ok(decl, theme + ": the landing's inline sheet declares --st-5xx-bg and --st-5xx-ink");
     assert.deepEqual([decl![1], decl![2]], [fill, ink], theme + ": the landing's tokens equal styles.css's");

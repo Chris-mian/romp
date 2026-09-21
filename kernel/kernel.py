@@ -65116,7 +65116,8 @@ def _landing():
             "<meta name=apple-mobile-web-app-title content=Romp>"
             "<meta name=theme-color id=meta-theme content='#1e1e1e'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
-            ":root{--accent:#9cd2ff;--accent-fg:#0c1a2e;--st-5xx-bg:#cb94d1;--st-5xx-ink:#8b7ec8}"   # the 5xx tokens the API-health cell paints, declared where they resolve (plans/needs-you.md; mirrors styles.css)
+            ":root{--accent:#9cd2ff;--accent-fg:#0c1a2e}"
+            ":root{--st-5xx-bg:#cb94d1;--st-5xx-ink:#8a8aff}"   # the 5xx tokens the API-health cell paints, declared where they resolve (plans/needs-you.md; mirrors styles.css); a rule of their own, so the accent line's byte pins keep meaning what they say
             # The menu vocabulary's tokens (CLAUDE.md "Menus and dropdowns wear ONE vocabulary"), defined
             # HERE because the shell loads no sheet: the bell popover reads them, with the same dark
             # literals as var() fallbacks in its rules. Byte-equal to styles.css's :root values.
@@ -65520,7 +65521,7 @@ def _landing():
             # the counts' TEXT inks per theme (review find: the chip colours as text sit under 4.5:1 on the tip; the
             # failure line's precedent is #ef6b6f dark / #B02A1C light): 429 the error-text red, 5xx a violet ink in
             # the dark (a lilac fill), a deep violet in the light; the swatches and the bars keep the chip colours
-            ".ah-c-ok{color:var(--accent,#9cd2ff)}.ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:var(--st-5xx-ink,#8b7ec8)}"
+            ".ah-c-ok{color:var(--accent,#9cd2ff)}.ah-c-r429{color:#ef6b6f}.ah-c-r5xx{color:var(--st-5xx-ink,#8a8aff)}"
             ".ah-c-none{color:#d9f99d}.ah-mline .ah-desc{opacity:1}.ah-mline .ah-c-plain{color:#a9b1ba}"
             ".ah-win,.ah-ago{margin-left:auto}"
             # the legend carries no group opacity (T340 review: a descendant cannot exceed its group's, so a faded legend put every
@@ -65932,7 +65933,8 @@ def _landing():
             # chrome's warm-light skin. Pure additive overrides; with the class absent nothing here matches,
             # so the dark rendering is byte-identical. Accent goes clay (#C2410C) via the same --accent var
             # every accent consumer already reads.
-            "body.theme-light{--accent:#C2410C;--accent-fg:#FFF8F2;--st-5xx-bg:#4c1b7e;--st-5xx-ink:#4c1b7e;background:#F1EAE2}"
+            "body.theme-light{--accent:#C2410C;--accent-fg:#FFF8F2;background:#F1EAE2}"
+            "body.theme-light{--st-5xx-bg:#4c1b7e;--st-5xx-ink:#4c1b7e}"
             # the light theme's menu tokens — the values styles.css's body.theme-light block resolves
             # them to, so the bell popover is the same cream card every other menu is
             "body.theme-light{--menu-bg:#FBF6EF;--menu-fg:#1F1E1D;--menu-border:rgba(0,0,0,0.12);--menu-hover:rgba(0,0,0,0.06);"
@@ -66027,7 +66029,7 @@ def _landing():
             # the failure line in the light theme's error-text red (styles.css --err #B02A1C, about 6.6:1 on white;
             # the dark line's #ef6b6f is 3.0:1 there)
             "body.theme-light .ah-err{color:#B02A1C}"
-            # T316, the light tip is white: the counts' inks (the clay accent, the light error red, a deep purple 10.95:1, the
+            # T316, the light tip is white: the counts' inks (the clay accent, the light error red, a deep violet 11.90:1, the
             # other band's indigo 6.3:1) and the bars' fills in the light palette's chip colours (T340: no swatches)
             "body.theme-light .ah-c-ok{color:#C2410C}body.theme-light .ah-c-r429{color:#B02A1C}body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}body.theme-light .ah-c-none{color:#4f46e5}"
             "body.theme-light .ah-seg-ok{fill:#C2410C}body.theme-light .ah-seg-serverErrors{fill:var(--st-5xx-bg,#4c1b7e)}body.theme-light .ah-seg-noStatus,body.theme-light .ah-seg-other{fill:#4f46e5}"

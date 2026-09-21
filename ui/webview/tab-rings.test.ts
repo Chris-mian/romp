@@ -1,5 +1,5 @@
-// THE RINGS AS WIDGETS (2026-09-14; the ask ring itself from the review of 2026-09-13): a session with something
-// waiting on you should grab attention in the tab strip without a click — the way a live prompt rings the tab red — and
+// THE RINGS AS WIDGETS (2026-09-14; the ask ring itself from the review of 2026-09-13): a session with a card that
+// needs you should grab attention in the tab strip without a click, the way a live prompt rings the tab red, and
 // it should do so whether the session went idle after asking or is still working in the background. The red ring is
 // the LIVE state's (a permission or picker prompt, or an API stop only you can clear); the magenta ring is the FEED's
 // verdict: a card of the session's under needs-you; the amber ring is an API retry on its own. The kernel puts the
