@@ -139,6 +139,97 @@ def _prose_line_above(text):
     return above
 
 
+def _trailing_link_checks(text):
+    """(file line, joined text, offends) for EVERY paragraph and list item: the whole rule in one
+    place, so the page test reads a verdict instead of composing the patterns itself, and the unit
+    test below can hold the composition. A paragraph offends when it ends on a link and is not a
+    link-only navigation line directly under a heading."""
+    above = _prose_line_above(text)
+    out = []
+    for line, joined in _paragraphs(text):
+        exempt = bool(_LINK_ONLY.match(joined)) and above.get(line, "").startswith("#")
+        out.append((line, joined, bool(_ENDS_ON_LINK.search(joined)) and not exempt))
+    return out
+
+
+def _trailing_link_violations(text):
+    """The (file line, joined text) pairs of _trailing_link_checks that offend, in file order."""
+    return [(line, joined) for line, joined, offends in _trailing_link_checks(text) if offends]
+
+
+class ParagraphHelper(unittest.TestCase):
+    """The helper the page tests read, over a synthetic snippet: every failure message's line number
+    and every word count comes out of it, and no page paragraph sits on either boundary today, so a
+    regression here would surface as a wrong line in some future failure rather than as a red."""
+
+    SNIPPET = "\n".join([
+        "<!-- a comment, dropped -->",         # 1
+        "# A heading",                         # 2
+        "",                                    # 3
+        "First paragraph, one line.",          # 4
+        "",                                    # 5
+        "A wrapped paragraph whose second",    # 6
+        '<span class="romp-chip">Chip</span> line opens with an inline tag.',   # 7
+        "",                                    # 8
+        "<video src=\"a.mp4\"></video>",       # 9
+        "",                                    # 10
+        "```",                                 # 11
+        "code, dropped",                       # 12
+        "```",                                 # 13
+        "- a list item",                       # 14
+    ]) + "\n"
+
+    def test_each_paragraph_comes_back_at_its_file_line_with_its_text(self):
+        got = _paragraphs(self.SNIPPET)
+        self.assertEqual(
+            got,
+            [(4, "First paragraph, one line."),
+             (6, 'A wrapped paragraph whose second <span class="romp-chip">Chip</span> line opens '
+                 "with an inline tag."),
+             (14, "- a list item")],
+            "each paragraph and list item once, at the line it starts on in the FILE (the comment "
+            "and the fenced block are dropped without shifting the numbers), text joined")
+
+    def test_an_inline_tag_does_not_split_a_paragraph_and_a_block_tag_yields_none(self):
+        # The MECHANISM, not the count: a line 7 read as block HTML would flush the paragraph at 6
+        # and start none of its own, so "no paragraph starts at 7" holds either way. What separates
+        # the two readings is whether line 7's words are IN the paragraph at line 6.
+        byline = dict((line, joined) for line, joined in _paragraphs(self.SNIPPET))
+        self.assertIn('<span class="romp-chip">Chip</span> line opens', byline[6],
+                      "a line opening with an inline tag continues the paragraph above it")
+        starts = list(byline)
+        self.assertNotIn(9, starts, "a lone video tag is block HTML: no paragraph of its own")
+        self.assertEqual(len(_paragraphs('<video src="a.mp4"></video>\n')), 0,
+                         "a page of nothing but a block tag has no prose paragraph")
+
+    # the three shapes the trailing-link rule turns on, each its own page
+    NAV_UNDER_HEADING = "## License\n\n[Apache-2.0](LICENSE).\n"
+    NAV_UNDER_PROSE = "# Title\n\nA paragraph of prose that says something.\n\n[Apache-2.0](LICENSE).\n"
+    PARAGRAPH_ON_A_LINK = "# Title\n\nThe mechanics are in\n[How it works](architecture.md).\n"
+
+    def test_a_link_only_paragraph_is_exempt_only_directly_under_a_heading(self):
+        self.assertEqual(_trailing_link_violations(self.NAV_UNDER_HEADING), [],
+                         "a line that is only a link, under its heading, is a navigation line")
+        self.assertEqual(_trailing_link_violations(self.NAV_UNDER_PROSE),
+                         [(5, "[Apache-2.0](LICENSE).")],
+                         "the same line under prose is the shape the rule forbids, at its file line")
+        self.assertEqual(_trailing_link_violations(self.PARAGRAPH_ON_A_LINK),
+                         [(3, "The mechanics are in [How it works](architecture.md).")],
+                         "a prose paragraph that ends on a link offends wherever it sits")
+        self.assertEqual([offends for _line, _joined, offends in _trailing_link_checks(self.NAV_UNDER_PROSE)],
+                         [False, True],
+                         "a verdict per paragraph, in file order: the page test's subTest per paragraph")
+
+    def test_the_nearest_prose_line_above_sees_through_a_comment(self):
+        above = _prose_line_above(self.SNIPPET)
+        self.assertEqual(above[4], "# A heading", "the heading, not the blank line between")
+        self.assertEqual(above[2], "", "the dropped comment is not the line above the heading")
+        # the shape the link-only exemption turns on: a comment between the heading and the line
+        # under it is dropped before this reads, so it cannot hide the heading
+        commented = "## License\n\n<!-- kept short on purpose -->\n\n[Apache-2.0](LICENSE).\n"
+        self.assertEqual(_prose_line_above(commented)[5], "## License")
+
+
 class FrontPagesStayShort(unittest.TestCase):
     def test_word_cap_per_page(self):
         for page in PAGES:
@@ -199,13 +290,10 @@ class FrontPagesStayShort(unittest.TestCase):
     def test_no_paragraph_ends_on_a_link(self):
         for page in GOVERNED:
             text = (REPO / page).read_text(encoding="utf-8")
-            above = _prose_line_above(text)
-            for line, joined in _paragraphs(text):
-                if _LINK_ONLY.match(joined) and above.get(line, "").startswith("#"):
-                    continue            # a navigation line under its heading
+            for line, joined, offends in _trailing_link_checks(text):
                 with self.subTest(page=page, line=line):
-                    self.assertIsNone(
-                        _ENDS_ON_LINK.search(joined),
+                    self.assertFalse(
+                        offends,
                         "%s line %d ends on a link (%r...): a paragraph states what the thing "
                         "does and carries the link inside a clause that says why a reader wants "
                         "it, rather than closing on somewhere else to go"
@@ -215,56 +303,6 @@ class FrontPagesStayShort(unittest.TestCase):
         md = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
         self.assertIn("The documentation front pages", md,
                       "CLAUDE.md is where the rule lives; this test only enforces it")
-
-
-class ParagraphHelper(unittest.TestCase):
-    """The helper the page tests read, over a synthetic snippet: every failure message's line number
-    and every word count comes out of it, and no page paragraph sits on either boundary today, so a
-    regression here would surface as a wrong line in some future failure rather than as a red."""
-
-    SNIPPET = "\n".join([
-        "<!-- a comment, dropped -->",         # 1
-        "# A heading",                         # 2
-        "",                                    # 3
-        "First paragraph, one line.",          # 4
-        "",                                    # 5
-        "A wrapped paragraph whose second",    # 6
-        '<span class="romp-chip">Chip</span> line opens with an inline tag.',   # 7
-        "",                                    # 8
-        "<video src=\"a.mp4\"></video>",       # 9
-        "",                                    # 10
-        "```",                                 # 11
-        "code, dropped",                       # 12
-        "```",                                 # 13
-        "- a list item",                       # 14
-    ]) + "\n"
-
-    def test_each_paragraph_comes_back_at_its_file_line_with_its_text(self):
-        got = _paragraphs(self.SNIPPET)
-        self.assertEqual(
-            got,
-            [(4, "First paragraph, one line."),
-             (6, 'A wrapped paragraph whose second <span class="romp-chip">Chip</span> line opens '
-                 "with an inline tag."),
-             (14, "- a list item")],
-            "each paragraph and list item once, at the line it starts on in the FILE (the comment "
-            "and the fenced block are dropped without shifting the numbers), text joined")
-
-    def test_an_inline_tag_does_not_split_a_paragraph_and_a_block_tag_yields_none(self):
-        starts = [line for line, _joined in _paragraphs(self.SNIPPET)]
-        self.assertNotIn(7, starts, "a line opening with an inline tag continues its paragraph")
-        self.assertNotIn(9, starts, "a lone video tag is block HTML: no paragraph of its own")
-        self.assertEqual(len(_paragraphs('<video src="a.mp4"></video>\n')), 0,
-                         "a page of nothing but a block tag has no prose paragraph")
-
-    def test_the_nearest_prose_line_above_sees_through_a_comment(self):
-        above = _prose_line_above(self.SNIPPET)
-        self.assertEqual(above[4], "# A heading", "the heading, not the blank line between")
-        self.assertEqual(above[2], "", "the dropped comment is not the line above the heading")
-        # the shape the link-only exemption turns on: a comment between the heading and the line
-        # under it is dropped before this reads, so it cannot hide the heading
-        commented = "## License\n\n<!-- kept short on purpose -->\n\n[Apache-2.0](LICENSE).\n"
-        self.assertEqual(_prose_line_above(commented)[5], "## License")
 
 
 if __name__ == "__main__":
