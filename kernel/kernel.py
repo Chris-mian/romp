@@ -14771,6 +14771,21 @@ def _launch_error(sid):
         return None
 
 
+def _compact_end(sid):
+    """The backend's record of the session's compaction ends, or None: {ends, kind, text, at}
+    (SessionBackend.compact_end, 2026-09-21; the Codex bracket's end counter with the last end's kind, words
+    and stamp), which the next accepted turn does not erase, where it clears the launch error. None from a
+    backend that keeps none (the SDK's compaction path), for a record that is not a dict, and, as _launch_error,
+    on a backend hiccup."""
+    try:
+        be = Sessions.backend_for(str(sid))
+        fn = getattr(be, "compact_end", None) if be else None
+        rec = fn(str(sid)) if callable(fn) else None
+        return rec if isinstance(rec, dict) else None
+    except Exception:
+        return None
+
+
 def _backend_queued(sid):
     """True if the session's backend holds queued-but-unstarted USER turns (the SDK keeps them in _pending;
     the Codex backend in its own list). Composer sends now go straight to that queue
@@ -28219,14 +28234,18 @@ def _sessions_listing_key(live_map, names):
     on the listing's pair memo and served to the row (_listing_pair_scoped): the row read the bit fresh while its notice
     came from the key's read, so a loud end landing between the two built a row reading not compacting with no notice, a
     clean end's shape, whenever another input moved in the same cycle or on the first cycle, and `romp compact --wait`
-    printed done over an uncompacted thread (the post-merge review of the native compaction, 2026-09-21). A field whose
-    input is not here cannot be added without adding the input."""
+    printed done over an uncompacted thread (the post-merge review of the native compaction, 2026-09-21). And each row's
+    compaction end record (_compact_end_key, read after the pair through the cycle's memo, the row takes the same read:
+    the backend's bracket-end counter with the last end's kind, words and stamp, which the next accepted turn does not
+    erase; in the race `romp compact --wait` judges it for, every other input stands still, so outside the key the
+    pre-failure row would be served until something else moved, 2026-09-21). A field whose input is not here cannot be
+    added without adding the input."""
     try:
         paths = {s["sid"]: s["path"] for s in _sessions(time.time())}   # the cycle's own sweep (memoized on the scope): the
     except Exception:                                                   #  transcript the compacting read is disproved against
         paths = {}
     rows = tuple(sorted((str(sid), (m or {}).get("state"), (m or {}).get("since"), (m or {}).get("backend"))
-                        + _listing_pair_key(sid, m, paths.get(sid))
+                        + _listing_pair_key(sid, m, paths.get(sid)) + (_compact_end_key(sid),)
                         for sid, m in (live_map or {}).items()))
     try:
         with os.scandir(WORKING_DIR) as it:
@@ -28292,6 +28311,33 @@ def _listing_pair_key(sid, tm, path):
     """The pair's two key components: the compacting bit, and the launch error's identity (_launch_error_key)."""
     compacting, le = _listing_pair_scoped(sid, tm, path)
     return compacting, _launch_error_key(le)
+
+
+def _compact_end_scoped(sid):
+    """_compact_end through the cycle's memo (_live_scope.compact_end_records, the _launch_error_scoped idiom,
+    2026-09-21): one backend read per session per cycle, shared by the listing's key and its rows; fresh outside a
+    cycle."""
+    sid = str(sid)
+    memo = getattr(_live_scope, "compact_end_records", None)
+    if memo is None:
+        return _compact_end(sid)
+    if sid not in memo:
+        memo[sid] = _compact_end(sid)
+    return memo[sid]
+
+
+def _compact_end_key(sid):
+    """The hashable identity of a row's compaction end record for the listing's key (2026-09-21): the count with the
+    last end's kind, words and stamp, None when the backend keeps none. A key input on its own, because in the race the
+    record exists for (a loud end whose notice the next accepted turn erased) the row's other inputs stand still, so
+    outside the key the row built before the end would be served until something else moved, and a wait reading it
+    would never see the end. Read after the row's pair (_listing_pair_key) in the key's tuple: an end landing between
+    the pair's reads and this one leaves the record advanced beside a pair from before it, and the wait judges the
+    record first."""
+    rec = _compact_end_scoped(sid)
+    if not isinstance(rec, dict):
+        return None
+    return (int(rec.get("ends") or 0), str(rec.get("kind") or ""), str(rec.get("text") or ""), str(rec.get("at") or ""))
 
 
 def _sessions_listing_miss(prev, cur):
@@ -28432,12 +28478,20 @@ def _session_listing_row(sid, meta, notes, path):
                 # read, compacting then notice, taken at the listing's key and served here (_listing_pair_scoped): read
                 # apart, a loud end between them gave this row a clean end's shape (2026-09-21)
                 "launchError": launch_error,
+                # compactEnd: the backend's record of its compaction bracket's ends ({ends, kind, text, at},
+                # SessionBackend.compact_end; None from a backend that keeps none), the field `romp compact --wait`
+                # judges: the launch error above is cleared by the next accepted turn, and a message parked behind the
+                # compaction drains at a loud end's poke, so that notice was gone within milliseconds, before the
+                # wait's next poll, which read quiet with no notice and printed done over an uncompacted thread
+                # (the post-merge review of the wait, 2026-09-21). Through the cycle's memo (_compact_end_scoped): the
+                # listing's key read it already, after the pair
+                "compactEnd": _compact_end_scoped(sid),
                 "working": notes.get(sid, ""), "backend": meta.get("backend", "")}
     except Exception:
         sys.stderr.write("session row for %s failed (kept minimal): %s\n"
                          % (sid, traceback.format_exc()))
         return {"id": sid, "name": sid[:8], "state": meta.get("state", ""), "dir": "",
-                "bg": "", "fg": "", "lastSid": sid, "compacting": False, "launchError": None,
+                "bg": "", "fg": "", "lastSid": sid, "compacting": False, "launchError": None, "compactEnd": None,
                 "working": "", "backend": meta.get("backend", "")}
 
 
@@ -59962,6 +60016,8 @@ def _pusher_cycle():
         _live_scope.auth = {}                   # …and the cycle's billing-availability memo (_auth_avail_status)
         _live_scope.launch_errors = {}          # …and the cycle's launch-error memo (_launch_error_scoped): the listing's
         #                                       key and its rows read one record per session (2026-09-21)
+        _live_scope.compact_end_records = {}    # …and the cycle's compaction-end-record memo (_compact_end_scoped), read
+        #                                       by the same pair (2026-09-21)
         _live_scope.subagent_trees = {}         # …and the cycle's subagents-tree samples (_subagent_tree): one sample per
         #                                       root per cycle for every tree that exists, validated or walked by the
         #                                       first reader and served to every reader after it: the chat builds'
@@ -59988,6 +60044,7 @@ def _pusher_cycle():
         _live_scope.sessions = None
         _live_scope.auth = None
         _live_scope.launch_errors = None
+        _live_scope.compact_end_records = None
         _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _cycle_idle = (_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle

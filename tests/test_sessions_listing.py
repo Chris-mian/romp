@@ -288,6 +288,66 @@ class OneListingPerChange(_Listing):
         self._cycle()
         self.assertEqual(self._stats()[0]["built"], n0 + 2, "a quiet cycle builds nothing")
 
+    def test_a_rows_compaction_end_record_rides_the_listing_and_moves_the_key_on_its_own(self):
+        # The record `romp compact --wait` judges (the post-merge review of the wait, 2026-09-21): the backend's
+        # bracket-end counter with the last end's kind, words and stamp, which the next accepted turn does not erase (it
+        # clears launchError, within milliseconds when a message parked behind the compaction drains at a loud end's
+        # poke). The row carries it whole, and it is a key input ON ITS OWN: in that race every other input stands still
+        # (the state back to waiting, compacting False, launchError None again), so a record outside the key would leave
+        # the row built before the end served until something else moved, and a wait reading it would never see the end.
+        recs, reads = {}, []
+        saved = km._compact_end
+        km._compact_end = lambda sid: (reads.append(str(sid)), recs.get(str(sid)))[1]
+        self.addCleanup(setattr, km, "_compact_end", saved)
+        self._cycle()
+        row = next(r for r in self._body() if r["id"] == SID)
+        self.assertIn("compactEnd", row, "the field is there")
+        self.assertIsNone(row["compactEnd"], "a backend that keeps no record: empty, never absent")
+        self.assertEqual(reads.count(SID), 1, "one backend read per session per cycle: the key and the row share the memo (%r)" % reads)
+        recs[SID] = {"ends": 0, "kind": "", "text": "", "at": None}                       # a Codex row before any end
+        self._cycle()
+        self.assertEqual(next(r for r in self._body() if r["id"] == SID)["compactEnd"], recs[SID], "the record, whole")
+        self.assertEqual(self._stats()[0]["built"], 2, "the record is a key input: one rebuild")
+        loud = {"ends": 1, "kind": "loud", "at": NOW + 1.5,
+                "text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was"}
+        recs[SID] = loud                     # the loud end with its notice already erased: launchError None, compacting False, state waiting
+        self._cycle()
+        self.assertEqual(next(r for r in self._body() if r["id"] == SID)["compactEnd"], loud)
+        self.assertEqual(self._stats()[0]["built"], 3, "the end alone moved the key, nothing else did")
+        self._cycle()
+        self.assertEqual(self._stats()[0]["built"], 3, "and a quiet cycle builds nothing")
+        recs[SID] = {"ends": 2, "kind": "clean", "text": "", "at": NOW + 9.0}
+        self._cycle()
+        self.assertEqual(next(r for r in self._body() if r["id"] == SID)["compactEnd"]["kind"], "clean")
+        self.assertEqual(self._stats()[0]["built"], 4)
+        self.assertEqual(reads.count(SID), 5, "still one read per cycle (%r)" % reads)
+
+    def test_the_rows_compaction_end_record_is_read_from_the_owning_backend(self):
+        # The live path (the post-merge review, 2026-09-21): the kernel's own read of the backend's compact_end, not a
+        # stub of it. SID's backend exposes the method; SID2's has none (the SDK backend's shape, which inherits the
+        # contract's None default; a backend from before the method reads the same way); and a record that is not a
+        # dict reads as None, never as a row that raises.
+        rec = {"ends": 1, "kind": "loud", "at": NOW,
+               "text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was"}
+        holder = {"rec": rec}
+
+        class WithRecord:
+            def compact_end(self, sid):
+                return holder["rec"] if str(sid) == SID else None
+        saved = km.Sessions.backend_for
+        km.Sessions.backend_for = staticmethod(lambda sid: WithRecord() if str(sid) == SID else object())
+        self.addCleanup(setattr, km.Sessions, "backend_for", saved)
+        self._cycle()
+        rows = {r["id"]: r for r in self._body()}
+        self.assertEqual(rows[SID]["compactEnd"], rec, "the backend's record, read live and served whole")
+        self.assertIsNone(rows[SID2]["compactEnd"], "a backend without the method: None, and the row is still built")
+        self.assertEqual(rows[SID2]["name"], "api", "the row is the full row, not the minimal one a raise leaves")
+        holder["rec"] = ["not", "a", "record"]
+        self._cycle()
+        rows = {r["id"]: r for r in self._body()}
+        self.assertIsNone(rows[SID]["compactEnd"], "a record that is not a dict reads as none")
+        self.assertEqual(rows[SID]["name"], "web")
+
     def test_a_start_a_rename_and_a_death_reach_the_roster_within_one_cycle(self):
         """The postal bus's roster (list_agents, the send's liveness check) reads this route: a session that started is
         listed after one cycle, a renamed one carries its name, a dead one is gone (absence reads as death downstream)."""
