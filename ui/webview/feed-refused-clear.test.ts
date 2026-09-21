@@ -30,7 +30,8 @@ test("client: the err handler releases the ids a refused clear names and repaint
   assert.match(h, /for \(const it of clearedStack\.splice\(i, 1\)\[0\]\) \{/, "and the optimistic Undo entry for a clear that never happened goes, its items back on the board");
   assert.ok(h.indexOf("render();") > h.indexOf("pendingCleared.delete(id)"), "then the board repaints from the payload that still lists the card");
   assert.ok(h.indexOf("refusedIds") < h.indexOf('if (op === "apiRetry" && sid)'), "ahead of the latch re-arms the frame already drove");
-  assert.match(h, /\} else if \(sid\) rearmLatches\(\{ kind: "session", sid \}\);/, "a session account re-arms the session's latches whether or not op rides (the round-three verifier)");
+  assert.match(h, /\} else if \(sid && \(!op \|\| STORE_GESTURE_OPS\.has\(op\)\)\) rearmLatches\(\{ kind: "session", sid \}\);/, "a store gesture's session account re-arms the session's latches whether or not op rides (the round-three verifier); a reply to a different request on the session leaves them (the revive test)");
+  assert.match(FEED, /const STORE_GESTURE_OPS = new Set\(\["askClear", "askClearMany", "nodeOverride", "clearAll", "undoClear"\]\);/, "the five requests the kernel's accounts ride");
   assert.doesNotMatch(h, /else if \(!op && sid\)/);
 });
 
