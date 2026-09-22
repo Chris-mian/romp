@@ -7961,6 +7961,9 @@ def _tag_new_session(sid, parent_sid="", tags=()):
 
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
+_HIDDEN_FROM_FEED_WHY = "hidden from the feed"   # the why the hideFromFeed mute stamps on its clear rows, so a mute's cross-off is
+#   distinguishable from the user's own (a plain feed Clear/Clear-all stamps the generic "cleared from the feed"); a measure that
+#   reads the journal must not count a mute as the user crossing a card off (the judge-experiment harness excludes this why exactly)
 # A persisted {sid: {flag: true}} dict under STATE. Flags today: hideFromFeed (a session whose prompts
 # should NOT mint feed cards — a per-session "mute from the feed") and postalServiceOff (isolate the session from
 # the Romp Postal Service — enforced in bin/romp-postal-service: invisible to list_agents, can't send/receive). Both are
@@ -8153,8 +8156,8 @@ def _set_session_flag(sid, flag, value):
                 with p.open("a") as fh:
                     for nid in tops:
                         fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
-                _mark_nodes_cleared(tops, True)               # durable node flag → sealed across judge passes
-                _files_stat_mark()                            # the clears log is a keyed file of every session
+                _mark_nodes_cleared(tops, True, why=_HIDDEN_FROM_FEED_WHY)   # durable node flag → sealed; a distinct why so a mute's
+                _files_stat_mark()                            # clear is not read as the user crossing the card off (a measure reads the journal)
         except Exception:
             pass
     if flag == "hideFromFeed" and not value:
@@ -28294,9 +28297,13 @@ def _sessions_listing_key(live_map, names):
 def _launch_error_scoped(sid):
     """_launch_error through the cycle's memo (2026-09-21): inside a pusher cycle the first read per sid is kept on
     _live_scope.launch_errors (opened and closed with the cycle's other memos, the _sessions idiom) and served to every
-    reader after it, so the listing, which reads it once at its key through the pair memo (_listing_pair_scoped), costs
-    one backend read per session per cycle (the SDK backend's read is a registry file per session); outside a cycle every
-    read is fresh, as _sessions behaves."""
+    reader after it; outside a cycle every read is fresh, as _sessions behaves. The listing's one backend read per
+    session per cycle (the SDK backend's read is a registry file per session) is bounded by the pair memo, not by this
+    one (the post-merge review of the listing pairing, 2026-09-22): this reader's only caller is the pair reader
+    (_listing_pair_scoped), reached on the pusher thread from the refresh's key and rows alone, with
+    _live_scope.listing_pairs open for that whole span, so a sid's second read stops at the pair memo and this memo
+    serves no hit today. It stays as a backstop for a second cycle reader outside the pair, which does not exist yet;
+    the raw readers elsewhere call _launch_error directly and never fill it."""
     sid = str(sid)
     memo = getattr(_live_scope, "launch_errors", None)
     if memo is None:
@@ -36730,7 +36737,16 @@ def _drop_parked_on_end(sid, client=None):
     message. The op the drain is handing over right now is found by SLOT (_inflight_slot), as _cancel_parked finds it,
     not by identity: two parked compact presses are one interned tuple, and an identity filter kept the second behind
     the in-flight first. Only the kinds the drain records are ever in that slot (a command, a compact, a clear, a
-    setting pick); a send run is popped, never recorded."""
+    setting pick); a send run is popped, never recorded.
+
+    ONE modal per End, however many texts (post-merge review of the hand-back, 2026-09-21): the loop sent one err
+    frame per text, and the pane's dialog replaces the one before it on every frame, so of two texts only the second
+    was ever seen and the first survived in undelivered.jsonl and the log alone. Each text still gets its own row and
+    its own log line through the per-op hand-back (_hand_back_parked, the not-delivered path); the frames it would
+    send are caught and, when there are several, folded into one (_fold_undelivered: every text in typed order under
+    its own header, a title that counts by kind, an op the feed matches to no latch). Folded here and not in the
+    not-delivered path, whose other callers refuse one op each; the drain's refusal road (_hand_back_refused_send)
+    still hands back one frame per refused send."""
     global _end_latch_gen
     sid = str(sid)
     with _pending_ops_lock:
@@ -36754,12 +36770,58 @@ def _drop_parked_on_end(sid, client=None):
         target = client
     else:
         target = {"send": lambda t: _send_to_one_chat(json.loads(t), sid)}
+    # Each typed text is filed by the per-op hand-back itself (_hand_back_parked, the not-delivered path: its
+    # undelivered.jsonl row, its stderr line), and the frame that path would send is CAUGHT here, not sent: the pane's
+    # dialog replaces the one before it on every err frame (showConfirm, the feed's err dialog), so of two texts handed
+    # back one frame each only the second was ever seen (post-merge review of the hand-back, 2026-09-21). One frame per
+    # End goes out: the caught one when there is one text, else the fold of all of them (_fold_undelivered). The count
+    # returned is still the texts handed back, one per row and log line, which the end route answers as `undelivered`.
+    frames = []
+    catcher = {"send": frames.append}
     handed = 0
     for op in gone:
-        handed += _hand_back_parked(op, sid, target, "The session ended before romp could hand this over",
+        handed += _hand_back_parked(op, sid, catcher, "The session ended before romp could hand this over",
                                     "with the ending session")
+    if frames:
+        try:
+            target["send"](frames[0] if len(frames) == 1
+                           else json.dumps(_fold_undelivered([json.loads(f) for f in frames], sid)))
+        except Exception:
+            pass
     _mark_views_dirty()
     return handed
+
+
+def _fold_undelivered(frames, sid):
+    """ONE err frame for the several not-delivered texts of one End (2026-09-21): the hand-back filed each text
+    through the not-delivered path and caught the frame that path would have sent; this folds those frames into the
+    one the pane shows. The texts ride the copy slot in typed order, each under a header line naming its kind and its
+    place ("--- message 1 of 2 ---"). A blank line is what a person would put between two texts, but a message can
+    hold blank lines of its own, and two texts joined by one then read as three; the header is a line no message
+    produces by accident, and its "of N" lets the reader check that the pieces add up. undelivered.jsonl keeps each
+    text on its own row for an exact copy. The title counts by kind, so a message and a command mixed read as "1
+    message and 1 command", never as two of one. The op slot is the frames' shared op when every text took the same
+    door (sendMessage for two messages), else the verb "handback", and itemId is empty. What the feed reads from
+    those two slots (its err arm): apiRetry with a sid re-arms that session's Retry, askFollowUp with an id re-arms
+    that card's Continue, and an EMPTY op with a sid is an older kernel's session-wide reply, re-arming the
+    session's Retry and Revive; so an empty op here would have given two texts a feed side effect one text does not
+    (review find, 2026-09-21). Neither sendMessage, sendCommand nor handback is a latch kind, so the folded frame
+    re-arms nothing, as the one-text frame does not. The detail names the session as the one-text frame does
+    (_refuse_drive's why branch): its registered name, the uuid only when no row names it."""
+    n = len(frames)
+    whats = [_FOREIGN_OP_VERB.get(f.get("op"), "action") for f in frames]
+    ops = [f.get("op") or "" for f in frames]
+    op = ops[0] if ops[0] and all(o == ops[0] for o in ops) else "handback"
+    copy = "\n\n".join("--- %s %d of %d ---\n%s" % (what, i, n, f.get("copy") or "")
+                       for i, (what, f) in enumerate(zip(whats, frames), 1))
+    counted = " and ".join("%d %s%s" % (whats.count(what), what, "" if whats.count(what) == 1 else "s")
+                           for what in dict.fromkeys(whats))          # kinds in typed order, each once
+    detail = ("Nothing was sent. The session ended before romp could hand these over (session %s), so it could not "
+              "deliver your %s. Each text is saved verbatim in undelivered.jsonl under romp's state directory, and "
+              "Copy my text takes all of them in the order you sent them, each under a line saying which it is."
+              % (_name_of(sid) or sid, counted))
+    return {"type": "err", "title": "%s were not delivered" % counted, "text": detail, "copy": copy, "sid": sid,
+            "op": op, "itemId": ""}
 
 
 _ending_sids: dict = {}          # sid -> the GENERATION of the End doors' cancel that latched it (_drop_parked_on_end): the
@@ -60329,9 +60391,14 @@ def _pusher_cycle():
         #                                         per cycle became one
         _live_scope.auth = {}                   # …and the cycle's billing-availability memo (_auth_avail_status)
         _live_scope.launch_errors = {}          # …and the cycle's launch-error memo (_launch_error_scoped): the listing's
-        #                                       key and its rows read one record per session (2026-09-21)
+        #                                       key alone reaches it, once per session through the pair reader, and it
+        #                                       serves no hit today, since the pair memo (_listing_pair_scoped, opened
+        #                                       by the refresh over its key and its rows) bounds the listing's read to
+        #                                       one per session; kept as a backstop for a second cycle reader outside
+        #                                       the pair, which does not exist yet (the post-merge review of the listing
+        #                                       pairing, 2026-09-22)
         _live_scope.compact_end_records = {}    # …and the cycle's compaction-end-record memo (_compact_end_scoped), read
-        #                                       by the same pair (2026-09-21)
+        #                                       by the listing's key and its rows (2026-09-21)
         _live_scope.subagent_trees = {}         # …and the cycle's subagents-tree samples (_subagent_tree): one sample per
         #                                       root per cycle for every tree that exists, validated or walked by the
         #                                       first reader and served to every reader after it: the chat builds'
@@ -60576,10 +60643,13 @@ JOBS_PASS_S = 0.5                                  # the jobs thread's pace betw
 
 def _jobs_cycle():
     """ONE pass of the jobs thread: the pass's liveness snapshot and scopes opened as _pusher_cycle opens the pusher's
-    (thread-confined, so the two loops never share a snapshot), less the launch-error memo: only the listing's key and rows
-    read it, and the listing is the pusher's job, so a memo opened here was filled by nothing (2026-09-21); _jobs_pass inside
-    them, the scopes closed in the finally, the pass counted under /perf `jobs`, and the boot's first pass sampled and
-    reported to the boot row like the pusher's first cycle."""
+    (thread-confined, so the two loops never share a snapshot), less the launch-error memo and the compaction-end-record
+    memo (_compact_end_scoped) beside it: only the listing reads them, the launch error once per session at its key through
+    the pair reader (_listing_pair_scoped; the rows hit the pair memo and never reach it) and the end record at its key and
+    its rows, and the listing is the pusher's job, so a memo opened here was filled by nothing (2026-09-21; the key alone
+    for the launch error since the post-merge review of the listing pairing, 2026-09-22); _jobs_pass inside them, the scopes closed in the finally, the
+    pass counted under /perf `jobs`, and the boot's first pass sampled and reported to the boot row like the pusher's
+    first cycle."""
     _t = time.monotonic()
     first = not _BOOT_HEALTH_DONE[0] and _BOOT_FIRST["jobs"] is None
     if first:

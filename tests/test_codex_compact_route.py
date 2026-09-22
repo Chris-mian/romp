@@ -50,6 +50,7 @@ _HOSTS.write_text("off")
 SID = "11111111-2222-4333-8444-0c0e0c0e0001"      # private to this module: the door, route and drain classes
 SID_REAL = "11111111-2222-4333-8444-0c0e0c0e0002" # the real-backend class (a registry row is written for it)
 QID = "echo:" + "ce" * 16                          # the press-minted copy id, in the kernel's echo form
+QID2 = "echo:" + "cf" * 16                         # a second press's id, for two texts parked together
 
 
 def until(fn, timeout=5.0, step=0.01):
@@ -1078,6 +1079,36 @@ class EndHandbackTargets(_Base):
         self.assertLess(move.index("_lift_end_latch_if_live(sid, since)"), move.index('if res == "busy":'),
                         "the move lifts on fresh liveness after the backend answered, whatever the answer")
 
+    def test_a_message_and_a_command_parked_together_come_back_in_one_dialog_that_counts_each_kind(self):
+        # Two texts handed back one frame each showed one dialog: the pane replaces the dialog before it on every err
+        # frame (post-merge review of the hand-back, 2026-09-21). One frame carries both under their own headers; its
+        # title counts by kind, so a message and a typed slash command read as one of each, never as two of one; the
+        # frame names no request, where the frame for one text names its own. Each text still gets its own row.
+        self._restore_undelivered()
+        self._name(SID, "web")
+        km._park_op(SID, ("send", "words the user typed", "human", QID, True))
+        km._park_op(SID, ("command", "/model opus", "human", None, True))
+        frames = []
+        pane = {"app": "chat", "alive": True, "send": lambda t: frames.append(json.loads(t))}
+        self.assertEqual(km._drop_parked_on_end(SID, pane), 2, "two texts handed back")
+        errs = [f for f in frames if f.get("type") == "err"]
+        self.assertEqual(len(errs), 1, "one dialog for one End: %r" % [f.get("title") for f in errs])
+        self.assertEqual(errs[0]["title"], "1 message and 1 command were not delivered")
+        self.assertEqual(errs[0]["copy"], "--- message 1 of 2 ---\nwords the user typed\n\n--- command 2 of 2 ---\n/model opus")
+        # The feed's err arm re-arms latches by these two slots: apiRetry with a sid, askFollowUp with an id, and an EMPTY
+        # op with a sid as an older kernel's session-wide reply (Retry and Revive). Two doors folded carry the verb
+        # "handback", which matches no latch kind, so this frame re-arms nothing, as the one-text frame does not.
+        self.assertEqual((errs[0]["sid"], errs[0]["op"], errs[0]["itemId"]), (SID, "handback", ""),
+                         "a frame folding two doors carries the hand-back verb and no id")
+        self.assertTrue(errs[0]["op"] and errs[0]["op"] not in ("apiRetry", "askFollowUp"), "not a latch kind, not the empty op")
+        self.assertIn("ended", errs[0]["text"])
+        self.assertIn("(session web)", errs[0]["text"], "the session as the person knows it, as the one-text frame names it")
+        self.assertIn("1 message and 1 command", errs[0]["text"])
+        rows = [json.loads(l) for l in (km.jd.STATE / "undelivered.jsonl").read_text().splitlines() if l.strip()]
+        self.assertEqual([(r["op"], r["text"]) for r in rows if r.get("sid") == SID],
+                         [("sendMessage", "words the user typed"), ("sendCommand", "/model opus")], "one row per text, in typed order")
+        self.assertNotIn(SID, km._pending_ops)
+
 
 class RealBackendCompact(unittest.TestCase):
     """The route, the gates and the drain over the REAL CodexBackend with the codex-backend module's own scripted
@@ -1595,6 +1626,49 @@ class RealBackendCompact(unittest.TestCase):
     def test_the_self_close_sweep_hands_back_before_the_kill(self):
         text = "typed behind a cue, ended by the session itself with a drain on the kill's heels"
         self._ended_with_a_drain_on_the_kills_heels(text, "/TESTDIR-compact-end-order-sweep", self._end_by_the_sweep)
+
+    def test_end_hands_two_parked_messages_back_in_one_dialog_carrying_both_in_typed_order(self):
+        # Two messages typed behind the cue, then End: the hand-back sent one err frame per text, and the pane's
+        # dialog replaces the one before it on every frame, so only the second text was ever seen; the first survived
+        # in the undelivered file and the log alone (post-merge review of the hand-back, 2026-09-21). One frame per
+        # End now carries both in typed order, each under a header naming its kind and place, and the blank line
+        # inside the first stays inside it: joined by a bare blank line the two would read as three. Each text still
+        # gets its own undelivered row and its own log line, and neither runs on the row End killed or the revived one.
+        import contextlib, io
+        first = "first words typed behind the cue\n\nafter a blank line inside the same message"
+        second = "second words typed behind the cue"
+        where = "/TESTDIR-compact-end-two"
+        sid = self._parked_behind_a_bracket_nothing_ends(first, where)
+        self.assertIs(km._send_or_park(self.be, sid, second, user=True, qid=QID2), True, "the second parks behind the first")
+        self.assertEqual([op[:2] for op in km._pending_ops[sid]], [("send", first), ("send", second)])
+        n0 = len(self.fake.called("turn_start"))
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            self.assertTrue(km._drive({"type": "endSession", "id": sid}, self.client))
+        errs = [f for f in self.sent if f.get("type") == "err"]
+        self.assertEqual(len(errs), 1, "one dialog for one End: %r" % [f.get("copy") for f in errs])
+        self.assertEqual(errs[0]["copy"], "--- message 1 of 2 ---\n" + first + "\n\n--- message 2 of 2 ---\n" + second,
+                         "both texts in typed order, each under its own header")
+        self.assertEqual(errs[0]["title"], "2 messages were not delivered")
+        self.assertIn("ended", errs[0]["text"])
+        # Two messages share one door, so the folded frame keeps its op (sendMessage) and an empty id: the feed's err arm
+        # re-arms a latch for apiRetry with a sid, askFollowUp with an id, or an EMPTY op with a sid (an older kernel's
+        # session-wide reply), and sendMessage is none of those, so the frame re-arms nothing, as the one-text frame does not.
+        self.assertEqual((errs[0]["sid"], errs[0]["op"], errs[0]["itemId"]), (sid, "sendMessage", ""),
+                         "a frame folding two messages keeps their shared op and names no id")
+        self.assertTrue(errs[0]["op"] and errs[0]["op"] not in ("apiRetry", "askFollowUp"), "not a latch kind, not the empty op")
+        self.assertEqual(log.getvalue().count("undeliverable sendMessage: The session ended before romp could hand this over %s" % sid), 2,
+                         "one log line per text")
+        rows = [json.loads(l) for l in (self.root / "undelivered.jsonl").read_text().splitlines() if l.strip()]
+        self.assertEqual([r["text"] for r in rows if r.get("sid") == sid], [first, second], "one row per text, verbatim, in typed order")
+        self.assertIs(self.be.owns(sid), False, "End killed the row")
+        km._apply_pending_ops()
+        self.assertTrue(self.be.resume("web", sid, cwd=where))
+        km._apply_pending_ops()
+        self.assertEqual([c for c in self.fake.called("turn_start")[n0:] if any(i.get("text") in (first, second) for i in c[2])], [],
+                         "nothing typed under the cue runs unasked on the row End killed or the revived one")
+        self.assertNotIn(sid, km._pending_ops, "the ending session's queue is gone with it")
+        self.assertEqual(self.be.pending_queued(sid), [], "the backend's own queue never had them")
 
 
 if __name__ == "__main__":

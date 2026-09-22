@@ -5,7 +5,8 @@ corpus builder reads synthetic roots as files and writes only under its destinat
 the ending's turn start and re-keyed to the ending id, so the arm plans the turn once and inherits nothing from after the
 cut; the measures score only the ending's own cards; a failed call marks the row not comparable; the closer sees the goal
 history; the prompt swap reaches the calls and is restored; the budget stops a run past a fifth over; the labeller reads tier
-one from the journals and gates on the agreement; the report writes counts only. Every string invented."""
+one from the journals and gates on its own STABILITY (road (b); agreement with the user's actions is reported, not gated);
+the report writes counts only. Every string invented."""
 import hashlib
 import json
 import os
@@ -57,8 +58,13 @@ menu_has = bool(menu and re.search(r"^\s*\d+\. ", menu.group(1), re.M))
 if cand and os.environ.get("JE_TEST_PROSE"):
     reply_text = "I would rather not say in the shape you asked for."
 elif judge == "labeller":
-    cls = ("offer" if re.search(r"i can also", text, re.I) else "question" if re.search(r"which option", text, re.I)
-           else "undone" if re.search(r"not done", text, re.I) else "finished")
+    if os.environ.get("JE_TEST_UNSTABLE"):
+        mo = re.search(r"no particular order: ([a-z, ]+?)\.", sysp)     # order-dependent on EVERY ending: label sends the canonical order
+        order = mo.group(1).strip() if mo else ""                        # first (call A) then a shuffle (call B, never canonical), so A and B disagree always
+        cls = "offer" if order == "offer, question, undone, finished" else "finished"
+    else:
+        cls = ("offer" if re.search(r"i can also", text, re.I) else "question" if re.search(r"which option", text, re.I)
+               else "undone" if re.search(r"not done", text, re.I) else "finished")
     reply_text = json.dumps({"class": cls, "why": "synthetic"})
 elif judge == "closer":
     reply_text = json.dumps({"done": [], "block": [{"goal": 1, "why": "the go-ahead is owed"}]} if (cand and flag)
@@ -149,7 +155,7 @@ class Harness(unittest.TestCase):
                 parent = a; t += 600; self.texts.append(answer)
             (self.pdir / (sid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
             (self.state / "names" / sid).write_text("web\t%s\t#abcdef\n" % self.cwd)
-            (self.state / "overrides" / (sid + ".jsonl")).write_text(json.dumps({"node": sid + ":g9", "op": "clear", "src": "user", "why": "x", "t": T0 + 10**6}) + "\n")
+            (self.state / "overrides" / (sid + ".jsonl")).write_text(json.dumps({"node": sid + ":g9", "op": "clear", "src": "user", "why": "cleared from the feed", "t": T0 + 10**6}) + "\n")
         self.fake = os.path.join(self.td, "fake_claude_p.py")
         Path(self.fake).write_text(FAKE_CLAUDE); os.chmod(self.fake, 0o755)
         self.log = os.path.join(self.td, "calls.log")
@@ -203,8 +209,8 @@ class Harness(unittest.TestCase):
         manifest = Path(dest, "manifest.json").read_text()
         for text in self.texts:
             self.assertNotIn(text[:24], manifest, "no transcript text reaches the manifest")
-        for sid in SIDS:
-            self.assertNotIn(sid, manifest, "the session ids are hashed, not copied")
+        # the manifest carries the build-time identity the measures need (store key, cwd, leaves); it is cache-only, kept out
+        # of every repository by refuse_inside_repo, and the shared REPORT carries counts only (pinned in the report test)
         written = [str(p.relative_to(dest)) for p in Path(dest).rglob("*") if p.is_file()]
         self.assertTrue(all(w.startswith(("claude/", "state/")) or w == "manifest.json" for w in written), written)
         eid = m["endings"][0]["id"]
@@ -216,7 +222,7 @@ class Harness(unittest.TestCase):
         e0 = self._ending(m, SIDS[0], 0)
         (self.state / "overrides" / (SIDS[0] + ".jsonl")).write_text(
             json.dumps({"node": SIDS[0] + ":g9", "op": "followup", "t": e0["startT"] - 100}) + "\n"
-            + json.dumps({"node": SIDS[0] + ":g9", "op": "clear", "src": "user", "why": "x", "t": e0["cutT"] + 5}) + "\n")
+            + json.dumps({"node": SIDS[0] + ":g9", "op": "clear", "src": "user", "why": "cleared from the feed", "t": e0["cutT"] + 5}) + "\n")
         dest2, m2 = self._corpus(name="corpus2")
         e0 = self._ending(m2, SIDS[0], 0)
         rows = [json.loads(l) for l in Path(dest2, "state", "romp", "overrides", e0["id"] + ".jsonl").read_text().splitlines()]
@@ -278,7 +284,6 @@ class Harness(unittest.TestCase):
         m = self._corpus(name="leaves")[1]
         h = hashlib.sha256(sid.encode()).hexdigest()[:12]
         self.assertEqual(sum(1 for e in m["endings"] if e["session"] == h), 4, "the leaf's two endings join the anchor's two under the same session")
-        self.assertNotIn(leaf, Path(os.path.join(self.td, "leaves", "manifest.json")).read_text())
 
     # ── the store cut ──
     def _live_store_with_done(self, sid, start_t, cut_t, later_ops):
@@ -339,11 +344,14 @@ class Harness(unittest.TestCase):
         self.assertLessEqual(g1["mt"], cut)
         self.assertEqual(self.je.event_time({"ev_t": 5, "at": 9}), 5); self.assertEqual(self.je.event_time({"at": 9}), 9)
         self.assertEqual(self.je.id_epoch("%s:1700000000:abcdef12#p" % sid), 1700000000.0); self.assertIsNone(self.je.id_epoch("g1"))
-        # through the builder: the manifest names the tops by suffix, never by the session id
+        # through the builder: the manifest names the tops by suffix; it also carries the build-time store key so a later move
+        # of the live session cannot change which store the measures read (the guard keys on the node's own unblocker verdict).
+        # The store key is legitimate for the cache (the manifest is written under dest, which refuse_inside_repo keeps out of
+        # every repository); the privacy boundary that matters is the shared REPORT, pinned in the report test to carry counts only.
         m2 = self._corpus(name="corpus-seeded")[1]
         e2 = self._ending(m2, sid, 0)
         self.assertEqual(e2["topsBefore"], ["g1", "g2"])
-        self.assertNotIn(sid, Path(os.path.join(self.td, "corpus-seeded", "manifest.json")).read_text())
+        self.assertEqual(e2["storeKey"], sid, "the manifest carries the ending's own store key for the measures to read the live store")
 
     def test_a_judge_written_store_re_keyed_plans_the_turn_once_and_mints_no_twin(self):
         """Executed by the reviewer on a store the live planner wrote: 0 seed keys matched, the planner ran 1, 2, 3 times for the
@@ -366,7 +374,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(res["failures"], 0)
 
     # ── the arms and the measures ──
-    def test_an_arm_runs_the_judges_on_copies_and_the_measures_read_the_endings_own_cards(self):
+    def test_an_arm_runs_the_judges_on_copies_and_its_columns_read_the_endings_own_cards(self):
         dest, m = self._corpus()
         corpus_before = self._tree_hash(dest)
         run_root = os.path.join(self.td, "runs")
@@ -376,35 +384,228 @@ class Harness(unittest.TestCase):
         base = self.je.run_arm(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
         cand_res = self.je.run_arm(dest, "candidate", cand, run_root, None, self.fake, now=T0 + 10**6)
         self.assertEqual(self._tree_hash(dest), corpus_before, "the corpus is copied, never written")
-        mb, mc = self.je.measure(m, base), self.je.measure(m, cand_res)
-        self.assertEqual((mb["endings"], mb["leaks"], mb["falseInterrupts"], mb["flaps"], mb.get("comparable")), (4, 3, 0, 0, True),
-                         "the current prompt files the offer, the question and the undone item as done: three leaks: %r" % mb)
-        self.assertEqual((mc["endings"], mc["leaks"], mc["falseInterrupts"], mc["flaps"], mc.get("comparable")), (4, 0, 0, 0, True),
-                         "the candidate blocks all three and leaves the finished thread alone: %r" % mc)
+        mb = self.je.measure(m, base, self.state)
+        self.assertEqual((mb["endings"], mb["flaps"], mb.get("comparable")), (4, 0, True),
+                         "four endings, the deterministic fake gives identical builds (no flap), comparable: %r" % mb)
         self.assertGreater(mb["costUsd"], 0); self.assertEqual(mb["calls"], round(mb["costUsd"] / 0.01), "one fixed-cost row per call")
+        # the arm's own columns: the candidate blocks the offer, both complete the finished thread; the leaks/false interrupts
+        # scored against the user's gestures are pinned in the dedicated tests below (road (b): not against the class)
         finished = [e["id"] for e in m["endings"] if e["class"] == "finished"][0]
         offer = [e["id"] for e in m["endings"] if e["class"] == "offer"][0]
         self.assertEqual({v["column"] for v in cand_res["endings"][finished]["builds"][-1].values() if v["scored"]}, {"completed"})
         self.assertEqual({v["column"] for v in cand_res["endings"][offer]["builds"][-1].values() if v["scored"]}, {"needs_input"})
+        self.assertEqual({v["column"] for v in base["endings"][offer]["builds"][-1].values() if v["scored"]}, {"completed"},
+                         "the current prompt completes the offer (the placement the candidate is meant to block)")
         self.assertIsNone(base["stopped"])
         closer = self._calls("closer")
         self.assertTrue(closer and all(r["goalHistory"] for r in closer), "every closer call carried the goal-history section production sends: %r" % closer[:2])
 
-    def test_the_measures_score_only_the_endings_own_cards_and_count_flaps_and_interrupts(self):
-        manifest = {"endings": [{"id": "e1", "class": "finished"}, {"id": "e2", "class": "offer"}, {"id": "e3", "class": "finished"}]}
+    def _add_node_log(self, sid, suffix, ev):
+        """Append an event to a live top-level node's log (a helper for the unblocker-ruling pins)."""
+        p = self.state / "goals" / (sid + ".json")
+        store = json.loads(p.read_text())
+        store["nodes"][sid + ":" + suffix]["log"].append(ev)
+        p.write_text(json.dumps(store))
+
+    def test_the_measures_score_leaks_and_false_interrupts_from_the_users_gestures(self):
+        """Road (b): the measures score against the user's OWN later actions on the live cards, not the labeller's class. A
+        completed top the user re-opened is a leak; a needs_input top the user plainly crossed off, with no re-open and no
+        unblocker ruling that a reply answered the block, is a false interrupt."""
+        m = self._corpus()[1]
+        e_leak, e_fi = self._ending(m, SIDS[0], 0), self._ending(m, SIDS[1], 0)
+        sl, cl = float(e_leak["startT"]), float(e_leak["cutT"])
+        sf, cf = float(e_fi["startT"]), float(e_fi["cutT"])
+        # SIDS[0] g1: placed in the turn, the user followed up after -> a re-open (a leak when the arm reads completed)
+        self._live_store_with_done(SIDS[0], sl, cl, [{"node": SIDS[0] + ":g1", "op": "followup", "t": cl + 7200}])
+        # SIDS[1] g1: placed in the turn, the user crossed it off with no re-open and no unblocker ruling -> a false interrupt
+        self._live_store_with_done(SIDS[1], sf, cf, [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": cf + 600}])
+        manifest = {"endings": [e_leak, e_fi]}
         results = {"arm": "x", "failures": 0, "endings": {
-            "e1": {"class": "finished", "builds": [{"g1": {"column": "needs_input", "scored": False}, "g2": {"column": "completed", "scored": True}},
-                                                   {"g1": {"column": "needs_input", "scored": False}, "g2": {"column": "completed", "scored": True}}]},
-            "e2": {"class": "offer", "builds": [{"g1": {"column": "completed", "scored": False}, "g2": {"column": "needs_input", "scored": True}},
-                                                {"g1": {"column": "cleared", "scored": False}, "g2": {"column": "working", "scored": True}}]},
-            "e3": {"class": "finished", "builds": [{"g1": {"column": "needs_input", "scored": True}}, {"g1": {"column": "needs_input", "scored": True}}]}}}
-        mm = self.je.measure(manifest, results)
-        self.assertEqual((mm["leaks"], mm["falseInterrupts"], mm["flaps"]), (0, 1, 1),
-                         "the inherited blocked and completed cards count nothing; the finished ending's own blocked card is the one false interrupt; "
-                         "the offer's own card that read needs_input then working is the one flap. e2's UNSCORED g1 also differs across builds "
-                         "(completed then cleared) and must not count: flaps run over the scored cards only: %r" % mm)
-        old = {"arm": "old", "endings": {"e2": {"class": "offer", "builds": [{"g1": "completed"}, {"g1": "completed"}]}}}
-        self.assertEqual(self.je.measure(manifest, old)["leaks"], 1, "an older results file counts every card")
+            e_leak["id"]: {"builds": [{e_leak["id"] + ":g1": {"column": "completed", "scored": True}}] * 2},
+            e_fi["id"]: {"builds": [{e_fi["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        mm = self.je.measure(manifest, results, self.state)
+        self.assertEqual((mm["leaks"], mm["falseInterrupts"], mm["answeredThenCleared"], mm["gesturedEndings"]), (1, 1, 0, 2),
+                         "the re-opened completed top is the one leak; the crossed-off needs_input top the one false interrupt: %r" % mm)
+
+    def test_the_false_interrupt_keys_on_the_unblocker_ruling_not_a_bare_turn(self):
+        """Road (b), the manager's ruling: the ONLY suppressor of a false interrupt is the kernel's own unblocker verdict on
+        the node after the placement (a reply it ruled answered the block). A cleared needs_input top with no such ruling is a
+        false interrupt; one the unblocker ruled answered before the clear is answeredThenCleared, never a false interrupt."""
+        sid = SIDS[1]
+        e = self._ending(self._corpus()[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        manifest = {"endings": [e]}
+        results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        mm = self.je.measure(manifest, results, self.state)
+        self.assertEqual((mm["falseInterrupts"], mm["answeredThenCleared"]), (1, 0),
+                         "no unblocker ruling: a plain cross-off is a false interrupt: %r" % mm)
+        # the kernel's unblocker ruled the block answered after the placement, before the clear
+        self._add_node_log(sid, "g1", {"ev_t": c + 300, "at": c + 301, "src": "unblocker", "kind": "unblock", "why": "answered in passing"})
+        mm = self.je.measure(manifest, results, self.state)
+        self.assertEqual((mm["falseInterrupts"], mm["answeredThenCleared"]), (0, 1),
+                         "the unblocker ruled the reply answered the block: answered-then-cleared, not a false interrupt: %r" % mm)
+
+    def test_only_a_reply_ruling_suppresses_never_the_other_unblock_kinds_or_one_after_the_clear(self):
+        """M1 + L1: an `unblock` event lifts a block from several sources; only the unblocker judge's ruling (src unblocker)
+        and the user's reply through the card's box (src user, REPLY_UNBLOCK_WHY) mean a reply ANSWERED it. A topic-blind
+        'you re-engaged' user unblock or a mechanical romp unblock does not suppress; nor does a ruling AFTER the clear."""
+        sid = SIDS[1]
+        e = self._ending(self._corpus()[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        manifest = {"endings": [e]}
+        results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+
+        def score(unblock_ev):
+            self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+            if unblock_ev:
+                self._add_node_log(sid, "g1", unblock_ev)
+            mm = self.je.measure(manifest, results, self.state)
+            return mm["falseInterrupts"], mm["answeredThenCleared"]
+
+        self.assertEqual(score({"ev_t": c + 300, "src": "user", "kind": "unblock", "why": "you re-engaged"}), (1, 0),
+                         "a topic-blind 'you re-engaged' user unblock does not suppress: a false interrupt")
+        self.assertEqual(score({"ev_t": c + 300, "src": "romp", "kind": "unblock", "why": "moot"}), (1, 0),
+                         "a mechanical romp unblock does not suppress: a false interrupt")
+        self.assertEqual(score({"ev_t": c + 300, "src": "user", "kind": "unblock", "why": self.je.REPLY_UNBLOCK_WHY}), (0, 1),
+                         "the user's reply through the card's box IS a reply ruling: answered-then-cleared")
+        self.assertEqual(score({"ev_t": c + 900, "src": "unblocker", "kind": "unblock", "why": "answered in passing"}), (1, 0),
+                         "L1: an unblocker ruling AFTER the clear is not the reply this clear crossed off: a false interrupt")
+
+    def test_the_harness_whys_match_the_kernel(self):
+        """The harness's mute-clear and reply-unblock whys must equal the kernel's own literals, or the guard drifts silent."""
+        km = load_source("romp_kernel_whys", os.path.join(BIN, "romp-kernel"))
+        jd = load_source("romp_judge_whys", os.path.join(BIN, "romp-judge"))
+        self.assertEqual(self.je.MUTE_CLEAR_WHY, km._HIDDEN_FROM_FEED_WHY, "the harness excludes exactly the kernel's mute why")
+        self.assertEqual(self.je.REPLY_UNBLOCK_WHY, jd.REPLY_UNBLOCK_WHY, "the harness counts exactly the kernel's reply-unblock why")
+
+    def test_a_plainly_cleared_completed_top_is_no_leak_and_a_reopened_needs_input_is_no_false_interrupt(self):
+        """The plan's negatives (round three): a completed top the user plainly cleared (no re-open) is NOT a leak; a
+        needs_input top the user re-opened, even if later cleared, is NOT a false interrupt (the re-open short-circuits)."""
+        sid = SIDS[0]
+        e = self._ending(self._corpus()[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        # a completed top the user only cleared (no followup): not a leak
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        manifest = {"endings": [e]}
+        res_completed = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "completed", "scored": True}}] * 2}}}
+        self.assertEqual(self.je.measure(manifest, res_completed, self.state)["leaks"], 0, "a completed top the user only cleared is not a leak")
+        # a needs_input top the user re-opened THEN cleared: the re-open short-circuits, not a false interrupt
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "followup", "t": c + 300},
+                                               {"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        res_ni = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        self.assertEqual(self.je.measure(manifest, res_ni, self.state)["falseInterrupts"], 0, "a re-opened needs_input top is not a false interrupt")
+
+    def test_a_mute_clear_is_not_a_false_interrupt_but_an_ordinary_cross_off_is(self):
+        """H1: a hideFromFeed mute journals a src-user clear with the DISTINCT why the kernel now stamps (its
+        _HIDDEN_FROM_FEED_WHY, excluded here EXACTLY), so a mute does not score. The ordinary feed Clear / Clear-all stamps
+        the generic 'cleared from the feed', which IS the user's cross-off and scores a false interrupt."""
+        self.assertEqual(self.je.MUTE_CLEAR_WHY, "hidden from the feed", "the harness excludes the mute's own why, not the generic one")
+        sid = SIDS[1]
+        e = self._ending(self._corpus()[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        manifest = {"endings": [e]}
+        results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": self.je.MUTE_CLEAR_WHY, "t": c + 600}])
+        self.assertEqual(self.je.measure(manifest, results, self.state)["falseInterrupts"], 0, "a mute's clear is not the user's cross-off: no false interrupt")
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        self.assertEqual(self.je.measure(manifest, results, self.state)["falseInterrupts"], 1, "the ordinary cross-off's generic why scores a false interrupt")
+
+    def test_gestured_endings_counts_only_endings_the_user_acted_on(self):
+        """gesturedEndings counts endings the user acted on (a re-open or a cross-off), not merely endings with a placement."""
+        sid = SIDS[0]
+        e = self._ending(self._corpus()[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [])          # a placement in the turn, but the user did nothing to it
+        manifest = {"endings": [e]}
+        results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "completed", "scored": True}}] * 2}}}
+        mm = self.je.measure(manifest, results, self.state)
+        self.assertEqual((mm["gesturedEndings"], mm["untouchedEndings"], mm["unplacedEndings"], mm["unresolvedEndings"], mm["leaks"]), (0, 1, 0, 0, 0),
+                         "a placement with no user gesture is untouched, not gestured or unplaced, and scores nothing: %r" % mm)
+        self.assertEqual(mm["gesturedEndings"] + mm["untouchedEndings"] + mm["unplacedEndings"] + mm["unresolvedEndings"], mm["endings"],
+                         "L2: the four ending columns partition every ending: %r" % mm)
+
+    def test_an_unresolved_ending_scores_no_leak_or_interrupt_only_flaps(self):
+        """An ending whose live session no longer lists (the manifest hash resolves to nothing) cannot be scored against the
+        user's actions; it still contributes flaps (and cost)."""
+        manifest = {"endings": [{"id": "gone", "session": "deadbeef0000", "lane": "deadbeef0000", "startT": T0, "cutT": T0 + 30}]}
+        results = {"arm": "x", "failures": 0, "endings": {"gone": {"builds": [
+            {"gone:g1": {"column": "completed", "scored": True}}, {"gone:g1": {"column": "needs_input", "scored": True}}]}}}
+        mm = self.je.measure(manifest, results, self.state)
+        self.assertEqual((mm["leaks"], mm["falseInterrupts"], mm["unresolvedEndings"], mm["flaps"]), (0, 0, 1, 1),
+                         "unresolved: no leak or interrupt, but the column flap between the two builds still counts: %r" % mm)
+
+    def test_flaps_run_over_the_scored_cards_only(self):
+        manifest = {"endings": [{"id": "gone", "session": "deadbeef0000", "lane": "deadbeef0000", "startT": T0, "cutT": T0 + 30}]}
+        results = {"arm": "x", "failures": 0, "endings": {"gone": {"builds": [
+            {"g1": {"column": "completed", "scored": False}, "g2": {"column": "needs_input", "scored": True}},
+            {"g1": {"column": "cleared", "scored": False}, "g2": {"column": "working", "scored": True}}]}}}
+        self.assertEqual(self.je.measure(manifest, results, self.state)["flaps"], 1,
+                         "the unscored g1 differs across builds but must not count; only the scored g2 flap does")
+
+    # ── the store resolution and the fault record: the manifest fixes the store identity at build, so a later move of the
+    #    live session cannot change which store the measures read; a corrupt or unreadable store, archive or journal is a
+    #    recorded fault, never a silent miss.
+    def _false_interrupt_case(self, sid, name):
+        """A corpus and a live store where the arm left one needs_input top the user plainly crossed off (a src-user clear on
+        g1 after the placement, no re-open, no unblocker ruling): a false interrupt unless a corruption intervenes."""
+        m = self._corpus(name=name)[1]
+        e = self._ending(m, sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        return m, results
+
+    def test_a_names_entry_gone_still_resolves_the_store_through_the_manifest(self):
+        """The manifest carries the store key, so an ending scores from the surviving live store even with the anchor's names
+        entry removed; it is not counted unresolved (the round-one head resolved through the live names and could not)."""
+        m, results = self._false_interrupt_case(SIDS[0], "fi-nonames")
+        (self.state / "names" / SIDS[0]).unlink()          # the names entry gone, goals/<sid>.json survives
+        mm = self.je.measure(m, results, self.state)
+        self.assertEqual((mm["falseInterrupts"], mm["unresolvedEndings"]), (1, 0),
+                         "the store resolves through the manifest key, so the plain cross-off still scores a false interrupt: %r" % mm)
+
+    def test_a_missing_live_store_counts_unresolved(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-gone")
+        (self.state / "goals" / (SIDS[0] + ".json")).unlink()   # the live store is gone entirely (no archive either)
+        mm = self.je.measure(m, results, self.state)
+        self.assertEqual((mm["unresolvedEndings"], mm["falseInterrupts"]), (1, 0), "a gone store is unresolved, scores nothing: %r" % mm)
+
+    def test_a_corrupt_live_store_is_recorded_as_a_fault(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-corrupt")
+        (self.state / "goals" / (SIDS[0] + ".json")).write_text("{ not json")
+        mm = self.je.measure(m, results, self.state)
+        h = hashlib.sha256(SIDS[0].encode()).hexdigest()[:12]
+        self.assertEqual(mm["falseInterrupts"], 0)
+        self.assertIn({"session": h, "error": "JSONDecodeError"}, mm["liveReadErrors"], "a corrupt live store is a recorded fault: %r" % mm["liveReadErrors"])
+        self.assertNotIn(SIDS[0], json.dumps(mm["liveReadErrors"]), "the fault carries the hashed id, never the raw sid")
+
+    def test_a_corrupt_archive_is_recorded_as_a_fault(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-corrupt-arch")
+        (self.state / "goals" / (SIDS[0] + ".json")).unlink()   # only the archive remains, and it is corrupt
+        (self.state / "goals-archive" / (SIDS[0] + ".json")).write_text("{ not json")
+        mm = self.je.measure(m, results, self.state)
+        h = hashlib.sha256(SIDS[0].encode()).hexdigest()[:12]
+        self.assertTrue(any(f["session"] == h for f in mm["liveReadErrors"]), "a corrupt archive is a recorded fault: %r" % mm["liveReadErrors"])
+
+    def test_an_unreadable_goals_file_is_recorded_as_a_fault(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-perm")
+        gf = self.state / "goals" / (SIDS[0] + ".json")
+        os.chmod(gf, 0o000); self.addCleanup(os.chmod, gf, 0o644)
+        if os.access(gf, os.R_OK):
+            self.skipTest("cannot deny read (running as root?)")
+        mm = self.je.measure(m, results, self.state)   # must not raise
+        self.assertTrue(mm["liveReadErrors"], "an unreadable goals file is recorded, not raised: %r" % mm["liveReadErrors"])
+
+    def test_an_unreadable_overrides_journal_is_a_fault_not_a_raise(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-jperm")
+        ov = self.state / "overrides" / (SIDS[0] + ".jsonl")
+        os.chmod(ov, 0o000); self.addCleanup(os.chmod, ov, 0o644)
+        if os.access(ov, os.R_OK):
+            self.skipTest("cannot deny read (running as root?)")
+        mm = self.je.measure(m, results, self.state)   # must not raise (an unreadable journal escaped as PermissionError before)
+        self.assertEqual(mm["falseInterrupts"], 0)
+        self.assertTrue(mm["liveReadErrors"], "the unreadable journal is recorded, not raised: %r" % mm["liveReadErrors"])
 
     def test_a_failed_call_or_a_rejected_reply_marks_the_row_not_comparable(self):
         """Executed by the reviewer: a prompt whose replies the parser rejected scored the perfect row. The failures count and mark it."""
@@ -417,13 +618,13 @@ class Harness(unittest.TestCase):
         os.environ.pop("JE_TEST_PROSE", None)
         self.assertGreaterEqual(res.get("closerNone", 0), 4, "every closer reply was prose the parser rejected (the base counted nothing): %r" % res.get("closerNone"))
         self.assertGreaterEqual(res.get("failures", 0), res.get("closerNone", 0))
-        mm = self.je.measure(m, res)
+        mm = self.je.measure(m, res, self.state)
         self.assertIs(mm.get("comparable"), False, "a row with failures is not comparable: %r" % mm); self.assertEqual(mm.get("failures"), res["failures"])
-        rows = self.je.report(dest, run_root, figure=None)
+        rows = self.je.report(dest, run_root, self.state, figure=None)
         table = Path(run_root, "table.md").read_text()
         self.assertIn("not comparable", table); self.assertIn("| prose |", table)
         current = self.je.run_arm(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
-        self.assertTrue(self.je.measure(m, current)["comparable"])
+        self.assertTrue(self.je.measure(m, current, self.state)["comparable"])
 
     def test_the_prompt_swap_reaches_the_calls_and_the_process_is_left_as_it_was(self):
         dest, m = self._corpus()
@@ -468,14 +669,14 @@ class Harness(unittest.TestCase):
         self.assertFalse(list(Path(inside).rglob("*")) if os.path.exists(inside) else False, "the subprocess entry refuses a run root inside a checkout and writes nothing")
 
     # ── the labeller and the report ──
-    def test_the_label_pass_reads_tier_one_from_the_journals_and_gates_on_the_agreement(self):
+    def test_the_label_pass_reads_tier_one_from_the_journals_and_reports_the_agreement(self):
         fn = getattr(self.je, "label", None)
         self.assertIsNotNone(fn, "the labeller is a subcommand of the harness")
         dest, m = self._corpus()
         e_a = self._ending(m, SIDS[0], 0)                # the offer: the closer filed done, the user came back with a followup
         self._live_store_with_done(SIDS[0], e_a["startT"], e_a["cutT"], [{"node": SIDS[0] + ":g1", "op": "followup", "t": e_a["cutT"] + 7200}])
         e_b = self._ending(m, SIDS[1], 1)                # the finished thread: done, then the user cleared it and nothing more
-        self._live_store_with_done(SIDS[1], e_b["startT"], e_b["cutT"], [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "x", "t": e_b["cutT"] + 600}])
+        self._live_store_with_done(SIDS[1], e_b["startT"], e_b["cutT"], [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": e_b["cutT"] + 600}])
         run_root = os.path.join(self.td, "runs")
         summary = fn(dest, run_root, self.state, claude_bin=self.fake, model="fake")
         rows = {r["id"]: r for r in json.loads(Path(run_root, "labels.json").read_text())}
@@ -483,12 +684,14 @@ class Harness(unittest.TestCase):
         self.assertEqual(rows[e_b["id"]]["tierOne"], "finished", "a clear with nothing after: finished")
         self.assertTrue(all(r["spanS"] > 0 for r in rows.values()), "the observation span is recorded per ending")
         self.assertEqual((summary["endings"], summary["tierOneLabelled"], summary["both"], summary["agree"]), (4, 2, 2, 2), summary)
-        self.assertEqual((summary["agreementPct"], summary["gatePassed"]), (100.0, True))
-        self.assertEqual((summary["labellerStable"], summary["heuristicMatchesLabel"]), (4, 4))
+        self.assertEqual((summary["labellerStable"], summary["stablePct"], summary["gatePassed"]), (4, 100.0, True),
+                         "road (b): the gate is STABILITY (all four labelled the same in both orders): %r" % summary)
+        self.assertEqual((summary["agreementPct"], summary["heuristicMatchesLabel"]), (100.0, 4),
+                         "the agreement with the user's actions is REPORTED, not gated: %r" % summary)
         ledger = [json.loads(l) for l in Path(run_root, "labeller-ledger.jsonl").read_text().splitlines() if l.strip()]
         self.assertEqual((len(ledger), round(sum(r["cost"] for r in ledger), 2)), (8, 0.08), "two calls per ending, each on the ledger")
         # a followup nine days later still says not finished: the label keys on events, never on a window
-        self._live_store_with_done(SIDS[1], e_b["startT"], e_b["cutT"], [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "x", "t": e_b["cutT"] + 600},
+        self._live_store_with_done(SIDS[1], e_b["startT"], e_b["cutT"], [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": e_b["cutT"] + 600},
                                                                           {"node": SIDS[1] + ":g1", "op": "followup", "t": e_b["cutT"] + 9 * 86400}])
         self.assertEqual(self.je.tier_one_label(self.state, SIDS[1], e_b["cutT"], e_b["startT"]), "not finished")
         with self.assertRaises(SystemExit):
@@ -522,16 +725,30 @@ class Harness(unittest.TestCase):
     def test_the_report_writes_the_table_and_the_figure_road_both_ways(self):
         dest, m = self._corpus()
         run_root = os.path.join(self.td, "runs")
+        e = self._ending(m, SIDS[0], 0)                  # the current prompt completes this top; the user re-opened it: the one leak
+        self._live_store_with_done(SIDS[0], float(e["startT"]), float(e["cutT"]), [{"node": SIDS[0] + ":g1", "op": "followup", "t": float(e["cutT"]) + 7200}])
         self.je.run_arm(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
-        rows = self.je.report(dest, run_root, figure=None)
+        rows = self.je.report(dest, run_root, self.state, figure=None)
         table = Path(run_root, "table.md").read_text()
         self.assertEqual([r["arm"] for r in rows], ["current"])
-        self.assertIn("| current | 4 | 3 | 0 | 0 |", table); self.assertIn("| 0 |", table)
+        self.assertEqual((rows[0]["endings"], rows[0]["gesturedEndings"], rows[0]["untouchedEndings"], rows[0]["unplacedEndings"],
+                          rows[0]["unresolvedEndings"], rows[0]["leaks"], rows[0]["falseInterrupts"], rows[0]["answeredThenCleared"], rows[0]["flaps"]),
+                         (4, 1, 0, 1, 2, 1, 0, 0, 0),
+                         "SIDS[0] turn0 scores the leak; turn1 is unplaced (its live tops sit outside the turn); SIDS[1] has no live store: %r" % rows[0])
+        self.assertEqual(rows[0]["gesturedEndings"] + rows[0]["untouchedEndings"] + rows[0]["unplacedEndings"] + rows[0]["unresolvedEndings"],
+                         rows[0]["endings"], "the four ending columns partition every ending: %r" % rows[0])
+        self.assertIn("| current | 4 | 1 | 0 | 1 | 2 | 1 | 0 | 0 | 0 |", table)
         for text in self.texts:
             self.assertNotIn(text[:24], table)
         self.assertNotIn("The synthetic goal", table, "no goal title in the report")
-        out = subprocess.run([sys.executable, SCRIPT, "report", "--corpus", dest, "--run-root", run_root], capture_output=True, text=True)
-        self.assertEqual(out.returncode, 0, out.stderr[-500:]); self.assertIn('"leaks": 3', out.stdout)
+        # the shared report carries counts only: no raw session id, cwd or goal title reaches the table or measures.json
+        measures = Path(run_root, "measures.json").read_text()
+        for leak in (SIDS[0], SIDS[1], self.cwd):
+            self.assertNotIn(leak, table, "no raw identity in the shared table")
+            self.assertNotIn(leak, measures, "no raw identity in measures.json")
+        out = subprocess.run([sys.executable, SCRIPT, "report", "--corpus", dest, "--run-root", run_root,
+                              "--live-state", str(self.state)], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr[-500:]); self.assertIn('"leaks": 1', out.stdout)
         # the figure road: a stub library writes the file; no library leaves the note
         png = os.path.join(run_root, "fig.png")
         drawn = []
@@ -552,7 +769,7 @@ class Harness(unittest.TestCase):
         stub = types.ModuleType("cleanplots"); stub.fig = fig
         saved = sys.modules.get("cleanplots"); sys.modules["cleanplots"] = stub
         try:
-            self.je.report(dest, run_root, figure=png)
+            self.je.report(dest, run_root, self.state, figure=png)
         finally:
             if saved is not None:
                 sys.modules["cleanplots"] = saved
@@ -570,7 +787,7 @@ class Harness(unittest.TestCase):
             return real_import(name, *a, **k)
         builtins.__import__ = no_cleanplots
         try:
-            self.je.report(dest, run_root, figure=os.path.join(run_root, "fig2.png"))
+            self.je.report(dest, run_root, self.state, figure=os.path.join(run_root, "fig2.png"))
         finally:
             builtins.__import__ = real_import
         self.assertIn("no figure", Path(run_root, "figure.note").read_text())
@@ -678,7 +895,7 @@ class Harness(unittest.TestCase):
         self.assertEqual((cleared_card["column"], cleared_card["scored"]), ("cleared", False),
                          "the cleared top the arm leaves alone reads cleared and unscored: %r" % build)
         self.assertTrue(any(v["scored"] for n, v in build.items() if n != "g1"), "the turn's own card scores: %r" % build)
-        self.assertEqual(self.je.measure(m, res)["falseInterrupts"], 0, "the untouched inherited blocked top counts against no finished ending")
+        self.assertEqual(self.je.measure(m, res, self.state)["falseInterrupts"], 0, "the untouched inherited blocked top counts against no finished ending")
 
     def test_the_seed_is_rolled_up_before_the_first_menu(self):
         """Round two: without the rollup before the first judge, the planner's first menu listed a pre-cut done sub and a
@@ -1107,23 +1324,29 @@ class Harness(unittest.TestCase):
         self.assertTrue(head_due, "with the stamp dropped the unblocker's gate fires (newest > the block time)")
         self.assertFalse(base_due, "with a surviving blockCheckT at the turn start the strict gate holds it: no examine")
 
-    def test_the_agreement_gate_reds_below_the_threshold(self):
-        """M-low: the gate was pinned only at 100 percent. A disagreeing ending (tier one finished, the labeller a non-finished
-        class) drops the agreement below 90 and the gate does not pass."""
+    def test_the_labeller_gate_is_stability_not_agreement_with_the_user(self):
+        """Road (b): the labeller's OWN gate is STABILITY (the same class in both shuffled orders), NOT agreement with the
+        user's recorded actions (the pilot showed the class is a frame, not a truth). A corpus the labeller labels stably but
+        that disagrees with the user's actions still PASSES the gate; an order-dependent labeller fails it."""
         dest, m = self._corpus()
-        by = {(e["session"], e["turn"]): e for e in m["endings"]}
-        h0 = hashlib.sha256(SIDS[0].encode()).hexdigest()[:12]
-        h1 = hashlib.sha256(SIDS[1].encode()).hexdigest()[:12]
-        # SIDS[0] turn 0 (offer): tier one finished (a clear, nothing after), but the labeller reads it "offer"
-        e0 = by[(h0, 0)]
-        self._live_store_with_done(SIDS[0], float(e0["startT"]), float(e0["cutT"]), [{"node": SIDS[0] + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e0["cutT"]) + 60}])
-        # SIDS[1] turn 1 (finished): tier one finished and the labeller finished too (agreement)
-        e1 = by[(h1, 1)]
-        self._live_store_with_done(SIDS[1], float(e1["startT"]), float(e1["cutT"]), [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e1["cutT"]) + 60}])
-        summary = self.je.label(dest, os.path.join(self.td, "runs-gate"), self.state, claude_bin=self.fake, model="fake")
-        self.assertEqual(summary["both"], 2, "two endings carry both a tier-one and a stable label: %r" % summary)
-        self.assertEqual(summary["agree"], 1, "the offer disagrees (finished vs offer); the finished agrees")
-        self.assertEqual((summary["agreementPct"], summary["gatePassed"]), (50.0, False), "below the 90 percent gate: %r" % summary)
+        # a disagreement: SIDS[0] turn 0 is an offer to the labeller, but tier one reads finished (a clear, nothing after)
+        e0 = self._ending(m, SIDS[0], 0)
+        self._live_store_with_done(SIDS[0], float(e0["startT"]), float(e0["cutT"]), [{"node": SIDS[0] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": float(e0["cutT"]) + 60}])
+        e1 = self._ending(m, SIDS[1], 1)                 # the finished thread: labeller and tier one agree
+        self._live_store_with_done(SIDS[1], float(e1["startT"]), float(e1["cutT"]), [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": float(e1["cutT"]) + 60}])
+        stable = self.je.label(dest, os.path.join(self.td, "runs-stable"), self.state, claude_bin=self.fake, model="fake")
+        self.assertEqual((stable["both"], stable["agree"], stable["agreementPct"]), (2, 1, 50.0),
+                         "the offer disagrees with the user's clear (offer vs finished); agreement is only 50 percent: %r" % stable)
+        self.assertEqual((stable["labellerStable"], stable["stablePct"], stable["gatePassed"]), (4, 100.0, True),
+                         "road (b): the labeller is stable in both orders, so the gate PASSES though agreement is 50 percent: %r" % stable)
+        # an order-dependent labeller: the two orders disagree, nothing is stable, the gate fails
+        os.environ["JE_TEST_UNSTABLE"] = "1"
+        try:
+            unstable = self.je.label(dest, os.path.join(self.td, "runs-unstable"), self.state, claude_bin=self.fake, model="fake")
+        finally:
+            os.environ.pop("JE_TEST_UNSTABLE", None)
+        self.assertEqual((unstable["labellerStable"], unstable["stablePct"], unstable["gatePassed"]), (0, 0.0, False),
+                         "an order-dependent labeller agrees with itself on no ending: below the 90 percent stability gate: %r" % unstable)
 
     # ── ksarma's review of 1946 ──
     def test_store_with_archive_skips_rewind_swept_nodes(self):
@@ -1169,7 +1392,7 @@ class Harness(unittest.TestCase):
         sid = SIDS[0]
         e = self._ending(self._corpus()[1], sid, 0)
         # the anchor's own store reads FINISHED (a user clear after the cut); a lane hash that resolves to nothing must not borrow it
-        self._live_store_with_done(sid, float(e["startT"]), float(e["cutT"]), [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e["cutT"]) + 60}])
+        self._live_store_with_done(sid, float(e["startT"]), float(e["cutT"]), [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": float(e["cutT"]) + 60}])
         self.assertEqual(self.je.tier_one_label(self.state, sid, float(e["cutT"]), float(e["startT"])), "finished", "the anchor's store reads finished")
         dest = os.path.join(self.td, "m1"); (Path(dest) / "claude" / "projects").mkdir(parents=True)
         lane_hash = hashlib.sha256(b"an-unregistered-lane-with-no-store-or-name").hexdigest()[:12]
