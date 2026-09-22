@@ -36737,7 +36737,16 @@ def _drop_parked_on_end(sid, client=None):
     message. The op the drain is handing over right now is found by SLOT (_inflight_slot), as _cancel_parked finds it,
     not by identity: two parked compact presses are one interned tuple, and an identity filter kept the second behind
     the in-flight first. Only the kinds the drain records are ever in that slot (a command, a compact, a clear, a
-    setting pick); a send run is popped, never recorded."""
+    setting pick); a send run is popped, never recorded.
+
+    ONE modal per End, however many texts (post-merge review of the hand-back, 2026-09-21): the loop sent one err
+    frame per text, and the pane's dialog replaces the one before it on every frame, so of two texts only the second
+    was ever seen and the first survived in undelivered.jsonl and the log alone. Each text still gets its own row and
+    its own log line through the per-op hand-back (_hand_back_parked, the not-delivered path); the frames it would
+    send are caught and, when there are several, folded into one (_fold_undelivered: every text in typed order under
+    its own header, a title that counts by kind, an op the feed matches to no latch). Folded here and not in the
+    not-delivered path, whose other callers refuse one op each; the drain's refusal road (_hand_back_refused_send)
+    still hands back one frame per refused send."""
     global _end_latch_gen
     sid = str(sid)
     with _pending_ops_lock:
@@ -36761,12 +36770,58 @@ def _drop_parked_on_end(sid, client=None):
         target = client
     else:
         target = {"send": lambda t: _send_to_one_chat(json.loads(t), sid)}
+    # Each typed text is filed by the per-op hand-back itself (_hand_back_parked, the not-delivered path: its
+    # undelivered.jsonl row, its stderr line), and the frame that path would send is CAUGHT here, not sent: the pane's
+    # dialog replaces the one before it on every err frame (showConfirm, the feed's err dialog), so of two texts handed
+    # back one frame each only the second was ever seen (post-merge review of the hand-back, 2026-09-21). One frame per
+    # End goes out: the caught one when there is one text, else the fold of all of them (_fold_undelivered). The count
+    # returned is still the texts handed back, one per row and log line, which the end route answers as `undelivered`.
+    frames = []
+    catcher = {"send": frames.append}
     handed = 0
     for op in gone:
-        handed += _hand_back_parked(op, sid, target, "The session ended before romp could hand this over",
+        handed += _hand_back_parked(op, sid, catcher, "The session ended before romp could hand this over",
                                     "with the ending session")
+    if frames:
+        try:
+            target["send"](frames[0] if len(frames) == 1
+                           else json.dumps(_fold_undelivered([json.loads(f) for f in frames], sid)))
+        except Exception:
+            pass
     _mark_views_dirty()
     return handed
+
+
+def _fold_undelivered(frames, sid):
+    """ONE err frame for the several not-delivered texts of one End (2026-09-21): the hand-back filed each text
+    through the not-delivered path and caught the frame that path would have sent; this folds those frames into the
+    one the pane shows. The texts ride the copy slot in typed order, each under a header line naming its kind and its
+    place ("--- message 1 of 2 ---"). A blank line is what a person would put between two texts, but a message can
+    hold blank lines of its own, and two texts joined by one then read as three; the header is a line no message
+    produces by accident, and its "of N" lets the reader check that the pieces add up. undelivered.jsonl keeps each
+    text on its own row for an exact copy. The title counts by kind, so a message and a command mixed read as "1
+    message and 1 command", never as two of one. The op slot is the frames' shared op when every text took the same
+    door (sendMessage for two messages), else the verb "handback", and itemId is empty. What the feed reads from
+    those two slots (its err arm): apiRetry with a sid re-arms that session's Retry, askFollowUp with an id re-arms
+    that card's Continue, and an EMPTY op with a sid is an older kernel's session-wide reply, re-arming the
+    session's Retry and Revive; so an empty op here would have given two texts a feed side effect one text does not
+    (review find, 2026-09-21). Neither sendMessage, sendCommand nor handback is a latch kind, so the folded frame
+    re-arms nothing, as the one-text frame does not. The detail names the session as the one-text frame does
+    (_refuse_drive's why branch): its registered name, the uuid only when no row names it."""
+    n = len(frames)
+    whats = [_FOREIGN_OP_VERB.get(f.get("op"), "action") for f in frames]
+    ops = [f.get("op") or "" for f in frames]
+    op = ops[0] if ops[0] and all(o == ops[0] for o in ops) else "handback"
+    copy = "\n\n".join("--- %s %d of %d ---\n%s" % (what, i, n, f.get("copy") or "")
+                       for i, (what, f) in enumerate(zip(whats, frames), 1))
+    counted = " and ".join("%d %s%s" % (whats.count(what), what, "" if whats.count(what) == 1 else "s")
+                           for what in dict.fromkeys(whats))          # kinds in typed order, each once
+    detail = ("Nothing was sent. The session ended before romp could hand these over (session %s), so it could not "
+              "deliver your %s. Each text is saved verbatim in undelivered.jsonl under romp's state directory, and "
+              "Copy my text takes all of them in the order you sent them, each under a line saying which it is."
+              % (_name_of(sid) or sid, counted))
+    return {"type": "err", "title": "%s were not delivered" % counted, "text": detail, "copy": copy, "sid": sid,
+            "op": op, "itemId": ""}
 
 
 _ending_sids: dict = {}          # sid -> the GENERATION of the End doors' cancel that latched it (_drop_parked_on_end): the
