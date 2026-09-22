@@ -3125,9 +3125,10 @@ def _note_unknown_model(mid):
 # grammar, _MODEL_ID_RE), a gateway id IS its choice value. Nothing here keys on a vendor prefix: membership
 # in the declared set is the test everywhere. Add-only and exactly reversible: _ROUTER_INSTALLED records what
 # the switch added, so turning it off removes that and nothing else. No sdk_backend _MODEL_TIERS entry and no
-# colour rank: a first-party<->gateway swap is a cross-provider change on an explicit pick, never a capacity
-# fallback, and a gateway id carrying no first-party family word wears no capability tint (the colour and tone
-# helpers match a family word wherever it appears). A gateway's presence is an ADVISORY (the authed
+# colour rank for a gateway id carrying no first-party family word: a swap between such an id and a first-party
+# family is a cross-provider change on an explicit pick, never a capacity fallback, and the id wears no capability
+# tint (the colour, tone and rank helpers all match a family word wherever it appears, so an id that carries one
+# ranks and tints as that family, and a swap to it can read as one). A gateway's presence is an ADVISORY (the authed
 # /models `router` section, one stderr line when the switch is on without one), never a gate: the switch is
 # the operator's explicit intent, and a silent gate is the detect-and-override this design replaces.
 ROUTER_MODELS_FILE = "router-models.json"    # the Extra models switch: {"enabled": bool, "gt": epoch-ms}; per-install

@@ -381,10 +381,11 @@ ordering and stale rules every stamped setting follows; there is no echo frame o
 applied flip changes the catalog and the kernel sends its usual `models` frame, on which every
 picker and the gear redraw. Turning it on adds the families to the pickers; turning it off removes
 them, but does not touch a session already running one, which keeps its model until you pick
-another (a later pick of a removed model is refused). A gateway model has no capability tint in the
-pickers (unless the id carries a Claude family word, which the colour helpers match wherever it
-appears), and a swap to or from one is never read as a capacity fallback: it is a cross-provider
-change on an explicit pick.
+another (a later pick of a removed model is refused). A gateway model whose id carries no Claude
+family word has no capability tint in the pickers, and a swap to or from it is never read as a
+capacity fallback: it is a cross-provider change on an explicit pick. An id that does carry a family
+word (`gw-opus-mini`) is matched by the colour, tone and rank helpers wherever the word appears, so
+it tints and ranks as that family, and a swap to it can read as one.
 
 The switch's status line in the gear comes from the authed `/models` payload's `router` section,
 `{"enabled", "declared", "gateway", "error"}`: the ids the kernel parsed out of the variable, whether
