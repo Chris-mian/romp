@@ -342,9 +342,10 @@ class ViewCleared(_Memos):
         # UnicodeDecodeError out of every judge pass, and a `[]` row raised AttributeError from the id lookup
         p = jd.STATE / "cleared.jsonl"
         a = SID + ":g1"
-        p.write_text("[]\n" + json.dumps({"id": 7, "t": T0, "op": "clear"}) + "\n" + json.dumps({"id": a, "t": T0, "op": "clear"}) + "\n")
+        p.write_text("[]\n" + json.dumps({"id": 7, "t": T0, "op": "clear"}) + "\n" + json.dumps({"id": a, "t": T0, "op": "clear"}) + "\n"
+                     + json.dumps({"id": SID + ":g9", "t": "yesterday", "op": "clear"}) + "\n")
         try:
-            self.assertEqual(jd._view_cleared(), {a}, "the array row and the non-string id are skipped, the row beside them loads")
+            self.assertEqual(jd._view_cleared(), {a}, "the array row, the non-string id and the row whose stamp is not a number are skipped, the row beside them loads")
         except AttributeError as e:
             self.fail("the scan raised on a row that is not an object: %r" % e)
         p.write_bytes(b"\xff\xfe\x00 not text\n")

@@ -7814,13 +7814,16 @@ class LiveReplan(unittest.TestCase):
         episode, the stage incomplete) instead of a silent pass."""
         g2 = SID + ":g2"
         log = Path(self.td.name) / "cleared.jsonl"
-        log.write_text("[]\n" + json.dumps({"id": 5, "t": 100, "op": "clear"}) + "\n" + json.dumps({"id": g2, "t": 200, "op": "clear"}) + "\n")
-        store = {"nodes": {g2: {"id": g2, "text": "Ship the exporter", "parentId": None, "cleared": True}}}
+        g3 = SID + ":g3"
+        log.write_text("[]\n" + json.dumps({"id": 5, "t": 100, "op": "clear"}) + "\n" + json.dumps({"id": g2, "t": 200, "op": "clear"}) + "\n"
+                       + json.dumps({"id": g3, "t": "yesterday", "op": "clear"}) + "\n")   # a stamp that is not a number: skipped (the sort below would raise on it)
+        store = {"nodes": {g2: {"id": g2, "text": "Ship the exporter", "parentId": None, "cleared": True},
+                           g3: {"id": g3, "text": "Retire the importer", "parentId": None, "cleared": True}}}
         try:
             ctx = jd._cleared_context(SID, store)
         except AttributeError as e:
             self.fail("the read raised on a row that is not an object: %r" % e)
-        self.assertEqual(ctx.splitlines(), ["- Ship the exporter"], "the array row and the non-string id are skipped, the row beside them loads")
+        self.assertEqual(ctx.splitlines(), ["- Ship the exporter"], "the array row, the non-string id and the string-stamped row are skipped, the row beside them loads")
         log.write_bytes(b"\xff\xfe\x00 not text\n")
         jd._judge_ctx.stage_incomplete = False
         try:

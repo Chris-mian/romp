@@ -123,6 +123,8 @@ class _World(unittest.TestCase):
         getattr(km, "_owed_note_read", [False])[0] = False   # (tolerant of a kernel without the once-per-life read: the red-first run at the round's base)
         getattr(km, "_owed_read_fault", [""])[0] = ""        # the note read's episode memo (round fourteen)
         getattr(km, "_cleared_read_fault", [""])[0] = ""     # the clears-log read's episode memo (PR 2025)
+        km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO.pop("landed", None); km._CLEARED_MEMO.setdefault("landed", None)   # the served and the last-landed slots (the post-merge note on PR 2025)
+        km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]   # the display readers' bell episodes and the ring
         (jd.STATE / km.OWED_FILE).unlink(missing_ok=True)
 
     def tearDown(self):
@@ -1667,14 +1669,20 @@ class ActsUnderAFailedWrite(_World):
         is not JSON; the rows beside them load."""
         log = jd.STATE / "cleared.jsonl"
         log.write_text("[]\n" + json.dumps({"id": 5, "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": A + ":g1", "t": 2, "op": "clear"}) + "\n"
-                       + json.dumps({"id": {"k": "v"}, "t": 3, "op": "clear"}) + "\n" + json.dumps({"id": "", "t": 4, "op": "clear"}) + "\n")
+                       + json.dumps({"id": {"k": "v"}, "t": 3, "op": "clear"}) + "\n" + json.dumps({"id": "", "t": 4, "op": "clear"}) + "\n"
+                       + json.dumps({"id": B + ":g1", "t": "yesterday", "op": "clear"}) + "\n" + json.dumps({"id": B + ":g2", "t": True, "op": "clear"}) + "\n")   # two ids: a shared one let the bool row shadow the string row (the round-one verifier of PR 2032)
         km._CLEARED_MEMO["slot"] = None
         try:
             got = km._cleared_ids()
         except AttributeError as e:
             self.fail("the reader raised on a row that is not an object: %r" % e)
-        self.assertEqual(got, {A + ":g1": 2}, "the array row, the non-string ids and the empty id are skipped, the row beside them loads")
+        self.assertEqual(got, {A + ":g1": 2}, "the array row, the non-string ids, the empty id and the rows whose stamp is not a number (a string, a bool) are skipped, the row beside them loads")
         self.assertEqual(km._undo_stack_ids(), {A + ":g1"}, "the stack helper reads the same")
+        # the undo over such a log answers normally (the second contributor's post-merge note on PR 2025: the stamp stored unchecked, the undo's max over
+        # the stamps raised TypeError into the socket handler's catch-all and no account went)
+        sent = self._dispatch({"type": "undoClear", "seq": 17})
+        self.assertEqual([m["type"] for m in sent if m.get("type") in ("err", "undoAck")], ["undoAck"], "the undo lands and acks (before: a TypeError and nothing on the socket): %r" % sent)
+        self.assertNotIn(A + ":g1", km._cleared_ids(), "and A's clear is undone")
 
     def test_a_standing_undecodable_clears_log_is_read_once_per_file_state_and_the_served_state_names_its_fault(self):
         """The second contributor's post-merge review of PR 2021: the fault arm returned before the memo, a permanent miss, so a standing
@@ -1798,8 +1806,11 @@ class ActsUnderAFailedWrite(_World):
     def test_a_read_fault_after_the_owed_rows_landed_files_the_account_and_the_reorder_and_leaves_the_owed_row_for_the_next_press(self):
         """The round-three verifier of PR 2025 (round six): the unconditional re-read's fault arm had no behavioural pin (a mutant dropping the
         reorder, or the arm, left the module green). B owed, a further clear so the click's batch is non-empty, the read after the lock block
-        refused: the read-fault account (no stack, the marker), the reorder frame saying the owed cards did not come back and naming the popped
-        batch, the owed row appended once, nothing restored; the next press, the log readable, restores B."""
+        refused and the fault STANDING from then on (the first contributor's round-four comment: a fault that passed after one read let the
+        reorder frame's own stack read land and ship a stack, the shape a standing fault never has): the read-fault account (no stack, the
+        marker), the reorder frame with no stack either, saying the owed cards did not come back, naming the popped batch and the clears log
+        as what must read again (not the session's goals file, the account beside it naming the record), the owed row appended once, nothing
+        restored; the next press, the log readable, restores B."""
         self._two_fault_undo_leaves_b_owed()                                 # B owed, in memory and in the note
         self._dispatch({"type": "askClear", "itemId": A + ":g1"})            # a further clear: the batch the click pops is A's
         log = jd.STATE / "cleared.jsonl"
@@ -1813,13 +1824,13 @@ class ActsUnderAFailedWrite(_World):
                 armed[0] = True
             return out
 
-        def faulting_once(*a, **kw):
+        def standing_fault(*a, **kw):                                        # every read from the arming on refuses: a fault that stands through the press
             if armed[0]:
-                armed[0] = False
                 return {}, "the read refused after the rows landed (stand-in)"
             return real_read(*a, **kw)
-        with mock.patch.object(km, "_owed_rewrite", rewrite_then_arm), mock.patch.object(km, "_cleared_ids_read", faulting_once):
+        with mock.patch.object(km, "_owed_rewrite", rewrite_then_arm), mock.patch.object(km, "_cleared_ids_read", standing_fault):
             sent = self._dispatch({"type": "undoClear", "seq": 15})
+        armed[0] = False                                                     # the fault lifts after the press
         errs = [m for m in sent if m.get("type") == "err"]
         fault = [m for m in errs if m.get("title") == "romp could not read its record of cleared cards"]
         self.assertEqual(len(fault), 1, "the read-fault account (with the arm gone the press went on over an empty read): %r" % sent)
@@ -1827,11 +1838,106 @@ class ActsUnderAFailedWrite(_World):
         reorder = [m for m in errs if m.get("ok") is True]
         self.assertEqual(len(reorder), 1, "the reorder frame (with its call gone the click's batch stood restored on the page): %r" % errs)
         self.assertEqual((reorder[0]["owedIds"], reorder[0]["itemIds"]), ([B + ":g1"], [A + ":g1"]), "saying the owed cards did not come back and naming the batch the click popped: %r" % reorder[0])
+        self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(reorder[0]), set(), "the reorder frame ships no stack under a standing fault (its own stack read refuses too): %r" % sorted(reorder[0]))
+        self.assertIn("the clears log", reorder[0]["text"], "and names the clears log as what must read again, as the account beside it does (before: the session's goals file): %r" % reorder[0]["text"])
         self.assertEqual(rows_b() - nb0, 1, "the owed row was appended once")
         self.assertTrue(self._flag(A, A + ":g1") and self._flag(B, B + ":g1"), "nothing restored this press")
         self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no ack")
         sent = self._dispatch({"type": "undoClear", "seq": 16})              # the log readable again: B's re-journal row is the newest batch
         self.assertFalse(self._flag(B, B + ":g1"), "the next press restores B: %r" % sent); self.assertTrue(self._flag(A, A + ":g1"), "and A's clear stands")
+
+    def test_a_served_landed_set_ends_the_read_fault_episode_so_the_same_fault_is_said_again(self):
+        """The second contributor's post-merge note on PR 2025: a memo hit never wrote the episode flag and an OSError fault is not memoized, so a
+        permission flap on the log's directory set the flag, the lift was served from the memo with the flag still holding the copy, and the same
+        fault before the next append filed no second row or line, against docs/judges.md's one row per episode ended by a landed read. The served
+        branch carries its state's fault into the flag: a served landed set ends the episode."""
+        log = jd.STATE / "cleared.jsonl"
+        log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._cleared_read_fault[0] = ""
+        rows = lambda: [r for r in self._rows("cleared-unreadable") if "the read" in r.get("note", "")]
+        self.assertEqual(km._cleared_ids(), {A + ":g1": 1}, "a landed read, memoized under the log's stat")
+        real_stat, real_read = os.stat, Path.read_text
+
+        def flapping_stat(p, *a, **kw):                                      # the directory's permission flap: the stat and the read refuse, the file itself unmoved
+            if os.fspath(p) == str(log):
+                raise OSError(errno.EACCES, "Permission denied", str(p))
+            return real_stat(p, *a, **kw)
+
+        def flapping_read(p, *a, **kw):
+            if p == log:
+                raise OSError(errno.EACCES, "Permission denied", str(p))
+            return real_read(p, *a, **kw)
+        lines = []
+
+        @contextlib.contextmanager
+        def captured():
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                yield
+            lines.extend(l for l in buf.getvalue().splitlines() if l.startswith("clears log: the read"))
+        with mock.patch.object(os, "stat", flapping_stat), mock.patch.object(Path, "read_text", flapping_read), captured():
+            self.assertEqual(km._cleared_ids(), {}, "the fault: the empty uncached set")
+        self.assertEqual((len(rows()), len(lines)), (1, 1), "the first fault is said")
+        with captured():
+            self.assertEqual(km._cleared_ids(), {A + ":g1": 1}, "the flap lifted with the file unmoved: served from the memo")
+        self.assertEqual(km._cleared_read_fault[0], "", "the served landed set ended the episode (before: the flag kept the copy)")
+        with mock.patch.object(os, "stat", flapping_stat), mock.patch.object(Path, "read_text", flapping_read), captured():
+            self.assertEqual(km._cleared_ids(), {})
+        self.assertEqual((len(rows()), len(lines)), (2, 2), "the same fault after the served recovery is a new episode: a second row and line (before: none)")
+        with captured():
+            km._cleared_ids()
+        self.assertEqual(km._cleared_read_fault[0], "")
+
+    def test_the_pane_holds_the_last_landed_set_while_the_log_cannot_be_read_with_one_bell_row_per_episode(self):
+        """The second contributor's post-merge note on PR 2025: every build and off frame derived from the empty set while the log could not be
+        read, so the Undo button hid, the dismissed count dropped to zero and the log-only seals returned to the pane until the read landed,
+        nothing on the frame naming why. The feed build and the off frame take the memo's last landed set during the episode, with one refused
+        bell row per episode (the display readers' convention); a cold memo has nothing to serve and says so. Pinned by behaviour: over a warm
+        slot the count, the button and the seal hold; a second build files no second row; a landed read ends the bell's episode; a cold memo
+        gives the empty set with its own row."""
+        log = jd.STATE / "cleared.jsonl"
+        row, err = km.post_notice(A, "n1", "a held note", producer="postal", needs_you=True, now=NOW, t=NOW)   # a needs-you notice this page cleared: its row in the log
+        self.assertIsNone(err, "premise: the notice posts: %r" % err)
+        nid = km._notice_item_id(A, "n1", row["rev"])
+        log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": nid, "t": 2, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None
+        km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        f = km.build_feed(NOW, self.live)
+        self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (2, True, False), "the landed read: two dismissed, the button, A's card sealed by the log alone")
+        self.assertNotIn(nid, [n["itemId"] for n in km._chat_notices(A) or []], "premise: the cleared notice is off the chat box")
+        outline = lambda: [r for r in km._goal_tree_walk(A, jd.load_goals(A), anchors=False)[0] if r["id"] == A + ":g1"][0]["cleared"]   # the Outline's own call (anchors off)
+        archive = lambda: km._ledger_cleared_overlay([{"id": A + ":g1", "depth": 0, "derived": True, "cleared": False, "summary": "", "text": "x"}])
+        self.assertTrue(outline(), "premise: the Outline reads A's node cleared"); self.assertEqual(archive(), [], "premise: the archive projection drops the cleared root")
+        with contextlib.redirect_stderr(io.StringIO()):
+            log.write_bytes(b"\xff\xfe\x00 not text\n")                        # the log cannot be read: a new file state, the memo's last landed set stands
+            f = km.build_feed(NOW, self.live)
+            self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (2, True, False), "the pane holds the last landed set (before: zero, no button, the seal lifted): %r" % ({k: f[k] for k in ("dismissedCount", "canUndoClear")},))
+            self.assertNotIn(nid, [n["itemId"] for n in km._chat_notices(A) or []], "the chat box's notice rows hold too (the round-one verifier of PR 2032: unpinned, the set-only reader let the cleared notice back)")
+            self.assertTrue(outline(), "the Outline's cleared flag holds (the round-one verifier: it flipped to False on the set-only reader)")
+            self.assertEqual(archive(), [], "the archive projection keeps dropping the cleared root (the round-one verifier: it stopped on the set-only reader)")
+            bell = [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
+            self.assertEqual([(n["kind"], n["ok"]) for n in bell], [("refused", False)], "one refused bell row names the file: %r" % km._SYNC_NOTICES)
+            self.assertIn("last-known", bell[0]["text"])
+            self.assertIn("clears still record, and Undo waits until the file can be read again", bell[0]["text"], "the row's remedy is this file's own: a clear still appends its row and sets the flag while the log cannot be read, only Undo waits (before: the convention's sentence promised refused changes): %r" % bell[0]["text"])
+            self.assertNotIn("changes to it are refused", bell[0]["text"])
+            km._note_state_fault(km._StateUnreadable(jd.STATE / "session-flags.json", "a stand-in fault"))   # another file keeps the convention's sentence
+            self.assertTrue(km._SYNC_NOTICES[-1]["text"].endswith("showing the last-known value; changes to it are refused until the file can be read again"), "the default sentence stands for every other file: %r" % km._SYNC_NOTICES[-1]["text"])
+            km._state_fault_seen.pop(str(jd.STATE / "session-flags.json"), None)
+            f2 = km.build_feed(NOW, self.live); off = km._feed_off_frame(NOW, self.live)
+            self.assertEqual((off["dismissedCount"], off["canUndoClear"]), (2, True), "the off frame holds too")
+            self.assertEqual(len([n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]), 1, "a second build and the off frame file no second row: one per episode")
+            log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": B + ":g1", "t": 2, "op": "clear"}) + "\n" + json.dumps({"id": nid, "t": 3, "op": "clear"}) + "\n")
+            f = km.build_feed(NOW, self.live)
+            self.assertEqual(f["dismissedCount"], 3, "a landed read: the pane follows the log again")
+            log.write_bytes(b"\xff\xfe\x00 not text either\n")
+            km.build_feed(NOW, self.live)
+            self.assertEqual(len([n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]), 2, "the landed read ended the bell's episode: the next fault files again")
+            # a cold memo: nothing to serve, the empty set, and the row says so
+            km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None; km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+            log.write_bytes(b"\xff\xfe\x00 not text at all\n")
+            f = km.build_feed(NOW, self.live)
+            self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (0, False, True), "a cold memo: the empty set")
+            bell = [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
+            self.assertEqual(len(bell), 1, "and one refused row: %r" % km._SYNC_NOTICES); self.assertIn("no earlier read", bell[0]["text"], "saying nothing reads as cleared: %r" % bell[0]["text"])
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
     def test_the_two_new_judge_errors_kinds_are_documented(self):
         """The second contributor's post-merge note on PR 2018: `clears-log` and `owed-note` were in neither kind list; the round-one verifier
@@ -1840,7 +1946,7 @@ class ActsUnderAFailedWrite(_World):
         ds = jd._log_judge_error.__doc__
         flat = doc.replace("\n  ", " ")
         self.assertRegex(flat, r"clears-log: a write to the clears log refused \(a clear's or an undo's rows, the mute's, the episode boundary's\), one row per refusal", "the write kind's sentence")
-        self.assertRegex(flat, r"cleared-unreadable is filed by the kernel's own reader of the clears log as well[^.]{0,300}one row per fault episode", "the read kind's sentence names the kernel's reader and the episode")
+        self.assertRegex(flat, r"cleared-unreadable is filed by the kernel's own reader of the clears log as well[^.]{0,300}holding the last landed set[^.]{0,200}one row per fault episode", "the read kind's sentence names the kernel's reader and the episode")
         self.assertRegex(flat, r"owed-note: the note of owed cards beside the log could not be written or read")
         self.assertRegex(ds, r'"clears-log" \(a clears-log write refused')
         self.assertRegex(ds.replace("\n", " "), r'"cleared-unreadable" is also the kernel\'s own reader\'s\s+kind for the clears log[^)]*one row per fault episode')
@@ -1870,11 +1976,14 @@ class ActsUnderAFailedWrite(_World):
 
     def test_the_off_frame_over_an_undecodable_clears_log_ships_zero_counts(self):
         """The thirteenth executed review (2026-09-22): the off frame's guarded clears-log read was dead code once the stack helper replaced it,
-        and _cleared_ids catches OSError alone, so with tracking off a clears log whose bytes are not text raised UnicodeDecodeError out of
-        the frame (the carry shipped zero counts). The ids are computed inside the guard again."""
+        and the reader of that day caught OSError alone, so with tracking off a clears log whose bytes are not text raised UnicodeDecodeError
+        out of the frame. The reader has caught it since PR 2021 and skips a malformed row, so the frame's belt stands without a live raise
+        in the reader (a fault in the owed-note join or a reader to come); this payload never reaches the guard. With a cold memo the counts
+        are zero; with a landed set memoized they hold (the pane test below)."""
+        km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None
         (jd.STATE / "cleared.jsonl").write_bytes(b"\xff\xfe\x00 not text\n")
         f = km._feed_off_frame(NOW, self.live)
-        self.assertEqual((f["off"], f["dismissedCount"], f["canUndoClear"]), (True, 0, False), "zero counts, no raise")
+        self.assertEqual((f["off"], f["dismissedCount"], f["canUndoClear"]), (True, 0, False), "zero counts over a cold memo, no raise")
 
     def test_the_one_stamp_reorder_clause_names_the_store_by_its_kind(self):
         """The thirteenth executed review (2026-09-22): the clause derived its subject as a goals file for an owed NOTICE id, whose own account

@@ -5356,9 +5356,11 @@ class _StateUnreadable(Exception):
     `path` is the file, `fault` the errno-and-strerror text (never the per-second quarantine stamp,
     never a second path), so the once-per-fault-text registries dedupe a disk that stays broken."""
 
-    def __init__(self, path, fault):
+    def __init__(self, path, fault, remedy=None):
         self.path = Path(path)
         self.fault = str(fault)
+        self.remedy = str(remedy) if remedy else None   # a per-file clause for _note_state_fault's row, when the file's readers and writers part ways
+        #                                                 (the clears log: clears still record, Undo waits; round three of PR 2032); None keeps the sentence every other file has
         super().__init__("%s could not be read (%s)" % (self.path.name, self.fault))
 
 
@@ -5549,8 +5551,9 @@ def _note_state_fault(exc):
         text = "%s — the change was not saved; changes to it are refused until the file can be written again" % exc
     else:
         table = _state_fault_seen
-        text = ("%s — showing the last-known value; changes to it are refused until the file can be "
-                "read again" % exc)
+        remedy = getattr(exc, "remedy", None) or ("showing the last-known value; changes to it are refused until the file can be "
+                                                   "read again")   # the file's own clause when it has one, else the sentence every other file keeps (round three of PR 2032)
+        text = "%s \u2014 %s" % (exc, remedy)                  # the same dash as before, the sentence byte-identical for every other file
     if table.get(key) == text:
         return
     table[key] = text
@@ -24972,7 +24975,7 @@ def _chat_notices(sid):
         return []                                         # the owner-less home is not a session: no chat page, no box
     try:
         out = [{k: v for k, v in r.items() if k not in _NEEDS_ROW_UNKEYED} for r in ((_feed_needs_rows[0] or {}).get(str(sid)) or [])]   # the face only: an unkeyed field never rides the wire (the third review of PR 1967, 2026-09-21)
-        for r in _notice_projection(sid, int(time.time()), _cleared_ids()):
+        for r in _notice_projection(sid, int(time.time()), _cleared_ids_display()):   # the display read (the box holds while the log cannot be read)
             if not r.get("needsYou"):
                 continue
             out.append({"itemId": _notice_item_id(sid, r.get("key"), r.get("rev") or 0), "key": r.get("key"), "rev": int(r.get("rev") or 0),
@@ -39564,7 +39567,7 @@ def _ledger_cleared_overlay(rows):
     its own (the re-seal requires it, an undo removes the row and restores the node, nothing prunes the file),
     and a ledger emptied by hand leaves the root listed struck through. The subtree drop relies on the flat
     list's order (a root, then its descendants, up to the next depth-0 row), the invariant the roll-down reads."""
-    vc = _cleared_ids()
+    vc = _cleared_ids_display()                          # a display derivation: the last landed set while the log cannot be read (round three of PR 2032)
     if not vc:
         return rows
     out, root_cleared, drop = [], False, False
@@ -39734,7 +39737,7 @@ def _goal_tree_walk(sid, gstore, seg_trig=None, seg_work=None, anchors=True):
     """(tree, live_roots) for `sid`'s goal store: the ledger's rows in recency order and the live top-level goals."""
     gnodes = gstore.get("nodes", {}) if gstore is not None else {}
     gstatus = gstore.get("status", {}) if gstore is not None else {}
-    gcleared = _cleared_ids()
+    gcleared = _cleared_ids_display()                    # the Outline's per-node cleared flag: a display derivation, the last landed set while the log cannot be read (round three of PR 2032)
     gkids = {}
     for _gid, _gn in gnodes.items():
         gkids.setdefault(_gn.get("parentId"), []).append(_gid)
@@ -41508,7 +41511,8 @@ def build_episode(sid, now):
 
 
 # ───────────────────────── feed clear / undo (inbox-zero) ─────────────────────────
-_CLEARED_MEMO = {"slot": None}     # (key, parsed set, the read's fault copy) or None: the clear log's stat taken BEFORE the read, the set read under it, and "" for a landed read (an undecodable log's empty set is served with its fault; round three of PR 2025)
+_CLEARED_MEMO = {"slot": None,     # (key, parsed set, the read's fault copy) or None: the clear log's stat taken BEFORE the read, the set read under it, and "" for a landed read (an undecodable log's empty set is served with its fault; round three of PR 2025)
+                 "landed": None}   # (key, parsed set) of the LAST LANDED read, for the display readers while the log cannot be read (_cleared_ids_display; the second contributor's post-merge note on PR 2025)
 _cleared_read_fault = [""]         # the fault copy filed for a STANDING unreadable or undecodable clears log: one stderr line and one judge-errors row per
 #                                    episode (the note read's shape), ended by a landed read or an absent log; the undo account names it (_undo_clear)
 _CLEARED_STATS = {"served": 0, "derived": 0}   # bumped from the pusher AND socket threads (undo, connect-time builds) with
@@ -41576,6 +41580,9 @@ def _cleared_ids_read():
     slot = _CLEARED_MEMO["slot"]
     if key is not None and slot is not None and slot[0] == key:
         _CLEARED_STATS["served"] += 1
+        _cleared_read_fault[0] = slot[2]                 # the served state's fault IS the episode's: a served landed set ends an episode a stat-level fault opened (the second
+        #                                                  contributor's post-merge note on PR 2025: a permission flap on the log's directory set the flag, the lift was served from
+        #                                                  the memo with the flag still holding the copy, and the same fault before the next append filed no second row or line)
         return slot[1], slot[2]                          # the slot holds the fault beside the set: a served undecodable state still names it (round three of PR 2025)
     cur = {}
     try:
@@ -41589,10 +41596,14 @@ def _cleared_ids_read():
             iid = o.get("id")                            # out of the read; the second contributor's post-merge review of PR 2021), and one whose id is not a string
             if not isinstance(iid, str) or not iid:
                 continue
+            t = o.get("t", 0)
+            if isinstance(t, bool) or not isinstance(t, (int, float)):
+                continue                                 # a stamp that is not a number: skipped like an unparseable line (the second contributor's post-merge note on PR 2025: stored
+            #                                              unchecked, the undo's max over the stamps raised TypeError into the socket handler's catch-all, no account)
             if o.get("op") == "undo":
                 cur.pop(iid, None)
             else:
-                cur[iid] = o.get("t", 0)
+                cur[iid] = t
     except FileNotFoundError:
         _CLEARED_STATS["derived"] += 1
         _cleared_read_fault[0] = ""                      # absent, or vanished after the stat: nothing cleared, a real state, said nowhere; it ends an episode too
@@ -41618,12 +41629,37 @@ def _cleared_ids_read():
     _cleared_read_fault[0] = ""                          # a landed read ends the episode
     if key is not None:
         _CLEARED_MEMO["slot"] = (key, cur, "")
+        _CLEARED_MEMO["landed"] = (key, cur)             # the last landed set, for the display readers while the log cannot be read
     return cur, ""
 
 
 def _cleared_ids():
     """The set of currently-cleared feed itemIds (_cleared_ids_read), the read's fault set aside: for the readers that answer for nothing."""
     return _cleared_ids_read()[0]
+
+
+def _cleared_ids_display():
+    """The cleared set for the DISPLAY readers (the feed build, the off frame, the chat box's notice rows): the read's set when it landed;
+    while the log cannot be read, the LAST LANDED set the memo holds for this path, so the pane holds (the dismissed count, the Undo button,
+    the foreign clears and the log-only seals stand as the last landed read left them) until a read lands, with one refused row on the
+    bell per fault episode: _note_state_fault's convention (the last-known value shown, one row, a clean read ends the episode; the second
+    contributor's post-merge note on PR 2025: every build and off frame derived from the empty set, so the button hid, the count dropped
+    to zero and the log-only seals returned to the pane with nothing on the frame naming why). A cold memo has nothing to serve: the empty
+    set, and the row says so. Never for a gesture: an Undo answers for its OWN read (_undo_clear) and an account's stack for the read
+    behind it (_ledger_batches), which is why this is not the shared set-only reader."""
+    cur, fault = _cleared_ids_read()
+    p = jd.STATE / "cleared.jsonl"
+    if not fault:
+        _clear_state_fault(p)                            # a clean read ends the bell's episode
+        return cur
+    landed = _CLEARED_MEMO["landed"]
+    # the row's remedy is this file's own (round three of PR 2032): the convention's "changes to it are refused" is untrue here, since a clear
+    # still appends its row and sets the card's flag while the log cannot be read; only Undo, which answers for its own read, waits
+    if landed is not None and landed[0][0] == str(p):
+        _note_state_fault(_StateUnreadable(p, fault, remedy="showing the last-known value; clears still record, and Undo waits until the file can be read again"))
+        return landed[1]
+    _note_state_fault(_StateUnreadable(p, fault, remedy="nothing reads as cleared until the file can be read again (no earlier read of it in this kernel's life); clears still record, and Undo waits"))
+    return cur
 
 def _mark_nodes_cleared(item_ids, value, src="user", why=None):
     """Set the DURABLE node-level `cleared` flag on each cleared/restored top goal node, so a Clear is
@@ -42044,7 +42080,7 @@ def _undo_stack_ids():
     """Every id the kernel's Undo stack holds: the clears log's ids and the owed ids (the note read once per life), as the Undo button
     and the dismissed count read them (the second contributor's review, 2026-09-22: the log alone hid the button while a card was owed)."""
     _owed_ensure_loaded("feed build")
-    return set(_cleared_ids()) | set(_rejournal_owed)
+    return set(_cleared_ids_display()) | set(_rejournal_owed)   # the display read: the last landed set while the log cannot be read
 
 
 LEDGER_BATCHES_ON_WIRE = 20   # the newest log batches an account carries (the eighth executed review of PR 1967: unbounded, a 1500-card log put 71 KB
@@ -42055,7 +42091,7 @@ LEDGER_BATCHES_ON_WIRE = 20   # the newest log batches an account carries (the e
 def _ledger_batches(limit=LEDGER_BATCHES_ON_WIRE):
     """The kernel's Undo stack as the feed holds its own: the ids an earlier undo left owed (the next Undo writes their rows first, so they
     are the newest batch though the log has no row for them yet), then the clears log's batches by stamp, newest first, each a sorted id
-    list; and the owed ids on their own. Every gesture account carries both (`batches`, `owedBatch`) and the count of log batches before the
+    list; and the owed ids on their own. Every gesture account sent while the log reads carries both (`batches`, `owedBatch`) and the count of log batches before the
     wire's bound (`batchesTotal`), so a truncated stack reads as truncated; the feed takes them as its stack,
     which keeps the two equal press after press (round eight of PR 1967: proven by enumeration in tests/test_goal_store_fault_boundary.py,
     whose table ui/webview/feed-render-incremental.test.ts replays against the built feed). Returns the stack, the owed ids, the count and
@@ -42096,7 +42132,7 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op="", seq=None):
     the user's copy (the save shape added on a review find, 2026-09-08: left to raise, it dropped the
     dashboard's socket without a word)."""
     _batch = [str(i) for i in (ids or []) if i]         # the batch the gesture named: the LEDGER account's ids (nothing of it landed)
-    _lb = [None]                                        # the kernel's stack after the gesture (_ledger_batches), read once, on every frame
+    _lb = [None]                                        # the kernel's stack after the gesture (_ledger_batches), read once, on every frame sent while the log reads (none while it cannot be read, the read-fault account never)
     # the undo's BUILD FLOOR (round fifteen of PR 1967, the round-thirteen verifier's ruling): the feed build counter as it stands now, the undo
     # processed. Every build claimed after this point read the store after the undo applied, and after every clear this socket sent before it
     # (the kernel applies them in order), so a payload with a greater build is exact evidence of what the undo restored; a build claimed before
@@ -42194,8 +42230,10 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op="", seq=None):
                 # store" misnamed two sessions at one stamp, and a clears-log refusal, whose subject is the log)
                 _owed_now = [str(i) for i in (value.get("owed") or [])] if isinstance(value, dict) else []
                 _stores = {("notice:" + i.split(":", 2)[1]) if i.startswith("notice:") else i.rsplit(":", 1)[0] for i in _owed_now}   # the STORE keys: a notice archive against a goals file (the thirteenth executed review)
-                if skipped.get(LEDGER_KEY) or skipped.get(LEDGER_REJOURNAL_AGAIN_KEY):
-                    _subject = "the clears log"
+                if skipped.get(LEDGER_KEY) or skipped.get(LEDGER_REJOURNAL_AGAIN_KEY) or skipped.get(LEDGER_READ_KEY):
+                    _subject = "the clears log"       # the read-fault account beside this frame too (the first contributor's round-four comment on PR 2025,
+                    #                                  2026-09-22): filed from the post-lock arm, the frame promised the owed cards once the session's goals file
+                    #                                  could be read while the account beside it said the record of cleared cards could not be read
                 elif len(_stores) > 1:
                     _subject = "those stores"
                 elif any(k.startswith("notice:") for k in _stores):
@@ -42833,7 +42871,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
         # judge's one-shot live re-plan lands a fresh one (a recorded #live key = it already ran → stay out).
         # An ABSENT target needs clear-EVIDENCE (its id in cleared.jsonl — every real cross-off logs one):
         # a bogus cite or a not-yet-written store must not flash a placeholder.
-        fu_gone = _card_gone(nodes, fu) if fu in nodes else fu in _cleared_ids()
+        fu_gone = _card_gone(nodes, fu) if fu in nodes else fu in _cleared_ids_display()   # clear-evidence for a placeholder: a display derivation (round three of PR 2032)
         if not (turn_open and fu_gone) or _live_replanned(placements, held["id"]):
             return None
     # PLACED already? the planner stamps placements the moment it classifies this segment — its prompt-run
@@ -45338,7 +45376,7 @@ def build_feed(now, live_map=None):
     builds.feed.memo."""
     if live_map is None:
         live_map = _live_map()
-    cleared = _cleared_ids()
+    cleared = _cleared_ids_display()                     # the last landed set while the log cannot be read (the second contributor's post-merge note on PR 2025)
     # Debug mode (the user 2026-07-09): join judge-failure rows onto each card so a rejection is
     # inspectable from the card modal (judge, kind, evidence, and in-debug capture: input + reply).
     # Zero cost when off: no rows read, no key emitted.
@@ -57677,9 +57715,9 @@ def _feed_off_frame(now, live_map=None):
         _subagent_trees_forget(alive)                 #  build_feed never runs; the bound's home is the jobs pass; a FAILED alive
     #                                                    read evicts nothing (an empty set from a failure is no owner list)
     try:
-        _ids = _undo_stack_ids()                      # the log's ids and the owed ids, under the guard the carry's read had (the thirteenth executed review: an
-    except Exception:                                 # undecodable clears log raised UnicodeDecodeError out of the off frame, since _cleared_ids catches OSError alone)
-        _ids = set()
+        _ids = _undo_stack_ids()                      # the log's ids and the owed ids, under the frame's belt: no live raise in the reader today (it catches OSError and
+    except Exception:                                 # ValueError and skips a malformed row), the guard standing for a fault in the owed-note join or a reader to come
+        _ids = set()                                  # (the thirteenth executed review of PR 1967 named the undecodable log; the reader has caught it since PR 2021)
     f["dismissedCount"] = len(_ids); f["showDismissed"] = False; f["canUndoClear"] = len(_ids) > 0
     f["undoAck"] = True                               # as build_feed's frame: this kernel accounts for every undo with a build floor (round fifteen)
     f["clearNotices"] = _boundary_clear_notices(alive)

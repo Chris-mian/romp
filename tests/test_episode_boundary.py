@@ -210,7 +210,8 @@ class EpisodeBoundaryTest(unittest.TestCase):
 
     def test_an_append_the_clears_log_refuses_at_the_boundary_is_said_and_settles_nothing(self):
         """The first contributor's post-merge review of PR 2021: the arm around the boundary's clear rows had no behavioural pin. An append the
-        log refuses files one clears-log judge-errors row and one stderr line, flags no top and writes no settle annotation (the base raised)."""
+        log refuses files one clears-log judge-errors row and one stderr line, flags no top and writes no settle annotation (the tree before PR
+        2021's merge raised: the arm landed with it, and this pin came after)."""
         self._store()
         anchor = self.proj / (SID + ".jsonl")
         _write_jsonl(anchor, [_rec("root1")])
