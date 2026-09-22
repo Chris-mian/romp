@@ -33,8 +33,10 @@ The thread test rests on CPython's own threading: a running session and its work
 other (the Thread holds the session as its `_target`), and `Thread.run` deletes `_target` in a `finally`
 when it returns, so once the thread has finished it no longer holds the session. A live ref whose thread
 has finished is therefore held by a DIFFERENT surviving cycle (a traceback frame, a stray reference), the
-reclaim's target; and a session whose thread never started reads as finished (`is_alive()` False), which
-is correct, since an unstarted thread holds no cycle to wait on.
+reclaim's target. An UNSTARTED thread reads as finished (`is_alive()` False) and still holds the session
+(the Thread keeps `_target`, since `run`'s finally never fires for it), so the ref is alive on a cycle;
+judging it a reclaim is correct precisely because ONLY the collector can take that cycle (refcounting never
+will), which is what a reclaim does.
 
 A request that arrives during a reconcile waits that one collection; the idle boundary is the best
 moment for it, not a guarantee none arrives. Default on; `ROMP_GC_FREEZE=off` (or `0`/`false`) off.

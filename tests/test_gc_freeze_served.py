@@ -88,7 +88,7 @@ class ServedGcFreeze(unittest.TestCase):
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
         cls.port, cls.token = _free_port(), "testtok-gcf"
         # the freeze ON in the kernel's own env (the suite floors it off); a low threshold so a couple loads fire it,
-        # and a zero quiescent-drop so a re-fold releases the old entry at once (the release trigger)
+        # and a zero quiescent-drop so a re-fold pops the old record-cache entry at once (a pop is acyclic and never reclaims)
         env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token, ROMP_HOST_NAME="TESTHOST",
                               ROMP_GC_FREEZE="on", ROMP_GC_FREEZE_LOAD_TREES="2", ROMP_RECORD_CACHE_DROP_QUIESCENT_S="0")
         cls.klog = os.path.join(cls.lab, "kernel.log")

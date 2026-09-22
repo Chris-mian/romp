@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import weakref
@@ -165,6 +166,66 @@ class EndedTruthTable(unittest.TestCase):
         self.assertEqual(c.tick(inserts=1), "release", "the tick observes the cyclic ended session and reclaims")
         self.assertEqual(fake.calls, ["unfreeze", "collect", "freeze"], "a reclaim unfreezes, collects, re-freezes")
         self.assertIsNotNone(w(), "the cyclic session stays alive under the FakeGc (its collect is a no-op): this pins the reconcile KIND, not the collection")
+
+
+class EndedLockConcurrency(unittest.TestCase):
+    """LOW 1, the concurrency fix, pinned DETERMINISTICALLY (no wall-clock, no statistical race). resolve_ended sets
+    self._ended = keep and judges the OLD list under _ended_lock, so a note_ended landing on another thread mid-judgement
+    blocks and lands in the NEW list, never in the old one the judgement is consuming. A stub worker thread whose is_alive()
+    pauses the judgement mid-flight while the lock is held; a second registration then lands only AFTER the judgement
+    returns, unjudged in the live list, and is judged at the NEXT tick. At affd9abf there is no lock: resolve_ended iterates
+    self._ended live and rebinds after the loop, so a registration landing mid-judgement is consumed by the index-based loop
+    and the rebind drops it (this test reds there by copy-aside; the red is quoted in the PR body)."""
+
+    class _Gate:
+        """A stand-in worker thread: is_alive() signals it has paused the judgement, then blocks until released, then reads
+        as still running (so the paused owner is KEPT, never itself a reclaim)."""
+        def __init__(self, entered, release):
+            self._entered, self._release = entered, release
+        def is_alive(self):
+            self._entered.set()
+            self._release.wait(10)
+            return True
+
+    def test_resolve_ended_holds_the_lock_so_a_concurrent_registration_is_never_dropped(self):
+        c = gf.GcFreeze(enabled=True, gc=FakeGc(), clock=lambda: 0.0)
+        entered, release, at_lock = threading.Event(), threading.Event(), threading.Event()
+        o1, o2 = _Owner(), _Owner()
+        gate = self._Gate(entered, release)                       # a strong ref: the controller keeps only a weakref to the thread
+        fin = _FakeThread(alive=False)                            # P2's finished worker thread (a strong ref, likewise)
+        c.note_ended(o1, thread=gate)                             # P1: its is_alive pauses the judgement mid-flight
+        box = {}
+        R = threading.Thread(target=lambda: box.__setitem__("reclaim1", c.resolve_ended()), daemon=True)
+        R.start()
+        self.assertTrue(entered.wait(10), "the judgement reached P1 and paused mid-flight")
+        # a second session ends WHILE the judgement is mid-flight; its worker thread has finished, so were it judged in this
+        # pass it would owe a reclaim and leave the live list. It must not be: the lock holds the old list steady.
+        lock = getattr(c, "_ended_lock", None)
+        if lock is not None:                                       # the head: note_ended blocks on the lock; spy it to know it arrived
+            real = lock                                            # R already holds the real lock (acquired before this swap); the spy sees only B's acquire
+            class _SpyLock:
+                def acquire(self, *a, **k):
+                    at_lock.set()                                  # the concurrent note_ended has reached the lock (and will block: R holds it)
+                    return real.acquire(*a, **k)
+                def release(self): return real.release()
+                def __enter__(self): self.acquire(); return self
+                def __exit__(self, *a): self.release()
+            c._ended_lock = _SpyLock()
+            B = threading.Thread(target=lambda: c.note_ended(o2, thread=fin), daemon=True)
+            B.start()
+            self.assertTrue(at_lock.wait(10), "the concurrent note_ended reached the lock while the judgement held it")
+            release.set()
+            R.join(10); B.join(10)
+        else:                                                      # affd9abf: no lock; the append lands unguarded, mid-loop, on this thread
+            c.note_ended(o2, thread=fin)
+            release.set()
+            R.join(10)
+        self.assertFalse(box["reclaim1"], "the judgement returned before the append landed: it judged only P1 (kept), never the "
+                                          "mid-flight registration (at affd9abf the live loop consumed it and returned a reclaim)")
+        self.assertTrue(any(sref() is o2 for sref, _ in c._ended), "the mid-judgement registration sits in the live list, never dropped")
+        # judged at the NEXT tick: P2 is alive with a finished thread, so it owes a reclaim then and is dropped
+        self.assertTrue(c.resolve_ended(), "the next tick judges the kept registration: a surviving cycle owes its reclaim")
+        self.assertFalse(any(sref() is o2 for sref, _ in c._ended), "and P2 is dropped after the reclaim it owes")
 
 
 class DoubleController:
@@ -467,7 +528,15 @@ def _install_fake_sdk():
     m.AssistantMessage = type("AssistantMessage", (), {"__init__": lambda self, content=None, model=None: self.__dict__.update(content=content or [], model=model)})
     m.ResultMessage = type("ResultMessage", (), {"__init__": lambda self, **k: self.__dict__.update(k)})
     m.TextBlock = type("TextBlock", (), {"__init__": lambda self, text="": self.__dict__.update(text=text)})
+    had = "claude_agent_sdk" in sys.modules
+    prior = sys.modules.get("claude_agent_sdk")
     sys.modules["claude_agent_sdk"] = m
+    def restore():                                   # never leave the stand-in in sys.modules: on a box where the real package
+        if had:                                      # imports (the kernel's sdkvenv on sys.path), it would shadow it for every later module
+            sys.modules["claude_agent_sdk"] = prior
+        else:
+            sys.modules.pop("claude_agent_sdk", None)
+    return restore
 
 
 class SessionEndPopsRegister(unittest.TestCase):
@@ -477,7 +546,8 @@ class SessionEndPopsRegister(unittest.TestCase):
     a `client is not None` guard at a pop (the round-one defect) would drop it and redden here."""
     @classmethod
     def setUpClass(cls):
-        _install_fake_sdk()
+        cls.addClassCleanup(_install_fake_sdk())     # install the stand-in and register its restore (pop it, or put back any real package)
+        cls.addClassCleanup(lambda: sys.modules.pop("romp_sdk_backend_pops", None))
         cls.sb = load_source("romp_sdk_backend_pops", os.path.join(ROOT, "kernel", "sdk_backend.py"))
 
     def _backend(self, tag):
@@ -537,6 +607,18 @@ class KernelGlue(unittest.TestCase):
                          "the pusher cycle calls the freeze tick with the cycle's idle flag and first-cycle flag")
         self.assertRegex(inspect.getsource(km), r'sbmod = load_source\("romp_sdk_backend"[\s\S]{0,320}?sbmod\.set_ended_note\(_GC_FREEZE\.note_ended\)',
                          "the kernel wires the controller's ended note when it loads the SDK backend")
+
+    def test_every_session_end_pop_is_paired_with_an_ended_note(self):
+        """A source census beside the driven test: every `self.sessions.pop(` site in the SDK backend (a session end) is
+        followed within a few lines by a `_note_ended(` call, so a FUTURE fourth pop that forgets the note reds here. The
+        driven test proves the three that exist fire; this guards the ones not yet written."""
+        src = Path(ROOT, "kernel", "sdk_backend.py").read_text().splitlines()
+        pops = [i for i, ln in enumerate(src) if "self.sessions.pop(" in ln]
+        self.assertEqual(len(pops), 3, "the SDK backend has exactly the three session-end pops (stop, kill, _on_session_gone): %d" % len(pops))
+        for i in pops:
+            window = "\n".join(src[i:i + 5])           # the pop's line and the next four
+            self.assertIn("_note_ended(", window,
+                          "the session-end pop at line %d is not paired with a _note_ended within four lines: %r" % (i + 1, window))
 
 
 if __name__ == "__main__":
