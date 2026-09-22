@@ -176,7 +176,10 @@ class ModelsRouteRouterSection(unittest.TestCase):
 # new vendor word cannot ride in: the first-party marker in both its shapes, Anthropic's own host (the gateway probe's
 # endswith), the CLI's default-model alias (model_label / _alias_label compare the chosen alias to it whole) and the
 # ROMP_MODEL_CATALOG knob's value (_router_models_boot compares the variable to it whole).
-VENDOR_ALLOW = frozenset({"claude-", "claude", "anthropic.com", ".anthropic.com", "default", "off"})
+VENDOR_ALLOW = frozenset({"claude-", "claude", "anthropic.com", ".anthropic.com", "default", "off",
+                          "triage", "session"})   # triage/session: the judge tier stores' sentinels (_router_tiers_on reads
+#                                                   them whole-value: distill "triage" follows the triage pick, comment
+#                                                   "session"/"default" is no model id); not vendors
 
 # A model-vendor-looking token, narrowly: one lowercase word, optionally followed by version digits, optionally
 # followed by ONE trailing separator — the shape a vendor prefix or a family word takes ("gemini-", "gpt-", "gpt",
@@ -235,7 +238,9 @@ def vendor_keys(source):
 ROUTER_FUNCTIONS = (km._parse_router_models, km._router_label, km._apply_router_families, km._remove_router_families,
                     km._router_apply_declared, km._set_router_models, km._router_models_boot, km._fetch_router_models,
                     km._router_first_party, km._router_tell_backend, km._router_live_on, km._router_gateway_configured,
-                    sb.pretty_model, sb.model_label, sb._alias_label, sb._router_declared, sb.set_router_ids)
+                    km._router_declared_effective, km._router_tiers_on, km._router_fetch_allowed, km._router_status,
+                    sb.pretty_model, sb.model_label, sb._alias_label, sb._router_declared, sb.set_router_ids,
+                    sb._router_first_party)
 
 
 class NothingKeysOnAVendor(unittest.TestCase):
@@ -251,13 +256,13 @@ class NothingKeysOnAVendor(unittest.TestCase):
             hits = [h[0] for fn in ROUTER_FUNCTIONS for h in vendor_keys(inspect.getsource(fn))]
         self.assertIn("startswith('claude-')", hits)
         self.assertIn("Eq 'default'", hits)
-        self.assertIn("Eq 'off'", hits)
+        self.assertIn("NotEq 'off'", hits)      # _router_fetch_allowed: the catalog knob's whole-value compare
         self.assertTrue(any(h.startswith("re.match('claude-") for h in hits), hits)
 
     def test_a_planted_startswith_in_a_copy_of_a_real_function_fails_the_check(self):
         src = inspect.getsource(km._router_first_party)
         self.assertEqual(vendor_keys(src), [])
-        planted = src.replace("return bool(", 'return mid.startswith("gemini-") or bool(', 1)
+        planted = re.sub(r"\n(\s+)return (.+)\n$", lambda m: '\n%sreturn mid.startswith("gemini-") or (%s)\n' % (m.group(1), m.group(2)), src)
         self.assertNotEqual(planted, src, "the plant landed")
         self.assertEqual([h[0] for h in vendor_keys(planted)], ["startswith('gemini-')"])
 

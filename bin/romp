@@ -2922,12 +2922,20 @@ print("\x1f".join([r.get("parentIgnored") or "", "existing" if r.get("existing")
             # reason, never as an unacknowledged ask, so --effort stays out of the dropped check below
             # (the kernel answered; it did not drop the ask). A warning on stderr: the session exists.
             _refused="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1]).get("refused"); print(v if isinstance(v, str) else "")' "$_resp" 2>/dev/null || true)"
-            [[ -n "$_refused" ]] && echo "romp new: effort $effort_arg refused: $_refused" >&2
-            _effask="$effort_arg"; [[ -n "$_refused" ]] && _effask=""
+            # which ask the refusal answers: the one(s) the echo does not carry back (a refused --model since the
+            # extra-models switch, 2026-09-22: a model the kernel no longer offers; before, only --effort could be
+            # refused and the line named effort whatever was asked)
+            _refwhat=""; _modask="$model_arg"; _effask="$effort_arg"
+            if [[ -n "$_refused" ]]; then
+                _refwhat="$(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print(", ".join("%s %s" % (k, a) for k, a in (("model", sys.argv[2]), ("effort", sys.argv[3])) if a and r.get(k) is None))' "$_resp" "$model_arg" "$effort_arg" 2>/dev/null || true)"
+                echo "romp new: ${_refwhat:-setting} refused: $_refused" >&2
+                [[ "$_refwhat" == *"model "* ]] && _modask=""     # answered, not dropped: out of the check below
+                [[ "$_refwhat" == *"effort "* ]] && _effask=""
+            fi
             _envask="${env_args[*]-}$_noenv"
             # the tags ask is named for what it was: --in, or the inheritance a parent implies
             _taglab=""; if [[ ${#in_args[@]} -gt 0 ]]; then _taglab="--in"; elif [[ -n "$_parent" ]]; then _taglab="the parent's tags"; fi
-            _dropped="$(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print("/".join(lab for k,lab,a in (("model","--model",sys.argv[2]),("effort","--effort",sys.argv[3]),("env","--env",sys.argv[4]),("tags",sys.argv[6],sys.argv[5])) if a and r.get(k) is None))' "$_resp" "$model_arg" "$_effask" "$_envask" "$_tagask" "$_taglab" 2>/dev/null || echo "--model/--effort/--env/--in")"
+            _dropped="$(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print("/".join(lab for k,lab,a in (("model","--model",sys.argv[2]),("effort","--effort",sys.argv[3]),("env","--env",sys.argv[4]),("tags",sys.argv[6],sys.argv[5])) if a and r.get(k) is None))' "$_resp" "$_modask" "$_effask" "$_envask" "$_tagask" "$_taglab" 2>/dev/null || echo "--model/--effort/--env/--in")"
             if [[ -n "$_dropped" ]]; then
                 _hint="model/effort can be set from the dashboard"
                 if [[ -n "$_taglab" && "$_dropped" == "$_taglab" ]]; then

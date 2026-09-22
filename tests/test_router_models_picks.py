@@ -218,6 +218,29 @@ class SetterRoad(_OnThenOff):
         self.assertEqual(self.be.calls, [(SID, REMOVED)])
 
 
+class ParkedDrain(_OnThenOff):
+    def test_a_pick_parked_while_on_and_drained_after_off_is_refused_at_fire_time(self):
+        # the last road around the vouch: a ('model', id) op parked behind a queue while the switch was on fires from
+        # _apply_pending_ops after the off flip; it is vouched when it fires, refused like a parked level (the stderr
+        # line, the settingRefused frame the chat reads), and popped
+        frames = []
+        with mock.patch.object(km, "_send_to_app", lambda app, frame: frames.append((app, frame))):
+            km._pending_ops[SID] = [("model", REMOVED)]
+            km._apply_pending_ops()
+        self.assertEqual(self.be.calls, [], "the backend was never asked")
+        self.assertNotIn(SID, {k for k, v in km._pending_ops.items() if v}, "the op is popped, never wedging the queue")
+        self.assertIn(REMOVED, self.err.getvalue())
+        self.assertEqual([f for a, f in frames if f.get("type") == "settingRefused" and f.get("flag") == "model"],
+                         [{"type": "settingRefused", "gesture": "command", "sid": SID, "flag": "model",
+                           "text": km._model_refusal(REMOVED)}])
+
+    def test_a_parked_first_party_pick_still_fires(self):
+        with mock.patch.object(km, "_send_to_app", lambda app, frame: None):
+            km._pending_ops[SID] = [("model", "sonnet")]
+            km._apply_pending_ops()
+        self.assertEqual(self.be.calls, [(SID, "sonnet")])
+
+
 class WsRoad(_OnThenOff):
     def setUp(self):
         super().setUp()

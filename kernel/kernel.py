@@ -38864,7 +38864,13 @@ def _apply_pending_ops(now=None):
                         refused = _user_send(be, sid, "/compact") is False   # a parked compact click is the user's too (T315); a
                         #                                                      backend with the verb took the native arm above (2026-09-19)
                     elif op[0] == "model":
-                        be.set_model(sid, op[1])
+                        # vouched at FIRE time, not only at the park: a pick parked while the extra-models switch was on
+                        # and drained after it went off would otherwise reach the backend unvouched, the one road left
+                        # around _pick_vouched (review round, 2026-09-22); refused the way a parked level is, below
+                        if _pick_vouched(op[1], be):
+                            be.set_model(sid, op[1])
+                        else:
+                            refused = True
                     elif op[0] == "effort":
                         # the verdict is READ, as the command and compact arms read theirs: a level the backend refuses
                         # at fire time (a Codex model whose catalog does not offer it after a model change under the
@@ -38926,7 +38932,7 @@ def _apply_pending_ops(now=None):
                                                           # compaction's cue is its backend's bracket, which compacting() publishes (2026-09-19)
                         _after_turn_opening(be, sid, _pending_ops.get(sid) or [])
                         break                             # its turn / compaction must end before anything behind it fires
-                    if op[0] in ("effort", "fast") and refused:
+                    if op[0] in ("model", "effort", "fast") and refused:
                         # the backend refused the parked level or toggle when it fired (a Codex model whose catalog does
                         # not offer the level, a session the backend holds no row for, a Codex session's fast toggle: it
                         # has no fast mode): the same stderr line the command and compact arms write, and the refusal
@@ -38939,6 +38945,7 @@ def _apply_pending_ops(now=None):
                         # is retried: the gate lift is still what fires the op, and it is popped once, above.
                         what = "/%s %s" % (op[0], op[1])
                         why = (_effort_refusal(be, op[1]) if op[0] == "effort"
+                               else _model_refusal(op[1]) if op[0] == "model"
                                else "Couldn't toggle fast mode: the session's backend refused it.")
                         sys.stderr.write("pending ops apply: %s refused %r for %s\n" % (type(be).__name__, what, sid[:8]))
                         _send_to_app("chat", {"type": "settingRefused", "gesture": "command", "sid": sid,
