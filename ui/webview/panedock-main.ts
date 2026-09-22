@@ -734,6 +734,11 @@ class Engine {
     const r = zone ? landingRect(rects, zone, strips) : null;
     if (!zone || !r) { this.hideOutline(); return; }
     o.classList.add("on"); o.classList.remove("free", "refused");
+    // the refusal previewed as the pane drag's outline does over a strip (the 1900 read: a tab's outline never did): the thin ring
+    // where the release will change nothing (a lone column on its own edge, a non-chat pane's strip)
+    const w = window as any;
+    const sets = (typeof w.__rompChatSets === "function" ? w.__rompChatSets() : null) as Record<string, string[]> | null;
+    if (planTabDrop(zone, this.tab.sid, sets).kind === "refuse") o.classList.add("refused");
     o.textContent = "";   // the square says where by its place alone (the user 2026-09-21): no name, no "joins"
     const rr = roundRect(r); o.style.left = rr.x + "px"; o.style.top = rr.y + "px"; o.style.width = rr.w + "px"; o.style.height = rr.h + "px";
   }
