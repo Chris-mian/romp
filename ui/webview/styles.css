@@ -606,7 +606,7 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 /* the STATE BADGE: a contained top-right dot for the Needs-you state under badge mode, drawn on top and moving nothing
    (.tab is position:relative already), in the magenta token the Needs-you ring reads. It carries a count later. */
 .tab-badge { position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); pointer-events: none; z-index: 3; }
-/* the numbered form: a black count on the magenta, the dot sized for the digits, widening into a short pill for two or
+/* the numbered form: a count on the magenta (black on the dark theme, the --st-needs-fg token on the light), the dot sized for the digits, widening into a short pill for two or
    more (plans/tab-state-badge.md, the user's pick). Empty (an older kernel with no count) stays the bare dot above. */
 .tab-badge:not(:empty) { width: auto; min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #000; font-weight: 700; font-size: 9px; line-height: 1; }
 /* the digit is 9px bold TEXT, so the 4.5:1 floor: black clears on the dark magenta (~6.07:1); on the lighter light-theme magenta (#a21caf) black is 3.32:1, short, so the state's own light-theme foreground (white) rides there (~6.32:1). The user chose black in dark; theme-parity.test.ts pins 4.5:1 in BOTH themes (plans/tab-state-badge.md). */

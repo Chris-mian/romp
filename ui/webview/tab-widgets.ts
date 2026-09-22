@@ -163,7 +163,8 @@ export function composeTabRing(tab: HTMLElement, sid: string, status: WidgetStat
  *  retrying state moves to the left status dot in amber; the red ring (Blocked) stays, since Blocked outranks the run
  *  states. Called once per tab per paint from render.ts ONLY when the setting is on, so ring mode never touches this and
  *  stays byte-identical to today. Idempotent: clears any prior badge dot first (a reused tab). The Needs-you dot carries
- *  status.needsYouCount as a black number (the numbered style, plans/tab-state-badge.md), "99+" past 99, a bare dot when
+ *  status.needsYouCount as a number (the numbered style, plans/tab-state-badge.md): black on the dark magenta, the state's
+ *  --st-needs-fg token (white) on the lighter light-theme magenta, "99+" past 99, a bare dot when
  *  the count is absent (an older kernel). Returns the Needs-you dot when one is drawn, else null. */
 export function applyTabBadgeMode(tab: HTMLElement, sid: string, status: WidgetStatus, prefs: TabWidgetPrefs): HTMLElement | null {
   for (const d of Array.from(tab.getElementsByClassName("tab-badge"))) d.remove();
@@ -175,8 +176,8 @@ export function applyTabBadgeMode(tab: HTMLElement, sid: string, status: WidgetS
       // move the amber from the ring to the left status dot: toggle the classes, never overwrite the slot's className
       // (it may carry an option class). Drop BOTH `none` and `idle` before adding `retrying`: under the dot widget's
       // "grey dot when idle" option a none-state slot renders as `tab-dot idle`, and the idle rule follows the retrying
-      // rule at equal specificity, so a leftover `idle` would paint the amber at idle's dim opacity. Drop the ring last,
-      // so the amber never vanishes.
+      // rule at equal specificity, so a leftover `idle` would paint the amber at idle's dim opacity. The ring comes off
+      // and the slot is re-inked in one synchronous pass below, so no paint ever sees the amber missing.
       tab.classList.remove("ring-retrying");
       slot.classList.remove("none", "idle");
       slot.classList.add("retrying");
@@ -190,7 +191,7 @@ export function applyTabBadgeMode(tab: HTMLElement, sid: string, status: WidgetS
   if (nu && ringOn(nu, sid, status, prefs)) {
     const dot = el("span", "tab-badge badge-needs");
     const n = typeof status.needsYouCount === "number" ? status.needsYouCount : 0;
-    if (n > 0) dot.textContent = n > 99 ? "99+" : String(n);   // a black number sized by the CSS (a pill for two-plus digits); empty stays a bare dot (an older kernel with no count)
+    if (n > 0) dot.textContent = n > 99 ? "99+" : String(n);   // a number sized by the CSS (a pill for two-plus digits); black on the dark magenta, --st-needs-fg (white) on the light; empty stays a bare dot (an older kernel with no count)
     // the dot is pointer-events:none (the close glyph sits under it), so its native title never shows; a screen reader
     // reads the aria-label as an image (not the bare digit), and render.ts adds the phrase to the tab's rich tooltip.
     dot.setAttribute("role", "img");
