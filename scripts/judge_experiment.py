@@ -558,6 +558,16 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
     for sub in ("goals", "overrides"):
         (dest / "state" / "romp" / sub).mkdir(parents=True, exist_ok=True)
     (dest / "state" / "romp" / "session-hosts").write_text("off")
+    # an arm runs the real judges with CLAUDE_CONFIG_DIR pointed at this claude root (load_judge), so the CLI resolves the key
+    # from HERE: carry the live root's apiKeyHelper (a command reference, never the key itself) or the CLI reports "Not logged
+    # in" and every arm's table is a silent zero. Only the helper key is copied, no other setting or secret.
+    (dest / "claude").mkdir(parents=True, exist_ok=True)
+    try:
+        live_settings = json.loads((Path(claude_root) / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        live_settings = {}
+    if live_settings.get("apiKeyHelper"):
+        (dest / "claude" / "settings.json").write_text(json.dumps({"apiKeyHelper": live_settings["apiKeyHelper"]}))
     manifest = {"built": now, "classes": list(CLASSES), "endings": [], "skipped": skipped}
     for c in CLASSES:
         for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key, seed_start in picked[c]:
@@ -635,6 +645,33 @@ def apply_prompts(jd, prompts):
     return saved
 
 
+def preflight_auth(claude_bin, claude_root):
+    """Before a paid arm walks a single ending: refuse if the corpus claude root carries no apiKeyHelper (an arm runs the CLI
+    with CLAUDE_CONFIG_DIR pointed here, so without it every call reads 'Not logged in' and the table is a silent zero), and
+    stop at once on a cheap probe whose envelope reads 'Not logged in'. The storm is loud and free, but it should also be
+    SHORT (one refusal, not one per ending). The fake validator does NOT exercise auth, so this is the arm's own gate."""
+    settings = Path(claude_root) / "settings.json"
+    has_helper = False
+    if settings.is_file():
+        try:
+            has_helper = bool(json.loads(settings.read_text(encoding="utf-8")).get("apiKeyHelper"))
+        except (OSError, ValueError):
+            has_helper = False
+    if not has_helper:
+        raise SystemExit("refused: the corpus claude root (%s) carries no apiKeyHelper; the judges cannot authenticate. "
+                         "Rebuild the corpus so its claude root has one." % claude_root)
+    try:
+        p = subprocess.run([str(claude_bin), "-p", "--safe-mode", "--model", "sonnet", "--output-format", "json"],
+                           input="ok", capture_output=True, text=True, timeout=120)
+        env = json.loads(p.stdout or "{}")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        p, env = None, {}
+    blob = json.dumps(env) + ((p.stderr or "") if p is not None else "")
+    if env.get("is_error") or not env.get("session_id") or "Not logged in" in blob:
+        raise SystemExit("refused: the claude binary did not authenticate on a probe (%s); fix the apiKeyHelper before the "
+                         "paid arms" % ((env.get("result") or blob or "no envelope")[:200]))
+
+
 def restore_prompts(jd, saved):
     for key, text in saved.items():
         setattr(jd, key, text)
@@ -688,6 +725,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
         shutil.rmtree(state)
     shutil.copytree(corpus / "state", state)
     jd = load_judge(state, corpus / "claude", claude_bin)
+    preflight_auth(claude_bin, corpus / "claude")               # refuse before the first ending if the arm cannot authenticate
     prompts = json.loads(Path(prompts_file).read_text()) if prompts_file else {}
     saved = apply_prompts(jd, prompts)
     now = int(time.time()) if now is None else int(now)
@@ -807,7 +845,6 @@ def _scored(build):
 PLACEMENT_KINDS = ("done", "block", "awaiting")   # a top-level verdict the live judges filed in the ending's turn: the placement
 #                                                   whose own ev_t/at bounds which later user gestures count (never the arm's wall clock)
 UNBLOCK_KINDS = ("unblock",)                       # the kernel lifts a block with an `unblock` event, but from several sources (below)
-REPLY_UNBLOCK_WHY = "answered by the user's reply to the card"   # kernel/judge.py's REPLY_UNBLOCK_WHY: the user answered through the card's box
 MUTE_CLEAR_WHY = "hidden from the feed"            # kernel/kernel.py's hideFromFeed mute (its _HIDDEN_FROM_FEED_WHY): excluded EXACTLY, never as a
 #   substring. The ordinary feed Clear / Clear-all stamps the generic "cleared from the feed", which IS the user's own cross-off and counts.
 
@@ -817,29 +854,60 @@ def _fault(faults, store_key, kind):
         faults.append((hashlib.sha256(str(store_key).encode()).hexdigest()[:12], kind))
 
 
+def _is_user_crossoff(op):
+    """The user's own cross-off of a card: a `clear`/`resolve` by the user whose why is NOT the hideFromFeed mute's (an
+    EXACT match; the ordinary feed Clear/Clear-all's generic why counts). A mute journals a src-user clear per open top,
+    which is not the user crossing the card off. Shared by the measure and tier_one_label so neither reads a mute as a finish."""
+    return op.get("op") in FINISHED_OPS and op.get("src") in (None, "user") and (op.get("why") or "") != MUTE_CLEAR_WHY
+
+
 def _answered_unblock(ev):
-    """An unblock event that means a REPLY answered the block, the exact event the guard approximates: the unblocker judge's
-    own ruling (`src` "unblocker") or the user's reply through the card's box (`src` "user", why REPLY_UNBLOCK_WHY). NOT the
-    topic-blind "you re-engaged" user unblock (the user typed anything), a reopen-ancestor lift, the planner's new-work
-    unblock, or a mechanical romp unblock (a moot re-file or a discharged-with-parent): those lift a block without a reply
-    that answered it, so they never suppress a false interrupt."""
-    if ev.get("kind") not in UNBLOCK_KINDS:
-        return False
-    src, why = ev.get("src"), (ev.get("why") or "")
-    return src == "unblocker" or (src == "user" and why == REPLY_UNBLOCK_WHY)
+    """An unblock event by the unblocker JUDGE (`src` "unblocker"), which lifts a block it ruled ANSWERED OR MOOT (both under
+    one why prefix). This is the only unblock that suppresses a false interrupt. NOT the topic-blind "you re-engaged" user
+    unblock (the user typed anything), a reopen-ancestor lift, the planner's new-work unblock, or a mechanical romp unblock:
+    those lift a block without the judge ruling it answered or moot. The user's reply through the card's box records the
+    reply-unblock why on DESCENDANTS only, never the top, so a box reply on a top lands as a followup (a re-open) and needs
+    no arm here."""
+    return ev.get("kind") in UNBLOCK_KINDS and ev.get("src") == "unblocker"
+
+
+def _read_ops(live_state, store_key, faults):
+    """The override-journal rows for a store, or None when the journal cannot be read AT ALL: an OSError (unreadable) or a
+    decode error (a ValueError, e.g. an invalid UTF-8 byte) is recorded as a fault and the ending is unscorable. A single
+    TORN row (a rejected JSON line) is recorded as a fault and skipped, the rest read: a torn tail must not swallow the row
+    after it silently."""
+    p = Path(live_state) / "overrides" / (store_key + ".jsonl")
+    if not p.is_file():
+        return []
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()      # UnicodeDecodeError is a ValueError: a read-level fault, not a silent miss
+    except (OSError, ValueError) as e:
+        _fault(faults, store_key, type(e).__name__)
+        return None
+    ops = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            ops.append(json.loads(line))
+        except ValueError:
+            _fault(faults, store_key, "torn-journal-row")       # a rejected line is a recorded fault, never a silent skip
+    return ops
 
 
 def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
     """The user's OWN later actions on each top the live judges placed in the ending's turn, from the live store and journal
     only. Per top-level node with a verdict in the turn's window, the placement time is that verdict's own ev_t/at (never the
-    arm's clock); a `followup`/`unclear`/`restore` after it re-opened the card; a user `clear`/`resolve` after it (whose why
-    does not name the feed, so a mute's clears do not count) is a cross-off. A cross-off is a false interrupt UNLESS the
-    kernel's own unblocker ruled the node's block answered after the placement (an `unblock` event in the node's log): that
-    is answered-then-cleared, the card having done its job. Returns None when the live store is absent/corrupt or its journal
-    cannot be read (a fault is recorded for the readable-but-broken cases); {} when the store is present but the live judges
-    placed no top in the turn; else {suffix: {...}}. The suffix (`gN`) is the join key: the results carry `<ending id>:gN`
-    and the live store `<store key>:gN`, so the full keys never coincide by construction; within one store every top-level
-    node has a distinct suffix, so the suffix is unambiguous."""
+    arm's clock); a `followup`/`unclear`/`restore` after it re-opened the card; a user `clear`/`resolve` after it (a
+    cross-off, by the shared `_is_user_crossoff`: a src-user clear whose why is not the mute's exact why) crossed it off. A
+    cross-off is a false interrupt UNLESS the unblocker JUDGE (src "unblocker") lifted the block, having ruled it ANSWERED or
+    MOOT, strictly after the placement and before the first cross-off (a same-second lift is not counted as after, so a
+    ruling at the placement's own second reads conservatively as a false interrupt): that lift is answered-then-cleared, the
+    card having done its job. Returns None when the live store is absent/corrupt or its journal cannot be read (a fault is
+    recorded for the readable-but-broken cases; a single torn journal row is a fault and skipped, not a return); {} when the
+    store is present but the live judges placed no top in the turn; else {suffix: {...}}. The suffix (`gN`) is the join key:
+    the results carry `<ending id>:gN` and the live store `<store key>:gN`, so the full keys never coincide by construction;
+    within one store every top-level node has a distinct suffix, so the suffix is unambiguous."""
     live_state = Path(live_state)
     goals_f = live_state / "goals" / (store_key + ".json")
     arch_f = live_state / "goals-archive" / (store_key + ".json")
@@ -856,19 +924,9 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
     except (OSError, ValueError) as e:
         _fault(faults, store_key, type(e).__name__)
         return None
-    ops = []
-    p = live_state / "overrides" / (store_key + ".jsonl")
-    if p.is_file():
-        try:
-            lines = p.read_text(encoding="utf-8").splitlines()
-        except OSError as e:                                    # an unreadable journal: without the user's gestures nothing can be scored
-            _fault(faults, store_key, type(e).__name__)
-            return None
-        for line in lines:
-            try:
-                ops.append(json.loads(line))
-            except ValueError:
-                continue
+    ops = _read_ops(live_state, store_key, faults)
+    if ops is None:                                             # the journal could not be read (unreadable or a decode error): unscorable
+        return None
     out = {}
     for nid, nd in (store.get("nodes") or {}).items():
         if nd.get("parentId") is not None:
@@ -887,14 +945,12 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
             return isinstance(nn, dict) and nid in nn
         later = [o for o in ops if on_node(o) and float(o.get("t") or 0) > t_place]
         reopened = any(o.get("op") in NOT_FINISHED_OPS for o in later)
-        # a cross-off: a user clear/resolve after the placement whose why is NOT the mute's (an exact match; the ordinary
-        # feed Clear/Clear-all's generic why counts)
-        clear_times = [float(o.get("t") or 0) for o in later if o.get("op") in FINISHED_OPS
-                       and o.get("src") in (None, "user") and (o.get("why") or "") != MUTE_CLEAR_WHY]
+        clear_times = [float(o.get("t") or 0) for o in later if _is_user_crossoff(o)]   # the mute's clears are excluded by the shared predicate
         crossed_off = bool(clear_times)
         first_clear = min(clear_times) if clear_times else None
-        # the kernel's OWN ruling that a reply answered the block, AFTER the placement and BEFORE the first cross-off (an
-        # unblock after the clear is not the reply this clear crossed off unanswered)
+        # the unblocker JUDGE lifted the block (ruling it answered or moot), STRICTLY after the placement and before the
+        # first cross-off (an unblock at or before the placement's second is not the reply this clear crossed off unanswered;
+        # a lift after the clear is not it either)
         unblock_answered = any(_answered_unblock(ev) and event_time(ev) is not None and t_place < event_time(ev)
                                and (first_clear is None or event_time(ev) < first_clear) for ev in log)
         cleared_no_reply = crossed_off and not reopened and not unblock_answered
@@ -1038,14 +1094,9 @@ def tier_one_label(live_state, sid, cut_t, start_t=None, faults=None):
         if faults is not None:
             faults.append((hashlib.sha256(str(sid).encode()).hexdigest()[:12], type(e).__name__))
         return None
-    ops = []
-    p = live_state / "overrides" / (sid + ".jsonl")
-    if p.is_file():
-        for line in p.read_text(encoding="utf-8").splitlines():
-            try:
-                ops.append(json.loads(line))
-            except ValueError:
-                continue
+    ops = _read_ops(live_state, sid, faults)                    # (OSError, ValueError) and torn rows are recorded faults, not a raise
+    if ops is None:
+        return None
     labels = []
     for nid, nd in (store.get("nodes") or {}).items():
         if nd.get("parentId") is not None:
@@ -1062,7 +1113,7 @@ def tier_one_label(live_state, sid, cut_t, start_t=None, faults=None):
             later = [o for o in ops if on_node(o) and float(o.get("t") or 0) > t]
             if any(o.get("op") in NOT_FINISHED_OPS for o in later):
                 labels.append("not finished")
-            elif any(o.get("op") in FINISHED_OPS and o.get("src") in (None, "user") for o in later):
+            elif any(_is_user_crossoff(o) for o in later):       # the shared cross-off predicate: a mute's clear is not the user's finish
                 labels.append("finished")
     if not labels:
         return None
