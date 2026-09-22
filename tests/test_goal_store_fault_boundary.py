@@ -121,6 +121,7 @@ class _World(unittest.TestCase):
         km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_mem_only[0] = False
         getattr(km, "_owed_note_read", [False])[0] = False   # (tolerant of a kernel without the once-per-life read: the red-first run at the round's base)
         getattr(km, "_owed_read_fault", [""])[0] = ""        # the note read's episode memo (round fourteen)
+        getattr(km, "_cleared_read_fault", [""])[0] = ""     # the clears-log read's episode memo (PR 2025)
         (jd.STATE / km.OWED_FILE).unlink(missing_ok=True)
 
     def tearDown(self):
@@ -1575,7 +1576,7 @@ class ActsUnderAFailedWrite(_World):
         read, or whose bytes are not text, files ONE stderr line and ONE judge-errors row per fault episode (ended by a landed read or an absent
         log), and an Undo over it names the fault on its account, with the floor and the sequence, where a bare ack went."""
         log = jd.STATE / "cleared.jsonl"
-        rows = lambda: [r for r in self._rows("clears-log") if "the read" in r.get("note", "")]
+        rows = lambda: [r for r in self._rows("cleared-unreadable") if "the read" in r.get("note", "")]   # the read's kind: the judge reader's, for the same file (the round-one verifier of PR 2025)
 
         @contextlib.contextmanager
         def captured(lines):
@@ -1591,6 +1592,13 @@ class ActsUnderAFailedWrite(_World):
         errs = [m for m in sent if m.get("type") == "err"]
         self.assertEqual([(m["title"], m.get("seq"), "buildId" in m) for m in errs], [("romp could not read its record of cleared cards", 5, True)], "the undo's account names the fault, with the floor and the sequence (before: a bare ack): %r" % sent)
         self.assertIn("codec", errs[0]["text"]); self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no bare ack beside it")
+        self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(errs[0]), set(), "the read-fault account ships NO stack: an empty one from the faulted read emptied the feed's stack and released its suppressions (the round-one verifier of PR 2025): %r" % errs[0])
+        # the sibling: a refused CLEAR over the unreadable log ships no stack either (the base sent an empty one)
+        with _nth_append_faults(log, 1):
+            km._CLEARED_MEMO["slot"] = None
+            sent2 = self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        errs2 = [m for m in sent2 if m.get("type") == "err"]
+        self.assertEqual(len(errs2), 1, "the clear's refusal: %r" % sent2); self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(errs2[0]), set(), "no stack while the log cannot be read")
         self.assertEqual(len(rows()), 1, "one judge-errors row for the read: %r" % self._rows("clears-log")); self.assertEqual(len(lines), 1, "one stderr line: %r" % lines)
         with captured(lines):
             km._CLEARED_MEMO["slot"] = None; km._cleared_ids(); km._undo_stack_ids()
@@ -1625,13 +1633,35 @@ class ActsUnderAFailedWrite(_World):
             km._cleared_ids()
         self.assertEqual((len(rows()), len(lines)), (4, 4), "the same bytes after an absent read are a new episode")
         log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+        self.assertEqual({r["err"] for r in self._rows() if "the read" in r.get("note", "")}, {"cleared-unreadable"}, "the read's rows file under the kind the judge's own reader uses for this file, one kind per meaning (the round-one verifier of PR 2025)")
+
+    def test_the_undos_account_describes_its_own_read_not_a_flag_another_read_may_have_moved(self):
+        """The round-one verifier of PR 2025: the fault travelled as a module flag read two statements after the undo's read, so a pusher
+        read landing in the window lost the account and one faulting there filed a false one. The undo takes the set and the fault in one
+        statement; a flag that says otherwise does not speak for it."""
+        two = hasattr(km, "_cleared_ids_read")                                          # (the base has the set-only reader alone: its red lands on the account below)
+        getattr(km, "_cleared_read_fault", [""])[0] = ""                                # the flag says nothing faulted
+        with mock.patch.object(km, "_cleared_ids_read" if two else "_cleared_ids", (lambda: ({}, "the read refused (stand-in)")) if two else (lambda: {})):
+            sent = self._dispatch({"type": "undoClear", "seq": 7})
+        self.assertEqual([m["title"] for m in sent if m.get("type") == "err"], ["romp could not read its record of cleared cards"], "the account follows the undo's own read (before: the flag, which said nothing): %r" % sent)
+        getattr(km, "_cleared_read_fault", [""])[0] = "a stale fault another read left"  # the flag says a fault stands
+        with mock.patch.object(km, "_cleared_ids_read" if two else "_cleared_ids", (lambda: ({}, "")) if two else (lambda: {})):
+            sent = self._dispatch({"type": "undoClear", "seq": 8})
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [], "and a stale flag files no false account: the undo's own read landed")
+        getattr(km, "_cleared_read_fault", [""])[0] = ""
 
     def test_the_two_new_judge_errors_kinds_are_documented(self):
-        """The second contributor's post-merge note on PR 2018: `clears-log` and `owed-note` were in neither kind list."""
+        """The second contributor's post-merge note on PR 2018: `clears-log` and `owed-note` were in neither kind list; the round-one verifier
+        of PR 2025: the sentences must name each kind's writer and shape, the kernel's read filing under `cleared-unreadable` per episode."""
         doc = (Path(km.__file__).resolve().parent.parent / "docs" / "judges.md").read_text()
-        for kind in ("clears-log", "owed-note"):
-            self.assertIn(kind, doc, "%s is documented" % kind)
-            self.assertIn('"%s"' % kind, jd._log_judge_error.__doc__, "%s is in the writer's docstring" % kind)
+        ds = jd._log_judge_error.__doc__
+        flat = doc.replace("\n  ", " ")
+        self.assertRegex(flat, r"clears-log: a write to the clears log refused \(a clear's or an undo's rows, the mute's, the episode boundary's\), one row per refusal", "the write kind's sentence")
+        self.assertRegex(flat, r"cleared-unreadable is filed by the kernel's own reader of the clears log as well[^.]{0,300}one row per fault episode", "the read kind's sentence names the kernel's reader and the episode")
+        self.assertRegex(flat, r"owed-note: the note of owed cards beside the log could not be written or read")
+        self.assertRegex(ds, r'"clears-log" \(a clears-log write refused')
+        self.assertRegex(ds.replace("\n", " "), r'"cleared-unreadable" is also the kernel\'s own reader\'s\s+kind for the clears log[^)]*one row per fault episode')
+        self.assertIn('"owed-note"', ds)
 
     def test_a_clears_account_after_a_restart_carries_the_owing_the_note_holds(self):
         """The second contributor's post-merge review (2026-09-22): the restart-owing load on a non-undo account was pinned by no behaviour

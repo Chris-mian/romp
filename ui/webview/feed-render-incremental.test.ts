@@ -2232,6 +2232,29 @@ test("a lost undo account on a LIVE socket: a later undo's account from that ker
   await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
 });
 
+test("an undo account without a stack (the kernel's clears log could not be read) leaves the feed's stack and its suppressions as they are: the popped card stays back, the other clear stays off, the dialog says why (the round-one verifier of PR 2025: an empty stack on that frame emptied the stack and released every suppression)", async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const sent0 = posted.length;
+  hooks._resetClearGestureStateForTests();
+  const g2it = card("g2")?._it ?? cardOf("g2", API, "api", "#cc6633", "a second card of api's", "working", { live: true, tree: [] });
+  await dispatch(frame([g1, g2it, g3], { working: ["web"], buildId: 1 })); mock.timers.tick(700);
+  card("g3")._clr.onclick(ev); card("g1")._clr.onclick(ev); mock.timers.tick(700);
+  body.byId("feed-undoclear")!.onclick!(ev);                                                  // pops g1's entry optimistically
+  assert.deepEqual(stackIds(), [["g3"]]); assert.ok(card("g1") && !card("g3"));
+  await dispatch({ type: "err", op: "undoClear", title: "romp could not read its record of cleared cards", text: "This Undo found nothing to bring back: romp could not read the record it keeps of cleared cards (a stand-in fault). The cards stay as they are. Once the record can be read again, press Undo again.", itemId: "", itemIds: [], buildId: 1, seq: lastSeq() });
+  mock.timers.tick(700);
+  assert.deepEqual(stackIds(), [["g3"]], "the stack stands: the frame carried none (before: an empty one emptied it)");
+  assert.ok(!card("g3"), "the other clear stays off (before: released, the card repainted beside a dialog saying the cards stay)");
+  assert.ok(card("g1"), "the popped card stays back");
+  assert.ok(body.querySelector("#err-dialog"), "and the dialog says why");
+  for (const d of body.querySelectorAll("#err-dialog")) d.remove();
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+});
+
 test("the feed's Undo stack equals the kernel's batches after every press, by enumeration over tests/fixtures/undo-stack-transitions.json (the boundary harness writes it; round eight of PR 1967)", async (t) => {
   t.after(() => mock.timers.reset());   // registered with the test context (the second contributor's review): the trailing reset left the timers enabled for every later test after a red
   mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });   // the test before this one reset them

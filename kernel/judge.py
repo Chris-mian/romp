@@ -1080,7 +1080,10 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
              "archive-unreadable", "reg-unreadable" (the eight side-file kinds: a file the evidence gate
              stat'd or read by value into a tier's signature exists and could not be read or parsed: the
              gate runs the stage without a stamp, or the stage's own read marks the run incomplete, one
-             row per failure episode: _read_failed)
+             row per failure episode: _read_failed; "cleared-unreadable" is also the kernel's own reader's
+             kind for the clears log, the feed build and the Undo reading it as nothing cleared for that
+             build or press, one row per fault episode ended by a landed read or an absent log:
+             kernel.py _cleared_ids_read)
       note   the evidence — reply tail, error message, exception name, or the give-up scope + re-arm
              event. Callers must pass it; an empty note means the caller has nothing at all to show.
       goal   the node id (or list of node ids) the judge was ruling on, when one exists — the feed's

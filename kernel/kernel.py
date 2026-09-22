@@ -41550,7 +41550,7 @@ def _cleared_foreign(cleared):
     return foreign[:500]
 
 
-def _cleared_ids():
+def _cleared_ids_read():
     """The set of currently-cleared feed itemIds (asks + stream), replayed from the append-only
     cleared.jsonl: a 'clear' row adds an id, an 'undo' row removes it (newest-wins). Mirrors the old
     kernel's shared cleared.jsonl so one Clear hides both an ask card and its stream deliverable.
@@ -41563,14 +41563,18 @@ def _cleared_ids():
     that call; every writer appends, so a same-second append moves the size (the kernel's file clock is
     coarse, so mtime alone would not see it); a rebound state root is a different path. An absent or
     unreadable file is the empty set, never cached. One slot, replaced whole, so two threads deriving at
-    once can never pair one's key with the other's set. Callers read the returned dict and never mutate it."""
+    once can never pair one's key with the other's set. Callers read the returned dict and never mutate it.
+
+    Returns the set AND the read's fault copy ("" when the read landed or the log is absent), taken in one read, so an account describes
+    the caller's own read and not a module flag another thread's read may have moved between two statements (the round-one verifier of PR
+    2025: a lost account when a pusher read landed in the window, a false one when it faulted there). _cleared_ids returns the set alone."""
     path = jd.STATE / "cleared.jsonl"
     st = _stat_key(path)
     key = (str(path),) + st if st is not None else None
     slot = _CLEARED_MEMO["slot"]
     if key is not None and slot is not None and slot[0] == key:
         _CLEARED_STATS["served"] += 1
-        return slot[1]
+        return slot[1], ""
     cur = {}
     try:
         for line in path.read_text().splitlines():
@@ -41588,7 +41592,7 @@ def _cleared_ids():
     except FileNotFoundError:
         _CLEARED_STATS["derived"] += 1
         _cleared_read_fault[0] = ""                      # absent, or vanished after the stat: nothing cleared, a real state, said nowhere; it ends an episode too
-        return cur
+        return cur, ""
     except (OSError, ValueError) as e:
         # a PRESENT log that cannot be read (a permission bit, EIO) or whose bytes are not text (UnicodeDecodeError is a ValueError: it raised at the
         # undo arm before the restore, and the account never went; the second contributor's post-merge note on PR 2018): the empty uncached set, as
@@ -41599,14 +41603,18 @@ def _cleared_ids():
         copy = _store_fault_copy(e)
         if _cleared_read_fault[0] != copy:
             _cleared_read_fault[0] = copy
-            _clears_log_fault_note("the read", e)
-        return cur
+            _clears_log_fault_note("the read", e, kind="cleared-unreadable")   # the READ's kind: the one the judge's own side-file reader files for this file (one kind per meaning; the round-one verifier of PR 2025)
+        return cur, copy
     _CLEARED_STATS["derived"] += 1
     _cleared_read_fault[0] = ""                          # a landed read ends the episode
     if key is not None:
         _CLEARED_MEMO["slot"] = (key, cur)
-    return cur
+    return cur, ""
 
+
+def _cleared_ids():
+    """The set of currently-cleared feed itemIds (_cleared_ids_read), the read's fault set aside: for the readers that answer for nothing."""
+    return _cleared_ids_read()[0]
 
 def _mark_nodes_cleared(item_ids, value, src="user", why=None):
     """Set the DURABLE node-level `cleared` flag on each cleared/restored top goal node, so a Clear is
@@ -41967,14 +41975,16 @@ _owed_read_fault = [""]          # the fault copy filed for a STANDING unreadabl
 #                                  _read_failed shape), cleared when a read lands; _undo_clear's own read files per gesture (the thirteenth executed review)
 
 
-def _clears_log_fault_note(what, e):
-    """The durable record of a refused clears-log write (the second contributor's post-merge review of PR 1967, 2026-09-22: the four arms
-    reached the pressing socket and nothing followed, while the note helpers' arms record theirs): one stderr line and a judge-errors row
-    (`clears-log`), the write-fault convention. Never raises: it runs inside the refusal arms it records."""
+def _clears_log_fault_note(what, e, kind="clears-log"):
+    """The durable record of a clears-log fault: one stderr line and a judge-errors row, the write-fault convention. `clears-log` is the WRITE
+    refusal's kind, one row per refusal (the second contributor's post-merge review of PR 1967, 2026-09-22: the four arms reached the pressing
+    socket and nothing followed, while the note helpers' arms record theirs); the kernel's own READ of the log files under `cleared-unreadable`,
+    the kind the judge's side-file reader files for the same file, one row per fault episode (_cleared_ids_read; the round-one verifier of PR
+    2025: one kind per meaning). Never raises: it runs inside the arms it records."""
     line = "clears log: %s refused: %s" % (what, _store_fault_copy(e))
     try:
         sys.stderr.write(line + "\n")
-        jd._log_judge_error("romp", "", "clears-log", note=line)
+        jd._log_judge_error("romp", "", kind, note=line)
     except Exception:
         pass
 
@@ -42103,9 +42113,15 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op="", seq=None):
                 frame["ok"] = True                    # information, not a refusal: the feed shows the dialog and files no bell entry (the round-four verifier)
             if owed:
                 frame["owedIds"] = [str(i) for i in owed]   # the owed ids that did NOT come back this press (the sixth and seventh executed reviews)
-            if _lb[0] is None:
-                _lb[0] = _ledger_batches()
-            frame["batches"], frame["owedBatch"], frame["batchesTotal"] = _lb[0]   # the kernel's stack, which the feed takes as its own (round eight), and the count before the bound (round ten)
+            if key != LEDGER_READ_KEY:
+                # the kernel's stack rides the account (round eight) with the count before the bound (round ten): the feed takes it as its own.
+                # NOT on the read-fault account, nor on any account while the log cannot be read (the round-one verifier of PR 2025): an empty
+                # stack from a faulted read released every suppression and emptied the feed's stack beside a dialog saying the cards stay; a frame
+                # without one leaves the feed's stack and suppressions as they are
+                if _lb[0] is None:
+                    _lb[0] = _ledger_batches()
+                if not _cleared_read_fault[0]:
+                    frame["batches"], frame["owedBatch"], frame["batchesTotal"] = _lb[0]
             if _floor is not None:
                 frame["buildId"] = _floor             # the undo's build floor (round fifteen): the feed judges a restore by a build past it
                 if seq is not None:
@@ -42356,9 +42372,9 @@ def _undo_clear(batch_out=None):
         # store was refusing, and both frames read cleared)
         if popped:
             skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped, "landed": bool(landed), "owed": [] if landed else list(not_back), "stamps": int(stamps)}
-    cur = _cleared_ids()
-    if _cleared_read_fault[0]:
-        skipped[LEDGER_READ_KEY] = {"fault": _cleared_read_fault[0], "ids": []}   # the log could not be read: said on the socket, where a bare ack went before (the post-merge review of PR 2021)
+    cur, _rfault = _cleared_ids_read()                    # the undo's OWN read and its fault, in one statement (the round-one verifier of PR 2025: a module flag read two statements later raced the pusher's reads)
+    if _rfault:
+        skipped[LEDGER_READ_KEY] = {"fault": _rfault, "ids": []}   # the log could not be read: said on the socket, where a bare ack went before (the post-merge review of PR 2021)
     if not cur:
         _reorder(False, owed_ids, 1)
         return skipped
