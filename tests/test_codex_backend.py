@@ -4968,6 +4968,131 @@ class NativeCompact(unittest.TestCase):
         self.assertEqual(fake.called("thread_compact"), [("thread_compact", "T-1")])
         self.assertIs(self._row(be, sid)["compacting"], True)
 
+    # ── the worker's three saves carry the bracket down (2026-09-22, the post-merge review of the bracket's row) ──────
+
+    def _ended_in_memory_with_its_save_failing(self, be, fake, sid, logs):
+        """Stage the residual the bracket's save helper names (the post-merge review of the bracket's registry row,
+        2026-09-22): latch, so the row reads compacting True; see the compaction's active status; then end the
+        bracket cleanly while the registry writer raises, so the bit falls in memory and its own save fails and is
+        logged. The writer is restored on return, and the disk row still reads compacting True with no notice: an end
+        this kernel saw, which a restart would read as an unknown outcome. The worker's next save is what repairs it,
+        since the in-memory bracket rides every save the worker makes, and the three cases below drive one of those
+        saves each. Dropping the bit from any of the three left every test green, while the same drop at the accepted
+        turn's ACK went red, so each case is the one pin its save has."""
+        self.assertEqual(be.compact(sid), "")
+        self.assertIs(self._row(be, sid)["compacting"], True, "saved at the latch")
+        _status(fake, "T-1", "active")
+        self.assertTrue(until(lambda: self._active_seen(be, sid)))
+        n = len(logs)
+
+        def full(rows):
+            raise OSError(28, "No space left on device")
+        with mock.patch.object(be, "_write_registry_locked", full):
+            _status(fake, "T-1", "idle")
+            # the end and its save run under one hold of s.lock, the lock compacting() reads under: the bit read down
+            # means the save has already been tried
+            self.assertTrue(until(lambda: be.compacting(sid) is False), "the clean end happened in memory")
+        self.assertTrue(any(l.startswith("compaction bracket registry save:") for l in logs[n:]),
+                        "and its own save failed, logged")
+        row = self._row(be, sid)
+        self.assertIs(row["compacting"], True, "the disk row still carries the bracket the end could not write down")
+        self.assertIsNone(row["launchError"])
+
+    def test_the_rejections_save_writes_the_bracket_down_after_a_clean_end_whose_save_failed(self):
+        # The worker's rejection save carries the in-memory bracket, so a row left reading compacting True by a clean
+        # end whose own save failed reads False again at the next rejection (the post-merge review of the bracket's
+        # registry row, 2026-09-22: this save was pinned by nothing). The refusal has to arrive as the SDK's
+        # InvalidParamsError, code -32602, the shape the worker parks on: a bare RuntimeError lands on the turn-failed
+        # save, the next case, so the two cases carry two fakes. Killed at the end so no worker outlives the case.
+        class InvalidParamsError(RuntimeError):
+            def __init__(self, message):
+                super().__init__(message)
+                self.code = -32602
+
+        class RejectingClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.rejecting = False           # the first turn runs; the send after the end is refused
+
+            def turn_start(self, tid, input_items, params=None):
+                if self.rejecting:
+                    self._rec("turn_start", tid, input_items, params, None)
+                    raise InvalidParamsError("model is not available")
+                return super().turn_start(tid, input_items, params)
+        fake = RejectingClient()
+        logs = []
+        be, _, tmp, sid = self._turned(factory=lambda: fake, log=logs.append)
+        self._ended_in_memory_with_its_save_failing(be, fake, sid, logs)
+        fake.rejecting = True
+        self.assertTrue(be.send(sid, "a send the server rejects"))
+        # launch_error() reads under the lock the handler sets the notice and saves under, so the row is read the
+        # moment the notice is observed, no wait
+        self.assertTrue(until(lambda: be.launch_error(sid) is not None), "the rejection is filed")
+        row = self._row(be, sid)
+        self.assertIn("rejected", row["launchError"]["text"], "the rejection's own notice: this save, not another")
+        self.assertIs(row["compacting"], False, "the rejection's save carries the bracket down")
+        self.assertEqual(be.pending_queued(sid), ["a send the server rejects"], "parked, as every rejection")
+        self.assertTrue(be.kill(sid))
+
+    def test_the_turn_failures_save_writes_the_bracket_down_after_a_clean_end_whose_save_failed(self):
+        # The turn-failed save, the second of the worker's three (the post-merge review of the bracket's registry row,
+        # 2026-09-22): a turn/start that raises anything but a permanent rejection or the Compact refusal lands here,
+        # and the worker then backs off and retries it, re-filing the failure each time, so the session is killed at
+        # the end rather than left retrying.
+        class FailingClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.failing = False
+
+            def turn_start(self, tid, input_items, params=None):
+                if self.failing:
+                    self._rec("turn_start", tid, input_items, params, None)
+                    raise RuntimeError("synthetic pre-ack failure")
+                return super().turn_start(tid, input_items, params)
+        fake = FailingClient()
+        logs = []
+        be, _, tmp, sid = self._turned(factory=lambda: fake, log=logs.append)
+        self._ended_in_memory_with_its_save_failing(be, fake, sid, logs)
+        fake.failing = True
+        self.assertTrue(be.send(sid, "a send the server fails"))
+        self.assertTrue(until(lambda: be.launch_error(sid) is not None), "the failure is filed")
+        row = self._row(be, sid)
+        self.assertIn("turn failed", row["launchError"]["text"], "the failure's own notice: this save, not another")
+        self.assertIs(row["compacting"], False, "the turn failure's save carries the bracket down")
+        self.assertTrue(be.kill(sid))
+
+    def test_the_client_failures_save_writes_the_bracket_down_after_a_clean_end_whose_save_failed(self):
+        # The client-failure save, the third (the post-merge review of the bracket's registry row, 2026-09-22). The
+        # worker reaches it only when the client getter hands it None, and the getter returns its cached live client
+        # for as long as it holds one: so the fake is closed first, and the pump that reads the close drops the client
+        # and finds no bracket to end (the clean end already fell in memory, so the row's repair is the worker's
+        # alone); the factory refuses the rebuild, so the send after it meets no app-server. The worker then backs
+        # off and retries, so the session is killed at the end.
+        fake = FakeClient()
+        live = [fake]
+
+        def factory():
+            if live[0] is None:
+                raise RuntimeError("synthetic unavailable client")
+            return live[0]
+        logs = []
+        be, _, tmp, sid = self._turned(factory=factory, log=logs.append)
+        self._ended_in_memory_with_its_save_failing(be, fake, sid, logs)
+        n = len(logs)
+        live[0] = None
+        fake.close()                                  # the pump's read raises: the app-server is gone
+        self.assertTrue(until(lambda: any(l.startswith("client unavailable:") for l in logs[n:])),
+                        "the pump dropped the client")
+        self.assertIsNone(be.launch_error(sid), "no bracket stood for the death to end")
+        self.assertIs(self._row(be, sid)["compacting"], True, "and the row is as the failed save left it")
+        self.assertTrue(be.send(sid, "a send with no app-server"))
+        self.assertTrue(until(lambda: be.launch_error(sid) is not None), "the client failure is filed")
+        row = self._row(be, sid)
+        self.assertIn("isn't available", row["launchError"]["text"],
+                      "the client failure's own notice: this save, not another")
+        self.assertIs(row["compacting"], False, "the client failure's save carries the bracket down")
+        self.assertTrue(be.kill(sid))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
