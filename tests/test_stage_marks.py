@@ -104,7 +104,7 @@ ALLOW = {
     ("kernel.py", "_push_notify", "run"): "web push delivery to subscriptions",
     ("kernel.py", "_push_forward", "run"): "the peer relay POST",
     ("kernel.py", "_refresh_model_catalog", "go"): "the models frame notice",
-    ("kernel.py", "_router_apply_declared", "go"): "the gateway's model list over HTTP (the Extra models switch), then the models frame notice",
+    ("kernel.py", "_router_apply_declared_inner", "go"): "the gateway's model list over HTTP (the Extra models switch), then the models frame notice",
 }
 
 # Kernel callables handed to a session backend's constructor that can build no atom and hydrate no body, keyed (constructor,

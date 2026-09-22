@@ -647,6 +647,133 @@ class SeedInflight(_OnThenOff):
             self._wait(lambda: not self._fetch_threads(), "the flip's listing to land")
             self.assertIsNone(km._reset_unvouched_seed(), "and it did")
 
+    def test_a_probe_that_raises_after_the_mark_takes_the_mark_back(self):
+        # review round twelve: the flip published the mark, then the gateway probe raised (a malformed base URL), and
+        # nothing took the mark back: every create held on a listing nothing fetched until the next flip
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+
+        def boom():
+            raise ValueError("Invalid IPv6 URL")
+        with mock.patch.object(km, "_router_gateway_configured", boom), mock.patch.object(km, "_models_changed", lambda: None):
+            with self.assertRaises(ValueError):
+                km._set_router_models(True, gt=1700000000010)
+        self.assertIsNone(km._ROUTER_FETCH_GEN[0], "the mark is taken back at its generation")
+        self.assertFalse(km._router_listing_inflight())
+        self._seed("gw-7-nova")
+        self.assertIsNone(km._reset_unvouched_seed(), "a create does not hold on a listing nothing fetches")
+
+    def test_an_off_flip_between_the_snapshot_and_the_vouch_resets_with_the_switch_off_cause(self):
+        # review round twelve: the moved-generation hold fired on an off flip too, keeping a just-removed id as "not
+        # offered yet"; only an ON flip holds
+        self._seed("gw-7-nova")
+        km._set_router_models(True, gt=1700000000010)      # on, so the create below starts under an on switch
+        real_state = km._router_listing_state
+        flipped = []
+
+        def state_then_off():
+            snap = real_state()
+            if not flipped:
+                flipped.append(1)
+                km._set_router_models(False, gt=1700000000011)   # the off flip lands after the snapshot
+            return snap
+        with mock.patch.object(km, "_router_listing_state", state_then_off):
+            self.assertIsNone(km._reset_unvouched_seed(), "an off flip is a removal: reset")
+        self.assertEqual(self._read(), "default")
+        self.assertIn("(the extra models switch is off)", self.err.getvalue())
+        self.assertNotIn("not offered yet", self.err.getvalue())
+
+    def test_a_create_racing_the_flips_bump_waits_for_the_mark(self):
+        # review round twelve: the bump and the mark were two holds, so a create in the gap read the new generation
+        # with no mark and reset the pick. The flip holds the settings lock across its store write, bump and mark; the
+        # create's snapshot takes the same lock, so it waits and then reads the mark.
+        import threading
+        self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        inside, go, listing_gate = threading.Event(), threading.Event(), threading.Event()
+        real_allowed = km._router_fetch_allowed
+
+        def allowed_then_pause():
+            r = real_allowed()
+            if not inside.is_set():
+                inside.set()
+                go.wait(5)                  # the flip parks here, inside its settings hold, before the bump
+            return r
+
+        def listing(url, timeout=4):
+            listing_gate.wait(5)
+            return ["gw-7-nova"]
+        verdict = {}
+        with mock.patch.object(km, "_router_fetch_allowed", allowed_then_pause), \
+                mock.patch.object(km, "_fetch_router_models", listing), mock.patch.object(km, "_models_changed", lambda: None):
+            flip = threading.Thread(target=lambda: km._set_router_models(True, gt=1700000000010))
+            flip.start()
+            self.assertTrue(inside.wait(5), "the flip reached the knob read")
+            create = threading.Thread(target=lambda: verdict.__setitem__("v", km._reset_unvouched_seed()))
+            create.start()
+            create.join(0.3)
+            self.assertTrue(create.is_alive(), "the create waits on the flip's settings hold")
+            go.set()
+            flip.join(5); create.join(5)
+            self.assertEqual(verdict.get("v"), "hold", "after the hold the create reads the mark and holds")
+            self.assertEqual(self._read(), "gw-7-nova")
+            listing_gate.set()
+            self._wait(lambda: not self._fetch_threads(), "the listing to land")
+
+    def test_a_slower_earlier_apply_cannot_overwrite_a_later_flips_mark(self):
+        # review round twelve: the apply's pre-thread mark write was unguarded, so a slower first apply wrote its
+        # generation over a second flip's mark; it is guarded on the current generation
+        import threading
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        park, listing_gate = threading.Event(), threading.Event()
+        probes = []
+        real_probe = km._router_gateway_configured
+
+        def probe_then_park():
+            probes.append(1)
+            if len(probes) == 1:
+                park.wait(5)                # the FIRST flip's apply parks here, after its bump and mark
+            return real_probe()
+
+        def listing(url, timeout=4):
+            listing_gate.wait(5)
+            return ["gw-7-nova"]
+        with mock.patch.object(km, "_router_gateway_configured", probe_then_park), \
+                mock.patch.object(km, "_fetch_router_models", listing), mock.patch.object(km, "_models_changed", lambda: None):
+            first = threading.Thread(target=lambda: km._set_router_models(True, gt=1700000000010))
+            first.start()
+            self._wait(lambda: probes, "the first apply to park")
+            km._set_router_models(False, gt=1700000000011)
+            km._set_router_models(True, gt=1700000000012)   # the second on: its mark is the current one
+            gen2 = km._ROUTER_GEN[0]
+            self.assertEqual(km._ROUTER_FETCH_GEN[0], gen2)
+            park.set(); first.join(5)                       # the first apply resumes: stale, no thread, no overwrite
+            self.assertEqual(km._ROUTER_FETCH_GEN[0], gen2, "the later flip's mark stands")
+            self.assertTrue(km._router_listing_inflight())
+            listing_gate.set()
+            self._wait(lambda: not self._fetch_threads(), "the listings to land")
+
+    def test_a_declared_seed_is_held_while_its_install_is_under_way(self):
+        # review round twelve: with no URL there is no mark, so a create between the flip's bump and its declared
+        # install reset a declared seed as "no longer declared"; a declared seed under an on switch is held
+        self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra, gw-7-nova")
+        verdict = {}
+        real_apply = km._apply_router_families
+
+        def create_then_apply(ids, gen=None, reason=""):
+            if "v" not in verdict:
+                verdict["v"] = km._reset_unvouched_seed()   # a create between the bump and the install
+            return real_apply(ids, gen=gen, reason=reason)
+        with mock.patch.object(km, "_apply_router_families", create_then_apply), mock.patch.object(km, "_models_changed", lambda: None):
+            km._set_router_models(True, gt=1700000000010)
+        self.assertEqual(verdict["v"], "hold")
+        self.assertEqual(self._read(), "gw-7-nova", "the declared pick is kept")
+        self.assertIn("its install is under way", self.err.getvalue())
+        self.assertIsNone(km._reset_unvouched_seed(), "installed by now: vouched")
+
     def test_a_create_during_the_flip_reads_the_listing_as_in_flight(self):
         # the in-flight mark is published with the on generation, before the fetch thread starts
         self._seed("gw-7-nova")
@@ -675,6 +802,7 @@ class SeedInflight(_OnThenOff):
             self.assertIsNone(km._reset_unvouched_seed(), "landed and vouched")
 
     def test_the_reset_line_names_the_knob_when_it_gates_the_listing(self):
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")     # the seed undeclared: a declared seed under an on switch is held
         self._seed("gw-7-nova")
         _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
         _env(self, "ROMP_MODEL_CATALOG", "off")

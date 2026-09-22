@@ -3400,14 +3400,18 @@ def _router_listing_failed_now():
 
 
 def _router_listing_state():
-    """(in_flight, failed, generation) for the CURRENT generation's listing, read as ONE snapshot under _catalog_lock:
-    a reader that took the fields in turn could see a listing land between them and word its line by a state that no
-    longer held. The generation rides along so the reader can tell whether a flip moved it after the snapshot."""
-    with _catalog_lock:
-        cur = _ROUTER_GEN[0]
-        return (_ROUTER_FETCH_GEN[0] is not None and _ROUTER_FETCH_GEN[0] == cur,
-                _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == cur,
-                cur)
+    """(in_flight, failed, generation, on) for the CURRENT generation's listing, read as ONE snapshot under
+    _SETTINGS_LOCK and _catalog_lock in that order: a flip writes its store, bumps the generation and publishes the
+    in-flight mark under the same two holds, so a reader never sees the store on with the old generation, or the new
+    generation without its mark (review round twelve). A reader that took the fields in turn could see a listing land
+    between them and word its line by a state that no longer held. The generation rides along so the reader can tell
+    whether a flip moved it after the snapshot."""
+    with _SETTINGS_LOCK:
+        with _catalog_lock:
+            cur = _ROUTER_GEN[0]
+            return (_ROUTER_FETCH_GEN[0] is not None and _ROUTER_FETCH_GEN[0] == cur,
+                    _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == cur,
+                    cur, _router_models_on())
 
 
 def _router_declared_effective():
@@ -3443,12 +3447,24 @@ def _router_apply_declared(reason, gen=None):
     WS reader, the boot path). `gen` is the switch generation the caller captured under _SETTINGS_LOCK; both the
     synchronous apply and the fetch thread's apply carry it, so a flip that happens meanwhile makes them stale
     (nothing installs under an off store). Refreshes the advisory. Returns the ids the declared list added."""
+    started = [False]
+    try:
+        return _router_apply_declared_inner(reason, gen, started)
+    finally:
+        if not started[0]:
+            # any exit that started no fetch thread (a stale apply, no URL, the knob, a raise anywhere on the road: a
+            # malformed base URL makes the gateway probe raise) takes the published mark back at its generation, else
+            # every create would hold on a listing nothing fetches until the next flip (review round twelve)
+            with _catalog_lock:
+                if _ROUTER_FETCH_GEN[0] == gen:
+                    _ROUTER_FETCH_GEN[0] = None
+
+
+def _router_apply_declared_inner(reason, gen, started):
+    """_router_apply_declared's road; `started[0]` is set once the fetch thread is running (the caller's finally reads it)."""
     raw = _router_declared_families()
     added = _apply_router_families(raw, gen=gen, reason=reason)   # first: a stale apply does no bookkeeping at all
     if added is None:
-        with _catalog_lock:
-            if _ROUTER_FETCH_GEN[0] == gen:
-                _ROUTER_FETCH_GEN[0] = None   # the flip published the mark with its generation; no thread starts for a stale apply
         return None
     declared = [d for d in raw if not _router_first_party(d)]
     url = (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()
@@ -3467,7 +3483,8 @@ def _router_apply_declared(reason, gen=None):
                          "list is offered\n" % reason)
     elif url:
         with _catalog_lock:
-            _ROUTER_FETCH_GEN[0] = gen
+            if gen == _ROUTER_GEN[0]:      # the boot road's mark (the flip published its own); guarded on the current
+                _ROUTER_FETCH_GEN[0] = gen  # generation so a slower earlier apply never overwrites a later flip's mark
 
         def go():
             try:
@@ -3493,6 +3510,7 @@ def _router_apply_declared(reason, gen=None):
                     if _ROUTER_FETCH_GEN[0] == gen:
                         _ROUTER_FETCH_GEN[0] = None
         threading.Thread(target=go, name="router-models", daemon=True).start()
+        started[0] = True
     return added
 
 
@@ -3516,12 +3534,12 @@ def _set_router_models(enabled, gt=None):
         except OSError as e:
             sys.stderr.write("romp-kernel: the extra models switch could not be written (%s); nothing applied\n" % e)
             return None
-        _ROUTER_GEN[0] += 1
-        gen = _ROUTER_GEN[0]
-        if enabled and (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip() and _router_fetch_allowed():
-            with _catalog_lock:
-                _ROUTER_FETCH_GEN[0] = gen      # published with the generation: a create between this bump and the
-                #                                 thread's start reads the listing as in flight (review round eleven)
+        lists = bool((os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()) and _router_fetch_allowed()   # read before the hold
+        with _catalog_lock:                 # the bump and the mark in ONE hold, nested in the settings hold: a create's
+            _ROUTER_GEN[0] += 1             # snapshot (the same two locks) never sees the new generation without its mark
+            gen = _ROUTER_GEN[0]            # (review rounds eleven and twelve)
+            if enabled and lists:
+                _ROUTER_FETCH_GEN[0] = gen
     # The models frame goes out on EVERY applied flip, the stale paths included (the second reviewer's note, 2026-09-22): the gear's line and
     # the pickers redraw from that frame alone, and a flip whose catalog work a later flip superseded still changed the
     # store the frame's readers consult.
@@ -3595,11 +3613,11 @@ def _router_models_boot():
     with _SETTINGS_LOCK:
         on = _router_models_on()
         if on:
-            _ROUTER_GEN[0] += 1
-            gen = _ROUTER_GEN[0]
-            if (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip() and _router_fetch_allowed():
-                with _catalog_lock:
-                    _ROUTER_FETCH_GEN[0] = gen  # published with the boot's generation, as the flip does
+            with _catalog_lock:
+                _ROUTER_GEN[0] += 1
+                gen = _ROUTER_GEN[0]
+            # no early mark here: every create door passes _sdk_ready(), which holds _sdk_lock while this boot runs, so
+            # the apply's own guarded write below is in place before a create can read (review round twelve)
     if not on:
         _router_tell_backend()
         return []
@@ -17463,21 +17481,34 @@ def _reset_unvouched_seed():
     seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
     if not seed or seed == "default":
         return
-    in_flight, failed, gen = _router_listing_state()   # one snapshot, taken BEFORE the vouch: a listing that lands in
-    #                                                    between installs the id before it clears its mark, so the vouch
-    #                                                    below sees it (the other order reset a pick offered at that
-    #                                                    moment; review round ten)
+    in_flight, failed, gen, on = _router_listing_state()   # one snapshot, taken BEFORE the vouch: a listing that lands in
+    #                                                        between installs the id before it clears its mark, so the
+    #                                                        vouch below sees it (the other order reset a pick offered at
+    #                                                        that moment; review round ten)
     if _vouched_model(seed):
         return
+    on_now = on
     if not _router_first_party(seed) and not (in_flight or failed):
-        with _catalog_lock:
-            moved = _ROUTER_GEN[0] != gen
-        if moved:
-            # an on flip landed between the snapshot and the vouch: its listing may yet vouch the seed, and the cause
+        with _SETTINGS_LOCK:
+            with _catalog_lock:
+                moved = _ROUTER_GEN[0] != gen
+                on_now = _router_models_on()   # the switch as it reads NOW: a flip in the window is what moved the generation
+        moved_on = moved and on_now
+        if moved_on:
+            # an ON flip landed between the snapshot and the vouch: its listing may yet vouch the seed, and the cause
             # read below would blame the gateway's list for a state one flip old. Held, said so; this row starts on the
-            # account default like the other holds (review round eleven)
+            # account default like the other holds (review round eleven). An OFF flip in the same window is a removal
+            # and falls through to the cause read (review round twelve).
             sys.stderr.write("sdk-defaults model %r is not offered yet; the extra models switch changed while this session "
                              "was being created, so the seed is kept and this session starts on the account default\n" % seed)
+            return "hold"
+        if on_now and seed in _router_declared_effective():
+            # the switch is on NOW and the seed IS declared: a create between the flip's bump and its declared install
+            # (the install runs outside the locks, a road with no mark) would otherwise reset a declared pick as "no
+            # longer declared" (review round twelve). Held: the install is moments away. An off flip in the window
+            # reads off here and falls through to the cause read.
+            sys.stderr.write("sdk-defaults model %r is not offered yet; it is declared and its install is under way, so the "
+                             "seed is kept and this session starts on the account default\n" % seed)
             return "hold"
     if not _router_first_party(seed) and (in_flight or failed):
         # the gateway's listing for the current generation has not landed (a create right after boot) or FAILED (nothing
@@ -17492,7 +17523,7 @@ def _reset_unvouched_seed():
         return "hold"
     # the cause, as established: the knob when it gates the listing the pick would need, the switch when it is off,
     # else a declaration that no longer carries the id (or a listing that never did)
-    if not _router_models_on():
+    if not on_now:
         cause = "the extra models switch is off"
     elif (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip() and not _router_fetch_allowed():
         cause = "the gateway's model list is not fetched under ROMP_MODEL_CATALOG=off"
