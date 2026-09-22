@@ -41584,11 +41584,11 @@ def _cleared_ids_read():
     if key is not None and slot is not None and slot[0] == key:
         _CLEARED_STATS["served"] += 1
         _cleared_read_fault[0] = slot[2]                 # the served state's fault IS the episode's: a served landed set ends an episode a stat-level fault opened (the second
+        #                                                  contributor's post-merge note on PR 2025: a permission flap on the log's directory set the flag, the lift was served from
+        #                                                  the memo with the flag still holding the copy, and the same fault before the next append filed no second row or line)
         if not slot[2]:
             _clear_state_fault(path)                     # and the bell's episode with it (the first contributor's round one on PR 2032: only the display read's own clean call ended
         #                                                  the bell's, so a repair the nudge walk alone saw with the dashboard closed left it standing and the same bytes filed no second row)
-        #                                                  contributor's post-merge note on PR 2025: a permission flap on the log's directory set the flag, the lift was served from
-        #                                                  the memo with the flag still holding the copy, and the same fault before the next append filed no second row or line)
         return slot[1], slot[2]                          # the slot holds the fault beside the set: a served undecodable state still names it (round three of PR 2025)
     cur = {}
     try:
@@ -41661,9 +41661,10 @@ def _cleared_ids_display():
     to zero and the log-only seals returned to the pane with nothing on the frame naming why). A cold memo has nothing to serve: the empty
     set, and the row says so. Never for a gesture: an Undo answers for its OWN read (_undo_clear) and an account's stack for the read
     behind it (_ledger_batches), which is why this is not the shared set-only reader. The bell's line comes with its row: _note_state_fault
-    writes the stderr line and the bell row together, beside the reader's own stderr line and judge row, under two episode keys, the reader's
-    by the fault's text (a different fault opens a new episode) and the bell's by the path (one row while it stands); every clean read ends both
-    (the second contributor's post-merge comment on PR 2032)."""
+    writes the stderr line and the bell row together, beside the reader's own stderr line and judge row, each under its own episode memo: the
+    reader's flag holds the fault's copy and the bell's table holds the row's text for the path, so a different fault's text files each again,
+    and every clean read ends both (the second contributor's post-merge comment on PR 2032; the round-one verifier of PR 2041: the bell's table
+    was described as keyed by the path alone, where it compares the text under it)."""
     cur, fault = _cleared_ids_read()
     p = jd.STATE / "cleared.jsonl"
     if not fault:
