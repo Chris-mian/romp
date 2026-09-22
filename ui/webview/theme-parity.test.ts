@@ -242,9 +242,11 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     // the box's ok button rests in a border of the accent at 90% over the wash (color-mix in srgb): a non-text edge, so the 3:1 floor on its ground
     // in both themes (the round-fourteen verifier of PR 1967 measured 60% at 2.33:1 on the light theme)
     const accent = rgbOf(theme.get("--accent")!, page)!;
-    const okBorder = [0, 1, 2].map((i) => Math.round(accent[i] * 0.9 + box[i] * 0.1)) as [number, number, number];
-    assert.ok(contrast(okBorder, box) >= 3, `${name}: the ok button's resting border on the box wash = ${contrast(okBorder, box).toFixed(2)} < 3`);
-    assert.match(css, /\.ntc-btn\.ntc-ok \{[^}]*color-mix\(in srgb, var\(--accent\) 90%, transparent\)/, "the share the measure reads is the sheet's");
+    const shareM = css.match(/\.ntc-btn\.ntc-ok \{[^}]*color-mix\(in srgb, var\(--accent\) (\d+)%, transparent\)/);
+    assert.ok(shareM, "the ok button's border is the accent's color-mix over its ground");
+    const share = Number(shareM![1]) / 100;   // the share the sheet carries, mixed as the sheet mixes it (the first contributor's note on PR 2014: a fixed 0.9 beside a literal pin let a lockstep re-ink pass)
+    const okBorder = [0, 1, 2].map((i) => Math.round(accent[i] * share + box[i] * (1 - share))) as [number, number, number];
+    assert.ok(contrast(okBorder, box) >= 3, `${name}: the ok button's resting border (the accent at ${shareM![1]}%) on the box wash = ${contrast(okBorder, box).toFixed(2)} < 3`);
   }
   // the light value itself, so a re-ink is a deliberate change here and in feed.css (tab-rings.test.ts pins the two sheets equal)
   assert.match(block(css, "body.theme-light {"), /--st-needs-bg: #a21caf; --st-needs-fg: #ffffff;/);

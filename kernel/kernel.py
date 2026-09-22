@@ -41891,6 +41891,7 @@ def _owed_load(note=True):
         try:
             text = (jd.STATE / OWED_FILE).read_text()
         except FileNotFoundError:
+            _owed_read_fault[0] = ""                  # an absent note is a landed read: the episode ends here too (the first contributor's note on PR 2014)
             return ""
         except (OSError, ValueError) as e:
             # a permission bit, EIO; or a note whose bytes are not text (UnicodeDecodeError is a ValueError; the thirteenth executed review,

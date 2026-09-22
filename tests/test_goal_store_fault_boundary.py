@@ -1428,11 +1428,24 @@ class ActsUnderAFailedWrite(_World):
             km._undo_stack_ids()
         self.assertEqual(len(self._rows("owed-note")) - rows0, 3, "the same fault after the Undo's landed read is a new episode: a third row")
         self._dispatch({"type": "undoClear"})              # the last clear back too, so the log is empty again for the corrupt-note case
+        # an ABSENT note read by an Undo ends the episode too (the first contributor's note on PR 2014: the reset sat after the try, so the
+        # missing-note arm returned before it and the identical fault filed nothing)
+        with mock.patch.object(Path, "read_text", refusing_read):
+            km._rejournal_owed.clear(); km._owed_note_read[0] = False
+            km._undo_stack_ids()                                                              # a fourth row: a new episode after the landed read above
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 4)
+        owed_file.unlink(missing_ok=True)
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"}); self._dispatch({"type": "undoClear"})   # the Undo's read finds no note: a landed read
+        with mock.patch.object(Path, "read_text", refusing_read):
+            km._rejournal_owed.clear(); km._owed_note_read[0] = False
+            owed_file.write_text("")                                                          # present again, unreadable
+            km._undo_stack_ids()
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 5, "the same fault after an absent-note read is a new episode (before: the missing-note arm left the memo standing)")
         # a note whose bytes are not text (the thirteenth executed review: a ValueError raised through every builder, nothing filed)
         km._rejournal_owed.clear(); km._owed_note_read[0] = False; km._owed_read_fault[0] = ""
         owed_file.write_bytes(b"\xff\xfe\x00 not text")
         self.assertEqual(payloads(), (False, 0, False, 0), "a corrupt note: the builders proceed on the log alone, nothing raises")
-        self.assertEqual(len(self._rows("owed-note")) - rows0, 4, "and it is filed once")
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 6, "and it is filed once")
         self.assertIn("codec", self._rows("owed-note")[-1]["note"])
         sent = self._dispatch({"type": "undoClear"})
         self.assertIn("romp could not read its note of earlier owed cards", [m.get("title") for m in sent if m.get("type") == "err"], "an Undo over a corrupt note says so on its frame: %r" % sent)
