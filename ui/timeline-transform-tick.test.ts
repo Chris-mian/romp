@@ -72,6 +72,17 @@ function liveData(now: number = NOW): any {
     messages: [], judging: [], activeChat: null, focus: null, hover: null, usage: null,
   };
 }
+// THE CLOCK IS FROZEN for these tests: the panel reads performance.now() at its build and at every tick (perfNow), and
+// `advance` moves the base it interpolates from, so with a live clock the drift a tick applied was `sec` plus the
+// wall-clock that passed between advance and tick, and its pixel assertions were a ratio against the wall-clock (red
+// under a peer suite's load: 1.5607 vs 1.575 for 10 s, green alone). The clock is one number the test owns, so a
+// tick's drift is exactly `sec` and the assertions below are exact counts of pixels.
+// the margin for a pixel count derived from a clock near 1.78e9 s: floating-point only (a millisecond of wall-clock is a thousandth
+// of a pixel at an hour's window and a fifth of a pixel at ten minutes, far above it)
+const EPS_PX = 1e-6;
+const realPerfNow = performance.now.bind(performance);
+let clockMs = realPerfNow();
+performance.now = () => clockMs;
 /** A panel following the live edge, built once; `advance` moves its clock by `sec` for the next tick. */
 function livePanel(data: any, winSec: number): any {
   const panel: any = new TimelinePanel(makeNode("div"));
@@ -82,7 +93,7 @@ function livePanel(data: any, winSec: number): any {
   assert.ok(panel._tickPlot, "a full build leaves the tick its handle");
   return panel;
 }
-const advance = (panel: any, sec: number) => { panel._nowBaseMs = performance.now() - sec * 1000; };
+const advance = (panel: any, sec: number) => { panel._nowBaseMs = clockMs - sec * 1000; };   // the frozen clock: the next tick reads exactly `sec` of drift
 // one look of the paced loop; the sleep it arms for the next look is cleared so the test does not wait on it
 const tick = (panel: any) => { panel._tickLive(); panel._stopLiveTick(); };
 const plotOf = (panel: any) => panel._tickPlot.g;
@@ -101,9 +112,9 @@ test("a tick moves the plot group by a transform and creates no element; the ope
   const before = created;
   tick(panel);
   assert.equal(created, before, "the tick created no element: no rebuild");
-  // the build itself stood a few ms past data.now (its own interpolation), so the drift is 10 s less that
+  // with the clock frozen the build stood exactly at data.now, so the drift is exactly 10 s: a count of pixels, not a ratio
   const px = tp.applied, want = 10 / geom0.winSec * geom0.plotW;
-  assert.ok(px >= 1 && Math.abs(px - want) < 0.01, "the edge moved about 10 s worth of pixels: " + px + " vs " + want);
+  assert.ok(px >= 1 && Math.abs(px - want) < EPS_PX, "the edge moved exactly 10 s worth of pixels: " + px + " vs " + want);
   assert.equal(plotOf(panel).getAttribute("transform"), "translate(" + (-px) + " 0)", "one translate on the plot group");
   assert.equal(widthOf(openBar.el), w0 + px, "the open bar grew by the drift: its right edge stays at the live now");
   assert.equal(widthOf(closedBar), cw0, "a closed bar's geometry is untouched");
@@ -122,7 +133,7 @@ test("a move under TICK_MIN_PX writes nothing; the translate is measured from th
   advance(panel, 120);   // well past the guard now, and inside the edge's glide cap
   tick(panel);
   const px = panel._tickPlot.applied, want = 120 / panel._geom.winSec * panel._geom.plotW;
-  assert.ok(px >= 1 && Math.abs(px - want) < 0.01, "about 120 s worth: " + px + " vs " + want);
+  assert.ok(px >= 1 && Math.abs(px - want) < EPS_PX, "exactly 120 s worth: " + px + " vs " + want);
   assert.equal(plotOf(panel).getAttribute("transform"), "translate(" + (-px) + " 0)");
 });
 
@@ -263,8 +274,10 @@ test("a glyph anchored near the left edge hides once its anchor crosses it (wher
 
 test("a rider's floor applies to the grown extent: a just-opened bar grows as a full draw draws it, and a narrow judging run stays centred only until it is wider than JMARK_MINW", () => {
   const data = liveData();
-  data.turns[SID1] = [turn("a", NOW - 300, NOW - 100), turn("b", NOW, NOW, { open: true })];   // opened this instant: drawn at the 2 px floor
-  data.judging = [{ sid: SID1, judge: "closer", t: NOW, t1: NOW, open: true, kind: "k", text: "" }];
+  // opened 20 ms ago: drawn at the 2 px floor. With the clock frozen the build stands exactly at data.now, so a turn opened AT now
+  // would have no extent and no rider (before the freeze the build's own few ms of interpolation gave it one, by the wall-clock)
+  data.turns[SID1] = [turn("a", NOW - 300, NOW - 100), turn("b", NOW - 0.02, NOW - 0.02, { open: true })];
+  data.judging = [{ sid: SID1, judge: "closer", t: NOW - 0.02, t1: NOW - 0.02, open: true, kind: "k", text: "" }];
   const getItem = g.localStorage.getItem;
   g.localStorage.getItem = (k: string) => (k === "romp:settings" ? JSON.stringify({ showTriageJudges: true }) : null);
   const panel: any = new TimelinePanel(makeNode("div"));
@@ -364,7 +377,7 @@ test("sub-pixel looks add up: the drift is measured from the build, not the last
   assert.equal(created, before, "no look rebuilt");
   assert.ok(tp.applied >= 1, "the looks added up and the edge moved a whole pixel: applied " + tp.applied);
   assert.equal(writes.length, expected.length, "writes: " + writes.join(", ") + " vs " + expected.join(", "));
-  writes.forEach((w, i) => assert.ok(Math.abs(w - expected[i]) < 0.05, "write " + i + ": " + w + " vs " + expected[i]));
+  writes.forEach((w, i) => assert.ok(Math.abs(w - expected[i]) < EPS_PX, "write " + i + ": " + w + " vs " + expected[i]));   // exact: the clock is frozen
   assert.equal(plotOf(panel).getAttribute("transform"), "translate(" + (-tp.applied) + " 0)");
 });
 
@@ -525,7 +538,7 @@ test("at a ten-minute window a fraction of a second is a visible move: the trans
   const before = created;
   tick(panel);
   assert.equal(created, before, "a translate, not a rebuild");
-  assert.ok(tp.applied >= 0.15 && tp.applied < 1 && Math.abs(tp.applied - want) < 0.05, "written under a pixel: " + tp.applied + " vs " + want);
+  assert.ok(tp.applied >= 0.15 && tp.applied < 1 && Math.abs(tp.applied - want) < EPS_PX, "written under a pixel, exactly: " + tp.applied + " vs " + want);
   assert.equal(plotOf(panel).getAttribute("transform"), "translate(" + (-tp.applied) + " 0)");
   // under the guard nothing is written: at a wide window the edge idles between the frames that move it
   const wide = livePanel(liveData(), 43200);   // 12 h: a 5 s look is about a sixteenth of a pixel
