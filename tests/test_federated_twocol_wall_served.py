@@ -181,7 +181,7 @@ const waitStrip = (fid, sid, ms) => page.waitForFunction(({ fid, sid }) => ((win
 const waitActive = (fr, sid, ms) => fr.waitForFunction((sid) => { const t = document.querySelector("#tabs .tab.active[data-id]"); return !!(t && t.getAttribute("data-id") === sid); }, sid, { timeout: ms });
 const frameState = (fr, sid) => fr.evaluate((sid) => ({ url: location.href, readyState: document.readyState, tabs: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id")),
   active: (document.querySelector("#tabs .tab.active[data-id]") || { getAttribute: () => null }).getAttribute("data-id"), turns: document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length,
-  regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null })).catch((e2) => ({ readError: String(e2) }));
+  regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null }), sid).catch((e2) => ({ readError: String(e2) }));   // sid passed in: the page function's own parameter, not the helper's
 const frameOf = async (fid) => { const h = await page.$("#" + fid); return h ? await h.contentFrame() : null; };
 const colState = async (fid, rid) => {
   const fr = await frameOf(fid);

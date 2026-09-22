@@ -75,7 +75,7 @@ const waitStrip = (fid, sid, ms) => page.waitForFunction(({ fid, sid }) => ((win
 const waitActive = (fr, sid, ms) => fr.waitForFunction((sid) => { const t = document.querySelector("#tabs .tab.active[data-id]"); return !!(t && t.getAttribute("data-id") === sid); }, sid, { timeout: ms });
 const frameState = (fr, sid) => fr.evaluate((sid) => ({ url: location.href, readyState: document.readyState, tabs: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id")),
   active: (document.querySelector("#tabs .tab.active[data-id]") || { getAttribute: () => null }).getAttribute("data-id"), turns: document.querySelectorAll("#content .turn[data-uuid]").length,
-  shownTurns: document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length, regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null })).catch((e2) => ({ readError: String(e2) }));
+  shownTurns: document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length, regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null }), sid).catch((e2) => ({ readError: String(e2) }));   // sid passed in: the page function's own parameter, not the helper's
 // the pane's session rendered: the frame's own load, the page's strip post listing the session, then a turn in THAT session's thread
 // (#content holds one .thread per cached session, shown by display) at a wide bound; a timeout records the frame's state and the strip map
 const waitRendered = async (fr, fid, sid) => {
@@ -248,7 +248,7 @@ const waitStrip = (fid, sid, ms) => page.waitForFunction(({ fid, sid }) => ((win
 const waitActive = (fr, sid, ms) => fr.waitForFunction((sid) => { const t = document.querySelector("#tabs .tab.active[data-id]"); return !!(t && t.getAttribute("data-id") === sid); }, sid, { timeout: ms });
 const frameState = (fr, sid) => fr.evaluate((sid) => ({ url: location.href, readyState: document.readyState, tabs: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id")),
   active: (document.querySelector("#tabs .tab.active[data-id]") || { getAttribute: () => null }).getAttribute("data-id"), turns: document.querySelectorAll("#content .turn[data-uuid]").length,
-  shownTurns: document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length, regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null })).catch((e2) => ({ readError: String(e2) }));
+  shownTurns: document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length, regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null }), sid).catch((e2) => ({ readError: String(e2) }));   // sid passed in: the page function's own parameter, not the helper's
 // the pane's session rendered: the frame's own load, the page's strip post listing the session, then a turn in THAT session's thread
 // (#content holds one .thread per cached session, shown by display) at a wide bound; a timeout records the frame's state and the strip map
 const waitRendered = async (fr, fid, sid) => {
@@ -501,8 +501,8 @@ class _VSplitLab(unittest.TestCase):
             self.assertIsNotNone(line, "no RESULT (stderr: %s)" % p.stderr[-1500:])
             type(self)._cache = json.loads(line[len("RESULT:"):])
         r = type(self)._cache
-        print("VSPLIT %s" % json.dumps(r)[:2000], file=sys.stderr)
-        self.assertIsNone(r.get("died"), "driver error: %s" % r.get("died"))
+        print("VSPLIT %s" % json.dumps(r), file=sys.stderr)   # whole, as the other split labs print theirs: the recorder's key comes last
+        self.assertIsNone(r.get("died"), "driver error: %s; at the timeout: %r" % (r.get("died"), r.get("atTimeout")))
         return r
 
     @staticmethod
