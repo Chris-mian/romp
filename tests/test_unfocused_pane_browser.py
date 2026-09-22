@@ -443,7 +443,8 @@ class ServedUnfocusedPane(unittest.TestCase):
         # a declined FIRST arrival is recorded. WHICH session the kernel lists first is decided once, at its first listing
         # (newest transcript first, an mtime tie falling to the lexical sid scan, nothing writing the session-order file at
         # seed time), so the first arrival is api or web by seed timing; assert the record is that first-listed session, the
-        # lifted strip's first tab (the cleared state leaves no view order), which a later hidden arrival never overwrites,
+        # lifted strip's first tab, since the view order federation writes is the kernel's own order and nothing in this
+        # test rearranges the strip, which a later hidden arrival never overwrites,
         # rather than a hardcoded sid (the flake was a hardcoded sid).
         self.assertEqual(nm["empty"]["text"], "The first session to arrive is hidden by this view. Pick a tab, or change the view.", "the declined record's own head, name-free")
         nl = r["noMatchLifted"]
