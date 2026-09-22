@@ -185,6 +185,8 @@ test("the Needs-you row: showTabTip carries the count as a short untinted value 
     return null;
   };
   assert.equal(rowFor({ state: "ready", sinceEpoch: null }), null, "no Needs-you row when the session does not need you");
+  assert.equal(rowFor({ state: "ready", sinceEpoch: null, needsYou: false }), null, "an explicit false (the feed ruled it not needs-you): no row");
+  assert.equal(rowFor({ state: "ready", sinceEpoch: null, needsYou: null }), null, "an explicit null (before the first feed build, render.ts Status types it boolean|null): no row");
   for (const [n, short] of [[1, "1 thing"], [3, "3 things"]] as const) {
     const v = rowFor({ state: "working", sinceEpoch: null, needsYou: true, needsYouCount: n });
     assert.ok(v, n + ": the Needs-you row is present");

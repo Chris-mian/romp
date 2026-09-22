@@ -391,11 +391,25 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn(".m-badge{position:static;flex:0 0 auto", css)   # item 2: the pill RESERVES room (an inline flex item), never stacks over the chevron/close
         self.assertIn("#mcur .cv{flex:0 0 auto;order:1", css)   # the caret is ordered right of the pill
         self.assertIn(".mrow .mclose{flex:0 0 auto;order:1", css)   # the close x is ordered right of the pill
-        # the dot is a static flex item, so the chip and row need no positioning context: the two position:relative rules
-        # that carried the old absolute dot are dropped, inert (the post-merge review of PR 2023, 2026-09-22; #mlist is a child of
-        # tabbar, not #mcur, so its absolute dropdown is unaffected)
-        self.assertNotIn("#mcur{position:relative}", css)
-        self.assertNotIn(".mrow{position:relative}", css)
+        # the dot is a static flex item, so the chip (#mcur) and the row (.mrow) need no positioning context. Walk every
+        # rule whose selector subject is the chip's id or the row's class (with class or pseudo-class suffixes only, so the
+        # light-theme override and the .ask variant are in scope, the descendants and ::after are not) and assert no
+        # `position:` in its body: this flags a re-added declaration inside an existing rule, not just the dropped literal
+        # rules (the second post-merge review of PR 2023, 2026-09-22; #mlist is a child of tabbar, not #mcur, so its
+        # absolute dropdown is unaffected). The CSS opens with an at-rule wrapper, so a leaf-rule regex reads the inner rules.
+        import re as _re
+        _checked = 0
+        for _sel, _body in _re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            for _part in _sel.split(","):
+                _toks = _part.split()
+                _subj = _toks[-1] if _toks else ""
+                for _pre in ("#mcur", ".mrow"):
+                    _rest = _subj[len(_pre):] if _subj.startswith(_pre) else None
+                    if _subj == _pre or (_rest and _rest[0] in ".:" and "::" not in _rest):
+                        _checked += 1
+                        self.assertNotIn("position:", _body.replace(" ", ""),
+                                         "the chip/row rule %r carries no positioning context (the dot is a static flex item): %r" % (_subj, _body))
+        self.assertGreater(_checked, 0, "the walk found the chip and row rules (the selectors moved if not)")
 
     def test_current_session_title_is_bold_color_on_the_grey_chip(self):
         # the user 2026-07-22: the mobile current-session title reads as the identity color in BOLD on the
