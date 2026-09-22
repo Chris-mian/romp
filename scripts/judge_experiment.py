@@ -532,7 +532,8 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                 cls = classify_ending(last_text)
                 eligible = any(in_turn_window(t, start_t, cut_t) for t in dones)   # keys on the real start: a None start is never in a window
                 seed_start = start_t if start_t is not None else prev_cut   # an opener-less ending's seed cuts at the previous ended turn's end
-                candidates.append((sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key, seed_start))
+                leaves = sorted(own) if not is_lane else [fsid]   # the session's own transcripts (a lane's is its own stem): the answering-turn read
+                candidates.append((sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key, seed_start, leaves))
                 prev_cut = cut_t
         if not found:
             skipped["no-transcript"] += 1
@@ -560,7 +561,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
     (dest / "state" / "romp" / "session-hosts").write_text("off")
     manifest = {"built": now, "classes": list(CLASSES), "endings": [], "skipped": skipped}
     for c in CLASSES:
-        for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key, seed_start in picked[c]:
+        for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key, seed_start, leaves in picked[c]:
             eid = str(uuid.uuid5(uuid.NAMESPACE_URL, "romp-judge-experiment:%s:%s:%d" % (sid, fsid, k)))
             pdir = dest / "claude" / "projects" / munge(cwd)
             pdir.mkdir(parents=True, exist_ok=True)
@@ -591,6 +592,9 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
             manifest["endings"].append({"id": eid, "session": hashlib.sha256(sid.encode()).hexdigest()[:12],
                                         "lane": hashlib.sha256(store_key.encode()).hexdigest()[:12], "turn": k,
                                         "class": cls, "cutT": cut_t, "startT": start_t, "tierOneEligible": bool(eligible),
+                                        # the identity the measures need, fixed AT BUILD so a later move of the live session cannot send the
+                                        # answering-turn guard blind (this cache is never the repo, a mail or a body; the names dir already holds cwd)
+                                        "storeKey": store_key, "sid": sid, "cwd": cwd, "leaves": list(leaves),
                                         "topsBefore": sorted(n.split(":")[-1] for n, nd in (before or {"nodes": {}})["nodes"].items()
                                                              if nd.get("parentId") is None)})
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=1))
@@ -804,62 +808,78 @@ PLACEMENT_KINDS = ("done", "block", "awaiting")   # a top-level verdict the live
 #                                                   whose own ev_t/at bounds which later user gestures count (never the arm's wall clock)
 
 
-def _session_user_turn_times(live_claude, cwd, fsids):
-    """The timestamps of the user's own typed turns across the session's live transcripts (the sid, its /clear and resume
-    leaves, and a lane's own stem), from the live Claude root. Used only for the false-interrupt guard: a card the user
-    cleared after answering it in the session is not a false interrupt, so a user turn between the placement and the clear
-    clears the count."""
-    times = []
+def _fault(faults, store_key, kind):
+    if faults is not None:
+        faults.append((hashlib.sha256(str(store_key).encode()).hexdigest()[:12], kind))
+
+
+def _session_user_turn_times(live_claude, cwd, leaves, store_key, faults):
+    """The user's own typed-turn timestamps across the session's live transcripts (its /clear and resume leaves, a lane's own
+    stem), from the live Claude root, and whether ANY of those transcripts was read. Used only for the false-interrupt guard.
+    A transcript that raises is a fault (never a silent miss); `any_read` False means the guard has nothing to go on, which
+    the caller records rather than treating as 'the user never answered'."""
+    times, any_read = [], False
     if not (live_claude and cwd):
-        return times
+        return times, any_read
     pdir = Path(live_claude) / "projects" / munge(cwd)
-    for fsid in fsids:
+    for fsid in (leaves or []):
         p = pdir / (fsid + ".jsonl")
         if not p.is_file():
             continue
-        for r in _records(p):
+        try:
+            rows = _records(p)
+        except OSError as e:                                    # e.g. an unreadable transcript: a fault, not a silent miss
+            _fault(faults, store_key, type(e).__name__)
+            continue
+        any_read = True
+        for r in rows:
             if r.get("type") == "user" and not r.get("isMeta"):
                 t = _ts(r)
                 if t is not None:
                     times.append(t)
-    return sorted(times)
+    return sorted(times), any_read
 
 
-def placement_gestures(live_state, live_claude, store_key, sid, cwd, start_t, cut_t, faults=None):
-    """The user's OWN later actions on each top the live judges placed in the ending's turn, keyed by the node's suffix
-    (`gN` in the full `<rompUuid>:g<N>` key), read from the live root only. Per top-level node with a verdict in the turn's
-    window, the placement time is that verdict's own ev_t/at (never the arm's clock); a followup, unclear or restore after
-    it re-opened the card; a user clear or resolve after it, with no re-open and no answering user turn between the placement
-    and the clear, is a plain cross-off. Returns {suffix: {"reopened": bool, "clearedNoReply": bool}}; {} when the live store
-    cannot be read (recorded in `faults`, never read as 'nothing applies')."""
+def placement_gestures(live_state, live_claude, store_key, cwd, leaves, start_t, cut_t, faults=None):
+    """The user's OWN later actions on each top the live judges placed in the ending's turn, from the live root only, using
+    the identity the manifest fixed at build (store key, cwd, transcript leaves) so a later move of the live session cannot
+    send this blind. Per top-level node with a verdict in the turn's window, the placement time is that verdict's own ev_t/at
+    (never the arm's clock); a followup, unclear or restore after it re-opened the card; a user clear or resolve after it,
+    with no re-open and no answering user turn between the placement and the clear, is a plain cross-off. Returns
+    None when the live store is absent/corrupt or its journal cannot be read (a fault is recorded for the readable-but-broken
+    cases); {} when the store is present but the live judges placed no top in the turn; else {suffix: {...}}. The suffix
+    (`gN`) is the join key: the results carry `<ending id>:gN` and the live store `<store key>:gN`, so the full keys never
+    match by construction; within one store every top-level node has a distinct suffix, so the suffix is unambiguous."""
     live_state = Path(live_state)
-    live_path = live_state / "goals" / (store_key + ".json")
-    if live_path.is_file():
+    goals_f = live_state / "goals" / (store_key + ".json")
+    arch_f = live_state / "goals-archive" / (store_key + ".json")
+    if not (goals_f.is_file() or arch_f.is_file()):
+        return None                                             # the live session no longer lists: unresolvable, no fault
+    if goals_f.is_file():
         try:
-            json.loads(live_path.read_text(encoding="utf-8"))   # a corrupt LIVE store is a fault, recorded, never read as "nothing applies"
+            json.loads(goals_f.read_text(encoding="utf-8"))     # a corrupt LIVE store is a fault, recorded, never read as "nothing applies"
         except (OSError, ValueError) as e:
-            if faults is not None:
-                faults.append((hashlib.sha256(str(store_key).encode()).hexdigest()[:12], type(e).__name__))
-            return {}
+            _fault(faults, store_key, type(e).__name__)
+            return None
     try:
         store = store_with_archive(live_state, store_key)       # the archive alone may hold a session's tops (all cleared); it carries the clear
     except (OSError, ValueError) as e:
-        if faults is not None:
-            faults.append((hashlib.sha256(str(store_key).encode()).hexdigest()[:12], type(e).__name__))
-        return {}
+        _fault(faults, store_key, type(e).__name__)
+        return None
     ops = []
     p = live_state / "overrides" / (store_key + ".jsonl")
     if p.is_file():
-        for line in p.read_text(encoding="utf-8").splitlines():
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()
+        except OSError as e:                                    # an unreadable journal: without the user's gestures nothing can be scored
+            _fault(faults, store_key, type(e).__name__)
+            return None
+        for line in lines:
             try:
                 ops.append(json.loads(line))
             except ValueError:
                 continue
-    try:
-        leaves = known_fsids(live_state, sid) if sid else set()             # the session's /clear and resume leaves
-    except (OSError, ValueError):
-        leaves = set()
-    user_turns = _session_user_turn_times(live_claude, cwd, {store_key} | leaves)   # the store's own transcript plus the leaves
+    user_turns, any_read = _session_user_turn_times(live_claude, cwd, leaves, store_key, faults)
     out = {}
     for nid, nd in (store.get("nodes") or {}).items():
         if nd.get("parentId") is not None:
@@ -880,33 +900,13 @@ def placement_gestures(live_state, live_claude, store_key, sid, cwd, start_t, cu
         clears = [float(o.get("t") or 0) for o in later if o.get("op") in FINISHED_OPS and o.get("src") in (None, "user")]
         cleared_no_reply = False
         if not reopened and clears:
-            clear_t = min(clears)
-            answered = any(t_place < ut < clear_t for ut in user_turns)   # the user replied before crossing it off: not a false interrupt
-            cleared_no_reply = not answered
+            if not any_read:                                    # a cleared card whose transcript we cannot read: unscorable, a fault, never a false interrupt
+                _fault(faults, store_key, "transcript-absent")
+            else:
+                clear_t = min(clears)
+                cleared_no_reply = not any(t_place < ut < clear_t for ut in user_turns)   # the user replied before crossing it off: not a false interrupt
         out[nid.split(":")[-1]] = {"reopened": reopened, "clearedNoReply": cleared_no_reply}
     return out
-
-
-def _live_key_maps(live_state):
-    """The three lookups the measures need from the live root, by the manifest's hashes (the corpus carries no live id): the
-    session/lane hash to the store key (the lane stem or the sid), the session hash to the sid, and the sid to its cwd."""
-    live_state = Path(live_state)
-    names_dir, goals_dir = live_state / "names", live_state / "goals"
-    key_of, sid_of, cwd_of = {}, {}, {}
-    for n in (sorted(os.listdir(names_dir)) if names_dir.is_dir() else []):
-        h = hashlib.sha256(n.encode()).hexdigest()[:12]
-        key_of[h] = n
-        sid_of[h] = n
-        try:
-            fields = (names_dir / n).read_text(encoding="utf-8").strip().split("\t")
-        except OSError:
-            continue
-        if len(fields) > 1:
-            cwd_of[n] = fields[1]
-    for f in (sorted(os.listdir(goals_dir)) if goals_dir.is_dir() else []):
-        if f.endswith(".json"):
-            key_of.setdefault(hashlib.sha256(f[:-5].encode()).hexdigest()[:12], f[:-5])
-    return key_of, sid_of, cwd_of
 
 
 def measure(manifest, results, live_state, live_claude):
@@ -914,38 +914,43 @@ def measure(manifest, results, live_state, live_claude):
     pilot showed is not a truth about an ending's shape). Leaks into Completed: the arm placed a top completed that the user
     then re-opened. False interrupts: the arm left a top needs_input that the user then plainly cleared, with no re-open and
     no answering turn. Flaps: a scored top whose column differs between the two builds. Failures: a row with any is not
-    comparable. Cost from the ledger. The live root is read only; an ending whose live session no longer lists, or whose
-    live judges placed no card in the turn, scores no leak or interrupt (it still contributes flaps and cost)."""
+    comparable. Cost from the ledger. The live root is read only; the identity comes from the manifest (fixed at build), so a
+    later move of the live session cannot mislead the guard. An ending whose live store is gone counts unresolved; one whose
+    live judges placed no card in the turn counts unplaced; both still contribute flaps and cost."""
     by_id = {e["id"]: e for e in manifest["endings"]}
-    key_of, sid_of, cwd_of = _live_key_maps(live_state)
-    leaks = false_interrupts = flaps = gestured = unresolved = 0
+    leaks = false_interrupts = flaps = gestured = unresolved = unplaced = 0
     faults = []
     for eid, r in results["endings"].items():
         e = by_id.get(eid, {})
-        store_key = key_of.get(e.get("lane") or e.get("session"))
-        sid = sid_of.get(e.get("session"))
+        store_key, cwd, leaves = e.get("storeKey"), e.get("cwd"), e.get("leaves")
         builds = [_scored(b) for b in r["builds"]]
         final = builds[-1] if builds else {}
         if store_key:
-            g = placement_gestures(live_state, live_claude, store_key, sid, cwd_of.get(sid),
+            g = placement_gestures(live_state, live_claude, store_key, cwd, leaves,
                                     e.get("startT"), float(e.get("cutT") or 0), faults=faults)
-            if g:
+            if g is None:
+                unresolved += 1                                 # the live store is gone or unreadable (a fault is recorded for the unreadable cases)
+            elif not g:
+                unplaced += 1                                   # resolved, but the live judges placed no top in the turn: nothing to score
+            else:
                 gestured += 1
-            if any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in final.items()):
-                leaks += 1
-            if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in final.items()):
-                false_interrupts += 1
+                # the join is by the node suffix (gN): the results carry the ending id prefix, the live store the store key,
+                # so the full keys never coincide by construction, and a store's top-level suffixes are distinct (safe)
+                if any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in final.items()):
+                    leaks += 1
+                if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in final.items()):
+                    false_interrupts += 1
         else:
-            unresolved += 1                                     # the manifest hash resolves to no live session: cannot be scored, told apart
+            unresolved += 1                                     # the manifest carries no live identity (an old or synthetic manifest): unresolvable
         if len(builds) >= 2:
             for nid in set(builds[0]) | set(builds[1]):
                 if builds[0].get(nid) != builds[1].get(nid):
                     flaps += 1
     failures = int(results.get("failures") or 0)
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
-            "flaps": flaps, "gesturedEndings": gestured, "unresolvedEndings": unresolved, "costUsd": results.get("cost", 0.0),
-            "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0), "stopped": results.get("stopped"),
-            "failures": failures, "comparable": failures == 0,
+            "flaps": flaps, "gesturedEndings": gestured, "unresolvedEndings": unresolved, "unplacedEndings": unplaced,
+            "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
+            "stopped": results.get("stopped"), "failures": failures, "comparable": failures == 0,
             "liveReadErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
 
 
@@ -958,13 +963,13 @@ def report(corpus, run_root, live_state, live_claude, figure=None):
     rows = []
     for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
         rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, live_claude))
-    lines = ["| arm | endings | leaks into Completed | false interrupts | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| arm | endings | gestured | unplaced | unresolved | leaks into Completed | false interrupts | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
-        lines.append("| %s | %d | %d | %d | %d | %.2f | %d | %d | %s | %s |" % (r["arm"], r["endings"], r["leaks"], r["falseInterrupts"],
-                                                                             r["flaps"], r["costUsd"], r["calls"], r["callMsMean"],
-                                                                             "yes" if r["stopped"] else "no",
-                                                                             "0" if r["comparable"] else "%d, not comparable" % r["failures"]))
+        lines.append("| %s | %d | %d | %d | %d | %d | %d | %d | %.2f | %d | %d | %s | %s |" % (
+            r["arm"], r["endings"], r["gesturedEndings"], r["unplacedEndings"], r["unresolvedEndings"], r["leaks"],
+            r["falseInterrupts"], r["flaps"], r["costUsd"], r["calls"], r["callMsMean"], "yes" if r["stopped"] else "no",
+            "0" if r["comparable"] else "%d, not comparable" % r["failures"]))
     (run_root / "table.md").write_text("\n".join(lines) + "\n")
     (run_root / "measures.json").write_text(json.dumps(rows, indent=1))
     if figure:

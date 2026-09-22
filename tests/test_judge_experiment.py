@@ -5,7 +5,8 @@ corpus builder reads synthetic roots as files and writes only under its destinat
 the ending's turn start and re-keyed to the ending id, so the arm plans the turn once and inherits nothing from after the
 cut; the measures score only the ending's own cards; a failed call marks the row not comparable; the closer sees the goal
 history; the prompt swap reaches the calls and is restored; the budget stops a run past a fifth over; the labeller reads tier
-one from the journals and gates on the agreement; the report writes counts only. Every string invented."""
+one from the journals and gates on its own STABILITY (road (b); agreement with the user's actions is reported, not gated);
+the report writes counts only. Every string invented."""
 import hashlib
 import json
 import os
@@ -207,8 +208,8 @@ class Harness(unittest.TestCase):
         manifest = Path(dest, "manifest.json").read_text()
         for text in self.texts:
             self.assertNotIn(text[:24], manifest, "no transcript text reaches the manifest")
-        for sid in SIDS:
-            self.assertNotIn(sid, manifest, "the session ids are hashed, not copied")
+        # the manifest carries the build-time identity the measures need (store key, cwd, leaves); it is cache-only, kept out
+        # of every repository by refuse_inside_repo, and the shared REPORT carries counts only (pinned in the report test)
         written = [str(p.relative_to(dest)) for p in Path(dest).rglob("*") if p.is_file()]
         self.assertTrue(all(w.startswith(("claude/", "state/")) or w == "manifest.json" for w in written), written)
         eid = m["endings"][0]["id"]
@@ -282,7 +283,8 @@ class Harness(unittest.TestCase):
         m = self._corpus(name="leaves")[1]
         h = hashlib.sha256(sid.encode()).hexdigest()[:12]
         self.assertEqual(sum(1 for e in m["endings"] if e["session"] == h), 4, "the leaf's two endings join the anchor's two under the same session")
-        self.assertNotIn(leaf, Path(os.path.join(self.td, "leaves", "manifest.json")).read_text())
+        for e in [e for e in m["endings"] if e["session"] == h]:
+            self.assertIn(leaf, e["leaves"], "the manifest carries the session's leaf transcripts for the answering-turn read")
 
     # ── the store cut ──
     def _live_store_with_done(self, sid, start_t, cut_t, later_ops):
@@ -343,11 +345,15 @@ class Harness(unittest.TestCase):
         self.assertLessEqual(g1["mt"], cut)
         self.assertEqual(self.je.event_time({"ev_t": 5, "at": 9}), 5); self.assertEqual(self.je.event_time({"at": 9}), 9)
         self.assertEqual(self.je.id_epoch("%s:1700000000:abcdef12#p" % sid), 1700000000.0); self.assertIsNone(self.je.id_epoch("g1"))
-        # through the builder: the manifest names the tops by suffix, never by the session id
+        # through the builder: the manifest names the tops by suffix; it also carries the build-time identity the measures
+        # need (store key, cwd, transcript leaves) so a later move of the live session cannot blind the answering-turn guard.
+        # That identity is legitimate for the cache (the manifest is written under dest, which refuse_inside_repo keeps out of
+        # every repository); the privacy boundary that matters is the shared REPORT, pinned in the report test to carry counts only.
         m2 = self._corpus(name="corpus-seeded")[1]
         e2 = self._ending(m2, sid, 0)
         self.assertEqual(e2["topsBefore"], ["g1", "g2"])
-        self.assertNotIn(sid, Path(os.path.join(self.td, "corpus-seeded", "manifest.json")).read_text())
+        self.assertEqual((e2["storeKey"], e2["cwd"], e2["leaves"]), (sid, self.cwd, [sid]),
+                         "the manifest carries the ending's own store key, cwd and transcript leaves for the measures")
 
     def test_a_judge_written_store_re_keyed_plans_the_turn_once_and_mints_no_twin(self):
         """Executed by the reviewer on a store the live planner wrote: 0 seed keys matched, the planner ran 1, 2, 3 times for the
@@ -457,6 +463,90 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.je.measure(manifest, results, self.state, self.claude)["flaps"], 1,
                          "the unscored g1 differs across builds but must not count; only the scored g2 flap does")
 
+    # ── the answering-turn guard's robustness (round two): the manifest fixes the identity at build, and a transcript the
+    #    guard cannot read is a fault, never a silent 'the user never answered'. Each reds against the round-one head.
+    def _false_interrupt_case(self, sid, name):
+        """A corpus and a live store where the arm left one needs_input top the user cleared, with an answering user turn in
+        the transcript between the placement and the clear. Were the guard to read that turn, it is NOT a false interrupt."""
+        m = self._corpus(name=name)[1]
+        e = self._ending(m, sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "x", "t": c + 600}])
+        (self.pdir / (sid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in [
+            uline(sid, s, "the ask", "u0"), aline(sid, s + 5, "on it", "a0", "u0"), uline(sid, c + 300, "my answer", "u1", "a0")]))
+        results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        return m, results
+
+    def test_the_guard_reads_the_manifest_cwd_not_the_moved_live_session(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-moved")
+        moved = os.path.join(self.td, "moved-proj")      # the session moved after the ending; the live names entry now points here, no transcript for the turn
+        (self.state / "names" / SIDS[0]).write_text("web\t%s\t#abcdef\n" % moved)
+        self.assertEqual(self.je.measure(m, results, self.state, self.claude)["falseInterrupts"], 0,
+                         "the guard reads the ending's own cwd from the manifest, sees the answering turn, and counts no false interrupt")
+
+    def test_a_malformed_live_names_entry_does_not_blind_the_guard(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-malformed")
+        (self.state / "names" / SIDS[0]).write_text("web\n")   # fewer than two tab fields: the round-one head derived no cwd and went blind
+        self.assertEqual(self.je.measure(m, results, self.state, self.claude)["falseInterrupts"], 0)
+
+    def test_a_missing_live_names_entry_does_not_blind_the_guard(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-nonames")
+        (self.state / "names" / SIDS[0]).unlink()          # the names entry gone, goals/<sid>.json survives: the round-one head scored with sid None
+        self.assertEqual(self.je.measure(m, results, self.state, self.claude)["falseInterrupts"], 0)
+
+    def test_an_absent_transcript_faults_and_never_scores_a_false_interrupt(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-notx")
+        (self.pdir / (SIDS[0] + ".jsonl")).unlink()        # the transcript the guard needs is gone
+        mm = self.je.measure(m, results, self.state, self.claude)
+        self.assertEqual(mm["falseInterrupts"], 0, "a cleared card whose transcript cannot be read is unscorable, never a false interrupt")
+        self.assertTrue(any(f["error"] == "transcript-absent" for f in mm["liveReadErrors"]), "the blind guard is recorded as a fault: %r" % mm["liveReadErrors"])
+
+    def test_a_corrupt_live_store_is_recorded_as_a_fault(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-corrupt")
+        (self.state / "goals" / (SIDS[0] + ".json")).write_text("{ not json")
+        mm = self.je.measure(m, results, self.state, self.claude)
+        h = hashlib.sha256(SIDS[0].encode()).hexdigest()[:12]
+        self.assertEqual(mm["falseInterrupts"], 0)
+        self.assertIn({"session": h, "error": "JSONDecodeError"}, mm["liveReadErrors"], "a corrupt live store is a recorded fault: %r" % mm["liveReadErrors"])
+        self.assertNotIn(SIDS[0], json.dumps(mm["liveReadErrors"]), "the fault carries the hashed id, never the raw sid")
+
+    def test_a_corrupt_archive_is_recorded_as_a_fault(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-corrupt-arch")
+        (self.state / "goals" / (SIDS[0] + ".json")).unlink()   # only the archive remains, and it is corrupt
+        (self.state / "goals-archive" / (SIDS[0] + ".json")).write_text("{ not json")
+        mm = self.je.measure(m, results, self.state, self.claude)
+        h = hashlib.sha256(SIDS[0].encode()).hexdigest()[:12]
+        self.assertTrue(any(f["session"] == h for f in mm["liveReadErrors"]), "a corrupt archive is a recorded fault: %r" % mm["liveReadErrors"])
+
+    def test_an_unreadable_goals_file_is_recorded_as_a_fault(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-perm")
+        gf = self.state / "goals" / (SIDS[0] + ".json")
+        os.chmod(gf, 0o000); self.addCleanup(os.chmod, gf, 0o644)
+        if os.access(gf, os.R_OK):
+            self.skipTest("cannot deny read (running as root?)")
+        mm = self.je.measure(m, results, self.state, self.claude)   # must not raise
+        self.assertTrue(mm["liveReadErrors"], "an unreadable goals file is recorded, not raised: %r" % mm["liveReadErrors"])
+
+    def test_an_unreadable_overrides_journal_is_a_fault_not_a_raise(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-jperm")
+        ov = self.state / "overrides" / (SIDS[0] + ".jsonl")
+        os.chmod(ov, 0o000); self.addCleanup(os.chmod, ov, 0o644)
+        if os.access(ov, os.R_OK):
+            self.skipTest("cannot deny read (running as root?)")
+        mm = self.je.measure(m, results, self.state, self.claude)   # the round-one head let PermissionError escape measure
+        self.assertEqual(mm["falseInterrupts"], 0)
+        self.assertTrue(mm["liveReadErrors"], "the unreadable journal is recorded, not raised: %r" % mm["liveReadErrors"])
+
+    def test_an_unreadable_transcript_is_a_fault_not_a_raise(self):
+        m, results = self._false_interrupt_case(SIDS[0], "fi-tperm")
+        tx = self.pdir / (SIDS[0] + ".jsonl")
+        os.chmod(tx, 0o000); self.addCleanup(os.chmod, tx, 0o644)
+        if os.access(tx, os.R_OK):
+            self.skipTest("cannot deny read (running as root?)")
+        mm = self.je.measure(m, results, self.state, self.claude)   # the round-one head let PermissionError escape _session_user_turn_times
+        self.assertEqual(mm["falseInterrupts"], 0, "an unreadable transcript blinds the guard: unscorable, never a false interrupt")
+        self.assertTrue(mm["liveReadErrors"])
+
     def test_a_failed_call_or_a_rejected_reply_marks_the_row_not_comparable(self):
         """Executed by the reviewer: a prompt whose replies the parser rejected scored the perfect row. The failures count and mark it."""
         dest, m = self._corpus()
@@ -519,7 +609,7 @@ class Harness(unittest.TestCase):
         self.assertFalse(list(Path(inside).rglob("*")) if os.path.exists(inside) else False, "the subprocess entry refuses a run root inside a checkout and writes nothing")
 
     # ── the labeller and the report ──
-    def test_the_label_pass_reads_tier_one_from_the_journals_and_gates_on_the_agreement(self):
+    def test_the_label_pass_reads_tier_one_from_the_journals_and_reports_the_agreement(self):
         fn = getattr(self.je, "label", None)
         self.assertIsNotNone(fn, "the labeller is a subcommand of the harness")
         dest, m = self._corpus()
@@ -581,12 +671,18 @@ class Harness(unittest.TestCase):
         rows = self.je.report(dest, run_root, self.state, self.claude, figure=None)
         table = Path(run_root, "table.md").read_text()
         self.assertEqual([r["arm"] for r in rows], ["current"])
-        self.assertEqual((rows[0]["endings"], rows[0]["leaks"], rows[0]["falseInterrupts"], rows[0]["flaps"]), (4, 1, 0, 0),
-                         "the one ending whose completed top the user re-opened is the leak, scored against the gesture: %r" % rows[0])
-        self.assertIn("| current | 4 | 1 | 0 | 0 |", table)
+        self.assertEqual((rows[0]["endings"], rows[0]["gesturedEndings"], rows[0]["unplacedEndings"], rows[0]["unresolvedEndings"],
+                          rows[0]["leaks"], rows[0]["falseInterrupts"], rows[0]["flaps"]), (4, 1, 1, 2, 1, 0, 0),
+                         "SIDS[0] turn0 scores the leak; turn1 is unplaced (its live tops sit outside the turn); SIDS[1] has no live store: %r" % rows[0])
+        self.assertIn("| current | 4 | 1 | 1 | 2 | 1 | 0 | 0 |", table)
         for text in self.texts:
             self.assertNotIn(text[:24], table)
         self.assertNotIn("The synthetic goal", table, "no goal title in the report")
+        # the shared report carries counts only: no raw session id, cwd or goal title reaches the table or measures.json
+        measures = Path(run_root, "measures.json").read_text()
+        for leak in (SIDS[0], SIDS[1], self.cwd):
+            self.assertNotIn(leak, table, "no raw identity in the shared table")
+            self.assertNotIn(leak, measures, "no raw identity in measures.json")
         out = subprocess.run([sys.executable, SCRIPT, "report", "--corpus", dest, "--run-root", run_root,
                               "--live-state", str(self.state), "--live-claude", str(self.claude)], capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr[-500:]); self.assertIn('"leaks": 1', out.stdout)
