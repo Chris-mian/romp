@@ -41296,7 +41296,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # feed build that moves the set wakes the pusher (_cached_feed), so the ring trails the
                   # card by one build, not a backstop tick.
                   "needsYou": needs_you,
-                  "needsYouCount": (None if needs_you is None else 0 if not needs_you else max(1, _feed_needs_input_count_of(sid) or 0)),   # the numbered badge's value (plans/tab-state-badge.md): reconciled with the SAME needsYou above so the pair never disagrees for a reader that straddles the feed build's set-then-count publish (needsYou true means at least 1, so never a bare dot; a raced stale NUMBER is harmless). The count is the same feed rule as needsYou, tallied, so the dot, the box and the column agree
+                  "needsYouCount": (None if needs_you is None else 0 if not needs_you else max(1, _feed_needs_input_count_of(sid) or 0)),   # the numbered badge's value (plans/tab-state-badge.md): reconciled with the SAME needsYou above so the pair never disagrees for a reader that straddles the feed build's set-then-count publish (needsYou true means at least 1, so never a bare dot; a raced stale NUMBER is harmless). The count is the same feed rule as needsYou, tallied, so the dot and the Needs-you COLUMN agree; the Needs-you box header counts the actionable rows (a subset) and can read lower
 
                   # the APPROVAL BOX's rows (2026-09-19): this session's needs-you notices with actions (a held peer message's
                   # Approve and Deny), on the status so a status-only delta carries a decision's disappearance like the ring's
@@ -57439,8 +57439,9 @@ def _needs_input_sids(feed):
 
 def _needs_input_counts(feed):
     """Per-session COUNT of needs-you cards, for the numbered badge (plans/tab-state-badge.md): the SAME _card_needs_you
-    rule _needs_input_sids reads, tallied by sid, so the tab dot's number agrees with the membership set (needsYou), the
-    box header and the Needs-you column. Placeholders count too, as in _needs_input_sids."""
+    rule _needs_input_sids reads, tallied by sid, so the tab dot's number agrees with the membership set (needsYou) and the
+    Needs-you COLUMN, which read the one rule. The Needs-you BOX HEADER counts the actionable rows (it drops hard stops
+    and notices, _needs_you_rows) and so can read lower; it is not this tally. Placeholders count too, as in _needs_input_sids."""
     counts = {}
     for a in (feed.get("asks") or []):
         sid = a.get("sid")
@@ -62097,7 +62098,7 @@ _CHAT_MOBILE_CSS = (
     # the working cue is the SAME gold status dot desktop uses (the tab's .tab-dot), not a text bullet
     "#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     "#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}"   # green when idle-waiting-on-bg-work
-    "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
+    "#mcur .cv{flex:0 0 auto;order:1;opacity:.6;font-size:11px}"   # order:1 keeps the caret right of the Needs-you pill (plans/tab-state-badge.md)
     # a card of the current session's needs you (the desktop tab's dashed magenta ring, the class ring-waiting-on-you):
     # the chip's border takes the ring, dashed, in the Needs you magenta, over the identity color (declared after
     # #mcur.colored so it wins at equal specificity)
@@ -62107,7 +62108,7 @@ _CHAT_MOBILE_CSS = (
     # top-right corner, retrying moves to the leading dot in amber. The chip needs position for the absolute dot.
     "#mcur{position:relative}"
     "#mcur .wd.retrying{background:var(--st-retrying-bg,#e67e22)}"
-    ".m-badge{position:absolute;top:5px;right:7px;width:8px;height:8px;border-radius:50%;background:var(--st-needs-bg,#d946ef);box-shadow:0 1px 2px rgba(0,0,0,.5);pointer-events:none}"
+    ".m-badge{position:static;flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--st-needs-bg,#d946ef)}"   # RESERVE room, do not stack: an inline flex item so the pill never covers the chevron or the close glyph (the second contributor on PR 2017, 2026-09-22); the chevron and close get order:1 so they stay at the right edge
     ".m-badge:not(:empty){width:auto;min-width:14px;height:14px;border-radius:7px;padding:0 3px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;font-size:9px;line-height:1}"
     "#mtag-slot{flex:0 0 auto;display:flex;align-items:center;gap:5px}"   # T161: the tag control's slot, sized by the shared button's own inline metrics
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
@@ -62140,7 +62141,7 @@ _CHAT_MOBILE_CSS = (
     ".mrow .workdot.await{background:var(--st-awaitbg-bg,#54B204)}"   # green: idle-waiting-on-bg-work
     ".mrow .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#dddddd}"
     # per-row end-session x (the mobile picker's only way to end a session — desktop has the tab x)
-    ".mrow .mclose{flex:0 0 auto;margin-left:8px;padding:0 6px;color:#8a8a8a;font-size:20px;line-height:1}"
+    ".mrow .mclose{flex:0 0 auto;order:1;margin-left:8px;padding:0 6px;color:#8a8a8a;font-size:20px;line-height:1}"   # order:1 keeps the x right of the Needs-you pill
     ".mrow .mclose:active{color:#e5484d}"
     ".mrow.active{background:#0d3a5c}"
     # a row whose session has a card that needs you: a magenta bar at its left edge, the desktop tab's
@@ -62232,7 +62233,7 @@ row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
 row.classList.toggle('pending',pendingId===s.id);
 row.classList.toggle('ask',!!s.ask);   // RING mode: the desktop tab's magenta ring (ring-waiting-on-you, a widget with a switch; switched off it puts no class on the tab, so the phone follows): a card of this session's needs you
 var mb=row.querySelector('.m-badge');   // BADGE mode: the desktop tab wears a .tab-badge dot with a count instead of the ring; the phone shows the same dot at the row's corner (plans/tab-state-badge.md)
-if(s.badgeNeeds){if(!mb){mb=document.createElement('span');mb.className='m-badge';row.appendChild(mb);}mb.textContent=s.needsCount||'';}
+if(s.badgeNeeds){if(!mb){mb=document.createElement('span');mb.className='m-badge';mb.setAttribute('role','img');row.appendChild(mb);}mb.textContent=s.needsCount||'';mb.setAttribute('aria-label',s.needsCount?(s.needsCount==='1'?'1 thing needs you':s.needsCount+' things need you'):'needs you');}
 else if(mb)mb.remove();
 var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg||s.retrying){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
@@ -62268,7 +62269,7 @@ wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working&&!act.retrying));
 wd.classList.toggle('retrying',!!(act&&act.retrying&&!act.working&&!act.awaitbg));
 cur.classList.toggle('ask',!!(act&&act.ask));   // RING mode: the current chip wears the magenta ring too
 var cb=cur.querySelector('.m-badge');   // BADGE mode: the Needs-you dot with its count at the chip's corner (plans/tab-state-badge.md)
-if(act&&act.badgeNeeds){if(!cb){cb=document.createElement('span');cb.className='m-badge';cur.appendChild(cb);}cb.textContent=act.needsCount||'';}
+if(act&&act.badgeNeeds){if(!cb){cb=document.createElement('span');cb.className='m-badge';cb.setAttribute('role','img');cur.appendChild(cb);}cb.textContent=act.needsCount||'';cb.setAttribute('aria-label',act.needsCount?(act.needsCount==='1'?'1 thing needs you':act.needsCount+' things need you'):'needs you');}
 else if(cb)cb.remove();
 if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}

@@ -53,8 +53,11 @@ test("every input the strip renders is in the signature", () => {
     "st.ctx", "st.ctxColor", "st.ctxTone", "!!s.sub", "hostIsDown(id)", "hostDownNote(id)",
     "settings.tabWidgets", "tabHotkey(id)",   // T379: which widgets a tab carries (and their options), and the hot-key keycap's chord
     "st.needsYou === true", "kst?.needsYou === true",   // the magenta Needs you ring's input (the ask ring, 2026-09-13; a widget since 2026-09-14): a card of the session's entering or leaving the feed's needs-you column repaints, on a loaded tab and a skeleton alike; the switches ride settings.tabWidgets above
-    "settings.tabStateBadge",   // the badge/ring toggle (plans/tab-state-badge.md): flipping it repaints the strip in place, no reload
-    "settings.tabStateBadge ? st.needsYouCount : null", "settings.tabStateBadge ? kst?.needsYouCount : null",   // the numbered badge's count on the loaded and skeleton rows, keyed ONLY in badge mode (only applyTabBadgeMode draws it, so a count move with the badge off never repaints a ring-mode tab byte-for-byte)
+    // the badge/ring toggle AND the numbered count on the loaded and skeleton rows, keyed ONLY in badge mode (only
+    // applyTabBadgeMode draws it, so a count move with the badge off never repaints a ring-mode tab). Each conditional
+    // needle carries the bare settings.tabStateBadge read as a substring (as tab-lock's needle carries its neighbours),
+    // so a separate needle for it would be redundant (the second contributor, PR 2017).
+    "settings.tabStateBadge ? st.needsYouCount : null", "settings.tabStateBadge ? kst?.needsYouCount : null",
   ]) assert.ok(sig.includes(needle), "the signature reads " + needle);
   assert.match(fn, /const unions = viewTagUnion\(effViews\(\)\);\s*\n\s*const plan = planStrip\(visibleIds, unions, readTabGroups\(unions\), activeId, phoneLayout\(\),/,
     "the plan reads the unions the signature carries");
