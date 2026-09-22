@@ -41512,9 +41512,12 @@ def build_episode(sid, now):
 
 # ───────────────────────── feed clear / undo (inbox-zero) ─────────────────────────
 _CLEARED_MEMO = {"slot": None,     # (key, parsed set, the read's fault copy) or None: the clear log's stat taken BEFORE the read, the set read under it, and "" for a landed read (an undecodable log's empty set is served with its fault; round three of PR 2025)
-                 "landed": None}   # (key, parsed set) of the LAST LANDED read, for the display readers while the log cannot be read (_cleared_ids_display; the second contributor's post-merge note on PR 2025)
+                 "landed": None}   # (key, parsed set) of the LAST LANDED read, for the display readers while the log cannot be read (_cleared_ids_display; the second contributor's post-merge note on PR 2025);
+#                                    an absent read counts as landed under a path-only key, the display checking the path alone (the FileNotFoundError arm; the first contributor's round one on PR 2032)
 _cleared_read_fault = [""]         # the fault copy filed for a STANDING unreadable or undecodable clears log: one stderr line and one judge-errors row per
-#                                    episode (the note read's shape), ended by a landed read or an absent log; the undo account names it (_undo_clear)
+#                                    episode (the note read's shape), ended by a landed read, an absent log or a different fault (the served branch writes the slot's fault whole, so a
+#                                    stat-level fault alternating with a memoized undecodable one files per alternation; the second contributor's post-merge comment on PR 2032); the undo
+#                                    account names it (_undo_clear)
 _CLEARED_STATS = {"served": 0, "derived": 0}   # bumped from the pusher AND socket threads (undo, connect-time builds) with
 #                                                no lock: a lost count under a race is tolerated, these are diagnostics only
 # The id families cleared.jsonl holds that name no session (review find, 2026-09-09), each built for the feed:
@@ -41581,6 +41584,9 @@ def _cleared_ids_read():
     if key is not None and slot is not None and slot[0] == key:
         _CLEARED_STATS["served"] += 1
         _cleared_read_fault[0] = slot[2]                 # the served state's fault IS the episode's: a served landed set ends an episode a stat-level fault opened (the second
+        if not slot[2]:
+            _clear_state_fault(path)                     # and the bell's episode with it (the first contributor's round one on PR 2032: only the display read's own clean call ended
+        #                                                  the bell's, so a repair the nudge walk alone saw with the dashboard closed left it standing and the same bytes filed no second row)
         #                                                  contributor's post-merge note on PR 2025: a permission flap on the log's directory set the flag, the lift was served from
         #                                                  the memo with the flag still holding the copy, and the same fault before the next append filed no second row or line)
         return slot[1], slot[2]                          # the slot holds the fault beside the set: a served undecodable state still names it (round three of PR 2025)
@@ -41599,7 +41605,10 @@ def _cleared_ids_read():
             t = o.get("t", 0)
             if isinstance(t, bool) or not isinstance(t, (int, float)):
                 continue                                 # a stamp that is not a number: skipped like an unparseable line (the second contributor's post-merge note on PR 2025: stored
-            #                                              unchecked, the undo's max over the stamps raised TypeError into the socket handler's catch-all, no account)
+            #                                              unchecked, the undo's max over the stamps raised TypeError into the socket handler's catch-all, no account). The rule is
+            #                                              EVERY malformed row, not the max and the sort alone: an UNDO row stamped so is skipped too and its clear stands (2026-09-22,
+            #                                              the first contributor's round one and the second's post-merge comment on PR 2032; the kernel stamps time.time(), so a
+            #                                              hand-edited or foreign row is the only source; one reading, pinned in all three readers' tests with "x" and null stamps)
             if o.get("op") == "undo":
                 cur.pop(iid, None)
             else:
@@ -41607,6 +41616,10 @@ def _cleared_ids_read():
     except FileNotFoundError:
         _CLEARED_STATS["derived"] += 1
         _cleared_read_fault[0] = ""                      # absent, or vanished after the stat: nothing cleared, a real state, said nowhere; it ends an episode too
+        _clear_state_fault(path)                         # the bell's episode too
+        _CLEARED_MEMO["landed"] = ((str(path),), {})     # the absent state IS the last landed one: after an unlink the pane shows nothing cleared, and a path that comes back
+        #                                                  unreadable must not serve the set from before the removal (the first contributor's round one on PR 2032: the count jumped
+        #                                                  back, Undo lit and the cards hid again with no new information about them)
         return cur, ""
     except (OSError, ValueError) as e:
         # a PRESENT log that cannot be read (a permission bit, EIO) or whose bytes are not text (UnicodeDecodeError is a ValueError: it raised at the
@@ -41627,6 +41640,7 @@ def _cleared_ids_read():
         return cur, copy
     _CLEARED_STATS["derived"] += 1
     _cleared_read_fault[0] = ""                          # a landed read ends the episode
+    _clear_state_fault(path)                             # and the bell's: every reader's clean read, not the display read's alone (the first contributor's round one on PR 2032)
     if key is not None:
         _CLEARED_MEMO["slot"] = (key, cur, "")
         _CLEARED_MEMO["landed"] = (key, cur)             # the last landed set, for the display readers while the log cannot be read
@@ -41646,7 +41660,10 @@ def _cleared_ids_display():
     contributor's post-merge note on PR 2025: every build and off frame derived from the empty set, so the button hid, the count dropped
     to zero and the log-only seals returned to the pane with nothing on the frame naming why). A cold memo has nothing to serve: the empty
     set, and the row says so. Never for a gesture: an Undo answers for its OWN read (_undo_clear) and an account's stack for the read
-    behind it (_ledger_batches), which is why this is not the shared set-only reader."""
+    behind it (_ledger_batches), which is why this is not the shared set-only reader. The bell's line comes with its row: _note_state_fault
+    writes the stderr line and the bell row together, beside the reader's own stderr line and judge row, under two episode keys, the reader's
+    by the fault's text (a different fault opens a new episode) and the bell's by the path (one row while it stands); every clean read ends both
+    (the second contributor's post-merge comment on PR 2032)."""
     cur, fault = _cleared_ids_read()
     p = jd.STATE / "cleared.jsonl"
     if not fault:
@@ -41658,7 +41675,7 @@ def _cleared_ids_display():
     if landed is not None and landed[0][0] == str(p):
         _note_state_fault(_StateUnreadable(p, fault, remedy="showing the last-known value; clears still record, and Undo waits until the file can be read again"))
         return landed[1]
-    _note_state_fault(_StateUnreadable(p, fault, remedy="nothing reads as cleared until the file can be read again (no earlier read of it in this kernel's life); clears still record, and Undo waits"))
+    _note_state_fault(_StateUnreadable(p, fault, remedy="clears still record, and Undo waits; nothing reads as cleared until then (no earlier read of it in this kernel's life)"))   # point first and short (the second contributor's post-merge comment on PR 2032): about 80 characters left for the fault text under SYNC_NOTICE_FIT
     return cur
 
 def _mark_nodes_cleared(item_ids, value, src="user", why=None):

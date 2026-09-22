@@ -1081,9 +1081,10 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
              stat'd or read by value into a tier's signature exists and could not be read or parsed: the
              gate runs the stage without a stamp, or the stage's own read marks the run incomplete, one
              row per failure episode: _read_failed; "cleared-unreadable" is also the kernel's own reader's
-             kind for the clears log, the feed build and the Undo reading it as nothing cleared for that
-             build or press, one row per fault episode ended by a landed read or an absent log:
-             kernel.py _cleared_ids_read)
+             kind for the clears log, the Undo reading a present log that cannot be read or is not text as
+             nothing to bring back and the feed build holding the last landed set meanwhile, served by
+             kernel.py _cleared_ids_display, with one refused bell row per episode, one row per fault episode
+             ended by a landed read, an absent log or a different fault: kernel.py _cleared_ids_read)
       note   the evidence — reply tail, error message, exception name, or the give-up scope + re-arm
              event. Callers must pass it; an empty note means the caller has nothing at all to show.
       goal   the node id (or list of node ids) the judge was ruling on, when one exists — the feed's
@@ -10277,7 +10278,7 @@ def _cleared_context(fsid, store, cap=6):
                 continue
             t = o.get("t", 0)
             if isinstance(t, bool) or not isinstance(t, (int, float)):
-                continue                               # a stamp that is not a number: skipped, as the kernel's reader skips it (the sort below would raise on it)
+                continue                               # a stamp that is not a number: skipped (every malformed row, an undo row too, not the max and the sort alone; the second contributor's post-merge comment on PR 2032), as the kernel's reader skips it (the sort below would raise on it); an undo row stamped so is skipped too, its clear standing (2026-09-22, the first contributor's round one on PR 2032)
             if o.get("op") == "undo":
                 times.pop(iid, None)                   # undone → not cleared context (its card is back)
             else:
@@ -12733,7 +12734,7 @@ def _view_cleared_scan(path):
             continue
         t = o.get("t", 0)
         if isinstance(t, bool) or not isinstance(t, (int, float)):
-            continue                                   # a stamp that is not a number: skipped like an unparseable line, as the kernel's reader skips it (the second contributor's post-merge note on PR 2025)
+            continue                                   # a stamp that is not a number: skipped (every malformed row, an undo row too, not the max and the sort alone; the second contributor's post-merge comment on PR 2032) like an unparseable line, as the kernel's reader skips it (the second contributor's post-merge note on PR 2025); an undo row stamped so is skipped too, its clear standing (2026-09-22, the first contributor's round one on PR 2032)
         cur.discard(iid) if o.get("op") == "undo" else cur.add(iid)
     return cur
 

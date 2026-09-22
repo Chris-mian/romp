@@ -7814,16 +7814,19 @@ class LiveReplan(unittest.TestCase):
         episode, the stage incomplete) instead of a silent pass."""
         g2 = SID + ":g2"
         log = Path(self.td.name) / "cleared.jsonl"
-        g3 = SID + ":g3"
+        g3, g4 = SID + ":g3", SID + ":g4"
         log.write_text("[]\n" + json.dumps({"id": 5, "t": 100, "op": "clear"}) + "\n" + json.dumps({"id": g2, "t": 200, "op": "clear"}) + "\n"
-                       + json.dumps({"id": g3, "t": "yesterday", "op": "clear"}) + "\n")   # a stamp that is not a number: skipped (the sort below would raise on it)
+                       + json.dumps({"id": g3, "t": "yesterday", "op": "clear"}) + "\n"   # a stamp that is not a number: skipped (the sort below would raise on it)
+                       + json.dumps({"id": g4, "t": True, "op": "clear"}) + "\n"   # a bool stamp, its own id (the first contributor's round one on PR 2032)
+                       + json.dumps({"id": g2, "t": "x", "op": "undo"}) + "\n" + json.dumps({"id": g2, "t": None, "op": "undo"}) + "\n")   # undo rows stamped "x" and null are skipped too: g2's clear stands (every malformed row; the second contributor's post-merge comment on PR 2032)
         store = {"nodes": {g2: {"id": g2, "text": "Ship the exporter", "parentId": None, "cleared": True},
-                           g3: {"id": g3, "text": "Retire the importer", "parentId": None, "cleared": True}}}
+                           g3: {"id": g3, "text": "Retire the importer", "parentId": None, "cleared": True},
+                           g4: {"id": g4, "text": "Rename the fixtures", "parentId": None, "cleared": True}}}
         try:
             ctx = jd._cleared_context(SID, store)
         except AttributeError as e:
             self.fail("the read raised on a row that is not an object: %r" % e)
-        self.assertEqual(ctx.splitlines(), ["- Ship the exporter"], "the array row, the non-string id and the string-stamped row are skipped, the row beside them loads")
+        self.assertEqual(ctx.splitlines(), ["- Ship the exporter"], "the array row, the non-string id, the string- and bool-stamped rows and the undo rows stamped \"x\" and null are skipped, the row beside them loads and stands")
         log.write_bytes(b"\xff\xfe\x00 not text\n")
         jd._judge_ctx.stage_incomplete = False
         try:
