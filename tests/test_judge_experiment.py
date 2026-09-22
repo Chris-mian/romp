@@ -1057,17 +1057,18 @@ class Harness(unittest.TestCase):
         for k in ("auth", "rate-limited", "fast-refused", "scratch", "call", "parse", "give-up", "pass-crash", "unregistered-caller"):
             self.assertIn(k, self.je.FAILURE_KINDS)
         self.assertNotIn("timeout", self.je.FAILURE_KINDS)
-        # comparability excludes non-arm-judge failures (a grouper's stuck call is not an arm-judge fault; the arm exercises
-        # only the planner, closer and unblocker): a grouper 'call' row and a planner 'call' row count as ONE, not two
-        self.assertEqual(self.je.ARM_JUDGES, ("planner", "closer", "unblocker"), "the three judges an arm exercises")
+        # comparability EXCLUDES only the named non-arm reshaping judges; every other failure row counts. An allowlist of the
+        # three arm judges would wrongly drop the opener and placer (which the arm also runs) and the kinds that carry a tier
+        # or "romp" instead of the judge name (rate-limited -> "triage", history-unreadable -> "romp").
+        self.assertEqual(self.je.NON_ARM_JUDGES, ("grouper", "consolidator", "distiller"), "only the reshaping judges are excluded")
+        rows = [{"err": "call", "judge": "placer"}, {"err": "call", "judge": "opener"},
+                {"err": "rate-limited", "judge": "triage"}, {"err": "history-unreadable", "judge": "romp"},
+                {"err": "call", "judge": "planner"},
+                {"err": "call", "judge": "grouper"}, {"err": "call", "judge": "consolidator"}, {"err": "give-up", "judge": "distiller"}]
         mixed = os.path.join(self.td, "judge-errors-mixed.jsonl")
-        Path(mixed).write_text(json.dumps({"err": "call", "judge": "grouper"}) + "\n"
-                               + json.dumps({"err": "call", "judge": "planner"}) + "\n")
-        self.assertEqual(counter(mixed), 1, "the grouper 'call' row is excluded (a non-arm judge); the planner 'call' row counts")
-        for j in ("consolidator", "distiller"):
-            other = os.path.join(self.td, "judge-errors-%s.jsonl" % j)
-            Path(other).write_text(json.dumps({"err": "call", "judge": j}) + "\n")
-            self.assertEqual(counter(other), 0, "a %s 'call' row is excluded too" % j)
+        Path(mixed).write_text("".join(json.dumps(r) + "\n" for r in rows))
+        self.assertEqual(counter(mixed), 5, "placer, opener, triage (rate-limited) and romp (history-unreadable) count with the "
+                         "planner; the grouper, consolidator and distiller rows do not")
         # a rejected closer reply files its own row: it is counted once, not once as a row and once as a None
         dest, m = self._corpus()
         run_root = os.path.join(self.td, "runs")
@@ -1729,6 +1730,10 @@ class Harness(unittest.TestCase):
         self.je.run_arm_inprocess(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6, builds=1)
         self.assertEqual(self._calls("grouper"), [], "the arm made no grouper or consolidator model call: %r" % self._calls("grouper"))
         self.assertTrue(self._calls("planner"), "the planner still ran (the grouper is what is disabled)")
+        # review low 3: the no-ops are restored in the finally (an in-process arm must not leave the module patched)
+        jd_loaded = sys.modules[self.je.JUDGE_MODULE_NAME]
+        self.assertEqual((jd_loaded._group_store.__name__, jd_loaded._consolidate_store.__name__), ("_group_store", "_consolidate_store"),
+                         "the grouper and consolidator are restored after the arm run, not left as the no-op lambdas")
 
     def test_the_measure_takes_the_majority_of_three_builds_and_counts_the_residual_flap(self):
         """Lever B: a card's column for scoring is the MAJORITY of the three builds of the same store; the flap figure is the
@@ -1752,6 +1757,7 @@ class Harness(unittest.TestCase):
                          "majority needs_input is NOT a leak though one build read completed; still one flap: %r" % noleak)
         agree = self.je.measure(manifest, scored(["completed", "completed", "completed"]), self.state)
         self.assertEqual((agree["leaks"], agree["flaps"]), (1, 0), "three equal completed builds: a leak and no flap: %r" % agree)
+        self.assertIsNone(self.je._majority([]), "review low 4: a card scored in no build has no column (empty list does not raise)")
 
     def test_the_corpus_builder_resolves_the_helper_through_the_credentials_module(self):
         """Review low 5: build_corpus resolves the apiKeyHelper through the credentials module, in Claude Code's own

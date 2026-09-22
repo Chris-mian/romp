@@ -43,10 +43,12 @@ BUDGET_OVERRUN = 1.2          # a run stops once its ledger passes this multiple
 COLUMN_OF = {"blocked": "needs_input", "completed": "completed", "cleared": "cleared"}   # the store-derivable part of the feed's rule
 STABILITY_GATE_PCT = 90.0     # the labeller's OWN gate: the fraction that get the same class in both shuffled orders (road (b): the
 #                               class is a stratification frame, not a truth, so its agreement with the user's actions is reported, not gated)
-ARM_JUDGES = ("planner", "closer", "unblocker")   # the three judges an arm run actually exercises. A judge-errors row
-#   naming any OTHER judge (grouper, consolidator, distiller, a captioner, ...) is not one of these, so its failure does not
-#   mark the arm not comparable: a stuck grouper call (the pilot's 120s-alarm timeouts) is not an arm-judge fault. A row
-#   naming no judge is counted, so the generic pause and stand-down rows still tell the arm not comparable.
+NON_ARM_JUDGES = ("grouper", "consolidator", "distiller")   # the reshaping/summarizing judges an arm's _plan_session drives
+#   but the measure does not read: a failure of one (a stuck grouper call, the pilot's 120s-alarm timeouts) must NOT mark the
+#   arm not comparable. Every OTHER failure row IS counted, an EXCLUSION list not an allowlist: the arm also runs the opener
+#   and the placer (neither would be in a three-name allowlist), and three failure kinds never carry judge None (a
+#   rate-limited row carries the TIER "triage", a store-quarantined or history-unreadable row carries "romp"), so an allowlist
+#   let those through. A row naming a non-arm judge above is the only kind excluded.
 FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",
                  "unregistered-caller", "history-unreadable", "store-quarantined")   # judge-errors rows that mean the ending was not judged:
 #   a rejected reply, a crashed or refused call, the two pause kinds (`auth`, `rate-limited`), the call-level stand-downs (`fast-refused`,
@@ -699,8 +701,10 @@ def preflight_auth(jd, claude_bin, model):
     auth = jd._judge_auth(None)
     cmd = jd._judge_cmd(model, "Reply with the word ok.", auth=auth)
     env = jd._judge_env("triage", auth=auth)
+    scratch = jd._ensure_judge_scratch()                        # the same romp-owned scratch cwd every judge call runs in, so the
+    #                                                             CLI's per-invocation files do not land in the checkout (review low 1)
     try:
-        p = subprocess.run(cmd, input="ok", env=env, capture_output=True, text=True, timeout=130)
+        p = subprocess.run(cmd, input="ok", env=env, cwd=scratch, capture_output=True, text=True, timeout=130)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise SystemExit("refused: the judges' auth probe could not run (%s); %s" % (type(e).__name__, HELP_REMEDY))
     try:
@@ -729,10 +733,12 @@ def column_of(status):
 def count_failure_rows(errors_path):
     """Rows on an arm's judge-errors ledger that mean an ARM judge's call failed, was skipped or its reply was rejected
     (`err` in FAILURE_KINDS); the other rows there are the judges' anomaly notes (a stale close, a workless done), which
-    are verdict facts, not failures. A row naming a NON-ARM judge (grouper, consolidator, distiller, ...) is excluded even
-    when its `err` is a failure kind: those judges are not among the three an arm exercises (ARM_JUDGES), so a stuck grouper
-    call must not mark the arm not comparable. A row naming no judge is counted, so the generic pause and stand-down rows
-    still tell the arm not comparable."""
+    are verdict facts, not failures. Every failure row is counted EXCEPT one whose judge is a named NON_ARM_JUDGES
+    (grouper, consolidator, distiller): those reshaping judges are not read by the measure, so a stuck grouper call must not
+    mark the arm not comparable. This is an exclusion list, not an allowlist of arm judges: the arm also runs the opener and
+    the placer, and some failure kinds carry a tier or "romp" rather than the judge name (a rate-limited row carries
+    "triage", a history-unreadable row "romp"), all of which an allowlist would wrongly drop; those still mark the row not
+    comparable."""
     n = 0
     try:
         for line in Path(errors_path).open(encoding="utf-8"):
@@ -740,7 +746,7 @@ def count_failure_rows(errors_path):
                 r = json.loads(line)
             except ValueError:
                 continue
-            if r.get("err") in FAILURE_KINDS and (r.get("judge") is None or r.get("judge") in ARM_JUDGES):
+            if r.get("err") in FAILURE_KINDS and r.get("judge") not in NON_ARM_JUDGES:
                 n += 1
     except OSError:
         return 0
@@ -787,6 +793,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     # non-deterministic reshaping of the top set is the largest flap component, and the grouper's stuck model calls are the
     # 120s-alarm timeouts. _plan_session calls _group_store as a module global after every placement, so patching it here
     # no-ops the grouper; _consolidate_store is patched too though the harness never runs the consolidator pass.
+    saved_group, saved_consolidate = jd._group_store, jd._consolidate_store   # restored in the finally with the prompts
     jd._group_store = lambda *a, **k: 0
     jd._consolidate_store = lambda *a, **k: 0
     usage = jd.USAGE
@@ -865,6 +872,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                 break
     finally:
         restore_prompts(jd, saved)
+        jd._group_store, jd._consolidate_store = saved_group, saved_consolidate   # restore the grouper/consolidator (in-process safety)
         try:
             cost, n, mean_ms = ledger_cost(usage)
             results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
@@ -906,6 +914,8 @@ def _majority(cols):
     set the first-seen among the modal columns (a deterministic pick, so the same builds always score the same way). This
     is the column a card is scored by (leaks / false interrupts / answered-then-cleared); the remaining disagreement is the
     flap figure."""
+    if not cols:
+        return None                                             # a card scored in no build has no column
     counts = {}
     for c in cols:
         counts[c] = counts.get(c, 0) + 1
