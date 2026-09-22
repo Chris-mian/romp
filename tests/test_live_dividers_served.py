@@ -830,15 +830,16 @@ class ServedLiveDividers(unittest.TestCase):
                 self.assertIn("files-pane", at["stored"]["parsed"].get("parked", []), "a hidden pane is parked, once")
             self.assertFalse(at["pressed"], "%s: the drag ended at the toggle (new information under the held pointer)" % name)
             self.assertEqual(at["writes"], 1, "%s: ONE store write at the toggle: the drag lands without writing and the reconcile writes the corrected layout (round four: the commit's write of the press-tree layout was a second, stale write): %r" % (name, at["writes"]))
-            # the drag's last position landed: a pane HIDDEN gives its room to every remaining kid in proportion, so the dragged pair keeps
-            # its SHARE; a pane SHOWN docks at the right end and splits the last leaf's share in half (splitAt), so the dragged pair's
-            # left pane keeps its width less its part of the one new gutter
+            # the drag's last position landed: a pane HIDDEN gives its room to every remaining kid in proportion, and a pane SHOWN comes
+            # back to its remembered place with its remembered share, taking its room from every kid in proportion (the rail remembers
+            # the arrangement, plans/pane-buttons-with-many-chats.md section 6; until then a shown pane docked at the right end and
+            # halved the last leaf), so the dragged pair keeps its SHARE either way
             L, R = t["pair"]["L"], t["pair"]["R"]
+            share = lambda rs: rs[L]["w"] / (rs[L]["w"] + rs[R]["w"])
+            self._within(share(at["rects"]), share(t["mid"]["rects"]), 0.01, "%s: the drag's last position landed (the pair's share held through the toggle): mid %r after %r" % (name, t["mid"]["rects"], at["rects"]))
             if t["show"]:
-                self._within(at["rects"][L]["w"], t["mid"]["rects"][L]["w"], 8.0, "%s: the drag's last position landed (the left pane's width, less the new gutter's share): mid %r after %r" % (name, t["mid"]["rects"], at["rects"]))
-            else:
-                share = lambda rs: rs[L]["w"] / (rs[L]["w"] + rs[R]["w"])
-                self._within(share(at["rects"]), share(t["mid"]["rects"]), 0.01, "%s: the drag's last position landed (the pair's share held through the close): mid %r after %r" % (name, t["mid"]["rects"], at["rects"]))
+                fx = at["rects"]["files-pane"]["x"]
+                self.assertTrue(all(fx >= r["x"] for k, r in at["rects"].items() if k != "tl-pane"), "%s: the shown pane is back at the right end, its remembered place: %r" % (name, at["rects"]))
             self.assertEqual(t["afterMore"]["rects"], at["rects"], "%s: more travel under the held pointer moves nothing" % name)
             self.assertEqual(t["afterUp"]["rects"], at["rects"], "%s: the release (or Escape) after changes nothing" % name)
             self.assertEqual(t["afterUp"]["writes"], 1, "%s: and writes nothing more" % name)

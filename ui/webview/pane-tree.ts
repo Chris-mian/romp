@@ -26,9 +26,13 @@ export interface Split { dir: Dir; kids: Node[]; ratios: number[]; fixed?: Array
 export type Node = Leaf | Split;
 
 /** The persisted store: the tree, plus the PARKED panes (closed from the rail but kept mounted and hidden,
- *  off the tree, so re-opening re-inserts with no reload; plans/pane-docking.md section 5). Versioned so
- *  an older reader that cannot parse it drops to the shipped stores rather than mis-rendering. */
-export interface Layout { v: 1; tree: Node; parked: PaneId[] }
+ *  off the tree, so re-opening re-inserts with no reload; plans/pane-docking.md section 5), plus, while anything
+ *  is parked, the REMEMBERED tree: the arrangement with the parked panes in their places, so a show puts each back
+ *  where it was (plans/pane-buttons-with-many-chats.md section 6, the user 2026-09-21: a hide remembers and a show
+ *  restores, for every rail button). Optional, appended after `parked`, so a store with nothing parked keeps the
+ *  phase-one shape byte for byte and an older bundle ignores it. Versioned so an older reader that cannot parse it
+ *  drops to the shipped stores rather than mis-rendering. */
+export interface Layout { v: 1; tree: Node; parked: PaneId[]; remembered?: Node }
 
 /** Where a dropped pane docks against a target leaf: an edge (dock/split) or the target's tab strip
  *  (join, handled by the shell, not this module). */
@@ -79,7 +83,9 @@ function keepFixed(fixed?: Array<number | null>): Array<number | null> | undefin
   return fixed && fixed.some((f) => typeof f === "number") ? fixed.map((f) => (typeof f === "number" && f > 0 ? f : null)) : undefined;
 }
 
-function mkSplit(dir: Dir, kids: Node[], ratios: number[], fixed?: Array<number | null>): Split {
+/** The module's one split constructor: ratios normalised, an all-null fixed array dropped (exported for the reconcile's
+ *  remembered-place insertion in pane-dock.ts; every other edit goes through the functions below). */
+export function mkSplit(dir: Dir, kids: Node[], ratios: number[], fixed?: Array<number | null>): Split {
   const fx = keepFixed(fixed);
   const out: Split = { dir, kids, ratios: norm(ratios, fx) };
   if (fx) out.fixed = fx;
@@ -226,7 +232,7 @@ export function closePane(cur: Layout, pane: PaneId): CloseResult {
   const { tree } = detach(cur.tree, pane);
   if (!tree) return { ok: false, layout: cur, reason: "cannot close the only pane" };
   const parked = cur.parked.includes(pane) ? cur.parked : cur.parked.concat(pane);
-  return { ok: true, layout: { v: 1, tree, parked } };
+  return { ok: true, layout: { ...cur, v: 1, tree, parked } };   // the remembered tree rides along (section 6)
 }
 
 /** Open a pane at an edge of a target (the rail's "open at its default dock"): dock it and drop it from the
@@ -234,7 +240,7 @@ export function closePane(cur: Layout, pane: PaneId): CloseResult {
  *  pane against itself is a refusal with a reason. A pane already in the tree is ok, and any STALE park of it
  *  is dropped (the parked set must never hold a docked pane), rather than returning the layout untouched. */
 export function openPane(cur: Layout, pane: PaneId, target: PaneId, edge: Edge): CloseResult {
-  const unpark = (tree: Node): Layout => ({ v: 1, tree, parked: cur.parked.filter((p) => p !== pane) });
+  const unpark = (tree: Node): Layout => ({ ...cur, v: 1, tree, parked: cur.parked.filter((p) => p !== pane) });   // the remembered tree rides along
   if (has(cur.tree, pane)) return { ok: true, layout: unpark(cur.tree) };   // already docked: drop any stale park, no structural change
   if (pane === target) return { ok: false, layout: cur, reason: "a pane cannot open against itself" };
   if (!has(cur.tree, target)) return { ok: false, layout: cur, reason: "target not in the tree" };
@@ -351,8 +357,13 @@ export function seedRowOverFixedBand(order: PaneId[], grow: Record<PaneId, numbe
   return mkSplit("col", [row, { pane: band }], [1, 0], [null, bandPx > 0 ? bandPx : 200]);
 }
 
-/** Serialise the store. */
-export function serialise(cur: Layout): string { return JSON.stringify({ v: 1, tree: cur.tree, parked: cur.parked }); }
+/** Serialise the store: the remembered tree, when there is one, appended after `parked` (a store with nothing parked keeps
+ *  the phase-one bytes). */
+export function serialise(cur: Layout): string {
+  const o: Record<string, unknown> = { v: 1, tree: cur.tree, parked: cur.parked };
+  if (cur.remembered) o.remembered = cur.remembered;
+  return JSON.stringify(o);
+}
 
 function validNode(n: unknown): n is Node {
   if (!n || typeof n !== "object") return false;
@@ -397,5 +408,12 @@ export function parse(s: string): Layout | null {
   // normalise every split's ratios once: validNode accepts a sum within 1e-3, but layout never re-normalises
   // (EPS 1e-6), so a stored [0.4995, 0.4996] would under-fill the box forever; mkSplit's norm() fixes it here
   const renorm = (n: Node): Node => isLeaf(n) ? n : mkSplit(n.dir, n.kids.map(renorm), n.ratios, n.fixed);
-  return { v: 1, tree: renorm(tree), parked };
+  const out: Layout = { v: 1, tree: renorm(tree), parked };
+  // the remembered tree (section 6): a valid one rides along; a bad one is DROPPED and the layout stands, since it costs a
+  // remembered place and never the dashboard (the tree above is what renders; fail-closed applies to that)
+  if (o.remembered !== undefined && validNode(o.remembered)) {
+    const m = o.remembered as Node, ml = leaves(m);
+    if (new Set(ml).size === ml.length) out.remembered = renorm(m);
+  }
+  return out;
 }

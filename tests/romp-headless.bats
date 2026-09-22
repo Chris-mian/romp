@@ -215,6 +215,15 @@ PY
 @test "romp help lists compact beside the other session verbs" {
     run "$ROMP_SCRIPT" help
     [[ "$output" == *"romp compact <session>"* ]]
+    # the failure exit is the Codex compaction's: its loud ends leave a notice on the row and a failed Claude /compact leaves
+    # none, so that one reads as a clean end, never as a failure (done when a poll caught the compacting sample, the timeout
+    # otherwise); and a queued compaction's baseline is the first sample after the request that reads not compacting, which
+    # lands mid-turn. The line said "the compaction" with no backend and "the first sample after the turn" (the post-merge
+    # review of the native compaction, 2026-09-21)
+    [[ "$output" == *"when a Codex compaction ended loudly"* ]]
+    [[ "$output" == *"a failed Claude /compact leaves no notice on the row, so it reads as a clean end, never as a failure"* ]]
+    [[ "$output" == *"new since the first sample after the request that reads not compacting"* ]]
+    [[ "$output" != *"first sample after the turn"* ]]
 }
 
 # The queued+--wait path died before its first poll (set -e killed the arming assignment — review

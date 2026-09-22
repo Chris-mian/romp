@@ -6758,6 +6758,7 @@ function showErrDialog(title: string, text: string, copy: string) {
   ok.onclick = () => overlay.remove();
   box.append(ok);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.appendChild(box);   // the box INTO the overlay (the verifier of PR 1967, 2026-09-21: built and never attached, so a refusal painted a bare dim sheet with no words and no button)
   document.body.appendChild(overlay);
   (box.querySelector("button") as HTMLElement | null)?.focus();
 }

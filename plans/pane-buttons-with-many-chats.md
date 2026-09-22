@@ -86,6 +86,29 @@ keep their places), is reduced to the panes the layout still knows (a column clo
 and is dropped once nothing is parked. The band keeps its own road (the root's bottom, fixed); a tab drop's hint
 wins over the memory for its column; the phone is untouched, since the kit stays off there.
 
+Sharpened once more by the review of the feature PR (2026-09-21): the memory is REBUILT at every park from the shown
+tree, with the earlier parked panes re-inserted by the show's own rule, so a pane turned on or a column opened while
+another was hidden is known to it and a resize made meanwhile keeps its ratios. The band is the neighbour of last
+resort: with every row pane hidden, a shown pane comes back above the band (a column over it, never a row beside it),
+and the memory-less road does the same. A stranger pane (one the memory never knew, turned on while a pane was
+hidden) in the neighbour's split does not stop the returning pane joining that split as a sibling with its remembered
+share, so the room comes from the whole row and not from the neighbour alone; only a split the memory knew as a
+separate group (a chat over its feed inside a row) wraps, so that group comes back as a group.
+
+The band is the neighbour of last resort only when it is ALL the tree shows (the second review of the feature PR,
+2026-09-21): with a stranger pane shown above the band, a returning pane whose remembered neighbours are all hidden takes
+its default dock beside the stranger instead of a full-width row of its own between the stranger and the band. The cost,
+accepted: at any park made while only strangers and the band are shown (a stranger turned off, a second stranger toggled,
+the band turned off) the HIDDEN panes' remembered places are dropped, since none of them has a shown neighbour to be
+re-inserted beside; the memory itself stands, rebuilt from the strangers' tree, which keeps only their places (the store
+keeps writing it, and a parked stranger keeps its place). The hidden panes then come back at their default docks around the
+first one shown, so the shape may match the seed's but
+the shares are the default dock's (the seed, every pane hidden, a stranger on and off, the three back: 493, 246.5 and 246.5 px
+against the seed's 441.5, 250.2 and 294.3 px at 1000 px), and a non-flat arrangement (the feed under the chat) comes back a flat row.
+With the band OFF the same holds without the band: a pane whose remembered neighbours are all hidden has no place to be
+re-inserted at a stranger's park, waits in the parked list without a place, and returns at its default dock, which the
+rule intends (keeping the old memory would cost the stranger its place).
+
 ## 3. The options
 
 **A. One chat button toggles every chat column as one group; hide remembers the tree, show restores it.**
