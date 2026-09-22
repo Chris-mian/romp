@@ -1993,10 +1993,12 @@ else:
             # notice when it latches a new bracket, so a later clean wait on the same thread would otherwise exit 1
             # over a notice from before it; and it is read whether or not a compacting sample was caught, since a
             # compaction can run and fail between two polls. It must also be MARKED a compaction's end (the kernel's
-            # noRetry, which the two loud ends of the Codex compaction bracket carry and a turn's rejection or failure
-            # does not): a queued wait's arming sample is read during the turn it waits behind, so that turn's own end
-            # notice is new against the baseline while the compaction it queued proceeds, and read here it exited 1
-            # with the turn's words over a thread that was compacted (review, 2026-09-21)
+            # noRetry, which every loud end of the Codex compaction bracket carries, the writers pinned by
+            # ui/webview/apierror-noretry.test.ts, and a turn's rejection or failure does not): a queued wait's arming
+            # sample is read during the turn it waits behind, so that turn's own end notice is new against the
+            # baseline while the compaction it queued proceeds, and read here it exited 1 with the turn's words over a
+            # thread that was compacted (review, 2026-09-21; count-free since 2026-09-22: a count here was a second
+            # roster the pin does not read, and the restart end had already outgrown it)
             echo "romp compact: $_c_who did not compact: ${_c_notice#*$'\t'}" >&2
             exit 1
         fi
