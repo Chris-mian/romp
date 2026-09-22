@@ -166,6 +166,120 @@ class OneListingPerChange(_Listing):
         self.assertIsNone(next(r for r in self._body() if r["id"] == SID)["launchError"])
         self.assertEqual(self._stats()[0]["built"], 3)
 
+    def _compaction_seams(self, comp, errs, reads=None, land=None):
+        """The listing's two per-row backend reads stubbed as the world's compacting bit (`comp`, sid to bool) and launch
+        error (`errs`, sid to record), the seams the launch-error test above uses; `land`, when given, runs after each
+        read for SID (the hook a loud end lands through, between two reads)."""
+        saved = (km._launch_error, km._compacting_now)
+
+        def launch_error(sid):
+            v = errs.get(str(sid))
+            if reads is not None:
+                reads.append(str(sid))
+            if land is not None and str(sid) == SID:
+                land()
+            return v
+
+        def compacting(sid, tm=None, path=None):
+            v = comp.get(str(sid), False)
+            if land is not None and str(sid) == SID:
+                land()
+            return v
+        km._launch_error, km._compacting_now = launch_error, compacting
+        self.addCleanup(lambda: (setattr(km, "_launch_error", saved[0]), setattr(km, "_compacting_now", saved[1])))
+
+    def test_a_loud_end_between_the_keys_read_and_the_rows_build_is_never_served_as_a_clean_end(self):
+        """The row read compacting fresh while its launch error came from the cycle memo filled at the key's read, so a
+        loud end landing between the two reads (the bit falls, the notice lands) built a row reading compacting False with
+        no notice, a clean end's shape, whenever another key input moved in the same cycle or on the first cycle (a quiet
+        cycle serves the prior rows and never showed it), and `romp compact --wait` printed done over an uncompacted thread (the post-merge review
+        of the native compaction, 2026-09-21). The key now reads the pair once per sid per cycle, compacting then notice,
+        and the row takes that read: the served row carries the pair as the key read it, and the next cycle's key reads
+        the end."""
+        comp, errs, reads = {SID: True, SID2: False}, {}, []
+        self._compaction_seams(comp, errs, reads)
+        notice = {"text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was",
+                  "at": NOW + 1.5, "limit": False, "noRetry": True}
+        self._cycle()
+        row = next(r for r in self._body() if r["id"] == SID)
+        self.assertEqual((row["compacting"], row["launchError"]), (True, None), "mid-compaction, no notice")
+        real = km._session_rows_from
+
+        def build_after_the_end(live_map):                  # the loud end lands after the key's read, before the rows' build
+            comp[SID] = False; errs[SID] = notice
+            return real(live_map)
+        km._session_rows_from = build_after_the_end
+        try:
+            self.row[SID2]["state"] = "working"             # another key input moves: this cycle rebuilds the listing
+            reads.clear()
+            self._cycle()
+        finally:
+            km._session_rows_from = real
+        self.assertEqual(self._stats()[0]["built"], 2, "the moved input rebuilt the listing this cycle")
+        row = next(r for r in self._body() if r["id"] == SID)
+        self.assertEqual((row["compacting"], row["launchError"]), (True, None),
+                         "the row carries the pair as the key read it, never (False, None), the clean end's shape the base built")
+        self.assertEqual(reads.count(SID), 1, "still one backend read per session per cycle: %r" % reads)
+        self._cycle()                                       # the next cycle's key reads the end: the bit down, the notice up
+        row = next(r for r in self._body() if r["id"] == SID)
+        self.assertEqual((row["compacting"], row["launchError"]), (False, notice), "the loud end, one cycle on")
+        st, miss = self._stats()
+        self.assertEqual((st["built"], miss.get("rows")), (3, 2), "one rebuild per cycle the rows moved in: %r" % miss)
+
+    def test_a_loud_end_between_the_pairs_two_reads_yields_compacting_with_the_notice(self):
+        """The pair is read compacting then notice, so a loud end landing between its two reads yields (True, notice),
+        which the wait already judges as a loud end; read notice then compacting it would yield (False, None), the clean
+        end's shape (2026-09-21)."""
+        comp, errs, landed = {SID: True, SID2: False}, {}, []
+        notice = {"text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was",
+                  "at": NOW + 1.5, "limit": False, "noRetry": True}
+
+        def land():                                         # the loud end lands right after the first of SID's two reads
+            if landed == ["armed"]:
+                landed[:] = ["landed"]; comp[SID] = False; errs[SID] = notice
+        self._compaction_seams(comp, errs, land=land)
+        real_key = km._sessions_listing_key
+
+        def key_arming_the_hook(live_map, names):           # armed inside the listing's key alone: a read of the same seams
+            if arm[0]:                                      #  from elsewhere in the cycle cannot land the end
+                landed.append("armed")
+            try:
+                return real_key(live_map, names)
+            finally:
+                if landed and landed[-1] == "armed":
+                    landed.pop()
+        arm = [False]
+        km._sessions_listing_key = key_arming_the_hook
+        self.addCleanup(setattr, km, "_sessions_listing_key", real_key)
+        self._cycle()
+        self.row[SID2]["state"] = "working"                 # another key input moves: this cycle rebuilds the listing
+        arm[0] = True
+        self._cycle()
+        self.assertEqual(landed, ["landed"], "the end landed between the pair's reads, inside the listing's key")
+        row = next(r for r in self._body() if r["id"] == SID)
+        self.assertEqual((row["compacting"], row["launchError"]), (True, notice),
+                         "compacting read first: the end is read with the bit still up, a loud end to the wait")
+        self.assertEqual(self._stats()[0]["built"], 2)
+
+    def test_the_compacting_bit_alone_moving_rebuilds_once_each_way_and_the_row_carries_it(self):
+        """The compacting bit is a key input in its own right (the design's compacting edge): a compaction starting and
+        clearing with nothing else moving rebuilds the listing once each way and the served row carries the bit, so the
+        pair's key half cannot be the notice's identity alone (2026-09-21)."""
+        comp, errs = {SID: False, SID2: False}, {}
+        self._compaction_seams(comp, errs)
+        self._cycle()
+        n0 = self._stats()[0]["built"]
+        comp[SID] = True                                    # the compaction starts: the bit alone moves
+        self._cycle()
+        self.assertEqual(self._stats()[0]["built"], n0 + 1, "the bit rising rebuilt once")
+        self.assertTrue(next(r for r in self._body() if r["id"] == SID)["compacting"], "and the served row reads compacting")
+        comp[SID] = False                                   # it clears: the bit alone moves back
+        self._cycle()
+        self.assertEqual(self._stats()[0]["built"], n0 + 2, "the bit falling rebuilt once")
+        self.assertFalse(next(r for r in self._body() if r["id"] == SID)["compacting"], "and the served row reads not compacting")
+        self._cycle()
+        self.assertEqual(self._stats()[0]["built"], n0 + 2, "a quiet cycle builds nothing")
+
     def test_a_start_a_rename_and_a_death_reach_the_roster_within_one_cycle(self):
         """The postal bus's roster (list_agents, the send's liveness check) reads this route: a session that started is
         listed after one cycle, a renamed one carries its name, a dead one is gone (absence reads as death downstream)."""
