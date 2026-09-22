@@ -683,8 +683,9 @@ def apply_prompts(jd, prompts):
 
 
 HELP_REMEDY = ("hand-place an apiKeyHelper into the existing corpus's claude root (do NOT rebuild it: a rebuild re-picks "
-               "the endings and orphans the labeller's id-keyed labels), or sign a Claude login in on this machine, then "
-               "re-run the arm")
+               "the endings and orphans the labeller's id-keyed labels), or export a login token into the environment the "
+               "run inherits (ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN, e.g. from `claude setup-token`; a file-based "
+               "`claude login` does not reach the probe's child, whose config dir is the corpus root), then re-run the arm")
 
 
 def preflight_auth(jd, model):
@@ -694,19 +695,19 @@ def preflight_auth(jd, model):
     the 1Password names and injects only the resolved login tokens, exactly as every judge call does: an environment-only
     credential that would pass a bare `claude -p` fails here as the judges do. It runs the judges' own binary
     (`jd._judge_claude_bin`, from ROMP_CLAUDE_BIN as load_judge exported it), so it takes no `claude_bin`: a caller's would be
-    ignored (review low e). Refuse (SystemExit) when the envelope is an error, reads 'Not logged in', or carries no
+    ignored (the 2026-09-22 PR 2022 review, low e). Refuse (SystemExit) when the envelope is an error, reads 'Not logged in', or carries no
     session_id. The storm the gate replaces is loud and free, but it should be SHORT (one refusal, not one per ending).
     Returns a {"cost", "ms", "sessionId"} note the arm ledgers in results.json.
 
     The refusal QUOTES the CLI's own words (the envelope's `result`, else truncated stdout and stderr, else the exception
-    name), never empty braces: a decode failure keeps the process object and quotes it (review low 3). It names the
-    hand-placed-helper remedy, never a rebuild (review low 4). The probe's timeout tracks the judge module's own alarm at
-    `jd.CALL_ALARM_S`, backstopped by five seconds, so raising the alarm does not kill a slow, healthy probe (review low f)."""
+    name), never empty braces: a decode failure keeps the process object and quotes it (the 2026-09-22 PR 2022 review, low 3). It names the
+    hand-placed-helper remedy, never a rebuild (the 2026-09-22 PR 2022 review, low 4). The probe's timeout tracks the judge module's own alarm at
+    `jd.CALL_ALARM_S`, backstopped by five seconds, so raising the alarm does not kill a slow, healthy probe (the 2026-09-22 PR 2022 review, low f)."""
     auth = jd._judge_auth(None)
     cmd = jd._judge_cmd(model, "Reply with the word ok.", auth=auth)
     env = jd._judge_env("triage", auth=auth)
     scratch = jd._ensure_judge_scratch()                        # the same romp-owned scratch cwd every judge call runs in, so the
-    #                                                             CLI's per-invocation files do not land in the checkout (review low 1)
+    #                                                             CLI's per-invocation files do not land in the checkout (the 2026-09-22 PR 2022 review, low 1)
     try:
         p = subprocess.run(cmd, input="ok", env=env, cwd=scratch, capture_output=True, text=True, timeout=jd.CALL_ALARM_S + 5)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -737,12 +738,11 @@ def column_of(status):
 def count_failure_rows(errors_path):
     """Rows on an arm's judge-errors ledger that mean an ARM judge's call failed, was skipped or its reply was rejected
     (`err` in FAILURE_KINDS); the other rows there are the judges' anomaly notes (a stale close, a workless done), which
-    are verdict facts, not failures. Every failure row is counted EXCEPT one whose judge is a named NON_ARM_JUDGES
-    (grouper, consolidator, distiller): those reshaping judges are not read by the measure, so a stuck grouper call must not
-    mark the arm not comparable. This is an exclusion list, not an allowlist of arm judges: the arm also runs the opener and
-    the placer, and some failure kinds carry a tier or "romp" rather than the judge name (a rate-limited row carries
-    "triage", a history-unreadable row "romp"), all of which an allowlist would wrongly drop; those still mark the row not
-    comparable."""
+    are verdict facts, not failures. Every failure row is counted EXCEPT one whose judge is named in `NON_ARM_JUDGES`: those
+    reshaping and summarizing judges are not read by the measure, so a stuck one (a grouper timeout) must not mark the arm
+    not comparable. This is an exclusion list, not an allowlist of arm judges: the arm also runs the opener and the placer,
+    and some failure kinds carry a tier or "romp" rather than the judge name (a rate-limited row carries "triage", a
+    history-unreadable row "romp"), all of which an allowlist would wrongly drop; those still mark the row not comparable."""
     n = 0
     try:
         for line in Path(errors_path).open(encoding="utf-8"):
@@ -751,6 +751,24 @@ def count_failure_rows(errors_path):
             except ValueError:
                 continue
             if r.get("err") in FAILURE_KINDS and r.get("judge") not in NON_ARM_JUDGES:
+                n += 1
+    except OSError:
+        return 0
+    return n
+
+
+def count_non_arm_failure_rows(errors_path):
+    """Failure rows the comparability filter EXCLUDES: `err` in FAILURE_KINDS AND `judge` in `NON_ARM_JUDGES`. Counted
+    nowhere else (the results record carries only the comparable count), so an excluded fault would be invisible; the measure
+    carries this beside the comparable count and the report prints it in the failures cell (the 2026-09-22 PR 2022 review)."""
+    n = 0
+    try:
+        for line in Path(errors_path).open(encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("err") in FAILURE_KINDS and r.get("judge") in NON_ARM_JUDGES:
                 n += 1
     except OSError:
         return 0
@@ -790,7 +808,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     prompts = json.loads(Path(prompts_file).read_text()) if prompts_file else {}
     now = int(time.time()) if now is None else int(now)
     results = {"arm": arm, "prompts": sorted(prompts), "endings": {}, "stopped": None, "failures": 0, "closerNone": 0,
-               "buildsPerCard": builds}     # stamp the per-card build count so a reader knows a card's column is the majority of N (review MED 1)
+               "buildsPerCard": builds}     # stamp the per-card build count so a reader knows a card's column is the majority of N (the 2026-09-22 PR 2022 review, MED 1)
     results["preflightProbe"] = preflight_auth(jd, jd.TRIAGE_MODEL)   # refuse before the first ending if the arm
     #                            cannot authenticate; the probe's own cost is noted here, outside the arm's judge ledger
     saved = apply_prompts(jd, prompts)
@@ -883,6 +901,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
             results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
         except Exception as e:
             results["costError"] = type(e).__name__    # a ledger read that raises is RECORDED, not swallowed: a reader tells a free arm from a broken tally
+        results["nonArmFailures"] = count_non_arm_failure_rows(errors_path)   # excluded from comparability, surfaced beside it (review 2026-09-22 PR 2022)
         flush()                                      # results.json is written in the finally, whatever raised in the loop or after it
     return results
 
@@ -920,21 +939,21 @@ _UNSCORED = object()   # a card's per-build value when THAT build did not score 
 
 
 def _majority(cols):
-    """The majority value across ALL builds: the most common, with a CONSERVATIVE tie rule (the `_UNSCORED` sentinel wins
-    any tie it is part of, so a card scored in a minority of builds gets no column even in a 1-1-1 tie; among real columns a
-    tie falls to the first-seen). The caller passes a value per build, an unscored build as the sentinel; when the sentinel
-    wins (a card scored in a minority of builds), the caller reads no scored column. A deterministic pick, so the same builds
-    always score the same way in any order. The scored column decides leaks / false interrupts / answered-then-cleared; a
-    build disagreement (the sentinel included) is the flap figure."""
+    """The card's column across ALL builds: a real column ONLY on a STRICT majority of the builds (its count more than half),
+    else no column (the `_UNSCORED` sentinel). No single build decides, so the result is order-independent: an all-different
+    set, a real tie (two builds one each, three builds three columns) and a card scored in a minority of builds all read no
+    column; a real 2-of-3 wins. The caller passes a value per build, an unscored build as the sentinel. The scored column
+    decides leaks / false interrupts / answered-then-cleared; a build disagreement (the sentinel included) is the flap figure
+    (the 2026-09-22 PR 2035 review: the earlier first-seen tie rule let the first build decide)."""
     if not cols:
         return None                                             # a card scored in no build has no column
     counts = {}
     for c in cols:
         counts[c] = counts.get(c, 0) + 1
-    best = max(counts.values())
-    if counts.get(_UNSCORED, 0) == best:                        # the sentinel wins any tie it is part of: no column, no leak, the flap still counts (review round two MED)
-        return _UNSCORED
-    return next(c for c in cols if c is not _UNSCORED and counts[c] == best)
+    for c in cols:                                              # at most one column can hold a strict majority; the sentinel is never a scored column
+        if c is not _UNSCORED and counts[c] * 2 > len(cols):
+            return c
+    return _UNSCORED                                            # no strict majority: no column (no leak / no false interrupt); the flap still counts
 
 
 PLACEMENT_KINDS = ("done", "block", "awaiting")   # a top-level verdict the live judges filed in the ending's turn: the placement
@@ -1032,7 +1051,7 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
                   if ev.get("kind") in PLACEMENT_KINDS and event_time(ev) is not None and in_turn_window(event_time(ev), start_t, cut_t)]
         if not placed:
             continue                                            # the live judges placed this top outside the turn: no placement time to bound gestures
-        # the gesture boundary is the ending's CUT, not the placement's own ev_t (review item 2): a closer done's ev_t is the
+        # the gesture boundary is the ending's CUT, not the placement's own ev_t (the 2026-09-22 PR 1960 note, item 2): a closer done's ev_t is the
         # turn's START, so keying on it counted a mid-turn gesture (made before the card was placed) as answering it. Every
         # arm verdict uses evidence up to the cut, so a user gesture is "later" only when it lands after the cut.
         t_place = cut_t
@@ -1060,7 +1079,7 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
     return out
 
 
-def measure(manifest, results, live_state, labels=None):
+def measure(manifest, results, live_state, labels=None, labels_state="absent"):
     """Per arm, scored against the user's OWN later actions on the live cards (road (b): NOT the labeller's class, which the
     pilot showed is not a truth about an ending's shape). Leaks into Completed: the arm placed a top completed that the user
     then re-opened. False interrupts: the arm left a top needs_input that the user plainly crossed off, with no re-open and
@@ -1077,19 +1096,22 @@ def measure(manifest, results, live_state, labels=None):
     leaks = false_interrupts = answered_then_cleared = flaps = gestured = untouched = unresolved = unplaced = 0
     leaks_by_class = {c: 0 for c in CLASSES}                     # leaks and false interrupts split by the ending's heuristic
     fi_by_class = {c: 0 for c in CLASSES}                        # class: the loose-ended strata (offer/question/undone) vs finished
-    labels = labels or {}                                        # {ending id: labeller class} when labels.json exists (review round two low 4)
+    labels = labels or {}                                        # {ending id: labeller class} when labels.json exists (the 2026-09-22 PR 2022 round-two review, low 4)
     leaks_by_labeller = {}                                       # the same splits keyed on the LABELLER's class, so the landing bar's
     fi_by_labeller = {}                                          # strata sentence (read from the labeller) is derivable from the outputs
     attribution = []                                             # per-ending: id, arm, leak, false interrupt, both class keyings
     faults = []
+    builds_n = results.get("buildsPerCard") or max((len(r.get("builds") or []) for r in results["endings"].values()), default=0)
     for eid, r in results["endings"].items():
         e = by_id.get(eid, {})
         store_key = e.get("storeKey")
         builds = [_scored(b) for b in r["builds"]]
+        if len(builds) < builds_n:                              # a crashed ending finished fewer builds: pad to buildsPerCard with the
+            builds += [{}] * (builds_n - len(builds))           # sentinel (the 2026-09-22 PR 2035 review, low 4), or one surviving build would decide the column
         # a value per build for EVERY card: the scored column where the build scored it, else the _UNSCORED sentinel (review
-        # MED 1). The majority is over ALL builds, so a card scored in a minority of builds takes the sentinel majority and
-        # is not scored; a flap is any disagreement across the builds, the sentinel included (a done in one build of three
-        # against none is a flap the base missed by reading only the scored builds).
+        # MED 1). The column is a STRICT majority over ALL builds, so a card scored in a minority of builds wins no column;
+        # a flap is any disagreement across the builds, the sentinel included (a done in one build of three against none is a
+        # flap the base missed by reading only the scored builds).
         cards = set().union(*[set(b) for b in builds]) if builds else set()
         vals_of = {nid: [b.get(nid, _UNSCORED) for b in builds] for nid in cards}
         majority = {nid: mv for nid, mv in ((nid, _majority(vals)) for nid, vals in vals_of.items()) if mv is not _UNSCORED}
@@ -1107,40 +1129,39 @@ def measure(manifest, results, live_state, labels=None):
                     untouched += 1                              # a placed card the user did nothing to: so the columns partition the endings
                 # the join is by the node suffix (gN): the results carry the ending id prefix, the live store the store key,
                 # so the full keys never coincide by construction, and a store's top-level suffixes are distinct (safe)
-                cls = e.get("class")                            # the ending's heuristic class, for the by-class strata (review item 3, item 4)
-                lbl = labels.get(eid)                           # the labeller's class for this ending, when labels.json exists (review round two low 4)
+                cls = e.get("class")                            # the ending's heuristic class, for the by-class strata (the 2026-09-22 PR 2016/2022 fold)
+                raw_lbl = labels.get(eid)                       # the labeller's class, None when unlabelled (torn/missing/unstable): the attribution keeps None
+                lbl = raw_lbl or "unlabeled"                    # the bucket key: an unlabeled bucket so the buckets sum to the totals (PR 2035 MED)
                 ending_leak = any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in majority.items())
                 ending_fi = any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in majority.items())
                 if ending_leak:
                     leaks += 1
                     if cls in leaks_by_class:
                         leaks_by_class[cls] += 1
-                    if lbl:
-                        leaks_by_labeller[lbl] = leaks_by_labeller.get(lbl, 0) + 1
+                    leaks_by_labeller[lbl] = leaks_by_labeller.get(lbl, 0) + 1
                 if ending_fi:
                     false_interrupts += 1
                     if cls in fi_by_class:
                         fi_by_class[cls] += 1
-                    if lbl:
-                        fi_by_labeller[lbl] = fi_by_labeller.get(lbl, 0) + 1
+                    fi_by_labeller[lbl] = fi_by_labeller.get(lbl, 0) + 1
                 if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("answeredThenCleared") for nid, col in majority.items()):
                     answered_then_cleared += 1
                 # per-ending attribution, so the landing bar's sentence (leaks per loose-ended stratum, false interrupts in
                 # the finished stratum) is derivable from the outputs under either keying
                 attribution.append({"id": eid, "arm": results["arm"], "leak": ending_leak, "falseInterrupt": ending_fi,
-                                    "heuristicClass": cls, "labellerClass": lbl})
+                                    "heuristicClass": cls, "labellerClass": raw_lbl})
         else:
             unresolved += 1                                     # the manifest carries no live identity (an old or synthetic manifest): unresolvable
     failures = int(results.get("failures") or 0)
-    builds_n = results.get("buildsPerCard") or max((len(r.get("builds") or []) for r in results["endings"].values()), default=0)
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
             "answeredThenCleared": answered_then_cleared, "flaps": flaps, "gesturedEndings": gestured,
             "untouchedEndings": untouched, "unplacedEndings": unplaced, "unresolvedEndings": unresolved,
             "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
-            "stopped": results.get("stopped"), "failures": failures, "comparable": failures == 0, "buildsPerCard": builds_n,
+            "stopped": results.get("stopped"), "failures": failures, "nonArmFailures": int(results.get("nonArmFailures") or 0),
+            "comparable": failures == 0, "buildsPerCard": builds_n,
             "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
             "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
-            "attribution": attribution,
+            "labellerKeying": labels_state, "attribution": attribution,   # the labeller-keying source: present / absent / unreadable (PR 2035 MED)
             "liveReadErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
 
 
@@ -1150,31 +1171,38 @@ def report(corpus, run_root, live_state, figure=None):
     user's later gestures and the kernel's rulings per placed card; it exists only while the live root still lists the session."""
     corpus, run_root = Path(corpus), Path(run_root)
     manifest = json.loads((corpus / "manifest.json").read_text())
-    labels = {}                                                 # {ending id: labeller class} from labels.json when the labeller ran here (review round two low 4)
+    labels, labels_state = {}, "absent"                         # {ending id: labeller class} from labels.json + the keying source stamp (PR 2035 MED)
     labels_f = run_root / "labels.json"
     if labels_f.is_file():
         try:
             labels = {r["id"]: r.get("label") for r in json.loads(labels_f.read_text()) if r.get("id")}
+            labels_state = "present"
         except (OSError, ValueError):
-            labels = {}                                         # an unreadable labels.json leaves the labeller keying empty, never raises the report
+            labels_state = "unreadable"                         # a torn labels.json is RECORDED (labellerKeying), never a silent empty pass that reads as zero leaks per stratum
     rows = []
     for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
-        rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, labels=labels))
+        rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, labels=labels, labels_state=labels_state))
     lines = ["| arm | endings | gestured | untouched | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
+        cell = "0" if r["comparable"] else "%d, not comparable" % r["failures"]
+        if r.get("nonArmFailures"):
+            cell += " (%d non-arm)" % r["nonArmFailures"]       # an excluded failure is surfaced, never invisible (review 2026-09-22 PR 2022)
         lines.append("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %.2f | %d | %d | %s | %s |" % (
             r["arm"], r["endings"], r["gesturedEndings"], r["untouchedEndings"], r["unplacedEndings"], r["unresolvedEndings"],
             r["leaks"], r["falseInterrupts"], r["answeredThenCleared"], r["flaps"], r["costUsd"], r["calls"], r["callMsMean"],
-            "yes" if r["stopped"] else "no", "0" if r["comparable"] else "%d, not comparable" % r["failures"]))
+            "yes" if r["stopped"] else "no", cell))
     counts = sorted({r.get("buildsPerCard") or 0 for r in rows})
     scope = ("%d builds" % counts[0]) if (len(counts) == 1 and counts[0]) else \
             ("builds per arm (" + ", ".join("%s %d" % (r["arm"], r.get("buildsPerCard") or 0) for r in rows) + ")" if rows else "the builds")
-    note = ("Scoring: each card's column is the MAJORITY of %s per arm (a value per build, an unscored build as a sentinel); "
-            "a flap is a card whose per-build columns disagree (review MED 1). Comparability EXCLUDES only the non-arm "
-            "reshaping and summarizing judges (%s); every other failure row counts. Leaks and false interrupts "
-            "by class are in measures.json (leaksByClass / falseInterruptsByClass): offer, question and undone are the "
-            "loose-ended strata, finished the tier-one stratum." % (scope, ", ".join(NON_ARM_JUDGES)))
+    note = ("Scoring: each card's column is the STRICT MAJORITY of %s per arm (a value per build, an unscored build as a "
+            "sentinel; no strict majority means no column); a flap is a card whose per-build columns disagree. Comparability "
+            "EXCLUDES only the non-arm reshaping and summarizing judges (%s); every other failure row counts (the failures "
+            "cell shows the non-arm count beside it). Leaks and false interrupts are split by class in measures.json under "
+            "TWO keyings: leaksByClass / falseInterruptsByClass on the manifest's heuristic class, and leaksByLabellerClass / "
+            "falseInterruptsByLabellerClass on the labeller's class (labellerKeying names the source; an unlabeled bucket "
+            "carries the rest so both sum to the totals). Offer, question and undone are the loose-ended strata, finished the "
+            "tier-one stratum." % (scope, ", ".join(NON_ARM_JUDGES)))
     (run_root / "table.md").write_text("\n".join(lines) + "\n\n" + note + "\n")
     (run_root / "measures.json").write_text(json.dumps(rows, indent=1))
     if figure:
@@ -1286,7 +1314,7 @@ def _ending_ask(path, faults=None):
     non-meta user text, so every ending past a session's first turn got an earlier turn's ask (review 2026-09-22 item 1). A
     parse EXCEPTION fails LOUD like the corpus builder: it records the exception name in `faults` (the caller marks the row
     and totals it in the summary) and returns "" so the labeller still runs on the final text, the degradation on the record
-    (review round two low 2)."""
+    (the 2026-09-22 PR 2022 round-two review, low 2)."""
     records = _records(path)
     fsid = next((r.get("sessionId") for r in records if r.get("sessionId")), "s")
     try:
@@ -1359,7 +1387,7 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
             t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=row_faults)
             # a tierOneError marks a GENUINE read fault, when tier one could not be read AT ALL (t1 is None); a torn journal
             # row that still yields a label leaves that label standing with NO error beside it, the fault recorded at the run
-            # level (tierOneErrors in the summary), not on the labeled row (review low 7)
+            # level (tierOneErrors in the summary), not on the labeled row (the 2026-09-22 PR 2022 review, low 7)
             row_err = (row_faults[0][1] if row_faults else None) if t1 is None else None
         else:
             t1 = None
@@ -1368,8 +1396,8 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % e["id"])), None)
         text = _last_assistant_text(path) if path else ""
         ask_faults = []
-        ask = _ending_ask(path, faults=ask_faults) if path else ""    # the ENDING turn's own opener, not the session's first (review item 1)
-        ask_err = ask_faults[0] if ask_faults else None               # a parse fault on the ask, recorded loud (review round two low 2)
+        ask = _ending_ask(path, faults=ask_faults) if path else ""    # the ENDING turn's own opener, not the session's first (the 2026-09-22 PR 1960 note, item 1)
+        ask_err = ask_faults[0] if ask_faults else None               # a parse fault on the ask, recorded loud (the 2026-09-22 PR 2022 round-two review, low 2)
         if ask:
             text = text + "\nThe user's ask that opened the last turn: %s" % ask[:1500]
         a, c1 = ask_class(claude_bin, model, text, list(CLASSES), ledger)
@@ -1394,7 +1422,7 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
                "both": len(both), "agree": agree, "agreementPct": agree_pct,
                "heuristicMatchesLabel": sum(1 for r in rows if r["label"] and r["label"] == r["class"]), "spentUsd": round(spent, 4),
                "tierOneErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))],
-               "askParseErrors": sum(1 for r in rows if r.get("askError"))}   # endings whose ask could not be parsed (review round two low 2)
+               "askParseErrors": sum(1 for r in rows if r.get("askError"))}   # endings whose ask could not be parsed (the 2026-09-22 PR 2022 round-two review, low 2)
     (run_root / "labels-summary.json").write_text(json.dumps(summary, indent=1))
     return summary
 

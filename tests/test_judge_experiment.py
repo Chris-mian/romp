@@ -55,13 +55,20 @@ cand = "CANDIDATE-MARK" in sysp
 judge = ("labeller" if "You classify the final assistant message" in sysp else "closer" if "turn-end auditor" in sysp
          else "grouper" if "You are a grouper" in sysp else "planner" if "planner" in sysp[:120]
          else "unblocker" if "marked blocked" in sysp else "other")
+import hashlib as _hl                                        # review PR 2022: input identity across builds up to the per-call security mark
+_blob = sysp + "\n" + user
+_mk = re.search(r"<[a-zA-Z_-]+ ([0-9a-f]{8})>", _blob)       # the section mark (_mark: 8 CSPRNG hex, fresh per call)
+_norm = _blob.replace(_mk.group(1), "MARK") if _mk else _blob
+raw_hash = _hl.sha256(_blob.encode()).hexdigest()[:16]
+mark_norm = _hl.sha256(_norm.encode()).hexdigest()[:16]      # equal across builds when the input is identical up to the mark
 log = os.environ.get("JE_TEST_LOG")
 if log:
     with open(log, "a") as fh:
         fh.write(json.dumps({"judge": judge, "candidate": cand, "head": sysp[:40], "goalHistory": "<goal-history" in user,
                              "menu": (re.search(r"<open-goals[^>]*>\n(.*?)\n</open-goals", user, re.S) or [None, ""])[1] if judge == "planner" else None,
                              "argv": args, "cwd": os.getcwd(),                            # review MED 2: the flags and the cwd the caller ran, observed
-                             "credPresent": [k for k in SENSITIVE if os.environ.get(k)]}) + "\n")   # which sensitive names ride the child env (presence, never a value)
+                             "credPresent": [k for k in SENSITIVE if os.environ.get(k)],  # which sensitive names ride the child env (presence, never a value)
+                             "rawHash": raw_hash, "markNorm": mark_norm}) + "\n")         # raw differs per call (the mark); mark-normalized is equal across builds
 m = re.search(r"<(turn|segment|message)[^>]*>\n(.*?)\n</(turn|segment|message)", user, re.S)
 text = m.group(2) if m else user
 flag = bool(re.search(r"i can also|which option|not done", text, re.I))
@@ -433,6 +440,18 @@ class Harness(unittest.TestCase):
         self.assertIsNone(base["stopped"])
         closer = self._calls("closer")
         self.assertTrue(closer and all(r["goalHistory"] for r in closer), "every closer call carried the goal-history section production sends: %r" % closer[:2])
+        # review PR 2022 (item 10): the pre-flight probe's cost note in the results record equals the fake's envelope
+        self.assertEqual(base["preflightProbe"], {"cost": 0.01, "ms": 7, "sessionId": "11111111-2222-4333-8444-555555555555"},
+                         "the probe's cost note is the fake's envelope: %r" % base.get("preflightProbe"))
+        # review PR 2022 (item 3): the builds' inputs are IDENTICAL up to the per-call security mark, made a fact here (the
+        # 0-flaps assertion above witnesses determinism given fixed replies, not input identity). For the base arm's planner
+        # calls, every RAW input is unique (a fresh mark per call), and mark-normalized they collapse to strictly fewer: the
+        # three builds of each ending send the same normalized input. A `>=` here would also hold; the collapse is the point.
+        base_planner = [r for r in self._calls("planner") if not r["candidate"]]
+        raw = [r["rawHash"] for r in base_planner]; norm = set(r["markNorm"] for r in base_planner)
+        self.assertEqual(len(set(raw)), len(raw), "the security mark makes every raw planner input unique per call: %d unique of %d" % (len(set(raw)), len(raw)))
+        self.assertLess(len(norm), len(raw), "mark-normalized, the builds collapse (input identity up to the mark): %d normalized of %d calls" % (len(norm), len(raw)))
+        self.assertEqual(len(raw) % 3, 0, "three builds ran, so the base arm's planner calls are a multiple of three: %d" % len(raw))
 
     def _add_node_log(self, sid, suffix, ev):
         """Append an event to a live top-level node's log (a helper for the unblocker-ruling pins)."""
@@ -514,11 +533,11 @@ class Harness(unittest.TestCase):
                          "the unblocker judge's answered lift is answered-then-cleared, not a false interrupt")
         self.assertEqual(score({"ev_t": c + 300, "src": "unblocker", "kind": "unblock", "why": "answered in passing: made moot by a later completion"}), (0, 1),
                          "item 6: a MOOT lift by the unblocker also suppresses (a top nobody answered, lifted moot then cleared): answered-then-cleared")
-        # L1 + the same-second bound: a lift after the clear, and one AT the placement's own second, are not this clear's reply
+        # L1 + the same-second bound: a lift after the clear, and one AT THE CUT (the boundary), are not this clear's reply
         self.assertEqual(score({"ev_t": c + 900, "src": "unblocker", "kind": "unblock", "why": "answered in passing"}), (1, 0),
                          "L1: a judge lift AFTER the clear is not the reply this clear crossed off: a false interrupt")
-        self.assertEqual(score({"ev_t": s, "src": "unblocker", "kind": "unblock", "why": "answered in passing"}), (1, 0),
-                         "a judge lift at the placement's own second is not strictly after it: conservatively a false interrupt")
+        self.assertEqual(score({"ev_t": c, "src": "unblocker", "kind": "unblock", "why": "answered in passing"}), (1, 0),
+                         "PR 2035 low 6: a judge lift AT the cut is not strictly after it, so it does not suppress (a non-strict `<` would): a false interrupt")
 
     def test_later_gestures_key_on_the_cut_not_the_placement_time(self):
         """Review item 2: a placed top's 'later' user gestures key on the ending's CUT, not the placement's own ev_t (a
@@ -549,6 +568,29 @@ class Harness(unittest.TestCase):
         self._live_store_with_done(sid, start, cut, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": mid}])
         self.assertIsNone(self.je.tier_one_label(self.state, sid, cut, start),
                           "a lone mid-turn clear is before the cut: not a later verdict, so no tier-one label")
+
+    def test_a_gesture_exactly_at_the_cut_is_not_later_in_either_function(self):
+        """PR 2035 low 6: the later-gesture boundary is STRICT (> cut). A cross-off or a follow-up landing exactly AT the cut
+        is not a later gesture, in both placement_gestures (the measure) and tier_one_label; a non-strict `>=` would count
+        it. Nothing in the earlier pins sat exactly at the cut."""
+        sid = SIDS[1]
+        e = self._ending(self._corpus(name="atcut")[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        manifest = {"endings": [e]}
+        # placement_gestures: a needs_input top with a cross-off AT the cut is not later -> no false interrupt, untouched
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c}])
+        results_ni = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        mm = self.je.measure(manifest, results_ni, self.state)
+        self.assertEqual((mm["falseInterrupts"], mm["untouchedEndings"]), (0, 1), "a cross-off AT the cut is not a later gesture: %r" % mm)
+        # a completed top with a follow-up AT the cut is not a re-open -> no leak
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "followup", "t": c}])
+        results_c = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "completed", "scored": True}}] * 2}}}
+        self.assertEqual(self.je.measure(manifest, results_c, self.state)["leaks"], 0, "a follow-up AT the cut is not a re-open")
+        # tier_one_label: neither a cross-off nor a follow-up AT the cut is a later verdict
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c}])
+        self.assertIsNone(self.je.tier_one_label(self.state, sid, c, s), "a cross-off AT the cut is not a later verdict")
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "followup", "t": c}])
+        self.assertIsNone(self.je.tier_one_label(self.state, sid, c, s), "a follow-up AT the cut is not a later verdict")
 
     def test_the_harness_mute_why_matches_the_kernel(self):
         """The harness's mute-clear why must equal the kernel's own literal, or the mute exclusion drifts silent."""
@@ -745,13 +787,14 @@ class Harness(unittest.TestCase):
         resolved billing (jd._judge_auth), not a bare `claude -p`, and is the SOLE gate: there is no hard apiKeyHelper-file
         refusal (which false-refused a login-road operator). The fake answers logged-in, so the probe passes and returns a
         cost note; with JE_TEST_NOAUTH it answers 'Not logged in' and preflight refuses, quoting the CLI's words (never
-        empty braces) and naming the hand-placed-helper remedy, never a rebuild (review low 3, low 4)."""
+        empty braces) and naming the hand-placed-helper remedy, never a rebuild (the 2026-09-22 PR 2022 review, lows 3 and 4)."""
         dest, m = self._corpus(name="preflight")
         saved_env = dict(os.environ)
         try:
             jd = self.je.load_judge(Path(self.td, "pf-state"), Path(dest, "claude"), self.fake)
-            probe = self.je.preflight_auth(jd, jd.TRIAGE_MODEL)   # the fake answers logged-in: no raise (review low e: no claude_bin param)
+            probe = self.je.preflight_auth(jd, jd.TRIAGE_MODEL)   # the fake answers logged-in: no raise (the 2026-09-22 PR 2022 review, low e: no claude_bin param)
             self.assertIsInstance(probe, dict); self.assertIn("cost", probe); self.assertIn("sessionId", probe)
+            self.assertEqual(probe["ms"], 7, "the probe note carries the envelope's duration_ms, not None or a string (the 2026-09-22 PR 2022 review, item 10): %r" % probe)
             os.environ["JE_TEST_NOAUTH"] = "1"
             with self.assertRaises(SystemExit) as cm:
                 self.je.preflight_auth(jd, jd.TRIAGE_MODEL)
@@ -762,6 +805,10 @@ class Harness(unittest.TestCase):
         self.assertNotIn("{}", msg, "never empty braces (the decode-failure branch keeps and quotes the process): %r" % msg)
         self.assertIn("hand-place", msg, "the refusal names the hand-placed-helper remedy: %r" % msg)
         self.assertIn("do NOT rebuild", msg, "the refusal tells the operator NOT to rebuild (a rebuild re-picks endings): %r" % msg)
+        # review PR 2022 item 4: the login remedy is the ENVIRONMENT-token road (the child's config dir is the corpus root,
+        # so a file-based `claude login` never reaches it); the remedy names the token vars, not "sign a login in on this machine"
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", msg, "the refusal names the environment login-token road: %r" % msg)
+        self.assertNotIn("on this machine", msg, "the refusal does not point at a file-based machine login the probe's child cannot read: %r" % msg)
 
     def test_the_preflight_probe_runs_the_judge_flags_in_the_scratch_with_creds_stripped(self):
         """Review MED 2: the pre-flight probe runs the JUDGES' own command and env, not a bare `claude -p`. The fake records
@@ -785,8 +832,8 @@ class Harness(unittest.TestCase):
             self.assertIn(flag, argv, "the probe carries the judges' flag %s (not a bare claude -p): %r" % (flag, argv))
         self.assertEqual(probe[0]["credPresent"], [],
                          "the ambient credential and 1Password/OP names are stripped from the probe env: %r" % probe[0]["credPresent"])
-        self.assertEqual(probe[0]["cwd"], str(jd._ensure_judge_scratch()),
-                         "the probe runs in the romp judge scratch, not the checkout: %r" % probe[0]["cwd"])
+        self.assertEqual(os.path.realpath(probe[0]["cwd"]), os.path.realpath(str(jd._ensure_judge_scratch())),
+                         "the probe runs in the romp judge scratch, not the checkout (realpath both sides: the temp dir is a symlink on macOS): %r" % probe[0]["cwd"])
 
     def test_the_preflight_probe_timeout_tracks_the_alarm(self):
         """Review round two low 3: the probe's timeout tracks the judge module's own alarm (CALL_ALARM_S + 5), not a
@@ -859,6 +906,16 @@ class Harness(unittest.TestCase):
         run_root = os.path.join(self.td, "runs-noauth")
         os.environ["JE_TEST_NOAUTH"] = "1"
         try:
+            # review PR 2022: drive the in-process arm DIRECTLY, so the refusal is the pre-flight's SystemExit (not any proxy
+            # error raised ahead of it), and it names the failure in its own words
+            jd = self.je.load_judge(Path(self.td, "noauth-state"), Path(dest, "claude"), self.fake)
+            with self.assertRaises(SystemExit) as cm:
+                self.je.run_arm_inprocess(dest, "baseline", None, run_root, None, self.fake, now=T0 + 10**6)
+            msg = str(cm.exception)
+            self.assertIn("did not authenticate", msg, "the refusal is the pre-flight probe's own words: %r" % msg)
+            self.assertIn("Not logged in", msg, "the refusal quotes the CLI: %r" % msg)
+            self.assertFalse(os.path.exists(os.path.join(run_root, "baseline", "results.json")), "the in-process arm wrote no results record before refusing")
+            # and the subprocess road propagates it as a CalledProcessError (the propagation check)
             with self.assertRaises(subprocess.CalledProcessError):
                 self.je.run_arm(dest, "baseline", None, run_root, None, self.fake)
         finally:
@@ -1204,6 +1261,8 @@ class Harness(unittest.TestCase):
         Path(mixed).write_text("".join(json.dumps(r) + "\n" for r in rows))
         self.assertEqual(counter(mixed), 5, "placer, opener, triage (rate-limited) and romp (history-unreadable) count with the "
                          "planner; the grouper, consolidator, distiller and gister rows do not")
+        # review PR 2022 (nonArmFailures): the excluded rows are counted too, so an excluded fault is never invisible
+        self.assertEqual(self.je.count_non_arm_failure_rows(mixed), 4, "the four non-arm rows (grouper, consolidator, distiller, gister) are counted apart")
         # a rejected closer reply files its own row: it is counted once, not once as a row and once as a None
         dest, m = self._corpus()
         run_root = os.path.join(self.td, "runs")
@@ -1891,23 +1950,36 @@ class Harness(unittest.TestCase):
 
 
     # ── this round: the three measure levers and the post-merge review items ──
-    def test_the_arm_disables_the_grouper_and_the_consolidator(self):
+    def test_the_arm_disables_the_grouper_executed_and_the_consolidator_a_safety_belt(self):
         """Lever A: arm runs compare WITHOUT regrouping or consolidation. The grouper and consolidator are not measured
         judges, their reshaping of the top set is the largest flap component, and the grouper's stuck calls are the
-        120s-alarm timeouts. _plan_session calls _group_store after each placement; the harness no-ops it, so a seed with
-        several open tops that would otherwise trip the grouper makes no grouper call. The fake logs each call's judge."""
+        120s-alarm timeouts. _plan_session calls _group_store after each placement, so the grouper no-op is EXECUTED by an
+        arm pass (a seed with several open tops that would otherwise trip the grouper makes no grouper call); the consolidator
+        no-op is a SAFETY BELT, reached by no arm pass (only run_consolidate drives it), kept so an in-process arm cannot leave
+        it patched. The fake logs each call's judge. The arm's RESULT is captured and asserted so a signature-slip no-op
+        (`lambda: 0`) that crashes every ending is caught here, not only elsewhere (review 2026-09-22 PR 2022)."""
         dest, m = self._corpus(name="nogroup")
-        eid = m["endings"][0]["id"]
-        # a seed of THREE open tops: the planner's one placement leaves two, which without the no-op trips the grouper
+        e0 = m["endings"][0]; eid = e0["id"]; st = float(e0["startT"])
+        # a seed of THREE open tops born IN the turn (so all three score): the planner's one placement leaves two, which
+        # without the grouper no-op trips the grouper
         nodes = {("%s:g%d" % (eid, i)): {"id": "%s:g%d" % (eid, i), "text": "Open top %d" % i, "parentId": None,
-                                         "t": T0 + i, "trail": [], "log": []} for i in (1, 2, 3)}
+                                         "t": st + i, "trail": [], "log": []} for i in (1, 2, 3)}
         (Path(dest) / "state" / "romp" / "goals" / (eid + ".json")).write_text(json.dumps(
             {"rompUuid": eid, "seq": 3, "placementsV": 14, "placements": {}, "status": {}, "nodes": nodes,
              "closedTurns": [], "closedSig": {}}))
         run_root = os.path.join(self.td, "runs-nogroup")
-        self.je.run_arm_inprocess(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6, builds=1)
+        res = self.je.run_arm_inprocess(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6, builds=1)
         self.assertEqual(self._calls("grouper"), [], "the arm made no grouper or consolidator model call: %r" % self._calls("grouper"))
         self.assertTrue(self._calls("planner"), "the planner still ran (the grouper is what is disabled)")
+        # the arm SURVIVED the no-op: no failures, the seeded ending did not crash, its build carries the three tops all
+        # scored with g1 completed (the closer's done) and g2, g3 working. A signature-slip no-op crashes every ending.
+        self.assertEqual(res["failures"], 0, "the grouper no-op did not crash the arm: %r" % res)
+        end = res["endings"][eid]
+        self.assertNotIn("crashed", end, "the seeded ending did not crash: %r" % end)
+        build = end["builds"][0]                                # keyed by the node SUFFIX (gN), the measure's join key
+        self.assertEqual(sorted(build), ["g1", "g2", "g3"], "the three tops are in the build: %r" % build)
+        self.assertEqual(build["g1"]["column"], "completed", "the closer's done put g1 completed: %r" % build)
+        self.assertTrue(all(build[k]["scored"] for k in build), "the three in-turn tops are all scored: %r" % build)
         # review low 3: the no-ops are restored in the finally (an in-process arm must not leave the module patched)
         jd_loaded = sys.modules[self.je.JUDGE_MODULE_NAME]
         self.assertEqual((jd_loaded._group_store.__name__, jd_loaded._consolidate_store.__name__), ("_group_store", "_consolidate_store"),
@@ -2021,6 +2093,96 @@ class Harness(unittest.TestCase):
         for cols in (["completed", "needs_input", None], [None, "needs_input", "completed"]):
             mm = self.je.measure(manifest, res(cols), self.state)
             self.assertEqual((mm["leaks"], mm["flaps"]), (0, 1), "sentinel-tie card: no leak, one flap, order %r: %r" % (cols, mm))
+
+    def test_a_column_needs_a_strict_majority_of_the_builds(self):
+        """PR 2035 round one MEDIUM: a card wins a column only on a STRICT majority of ALL builds, else no column (the
+        sentinel), so no single build decides in any order. The pre-fix rule (first-seen among the modal real columns) let
+        the first build decide an all-real tie: [completed, needs_input, working] scored `completed` and a leak, and a
+        two-build [completed, needs_input] scored `completed` while its reverse scored `needs_input`. The odd-first and
+        odd-middle cases (a real 2-of-3 majority) still score, catching a first-build or middle-build mutant."""
+        U = self.je._UNSCORED
+        self.assertIs(self.je._majority(["completed", "needs_input", "working"]), U, "three different real columns: no strict majority, no column")
+        self.assertIs(self.je._majority(["completed", "needs_input"]), U, "a two-build real tie: no column, either order")
+        self.assertIs(self.je._majority(["needs_input", "completed"]), U, "the reverse: also no column (order-independent)")
+        self.assertEqual(self.je._majority(["needs_input", "completed", "completed"]), "completed", "odd-first: a real 2-of-3 majority scores")
+        self.assertEqual(self.je._majority(["completed", "needs_input", "completed"]), "completed", "odd-middle: the same")
+        self.assertEqual(self.je._majority(["completed", "completed", U]), "completed", "2 of 3 real is a strict majority over the sentinel")
+        self.assertIs(self.je._majority(["completed", U]), U, "1 of 2 is not a strict majority")
+        # through the measure on a re-opened card: an all-real tie and a two-build tie score NO leak, in every order
+        m = self._corpus(name="strict")[1]
+        e = self._ending(m, SIDS[0], 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(SIDS[0], s, c, [{"node": SIDS[0] + ":g1", "op": "followup", "t": c + 7200}])   # re-opened g1
+        manifest = {"endings": [e]}
+        def res(cols):
+            builds = [({} if col is None else {e["id"] + ":g1": {"column": col, "scored": True}}) for col in cols]
+            return {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": builds}}}
+        for cols in (["completed", "needs_input", "working"], ["working", "needs_input", "completed"],
+                     ["completed", "needs_input"], ["needs_input", "completed"]):
+            mm = self.je.measure(manifest, res(cols), self.state)
+            self.assertEqual(mm["leaks"], 0, "no strict majority: no column, no leak, order %r: %r" % (cols, mm))
+        for cols in (["needs_input", "completed", "completed"], ["completed", "needs_input", "completed"]):
+            mm = self.je.measure(manifest, res(cols), self.state)
+            self.assertEqual(mm["leaks"], 1, "a real 2-of-3 majority completed scores the leak, order %r: %r" % (cols, mm))
+
+    def test_report_keys_labeller_buckets_from_labels_and_records_a_torn_file(self):
+        """PR 2035 round one MEDIUM: report keys the labeller buckets from labels.json's `label` (not the heuristic
+        `class`), adds an `unlabeled` bucket so the buckets sum to the totals, and stamps the keying's source; a torn
+        labels.json is recorded (labellerKeying `unreadable`), never a silent empty pass. The head fell back to an empty
+        mapping and dropped unlabeled endings, so a torn or missing file read as zero leaks in every stratum."""
+        dest, m = self._corpus(name="lblbucket")
+        e = self._ending(m, SIDS[0], 1)                      # heuristic class 'question'
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(SIDS[0], s, c, [{"node": SIDS[0] + ":g1", "op": "followup", "t": c + 7200}])   # re-opened -> a leak
+        run_root = os.path.join(self.td, "runs-lblbucket"); os.makedirs(os.path.join(run_root, "baseline"))
+        results = {"arm": "baseline", "failures": 0, "buildsPerCard": 3,
+                   "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "completed", "scored": True}}] * 3}}}
+        Path(run_root, "baseline", "results.json").write_text(json.dumps(results))
+        # a real labels.json: the leak ending labelled 'finished' (label), heuristic 'question' (class); reading `class` would misbucket
+        Path(run_root, "labels.json").write_text(json.dumps([{"id": e["id"], "class": "question", "label": "finished"}]))
+        r = self.je.report(dest, run_root, self.state, figure=None)[0]
+        self.assertEqual(r["leaks"], 1, "the re-opened completed card is a leak")
+        self.assertEqual(r.get("labellerKeying"), "present", "the keying source is stamped: %r" % r.get("labellerKeying"))
+        self.assertEqual(r.get("leaksByLabellerClass"), {"finished": 1}, "keyed on the labeller's label, not the heuristic class: %r" % r.get("leaksByLabellerClass"))
+        self.assertEqual(sum((r.get("leaksByLabellerClass") or {}).values()), r["leaks"], "the labeller buckets sum to the total")
+        # a torn labels.json: recorded, not a silent empty pass; the leak buckets under 'unlabeled', still summing to the total
+        Path(run_root, "labels.json").write_text("{ torn not json\n")
+        r2 = self.je.report(dest, run_root, self.state, figure=None)[0]
+        self.assertEqual(r2.get("labellerKeying"), "unreadable", "a torn labels.json is recorded as unreadable, not silently empty: %r" % r2.get("labellerKeying"))
+        self.assertEqual(r2.get("leaksByLabellerClass"), {"unlabeled": 1}, "a torn file buckets the leak under unlabeled, summing to the total: %r" % r2.get("leaksByLabellerClass"))
+
+    def test_non_arm_failures_are_carried_and_printed_beside_the_comparable_count(self):
+        """Review PR 2022: an excluded (non-arm) failure is counted nowhere else, so the measure carries nonArmFailures into
+        the record and the report prints it in the failures cell (a comparable arm reads '0 (2 non-arm)')."""
+        dest, m = self._corpus(name="nonarm")
+        e = self._ending(m, SIDS[0], 0)
+        manifest = {"endings": [e]}
+        results = {"arm": "baseline", "failures": 0, "nonArmFailures": 2, "buildsPerCard": 3,
+                   "endings": {e["id"]: {"builds": [{}] * 3}}}
+        mm = self.je.measure(manifest, results, self.state)
+        self.assertEqual((mm["failures"], mm.get("nonArmFailures"), mm["comparable"]), (0, 2, True),
+                         "the excluded failures ride the record beside the comparable count: %r" % mm)
+        run_root = os.path.join(self.td, "runs-nonarm"); os.makedirs(os.path.join(run_root, "baseline"))
+        Path(run_root, "baseline", "results.json").write_text(json.dumps(results))
+        self.je.report(dest, run_root, self.state, figure=None)
+        self.assertIn("0 (2 non-arm)", Path(run_root, "table.md").read_text(), "the failures cell surfaces the excluded count")
+
+    def test_a_crashed_ending_is_padded_to_the_build_count_before_scoring(self):
+        """PR 2035 round one low 4: a crash leaves fewer builds than buildsPerCard, so the finished builds must be padded to
+        buildsPerCard with the sentinel before scoring, or one surviving build decides the column with no flap. A crashed
+        one-of-three ending on a re-opened card scores no leak (the one completed build is a minority once padded) and one
+        flap. The head scored it from the single build: a leak."""
+        m = self._corpus(name="crashpad")[1]
+        e = self._ending(m, SIDS[0], 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(SIDS[0], s, c, [{"node": SIDS[0] + ":g1", "op": "followup", "t": c + 7200}])   # re-opened g1
+        manifest = {"endings": [e]}
+        results = {"arm": "x", "failures": 4, "buildsPerCard": 3,
+                   "endings": {e["id"]: {"class": e["class"], "crashed": "synthetic",
+                                         "builds": [{e["id"] + ":g1": {"column": "completed", "scored": True}}]}}}   # one finished build, then a crash
+        mm = self.je.measure(manifest, results, self.state)
+        self.assertEqual((mm["leaks"], mm["flaps"]), (0, 1),
+                         "the crashed ending is padded to 3 with the sentinel: one completed build is no strict majority, no leak, one flap: %r" % mm)
 
     def test_the_build_count_and_the_majority_rule_are_stamped(self):
         """Review MED 1: the per-card build count and the majority/flap definition are stamped in results.json and the report
