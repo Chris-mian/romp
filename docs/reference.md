@@ -390,10 +390,13 @@ The switch's status line in the gear comes from the authed `/models` payload's `
 `{"enabled", "declared", "gateway", "error"}`: the ids the kernel parsed out of the variable, whether
 a gateway is configured (`ANTHROPIC_BASE_URL` in the service's environment first, else in Claude
 Code's managed or user settings, pointing anywhere but Anthropic; `null` while the switch is off,
-when nothing is probed), and the standing advisory: while on, nothing declared, no gateway, a
-listing that could not be fetched, or a settings file that could not be read (a fixed phrase; the
-detail goes to the kernel log); after an off flip, the live sessions and the judge tiers still on a
-removed model. A declared id the first-party grammar owns (a Claude version id or family alias) is
+when nothing is probed), and the standing advisory: while on, nothing declared, no gateway, or a
+settings file that could not be read (a fixed phrase; the detail goes to the kernel log), each read
+live at every request so the line clears as soon as the operator fixes it, and a listing that could
+not be fetched; after an off flip, the live sessions, the judge tiers and the default for new comment
+threads still on a removed model (the stores are left as they are; a new thread whose default is a
+removed model inherits its parent). A removed model is refused on every pick road, the comment
+thread dialog and the new-session seed included. A declared id the first-party grammar owns (a Claude version id or family alias) is
 skipped, said once in the log, and reported as not declared; a listing or an apply that lands after
 a later flip installs nothing and changes nothing. `/version` carries
 `routerModels`, the switch's value, for the gear's checkbox.

@@ -284,6 +284,68 @@ class NewBodyRoad(_OnThenOff):
         self.assertEqual(self.codex.calls, [(SID, "gpt-5-codex")])
 
 
+class NewThreadRoad(_OnThenOff):
+    """The comment-thread create door (the verify round's find: the one create door around the vouch)."""
+
+    def _create(self, model):
+        # the name claim is stubbed to REFUSE (recording the ask): a create that reaches it passed the vouch and stops
+        # there, so the test never forks or sends
+        claimed = []
+        with mock.patch.object(km.Sessions, "backend_for", lambda sid: self.be), \
+                mock.patch.object(km, "_sdk_ready", lambda: True), \
+                mock.patch.object(km, "_session_row", lambda sid, now: {"name": "web", "path": str(km.jd.STATE / "none.jsonl")}), \
+                mock.patch.object(km, "_claim_session_name", lambda nm, kind, sid: claimed.append(nm) or "claimed-in-test"):
+            self.be.fork = lambda *a, **k: None
+            err, tid = km._comment_create(SID, "", "a passage", "a comment", name="t1", model=model)
+        return err, tid, claimed
+
+    def test_a_removed_id_picked_in_the_dialog_is_refused_before_the_name_claim(self):
+        err, tid, claimed = self._create(REMOVED)
+        self.assertEqual((err, tid), (km._model_refusal(REMOVED), None))
+        self.assertEqual(claimed, [], "nothing latched: no name claimed, no fork")
+        self.assertIn(REMOVED, self.err.getvalue())
+
+    def test_a_first_party_pick_passes_the_vouch(self):
+        err, tid, claimed = self._create("sonnet")
+        self.assertEqual((err, tid), ("claimed-in-test", None), "the vouch passed and the create went on to the name claim")
+        self.assertEqual(claimed, ["t1"])
+
+    def test_a_stored_comment_default_the_kernel_cannot_vouch_for_falls_to_the_parent(self):
+        (km.jd.STATE / "comment-model").write_text(REMOVED + "\n")
+        self.addCleanup(lambda: (km.jd.STATE / "comment-model").unlink(missing_ok=True))
+        self.assertEqual(km._comment_launch_prefs("", "", "")[0], "", "inherit the parent, not the removed id")
+        self.assertIn(REMOVED, self.err.getvalue())
+        self.assertEqual((km.jd.STATE / "comment-model").read_text().strip(), REMOVED, "the store is left as it is")
+        (km.jd.STATE / "comment-model").write_text("sonnet\n")
+        self.assertEqual(km._comment_launch_prefs("", "", "")[0], "sonnet", "a vouched default is used")
+
+
+class SeedInflight(_OnThenOff):
+    def _seed(self, value):
+        km._sdk_defaults_module().write_sdk_default(km.jd.STATE, model=value)
+
+    def _read(self):
+        return str(km._sdk_defaults_module().read_sdk_defaults(km.jd.STATE).get("model") or "")
+
+    def test_a_seed_the_listing_may_still_vouch_is_left_alone_while_the_fetch_is_in_flight(self):
+        # the verify round's find: a create right after boot reset a valid remembered gateway model to default before
+        # the gateway's listing had landed
+        self._seed("gw-7-nova")
+        with mock.patch.object(km, "_router_listing_inflight", lambda: True):
+            km._reset_unvouched_seed()
+        self.assertEqual(self._read(), "gw-7-nova", "left as it is")
+        self.assertIn("still being fetched", self.err.getvalue())
+        with mock.patch.object(km, "_router_listing_inflight", lambda: False):
+            km._reset_unvouched_seed()
+        self.assertEqual(self._read(), "default", "reset once no listing is pending")
+
+    def test_a_gpt_shaped_seed_is_reset_too(self):
+        # the seed feeds SDK sessions: the Codex exception does not apply (a mutant that applied it passed the suite)
+        self._seed("gpt-5-codex")
+        km._reset_unvouched_seed()
+        self.assertEqual(self._read(), "default")
+
+
 class Seed(_OnThenOff):
     """The create door, with the REAL SdkBackend spawn over this root (the copy of the seed into the row is the
     line under test) and the connect and the pushes stubbed."""

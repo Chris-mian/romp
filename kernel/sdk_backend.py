@@ -666,6 +666,7 @@ _ROUTER_FIRST_PARTY_ALIASES = ("fable", "opus", "sonnet", "haiku")
 
 
 def _router_first_party(mid):
+    mid = re.sub(r"\[[^\]]*\]$", "", str(mid or "").strip().lower())   # the kernel's _model_id_clean: lower-cased, tag stripped
     return mid in _ROUTER_FIRST_PARTY_ALIASES or bool(_ROUTER_FIRST_PARTY_RE.match(mid))
 
 

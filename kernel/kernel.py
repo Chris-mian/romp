@@ -3139,7 +3139,11 @@ _ROUTER_EVER = set()                         # every id installed this kernel li
 _ROUTER_GEN = [0]                            # the switch's generation: bumped under _SETTINGS_LOCK at every applied flip and at boot; an
 #                                              apply or remove carrying an older generation is stale (a listing fetch that lands after an
 #                                              off flip, a declared apply delayed past a concurrent off) and is discarded, never installed
-_router_status_note = [None]                 # the standing advisory (no gateway / nothing declared / N live on a removed id)
+_router_status_note = [None]                 # the standing EVENT-sourced advisory (the off flip's live sessions and tiers on a removed
+#                                              model; a listing that failed): written only through _router_set_note, at its own
+#                                              generation. The probe-shaped advisories (nothing declared, no gateway, a settings fault)
+#                                              are derived LIVE in _router_status, never frozen here (verify find, 2026-09-22)
+_ROUTER_FETCH_GEN = [None]                   # the generation whose listing fetch is in flight (None when none): the create door reads it
 _router_probe_said = [None]                  # the settings-read fault last said on stderr (once per distinct fault; the payload carries a
 #                                              static phrase, never the file's path)
 # The advisories the authed /models `router` section carries (the gear's status line prints them): static phrases, never a
@@ -3230,6 +3234,7 @@ def _router_first_party(mid):
     """True for an id the first-party grammar owns (a family alias such as opus, a family's version id, or an id the
     catalog files under a family): such an id is never a gateway row, on either road (the declared list, the
     gateway's listing). sdk_backend._router_first_party is the twin (the regex and the shipped family names)."""
+    mid = _model_id_clean(mid)   # lower-cased, a [1m]-style tag stripped: 'Opus' or 'claude-opus-4-8[1m]' is first-party too
     return mid in MODEL_VERSIONS or bool(_catalog_family(mid)) or bool(_MODEL_ID_RE.match(mid))
 
 
@@ -3341,6 +3346,26 @@ def _router_models_gt():
     return _gt_int(d.get("gt")) if isinstance(d, dict) else 0
 
 
+def _router_set_note(gen, text):
+    """The one writer of the standing advisory: under _catalog_lock, and only when `gen` is still the current switch
+    generation. A slower earlier flip's bookkeeping (its note write, its stderr summary, its models frame) must not land
+    over a later flip's: before this, the note was written after the apply or remove with no check, so two overlapping
+    flips could leave an on switch showing the off flip's advisory, or an off switch showing none (verify find,
+    2026-09-22). Returns whether the write landed; a caller that reads False says nothing and sends nothing."""
+    with _catalog_lock:
+        if gen is not None and gen != _ROUTER_GEN[0]:
+            return False
+        _router_status_note[0] = text
+        return True
+
+
+def _router_listing_inflight():
+    """Whether a listing fetch for the CURRENT generation is still running (the create door leaves an unvouched seed
+    alone while one is: the seed may be one of the ids the listing is about to install)."""
+    with _catalog_lock:
+        return _ROUTER_FETCH_GEN[0] is not None and _ROUTER_FETCH_GEN[0] == _ROUTER_GEN[0]
+
+
 def _router_declared_effective():
     """The declared list AFTER the first-party skip: what the payload reports as declared and what the pickers can
     gain (a declared Claude version id or family alias is never a gateway row; the apply says the skip)."""
@@ -3381,20 +3406,22 @@ def _router_apply_declared(reason, gen=None):
     declared = [d for d in raw if not _router_first_party(d)]
     url = (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()
     gw, gerr = _router_gateway_configured()
+    # the flip's own word on stderr; the payload's advisory for these states is derived live in _router_status
     if not declared and not url:
-        _router_status_note[0] = ROUTER_NOTE_NOTHING_DECLARED
         sys.stderr.write("extra models (%s): the switch is on but ROMP_ROUTER_MODELS declares nothing; nothing to offer\n" % reason)
     elif not gw:
-        _router_status_note[0] = gerr or ROUTER_NOTE_NO_GATEWAY
-        sys.stderr.write("extra models (%s): %s\n" % (reason, _router_status_note[0]))
-    else:
-        _router_status_note[0] = None
+        sys.stderr.write("extra models (%s): %s\n" % (reason, gerr or ROUTER_NOTE_NO_GATEWAY))
+    if not _router_set_note(gen, None):      # an on flip clears the off flip's note, at its own generation only
+        return None
     if added:
         sys.stderr.write("extra models (%s): %d joined the pickers: %s\n" % (reason, len(added), ", ".join(added)))
     if url and not _router_fetch_allowed():
         sys.stderr.write("extra models (%s): ROMP_MODEL_CATALOG=off, the gateway's model list is not fetched; the declared "
                          "list is offered\n" % reason)
     elif url:
+        with _catalog_lock:
+            _ROUTER_FETCH_GEN[0] = gen
+
         def go():
             try:
                 more = _apply_router_families(_fetch_router_models(url), gen=gen, reason=reason)
@@ -3414,6 +3441,10 @@ def _router_apply_declared(reason, gen=None):
                         noted = True
                 if noted:
                     _models_changed()        # the gear's line repaints from the models frame alone (verify find, 2026-09-22)
+            finally:
+                with _catalog_lock:
+                    if _ROUTER_FETCH_GEN[0] == gen:
+                        _ROUTER_FETCH_GEN[0] = None
         threading.Thread(target=go, name="router-models", daemon=True).start()
     return added
 
@@ -3449,20 +3480,26 @@ def _set_router_models(enabled, gt=None):
             return stamp     # stale: the on flip that followed keeps its advisory and its rows; no frame
         live = _router_live_on(set(gone)) if gone else 0
         tiers = _router_tiers_on(set(gone)) if gone else []
+        judges = [t for t in tiers if t != "comment"]
         parts = []
         if live is None:
             parts.append(ROUTER_NOTE_COUNT_UNKNOWN)
         elif live:
             parts.append("%d live session(s) still run a removed model; a later pick of one is refused" % live)
-        if tiers:
-            parts.append("the %s judge tier(s) keep a removed model" % ", ".join(tiers))
-        _router_status_note[0] = "; ".join(parts) if parts else None
+        if judges:
+            parts.append("the %s judge tier(s) keep a removed model" % ", ".join(judges))
+        if "comment" in tiers:
+            parts.append("the default for new comment threads is a removed model; new threads inherit their parent until it is changed")
+        if not _router_set_note(gen, "; ".join(parts) if parts else None):
+            return stamp     # a later flip landed first: its advisory stands, and this one says and sends nothing
         if gone:
             tail = ""
             if live or live is None:
                 tail += " — %s live session(s) keep running one" % ("?" if live is None else live)
-            if tiers:
-                tail += " — the %s judge tier(s) keep one" % ", ".join(tiers)
+            if judges:
+                tail += " — the %s judge tier(s) keep one" % ", ".join(judges)
+            if "comment" in tiers:
+                tail += " — the default for new comment threads is one (new threads inherit their parent)"
             sys.stderr.write("extra models (switch off): %d left the pickers: %s%s\n" % (len(gone), ", ".join(gone), tail))
     _models_changed()
     return stamp
@@ -3475,10 +3512,16 @@ def _router_status():
     on = _router_models_on()
     gw, gerr = _router_gateway_configured() if on else (None, None)   # not probed while off: null, and no fault line for a
     #                                                                   feature never turned on (review find, 2026-09-21)
-    return {"enabled": on, "declared": _router_declared_effective(), "gateway": gw,
-            "error": _router_status_note[0] or (gerr if on else None)}   # the standing note whatever the switch (the off
-    #                                                                     flip's live-session note is written while off);
-    #                                                                     the probe's fault only while on
+    declared = _router_declared_effective()
+    error = _router_status_note[0]           # the event-sourced note whatever the switch (the off flip writes it while off)
+    if on and not error:
+        # the probe-shaped advisories, LIVE from this call's probe and declaration, never a note frozen at flip time: an
+        # operator who fixes the gateway or the declaration sees the line clear on the next read (verify find, 2026-09-22)
+        if not declared and not (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip():
+            error = ROUTER_NOTE_NOTHING_DECLARED
+        elif not gw:
+            error = gerr or ROUTER_NOTE_NO_GATEWAY
+    return {"enabled": on, "declared": declared, "gateway": gw, "error": error}
 
 
 def _router_models_boot():
@@ -17351,6 +17394,14 @@ def _reset_unvouched_seed():
     seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
     if not seed or seed == "default" or _vouched_model(seed):
         return
+    if _router_listing_inflight() and not _router_first_party(seed):
+        # the gateway's listing for the current generation has not landed yet (a create right after boot): the seed may
+        # be one of the ids it is about to install, and a reset here would lose a valid remembered model. Left alone,
+        # said once; the new row starts on the seed as before, vouched the moment the listing lands (verify find,
+        # 2026-09-22). A removed id that the listing does not carry is reset at the next create.
+        sys.stderr.write("sdk-defaults model %r is not offered yet; the gateway's model list is still being fetched, so "
+                         "the seed is left as it is for this session\n" % seed)
+        return
     sys.stderr.write("sdk-defaults model %r is not a model this kernel offers (an extra gateway model whose "
                      "switch is off, or one no longer declared); reset to the account default for the new "
                      "session\n" % seed)
@@ -18633,6 +18684,13 @@ def _comment_launch_prefs(model="", effort="", fast=""):
         if not v:
             stored = jd._state_str(fname, "session")
             v = "" if stored == "session" else stored
+            if fname == "comment-model" and v and v != "default" and not _vouched_model(v):
+                # the stored default is a model this kernel no longer offers (an extra gateway model whose switch is
+                # off): every new thread would launch on it, with nothing said. Inherit the parent instead, loudly; the
+                # store is left as it is (a reset would write an ungestured setting) — verify find, 2026-09-22
+                sys.stderr.write("comment-model %r is not a model this kernel offers; new threads inherit their parent "
+                                 "until the default is changed\n" % v)
+                v = ""
         out.append(v)
     return tuple(out)
 
@@ -18678,6 +18736,15 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
     else:
         cut, cut_t = "", int(now)   # tip fork by request (see docstring) — no record to cut at
     nm = str(name or "").strip()
+    # the model the thread would launch on, vouched BEFORE the name claim and the fork, like every other pick road
+    # (_pick_vouched): a removed extra gateway model picked in the dialog (a stale picker) launched a new session on
+    # it here, the one create door around the vouch (verify find, 2026-09-22). The stored default is vouched by
+    # _comment_launch_prefs itself and falls to inheriting the parent, so this bites the dialog's explicit pick.
+    m_launch = _comment_launch_prefs(model, "", "")[0]
+    if m_launch and not _pick_vouched(m_launch, be):
+        sys.stderr.write("model %r for a new thread of %s refused (comment create): not a model this kernel offers\n"
+                         % (m_launch, str(parent_sid)[:8]))
+        return _model_refusal(m_launch), None
     if nm and not NAME_RE.match(nm):
         return "thread names use letters, digits, . _ - only.", None
     col = str(color or "").strip()

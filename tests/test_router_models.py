@@ -288,7 +288,8 @@ class Switch(_Catalog):
         self.assertEqual(stamp, 1700000000000, "the switch is the operator's intent; an empty list is advice, not a refusal")
         self.assertEqual(km._ROUTER_INSTALLED, set())
         self.assertEqual(self.frames, [False], "the frame still goes: the gear's status line reads the payload")
-        self.assertIn("ROMP_ROUTER_MODELS", km._router_status_note[0])
+        self.assertIn("ROMP_ROUTER_MODELS", km._router_status()["error"], "derived live from the declaration")
+        self.assertIsNone(km._router_status_note[0], "not a frozen note")
         self.assertIn("ROMP_ROUTER_MODELS", self.err.getvalue())
 
     def test_no_gateway_is_an_advisory_never_a_gate(self):
@@ -296,7 +297,7 @@ class Switch(_Catalog):
         km._router_gateway_configured = lambda: (False, None)
         km._set_router_models(True, gt=1700000000000)
         self.assertTrue(km._vouched_model("gw-6-astra"), "installed all the same")
-        self.assertIn("gateway", km._router_status_note[0])
+        self.assertIsNone(km._router_status_note[0], "the probe-shaped advisory is never frozen into the note")
         st = km._router_status()
         self.assertEqual(set(st), {"enabled", "declared", "gateway", "error"})
         self.assertEqual((st["enabled"], st["declared"], st["gateway"]), (True, IDS, False))
@@ -425,7 +426,8 @@ class Switch(_Catalog):
             km._set_router_models(True, gt=10)
             time.sleep(0.05)
             note_on, n_on, n_calls = km._router_status_note[0], len(self.frames), len(calls)
-            self.assertEqual(note_on, km.ROUTER_NOTE_NO_GATEWAY)
+            self.assertIsNone(note_on, "the on flip's note is clear (the no-gateway advisory is derived live)")
+            self.assertEqual(km._router_status()["error"], km.ROUTER_NOTE_NO_GATEWAY)
 
             def late_remove(gen=None):
                 km._ROUTER_GEN[0] += 1        # a later on flip lands first
@@ -445,6 +447,76 @@ class Switch(_Catalog):
             self.assertEqual(len(calls), n_calls, "a stale apply starts no listing fetch")
             self.assertEqual(len(self.frames), n_on, "and sends no frame")
 
+    def test_a_slower_earlier_flip_cannot_overwrite_a_later_flips_advisory(self):
+        # the verify round's find: the note was written after the apply or remove with no generation check, so an on
+        # flip parked in its probe finished after an off flip and erased the off flip's live-sessions advisory (and the
+        # mirror left a removed-model advisory standing under an on switch). Every note write goes through
+        # _router_set_note at its own generation; a stale writer says and sends nothing.
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        gate = threading.Event()
+        probe_calls = []
+
+        def slow_probe():
+            probe_calls.append(1)
+            if len(probe_calls) == 1:
+                gate.wait(5)          # the on flip parks here, after its apply
+            return (True, None)
+        km._router_gateway_configured = slow_probe
+        t = threading.Thread(target=lambda: km._set_router_models(True, gt=10))
+        t.start()
+        self._wait(lambda: probe_calls, "the on flip to reach its probe")
+        with mock.patch.object(km, "_live_map", lambda: {"11111111-2222-4333-8444-555555555555": {"model": "gw-6-astra"}}):
+            km._set_router_models(False, gt=11)
+        off_note = km._router_status_note[0]
+        self.assertIn("1 live session", off_note)
+        n = len(self.frames)
+        gate.set(); t.join(5)
+        self.assertEqual(km._router_status_note[0], off_note, "the later off flip's advisory stands")
+        self.assertEqual(len(self.frames), n, "the stale on flip sent no frame")
+        self.assertFalse(km._vouched_model("gw-6-astra"))
+        st = km._router_status()
+        self.assertIs(st["enabled"], False)
+        self.assertIn("1 live session", st["error"])
+
+    def test_the_probe_shaped_advisory_clears_when_the_operator_fixes_the_gateway(self):
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        km._router_gateway_configured = lambda: (False, None)
+        km._set_router_models(True, gt=10)
+        self.assertEqual(km._router_status()["error"], km.ROUTER_NOTE_NO_GATEWAY)
+        km._router_gateway_configured = lambda: (True, None)     # the operator sets ANTHROPIC_BASE_URL; no flip
+        st = km._router_status()
+        self.assertIsNone(st["error"], "derived live: the line clears on the next read")
+        self.assertIs(st["gateway"], True)
+        km._router_gateway_configured = lambda: (False, km.ROUTER_SETTINGS_FAULT)
+        self.assertEqual(km._router_status()["error"], km.ROUTER_SETTINGS_FAULT)
+        km._router_gateway_configured = lambda: (True, None)
+        self.assertIsNone(km._router_status()["error"])
+
+    def test_a_listing_that_fails_after_an_off_flip_leaves_no_advisory(self):
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        gate = threading.Event()
+
+        def fetch(url, timeout=4):
+            gate.wait(5)
+            raise OSError("connection refused")
+        with mock.patch.object(km, "_fetch_router_models", fetch):
+            km._set_router_models(True, gt=10)
+            self.assertTrue(km._router_listing_inflight())
+            km._set_router_models(False, gt=11)
+            gate.set()
+            self._wait(lambda: "failed" in self.err.getvalue(), "the failure line")
+            self._wait(lambda: not km._router_listing_inflight(), "the fetch to end")
+        self.assertIsNone(km._router_status_note[0], "a failure at an old generation files nothing")
+        self.assertIsNone(km._router_status()["error"])
+        self.assertEqual(self.frames, [False, False], "the on and the off frames alone")
+
+    def test_a_gateway_id_that_cleans_to_a_first_party_alias_is_first_party(self):
+        for mid in ("Opus", "OPUS", "claude-opus-4-8[1m]", "Claude-Fable-5-1"):
+            self.assertTrue(km._router_first_party(mid), mid)
+            self.assertTrue(sb._router_first_party(mid), mid)
+        self.assertEqual(km._apply_router_families(["Opus", "gw-6-astra"]), ["gw-6-astra"])
+
     def test_the_off_flip_names_the_judge_tiers_still_on_a_removed_model(self):
         _env(self, "ROMP_ROUTER_MODELS", DECLARED)
         (km.jd.STATE / "judge-model").write_text("gw-6-astra\n")
@@ -454,6 +526,16 @@ class Switch(_Catalog):
         self.assertIn("triage, distill judge tier", km._router_status_note[0], "the distill tier follows the triage pick")
         self.assertIn("triage, distill judge tier", self.err.getvalue())
         self.assertEqual((km.jd.STATE / "judge-model").read_text().strip(), "gw-6-astra", "the store is left as it is")
+
+    def test_the_off_flip_words_the_comment_default_as_what_it_is(self):
+        # the verify round's find: the default for new comment threads was filed as a judge tier
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        (km.jd.STATE / "comment-model").write_text("gw-6-astra\n")
+        self.addCleanup(lambda: (km.jd.STATE / "comment-model").unlink(missing_ok=True))
+        km._set_router_models(True, gt=10)
+        km._set_router_models(False, gt=11)
+        self.assertIn("new comment threads", km._router_status_note[0])
+        self.assertNotIn("judge tier", km._router_status_note[0])
 
     def test_a_url_only_configuration_declares_nothing_but_says_nothing_wrong(self):
         _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")

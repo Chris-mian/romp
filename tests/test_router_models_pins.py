@@ -178,7 +178,8 @@ class ModelsRouteRouterSection(unittest.TestCase):
 # ROMP_MODEL_CATALOG knob's value (_router_models_boot compares the variable to it whole).
 VENDOR_ALLOW = frozenset({"claude-", "claude", "anthropic.com", ".anthropic.com", "default", "off",
                           "triage", "session",
-                          "utf-8", "router-models"})   # the wider token rule (verify round) reaches these two whole-value
+                          "utf-8", "router-models",
+                          "comment", "index", "distill"})   # the tier names (_set_router_models words the comment default apart)   # the wider token rule (verify round) reaches these two whole-value
 #                                                       compares: a codec name and the setting's own store name; not vendors   # triage/session: the judge tier stores' sentinels (_router_tiers_on reads
 #                                                   them whole-value: distill "triage" follows the triage pick, comment
 #                                                   "session"/"default" is no model id); not vendors
@@ -246,6 +247,30 @@ ROUTER_FUNCTIONS = (km._parse_router_models, km._router_label, km._apply_router_
                     km._router_declared_effective, km._router_tiers_on, km._router_fetch_allowed, km._router_status,
                     sb.pretty_model, sb.model_label, sb._alias_label, sb._router_declared, sb.set_router_ids,
                     sb._router_first_party)
+
+
+class GenerationBumpsUnderTheLock(unittest.TestCase):
+    """The generation bump sits INSIDE the `with _SETTINGS_LOCK:` body of both writers (a mutant that moves it out
+    leaves every behavioural test green, the verify round found): pinned on the AST, as the vendor-key rule is."""
+
+    def _bump_is_locked(self, fn):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.With) and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_SETTINGS_LOCK"
+                                                  for i in node.items):
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.AugAssign) and isinstance(inner.target, ast.Subscript) \
+                            and isinstance(inner.target.value, ast.Name) and inner.target.value.id == "_ROUTER_GEN":
+                        return True
+        return False
+
+    def test_the_setter_and_the_boot_bump_the_generation_under_the_settings_lock(self):
+        self.assertTrue(self._bump_is_locked(km._set_router_models))
+        self.assertTrue(self._bump_is_locked(km._router_models_boot))
+        self.assertEqual(sum(1 for n in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(km._set_router_models))))
+                             if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Subscript)
+                             and isinstance(n.target.value, ast.Name) and n.target.value.id == "_ROUTER_GEN"), 1,
+                         "one bump per applied flip")
 
 
 class NothingKeysOnAVendor(unittest.TestCase):
