@@ -759,6 +759,22 @@ class ViewBuilder(unittest.TestCase):
         km._set_session_flag(SID, "hideFromFeed", False)
         self.assertFalse(has_card(), "un-flagged: the view-cleared goal stays sealed — old cards do NOT resurface")
 
+    def test_the_mute_journals_its_clear_with_a_distinct_why(self):
+        """A hideFromFeed mute stamps its clear rows with a distinct why, so a measure reading the override journal can tell
+        a mute from the user crossing a card off the feed (whose clear carries the generic default why)."""
+        top = SID + ":top"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": None,
+            "nodes": {top: {"id": top, "text": "a goal", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}},
+            "placements": {}, "status": {top: "working"}}))
+        km._set_session_flag(SID, "hideFromFeed", True)
+        rows = [json.loads(l) for l in (jd._overrides_dir() / (SID + ".jsonl")).read_text().splitlines() if l.strip()]
+        clears = [r for r in rows if r.get("op") == "clear" and r.get("node") == top]
+        self.assertTrue(clears, "the mute journaled a clear on the open top: %r" % rows)
+        self.assertEqual(clears[-1]["why"], km._HIDDEN_FROM_FEED_WHY, "the mute's clear carries its distinct why, not the generic cross-off: %r" % clears[-1])
+        self.assertNotEqual(clears[-1]["why"], "cleared from the feed")
+
     def test_muted_session_is_out_of_the_ledger(self):
         # crossing the feed checkbox off takes a session OUT of task tracking — its ledger shows no goal tree
         # (the judge also stops planning for it; see tests/test_judge_hidefeed.py). Reversible.
