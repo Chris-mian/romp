@@ -34,10 +34,10 @@ The badge is one magenta dot at the tab's top-right corner, shown only when the 
 
 ## The count in the Needs-you dot
 
-The Needs-you dot carries the count of things that need you in the session (the user, 2026-09-21). Two styles are drawn for the user to pick from the mockups; the choice is FIXED for all tabs, since the dot's pixel size is the same on every tab, so it is one decision, not a per-tab switch:
+The Needs-you dot carries the count of things that need you in the session (the user, 2026-09-21). CHOSEN from the mockups by the manager on the user's delegation (2026-09-21 evening PT): the NUMBERED DOT. The choice is fixed for all tabs (the dot's pixels are the same on every tab), not a per-tab switch.
 
-- PREFERRED: a black number in the dot. The dot grows to about 12 to 14px to fit the digits (the mockup sets the exact size), still contained at the top-right and still moving nothing; black digits at a legible size on the magenta. A count of one shows "1", not a bare dot. One and two digits fit; past 99 the dot shows "99+".
-- FALLBACK, if a legible number does not fit at a contained dot size: a series of dots, one per Needs-you item, in the horizontal top-aligned row (each half a dot to the left of the one before it, the most recent at the corner), capped at FOUR. Five or more items still show exactly four dots, with no plus and no overflow marker; the fourth dot stands for "four or more".
+- The numbered dot (chosen): a black number in the dot. The dot is sized for the digits; a two-digit count widens it into a short pill; it stays contained at the top-right and moves nothing. Black digits at a legible size on the magenta. A count of one shows "1", not a bare dot. Past 99 the dot shows "99+".
+- The capped series (the road not taken, kept for the record): a series of dots, one per Needs-you item, in the horizontal top-aligned row (each half a dot to the left of the one before it, the most recent at the corner), capped at FOUR. Five or more items still show exactly four dots, with no plus and no overflow marker; the fourth dot stands for "four or more".
 
 Source, in code, so the readings never disagree: the count is `needsYouCount`, an ADDITIVE wire field beside the `needsYou` boolean, computed where the boolean is (the kernel's per-session read in build_session, over the session's needs-input rows, the same set the box lists and the feed's Needs-you column holds). An older page without the field shows a bare dot from the boolean; a newer page shows the count. The contrast pin adds black-on-magenta in both themes for the numbered style.
 
@@ -75,7 +75,7 @@ All served labs run under `ROMP_SERVED_TESTS_REQUIRE=1`.
 4. Contrast and colour-vision (theme-parity). Add the magenta-on-ground and amber-on-ground pairs to `theme-parity.test.ts` at the floors above, both themes, active and inactive. Red at the base: the pairs are not in the table.
 5. Gear preview. The preview shows the Needs-you dot and the retrying left dot when on, the ring when off. Red at the base: no badge branch.
 6. Phone (served lab, phone layout). Under badge mode the Needs-you magenta dot sits at the chip and row corner (the dashed border and left bar gone), retrying is the amber leading dot, Blocked is unchanged, the working/await dot stays. Red at the base: no phone dot.
-7. The count in the dot (served lab, once the style is picked). Numbered: the black count in the dot per state at 1, 2 and 12. Or the capped series: one dot per item at 1, 2, 4 and 6 items (four at most, the fourth for four-or-more). The count moves when the session's Needs-you rows change. Red at the base: no count.
+7. The numbered count in the dot (served lab). The black count reads in the dot per state at 1, 3 and 12; a two-digit count widens the dot into a pill (assert the 12 dot is wider than the 1 dot, both contained); the count moves when the session's Needs-you rows change. Red at the base: no count.
 8. The needsYouCount wire field. Additive beside needsYou, computed in build_session over the session's needs-input rows, and pinned in the wire census; the dot, the box header and the feed's Needs-you column read the one field, so a divergence is a red. Red at the base: the field is absent, or diverges from the box's row count.
 
 ## Decided by the user (2026-09-21)
@@ -85,6 +85,6 @@ All served labs run under `ROMP_SERVED_TESTS_REQUIRE=1`.
 - Blocked is unchanged: red ring plus fill, in both modes, outranking the other run states.
 - 8px dot at 2px inset, the horizontal top-aligned placement and the phone placement, approved from the mockups.
 - The dashed ring stays available; the setting flips only the Needs-you and retrying shapes; the badge becomes the default later, in a separate change (default OFF now).
-- The Needs-you dot carries a count (`needsYouCount`, an additive wire field). The style, a black number in the dot or a capped series of dots, is being picked from the mockups; the series caps at four dots for four or more, with no plus and no marker.
+- The Needs-you dot carries a count (`needsYouCount`, an additive wire field). The style is the NUMBERED DOT (black digits on magenta, the dot sized for the digits, a two-digit count widening it into a pill, "99+" past 99), chosen from the mockups by the manager on the user's delegation (2026-09-21 evening). The capped series is the road not taken.
 
 The retrying ring stays in ring mode (byte-identical to today); the left-dot retrying appears only under badge mode (the user confirmed, 2026-09-21).
