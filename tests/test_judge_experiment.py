@@ -155,7 +155,7 @@ class Harness(unittest.TestCase):
                 parent = a; t += 600; self.texts.append(answer)
             (self.pdir / (sid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
             (self.state / "names" / sid).write_text("web\t%s\t#abcdef\n" % self.cwd)
-            (self.state / "overrides" / (sid + ".jsonl")).write_text(json.dumps({"node": sid + ":g9", "op": "clear", "src": "user", "why": "x", "t": T0 + 10**6}) + "\n")
+            (self.state / "overrides" / (sid + ".jsonl")).write_text(json.dumps({"node": sid + ":g9", "op": "clear", "src": "user", "why": "cleared from the feed", "t": T0 + 10**6}) + "\n")
         self.fake = os.path.join(self.td, "fake_claude_p.py")
         Path(self.fake).write_text(FAKE_CLAUDE); os.chmod(self.fake, 0o755)
         self.log = os.path.join(self.td, "calls.log")
@@ -222,7 +222,7 @@ class Harness(unittest.TestCase):
         e0 = self._ending(m, SIDS[0], 0)
         (self.state / "overrides" / (SIDS[0] + ".jsonl")).write_text(
             json.dumps({"node": SIDS[0] + ":g9", "op": "followup", "t": e0["startT"] - 100}) + "\n"
-            + json.dumps({"node": SIDS[0] + ":g9", "op": "clear", "src": "user", "why": "x", "t": e0["cutT"] + 5}) + "\n")
+            + json.dumps({"node": SIDS[0] + ":g9", "op": "clear", "src": "user", "why": "cleared from the feed", "t": e0["cutT"] + 5}) + "\n")
         dest2, m2 = self._corpus(name="corpus2")
         e0 = self._ending(m2, SIDS[0], 0)
         rows = [json.loads(l) for l in Path(dest2, "state", "romp", "overrides", e0["id"] + ".jsonl").read_text().splitlines()]
@@ -418,7 +418,7 @@ class Harness(unittest.TestCase):
         # SIDS[0] g1: placed in the turn, the user followed up after -> a re-open (a leak when the arm reads completed)
         self._live_store_with_done(SIDS[0], sl, cl, [{"node": SIDS[0] + ":g1", "op": "followup", "t": cl + 7200}])
         # SIDS[1] g1: placed in the turn, the user crossed it off with no re-open and no unblocker ruling -> a false interrupt
-        self._live_store_with_done(SIDS[1], sf, cf, [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "x", "t": cf + 600}])
+        self._live_store_with_done(SIDS[1], sf, cf, [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": cf + 600}])
         manifest = {"endings": [e_leak, e_fi]}
         results = {"arm": "x", "failures": 0, "endings": {
             e_leak["id"]: {"builds": [{e_leak["id"] + ":g1": {"column": "completed", "scored": True}}] * 2},
@@ -434,17 +434,50 @@ class Harness(unittest.TestCase):
         sid = SIDS[1]
         e = self._ending(self._corpus()[1], sid, 0)
         s, c = float(e["startT"]), float(e["cutT"])
-        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "x", "t": c + 600}])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
         manifest = {"endings": [e]}
         results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
         mm = self.je.measure(manifest, results, self.state)
         self.assertEqual((mm["falseInterrupts"], mm["answeredThenCleared"]), (1, 0),
                          "no unblocker ruling: a plain cross-off is a false interrupt: %r" % mm)
         # the kernel's unblocker ruled the block answered after the placement, before the clear
-        self._add_node_log(sid, "g1", {"ev_t": c + 300, "at": c + 301, "src": "unblocker", "kind": "unblock", "why": "answered"})
+        self._add_node_log(sid, "g1", {"ev_t": c + 300, "at": c + 301, "src": "unblocker", "kind": "unblock", "why": "answered in passing"})
         mm = self.je.measure(manifest, results, self.state)
         self.assertEqual((mm["falseInterrupts"], mm["answeredThenCleared"]), (0, 1),
                          "the unblocker ruled the reply answered the block: answered-then-cleared, not a false interrupt: %r" % mm)
+
+    def test_only_a_reply_ruling_suppresses_never_the_other_unblock_kinds_or_one_after_the_clear(self):
+        """M1 + L1: an `unblock` event lifts a block from several sources; only the unblocker judge's ruling (src unblocker)
+        and the user's reply through the card's box (src user, REPLY_UNBLOCK_WHY) mean a reply ANSWERED it. A topic-blind
+        'you re-engaged' user unblock or a mechanical romp unblock does not suppress; nor does a ruling AFTER the clear."""
+        sid = SIDS[1]
+        e = self._ending(self._corpus()[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        manifest = {"endings": [e]}
+        results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+
+        def score(unblock_ev):
+            self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+            if unblock_ev:
+                self._add_node_log(sid, "g1", unblock_ev)
+            mm = self.je.measure(manifest, results, self.state)
+            return mm["falseInterrupts"], mm["answeredThenCleared"]
+
+        self.assertEqual(score({"ev_t": c + 300, "src": "user", "kind": "unblock", "why": "you re-engaged"}), (1, 0),
+                         "a topic-blind 'you re-engaged' user unblock does not suppress: a false interrupt")
+        self.assertEqual(score({"ev_t": c + 300, "src": "romp", "kind": "unblock", "why": "moot"}), (1, 0),
+                         "a mechanical romp unblock does not suppress: a false interrupt")
+        self.assertEqual(score({"ev_t": c + 300, "src": "user", "kind": "unblock", "why": self.je.REPLY_UNBLOCK_WHY}), (0, 1),
+                         "the user's reply through the card's box IS a reply ruling: answered-then-cleared")
+        self.assertEqual(score({"ev_t": c + 900, "src": "unblocker", "kind": "unblock", "why": "answered in passing"}), (1, 0),
+                         "L1: an unblocker ruling AFTER the clear is not the reply this clear crossed off: a false interrupt")
+
+    def test_the_harness_whys_match_the_kernel(self):
+        """The harness's mute-clear and reply-unblock whys must equal the kernel's own literals, or the guard drifts silent."""
+        km = load_source("romp_kernel_whys", os.path.join(BIN, "romp-kernel"))
+        jd = load_source("romp_judge_whys", os.path.join(BIN, "romp-judge"))
+        self.assertEqual(self.je.MUTE_CLEAR_WHY, km._HIDDEN_FROM_FEED_WHY, "the harness excludes exactly the kernel's mute why")
+        self.assertEqual(self.je.REPLY_UNBLOCK_WHY, jd.REPLY_UNBLOCK_WHY, "the harness counts exactly the kernel's reply-unblock why")
 
     def test_a_plainly_cleared_completed_top_is_no_leak_and_a_reopened_needs_input_is_no_false_interrupt(self):
         """The plan's negatives (round three): a completed top the user plainly cleared (no re-open) is NOT a leak; a
@@ -453,27 +486,30 @@ class Harness(unittest.TestCase):
         e = self._ending(self._corpus()[1], sid, 0)
         s, c = float(e["startT"]), float(e["cutT"])
         # a completed top the user only cleared (no followup): not a leak
-        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "x", "t": c + 600}])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
         manifest = {"endings": [e]}
         res_completed = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "completed", "scored": True}}] * 2}}}
         self.assertEqual(self.je.measure(manifest, res_completed, self.state)["leaks"], 0, "a completed top the user only cleared is not a leak")
         # a needs_input top the user re-opened THEN cleared: the re-open short-circuits, not a false interrupt
         self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "followup", "t": c + 300},
-                                               {"node": sid + ":g1", "op": "clear", "src": "user", "why": "x", "t": c + 600}])
+                                               {"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
         res_ni = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
         self.assertEqual(self.je.measure(manifest, res_ni, self.state)["falseInterrupts"], 0, "a re-opened needs_input top is not a false interrupt")
 
-    def test_a_mute_clear_is_not_a_false_interrupt(self):
-        """A hideFromFeed mute journals a src-user clear per open top with why 'cleared from the feed'; that is not the user's
-        cross-off habit, so a clear whose why names the feed does not score a false interrupt."""
+    def test_a_mute_clear_is_not_a_false_interrupt_but_an_ordinary_cross_off_is(self):
+        """H1: a hideFromFeed mute journals a src-user clear with the DISTINCT why the kernel now stamps (its
+        _HIDDEN_FROM_FEED_WHY, excluded here EXACTLY), so a mute does not score. The ordinary feed Clear / Clear-all stamps
+        the generic 'cleared from the feed', which IS the user's cross-off and scores a false interrupt."""
+        self.assertEqual(self.je.MUTE_CLEAR_WHY, "hidden from the feed", "the harness excludes the mute's own why, not the generic one")
         sid = SIDS[1]
         e = self._ending(self._corpus()[1], sid, 0)
         s, c = float(e["startT"]), float(e["cutT"])
-        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
         manifest = {"endings": [e]}
         results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
-        self.assertEqual(self.je.measure(manifest, results, self.state)["falseInterrupts"], 0,
-                         "a mute's feed-named clear is not the user's cross-off: no false interrupt")
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": self.je.MUTE_CLEAR_WHY, "t": c + 600}])
+        self.assertEqual(self.je.measure(manifest, results, self.state)["falseInterrupts"], 0, "a mute's clear is not the user's cross-off: no false interrupt")
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        self.assertEqual(self.je.measure(manifest, results, self.state)["falseInterrupts"], 1, "the ordinary cross-off's generic why scores a false interrupt")
 
     def test_gestured_endings_counts_only_endings_the_user_acted_on(self):
         """gesturedEndings counts endings the user acted on (a re-open or a cross-off), not merely endings with a placement."""
@@ -484,8 +520,10 @@ class Harness(unittest.TestCase):
         manifest = {"endings": [e]}
         results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "completed", "scored": True}}] * 2}}}
         mm = self.je.measure(manifest, results, self.state)
-        self.assertEqual((mm["gesturedEndings"], mm["unplacedEndings"], mm["leaks"]), (0, 0, 0),
-                         "a placement with no user gesture is neither gestured nor unplaced, and scores nothing: %r" % mm)
+        self.assertEqual((mm["gesturedEndings"], mm["untouchedEndings"], mm["unplacedEndings"], mm["unresolvedEndings"], mm["leaks"]), (0, 1, 0, 0, 0),
+                         "a placement with no user gesture is untouched, not gestured or unplaced, and scores nothing: %r" % mm)
+        self.assertEqual(mm["gesturedEndings"] + mm["untouchedEndings"] + mm["unplacedEndings"] + mm["unresolvedEndings"], mm["endings"],
+                         "L2: the four ending columns partition every ending: %r" % mm)
 
     def test_an_unresolved_ending_scores_no_leak_or_interrupt_only_flaps(self):
         """An ending whose live session no longer lists (the manifest hash resolves to nothing) cannot be scored against the
@@ -514,7 +552,7 @@ class Harness(unittest.TestCase):
         m = self._corpus(name=name)[1]
         e = self._ending(m, sid, 0)
         s, c = float(e["startT"]), float(e["cutT"])
-        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "x", "t": c + 600}])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
         results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
         return m, results
 
@@ -638,7 +676,7 @@ class Harness(unittest.TestCase):
         e_a = self._ending(m, SIDS[0], 0)                # the offer: the closer filed done, the user came back with a followup
         self._live_store_with_done(SIDS[0], e_a["startT"], e_a["cutT"], [{"node": SIDS[0] + ":g1", "op": "followup", "t": e_a["cutT"] + 7200}])
         e_b = self._ending(m, SIDS[1], 1)                # the finished thread: done, then the user cleared it and nothing more
-        self._live_store_with_done(SIDS[1], e_b["startT"], e_b["cutT"], [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "x", "t": e_b["cutT"] + 600}])
+        self._live_store_with_done(SIDS[1], e_b["startT"], e_b["cutT"], [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": e_b["cutT"] + 600}])
         run_root = os.path.join(self.td, "runs")
         summary = fn(dest, run_root, self.state, claude_bin=self.fake, model="fake")
         rows = {r["id"]: r for r in json.loads(Path(run_root, "labels.json").read_text())}
@@ -653,7 +691,7 @@ class Harness(unittest.TestCase):
         ledger = [json.loads(l) for l in Path(run_root, "labeller-ledger.jsonl").read_text().splitlines() if l.strip()]
         self.assertEqual((len(ledger), round(sum(r["cost"] for r in ledger), 2)), (8, 0.08), "two calls per ending, each on the ledger")
         # a followup nine days later still says not finished: the label keys on events, never on a window
-        self._live_store_with_done(SIDS[1], e_b["startT"], e_b["cutT"], [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "x", "t": e_b["cutT"] + 600},
+        self._live_store_with_done(SIDS[1], e_b["startT"], e_b["cutT"], [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": e_b["cutT"] + 600},
                                                                           {"node": SIDS[1] + ":g1", "op": "followup", "t": e_b["cutT"] + 9 * 86400}])
         self.assertEqual(self.je.tier_one_label(self.state, SIDS[1], e_b["cutT"], e_b["startT"]), "not finished")
         with self.assertRaises(SystemExit):
@@ -693,10 +731,13 @@ class Harness(unittest.TestCase):
         rows = self.je.report(dest, run_root, self.state, figure=None)
         table = Path(run_root, "table.md").read_text()
         self.assertEqual([r["arm"] for r in rows], ["current"])
-        self.assertEqual((rows[0]["endings"], rows[0]["gesturedEndings"], rows[0]["unplacedEndings"], rows[0]["unresolvedEndings"],
-                          rows[0]["leaks"], rows[0]["falseInterrupts"], rows[0]["answeredThenCleared"], rows[0]["flaps"]), (4, 1, 1, 2, 1, 0, 0, 0),
+        self.assertEqual((rows[0]["endings"], rows[0]["gesturedEndings"], rows[0]["untouchedEndings"], rows[0]["unplacedEndings"],
+                          rows[0]["unresolvedEndings"], rows[0]["leaks"], rows[0]["falseInterrupts"], rows[0]["answeredThenCleared"], rows[0]["flaps"]),
+                         (4, 1, 0, 1, 2, 1, 0, 0, 0),
                          "SIDS[0] turn0 scores the leak; turn1 is unplaced (its live tops sit outside the turn); SIDS[1] has no live store: %r" % rows[0])
-        self.assertIn("| current | 4 | 1 | 1 | 2 | 1 | 0 | 0 | 0 |", table)
+        self.assertEqual(rows[0]["gesturedEndings"] + rows[0]["untouchedEndings"] + rows[0]["unplacedEndings"] + rows[0]["unresolvedEndings"],
+                         rows[0]["endings"], "the four ending columns partition every ending: %r" % rows[0])
+        self.assertIn("| current | 4 | 1 | 0 | 1 | 2 | 1 | 0 | 0 | 0 |", table)
         for text in self.texts:
             self.assertNotIn(text[:24], table)
         self.assertNotIn("The synthetic goal", table, "no goal title in the report")
@@ -1290,9 +1331,9 @@ class Harness(unittest.TestCase):
         dest, m = self._corpus()
         # a disagreement: SIDS[0] turn 0 is an offer to the labeller, but tier one reads finished (a clear, nothing after)
         e0 = self._ending(m, SIDS[0], 0)
-        self._live_store_with_done(SIDS[0], float(e0["startT"]), float(e0["cutT"]), [{"node": SIDS[0] + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e0["cutT"]) + 60}])
+        self._live_store_with_done(SIDS[0], float(e0["startT"]), float(e0["cutT"]), [{"node": SIDS[0] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": float(e0["cutT"]) + 60}])
         e1 = self._ending(m, SIDS[1], 1)                 # the finished thread: labeller and tier one agree
-        self._live_store_with_done(SIDS[1], float(e1["startT"]), float(e1["cutT"]), [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e1["cutT"]) + 60}])
+        self._live_store_with_done(SIDS[1], float(e1["startT"]), float(e1["cutT"]), [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": float(e1["cutT"]) + 60}])
         stable = self.je.label(dest, os.path.join(self.td, "runs-stable"), self.state, claude_bin=self.fake, model="fake")
         self.assertEqual((stable["both"], stable["agree"], stable["agreementPct"]), (2, 1, 50.0),
                          "the offer disagrees with the user's clear (offer vs finished); agreement is only 50 percent: %r" % stable)
@@ -1351,7 +1392,7 @@ class Harness(unittest.TestCase):
         sid = SIDS[0]
         e = self._ending(self._corpus()[1], sid, 0)
         # the anchor's own store reads FINISHED (a user clear after the cut); a lane hash that resolves to nothing must not borrow it
-        self._live_store_with_done(sid, float(e["startT"]), float(e["cutT"]), [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e["cutT"]) + 60}])
+        self._live_store_with_done(sid, float(e["startT"]), float(e["cutT"]), [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": float(e["cutT"]) + 60}])
         self.assertEqual(self.je.tier_one_label(self.state, sid, float(e["cutT"]), float(e["startT"])), "finished", "the anchor's store reads finished")
         dest = os.path.join(self.td, "m1"); (Path(dest) / "claude" / "projects").mkdir(parents=True)
         lane_hash = hashlib.sha256(b"an-unregistered-lane-with-no-store-or-name").hexdigest()[:12]

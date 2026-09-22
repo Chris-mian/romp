@@ -806,14 +806,27 @@ def _scored(build):
 
 PLACEMENT_KINDS = ("done", "block", "awaiting")   # a top-level verdict the live judges filed in the ending's turn: the placement
 #                                                   whose own ev_t/at bounds which later user gestures count (never the arm's wall clock)
-UNBLOCK_KINDS = ("unblock",)                       # the kernel's own ruling that a reply answered, resolved or made moot the block on a node
-MUTE_WHY = "feed"                                  # a hideFromFeed mute journals a src-user clear per open top with why "cleared from the feed":
-#                                                    not the user's habit, so a clear whose why names the feed is not a cross-off
+UNBLOCK_KINDS = ("unblock",)                       # the kernel lifts a block with an `unblock` event, but from several sources (below)
+REPLY_UNBLOCK_WHY = "answered by the user's reply to the card"   # kernel/judge.py's REPLY_UNBLOCK_WHY: the user answered through the card's box
+MUTE_CLEAR_WHY = "hidden from the feed"            # kernel/kernel.py's hideFromFeed mute (its _HIDDEN_FROM_FEED_WHY): excluded EXACTLY, never as a
+#   substring. The ordinary feed Clear / Clear-all stamps the generic "cleared from the feed", which IS the user's own cross-off and counts.
 
 
 def _fault(faults, store_key, kind):
     if faults is not None:
         faults.append((hashlib.sha256(str(store_key).encode()).hexdigest()[:12], kind))
+
+
+def _answered_unblock(ev):
+    """An unblock event that means a REPLY answered the block, the exact event the guard approximates: the unblocker judge's
+    own ruling (`src` "unblocker") or the user's reply through the card's box (`src` "user", why REPLY_UNBLOCK_WHY). NOT the
+    topic-blind "you re-engaged" user unblock (the user typed anything), a reopen-ancestor lift, the planner's new-work
+    unblock, or a mechanical romp unblock (a moot re-file or a discharged-with-parent): those lift a block without a reply
+    that answered it, so they never suppress a false interrupt."""
+    if ev.get("kind") not in UNBLOCK_KINDS:
+        return False
+    src, why = ev.get("src"), (ev.get("why") or "")
+    return src == "unblocker" or (src == "user" and why == REPLY_UNBLOCK_WHY)
 
 
 def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
@@ -874,10 +887,16 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
             return isinstance(nn, dict) and nid in nn
         later = [o for o in ops if on_node(o) and float(o.get("t") or 0) > t_place]
         reopened = any(o.get("op") in NOT_FINISHED_OPS for o in later)
-        crossed_off = any(o.get("op") in FINISHED_OPS and o.get("src") in (None, "user")
-                          and MUTE_WHY not in (o.get("why") or "").lower() for o in later)
-        # the kernel's OWN ruling on the node: an unblock event after the placement says a reply answered/resolved/made the block moot
-        unblock_answered = any(ev.get("kind") in UNBLOCK_KINDS and event_time(ev) is not None and event_time(ev) > t_place for ev in log)
+        # a cross-off: a user clear/resolve after the placement whose why is NOT the mute's (an exact match; the ordinary
+        # feed Clear/Clear-all's generic why counts)
+        clear_times = [float(o.get("t") or 0) for o in later if o.get("op") in FINISHED_OPS
+                       and o.get("src") in (None, "user") and (o.get("why") or "") != MUTE_CLEAR_WHY]
+        crossed_off = bool(clear_times)
+        first_clear = min(clear_times) if clear_times else None
+        # the kernel's OWN ruling that a reply answered the block, AFTER the placement and BEFORE the first cross-off (an
+        # unblock after the clear is not the reply this clear crossed off unanswered)
+        unblock_answered = any(_answered_unblock(ev) and event_time(ev) is not None and t_place < event_time(ev)
+                               and (first_clear is None or event_time(ev) < first_clear) for ev in log)
         cleared_no_reply = crossed_off and not reopened and not unblock_answered
         answered_then_cleared = crossed_off and not reopened and unblock_answered
         out[nid.split(":")[-1]] = {"reopened": reopened, "clearedNoReply": cleared_no_reply,
@@ -893,11 +912,12 @@ def measure(manifest, results, live_state):
     no unblocker ruling that a reply answered the block (a topic-blind later turn does NOT suppress). answeredThenCleared: a
     needs_input top the kernel ruled answered before the user cleared it (the card did its job), a separate count. Flaps: a
     scored top whose column differs between the two builds. Failures: a row with any is not comparable. The live root is read
-    only, and the store identity comes from the manifest (fixed at build). An ending whose live store is gone counts
-    unresolved; one whose live judges placed no card in the turn, unplaced; gesturedEndings counts endings the user actually
-    acted on (a re-open or a cross-off), not merely a placement. Every ending contributes flaps and cost."""
+    only, and the store identity comes from the manifest (fixed at build). Every ending falls in exactly one column so they
+    partition: unresolved (live store gone or unreadable), unplaced (resolved, no card placed in the turn), gestured (a
+    placed card the user acted on, a re-open or a cross-off) or untouched (a placed card the user did nothing to). Every
+    ending contributes flaps and cost."""
     by_id = {e["id"]: e for e in manifest["endings"]}
-    leaks = false_interrupts = answered_then_cleared = flaps = gestured = unresolved = unplaced = 0
+    leaks = false_interrupts = answered_then_cleared = flaps = gestured = untouched = unresolved = unplaced = 0
     faults = []
     for eid, r in results["endings"].items():
         e = by_id.get(eid, {})
@@ -911,8 +931,10 @@ def measure(manifest, results, live_state):
             elif not g:
                 unplaced += 1                                   # resolved, but the live judges placed no top in the turn: nothing to score
             else:
-                if any(v.get("gestured") for v in g.values()):  # an ending the user actually acted on (a re-open or a cross-off), not merely a placement
+                if any(v.get("gestured") for v in g.values()):  # an ending the user actually acted on (a re-open or a cross-off)
                     gestured += 1
+                else:
+                    untouched += 1                              # a placed card the user did nothing to: so the columns partition the endings
                 # the join is by the node suffix (gN): the results carry the ending id prefix, the live store the store key,
                 # so the full keys never coincide by construction, and a store's top-level suffixes are distinct (safe)
                 if any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in final.items()):
@@ -930,9 +952,9 @@ def measure(manifest, results, live_state):
     failures = int(results.get("failures") or 0)
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
             "answeredThenCleared": answered_then_cleared, "flaps": flaps, "gesturedEndings": gestured,
-            "unresolvedEndings": unresolved, "unplacedEndings": unplaced, "costUsd": results.get("cost", 0.0),
-            "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0), "stopped": results.get("stopped"),
-            "failures": failures, "comparable": failures == 0,
+            "untouchedEndings": untouched, "unplacedEndings": unplaced, "unresolvedEndings": unresolved,
+            "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
+            "stopped": results.get("stopped"), "failures": failures, "comparable": failures == 0,
             "liveReadErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
 
 
@@ -945,12 +967,12 @@ def report(corpus, run_root, live_state, figure=None):
     rows = []
     for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
         rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state))
-    lines = ["| arm | endings | gestured | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| arm | endings | gestured | untouched | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
-        lines.append("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %.2f | %d | %d | %s | %s |" % (
-            r["arm"], r["endings"], r["gesturedEndings"], r["unplacedEndings"], r["unresolvedEndings"], r["leaks"],
-            r["falseInterrupts"], r["answeredThenCleared"], r["flaps"], r["costUsd"], r["calls"], r["callMsMean"],
+        lines.append("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %.2f | %d | %d | %s | %s |" % (
+            r["arm"], r["endings"], r["gesturedEndings"], r["untouchedEndings"], r["unplacedEndings"], r["unresolvedEndings"],
+            r["leaks"], r["falseInterrupts"], r["answeredThenCleared"], r["flaps"], r["costUsd"], r["calls"], r["callMsMean"],
             "yes" if r["stopped"] else "no", "0" if r["comparable"] else "%d, not comparable" % r["failures"]))
     (run_root / "table.md").write_text("\n".join(lines) + "\n")
     (run_root / "measures.json").write_text(json.dumps(rows, indent=1))

@@ -7961,6 +7961,9 @@ def _tag_new_session(sid, parent_sid="", tags=()):
 
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
+_HIDDEN_FROM_FEED_WHY = "hidden from the feed"   # the why the hideFromFeed mute stamps on its clear rows, so a mute's cross-off is
+#   distinguishable from the user's own (a plain feed Clear/Clear-all stamps the generic "cleared from the feed"); a measure that
+#   reads the journal must not count a mute as the user crossing a card off (the judge-experiment harness excludes this why exactly)
 # A persisted {sid: {flag: true}} dict under STATE. Flags today: hideFromFeed (a session whose prompts
 # should NOT mint feed cards — a per-session "mute from the feed") and postalServiceOff (isolate the session from
 # the Romp Postal Service — enforced in bin/romp-postal-service: invisible to list_agents, can't send/receive). Both are
@@ -8153,8 +8156,8 @@ def _set_session_flag(sid, flag, value):
                 with p.open("a") as fh:
                     for nid in tops:
                         fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
-                _mark_nodes_cleared(tops, True)               # durable node flag → sealed across judge passes
-                _files_stat_mark()                            # the clears log is a keyed file of every session
+                _mark_nodes_cleared(tops, True, why=_HIDDEN_FROM_FEED_WHY)   # durable node flag → sealed; a distinct why so a mute's
+                _files_stat_mark()                            # clear is not read as the user crossing the card off (a measure reads the journal)
         except Exception:
             pass
     if flag == "hideFromFeed" and not value:
