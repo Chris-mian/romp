@@ -28294,9 +28294,13 @@ def _sessions_listing_key(live_map, names):
 def _launch_error_scoped(sid):
     """_launch_error through the cycle's memo (2026-09-21): inside a pusher cycle the first read per sid is kept on
     _live_scope.launch_errors (opened and closed with the cycle's other memos, the _sessions idiom) and served to every
-    reader after it, so the listing, which reads it once at its key through the pair memo (_listing_pair_scoped), costs
-    one backend read per session per cycle (the SDK backend's read is a registry file per session); outside a cycle every
-    read is fresh, as _sessions behaves."""
+    reader after it; outside a cycle every read is fresh, as _sessions behaves. The listing's one backend read per
+    session per cycle (the SDK backend's read is a registry file per session) is bounded by the pair memo, not by this
+    one (the post-merge review of the listing pairing, 2026-09-22): this reader's only caller is the pair reader
+    (_listing_pair_scoped), reached on the pusher thread from the refresh's key and rows alone, with
+    _live_scope.listing_pairs open for that whole span, so a sid's second read stops at the pair memo and this memo
+    serves no hit today. It stays as a backstop for a second cycle reader outside the pair, which does not exist yet;
+    the raw readers elsewhere call _launch_error directly and never fill it."""
     sid = str(sid)
     memo = getattr(_live_scope, "launch_errors", None)
     if memo is None:
@@ -60329,9 +60333,14 @@ def _pusher_cycle():
         #                                         per cycle became one
         _live_scope.auth = {}                   # …and the cycle's billing-availability memo (_auth_avail_status)
         _live_scope.launch_errors = {}          # …and the cycle's launch-error memo (_launch_error_scoped): the listing's
-        #                                       key and its rows read one record per session (2026-09-21)
+        #                                       key alone reaches it, once per session through the pair reader, and it
+        #                                       serves no hit today, since the pair memo (_listing_pair_scoped, opened
+        #                                       by the refresh over its key and its rows) bounds the listing's read to
+        #                                       one per session; kept as a backstop for a second cycle reader outside
+        #                                       the pair, which does not exist yet (the post-merge review of the listing
+        #                                       pairing, 2026-09-22)
         _live_scope.compact_end_records = {}    # …and the cycle's compaction-end-record memo (_compact_end_scoped), read
-        #                                       by the same pair (2026-09-21)
+        #                                       by the listing's key and its rows (2026-09-21)
         _live_scope.subagent_trees = {}         # …and the cycle's subagents-tree samples (_subagent_tree): one sample per
         #                                       root per cycle for every tree that exists, validated or walked by the
         #                                       first reader and served to every reader after it: the chat builds'
@@ -60576,10 +60585,13 @@ JOBS_PASS_S = 0.5                                  # the jobs thread's pace betw
 
 def _jobs_cycle():
     """ONE pass of the jobs thread: the pass's liveness snapshot and scopes opened as _pusher_cycle opens the pusher's
-    (thread-confined, so the two loops never share a snapshot), less the launch-error memo: only the listing's key and rows
-    read it, and the listing is the pusher's job, so a memo opened here was filled by nothing (2026-09-21); _jobs_pass inside
-    them, the scopes closed in the finally, the pass counted under /perf `jobs`, and the boot's first pass sampled and
-    reported to the boot row like the pusher's first cycle."""
+    (thread-confined, so the two loops never share a snapshot), less the launch-error memo and the compaction-end-record
+    memo (_compact_end_scoped) beside it: only the listing reads them, the launch error once per session at its key through
+    the pair reader (_listing_pair_scoped; the rows hit the pair memo and never reach it) and the end record at its key and
+    its rows, and the listing is the pusher's job, so a memo opened here was filled by nothing (2026-09-21; the key alone
+    for the launch error since the post-merge review of the listing pairing, 2026-09-22); _jobs_pass inside them, the scopes closed in the finally, the
+    pass counted under /perf `jobs`, and the boot's first pass sampled and reported to the boot row like the pusher's
+    first cycle."""
     _t = time.monotonic()
     first = not _BOOT_HEALTH_DONE[0] and _BOOT_FIRST["jobs"] is None
     if first:
