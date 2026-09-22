@@ -757,9 +757,10 @@ function undoRoutedBuilt(m: any): boolean {
 // the undo never reached never lists a restored card with a newer build; a kernel that restored an older batch shows exactly what it restored;
 // a card cleared AFTER the send has no check, so no payload releases it by evidence. A build below the one last seen from a kernel is its restart
 // (the counter is per process; the twelfth executed review): the check re-bases to the new life and that payload judges the card. The single-kernel
-// pane releases at the click instead, as the enumeration proves it, so it writes no check; a pane that flips from federated to single-kernel between
-// the click and the restore keeps its checks, so no gate on the attachment stands here. Apart from applyFeedPayload's absence-driven writers, which
-// stand behind the cards-unknown gate: this one acts on presence and needs no such gate
+// pane releases at the click instead, as the enumeration proves it, so the undoRouted branch writes no check there (the attachment read at the send,
+// the click's moment; the frame reaches every kernel-served pane, the thirteenth executed review); a pane that flips from federated to single-kernel
+// between the click and the restore keeps its checks, so no gate on the attachment stands HERE. Apart from applyFeedPayload's absence-driven writers,
+// which stand behind the cards-unknown gate: this one acts on presence and needs no such gate
 function releaseRestoredByEvidence(incomingAsks: AskItem[], m: any): void {
   for (const id of Array.from(restoreChecks.keys())) if (!pendingCleared.has(id)) restoreChecks.delete(id);   // the absence rule, or a click, ended the suppression: judged elsewhere
   if (!restoreChecks.size) return;
@@ -6854,12 +6855,19 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // the restore checks, per suppression (round thirteen): every card suppressed on a routed kernel, at that kernel's seen build. A kernel with no
     // build on record can give no evidence, so its suppressions take the click-time release here instead, never a baseline of zero (the round-twelve
     // verifier's MEDIUM, the twelfth executed review)
-    for (const id of Array.from(pendingCleared)) {
-      const h = suppressedHostOf(id);
-      if (!lastUndoHosts.has(h)) continue;
-      const seen = lastSeenBuild.get(h);
-      if (seen === undefined) { pendingCleared.delete(id); restoreChecks.delete(id); continue; }
-      restoreChecks.set(id, { host: h, sentBuild: seen });
+    // on a FEDERATED pane alone, read at the send, the click's moment: the kernel-served shim routes every send through the manager, so this frame
+    // reaches a single-kernel pane too, and there the click released the popped entry's ids while the OTHER pending clears stayed suppressed; a
+    // check on those let the kernel's in-flight build, claimed before the clear, paint the card back for a beat (the thirteenth executed review,
+    // 2026-09-22: a regression against the carry). The evidence PATH stays ungated, so a pane that flips to single-kernel between the click and
+    // the restore keeps the checks it wrote as a federated one
+    if (federatedPane()) {
+      for (const id of Array.from(pendingCleared)) {
+        const h = suppressedHostOf(id);
+        if (!lastUndoHosts.has(h)) continue;
+        const seen = lastSeenBuild.get(h);
+        if (seen === undefined) { pendingCleared.delete(id); restoreChecks.delete(id); continue; }
+        restoreChecks.set(id, { host: h, sentBuild: seen });
+      }
     }
   } else if (m.type === "err" && typeof m.text === "string" && m.text) {
     // the dialog interrupts; the bell KEEPS it (the user 2026-07-29) — dismissing the modal must not erase

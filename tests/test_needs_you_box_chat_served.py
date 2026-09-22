@@ -131,6 +131,16 @@ await page.fill("#composer-input", cfg.reply);
 await page.press("#composer-input", "Enter");
 out.afterReply = { left: await page.waitForFunction((s) => !document.querySelector(s), rowSel(cfg.g1), { timeout: 60000 }).then(() => true).catch(() => false) };
 out.afterReply.box = await readBox();
+// 4b. a BRAND-NEW card with a long brief (the round-thirteen verifier): its row is built detached and joined after, so the disclosure must be
+// measured once the row stands in the box; the button shows with no gesture
+const store3 = JSON.parse(fs.readFileSync(cfg.store, "utf8"));
+store3.nodes[cfg.g5] = { id: cfg.g5, text: cfg.g5q, parentId: null, nodeComplete: false, blocked: true, blockWhy: cfg.g5q, blockSummary: cfg.longBrief, cleared: false, trail: [],
+  t: Math.floor(Date.now() / 1000), log: [{ ev_t: Math.floor(Date.now() / 1000), src: "planner", kind: "block", why: "asked: " + cfg.g5q, at: Math.floor(Date.now() / 1000) }] };
+store3.status[cfg.g5] = "blocked"; store3.seq = (store3.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store3));
+fs.utimesSync(cfg.order, new Date(), new Date());
+out.fresh = { row: await page.waitForSelector(rowSel(cfg.g5), { timeout: 60000 }).then(() => true).catch(() => false) };
+out.fresh.more = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);
+out.fresh.box = await readBox();
 // 5. the switch: a romp:settings save with the box off hides it and leaves the ring; back on, the box returns
 const setBox = (on) => page.evaluate((on) => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.needsBox = on; localStorage.setItem("romp:settings", JSON.stringify(s)); window.dispatchEvent(new Event("romp:settings")); }, on);
 await setBox(false);
@@ -138,6 +148,7 @@ out.off = { hidden: await page.waitForFunction(() => { const b = document.getEle
 out.off.box = await readBox();
 await setBox(true);
 out.on = { shown: await page.waitForFunction(() => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && b.querySelectorAll(".ntc-row").length >= 1; }, null, { timeout: 10000 }).then(() => true).catch(() => false) };
+out.on.moreAfterRebuild = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);   // the rebuilt row (host.replaceChildren, then the rows built anew) wears the disclosure too
 out.on.box = await readBox();
 process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
@@ -272,7 +283,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
                 json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
-                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "ledger": self.ledger, "order": self.order}, f)
+                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "ledger": self.ledger, "order": self.order}, f)
             driver = os.path.join(self.lab, "needsbox.mjs")
             Path(driver).write_text(DRIVER)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=600,
@@ -338,6 +349,15 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertEqual((m["after"] or {}).get("label"), "Less"); self.assertEqual((m["after"] or {}).get("text"), LONG_BRIEF)
         self.assertTrue(m["closed"], "the second click folds the row back")
         self.assertEqual(m["box"]["head"], "Needs you · 4", "a disclosure is not a decision: nothing else moved")
+
+    def test_a_brand_new_long_brief_row_and_a_rebuilt_row_both_get_the_disclosure(self):
+        """The round-thirteen verifier (2026-09-22): the disclosure was measured while the row was still detached (built, then joined), so a
+        fresh row with a long brief never got its button, nor did the rows the switch's off-then-on rebuilt; the first scene passed because it
+        mutated a row already in the document. The measure runs over the rows once they stand in the box."""
+        r = self._result()
+        self.assertTrue(r["fresh"]["row"], "the new card's row arrives: %r (kernel: %s)" % (r["fresh"], self._kernel_tail()))
+        self.assertTrue(r["fresh"]["more"], "and wears the More button with no gesture (before: measured detached, 0 by 0, no button): %r" % r["fresh"]["box"])
+        self.assertTrue(r["on"]["shown"]); self.assertTrue(r["on"]["moreAfterRebuild"], "the rebuilt row wears it too (before: none after the switch's off-then-on)")
 
     def test_a_clear_the_clears_log_refuses_leaves_the_row_and_re_arms_its_buttons_and_says_so(self):
         r = self._result()

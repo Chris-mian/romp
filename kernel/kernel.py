@@ -41437,17 +41437,21 @@ def _owed_persist(ids):
             return _store_fault_copy(e)
 
 
-def _owed_load():
+def _owed_load(note=True):
     """The owed ids on disk joined into _rejournal_owed (a restart's memory is empty; the file is not); "" or the fault's copy. A
     MISSING file is nothing owed; any other refusal is said on the frame (the third executed review of PR 1967, 2026-09-21: every OSError read as nothing owed).
-    Ids whose re-journal landed while the note's rewrite refused (_owed_settled) are not owed again."""
+    Ids whose re-journal landed while the note's rewrite refused (_owed_settled) are not owed again. `note`: file the durable record here
+    (a gesture's read, one per gesture); the feed's once-per-life read files its own, one per episode (_owed_ensure_loaded)."""
     with _OWED_LOCK:
         try:
             text = (jd.STATE / OWED_FILE).read_text()
         except FileNotFoundError:
             return ""
-        except OSError as e:
-            _owed_fault_note("the note's read", e)
+        except (OSError, ValueError) as e:
+            # a permission bit, EIO; or a note whose bytes are not text (UnicodeDecodeError is a ValueError; the thirteenth executed review,
+            # 2026-09-22: it raised through every feed build and the off frame, no row filed, the read armed, until the file was repaired)
+            if note:
+                _owed_fault_note("the note's read", e)
             return _store_fault_copy(e)
     for line in text.splitlines():
         try:
@@ -41482,13 +41486,15 @@ def _owed_note():
 
 
 _owed_mem_only = [False]         # the last persist refused: the owing is in memory alone (the dialog says so)
+_owed_read_fault = [""]          # the fault copy filed for a STANDING unreadable note on the feed's once-per-life read: one row per episode (the judge's
+#                                  _read_failed shape), cleared when a read lands; _undo_clear's own read files per gesture (the thirteenth executed review)
 
 
 def _owed_fault_note(what, e):
     """The durable record of a refused note write or read (the second contributor's review, 2026-09-22: seven refusal arms said nothing
     beyond the frame): one stderr line and a judge-errors row (jd._log_judge_error, the rows the card modal's diagnostics read), the
-    kernel's write-fault convention. Never raises: it runs inside the refusal arms it records."""
-    line = "owed note: %s refused: %s" % (what, _store_fault_copy(e))
+    kernel's write-fault convention. Never raises: it runs inside the refusal arms it records. `e`: the exception, or a fault's copy."""
+    line = "owed note: %s refused: %s" % (what, e if isinstance(e, str) else _store_fault_copy(e))
     try:
         sys.stderr.write(line + "\n")
         jd._log_judge_error("romp", "", "owed-note", note=line)
@@ -41500,14 +41506,20 @@ _owed_note_read = [False]        # the note beside the log read into memory once
 def _owed_ensure_loaded(what):
     """The owed ids on disk joined into memory once per kernel life, under the lock, so the feed's Undo button and every gesture account
     see the owing a restart's memory lacks (the second contributor's review, 2026-09-22: the button hid exactly when the dialogs said to
-    press it, until the first Undo read the note). A present, unreadable note: the helper's own record (a judge-errors row and one stderr
-    line per attempt), and the read stays armed for the next caller. Returns the fault's copy, or ""."""
+    press it, until the first Undo read the note). A present, unreadable note: ONE judge-errors row and stderr line per episode, the first
+    failed read after a good one (the judge's _read_failed shape; the thirteenth executed review, 2026-09-22: this read runs twice per feed
+    build and once per off frame, and filed a row each time while the fault stood), a different fault a new episode; the read stays armed
+    for the next caller. Returns the fault's copy, or ""."""
     with _OWED_LOCK:
         if _owed_note_read[0]:
             return ""
-        err = _owed_load()                              # a refusal files its own record (_owed_fault_note inside the helper); said here to the caller
+        err = _owed_load(note=False)
         if err:
+            if _owed_read_fault[0] != err:
+                _owed_read_fault[0] = err
+                _owed_fault_note("the note's read for %s" % what, err)
             return err
+        _owed_read_fault[0] = ""                      # the read landed: the next failure is a new episode (_read_ok)
         _owed_note_read[0] = True
         return ""
 
@@ -41626,9 +41638,15 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                 # the one-stamp clause names its subject from the owed ids' stores (the second contributor's review, 2026-09-22: "that session's
                 # store" misnamed two sessions at one stamp, and a clears-log refusal, whose subject is the log)
                 _owed_now = [str(i) for i in (value.get("owed") or [])] if isinstance(value, dict) else []
-                _stores = {(i.split(":", 2)[1] if i.startswith("notice:") else i.rsplit(":", 1)[0]) for i in _owed_now}
-                _subject = ("the clears log" if (skipped.get(LEDGER_KEY) or skipped.get(LEDGER_REJOURNAL_AGAIN_KEY)) else
-                            ("that session's goals file" if len(_stores) <= 1 else "their goals files"))
+                _stores = {("notice:" + i.split(":", 2)[1]) if i.startswith("notice:") else i.rsplit(":", 1)[0] for i in _owed_now}   # the STORE keys: a notice archive against a goals file (the thirteenth executed review)
+                if skipped.get(LEDGER_KEY) or skipped.get(LEDGER_REJOURNAL_AGAIN_KEY):
+                    _subject = "the clears log"
+                elif len(_stores) > 1:
+                    _subject = "those stores"
+                elif any(k.startswith("notice:") for k in _stores):
+                    _subject = "that session's notice archive"
+                else:
+                    _subject = "that session's goals file"
                 _send("Undo went to earlier cards first",
                       "Some cards were still owed from an earlier undo, so Undo went to them first, and that did not fully land (the other "
                       "message says which). " + ("Once %s can be read and written again, one Undo brings them back and the next the last clear." % _subject if _n <= 1 else
@@ -57003,10 +57021,9 @@ def _feed_off_frame(now, live_map=None):
         _subagent_trees_forget(alive)                 #  build_feed never runs; the bound's home is the jobs pass; a FAILED alive
     #                                                    read evicts nothing (an empty set from a failure is no owner list)
     try:
-        cleared = _cleared_ids()
-    except Exception:
-        cleared = set()
-    _ids = _undo_stack_ids()
+        _ids = _undo_stack_ids()                      # the log's ids and the owed ids, under the guard the carry's read had (the thirteenth executed review: an
+    except Exception:                                 # undecodable clears log raised UnicodeDecodeError out of the off frame, since _cleared_ids catches OSError alone)
+        _ids = set()
     f["dismissedCount"] = len(_ids); f["showDismissed"] = False; f["canUndoClear"] = len(_ids) > 0
     f["clearNotices"] = _boundary_clear_notices(alive)
     f["sdkNotices"] = _sdk_problem_rows()

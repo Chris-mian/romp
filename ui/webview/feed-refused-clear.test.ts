@@ -62,6 +62,7 @@ test("kernel: the clears-log refusal names the request the way _refuse_drive's f
   assert.match(FEED, /clearedStack\.push\(\.\.\.older\);/, "the older local entries stay below the rebuilt ones under a truncated frame");
   assert.match(FEED, /if \(!federatedPane\(\)\) pendingCleared\.clear\(\);/, "the single-kernel round trip releases every suppression; a federated pane waits for federation's word (round twelve)");
   assert.match(FEED, /\} else if \(m\.type === "undoRouted" && Array\.isArray\(m\.hosts\)\) \{/, "federation's word on where the undo went");
+  assert.match(FEED, /    if \(federatedPane\(\)\) \{\n      for \(const id of Array\.from\(pendingCleared\)\) \{\n        const h = suppressedHostOf\(id\);/, "the checks on a federated pane alone, read at the send (the thirteenth executed review: a single-kernel pane wrote checks on its other pending clears)");
   assert.match(FEED, /restoreChecks\.set\(id, \{ host: h, sentBuild: seen \}\);/, "the send's moment per SUPPRESSION, as the build seen on its kernel (round thirteen: the round-twelve verifier's HIGH, a per-kernel record measured every later clear against the old moment)");
   assert.match(FEED, /if \(seen === undefined\) \{ pendingCleared\.delete\(id\); restoreChecks\.delete\(id\); continue; \}/, "a kernel with no build on record: the click-time release, never a baseline of zero (the round-twelve verifier's MEDIUM)");
   assert.doesNotMatch(FEED, /lastSeenBuild\.get\(h\) \?\? 0/, "no zero baseline anywhere");

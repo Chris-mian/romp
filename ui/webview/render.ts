@@ -14915,6 +14915,10 @@ function renderNotices(): void {
     }
     prev = row;
   }
+  // the brief's disclosure measured IN the document (the round-thirteen verifier of PR 1967): a row is built detached and joined after
+  // updateNoticeRow ran, so its clamped body measured 0 by 0 there and no button was ever made for a fresh row, nor for the rows the
+  // switch's off-then-on rebuilt; the pass runs over the rows once they stand in the box
+  for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) noticeMoreButton(r, r.querySelector<HTMLElement>(".ntc-body"));
 }
 
 function renderBgTasks() {

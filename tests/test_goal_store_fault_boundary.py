@@ -119,6 +119,7 @@ class _World(unittest.TestCase):
         # memory-only mark or once-per-life read must not ride into this one
         km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_mem_only[0] = False
         getattr(km, "_owed_note_read", [False])[0] = False   # (tolerant of a kernel without the once-per-life read: the red-first run at the round's base)
+        getattr(km, "_owed_read_fault", [""])[0] = ""        # the note read's episode memo (round fourteen)
         (jd.STATE / km.OWED_FILE).unlink(missing_ok=True)
 
     def tearDown(self):
@@ -1062,6 +1063,7 @@ class ActsUnderAFailedWrite(_World):
         self.assertIn("only this running romp remembers", rj["text"])
         self.assertIn("a restart before it can write again loses that", rj["text"], "the limit is stated where the promise is made")
         self.assertEqual(km._rejournal_owed, {B + ":g1": None})
+        self.assertTrue(any("the note's append refused" in r.get("note", "") for r in self._rows("owed-note")), "the append arm's durable record (the round-thirteen verifier): %r" % self._rows("owed-note"))
 
     def test_the_press_after_the_two_fault_undo_with_the_log_still_refusing_names_what_the_feed_restored(self):
         """The double-fault window's other side (the manager's read of round three): owed ids present, a later clear landed, then
@@ -1144,15 +1146,21 @@ class ActsUnderAFailedWrite(_World):
         orig_write = Path.write_text
 
         def refusing_write(p, *a, **kw):
-            if p.name.startswith(owed_file.name):   # the note or its atomic temp
+            if p.name.startswith(owed_file.name) and p.name != owed_file.name:   # the atomic temp alone: a plain write on the final name goes through, so the atomic switch is guarded (the round-thirteen verifier)
                 raise OSError(errno.EROFS, "Read-only file system", str(p))
             return orig_write(p, *a, **kw)
         with mock.patch.object(Path, "write_text", refusing_write):
             sent = self._dispatch({"type": "undoClear"})    # the re-journal lands; the note's rewrite refuses
         titles = [m["title"] for m in sent if m.get("type") == "err"]
         self.assertIn("romp could not update its note of earlier owed cards", titles, "the refused rewrite has an account: %r" % titles)
+        self.assertTrue(any("the note's rewrite refused" in r.get("note", "") for r in self._rows("owed-note")), "the rewrite arm's durable record (the round-thirteen verifier): %r" % self._rows("owed-note"))
         self.assertFalse(self._flag(B, B + ":g1"), "B came back")
         self.assertIn(B + ":g1", [json.loads(l)["id"] for l in owed_file.read_text().splitlines() if l.strip()], "the stale row is still on disk")
+        with mock.patch.object(Path, "write_text", refusing_write):
+            self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+            sent = self._dispatch({"type": "undoClear"})    # the note still carries the settled id and its QUIET rewrite refuses again: said (round thirteen: its return was discarded)
+        self.assertIn("romp could not update its note of earlier owed cards", [m["title"] for m in sent if m.get("type") == "err"], "the quiet rewrite's refusal has the owed-write account: %r" % sent)
+        self.assertFalse(self._flag(A, A + ":g1"), "and the undo went ahead")
         self._dispatch({"type": "askClear", "itemId": A + ":g1"})   # the last clear
         sent = self._dispatch({"type": "undoClear"})
         self.assertEqual([m for m in sent if m.get("type") == "err"], [], "no stale re-journal: the settled id is not owed again")
@@ -1245,7 +1253,7 @@ class ActsUnderAFailedWrite(_World):
         orig_write = Path.write_text
 
         def refusing_write(p, *a, **kw):
-            if p.name.startswith(owed_file.name):   # the note or its atomic temp
+            if p.name.startswith(owed_file.name) and p.name != owed_file.name:   # the atomic temp alone: a plain write on the final name goes through, so the atomic switch is guarded (the round-thirteen verifier)
                 raise OSError(errno.EROFS, "Read-only file system", str(p))
             return orig_write(p, *a, **kw)
         with mock.patch.object(Path, "write_text", refusing_write), mock.patch.object(km, "_mark_nodes_cleared", under_fault):
@@ -1377,14 +1385,22 @@ class ActsUnderAFailedWrite(_World):
     def test_the_undo_button_shows_while_a_card_is_owed_and_after_a_restart_before_the_first_undo(self):
         """The second contributor's review (2026-09-22): canUndoClear and the dismissed count read the clears log alone, so after a two-fault
         undo (a card owed in memory and in the note, none in the log) the button hid exactly when the dialogs said to press it, and after a
-        restart until the first Undo read the note. Both read the log's ids and the owed ids; the note is read once per kernel life."""
+        restart until the first Undo read the note. Both PAYLOADS (build_feed and the off frame) read the log's ids and the owed ids; the note
+        is read once per kernel life, and while it is unreadable ONE judge-errors row per episode is filed (the thirteenth executed review:
+        the helper alone was pinned, so the two payload lines reverted to the log's count stayed green; one row per call filled the errors
+        file at twice the build rate). Red against that mutant, and against the per-call rows; the helper is this branch's, so the round's
+        base has no button to hide, only a missing name."""
         self._two_fault_undo_leaves_b_owed()
         self.assertEqual(km._cleared_ids(), {}, "the log holds nothing: the owing is in memory and the note")
-        self.assertEqual((len(km._undo_stack_ids()), B + ":g1" in km._undo_stack_ids()), (1, True), "the stack's ids include the owed card")
+
+        def payloads():
+            feed = km.build_feed(NOW, self.live); off = km._feed_off_frame(NOW, self.live)
+            return (feed["canUndoClear"], feed["dismissedCount"], off["canUndoClear"], off["dismissedCount"])
+        self.assertEqual(payloads(), (True, 1, True, 1), "both payloads show the button while a card is owed (before: false and 0, the log alone)")
         km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_note_read[0] = False   # a restart: memory empty, the note on disk
-        self.assertEqual(km._undo_stack_ids(), {B + ":g1"}, "the note is read for the button before any Undo (before: empty until the first Undo)")
+        self.assertEqual(payloads(), (True, 1, True, 1), "the note is read for the button before any Undo (before: hidden until the first Undo)")
         self.assertTrue(km._owed_note_read[0], "read once per life")
-        # a present, unreadable note: said, and the read stays armed
+        # a present, unreadable note: said ONCE per episode, and the read stays armed
         km._rejournal_owed.clear(); km._owed_note_read[0] = False
         owed_file = jd.STATE / km.OWED_FILE
         orig_read = Path.read_text
@@ -1393,11 +1409,49 @@ class ActsUnderAFailedWrite(_World):
             if p == owed_file:
                 raise OSError(errno.EACCES, "Permission denied", str(p))
             return orig_read(p, *a, **kw)
+        rows0 = len(self._rows("owed-note"))
         with mock.patch.object(Path, "read_text", refusing_read):
+            self.assertEqual(payloads(), (False, 0, False, 0), "the log alone while the note cannot be read")
             self.assertEqual(km._undo_stack_ids(), set())
         self.assertFalse(km._owed_note_read[0], "armed until a read lands")
-        self.assertTrue(any("owed-note" in r.get("err", "") for r in self._rows()), "a judge-errors row names the unreadable note: %r" % self._rows()[-1:])
-        self.assertEqual(km._undo_stack_ids(), {B + ":g1"}, "readable again: the read lands")
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 1, "five reads of the standing fault, one judge-errors row (before: one per read): %r" % self._rows("owed-note"))
+        self.assertIn("Permission denied", self._rows("owed-note")[-1]["note"])
+        self.assertEqual(payloads(), (True, 1, True, 1), "readable again: the read lands and the button is back")
+        with mock.patch.object(Path, "read_text", refusing_read):
+            km._rejournal_owed.clear(); km._owed_note_read[0] = False
+            self.assertEqual(km._undo_stack_ids(), set())
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 2, "a read that landed in between makes the next refusal a new episode: a second row")
+        # a note whose bytes are not text (the thirteenth executed review: a ValueError raised through every builder, nothing filed)
+        km._rejournal_owed.clear(); km._owed_note_read[0] = False; km._owed_read_fault[0] = ""
+        owed_file.write_bytes(b"\xff\xfe\x00 not text")
+        self.assertEqual(payloads(), (False, 0, False, 0), "a corrupt note: the builders proceed on the log alone, nothing raises")
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 3, "and it is filed once")
+        self.assertIn("codec", self._rows("owed-note")[-1]["note"])
+        sent = self._dispatch({"type": "undoClear"})
+        self.assertIn("romp could not read its note of earlier owed cards", [m.get("title") for m in sent if m.get("type") == "err"], "an Undo over a corrupt note says so on its frame: %r" % sent)
+
+    def test_the_off_frame_over_an_undecodable_clears_log_ships_zero_counts(self):
+        """The thirteenth executed review (2026-09-22): the off frame's guarded clears-log read was dead code once the stack helper replaced it,
+        and _cleared_ids catches OSError alone, so with tracking off a clears log whose bytes are not text raised UnicodeDecodeError out of
+        the frame (the carry shipped zero counts). The ids are computed inside the guard again."""
+        (jd.STATE / "cleared.jsonl").write_bytes(b"\xff\xfe\x00 not text\n")
+        f = km._feed_off_frame(NOW, self.live)
+        self.assertEqual((f["off"], f["dismissedCount"], f["canUndoClear"]), (True, 0, False), "zero counts, no raise")
+
+    def test_the_one_stamp_reorder_clause_names_the_store_by_its_kind(self):
+        """The thirteenth executed review (2026-09-22): the clause derived its subject as a goals file for an owed NOTICE id, whose own account
+        names the notice archive. The subject comes from the store keys: a notice archive against a goals file, several stores as such."""
+        def words(owed, extra=None):
+            sent = []
+            client = {"app": "feed", "alive": True, "send": lambda s: sent.append(json.loads(s))}
+            skipped = {km.LEDGER_REORDER_KEY: {"fault": "", "ids": [A + ":g2"], "landed": False, "owed": owed, "stamps": 1}}
+            skipped.update(extra or {})
+            km._gesture_store_refusal(client, "undo", skipped, ids=[A + ":g2"], op="undoClear")
+            return next(m["text"] for m in sent if m.get("title") == "Undo went to earlier cards first")
+        self.assertIn("Once that session's notice archive can be read and written again, one Undo brings them back", words(["notice:%s:k:1" % B]))
+        self.assertIn("Once that session's goals file can be read and written again", words([B + ":g1"]))
+        self.assertIn("Once those stores can be read and written again", words([B + ":g1", "notice:%s:k:1" % B]), "a goals file and a notice archive of one session are two stores")
+        self.assertIn("Once the clears log can be read and written again", words([B + ":g1"], {km.LEDGER_REJOURNAL_AGAIN_KEY: {"fault": "x", "ids": [B + ":g1"]}}))
 
     def test_a_refused_continue_from_the_chat_box_answers_that_socket_with_the_held_shape(self):
         """The second contributor's review (2026-09-22): the askFollowUp arm's ack reached feed clients alone, so a chat socket that pressed
@@ -1434,7 +1488,7 @@ class ActsUnderAFailedWrite(_World):
         orig_write = Path.write_text
 
         def refusing_write(p, *a, **kw):
-            if p.name.startswith(owed_file.name):   # the note or its atomic temp
+            if p.name.startswith(owed_file.name) and p.name != owed_file.name:   # the atomic temp alone: a plain write on the final name goes through, so the atomic switch is guarded (the round-thirteen verifier)
                 raise OSError(errno.EROFS, "Read-only file system", str(p))
             return orig_write(p, *a, **kw)
         with mock.patch.object(Path, "write_text", refusing_write):
@@ -1668,6 +1722,7 @@ class UndoStackSequences(_World):
             p.start()
             self.addCleanup(p.stop)
         km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_mem_only[0] = False
+        getattr(km, "_owed_note_read", [False])[0] = False; getattr(km, "_owed_read_fault", [""])[0] = ""
 
     _dispatch = ActsUnderAFailedWrite._dispatch
     _flag = ActsUnderAFailedWrite._flag
@@ -1675,6 +1730,7 @@ class UndoStackSequences(_World):
     def _fresh(self):
         _World.tearDown(self); _World.setUp(self)           # a new state root with the two stores; the class's patches stay
         km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_mem_only[0] = False
+        getattr(km, "_owed_note_read", [False])[0] = False; getattr(km, "_owed_read_fault", [""])[0] = ""
 
     def _visible(self):
         cur = km._cleared_ids()

@@ -226,8 +226,9 @@ a clear was routed in between. The routing is read from its owner rather than sh
 and the board's Clear all fans out to every kernel, two things a page-side record could not track.
 
 The click releases no suppression. At federation's word the page writes a restore check on every card then suppressed on the
-kernels the undo went to, each with the build of its kernel the page had seen at that moment, and a suppression ends on the
-evidence that the card was restored: a payload from the card's own kernel, built after that moment, that lists the card. A stale
+kernels the undo went to, each with the build of its kernel the page had seen at that moment (on a federated pane alone, read at
+the send: a single-kernel pane released at the click and writes none, though the frame reaches it too), and a suppression ends on
+the evidence that the card was restored: a payload from the card's own kernel, built after that moment, that lists the card. A stale
 held frame cannot release it; a kernel the undo never reached never lists a restored card with a newer build; a kernel that
 restored an older batch shows exactly what it restored; a card cleared after the send has no check, so no payload releases it by
 evidence. A build below the one last seen from a kernel is its restart, since the counter is per process: the check re-bases to

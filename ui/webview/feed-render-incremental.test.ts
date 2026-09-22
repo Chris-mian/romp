@@ -420,7 +420,7 @@ test("a reorder whose owed cards did not come back names them: an empty entry ab
   mock.timers.tick(200);
   // the kernel went to an owed card first and its store refused: the reorder frame names g3 as not restored and the owed id
   await dispatch({ type: "err", ok: true, op: "undoClear", itemId: "g3", itemIds: ["g3"], owedIds: [API + ":g9"], title: "Undo went to earlier cards first",
-                   text: "Once that session's store can be read, one Undo brings them back and the next the last clear." });
+                   text: "Once that session's goals file can be read and written again, one Undo brings them back and the next the last clear." });
   mock.timers.tick(700);
   assert.ok(!card("g3"), "the last clear's card is off the board again");
   const undo = body.byId("feed-undoclear")!;
@@ -1836,9 +1836,34 @@ test("the local kernel's seen build advances from the payload's own build when t
   const undo = body.byId("feed-undoclear")!;
   undo.onclick!(ev); await dispatch({ type: "undoRouted", hosts: [""] });
   await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...M(5, 1) })); mock.timers.tick(700);   // the held frame, at the build seen at the send
-  assert.ok(!card("g3"), "a frame at the send's build releases nothing (before: the local record stood still, the send measured at zero, and 5 > 0 released it)");
+  assert.ok(!card("g3"), "a frame at the send's build releases nothing (the local kernel's build read from the payload's own when the map lacks the local key)");
   await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...M(6, 1) })); mock.timers.tick(700);
-  assert.ok(card("g3"), "the newer build shows it");
+  assert.ok(card("g3"), "the newer build shows it (before: the local build was read from the map alone, which lacked it, so nothing ever released the card)");
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+});
+
+test("a kernel-served SINGLE-KERNEL pane receives the manager's undoRouted frame too, and writes no restore check: the kernel's in-flight build, claimed before a second clear, leaves that card off while its Undo entry stands (the thirteenth executed review of PR 1967: a regression against the carry)", async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const checks = hooks._restoreChecksForTests as () => unknown[];
+  const sent0 = posted.length;
+  hooks._resetClearGestureStateForTests();
+  const g2it = card("g2")?._it ?? cardOf("g2", API, "api", "#cc6633", "a second card of api's", "working", { live: true, tree: [] });
+  await dispatch(frame([g1, g2it, g3], { working: ["web"], buildId: 1 })); mock.timers.tick(700);
+  card("g3")._clr.onclick(ev); card("g1")._clr.onclick(ev); mock.timers.tick(700);           // two clears, both in flight
+  assert.deepEqual(stackIds(), [["g1"], ["g3"]]);
+  body.byId("feed-undoclear")!.onclick!(ev);                                                  // Undo pops g1's entry optimistically
+  await dispatch({ type: "undoRouted", hosts: [""] });                                        // the shim routes the send through the manager: its frame reaches this pane
+  assert.ok(card("g1"), "the popped entry's card is back at once"); assert.ok(!card("g3"), "the other clear stays");
+  assert.deepEqual(checks(), [], "no restore check on a single-kernel pane: the click released what it restored (before: a check on g3 at build 1)");
+  await dispatch(frame([g1, g2it, g3], { working: ["web"], buildId: 2 })); mock.timers.tick(700);   // the kernel's in-flight build, claimed before g3's clear, still lists g3
+  assert.ok(!card("g3"), "g3 stays off while its Undo entry stands (before: painted back on build 2 and hidden again on build 3)");
+  assert.deepEqual(stackIds(), [["g3"]]);
+  await dispatch(frame([g1, g2it], { working: ["web"], buildId: 3 })); mock.timers.tick(700);       // the confirming build
+  assert.ok(!card("g3") && card("g1"));
   hooks._resetClearGestureStateForTests(); posted.splice(sent0);
   await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
 });
@@ -1989,12 +2014,13 @@ test("the feed's Undo stack equals the kernel's batches after every press, by en
   const byKey = new Map<string, any>();
   for (const t of T.transitions) byKey.set(t.from + "|" + t.input.join(","), t);
   const settle = () => { mock.timers.tick(700); for (const d of body.querySelectorAll("#err-dialog")) d.remove(); };
+  let build = 1;
   const press = async (t: any) => {
     const action = t.input[0];
     if (action === "clearA") card(T.cards.A)._clr.onclick(ev);
     else if (action === "clearB") card(T.cards.B)._clr.onclick(ev);
     else if (action === "clearAll") body.byId("feed-clearall")!.onclick!(ev);
-    else body.byId("feed-undoclear")!.onclick!(ev);
+    else { body.byId("feed-undoclear")!.onclick!(ev); await dispatch({ type: "undoRouted", hosts: [""] }); }   // the manager's frame reaches a kernel-served single-kernel pane too (round fourteen)
     for (const f of t.frames) await dispatch(f);                              // the kernel's real frames for this press
     settle();
     const where = "after " + t.input.join("/") + " from " + t.from;
@@ -2005,14 +2031,24 @@ test("the feed's Undo stack equals the kernel's batches after every press, by en
     if (t.frames.length) assert.deepEqual(frameIds(), t.after, where + ": the ids the entries took from the frame are the kernel's batches");
     const before = T.states[t.from].visible as string[];
     for (const id of t.visible.filter((x: string) => !before.includes(x))) assert.ok(card(id), where + " (before the payload): " + id + " is on the board, restored optimistically");
-    await dispatch(frame(t.visible.map((id: string) => card(id)?._it ?? cards[id])));   // the payload after it
+    // the kernel's IN-FLIGHT build (round fourteen, the round-thirteen verifier): a payload claimed before the press, listing the from-state's cards
+    // at a later build, lands first. The board must already read as the kernel will show it, except after a silent board Clear all, whose cards
+    // leave with the kernel's payload and not before (a check written on a single-kernel pane released the other pending clear on exactly this frame)
+    await dispatch(frame(before.map((id: string) => card(id)?._it ?? cards[id]), { buildId: ++build })); settle();
+    const inflight = action === "clearAll" && !t.frames.length ? before : t.visible;   // a Clear all's account (a refusal) has reconciled the board already
+    // an OWED id's showing is the payload's to decide (the reconcile's rule: a promise about the next Undo, not a word on its card), so a frame from
+    // before the press decides it too, until the truth payload; the flicker that leaves on a double-fault undo is the shape a build floor on the
+    // kernel's accounts would close (round fourteen's proposal), not this replay's claim
+    const deferred = new Set<string>(t.frames.flatMap((f: any) => (Array.isArray(f.owedBatch) ? f.owedBatch.map(String) : [])));
+    for (const id of [T.cards.A, T.cards.B]) if (!deferred.has(id)) assert.equal(!!card(id), inflight.includes(id), where + " (the kernel's in-flight build): " + id + " is on the board iff the kernel will show it");
+    await dispatch(frame(t.visible.map((id: string) => card(id)?._it ?? cards[id]), { buildId: ++build }));   // the payload after it, a later build each press (round fourteen: the kernel's counter moves)
     settle(); mock.timers.tick(7000);
     assert.deepEqual(stackIds(), t.after, where + ": the feed's stack by its items, top first, is the kernel's batches");
     for (const id of [T.cards.A, T.cards.B]) assert.equal(!!card(id), t.visible.includes(id), where + ": " + id + " is on the board iff the kernel shows it");
   };
   let n = 0;
   for (const t of T.transitions) {
-    reset();
+    reset(); build = 1;
     await dispatch(frame([cards[T.cards.A], cards[T.cards.B]])); settle();
     let key = T.start;
     for (const step of T.states[t.from].witness) {
