@@ -19795,9 +19795,12 @@ def _refuse_drive(client, op, sid, msg, why=None):
     except OSError:
         pass
     sys.stderr.write("undeliverable %s: %s %s — %r\n" % (op, why or "this kernel has no session", sid, text[:200]))
+    # The why branch names the session by its registered name, the uuid only when no row names it, as moveFailed does
+    # (2026-09-21): the End hand-back's frame lands on ONE pane, and on a chat column showing another session the uuid
+    # said nothing to the person reading it. The wrong-kernel branch keeps the id: there the id IS the diagnosis.
     detail = ("Nothing was sent. %s, so it could not deliver your %s. "
               "Your text is saved verbatim in undelivered.jsonl under romp's state directory."
-              % ((why + " (session %s)" % sid) if why else
+              % ((why + " (session %s)" % (_name_of(sid) or sid)) if why else
                  ("This romp kernel has no session with id %s — on a board showing more than one machine, that "
                   "means the pane addressed the wrong kernel" % sid), what))
     try:
@@ -36578,10 +36581,11 @@ def _drop_parked_on_end(sid, client=None):
     WHERE the modal lands (review find, 2026-09-21): on `client` only when its pane renders an err frame (the chat
     and the feed, _ERR_FRAME_APPS); an End pressed in the Sessions pane arrives on that pane's socket, whose bundle
     has no err arm, so handed there the frame showed nothing and reached no chat pane either. Every other case (a
-    pane that cannot show it, no socket at all) goes to ONE chat pane (_send_to_one_chat): the broadcast put a modal
-    and a bell entry in every chat column for one message. The op the drain is handing over right now is found by
-    SLOT (_inflight_slot), as _cancel_parked finds it, not by identity: two parked compact presses are one interned
-    tuple, and an identity filter kept the second behind the in-flight first."""
+    pane that cannot show it, no socket at all) goes to ONE pane that renders it (_send_to_one_chat: a chat pane first,
+    the feed when no chat pane is connected): the broadcast put a modal and a bell entry in every chat column for one
+    message. The op the drain is handing over right now is found by SLOT (_inflight_slot), as _cancel_parked finds it,
+    not by identity: two parked compact presses are one interned tuple, and an identity filter kept the second behind
+    the in-flight first."""
     sid = str(sid)
     with _pending_ops_lock:
         ops = _pending_ops.get(sid) or []
@@ -36620,19 +36624,33 @@ _ERR_FRAME_APPS = ("chat", "feed")   # the panes whose bundles render an err fra
 
 
 def _send_to_one_chat(msg, sid=""):
-    """One chat pane hears `msg` (2026-09-21): the live chat client watching `sid` when one does (its `active` is the
-    tab it shows), else the first live chat client. The not-delivered frame's modal and its bell entry are one notice,
-    and the broadcast drew them once per chat column. With no chat pane connected the frame goes through the chat
-    broadcast, which reaches nobody either; the undelivered file and the log are the record then. Returns whether a
-    pane took it."""
+    """One pane hears `msg` (2026-09-21): a live chat client watching `sid` when one does (its `active` is the tab it
+    shows), else a live chat client, else a live client of any pane whose bundle reads an err frame (_ERR_FRAME_APPS).
+    The feed hands the frame to the shell's bell through the notify bridge (a postMessage to the frame hosting it), so
+    the words reach the person where a shell hosts the pane; the standalone feed page and the extension's feed webview
+    have no bridge, so there the feed's own dialog carries the words (its box attached to the overlay since this
+    change: built and never attached before, the frame painted a bare dim sheet with no words and no button). The
+    not-delivered frame's
+    modal and its bell entry are one notice, and the broadcast drew them once per chat column. Two finds of the
+    post-merge review of the End hand-back (2026-09-21) shaped the tiers and the pick within one. The pick considered
+    chat clients only, so a socketless End (romp end, the self-close sweep) with a feed pane connected and no chat pane
+    sent the frame to the empty chat broadcast, though the feed's bundle reads it: now the third tier. And within a tier
+    the pick took the OLDEST socket, while _client_send answers True on the enqueue, so a chat pane whose peer went
+    silent without closing (a forwarder holding the kernel's end open) took the one dialog until the heartbeat dropped
+    it (WS_DEAD_S, three beats), and a pane whose peer was answering heard nothing: now the socket whose peer proved
+    itself alive LAST (`lastIn`, stamped on every inbound frame by _note_ws_inbound, a pong each beat included, so the
+    pick excludes a silent peer and promises no more); equal stamps keep the older socket, the order the pick had. With
+    no such pane connected the frame goes through the chat broadcast, which reaches nobody either; the undelivered file
+    and the log are the record then. Returns whether a pane took it."""
     s = json.dumps(msg)
     with _clients_lock:
-        live = [c for c in _clients if c["app"] == "chat" and c.get("alive", True)]
-    pick = next((c for c in live if sid and c.get("active") == sid), None) or (live[0] if live else None)
-    if pick is None:
+        live = [c for c in _clients if (c.get("app") or "") in _ERR_FRAME_APPS and c.get("alive", True)]
+    chat = [c for c in live if c.get("app") == "chat"]
+    tier = [c for c in chat if sid and c.get("active") == sid] or chat or live
+    if not tier:
         _send_to_app("chat", msg)
         return False
-    return _client_send(pick, s)
+    return _client_send(max(tier, key=lambda c: c.get("lastIn", 0)), s)
 
 
 def _cancel_backend_queued(be, sid, idx, md, qid=None):
