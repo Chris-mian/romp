@@ -8151,11 +8151,15 @@ def _set_session_flag(sid, flag, value):
                     if nd.get("parentId") is None and not nd.get("cleared") and status.get(nid) != "cleared"]
             if tops:
                 p = jd.STATE / "cleared.jsonl"
-                p.parent.mkdir(parents=True, exist_ok=True)
                 t = time.time()
-                with p.open("a") as fh:
-                    for nid in tops:
-                        fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
+                try:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    with p.open("a") as fh:
+                        for nid in tops:
+                            fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
+                except OSError as e:
+                    _clears_log_fault_note("the mute's clear rows", e)   # the sixth writer, under the bare except below (the second contributor's post-merge note on PR 2018)
+                    raise
                 _mark_nodes_cleared(tops, True, why=_HIDDEN_FROM_FEED_WHY)   # durable node flag → sealed; a distinct why so a mute's
                 _files_stat_mark()                            # clear is not read as the user crossing the card off (a measure reads the journal)
         except Exception:
@@ -41579,9 +41583,9 @@ def _cleared_ids():
                 cur.pop(iid, None)
             else:
                 cur[iid] = o.get("t", 0)
-    except OSError:
+    except (OSError, ValueError):
         _CLEARED_STATS["derived"] += 1
-        return cur                                       # absent, vanished after the stat, or unreadable: empty, uncached
+        return cur                                       # absent, vanished after the stat, unreadable, or not text (UnicodeDecodeError is a ValueError: it raised at the undo arm before the restore, and the account never went; the second contributor's post-merge note on PR 2018): empty, uncached
     _CLEARED_STATS["derived"] += 1
     if key is not None:
         _CLEARED_MEMO["slot"] = (key, cur)
@@ -41752,11 +41756,15 @@ def _episode_boundary_check(sid, path, now):
     if not tops:
         return
     p = jd.STATE / "cleared.jsonl"
-    p.parent.mkdir(parents=True, exist_ok=True)
     t = time.time()                  # one shared batch t → a single Undo restores the whole boundary batch
-    with p.open("a") as fh:
-        for nid in tops:
-            fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a") as fh:
+            for nid in tops:
+                fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
+    except OSError as e:
+        _clears_log_fault_note("the episode boundary's clear rows", e)   # the fifth writer, with no arm before (the second contributor's post-merge note on PR 2018)
+        return
     # The settle's OWN record — which cards this boundary dropped — rides the episodes log as an
     # annotation row keyed to this head, appended only on THIS settle path so the race-decided seed
     # above can never claim one (the user 2026-07-27, who found the drop invisible): the feed's bell
@@ -42034,7 +42042,7 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op="", seq=None):
     next Undo retries it (_undo_clear keeps those ids the newest batch). `text` carries the whole
     account; there is no `copy` key, which by contract is the USER'S undelivered text (the feed renders
     it as a "Copy my text" button and folds it into the bell entry). The skip itself is already a
-    judge-errors row: `store-unreadable` when the load faulted (jd.load_goals_or_fault), `store-unwritable`
+    judge-errors row (`clears-log` for the log's own refusals, `owed-note` for the note's, beside the stores'): `store-unreadable` when the load faulted (jd.load_goals_or_fault), `store-unwritable`
     when the store read and its publish then faulted (jd.save_goals_or_fault: the save path's strict reads,
     or the write itself), so the prose says "read or write" and lets the fault text name which; this is
     the user's copy (the save shape added on a review find, 2026-09-08: left to raise, it dropped the
@@ -52029,7 +52037,7 @@ def _send_slot_locked(c, ftype, payload, pre, sig, parts=None):
         went = _send_client(c, key, payload, pre=pre, sig="%s|floor:%s|build:%s" % (sig, fp, bid))
         if went and isinstance(bid, int) and bid > fp:
             c.pop("floorPending", None)
-            c.setdefault("sent", {})[key] = (sig, time.time())   # the slot holds the plain signature again, so the dedup stands from the next build (no extra full frame)
+            c.setdefault("sent", {})[key] = (sig, time.time())   # the slot holds the plain signature again: a legacy client dedups from the next build; a delta client, whose base went with each send under the mark, re-bases with one whole frame
         return
     if not c.get("delta"):
         _send_client(c, key, payload, pre=pre, sig=sig)

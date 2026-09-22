@@ -236,8 +236,9 @@ undo alone (two undos to one kernel with a clear between them keep their floors 
 read the store after every clear that socket sent before the undo had applied and after the undo's batch was restored, so a card
 it lists is restored; a build claimed before it, however it is stamped, is no evidence, and until the account lands the check
 releases nothing (the card stays off, and the absence rule stands). The account rides the pressing client's own socket, which a
-redial can abandon, so a kernel's socket coming back (the local shim's reopen, a remote link's recovery) drops that kernel's
-waiting checks and their suppressions: a listed card is never covered by the absence rule, and a lost account must not hold a
+redial can abandon, so a kernel's socket coming back drops that kernel's waiting checks and their suppressions, on the socket's
+own reopen (the local shim's `wsup`; a remote relay socket's `romp:hostRelayUp`, the exact event a redial fires) and, as a second
+trigger, on the tunnel poll's word that a remote kernel came back (`hostUp`): a listed card is never covered by the absence rule, and a lost account must not hold a
 restored card off the board until a reload. An older kernel sends no account, which its payloads say
 (`undoAck` on a kernel's frame, `ackHosts` on the merge), and its checks take the build seen at the send as their floor, as
 before. A stale held frame cannot release a suppression; a kernel the undo never reached never lists a restored card past its

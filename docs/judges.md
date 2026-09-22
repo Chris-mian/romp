@@ -646,6 +646,10 @@ permission/API-error floors: one interrupt at a time, the present event first.
   frozen-store-write: a read-only site wrote to the shared store view, naming
   the site, after which the shared cache is off for the process,
   frozen-store-save: a shared store view was handed to `save_goals`, refused,
+  clears-log: a write to the clears log refused (a clear's or an undo's rows, the
+  mute's, the episode boundary's), one row per refusal, owed-note: the note of owed
+  cards beside the log could not be written or read, one row per gesture and one
+  per episode on the feed's own read,
   unroll-heal: a top left rolled up with settle rows and no done in its
   diary, given one reopen row so it can be judged again, gate-stamp: the
   evidence gate could not write a tier's stamp after a complete run, so the

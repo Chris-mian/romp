@@ -164,6 +164,7 @@ let fr = null; for (let i = 0; i < 150 && !fr; i++) { fr = shell.frames().find((
 out.hiddenPane = { frame: !!fr };
 if (fr) {
   out.hiddenPane.loaded = await fr.waitForSelector("#notices .ntc-row", { timeout: 60000 }).then(() => true).catch(() => false);   // the box on screen once
+  out.hiddenPane.g5MoreBefore = await fr.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);   // the long-brief row's button stands before the hide
   await shell.evaluate(() => { window.__rompPaneToggle("chat", false); });                                                    // the rail hides the pane (display:none on its wrapper): the observer's word
   out.hiddenPane.hidden = await shell.waitForFunction(() => !document.body.classList.contains("po-chat"), null, { timeout: 10000 }).then(() => true).catch(() => false);
   const store4 = JSON.parse(fs.readFileSync(cfg.store, "utf8"));
@@ -173,7 +174,8 @@ if (fr) {
   fs.utimesSync(cfg.order, new Date(), new Date());
   out.hiddenPane.row = await fr.waitForSelector(rowSel(cfg.g6), { state: "attached", timeout: 60000 }).then(() => true).catch(() => false);
   out.hiddenPane.landed = await fr.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g6), brief: cfg.longBrief }, { timeout: 60000 }).then(() => true).catch(() => false);
-  out.hiddenPane.whileHidden = await fr.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); return b ? { h: b.clientHeight, sh: b.scrollHeight, more: !!r.querySelector(".ntc-more") } : null; }, rowSel(cfg.g6));
+  out.hiddenPane.whileHidden = await fr.evaluate((a) => { const r = document.querySelector(a.g6); const b = r && r.querySelector(".ntc-body"); const g5 = document.querySelector(a.g5);
+    return b ? { h: b.clientHeight, sh: b.scrollHeight, more: !!r.querySelector(".ntc-more"), g5More: !!(g5 && g5.querySelector(".ntc-more")) } : null; }, { g6: rowSel(cfg.g6), g5: rowSel(cfg.g5) });   // g5's button must stand: a zero measure removes nothing (the second contributor's post-merge note on PR 2018)
   await shell.evaluate(() => { window.__rompPaneToggle("chat", true); });                                                     // shown again
   out.hiddenPane.moreAfterShow = await fr.waitForSelector(rowSel(cfg.g6) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);
   out.hiddenPane.clipped = await fr.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); return !!b && b.scrollHeight > b.clientHeight + 1; }, rowSel(cfg.g6));
@@ -397,6 +399,8 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         r = self._result(); h = r["hiddenPane"]
         self.assertTrue(h["frame"] and h["loaded"] and h["hidden"] and h["row"] and h["landed"], "the shell's chat pane, shown once then hidden by the rail, builds the fresh row with its brief while hidden: %r (kernel: %s)" % (h, self._kernel_tail()))
         self.assertEqual((h["whileHidden"] or {}).get("h"), 0, "hidden, the body measures zero: %r" % h["whileHidden"])
+        self.assertTrue(h["g5MoreBefore"], "the earlier long-brief row's button stood before the hide")
+        self.assertTrue((h["whileHidden"] or {}).get("g5More"), "and stands while hidden: a zero measure is no information (with the guard deleted the pass removes it): %r" % h["whileHidden"])
         self.assertTrue(h["moreAfterShow"], "shown, the pane's return re-measures and the button appears (before: none until the next repaint): %r" % h)
         self.assertTrue(h["clipped"], "and the brief is clipped at four lines once laid out")
 

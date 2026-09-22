@@ -16,6 +16,7 @@ SYNTHETIC fixtures only: private synthetic sids, the notes-api demo world (`web`
 message ids stamped TESTHOST; the per-sid override journals are cleaned in tearDown."""
 import contextlib
 import errno
+import io
 import itertools
 import json
 import os
@@ -1499,10 +1500,19 @@ class ActsUnderAFailedWrite(_World):
             self.assertTrue(push(c, floor), road + ": the in-flight build at the floor goes")
             self.assertTrue(push(c, floor + 1), road + ": the rebuild past the floor goes though its content is the in-flight build's (before: deduped until the repost)")
             self.assertNotIn("floorPending", c, road + ": a build past the floor sent, the mark clears")
-            self.assertNotEqual(c.get("floorPending"), floor, road + ": (the mark stood at the floor between the account and that build)")
+            plain = {"type": "feed", "buildId": 0, "asks": [{"itemId": A + ":g1", "sid": A}], "now": NOW}
+            self.assertEqual(c["sent"][("feed",)][0], km._dedup_sig(plain, json.dumps(plain)), road + ": the slot holds the plain signature again once the mark clears (a mutant clearing it without the slot reset sends one frame more)")
+            # the mark itself (the post-merge note on PR 2018): equal to the floor after the account and after the at-floor push; a refusal's account
+            # sets it too and leaves it standing until a build past ITS floor has gone
+            km._gesture_store_refusal(c, "undo", {}, ids=[], op="undoClear", seq=10); floor2 = km._feed_build_id[0]
+            self.assertEqual(c.get("floorPending"), floor2, road + ": the mark equals the floor after the account")
+            self.assertTrue(push(c, floor2)); self.assertEqual(c.get("floorPending"), floor2, road + ": and after the at-floor push")
+            km._gesture_store_refusal(c, "undo", {km.LEDGER_KEY: {"fault": "the log refused", "ids": [A + ":g1"]}}, ids=[A + ":g1"], op="undoClear", seq=11); floor3 = km._feed_build_id[0]
+            self.assertEqual(c.get("floorPending"), floor3, road + ": a refusal's account leaves the mark standing, at its own floor (a mutant popping it after the err frame fails here)")
+            self.assertTrue(push(c, floor3 + 1)); self.assertNotIn("floorPending", c)
             if road == "delta":
-                self.assertTrue(push(c, floor + 2), "delta: the next build re-bases the delta stream with one whole frame (the base was forgotten under the mark)")
-            self.assertFalse(push(c, floor + 3 if road == "delta" else floor + 2), road + ": and the dedup stands again")
+                self.assertTrue(push(c, floor3 + 2), "delta: one whole frame re-bases the stream")
+            self.assertFalse(push(c, floor3 + 3 if road == "delta" else floor3 + 2), road + ": the dedup stands again")
         sent.clear()
         client = client_of()
         km._gesture_store_refusal(client, "clear", {}, ids=[A + ":g1"], op="askClear", seq=8)
@@ -1523,21 +1533,56 @@ class ActsUnderAFailedWrite(_World):
         record theirs. Each files one judge-errors row (clears-log) and a stderr line."""
         rows = lambda: len(self._rows("clears-log"))
         n0 = rows()
-        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+        stderr = []
+
+        @contextlib.contextmanager
+        def captured():                                      # the stderr half of the convention (the second contributor's post-merge note on PR 2018: unpinned before)
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                yield
+            stderr.append([l for l in buf.getvalue().splitlines() if l.startswith("clears log: ")])
+        with captured(), _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
             self._dispatch({"type": "askClear", "itemId": A + ":g1"})                # the clear rows refused
         self.assertEqual(rows() - n0, 1, "the clear rows' refusal files: %r" % self._rows("clears-log"))
         self._dispatch({"type": "askClear", "itemId": A + ":g1"})
-        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+        with captured(), _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
             self._dispatch({"type": "undoClear"})                                     # the undo rows refused
         self.assertEqual(rows() - n0, 2, "the undo rows' refusal files")
         self._dispatch({"type": "undoClear"})                                         # A back
-        self._two_fault_undo_leaves_b_owed()                                           # the flag-step re-journal refused: B owed
+        with captured():
+            self._two_fault_undo_leaves_b_owed()                                       # the flag-step re-journal refused: B owed
         self.assertEqual(rows() - n0, 3, "the flag-step re-journal's refusal files")
-        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+        with captured(), _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
             self._dispatch({"type": "undoClear"})                                     # the owed id's re-journal-first rows refused
         self.assertEqual(rows() - n0, 4, "the re-journal-first refusal files")
         self.assertEqual([r["note"].split(" refused")[0] for r in self._rows("clears-log")[-4:]],
                          ["clears log: the clear rows", "clears log: the undo rows", "clears log: the flag-step re-journal", "clears log: the re-journal-first rows"])
+        self.assertEqual([len(x) for x in stderr], [1, 1, 1, 1], "one stderr line per refusal: %r" % stderr)
+        # the sixth writer: the mute's clear rows, under the flag setter's own bare except (the second contributor's post-merge note on PR 2018)
+        self._dispatch({"type": "undoClear"})                                         # B back, A's clear undone: tops to mute
+        with captured(), _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+            km._set_session_flag(A, "hideFromFeed", True)
+        self.assertEqual(rows() - n0, 5, "the mute's refusal files a row too"); self.assertEqual(len(stderr[-1]), 1)
+        self.assertIn("the mute's clear rows", self._rows("clears-log")[-1]["note"])
+        km._set_session_flag(A, "hideFromFeed", False)
+
+    def test_an_undo_over_an_undecodable_clears_log_answers_the_socket_with_the_floor(self):
+        """The second contributor's post-merge note on PR 2018: _cleared_ids caught OSError alone, so a clears log whose bytes are not text raised
+        UnicodeDecodeError at the undo arm before the restore and the account never went. It reads as the empty uncached set now, as an
+        unreadable log does, and the undo answers with its floor and sequence."""
+        (jd.STATE / "cleared.jsonl").write_bytes(b"\xff\xfe\x00 not text\n")
+        km._CLEARED_MEMO["slot"] = None
+        sent = self._dispatch({"type": "undoClear", "seq": 5})
+        acks = [m for m in sent if m.get("type") == "undoAck"]
+        self.assertEqual([(m["seq"], m["buildId"]) for m in acks], [(5, km._feed_build_id[0])], "the socket is answered with the floor and the sequence (before: a raise, no frame): %r" % sent)
+        self.assertEqual(km._cleared_ids(), {}, "the undecodable log reads as empty, uncached")
+
+    def test_the_two_new_judge_errors_kinds_are_documented(self):
+        """The second contributor's post-merge note on PR 2018: `clears-log` and `owed-note` were in neither kind list."""
+        doc = (Path(km.__file__).resolve().parent.parent / "docs" / "judges.md").read_text()
+        for kind in ("clears-log", "owed-note"):
+            self.assertIn(kind, doc, "%s is documented" % kind)
+            self.assertIn('"%s"' % kind, jd._log_judge_error.__doc__, "%s is in the writer's docstring" % kind)
 
     def test_a_clears_account_after_a_restart_carries_the_owing_the_note_holds(self):
         """The second contributor's post-merge review (2026-09-22): the restart-owing load on a non-undo account was pinned by no behaviour
