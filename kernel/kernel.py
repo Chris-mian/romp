@@ -17280,8 +17280,16 @@ def _apply_new_session_prefs(sid, body):
     if be is None:
         return out
     if m:
-        _set_model_or_park(be, str(sid), m)
-        out["model"] = m
+        if _pick_vouched(m, be):
+            _set_model_or_park(be, str(sid), m)
+            out["model"] = m
+        else:
+            # refused (a value the kernel cannot vouch for: an extra gateway model whose switch is off, a typo)
+            # AHEAD of the setter, so nothing latches; echoed as `refused` in place of the model, as a refused
+            # effort is below, so `romp new --model` is loud instead of applying a removed id to the fresh row
+            # (review find, 2026-09-21)
+            out["refused"] = _model_refusal(m)
+            sys.stderr.write("model %r for %s refused (POST /new): not a model this kernel offers\n" % (m, sid))
     if e:
         took, _parked = _set_effort_or_park(be, str(sid), e)
         if took:
@@ -17290,7 +17298,7 @@ def _apply_new_session_prefs(sid, body):
             # refused (a Codex model whose catalog does not offer the level or a catalog the backend could not
             # read, an SDK level outside its list): the echo carries the refusal in place of the level, so the
             # caller is loud, and stderr says so once, as the typed route does, with the door named
-            out["refused"] = _effort_refusal(be, e)
+            out["refused"] = " ".join(x for x in (out.get("refused"), _effort_refusal(be, e)) if x)   # after a model refusal, both
             sys.stderr.write("effort %r for %s refused by %s (POST /new)\n" % (e, sid, type(be).__name__))
     if ev is not None and hasattr(be, "set_env"):
         _set_env_or_park(be, str(sid), dict(ev))
@@ -20589,8 +20597,16 @@ def _drive(msg, client):
                                        "text": "Couldn't retry: the session isn't connected right now."}))
     elif t == "setModel" and msg.get("value"):
         # mid-compaction → parked as a queued command; `floating` is the version submenu's Latest row —
-        # forget the family's remembered pin and send the alias
-        if _set_model_or_park(be, sid, str(msg["value"]), floating=bool(msg.get("floating"))) is None:
+        # forget the family's remembered pin and send the alias. Vouched FIRST (_pick_vouched, the typed
+        # road's rule): a value the kernel cannot stand behind — an extra gateway model whose switch has since
+        # been turned off, offered by a picker that has not re-read the list — used to land unvouched here
+        # (registry, pending dots, pick memory), and is refused on the same settingRefused frame as setEffort
+        # below, flag model, never a bare warn (review find, 2026-09-21).
+        if not _pick_vouched(str(msg["value"]), be):
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "model",
+                                       "text": _model_refusal(str(msg["value"]))}))
+            sys.stderr.write("model %r for %s refused (setModel): not a model this kernel offers\n" % (str(msg["value"]), sid))
+        elif _set_model_or_park(be, sid, str(msg["value"]), floating=bool(msg.get("floating"))) is None:
             # the park was refused: the session is ending (the third review, 2026-09-21); the same settingRefused frame
             # the setEffort arm answers a refusal with, so the pick's dots end with the reason and nothing reads queued
             client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "model",
@@ -37996,8 +38012,16 @@ def _set_model_or_park(be, sid, value, floating=False):
     forgotten, so the family follows the CLI's newest again — the one picker gesture back from a pin (the
     family row sends the pin, the version rows pin, and a typed bare alias leaves the memory alone by
     design). Meaningless on a non-alias value. Returns True when the pick PARKED, False when it fired now, and None
-    when the park was REFUSED because the session is ending (_park_op_locked's latch, the third review, 2026-09-21):
-    the pick went nowhere, the pending stamp is taken back, and the caller says so instead of answering queued."""
+    when the pick was REFUSED: the session is ending (_park_op_locked's latch, the third review, 2026-09-21), or the
+    value is one no road can vouch for (_pick_vouched) — such a value latches nothing here — no pin forgotten, no
+    pending stamp, no pick memory, no park, no backend call — because the setter PERSISTS what it takes (the registry,
+    the sdk-defaults seed for every future session), and a removed gateway id that got this far used to land on all of
+    them (review find, 2026-09-21). The roads vouch ahead of the call and answer their own refusal; this is the backstop
+    for any other caller, said once on stderr. Either way the pick went nowhere and the caller says so instead of
+    answering queued."""
+    if not _pick_vouched(value, be):
+        sys.stderr.write("model %r for %s refused: not a model this kernel offers\n" % (value, sid))
+        return None
     if floating and value in _MODEL_VALUES:
         _forget_model_pick(value)
     _mark_model_pending(sid, value)
@@ -38151,10 +38175,9 @@ def _route_setter_command(be, sid, text, client=None, floating=False, state=None
     # The unowned route is vouched for the same shape: a DEAD Codex session still reports its backend (the
     # lane reads the durable row, _session_backend), so its menu still offers gpt-… while backend_for says
     # _UNOWNED (CodexBackend.owns is False once dead) — and the refusal arm below is the one place the client
-    # hears that the pick went nowhere; _UNOWNED.send refuses on stderr alone (review find, 2026-09-11).
-    model_pick = head == "/model" and (_vouched_model(value)
-                                        or (value.startswith("gpt") and be is not None
-                                            and (be is _UNOWNED or be is _codex())))
+    # hears that the pick went nowhere; _UNOWNED.send refuses on stderr alone (review find, 2026-09-11). The
+    # rule is _pick_vouched, the one the setModel op and POST /new read too (review find, 2026-09-21).
+    model_pick = head == "/model" and _pick_vouched(value, be)
     # Codex's backend validates against the selected model's advertised capabilities (2026-09-17).
     # Its effort command must never become model input just because a new level is absent from the SDK list.
     effort_pick = head == "/effort" and (value in _EFFORT_VALUES or (be is not None
@@ -38498,6 +38521,24 @@ def _vouched_model(value):
         return True                                # — vouched like the tagged id below
     parts = _model_id_parts(value)
     return bool(parts and parts[0] in _MODEL_VALUES)
+
+
+def _pick_vouched(value, be):
+    """The ONE vouch every model-pick road asks before its setter latches anything: _vouched_model, or the
+    Codex exception — a gpt-… value when `be` is the Codex backend or the unowned route (a dead Codex session
+    still reports its backend, so its menu still offers gpt-…; the typed road's rule since 2026-09-11, kept
+    byte-for-byte). The typed /model road was the only reader; the setter, the WS setModel arm and the POST
+    /new body took a pick unvouched, so after the extra-models switch was turned on and then off a removed
+    gateway id still landed on all three: registry, pending dots, pick memory (review find, 2026-09-21)."""
+    if _vouched_model(value):
+        return True
+    return bool(value.startswith("gpt") and be is not None and (be is _UNOWNED or be is _codex()))
+
+
+def _model_refusal(value):
+    """The sentence a refused model pick is answered with, the same one on every road (the WS arm's
+    settingRefused frame, POST /new's `refused` echo, the setter's stderr line)."""
+    return "Couldn't switch to '%s': it isn't a model this kernel offers right now." % value
 
 
 def _deliver_send_batch(be, sid, run):
