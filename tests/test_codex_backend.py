@@ -4870,23 +4870,75 @@ class NativeCompact(unittest.TestCase):
         self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
         self.assertIs(self._row(be, sid)["compacting"], False)
 
+    def _loud_end_lands_in_one_commit(self, be, sid, end, word):
+        """Drive a loud end with end() after the latch, recording a deep copy of the session's row at every registry
+        commit while the real writer still lands it, and assert the end reached the row in ONE commit: the window
+        holds exactly one recorded commit (nothing is queued, so no other write is legitimate in it), that commit
+        takes the bit from True to False, it carries the end's notice (word in its text), and no recorded row reads
+        (False, None), the clean end's shape. The count is the assertion that closes every split: the three about
+        the commit's shape pass a notice-first split, which commits (True, notice) and then (False, notice) and hands
+        a restart between them a row reading compacting True beside the end's text, the shape the registry load
+        replaces with the unknown-outcome notice (the review of this pin, 2026-09-22); they stay because they name
+        the shape of the commit the bit fell in when they fail. Recording starts here, after compact() returned,
+        since the latch's own (True, None) save is a legitimate separate write, and runs until the session lock is
+        free again so the recorded sequence is complete when a message is built (a second save made under the end's
+        lock hold is in it); the verdict does not rest on that wait, since compacting() reads under the same lock
+        and the wait on it returns only after the hold."""
+        s = be._session(sid)
+        commits = []
+        real = be._write_registry_locked
+
+        def record_then_write(rows):
+            if sid in rows:
+                commits.append(json.loads(json.dumps(rows[sid])))
+            real(rows)
+
+        def lock_free():
+            if s.lock.acquire(blocking=False):
+                s.lock.release()
+                return True
+            return False
+        self.assertIs(self._row(be, sid)["compacting"], True, "the latch's row stands before the end")
+        with mock.patch.object(be, "_write_registry_locked", record_then_write):
+            end()
+            self.assertTrue(until(lambda: be.compacting(sid) is False))
+            self.assertTrue(until(lock_free), "the end's transaction released the session lock")
+        pairs = [(c["compacting"], c["launchError"]) for c in commits]
+        was = [True] + [c["compacting"] for c in commits[:-1]]
+        down = [c for c, up in zip(commits, was) if up is True and c["compacting"] is False]
+        self.assertEqual(len(down), 1, "exactly one commit takes the bit down: %r" % (pairs,))
+        self.assertIn(word, ((down[0]["launchError"] or {}).get("text") or ""),
+                      "the commit that takes the bit down carries the end's notice: %r" % (pairs,))
+        self.assertNotIn((False, None), pairs, "no commit reads (False, None), the clean end's shape: %r" % (pairs,))
+        self.assertEqual(len(commits), 1, "the end is one commit, the bit and the notice together: %r" % (pairs,))
+        return commits
+
     def test_the_loud_ends_write_the_bracket_down_and_the_notice_in_one_row(self):
         # systemError, then the client's death: the bit falls and the notice lands in the same registry write, so the
-        # row a restart reads is the loud end's, never a clean-looking one and never an unknown outcome
+        # row a restart reads is the loud end's, never a clean-looking one and never an unknown outcome.
+        # Every commit is recorded, not the final row alone (the post-merge review of the bracket's durable row,
+        # 2026-09-22): read the final row only, and a kernel that split each loud end into the bit's save followed
+        # by a launch-error save passed here while committing a row reading compacting False with no notice first,
+        # the very row the one-write rule keeps off the disk; compacting() reads under the session lock, so the wait
+        # on it returned only after that kernel's second save, and the final row looked whole.
         be, fake, tmp, sid = self._turned()
         self.assertEqual(be.compact(sid), "")
-        _status(fake, "T-1", "active")
-        _status(fake, "T-1", "systemError")
-        self.assertTrue(until(lambda: be.compacting(sid) is False))
+
+        def system_error():
+            _status(fake, "T-1", "active")
+            _status(fake, "T-1", "systemError")
+        self._loud_end_lands_in_one_commit(be, sid, system_error, "systemError")
         row = self._row(be, sid)
         self.assertIs(row["compacting"], False)
         self.assertIn("systemError", row["launchError"]["text"])
         be, fake, tmp, sid = self._turned()
         self.assertEqual(be.compact(sid), "")
-        _status(fake, "T-1", "active")
-        self.assertTrue(until(lambda: self._active_seen(be, sid)))
-        fake.close()                                  # the app-server is gone
-        self.assertTrue(until(lambda: be.compacting(sid) is False))
+
+        def death():
+            _status(fake, "T-1", "active")
+            self.assertTrue(until(lambda: self._active_seen(be, sid)))
+            fake.close()                              # the app-server is gone
+        self._loud_end_lands_in_one_commit(be, sid, death, "app-server")
         row = self._row(be, sid)
         self.assertIs(row["compacting"], False)
         self.assertIn("app-server", row["launchError"]["text"])
