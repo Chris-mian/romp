@@ -98,6 +98,30 @@ test("the send hands the panes the kernels the undo went to (undoRouted): every 
   });
 });
 
+test("a kernel's account of an undo retargets the retry whether it refused or reordered (ok true), and the local kernel's own account counts among the refusers (the second contributor's review of PR 1967)", () => {
+  withManager((fm, localSent, remoteSent) => {
+    fm.outbound({ type: "clearAll" });
+    fm.outbound({ type: "undoClear" });
+    (fm as any).inboundNow("box2", { type: "err", op: "undoClear", ok: true, sid: SID, title: "Undo brought back earlier cards first", text: "the last clear stands", itemIds: [], batches: [], owedBatch: [], batchesTotal: 0 });
+    (fm as any).inboundNow("", { type: "err", op: "undoClear", sid: SID, title: "That undo did not land", text: "the clears log refused", itemIds: [], batches: [], owedBatch: [], batchesTotal: 0 });
+    fm.outbound({ type: "undoClear" });
+    assert.deepEqual(remoteSent.slice(4).map(([h, m]) => [h, m.type]), [["box2", "undoClear"]], "the reorder's information frame retargets too: the standing clear is there");
+    assert.deepEqual(localSent.map((m) => m.type), ["clearAll", "undoClear", "undoClear"], "and the local kernel, which refused, gets the retry as well (before: skipped)");
+  });
+});
+
+test("one Undo send is ONE undoRouted frame to the panes, naming every kernel it went to, and one undoClear per kernel (the round-twelve verifier's low on PR 1967: a live two-kernel board counted two frames for one click; the manager sends one)", () => {
+  withManager((fm, localSent, remoteSent) => {
+    const routed: any[] = [];
+    (globalThis as any).window.dispatchEvent = (e: any) => { routed.push(e && e.data); };
+    fm.outbound({ type: "clearAll" });
+    fm.outbound({ type: "undoClear" });
+    assert.deepEqual(routed.filter((m) => m && m.type === "undoRouted").map((m) => m.hosts), [["", "box2", "box3"]], "one frame, every kernel the undo went to");
+    assert.equal(localSent.filter((m) => m.type === "undoClear").length, 1, "one send to the local kernel");
+    assert.deepEqual(remoteSent.filter(([, m]) => m.type === "undoClear").map(([h]) => h), ["box2", "box3"], "one send per remote kernel");
+  });
+});
+
 test("the session header's Clear all still goes to that session's kernel alone, and Undo follows it there alone", () => {
   withManager((fm, localSent, remoteSent) => {
     fm.outbound({ type: "askClearMany", sid: "box2:" + SID, itemIds: ["box2:" + SID + ":g1", "box2:" + SID + ":g2"] });

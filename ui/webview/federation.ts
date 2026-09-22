@@ -156,7 +156,7 @@ export function prefixInbound(host: string, msg: any): any {
   if (!host || !msg || typeof msg !== "object" || Array.isArray(msg)) return msg;
   const out: any = { ...msg };
   for (const k of SCALAR_ID)
-    if (typeof out[k] === "string") out[k] = prefixId(host, out[k]);
+    if (typeof out[k] === "string" && out[k]) out[k] = prefixId(host, out[k]);   // an empty id is no id: prefixed, it read as the remote kernel's bare "HOST:" (the second contributor's review, 2026-09-22)
   for (const k of ARRAY_ID)
     if (Array.isArray(out[k])) out[k] = out[k].map((x: any) => (typeof x === "string" ? prefixId(host, x) : x));
   // a kernel's REPLY names the card it answers at the top level (noticeActionDone, settingRefused, an err naming its op): a
@@ -168,6 +168,7 @@ export function prefixInbound(host: string, msg: any): any {
   // executed review: unprefixed, a refused undo of a remote notice batch reverted nothing and the card stayed a phantom until reload)
   if (Array.isArray(out.batches)) out.batches = out.batches.map((b: any) => (Array.isArray(b) ? b.map((x: any) => prefixNoticeId(host, x)) : b));
   if (Array.isArray(out.owedBatch)) out.owedBatch = out.owedBatch.map((x: any) => prefixNoticeId(host, x));
+  if (Array.isArray(out.owedIds)) out.owedIds = out.owedIds.map((x: any) => prefixNoticeId(host, x));   // the reorder frame's owed ids, the same way
   // a session frame's approval-box rows (status.notices, the chat's #notices box) carry notice ids too: prefixed like the feed's
   // cards, so a remote host's noticeActionDone (prefixed above) finds the row it answers (the review of PR 1890, medium 2)
   if (out.status && typeof out.status === "object" && !Array.isArray(out.status) && Array.isArray(out.status.notices))
@@ -1202,11 +1203,13 @@ export class FederationManager {
 
   private inboundNow(host: string, msg: any): void {
     const m = prefixInbound(host, msg);
-    // a REMOTE kernel refused an undo: the retry the dialog invites must reach that kernel again, so it becomes the next undo's target
-    // (the send reset the target to the local kernel, T286, and a second Undo after a LANDED one still goes there alone; round ten of PR 1967)
-    if (host !== LOCAL && m && m.type === "err" && m.op === "undoClear" && !this.clearRoutedSinceUndo) {
+    // a kernel's ACCOUNT of an undo (a refusal, or the landed reorder's information frame): the next Undo the dialog invites must reach that
+    // kernel again, so every kernel that answered the undo last sent becomes the retry's target, the local kernel among them when it
+    // answered (the send reset the target to the local kernel, T286, and a second Undo after a landed one still goes there alone; rounds
+    // ten to thirteen of PR 1967). A clear routed since takes the routing back
+    if (m && m.type === "err" && m.op === "undoClear" && !this.clearRoutedSinceUndo) {
       if (!this.undoRefusers.includes(host)) this.undoRefusers.push(host);
-      this.lastClearHosts = this.undoRefusers.slice();   // every kernel that refused, so one retry reaches them all (round eleven)
+      this.lastClearHosts = this.undoRefusers.slice();
     }
     if (m && m.type === "session" && typeof m.id === "string") {
       (this.perHostSids[host] ||= new Set()).add(m.id);
@@ -1500,7 +1503,7 @@ export class FederationManager {
   private lastClearHosts: string[] = [LOCAL]; // where the most recent clear routed (one kernel for a card or a
   //                                             session's batch, every attached kernel for the board-wide Clear
   //                                             all, T286) — undoClear follows it to each of them
-  private undoRefusers: string[] = [];        // the remote kernels that refused the undo last sent, in order: one retry reaches every one (round eleven of PR 1967)
+  private undoRefusers: string[] = [];        // the kernels that ANSWERED the undo last sent (a refusal, or the landed reorder's frame), the local among them, in order: one retry reaches every one (rounds eleven and thirteen of PR 1967)
   private clearRoutedSinceUndo = false;       // a clear routed after that undo takes the routing back: a late refusal does not retarget it
 
   // browser → kernel: route each message to the owning kernel, prefix stripped.

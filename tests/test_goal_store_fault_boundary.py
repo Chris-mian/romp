@@ -115,6 +115,11 @@ class _World(unittest.TestCase):
         self._write(B, _store(B, "the healthy session's goal"))
         km._parse_cache.clear()
         jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
+        # the owed-note globals, all of them, for every world (the second contributor's review, 2026-09-22): a past test's owing, settled ids,
+        # memory-only mark or once-per-life read must not ride into this one
+        km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_mem_only[0] = False
+        getattr(km, "_owed_note_read", [False])[0] = False   # (tolerant of a kernel without the once-per-life read: the red-first run at the round's base)
+        (jd.STATE / km.OWED_FILE).unlink(missing_ok=True)
 
     def tearDown(self):
         for sid in (A, B, P):
@@ -948,9 +953,7 @@ class ActsUnderAFailedWrite(_World):
                   mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: mock.MagicMock()))):
             p.start()
             self.addCleanup(p.stop)
-        getattr(km, "_rejournal_owed", {}).clear()       # a past test's owed re-journal must not ride into this one
-        (jd.STATE / getattr(km, "OWED_FILE", "cleared-owed.jsonl")).unlink(missing_ok=True)
-        getattr(km, "_owed_settled", set()).clear()
+        # (the owed globals reset in _World.setUp for every class: the second contributor's review found _owed_mem_only unreset here)
 
     def _dispatch(self, msg):
         sent = []
@@ -1141,7 +1144,7 @@ class ActsUnderAFailedWrite(_World):
         orig_write = Path.write_text
 
         def refusing_write(p, *a, **kw):
-            if p == owed_file:
+            if p.name.startswith(owed_file.name):   # the note or its atomic temp
                 raise OSError(errno.EROFS, "Read-only file system", str(p))
             return orig_write(p, *a, **kw)
         with mock.patch.object(Path, "write_text", refusing_write):
@@ -1197,7 +1200,7 @@ class ActsUnderAFailedWrite(_World):
                          "the owed store's account, then the reorder worded for what happened: %r" % errs)
         self.assertEqual((errs[1]["itemIds"], errs[1].get("ok"), "ok" in errs[0]), ([A + ":g1"], True, False))
         self.assertNotIn("brought them back", errs[1]["text"], "no restore is claimed while the owed store refuses")
-        self.assertIn("Once that session's store can be read, one Undo brings them back and the next the last clear.", errs[1]["text"], "the words name the condition, not a press count (the sixth executed review; the round-eight verifier)")
+        self.assertIn("Once that session's goals file can be read and written again, one Undo brings them back and the next the last clear.", errs[1]["text"], "the words name the condition, not a press count (the sixth executed review; the round-eight verifier)")
         self.assertEqual(errs[1]["owedIds"], [B + ":g1"], "and the frame names the owed ids: the feed holds an entry for them above the last clear's")
         self.assertTrue(self._flag(B, B + ":g1"), "B still hidden"); self.assertTrue(self._flag(A, A + ":g1"), "the last clear stands")
         sent = self._dispatch({"type": "undoClear"})        # B's store writable: its re-journal row is the newest batch, so it comes back, quietly
@@ -1242,7 +1245,7 @@ class ActsUnderAFailedWrite(_World):
         orig_write = Path.write_text
 
         def refusing_write(p, *a, **kw):
-            if p == owed_file:
+            if p.name.startswith(owed_file.name):   # the note or its atomic temp
                 raise OSError(errno.EROFS, "Read-only file system", str(p))
             return orig_write(p, *a, **kw)
         with mock.patch.object(Path, "write_text", refusing_write), mock.patch.object(km, "_mark_nodes_cleared", under_fault):
@@ -1341,6 +1344,87 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual(km._ledger_batches(limit=None)[0][-1], [A + ":g1"], "the unbounded read holds all twenty-one")
         self.assertEqual(km._ledger_batches()[2], 21, "and says how many there are")
 
+    def test_an_undo_of_an_archived_card_on_a_read_only_root_answers_the_socket_and_the_next_undo_restores(self):
+        """The second contributor's review (2026-09-22): _restore_goal_archive's journal append and archive save, and the flag helper's journal
+        appends, raised through the dispatcher on a read-only root and the receive loop dropped the client. Each files its account instead;
+        with the root writable again the next Undo restores the card cleanly."""
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        km._compact_goal_store(A)                          # the sweep archived the cleared top
+        orig = jd.append_restore
+
+        def refusing_append(*a, **kw):
+            raise OSError(errno.EROFS, "Read-only file system", str(jd.GOALDIR / "overrides"))
+        with mock.patch.object(jd, "append_restore", refusing_append):
+            sent = self._dispatch({"type": "undoClear"})    # the restore journal refuses: an account, the socket kept
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["That undo did not land for web"], "%r" % errs)
+        self.assertIn("Read-only", errs[0]["text"])
+        self.assertNotIn(A + ":g1", jd.load_goals(A)["nodes"], "the card stays archived: nothing moved before the refusal")
+        sent = self._dispatch({"type": "undoClear"})        # writable again: the next Undo restores cleanly
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [])
+        self.assertFalse(self._flag(A, A + ":g1")); self.assertIn(A + ":g1", self._feed_rows(A))
+        # the flag helper's journal append refusing at a clear: its account, the save skipped, the socket kept
+        orig_clear = jd.append_clear
+
+        def refusing_clear(*a, **kw):
+            raise OSError(errno.EROFS, "Read-only file system", str(jd.GOALDIR / "overrides"))
+        with mock.patch.object(jd, "append_clear", refusing_clear):
+            sent = self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["That clear did not fully land for web"], "%r" % errs)
+        self.assertFalse(self._flag(A, A + ":g1"), "the flag's save was skipped: the journal did not take the row")
+
+    def test_the_undo_button_shows_while_a_card_is_owed_and_after_a_restart_before_the_first_undo(self):
+        """The second contributor's review (2026-09-22): canUndoClear and the dismissed count read the clears log alone, so after a two-fault
+        undo (a card owed in memory and in the note, none in the log) the button hid exactly when the dialogs said to press it, and after a
+        restart until the first Undo read the note. Both read the log's ids and the owed ids; the note is read once per kernel life."""
+        self._two_fault_undo_leaves_b_owed()
+        self.assertEqual(km._cleared_ids(), {}, "the log holds nothing: the owing is in memory and the note")
+        self.assertEqual((len(km._undo_stack_ids()), B + ":g1" in km._undo_stack_ids()), (1, True), "the stack's ids include the owed card")
+        km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_note_read[0] = False   # a restart: memory empty, the note on disk
+        self.assertEqual(km._undo_stack_ids(), {B + ":g1"}, "the note is read for the button before any Undo (before: empty until the first Undo)")
+        self.assertTrue(km._owed_note_read[0], "read once per life")
+        # a present, unreadable note: said, and the read stays armed
+        km._rejournal_owed.clear(); km._owed_note_read[0] = False
+        owed_file = jd.STATE / km.OWED_FILE
+        orig_read = Path.read_text
+
+        def refusing_read(p, *a, **kw):
+            if p == owed_file:
+                raise OSError(errno.EACCES, "Permission denied", str(p))
+            return orig_read(p, *a, **kw)
+        with mock.patch.object(Path, "read_text", refusing_read):
+            self.assertEqual(km._undo_stack_ids(), set())
+        self.assertFalse(km._owed_note_read[0], "armed until a read lands")
+        self.assertTrue(any("owed-note" in r.get("err", "") for r in self._rows()), "a judge-errors row names the unreadable note: %r" % self._rows()[-1:])
+        self.assertEqual(km._undo_stack_ids(), {B + ":g1"}, "readable again: the read lands")
+
+    def test_a_refused_continue_from_the_chat_box_answers_that_socket_with_the_held_shape(self):
+        """The second contributor's review (2026-09-22): the askFollowUp arm's ack reached feed clients alone, so a chat socket that pressed
+        Continue heard nothing and its row stayed latched. The pressing socket, when its app is not the feed, hears the held shape: the
+        words went out, the reopen did not land, the why as the error; a goal gone has its own words."""
+        sent = []
+        client = {"app": "chat", "alive": True, "send": lambda s: sent.append(json.loads(s))}
+        orig = jd.optimistic_followup
+
+        def refusing(*a, **kw):
+            raise OSError(errno.EROFS, "Read-only file system", str(self.a_file))
+        with mock.patch.object(jd, "optimistic_followup", refusing), mock.patch.object(km, "_send_or_park", lambda *a, **kw: object()):
+            km.Handler._dispatch_ws(object.__new__(km.Handler), {"type": "askFollowUp", "itemId": A + ":g1", "sid": A, "cont": True}, client)
+        done = [m for m in sent if m.get("type") == "noticeActionDone"]
+        self.assertEqual([(m["itemId"], m["ok"], m["held"]) for m in done], [(A + ":g1", True, True)], "the held shape to the socket that pressed: %r" % sent)
+        self.assertIn("Read-only", done[0]["error"])
+        sent.clear()
+        with mock.patch.object(jd, "optimistic_followup", lambda *a, **kw: False), mock.patch.object(km, "_send_or_park", lambda *a, **kw: object()):
+            km.Handler._dispatch_ws(object.__new__(km.Handler), {"type": "askFollowUp", "itemId": A + ":g9", "sid": A, "cont": True}, client)
+        done = [m for m in sent if m.get("type") == "noticeActionDone"]
+        self.assertEqual(len(done), 1); self.assertIn("no longer on the board", done[0]["error"], "the goal-gone case has its own words: %r" % done)
+        sent.clear()
+        feed = {"app": "feed", "alive": True, "send": lambda s: sent.append(json.loads(s))}
+        with mock.patch.object(jd, "optimistic_followup", refusing), mock.patch.object(km, "_send_or_park", lambda *a, **kw: object()):
+            km.Handler._dispatch_ws(object.__new__(km.Handler), {"type": "askFollowUp", "itemId": A + ":g1", "sid": A, "cont": True}, feed)
+        self.assertEqual([m for m in sent if m.get("type") == "noticeActionDone"], [], "a feed client hears the ack it always did, not the box's shape")
+
     def test_a_stale_note_across_a_restart_does_not_name_a_card_this_press_restores(self):
         """The fourth review's second low: the note's rewrite refused (its stale row stays), a restart, the card re-cleared, Undo: the
         re-journal-first step named the newest batch as not restored, and that batch IS the owed card, which this press restores, so the
@@ -1350,7 +1434,7 @@ class ActsUnderAFailedWrite(_World):
         orig_write = Path.write_text
 
         def refusing_write(p, *a, **kw):
-            if p == owed_file:
+            if p.name.startswith(owed_file.name):   # the note or its atomic temp
                 raise OSError(errno.EROFS, "Read-only file system", str(p))
             return orig_write(p, *a, **kw)
         with mock.patch.object(Path, "write_text", refusing_write):

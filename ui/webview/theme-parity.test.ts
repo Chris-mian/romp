@@ -233,7 +233,10 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     // the grounds a ring sits on: the page (PAIRS above), the hovered tab (a 6% white wash) and the selected tab's fill
     const hover = [0, 1, 2].map((i) => Math.round(255 * 0.06 + page[i] * 0.94)) as [number, number, number];
     const active = rgbOf(theme.get("--tab-active-bg")!, page)!;
-    for (const [g, ground] of [["hovered tab", hover], ["selected tab", active]] as const) {
+    // and the Needs you box's wash (`--box-bg` over the page), the ground under its edge, its header's dot and its rows (the second contributor's
+    // review of PR 1967: the header's ground is that wash, opaque, so one ground covers the dot too)
+    const box = rgbOf(theme.get("--box-bg")!, page)!;
+    for (const [g, ground] of [["hovered tab", hover], ["selected tab", active], ["Needs you box wash", box]] as const) {
       assert.ok(contrast(rings.ask, ground) >= 3, `${name}: the Needs you ring on the ${g} = ${contrast(rings.ask, ground).toFixed(2)} < 3`);
     }
   }

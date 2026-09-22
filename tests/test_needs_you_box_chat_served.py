@@ -37,6 +37,8 @@ SID = "cccccccc-1111-2222-3333-444444444444"
 API = "dddddddd-1111-2222-3333-444444444444"     # a second session with a question and NO hard stop: its tab wears the Needs you ring
 API_Q = "which port should the api listen on in the fixtures?"
 BRIEF = "the suite targets Postgres in CI and SQLite locally; which should the fixtures load into?"
+LONG_BRIEF = " ".join("The fixtures load into one database and the suite has two: Postgres in CI and SQLite on a laptop, with different "
+                      "date handling, so a fixture written for one fails on the other." for _ in range(5))   # well past the row's four lines
 MID = "aaaaaaaa-bbbb-cccc-dddd-000000000301"
 TOKEN_RGB = "rgb(217, 70, 239)"          # --st-needs-bg, the dark theme (styles.css)
 QUESTIONS = ["which database does the suite target?", "should the parser keep the legacy header?", "is the fixtures directory versioned?"]
@@ -86,6 +88,21 @@ const store = JSON.parse(fs.readFileSync(cfg.store, "utf8")); store.nodes[cfg.g1
 fs.utimesSync(cfg.order, new Date(), new Date());   // the judge's own write ends a pass that bumps the view signature's generation; this stand-in moves a file the signature stats
 out.brief = { landed: await page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g1), brief: cfg.brief }, { timeout: 60000 }).then(() => true).catch(() => false) };
 out.brief.box = await readBox();
+// 1c. a brief past the four-line clamp gets a disclosure on its row (the second contributor's review of PR 1967): the More button shows
+// only once the body overflows, opens the row (the clamp lifted, the whole brief on screen), reads Less, and folds the row back
+const store2 = JSON.parse(fs.readFileSync(cfg.store, "utf8")); store2.nodes[cfg.g1].blockSummary = cfg.longBrief; store2.seq = (store2.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store2));
+fs.utimesSync(cfg.order, new Date(), new Date());
+const moreSel = rowSel(cfg.g1) + " .ntc-more";
+out.more = { shown: await page.waitForSelector(moreSel, { timeout: 60000 }).then(() => true).catch(() => false) };
+out.more.before = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); const m = r && r.querySelector(".ntc-more");
+  return b ? { open: r.classList.contains("ntc-open"), clamp: getComputedStyle(b).webkitLineClamp, clipped: b.scrollHeight > b.clientHeight + 1, label: m ? m.textContent : null } : null; }, rowSel(cfg.g1));
+await page.click(moreSel).catch(() => {});
+out.more.open = await page.waitForFunction((s) => { const r = document.querySelector(s); return !!r && r.classList.contains("ntc-open"); }, rowSel(cfg.g1), { timeout: 10000 }).then(() => true).catch(() => false);
+out.more.after = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); const m = r && r.querySelector(".ntc-more");
+  return b ? { clamp: getComputedStyle(b).webkitLineClamp, clipped: b.scrollHeight > b.clientHeight + 1, label: m ? m.textContent : null, text: (b.textContent || "").trim() } : null; }, rowSel(cfg.g1));
+await page.click(moreSel).catch(() => {});
+out.more.closed = await page.waitForFunction((s) => { const r = document.querySelector(s); return !!r && !r.classList.contains("ntc-open"); }, rowSel(cfg.g1), { timeout: 10000 }).then(() => true).catch(() => false);
+out.more.box = await readBox();
 // 2a. a Clear the clears log REFUSES (the log made read-only): the dialog says nothing changed, the row stays and its buttons let go
 fs.chmodSync(cfg.ledger, 0o444);
 await page.click(rowSel(cfg.g3) + ' [data-act="ntc-clear"]');
@@ -255,7 +272,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
                 json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
-                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "ledger": self.ledger, "order": self.order}, f)
+                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "ledger": self.ledger, "order": self.order}, f)
             driver = os.path.join(self.lab, "needsbox.mjs")
             Path(driver).write_text(DRIVER)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=600,
@@ -305,6 +322,22 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         row = next((x for x in r["brief"]["box"]["rows"] if x["id"] == self.g[0]), None)
         self.assertEqual(row and row["body"].strip(), BRIEF, "the brief is the row's body (the face renders it as markdown, with its trailing newline)")
         self.assertEqual(r["brief"]["box"]["head"], "Needs you · 4", "and nothing else moved")
+
+    def test_a_long_brief_gets_a_disclosure_on_its_row_that_lifts_the_clamp_and_folds_back(self):
+        """The second contributor's review (2026-09-22): the row clamped the brief to four lines with no way to the rest. A More button
+        shows once the body overflows, opens the row (the clamp lifted, the whole brief on screen), reads Less, and folds the row back."""
+        r = self._result()
+        m = r["more"]
+        self.assertTrue(m["shown"], "the More button shows on a brief past the clamp: %r (kernel: %s)" % (m, self._kernel_tail()))
+        self.assertEqual((m["before"] or {}).get("label"), "More"); self.assertEqual((m["before"] or {}).get("open"), False)
+        self.assertTrue((m["before"] or {}).get("clipped"), "the body hides lines before the click: %r" % m["before"])
+        self.assertEqual((m["before"] or {}).get("clamp"), "4", "the clamp stands on a closed row")
+        self.assertTrue(m["open"], "the click opens the row")
+        self.assertEqual((m["after"] or {}).get("clamp"), "none", "the clamp lifted: %r" % m["after"])
+        self.assertFalse((m["after"] or {}).get("clipped"), "the whole brief is on screen")
+        self.assertEqual((m["after"] or {}).get("label"), "Less"); self.assertEqual((m["after"] or {}).get("text"), LONG_BRIEF)
+        self.assertTrue(m["closed"], "the second click folds the row back")
+        self.assertEqual(m["box"]["head"], "Needs you · 4", "a disclosure is not a decision: nothing else moved")
 
     def test_a_clear_the_clears_log_refuses_leaves_the_row_and_re_arms_its_buttons_and_says_so(self):
         r = self._result()

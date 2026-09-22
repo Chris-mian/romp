@@ -43,7 +43,7 @@ test("undo clear: the round-trip branch arms a busy cue that never disables the 
 });
 
 test("undo clear: the cue clears on the NEXT feed payload (the event it waits for)", () => {
-  assert.match(FEED, /if \(typeof m\.dismissedCount === "number"\) dismissedCount = m\.dismissedCount;\s*\n\s*clearUndoBusy\(\);/);
+  assert.match(FEED, /if \(typeof m\.dismissedCount === "number"\) dismissedCount = m\.dismissedCount;\s*\n(\s*\/\/[^\n]*\n)*\s*if \(!federatedPane\(\) \|\| undoRoutedBuilt\(m\)\) clearUndoBusy\(\);/, "the payload clears the cue; on a federated pane once every kernel the undo went to has built past the send (the second contributor's review of PR 1967)");
   assert.match(FEED, /function clearUndoBusy\(\): void \{/);
   assert.match(FEED, /b\.querySelector\("\.undo-dots"\)\?\.remove\(\);/);
 });

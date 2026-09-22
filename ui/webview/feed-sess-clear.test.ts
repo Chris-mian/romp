@@ -91,7 +91,8 @@ test("the router sends the batch to the session's kernel with bare ids, and Undo
     "undoClear follows the LAST clear, batched or single, to the kernel that took it (T286: the board-wide Clear all to every kernel it reached)");
   const ub = FED.slice(FED.indexOf('if (m && m.type === "undoClear") {'), FED.indexOf("for (const h of hosts) this.sendTo(h, m);"));
   assert.match(ub, /this\.lastClearHosts = \[LOCAL\];/, "a second Undo after a landed one goes to the local kernel alone (T286)");
-  assert.match(FED, /if \(host !== LOCAL && m && m\.type === "err" && m\.op === "undoClear" && !this\.clearRoutedSinceUndo\) \{\n\s+if \(!this\.undoRefusers\.includes\(host\)\) this\.undoRefusers\.push\(host\);\n\s+this\.lastClearHosts = this\.undoRefusers\.slice\(\);/, "every remote kernel that refused the undo is the retry's target, unless a clear was routed since (rounds ten and eleven of PR 1967)");
+  assert.match(FED, /if \(m && m\.type === "err" && m\.op === "undoClear" && !this\.clearRoutedSinceUndo\) \{\n\s+if \(!this\.undoRefusers\.includes\(host\)\) this\.undoRefusers\.push\(host\);\n\s+this\.lastClearHosts = this\.undoRefusers\.slice\(\);/, "every kernel that answered the undo (a refusal, or the landed reorder's frame), the local among them, is the retry's target, unless a clear was routed since (rounds ten to thirteen of PR 1967)");
+  assert.doesNotMatch(FED, /host !== LOCAL && m && m\.type === "err" && m\.op === "undoClear"/, "the local kernel's own account counts too (the second contributor's review: a fanned-out undo both kernels refused was retried on the remote alone)");
 });
 
 test("the header Clear's own class carries layout only; size, outline and the accent hover come from .fdismiss", () => {

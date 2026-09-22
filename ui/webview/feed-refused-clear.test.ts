@@ -37,7 +37,7 @@ test("client: the err handler releases the ids a refused clear names and repaint
 });
 
 test("kernel: the clears-log refusal names the request the way _refuse_drive's frame does", () => {
-  assert.match(KERNEL, /frame = \{"type": "err", "sid": sid_, "title": title, "text": text, "op": op or "",\s+"itemId": acct_ids\[0\] if acct_ids else "", "itemIds": list\(acct_ids\)\}/, "one frame shape for every account, each with its own ids");
+  assert.match(KERNEL, /frame = \{"type": "err", "title": title, "text": text, "op": op or "",\s+"itemId": acct_ids\[0\] if acct_ids else "", "itemIds": list\(acct_ids\)\}\s+if sid_:\s+frame\["sid"\] = sid_/, "one frame shape for every account, each with its own ids; a session account names its session and an empty sid is omitted (the second contributor's review)");
   assert.match(KERNEL, /if ok:\s+frame\["ok"\] = True/, "and `ok` on an information frame alone (the round-four verifier)");
   assert.ok(KERNEL.includes('_gesture_store_refusal(client, "undo", _undo_clear(batch_out=_ub), ids=_ub, op=str(msg.get("type") or ""))'), "an undo names its op (the request's type) and the batch it reached for (the verifier's medium A)");
   // the double-fault window's other side (round four): the re-journal-first refusal fills the batch too, so the feed's revert has ids
@@ -47,31 +47,41 @@ test("kernel: the clears-log refusal names the request the way _refuse_drive's f
   assert.match(KERNEL, /_reorder\(not _not_back, _not_back, len\(\{_cur2\.get\(i\) for i in _not_back\}\) or 1\)/, "the owed cards came back only if every one did; the frame names the ones that did not and how many batches they sit in");
   assert.match(KERNEL, /_send\("Undo brought back earlier cards first",[\s\S]{0,400}ok=True\)/);
   assert.match(KERNEL, /_send\("Undo went to earlier cards first",[\s\S]{0,600}ok=True, owed=value\.get\("owed"\)/, "the words for an owed store still refusing, naming the owed ids");
-  assert.match(KERNEL, /Once that session's store can be read, one Undo brings them back and the next the last clear\./, "the words name the press (the sixth executed review)");
+  assert.match(KERNEL, /one Undo brings them back and the next the last clear\./, "the words name the condition, not a press count (the sixth executed review; the round-eight verifier), their subject derived from the ids that did not come back (the second contributor's review)");
   assert.match(KERNEL, /"owed": \[\] if landed else list\(not_back\), "stamps": int\(stamps\)/, "the ids that did NOT come back, and how many batches they sit in (the seventh executed review)");
   assert.match(KERNEL, /Once their stores can be read they take more than one Undo, since they were left at different points, and the last clear comes back after them\./, "no press count when they hold more than one stamp");
   // round eight: the kernel's stack rides every account and the page takes it as its own; a batch this page makes goes under the owed entries
   assert.match(KERNEL, /frame\["batches"\], frame\["owedBatch"\], frame\["batchesTotal"\] = _lb\[0\]/, "every account carries the kernel's stack and the count before the bound");
   assert.match(FEED, /if \(storeOp && Array\.isArray\(m\.batches\) && !fromHost && !federatedPane\(\)\) \{/, "the local kernel's frame reconciles on a single-kernel pane; an old kernel's frame, and every frame on a federated pane, take the branches below (the round-nine verifier's ruling)");
-  assert.match(FEED, /function federatedPane\(\): boolean \{[\s\S]{0,700}if \(pendingHosts\.length \|\| pendingDead\.length\) return true;\n  return sessionsMeta\.some\(\(s\) => hostOf\(s\.sid\) !== ""\);\n\}/, "read from the attachment, never from the cards (round twelve: the reading flapped with the board)");
-  assert.doesNotMatch(FEED, /asks\.some\(\(a\) => hostOf\(a\.sid\) !== ""\)/, "no card-based reading");
+  assert.match(FEED, /function federatedPane\(\): boolean \{ return attachedHosts\(\)\.size > 0; \}/, "read from federation's account of the attachment: the hosts pending or down, the merged payload's build map, the manager's host list; never sessions or cards (rounds twelve and thirteen)");
+  assert.match(FEED, /function attachedHosts\(\): Set<string> \{[\s\S]{0,900}for \(const h of payloadHosts\) out\.add\(h\);[\s\S]{0,400}typeof fed\.hosts === "function"/, "its three sources");
+  assert.match(FEED, /payloadHosts = perHostBuildIds \? Object\.keys\(perHostBuildIds\)\.filter\(\(h\) => h !== ""\) : \[\];/, "the build map's keys, the local one aside, taken at every payload");
+  assert.ok(!FEED.includes('for (const a of asks) if (hostOf(a.sid) !== "") return true;'), "no card-based reading: the removed loop, literally (the twelfth executed review: the earlier pin matched a form that never existed)");
+  assert.doesNotMatch(FEED, /sessionsMeta\.some\(\(s\) => hostOf\(s\.sid\) !== ""\)/, "nor a session-based one: a remote card with no session row read as a single-kernel pane (the round-twelve verifier)");
   assert.match(FEED, /if \(federatedPane\(\)\) clearedStack\.length = 0;\s*\/\/[^\n]*\n\s+const batch = clearedStack\.pop\(\);/, "and pops none: the round trip");
   assert.match(FEED, /clearedStack\.push\(\.\.\.older\);/, "the older local entries stay below the rebuilt ones under a truncated frame");
   assert.match(FEED, /if \(!federatedPane\(\)\) pendingCleared\.clear\(\);/, "the single-kernel round trip releases every suppression; a federated pane waits for federation's word (round twelve)");
   assert.match(FEED, /\} else if \(m\.type === "undoRouted" && Array\.isArray\(m\.hosts\)\) \{/, "federation's word on where the undo went");
-  assert.match(FEED, /for \(const h of lastUndoHosts\) undoSentBuild\.set\(h, lastSeenBuild\.get\(h\) \?\? 0\);/, "the send's moment per kernel, as the build seen (round twelve, the round-eleven verifier's design)");
-  assert.match(FEED, /if \(sent !== undefined && typeof built === "number" && built > sent\) pendingCleared\.delete\(a\.itemId\);/, "a suppression ends on the evidence: the card's own kernel's payload, built past the send, listing it");
-  assert.match(FEED, /function releaseRestoredByEvidence\(incomingAsks: AskItem\[\], m: any\): void \{\n  if \(!federatedPane\(\)\) return;/, "on a federated pane alone; the single-kernel pane releases at the click");
+  assert.match(FEED, /restoreChecks\.set\(id, \{ host: h, sentBuild: seen \}\);/, "the send's moment per SUPPRESSION, as the build seen on its kernel (round thirteen: the round-twelve verifier's HIGH, a per-kernel record measured every later clear against the old moment)");
+  assert.match(FEED, /if \(seen === undefined\) \{ pendingCleared\.delete\(id\); restoreChecks\.delete\(id\); continue; \}/, "a kernel with no build on record: the click-time release, never a baseline of zero (the round-twelve verifier's MEDIUM)");
+  assert.doesNotMatch(FEED, /lastSeenBuild\.get\(h\) \?\? 0/, "no zero baseline anywhere");
+  assert.match(FEED, /if \(\(!perHostBuildIds \|\| typeof perHostBuildIds\[""\] !== "number"\) && typeof m\.buildId === "number"\) lastSeenBuild\.set\("", m\.buildId\);/, "the local kernel's seen build from the payload's own when the map lacks the local key");
+  assert.match(FEED, /if \(typeof built === "number" && built > c\.sentBuild\) \{ pendingCleared\.delete\(a\.itemId\); restoreChecks\.delete\(a\.itemId\); \}/, "a suppression ends on the evidence: the card's own kernel's payload, built past its check's moment, listing it; the check leaves once judged");
+  assert.match(FEED, /if \(typeof built === "number" && seen !== undefined && built < seen\) c\.sentBuild = -1;/, "a build below the last seen is the kernel's restart: the check re-bases to the new life (the twelfth executed review)");
+  assert.match(FEED, /function releaseRestoredByEvidence\(incomingAsks: AskItem\[\], m: any\): void \{\n  for \(const id of Array\.from\(restoreChecks\.keys\(\)\)\) if \(!pendingCleared\.has\(id\)\) restoreChecks\.delete\(id\);/, "no gate on the attachment inside the evidence path (a pane that flips to single-kernel keeps its checks; the twelfth executed review); a check whose suppression the absence rule ended leaves");
   assert.match(FEED, /  releaseRestoredByEvidence\(incomingAsks, m\);/, "called from the payload handler, apart from its absence-driven writers");
   assert.doesNotMatch(FEED, /lastClearHostsPage/, "no shadow of the routing on the page");
   assert.match(FED, /window\.dispatchEvent\(new MessageEvent\("message", \{ data: \{ type: "undoRouted", hosts: hosts\.slice\(\) \} \}\)\);/, "handed to the panes at the send, by the routing's owner");
   assert.match(FEED, /if \(op === "undoClear" && \(!federatedPane\(\) \|\| lastUndoHosts\.has\(fromHost\)\)\) clearUndoBusy\(\);/, "an undo's account from a kernel the undo went to clears the round trip's cue");
+  assert.match(FEED, /if \(!federatedPane\(\) \|\| undoRoutedBuilt\(m\)\) clearUndoBusy\(\);/, "on a federated pane the payload clears the cue once every kernel the undo went to has built past the send (the second contributor's review); the backstop stands");
   // the page's record of cleared cards (the round-ten verifier): one source for the reconcile, pruned when a live payload shows the card, bounded
   assert.doesNotMatch(FEED, /for \(const e of clearedStack\) for \(const it of e\) known\.set/, "one source for the record, so the enumeration's mutant on it reds");
   assert.match(FEED, /for \(const id of Array\.from\(clearedItems\.keys\(\)\)\) if \(!pendingCleared\.has\(id\) && incomingAsks\.some\(\(a\) => a\.itemId === id\)\) clearedItems\.delete\(id\);/, "a record ends when a live payload shows the card unsuppressed");
   assert.match(FEED, /^const CLEARED_ITEMS_CAP = 200;/m);
   assert.match(FEED, /asks = asks\.filter\(\(a\) => \{ if \(!hidden\.has\(a\.itemId\)\) return true; recordCleared\(a\); return false; \}\);/, "a card the reconcile hides enters the record with its live copy, for the next frame of the same press");
-  assert.match(FEED, /function recordCleared\(it: AskItem\): void \{[\s\S]{0,600}if \(!held\.has\(id\)\) clearedItems\.delete\(id\);/, "bounded, the oldest evictable first: never a record under suppression or on the stack (round twelve)");
+  assert.match(FEED, /function evictClearedRecords\(writing: Iterable<string>\): void \{[\s\S]{0,700}if \(!held\.has\(id\)\) clearedItems\.delete\(id\);/, "bounded, the oldest evictable first: never a record under suppression, on the stack, or in the batch being written (rounds twelve and thirteen)");
+  assert.equal((FEED.match(/clearedItems\.set\(/g) || []).length, 1, "one writer of the record (recordCleared): a second direct write would bypass the cap (the twelfth executed review)");
+  assert.equal((FEED.match(/evictClearedRecords\(/g) || []).length, 4, "the definition and its three calls: after the federated return, after the splice, after the reconcile's hiding");
   assert.equal((FEED.match(/recordCleared\(/g) || []).length, 3, "the two writers (a clear, the reconcile hiding a card) and the definition: no write bypasses the cap");
   assert.match(KERNEL, /^LEDGER_BATCHES_ON_WIRE = 20/m, "the stack on the wire is bounded (plans\/needs-you.md)");
   assert.match(KERNEL, /def _ledger_batches\(limit=LEDGER_BATCHES_ON_WIRE\):/);
@@ -79,7 +89,8 @@ test("kernel: the clears-log refusal names the request the way _refuse_drive's f
   assert.match(FEED, /const truncated = typeof m\.batchesTotal === "number" && m\.batchesTotal > bats\.length - \(owedB\.length \? 1 : 0\);/, "a frame that left older batches out says so (round ten)");
   assert.match(FEED, /reconcileClearedStack\(bats, owedB, truncated, refusedIds\);/);
   assert.match(FEED, /if \(truncated && !named\.has\(id\) && !cleared\.has\(id\)\) continue;/, "a suppression the truncated frame neither names nor carries stays");
-  assert.match(FEED, /function pushClearedEntry\(entry: AskItem\[\]\): void \{\n  for \(const it of entry\) recordCleared\(it\);\n  if \(federatedPane\(\)\) return;[^\n]*\n  let i = clearedStack\.length;\n  const owedIds = new Set<string>\(\);\n  while \(i > 0 && \(clearedStack\[i - 1\] as any\)\._owed\) \{/, "every cleared card is recorded; a federated pane caches no entry; a batch this page makes goes under the owed entries, and an id they hold counts once");
+  assert.match(FEED, /function pushClearedEntry\(entry: AskItem\[\]\): void \{\n  for \(const it of entry\) recordCleared\(it\);\n  const writing = entry\.map\(\(it\) => it\.itemId\);\n  if \(federatedPane\(\)\) \{ evictClearedRecords\(writing\); return; \}[^\n]*\n  let i = clearedStack\.length;\n  const owedIds = new Set<string>\(\);/, "the record first, the batch held through the cap; a federated pane keeps no stack");
+  assert.match(FEED, /if \(rest\.length\) clearedStack\.splice\(i, 0, rest\);\n  evictClearedRecords\(writing\);/, "the cap after the entry is on the stack, this batch held (the twelfth executed review: the batch's own oldest members went at the 201st record)");
   assert.match(FEED, /const rest = entry\.filter\(\(it\) => !owedIds\.has\(it\.itemId\)\);\n  if \(rest\.length\) clearedStack\.splice\(i, 0, rest\);/);
   assert.match(FEED, /function reconcileClearedStack\(batches: string\[\]\[\], owedBatch: string\[\], truncated = false, namedIds: string\[\] = \[\]\): void \{/);
   assert.equal((FEED.match(/pushClearedEntry\(/g) || []).length, 5, "the four writers (a card's Clear, a group's, a session's Clear all, the board's Clear all) and the definition");

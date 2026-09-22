@@ -14864,6 +14864,10 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
   const title = row.querySelector<HTMLElement>(".ntc-title"), body = row.querySelector<HTMLElement>(".ntc-body"), att = row.querySelector<HTMLElement>(".ntc-attach");
   if (title && row._title !== (n.title || "")) { title.textContent = n.title || "Needs you"; row._title = n.title || ""; }
   if (body && row._body !== (n.body || "")) { body.replaceChildren(...noticeBodyNodes(n.body || "")); body.style.display = n.body && n.body.trim() ? "" : "none"; row._body = n.body || ""; }
+  // the brief past the clamp (the second contributor's review, 2026-09-22): a disclosure keyed by the item id in the one fold store, re-applied on
+  // every update (the switch's off-then-on rebuilds the rows), its button shown only when the body overflows its four lines
+  row.classList.toggle("ntc-open", openFolds.has("notice:" + n.itemId + ":brief"));   // both ways: applyFold only opens, and a closed disclosure must fold the row back
+  noticeMoreButton(row, body);
   const attKey = JSON.stringify(n.attachment || null);
   if (att && row._att !== attKey) { att.replaceChildren(...noticeAttachmentNodes(n.attachment, sid)); att.style.display = att.childNodes.length ? "" : "none"; row._att = attKey; }
   const sig = noticeActionsSig(n);
@@ -14873,6 +14877,16 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
   }
 }
 // the box's header bar (plans/needs-you.md, phase three): the background box's grammar, the dot in the Needs you token, the title with the count
+// the brief's disclosure button, on the row's own delegate (act ntc-more) and not on the body div; present only while the clamped body hides
+// lines, so a short brief shows no control; kept out of the latch (a disclosure is not a decision)
+function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
+  let b = row.querySelector<HTMLButtonElement>(".ntc-more");
+  const overflows = !!body && body.style.display !== "none" && body.scrollHeight > body.clientHeight + 1;
+  const open = row.classList.contains("ntc-open");
+  if (!overflows && !open) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement("button"); b.className = "ntc-btn ntc-more"; b.dataset.act = "ntc-more"; body?.after(b); }
+  b.textContent = open ? "Less" : "More"; (b as any)._idle = b.textContent;
+}
 function buildNoticeHead(): HTMLElement {
   const head = document.createElement("div"); head.className = "ntc-head";
   head.appendChild(el("span", "ntc-dot"));
@@ -20889,6 +20903,7 @@ setupSettings();
     "ntc-deny-step": (el) => { const p = pick(el); if (p) noticeRowDenyStep(p[0], Number(el.dataset.idx)); },
     "ntc-deny-note": (el) => { const p = pick(el); if (!p) return; const t = (p[0].querySelector<HTMLTextAreaElement>(".ntc-note")?.value || "").trim(); go(p[0], p[1], p[2], el as HTMLButtonElement, t ? { note: t } : undefined); },
     "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
+    "ntc-more": (el) => { const row = rowOf(el); if (!row) return; const key = "notice:" + (row.dataset.item || "") + ":brief"; if (openFolds.has(key)) openFolds.delete(key); else openFolds.add(key); row.classList.toggle("ntc-open", openFolds.has(key)); noticeMoreButton(row, row.querySelector<HTMLElement>(".ntc-body")); },   // the brief's disclosure: no latch, a toggle (the second contributor's review)
     "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },
     "ntc-reply": (el) => { const p = item(el); if (p && activeId) setCitation(activeId, { itemId: p[1].itemId, title: p[1].title }); },
     "ntc-cont": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askFollowUp", itemId: p[1].itemId, sid: activeId, cont: true }); latch(p[0], el as HTMLButtonElement); },
