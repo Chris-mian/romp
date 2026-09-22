@@ -861,10 +861,11 @@ class RealBackendCompact(unittest.TestCase):
         self.assertEqual([c for c in self.fake.called("turn_start")[n0:] if any(i.get("text") == machine for i in c[2])], [])
 
     def test_the_end_route_hands_the_parked_message_to_a_chat_pane(self):
-        # romp end lands here with no socket: the not-delivered frame goes to one chat pane (_send_to_one_chat), the
-        # same shape the WS op sends its pane. No chat client is connected in this module, so the picker falls to the
-        # chat broadcast, and that fallback is what this test reads (the post-merge review of 2026-09-21 read the
-        # earlier "every chat pane" here as stale against the picker: the broadcast is the fallback, not the road).
+        # romp end lands here with no socket: the not-delivered frame goes to one pane that renders it
+        # (_send_to_one_chat: a chat pane first, the feed when no chat pane is connected), the same shape the WS op
+        # sends its pane. No chat or feed client is connected in this case, so the picker falls to the chat broadcast,
+        # and that fallback is what this test reads (the post-merge review of 2026-09-21 read the earlier "every chat
+        # pane" here as stale against the picker: the broadcast is the fallback, not the road).
         import threading
         from http.server import ThreadingHTTPServer
         import urllib.request
@@ -887,8 +888,8 @@ class RealBackendCompact(unittest.TestCase):
 
     def test_the_self_close_sweep_hands_the_parked_message_to_a_chat_pane(self):
         # romp end self defers to idle; the pusher's sweep kills at the turn's settle and takes the end route's road:
-        # no socket, so one chat pane, read here through the no-chat-client broadcast fallback as the route test does
-        # (reworded 2026-09-21, the post-merge review). The sweep's own transcript read is stubbed quiet
+        # no socket, so one pane that renders it, read here through the broadcast fallback with no chat or feed client
+        # connected, as the route test does (reworded 2026-09-21, the post-merge review). The sweep's own transcript read is stubbed quiet
         # (tests/test_kernel_end_on_idle.py's shape); the parked queue, the kill and the frames are real.
         text = "typed behind a cue, ended by the session itself"
         sid = self._parked_behind_a_bracket_nothing_ends(text, "/TESTDIR-compact-end-sweep")

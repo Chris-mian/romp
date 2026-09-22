@@ -36565,10 +36565,10 @@ def _drop_parked_on_end(sid, client=None):
     queue ahead or an account hold) vanished with the End, while the doc said End then Revive delivered it. Now the
     ending session's parked sends take the existing not-delivered path (_refuse_drive: a modal with the text in its
     copy slot, undelivered.jsonl verbatim, one stderr line), aimed at `client` when the End came over the socket of
-    a pane that renders the frame, else at ONE chat pane (the WHERE paragraph below; the broadcast to every chat pane
-    is only the picker's fallback with no chat client connected, which is what the two socketless route tests drive;
-    the post-merge review of 2026-09-21 read the earlier "aimed at the socket, else every chat pane" here as stale
-    in both halves against the picker).
+    a pane that renders the frame, else at ONE pane that renders it (the WHERE paragraph below: a chat pane first,
+    the feed when no chat pane is connected; the chat broadcast is only the picker's fallback with neither connected,
+    which is what the two socketless route tests drive; the post-merge review of 2026-09-21 read the earlier "aimed
+    at the socket, else every chat pane" here as stale in both halves against the picker).
 
     Only the USER's words are handed back: a parked send or command wearing the user flag (_op_user) or a
     press-minted copy id (_op_qid); the predicate reads the flag and the id, never the text's shape, so a typed
@@ -69025,7 +69025,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True, "deferred": True}), "application/json")
                 else:
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
-                    _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one chat pane (2026-09-21)
+                    _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one pane that renders it, a chat pane first (2026-09-21)
                     be.kill(sid)
                     _record_death(sid, int(time.time()), "kill")
                     _comment_kill_all(sid, be)   # its comment threads must not outlive it (the WS endSession twin)
