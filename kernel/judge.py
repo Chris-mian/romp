@@ -1072,7 +1072,10 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
              "unroll-heal" (a top left the rolled-up state with settle rows and no done in its diary; a romp
              reopen row ended that settled episode so the node can be judged again — _heal_settle_without_done),
              "gate-stamp" (the evidence gate could not write a tier's stamp after a complete run; the run
-             counts bypassed and the session stays due: _gated), "states-unreadable", "cleared-unreadable",
+             counts bypassed and the session stays due: _gated), "clears-log" (a clears-log write refused under a
+             gesture, the mute or the episode boundary: one row per refusal, kernel.py _clears_log_fault_note),
+             "owed-note" (the note of owed cards beside the log could not be written or read: one row per gesture,
+             one per episode on the feed's once-per-life read; kernel.py _owed_fault_note), "states-unreadable", "cleared-unreadable",
              "stall-unreadable", "captions-unreadable", "episodes-unreadable", "marker-unreadable",
              "archive-unreadable", "reg-unreadable" (the eight side-file kinds: a file the evidence gate
              stat'd or read by value into a tier's signature exists and could not be read or parsed: the

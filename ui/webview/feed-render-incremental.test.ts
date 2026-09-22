@@ -2140,6 +2140,8 @@ test("a kernel's socket coming back drops its waiting checks and their suppressi
   card("g3")._clr.onclick(ev); mock.timers.tick(700);
   undo.onclick!(ev); await dispatch({ type: "undoRouted", hosts: [""], seq: lastSeq() });          // the local kernel's check; its account never comes
   assert.deepEqual(floors(), [[R + ":g1", null], ["g3", null]]);
+  win.dispatchEvent(new Event("romp:hostRelayUp"));                                              // a detail-less event names no kernel: nothing drops (the second contributor's post-merge note on PR 2018)
+  assert.deepEqual(floors(), [[R + ":g1", null], ["g3", null]], "an event without a host drops nothing, the local kernel's check included");
   win.dispatchEvent(Object.assign(new Event("romp:hostRelayUp"), { detail: { host: "TESTHOST" } }));   // the remote relay socket reopened (federation's own event on its onopen): the redial abandoned the account
   assert.deepEqual(floors(), [["g3", null]], "the remote kernel's check is dropped on its socket's own reopen, the local one stands (before: only the tunnel poll's frame, silent on a watchdog redial)");
   await dispatch({ type: "undoRouted", hosts: ["TESTHOST"], seq: 99 });                          // (nothing pending on the remote now: no new check)
@@ -2204,6 +2206,28 @@ test("the truncation read's OWED adjustment: an account whose list is an owed id
   mock.timers.tick(700);
   assert.ok(!card("c1"), "the oldest clear stays off: the frame is truncated once the owed entry is set aside (under the mutant 21 > 21 reads whole, and c1 shows again)");
   assert.deepEqual(stackIds(), [[], ...window, ["c1"]], "twenty-two entries: the owed entry (no card of this page's), the window, and c1's kept below (under the mutant c1's drops)");
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+});
+
+test("a lost undo account on a LIVE socket: a later undo's account from that kernel drops its older floorless checks, so the card shows on the next frame listing it instead of staying off while every build lists it (the second contributor's post-merge note on PR 2018)", async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const floors = hooks._restoreFloorsForTests as () => [string, number | null][];
+  const sent0 = posted.length;
+  const { g2it, remote } = await remoteWorld(hooks);
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(1, 1) })); mock.timers.tick(700);
+  card("g3")._clr.onclick(ev); mock.timers.tick(700);
+  const undo = body.byId("feed-undoclear")!;
+  undo.onclick!(ev); const s1 = lastSeq(); await dispatch({ type: "undoRouted", hosts: [""], seq: s1 });   // undo 1: its account is lost
+  card("g1")._clr.onclick(ev); mock.timers.tick(700);
+  undo.onclick!(ev); const s2 = lastSeq(); await dispatch({ type: "undoRouted", hosts: [""], seq: s2 });   // undo 2
+  assert.deepEqual(floors(), [["g3", null], ["g1", null]]);
+  await dispatch({ type: "undoAck", op: "undoClear", seq: s2, buildId: 3 });                  // undo 2's account: undo 1's will never come (in-order delivery)
+  assert.deepEqual(floors(), [["g1", 3]], "the older floorless check is dropped, the acked one keeps its floor");
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(4, 1) })); mock.timers.tick(700);
+  assert.ok(card("g3"), "the card of the lost account shows on the next frame listing it (before: off while every build listed it)"); assert.ok(card("g1"), "the acked undo's card shows past its floor");
   hooks._resetClearGestureStateForTests(); posted.splice(sent0);
   await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
 });

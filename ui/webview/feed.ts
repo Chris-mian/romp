@@ -796,6 +796,10 @@ function releaseRestoredByEvidence(incomingAsks: AskItem[], m: any): void {
 function setUndoFloor(host: string, seq: unknown, floor: unknown): void {
   if (typeof floor !== "number") return;
   for (const c of restoreChecks.values()) if (c.host === host && (typeof seq !== "number" || c.seq === seq)) c.floor = floor;
+  // an account for undo N on a LIVE socket says every earlier undo's account from this kernel has come or never will (in-order delivery on the
+  // pressing socket): this kernel's FLOORLESS checks with a lower sequence lost theirs, so they take the click-time release now, or the card
+  // would stay off while every build listed it (the second contributor's post-merge note on PR 2018); a floored check keeps waiting for evidence
+  if (typeof seq === "number") for (const [id, c] of Array.from(restoreChecks)) if (c.host === host && c.floor === undefined && typeof c.seq === "number" && c.seq < seq) { restoreChecks.delete(id); pendingCleared.delete(id); }
 }
 // a kernel's socket came back (the shim's `wsup` for the local kernel, federation's `hostUp` for a remote): the undo's account rides the
 // pressing client's queue alone, which the redial may have abandoned, so a check still waiting for it would hold a restored card off the

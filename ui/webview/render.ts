@@ -21407,6 +21407,7 @@ setupSettings();
 // The chat page's hidden word for the kernel's pane shim (chat-visibility.ts): the chat gates no paint, so this
 // is the one place it measures its own visibility. Once, at top level, over the page's body.
 watchChatVisibility(document.body, { ...browserChatVisibilityDeps(), onShown: renderNoticeDisclosures });   // the pane's return re-measures the box's disclosures (the post-merge review of PR 1967)
+window.addEventListener("resize", renderNoticeDisclosures);   // Firefox's observer never reports the hidden pane, so its return fires no edge: the pane's resize on the way back re-measures instead (the second contributor's post-merge note on PR 2018)
 // right-click a selection in the transcript → Reply (quote it) / Copy
 document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
 // The chat document hosts the viewer itself (openPath), so it boots the viewer's listener with the
