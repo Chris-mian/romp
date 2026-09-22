@@ -99,7 +99,8 @@ const kernelFeed = () => page.evaluate(async (u) => { try { const r = await fetc
 const kernelPerf = () => page.evaluate(async (u) => { try { const r = await fetch(u); const p = await r.json(); return { pusher: p.pusher, builds: p.builds, stages_ms: p.stages_ms }; } catch (e) { return String(e); } }, cfg.perf);
 const briefOf = (f, id) => (((f || {}).asks || []).find((a) => a.itemId === id) || {}).blockSummary;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const feedBuiltPast = async (floor, id, brief, ms) => {   // the kernel's feed build past `floor` carrying `brief` on the card: its build id, else null at the deadline (a null floor never passes)
+const feedBuiltPast = async (floor, id, brief, ms) => {   // the kernel's feed build past `floor` carrying `brief` on the card: its build id, else null at the deadline
+  if (typeof floor !== "number") return null;   // a null floor is the pre-write read's own miss (the floor pin names it): no poll, no counters pointing at the kernel (the second contributor's read of PR 2038)
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {   // loop-ok: bounded by the deadline, one fetch per 500 ms (the cadence the polling option asked for)
     const f = await kernelFeed();
@@ -229,10 +230,12 @@ await browser.close();
 # the driver's budget. Its bounded waits sum to about 1170 s serially (every helper counted per call: the kernel's four 90 s deadlines, the
 # 60 s row and card waits of the first scenes, the 30 s row waits that follow the kernel's word, the shorter button, dialog and frame waits, the
 # 30 s frame loop), more than any per-test ceiling the runner gives (CI's served-page step runs pytest with --timeout=600, thread method), so
-# the cap cannot be the sum: it is the ceiling less a margin, and a driver that runs past it has hit several deadlines in a row. What such a
-# run owes is its record so far: the driver prints a PARTIAL line after every scene, and _result reports the last one with the kernel's tail
-# (the second contributor's read of PR 2031: a 600 s cap the waits' sum already exceeded, and a timeout that propagated as a bare traceback).
-DRIVER_TIMEOUT_S = 540
+# the cap cannot be the sum: it is the ceiling less the SETUP the same per-test timer wraps (pytest-timeout's thread method times the first
+# test's setUpClass too: the esbuild run and the healthz boot loop, bounded at about 60 to 120 s here), so a kernel that boots late and then
+# stalls still hits this cap before the runner's, with the record below and the kernel's tail in hand rather than a bare per-test timeout
+# that also skips every later served test in the process (the second contributor's read of PR 2038). A driver that runs past it has hit
+# several deadlines in a row; the driver prints a PARTIAL line after every scene, and _result reports the last one with the kernel's tail.
+DRIVER_TIMEOUT_S = 480
 
 
 def _block(t, why):
