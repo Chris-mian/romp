@@ -1670,7 +1670,7 @@ class ActsUnderAFailedWrite(_World):
         log = jd.STATE / "cleared.jsonl"
         log.write_text("[]\n" + json.dumps({"id": 5, "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": A + ":g1", "t": 2, "op": "clear"}) + "\n"
                        + json.dumps({"id": {"k": "v"}, "t": 3, "op": "clear"}) + "\n" + json.dumps({"id": "", "t": 4, "op": "clear"}) + "\n"
-                       + json.dumps({"id": B + ":g1", "t": "yesterday", "op": "clear"}) + "\n" + json.dumps({"id": B + ":g1", "t": True, "op": "clear"}) + "\n")
+                       + json.dumps({"id": B + ":g1", "t": "yesterday", "op": "clear"}) + "\n" + json.dumps({"id": B + ":g2", "t": True, "op": "clear"}) + "\n")   # two ids: a shared one let the bool row shadow the string row (the round-one verifier of PR 2032)
         km._CLEARED_MEMO["slot"] = None
         try:
             got = km._cleared_ids()
@@ -1895,23 +1895,38 @@ class ActsUnderAFailedWrite(_World):
         slot the count, the button and the seal hold; a second build files no second row; a landed read ends the bell's episode; a cold memo
         gives the empty set with its own row."""
         log = jd.STATE / "cleared.jsonl"
-        log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None
+        row, err = km.post_notice(A, "n1", "a held note", producer="postal", needs_you=True, now=NOW, t=NOW)   # a needs-you notice this page cleared: its row in the log
+        self.assertIsNone(err, "premise: the notice posts: %r" % err)
+        nid = km._notice_item_id(A, "n1", row["rev"])
+        log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": nid, "t": 2, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None
         km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
         f = km.build_feed(NOW, self.live)
-        self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (1, True, False), "the landed read: one dismissed, the button, A's card sealed by the log alone")
+        self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (2, True, False), "the landed read: two dismissed, the button, A's card sealed by the log alone")
+        self.assertNotIn(nid, [n["itemId"] for n in km._chat_notices(A) or []], "premise: the cleared notice is off the chat box")
+        outline = lambda: [r for r in km._goal_tree_walk(A, jd.load_goals(A), anchors=False)[0] if r["id"] == A + ":g1"][0]["cleared"]   # the Outline's own call (anchors off)
+        archive = lambda: km._ledger_cleared_overlay([{"id": A + ":g1", "depth": 0, "derived": True, "cleared": False, "summary": "", "text": "x"}])
+        self.assertTrue(outline(), "premise: the Outline reads A's node cleared"); self.assertEqual(archive(), [], "premise: the archive projection drops the cleared root")
         with contextlib.redirect_stderr(io.StringIO()):
             log.write_bytes(b"\xff\xfe\x00 not text\n")                        # the log cannot be read: a new file state, the memo's last landed set stands
             f = km.build_feed(NOW, self.live)
-            self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (1, True, False), "the pane holds the last landed set (before: zero, no button, the seal lifted): %r" % ({k: f[k] for k in ("dismissedCount", "canUndoClear")},))
+            self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (2, True, False), "the pane holds the last landed set (before: zero, no button, the seal lifted): %r" % ({k: f[k] for k in ("dismissedCount", "canUndoClear")},))
+            self.assertNotIn(nid, [n["itemId"] for n in km._chat_notices(A) or []], "the chat box's notice rows hold too (the round-one verifier of PR 2032: unpinned, the set-only reader let the cleared notice back)")
+            self.assertTrue(outline(), "the Outline's cleared flag holds (the round-one verifier: it flipped to False on the set-only reader)")
+            self.assertEqual(archive(), [], "the archive projection keeps dropping the cleared root (the round-one verifier: it stopped on the set-only reader)")
             bell = [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
             self.assertEqual([(n["kind"], n["ok"]) for n in bell], [("refused", False)], "one refused bell row names the file: %r" % km._SYNC_NOTICES)
             self.assertIn("last-known", bell[0]["text"])
+            self.assertIn("clears still record, and Undo waits until the file can be read again", bell[0]["text"], "the row's remedy is this file's own: a clear still appends its row and sets the flag while the log cannot be read, only Undo waits (before: the convention's sentence promised refused changes): %r" % bell[0]["text"])
+            self.assertNotIn("changes to it are refused", bell[0]["text"])
+            km._note_state_fault(km._StateUnreadable(jd.STATE / "session-flags.json", "a stand-in fault"))   # another file keeps the convention's sentence
+            self.assertTrue(km._SYNC_NOTICES[-1]["text"].endswith("showing the last-known value; changes to it are refused until the file can be read again"), "the default sentence stands for every other file: %r" % km._SYNC_NOTICES[-1]["text"])
+            km._state_fault_seen.pop(str(jd.STATE / "session-flags.json"), None)
             f2 = km.build_feed(NOW, self.live); off = km._feed_off_frame(NOW, self.live)
-            self.assertEqual((off["dismissedCount"], off["canUndoClear"]), (1, True), "the off frame holds too")
+            self.assertEqual((off["dismissedCount"], off["canUndoClear"]), (2, True), "the off frame holds too")
             self.assertEqual(len([n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]), 1, "a second build and the off frame file no second row: one per episode")
-            log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": B + ":g1", "t": 2, "op": "clear"}) + "\n")
+            log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": B + ":g1", "t": 2, "op": "clear"}) + "\n" + json.dumps({"id": nid, "t": 3, "op": "clear"}) + "\n")
             f = km.build_feed(NOW, self.live)
-            self.assertEqual(f["dismissedCount"], 2, "a landed read: the pane follows the log again")
+            self.assertEqual(f["dismissedCount"], 3, "a landed read: the pane follows the log again")
             log.write_bytes(b"\xff\xfe\x00 not text either\n")
             km.build_feed(NOW, self.live)
             self.assertEqual(len([n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]), 2, "the landed read ended the bell's episode: the next fault files again")
@@ -1931,7 +1946,7 @@ class ActsUnderAFailedWrite(_World):
         ds = jd._log_judge_error.__doc__
         flat = doc.replace("\n  ", " ")
         self.assertRegex(flat, r"clears-log: a write to the clears log refused \(a clear's or an undo's rows, the mute's, the episode boundary's\), one row per refusal", "the write kind's sentence")
-        self.assertRegex(flat, r"cleared-unreadable is filed by the kernel's own reader of the clears log as well[^.]{0,300}one row per fault episode", "the read kind's sentence names the kernel's reader and the episode")
+        self.assertRegex(flat, r"cleared-unreadable is filed by the kernel's own reader of the clears log as well[^.]{0,300}holding the last landed set[^.]{0,200}one row per fault episode", "the read kind's sentence names the kernel's reader and the episode")
         self.assertRegex(flat, r"owed-note: the note of owed cards beside the log could not be written or read")
         self.assertRegex(ds, r'"clears-log" \(a clears-log write refused')
         self.assertRegex(ds.replace("\n", " "), r'"cleared-unreadable" is also the kernel\'s own reader\'s\s+kind for the clears log[^)]*one row per fault episode')

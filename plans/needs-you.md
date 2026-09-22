@@ -265,7 +265,8 @@ lost; the row and the line name the session.
 
 While the clears log cannot be read, the pane holds. The feed build, the off frame and the chat box's notice rows take the last
 landed set the reader memoized, so the dismissed count, the Undo button, the foreign clears and the log-only seals stand as the last
-landed read left them until a read lands, and the bell carries one refused row per fault episode naming the file: the display
+landed read left them until a read lands (a press of that held Undo is refused with the dialog, the read-fault account, since an
+undo answers for its own read), and the bell carries one refused row per fault episode naming the file: the display
 readers' convention (the last-known value shown, one row, a clean read ends the episode). A cold memo has nothing to serve: the pane
 shows nothing cleared and the row says so. The gestures never take the memo's set: an Undo answers for its own read, and an
 account's stack for the read behind it. Every clear or undo account carries its stack except any sent while the clears log cannot be

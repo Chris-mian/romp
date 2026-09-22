@@ -5356,9 +5356,11 @@ class _StateUnreadable(Exception):
     `path` is the file, `fault` the errno-and-strerror text (never the per-second quarantine stamp,
     never a second path), so the once-per-fault-text registries dedupe a disk that stays broken."""
 
-    def __init__(self, path, fault):
+    def __init__(self, path, fault, remedy=None):
         self.path = Path(path)
         self.fault = str(fault)
+        self.remedy = str(remedy) if remedy else None   # a per-file clause for _note_state_fault's row, when the file's readers and writers part ways
+        #                                                 (the clears log: clears still record, Undo waits; round three of PR 2032); None keeps the sentence every other file has
         super().__init__("%s could not be read (%s)" % (self.path.name, self.fault))
 
 
@@ -5549,8 +5551,9 @@ def _note_state_fault(exc):
         text = "%s — the change was not saved; changes to it are refused until the file can be written again" % exc
     else:
         table = _state_fault_seen
-        text = ("%s — showing the last-known value; changes to it are refused until the file can be "
-                "read again" % exc)
+        remedy = getattr(exc, "remedy", None) or ("showing the last-known value; changes to it are refused until the file can be "
+                                                   "read again")   # the file's own clause when it has one, else the sentence every other file keeps (round three of PR 2032)
+        text = "%s \u2014 %s" % (exc, remedy)                  # the same dash as before, the sentence byte-identical for every other file
     if table.get(key) == text:
         return
     table[key] = text
@@ -39564,7 +39567,7 @@ def _ledger_cleared_overlay(rows):
     its own (the re-seal requires it, an undo removes the row and restores the node, nothing prunes the file),
     and a ledger emptied by hand leaves the root listed struck through. The subtree drop relies on the flat
     list's order (a root, then its descendants, up to the next depth-0 row), the invariant the roll-down reads."""
-    vc = _cleared_ids()
+    vc = _cleared_ids_display()                          # a display derivation: the last landed set while the log cannot be read (round three of PR 2032)
     if not vc:
         return rows
     out, root_cleared, drop = [], False, False
@@ -39734,7 +39737,7 @@ def _goal_tree_walk(sid, gstore, seg_trig=None, seg_work=None, anchors=True):
     """(tree, live_roots) for `sid`'s goal store: the ledger's rows in recency order and the live top-level goals."""
     gnodes = gstore.get("nodes", {}) if gstore is not None else {}
     gstatus = gstore.get("status", {}) if gstore is not None else {}
-    gcleared = _cleared_ids()
+    gcleared = _cleared_ids_display()                    # the Outline's per-node cleared flag: a display derivation, the last landed set while the log cannot be read (round three of PR 2032)
     gkids = {}
     for _gid, _gn in gnodes.items():
         gkids.setdefault(_gn.get("parentId"), []).append(_gid)
@@ -41650,10 +41653,12 @@ def _cleared_ids_display():
         _clear_state_fault(p)                            # a clean read ends the bell's episode
         return cur
     landed = _CLEARED_MEMO["landed"]
+    # the row's remedy is this file's own (round three of PR 2032): the convention's "changes to it are refused" is untrue here, since a clear
+    # still appends its row and sets the card's flag while the log cannot be read; only Undo, which answers for its own read, waits
     if landed is not None and landed[0][0] == str(p):
-        _note_state_fault(_StateUnreadable(p, fault))    # once per fault text: the last landed set stands meanwhile
+        _note_state_fault(_StateUnreadable(p, fault, remedy="showing the last-known value; clears still record, and Undo waits until the file can be read again"))
         return landed[1]
-    _note_state_fault(_StateUnreadable(p, fault + "; no earlier read of it in this kernel's life, so nothing reads as cleared"))
+    _note_state_fault(_StateUnreadable(p, fault, remedy="nothing reads as cleared until the file can be read again (no earlier read of it in this kernel's life); clears still record, and Undo waits"))
     return cur
 
 def _mark_nodes_cleared(item_ids, value, src="user", why=None):
@@ -42127,7 +42132,7 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op="", seq=None):
     the user's copy (the save shape added on a review find, 2026-09-08: left to raise, it dropped the
     dashboard's socket without a word)."""
     _batch = [str(i) for i in (ids or []) if i]         # the batch the gesture named: the LEDGER account's ids (nothing of it landed)
-    _lb = [None]                                        # the kernel's stack after the gesture (_ledger_batches), read once, on every frame
+    _lb = [None]                                        # the kernel's stack after the gesture (_ledger_batches), read once, on every frame sent while the log reads (none while it cannot be read, the read-fault account never)
     # the undo's BUILD FLOOR (round fifteen of PR 1967, the round-thirteen verifier's ruling): the feed build counter as it stands now, the undo
     # processed. Every build claimed after this point read the store after the undo applied, and after every clear this socket sent before it
     # (the kernel applies them in order), so a payload with a greater build is exact evidence of what the undo restored; a build claimed before
@@ -42866,7 +42871,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
         # judge's one-shot live re-plan lands a fresh one (a recorded #live key = it already ran → stay out).
         # An ABSENT target needs clear-EVIDENCE (its id in cleared.jsonl — every real cross-off logs one):
         # a bogus cite or a not-yet-written store must not flash a placeholder.
-        fu_gone = _card_gone(nodes, fu) if fu in nodes else fu in _cleared_ids()
+        fu_gone = _card_gone(nodes, fu) if fu in nodes else fu in _cleared_ids_display()   # clear-evidence for a placeholder: a display derivation (round three of PR 2032)
         if not (turn_open and fu_gone) or _live_replanned(placements, held["id"]):
             return None
     # PLACED already? the planner stamps placements the moment it classifies this segment — its prompt-run
