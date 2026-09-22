@@ -1292,23 +1292,26 @@ class LedgerMemo(unittest.TestCase):
 
     def test_a_clear_landing_during_the_walk_misses_next_build(self):
         # cleared.jsonl is stat'd BEFORE it is read: a row appended between the two pairs the old key with
-        # the new set, so the next build misses instead of serving a set the file has moved past
+        # the new set, so the next build misses instead of serving a set the file has moved past. The hook sits on
+        # _cleared_ids_read, the one read every reader of the set shares (PR 2032: the walk reads through the display
+        # reader, which takes the set and its fault from that read; a hook on the set-only wrapper was off the path,
+        # so the row never landed during the walk and the next build served the memo)
         w = self.w
         w.store(w.nodes(2))
-        real = km._cleared_ids
+        real = km._cleared_ids_read
 
         def racing():
             with open(jd.STATE / "cleared.jsonl", "a") as f:
                 f.write(json.dumps({"id": "g2", "t": w.now}) + "\n")
-            km._cleared_ids = real
+            km._cleared_ids_read = real
             return real()
-        km._cleared_ids = racing
+        km._cleared_ids_read = racing
         try:
             s = self._stats()
             w.build()
             self.assertEqual(self._delta(s), {"miss": 1})
         finally:
-            km._cleared_ids = real
+            km._cleared_ids_read = real
         s = self._stats()
         w.build()
         self.assertEqual(self._delta(s), {"miss": 1}, "the key taken before the read predates the row")
