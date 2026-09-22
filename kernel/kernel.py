@@ -36538,8 +36538,9 @@ def _send_to_one_chat(msg, sid=""):
     shows), else a live chat client, else a live client of any pane whose bundle reads an err frame (_ERR_FRAME_APPS).
     The feed hands the frame to the shell's bell through the notify bridge (a postMessage to the frame hosting it), so
     the words reach the person where a shell hosts the pane; the standalone feed page and the extension's feed webview
-    have no bridge, and the feed's own dialog leaves its box unattached, a pre-existing feed.ts defect fixed separately
-    (PR 1967), so there the undelivered file and the log are the record until that lands. The not-delivered frame's
+    have no bridge, so there the feed's own dialog carries the words (its box attached to the overlay since this
+    change: built and never attached before, the frame painted a bare dim sheet with no words and no button). The
+    not-delivered frame's
     modal and its bell entry are one notice, and the broadcast drew them once per chat column. Two finds of the
     post-merge review of the End hand-back (2026-09-21) shaped the tiers and the pick within one. The pick considered
     chat clients only, so a socketless End (romp end, the self-close sweep) with a feed pane connected and no chat pane

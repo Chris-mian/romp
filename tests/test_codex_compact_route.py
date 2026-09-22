@@ -450,7 +450,7 @@ class EndHandbackTargets(_Base):
         # only, so the frame went to the empty chat broadcast, though the feed's bundle reads an err frame (review find,
         # 2026-09-21): it hands the frame to the shell's bell through the notify bridge, so the words reach the person
         # where a shell hosts the pane (the standalone feed page and the extension's feed webview have no bridge), and
-        # its own dialog leaves its box unattached, a pre-existing feed.ts defect fixed separately (PR 1967). With no
+        # its own dialog carries the words (its box attached to the overlay since this change). With no
         # live chat client the pick is a live client of a pane whose bundle reads the frame; a pane whose bundle drops
         # it (the timeline) is never the target, however fresh its socket.
         self._restore_undelivered()
