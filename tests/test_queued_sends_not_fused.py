@@ -892,6 +892,7 @@ class OneFedTextAtATime(unittest.TestCase):
         self.assertEqual(len(c.writes), 2)
         self._fault_the_transcript()
         self._assistant(c)                              # the scan raises here
+        self._wait(lambda: len(self._fault_lines()) == 1, "the scan faulted and was logged")
         self._settle()
         self.assertEqual(len(c.writes), 2, "the frame that met the fault is not yet the escape")
         self.assertTrue(s._untaken and s._untaken.get("fault"), "the hold knows")
