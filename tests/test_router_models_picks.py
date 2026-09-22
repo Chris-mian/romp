@@ -22,7 +22,6 @@ off, a stub backend that records what it was asked, no network.
 import io
 import json
 import os
-import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -179,6 +178,12 @@ class Rule(_OnThenOff):
         self.assertTrue(km._pick_vouched("gpt-5-codex", km._UNOWNED))
         self.assertFalse(km._pick_vouched("gpt-5-codex", self.be))
         self.assertFalse(km._pick_vouched("gpt-5-codex", None))
+        # …or a CodexBackend by class: the setter reads the rule now, and tests/test_model_live_midturn.py drives
+        # it with a real CodexBackend of its own, never the kernel's singleton
+
+        class CodexBackend(_Recorder):
+            pass
+        self.assertTrue(km._pick_vouched("gpt-5-codex", CodexBackend()))
         km._set_router_models(True, gt=1700000000002)
         self.assertTrue(km._pick_vouched(REMOVED, self.be), "installed again → vouched again")
 

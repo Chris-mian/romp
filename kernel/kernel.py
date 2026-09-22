@@ -38558,10 +38558,13 @@ def _pick_vouched(value, be):
     still reports its backend, so its menu still offers gpt-…; the typed road's rule since 2026-09-11, kept
     byte-for-byte). The typed /model road was the only reader; the setter, the WS setModel arm and the POST
     /new body took a pick unvouched, so after the extra-models switch was turned on and then off a removed
-    gateway id still landed on all three: registry, pending dots, pick memory (review find, 2026-09-21)."""
+    gateway id still landed on all three: registry, pending dots, pick memory (review find, 2026-09-21).
+    The Codex backend is known by identity (the singleton every route hands out) or by class: the setter is
+    a reader now, and a test drives it with a CodexBackend of its own that is not the singleton."""
     if _vouched_model(value):
         return True
-    return bool(value.startswith("gpt") and be is not None and (be is _UNOWNED or be is _codex()))
+    return bool(value.startswith("gpt") and be is not None
+                and (be is _UNOWNED or be is _codex() or type(be).__name__ == "CodexBackend"))
 
 
 def _model_refusal(value):
