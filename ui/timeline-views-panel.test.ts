@@ -710,11 +710,13 @@ test("executed: the lane picker's /models list re-fetches IN PLACE on the kernel
   } finally {
     (globalThis as any).fetch = realFetch;
   }
-  // both boots dispatch the frame to it — the VS Code glue and the kernel's inline browser twin
+  // both boots dispatch the frame to it — the VS Code glue and the kernel's inline browser twin — and the shim's
+  // wsup frame beside it (a kernel restart, the documented way to change the API gateway's declared extra models;
+  // the restarted kernel sends no models frame for a list that changed while it was down — review find, 2026-09-22)
   const BOOT = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "timeline-boot.ts"), "utf8");
   const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
-  assert.match(BOOT, /if \(m\.type === "models" && panel\.refreshModels\) \{ panel\.refreshModels\(\); return true; \}/);
-  assert.match(KERNEL, /else if\(m\.type==="models"&&panel\.refreshModels\)panel\.refreshModels\(\);/);
+  assert.match(BOOT, /if \(\(m\.type === "models" \|\| m\.type === "wsup"\) && panel\.refreshModels\) \{ panel\.refreshModels\(\); return true; \}/);
+  assert.match(KERNEL, /else if\(\(m\.type==="models"\|\|m\.type==="wsup"\)&&panel\.refreshModels\)panel\.refreshModels\(\);/);
   assert.match(SRC, /^loadModelChoices\(\);$/m, "page load is the first call");
 });
 
