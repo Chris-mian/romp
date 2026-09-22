@@ -712,18 +712,21 @@ class CodexBackend:
                     # bracket is not restored (nothing would end it, and every send would park behind it untimed); it
                     # ends HERE, loudly, as every bracket end does: a noRetry notice, the mark the CLI's wait reads as a
                     # compaction's end, replacing a restored notice, which is older than the restart. compacting False
-                    # is written back below the loop so a second restart does not re-fire it. Residual: the notice,
-                    # like every bracket end's, is cleared by the next accepted turn, and __init__ re-arms every
-                    # queued session at boot, so a message parked at the restart can clear it before the CLI's first
-                    # poll after the kernel returns; the wait stops depending on the notice when the CLI judges a
-                    # durable bracket-end record instead, that record's own change. The notice says what this load
-                    # knows and nothing about the conversation's markers (2026-09-22, the post-merge note on the
-                    # durable bracket): it used to end by claiming that no compaction is marked in the conversation,
-                    # but the clean end appends its compact_boundary to the transcript and then saves the bit to the
-                    # registry row, two writes in one locked section, so a kernel death between them leaves the
-                    # boundary in the transcript with this row still reading compacting, and the wait then exited 1
-                    # quoting a claim the transcript contradicted (_compact_status keeps that order on purpose, and
-                    # says why).
+                    # is written back below the loop so a second restart does not re-fire it. The notice, like every
+                    # bracket end's, is cleared by the next accepted turn, and __init__ re-arms every queued session
+                    # at boot, so a message parked at the restart clears it within milliseconds of this constructor,
+                    # before the CLI's first poll after the kernel returns; so the end is also RECORDED below the loop
+                    # (compact_ends 1, compact_last loud with these words, the record compact_end() publishes), which
+                    # no delivery erases and which `romp compact --wait` judges as the restart's end (2026-09-22, the
+                    # docs lane that followed the post-merge note on #1998: the load wrote the notice and no record,
+                    # so on a restart the wait printed done over the cleared notice, or from a zero baseline ran to
+                    # its never-recorded line). The notice says what this load knows and nothing about the
+                    # conversation's markers (2026-09-22, the post-merge note on the durable bracket): it used to end by
+                    # claiming that no compaction is marked in the conversation, but the clean end appends its
+                    # compact_boundary to the transcript and then saves the bit to the registry row, two writes in one
+                    # locked section, so a kernel death between them leaves the boundary in the transcript with this
+                    # row still reading compacting, and the wait then exited 1 quoting a claim the transcript
+                    # contradicted (_compact_status keeps that order on purpose, and says why).
                     s.launch_error = {"text": ("romp restarted while this conversation was compacting; whether "
                                                "Codex compacted it is unknown"),
                                       "at": time.time(), "limit": False, "noRetry": True}
@@ -732,6 +735,11 @@ class CodexBackend:
         for s in restart_ended:
             with s.lock:
                 text = s.launch_error["text"]
+                # the restart end is an end of THIS kernel's record too (2026-09-22): the fresh session's bit is already
+                # down, so _end_compact_locked only advances the count to one and records the notice's words as a loud
+                # end, the record the wait judges once a parked message has cleared the notice; it writes nothing, so
+                # the row's bit and notice still land in the one save below, and the end is logged once
+                self._end_compact_locked(s, "loud", text)
                 self._save_compacting_locked(s, "launchError")
             self.log("compaction of %s ended: %s" % (s.name, text))
 
@@ -1504,10 +1512,13 @@ class CodexBackend:
         drains at the loud end's poke and its accepted turn/start clears the field within milliseconds, before a wait
         polling every two seconds reads again, so the row read quiet with no notice, a clean end's shape, and the
         wait printed done over an uncompacted thread (the post-merge review of the wait). In memory: the bracket's bit
-        is in the registry row too (_save_compacting_locked), and a row still reading compacting at load is ended with a
-        noRetry notice and no record (_load_registry: this kernel had no bracket to end), so a kernel restart starts
-        the count over, the wait treats a count below its baseline as that, and reads the restart's end through the
-        notice."""
+        is in the registry row too (_save_compacting_locked), so a kernel restart starts the count over, and a row still
+        reading compacting at load is ended as a loud end this kernel RECORDS (_load_registry, 2026-09-22: the count at
+        one, the restart notice's words, a stamp) beside its noRetry notice, so the wait reads the restart's end from
+        the record by its identity, the count with this end's stamp, from every baseline (a count below the baseline,
+        or the restart's count of one under a new stamp against a baseline of one), not from a notice the message
+        parked at the restart clears within milliseconds of the boot (before this, the load wrote the notice and no
+        record)."""
         s = self._session(sid)
         if not s:
             return None
@@ -2035,10 +2046,14 @@ class CodexBackend:
         accepted turn, whose words say its end was never seen (no divider was written, whether the compaction ran or
         not; the pump's and the worker's queues have no order between them, so "never started" is not knowable). A kind for
         EVERY end, because `romp compact --wait` judges the record: an end with none would read as neither done
-        nor failed, and the wait would run to its timeout. The record is in memory, unlike the row's bit: the end
-        _load_registry gives a row still reading compacting (a compaction the previous kernel never saw end) comes
-        through no bracket of this kernel's, so it writes its notice and no record, and the count starts over at zero;
-        the wait reads that end through the notice, and a count below its baseline as the restart."""
+        nor failed, and the wait would run to its timeout. The record is in memory, unlike the row's bit, so a kernel
+        restart starts the count over; the end _load_registry gives a row still reading compacting (a compaction the
+        previous kernel never saw end) comes through here too (2026-09-22): the fresh session's bit is already down, so
+        the call advances the count to one and records the restart notice's words as a loud end, which the wait reads
+        as the restart's end by the record's identity, its count with this end's stamp, from every baseline (a count
+        below the baseline, or the same count under a new stamp: the restart's record starts at one, so its count alone
+        matches a baseline of one). Before that, the load wrote its notice and no record, and a message parked at the
+        restart cleared the notice within milliseconds of the boot's re-arm."""
         s.compacting = False
         s.compact_active_seen = False
         s.compact_ends += 1

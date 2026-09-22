@@ -1847,8 +1847,9 @@ if [[ "${1:-}" == "compact" ]]; then
     # One /sessions read for the session named, as tab-separated fields: its state ("compacting" or "quiet"); its
     # launch error as "<at><TAB><text><TAB><mark>" (all empty when none; the mark is "end" when the kernel flags the
     # notice as a compaction's end, its noRetry, else empty); then the backend's compaction end record as
-    # "<ends><TAB><kind><TAB><words>" (the row's compactEnd: the bracket-end counter, the last end's kind and its
-    # words; all empty on a row that carries none, a Claude session or a kernel from before the record). One word
+    # "<ends><TAB><at><TAB><kind><TAB><words>" (the row's compactEnd: the bracket-end counter, the last end's stamp,
+    # its kind and its words; all empty on a row that carries none, a Claude session or a kernel from before the
+    # record; the stamp since 2026-09-22, the record's identity beside the count). One word
     # instead: "gone" when no row wears the name; "unknown" when the kernel did not answer or the body did not parse
     # (a transient kernel blip is not "session gone"). A compaction that ends loudly drops the compacting bit exactly
     # as a clean end does and leaves the backend's notice on the row's launchError (2026-09-21), so the bit alone
@@ -1873,27 +1874,30 @@ else:
             print("\t".join(["compacting" if r.get("compacting") else "quiet", str(le.get("at") or ""),
                              " ".join(str(le.get("text") or "").split()),
                              "end" if le.get("noRetry") else "",
-                             str(int(ce.get("ends") or 0)) if ce else "", str(ce.get("kind") or "") if ce else "",
+                             str(int(ce.get("ends") or 0)) if ce else "", str(ce.get("at") or "") if ce else "",
+                             str(ce.get("kind") or "") if ce else "",
                              " ".join(str(ce.get("text") or "").split()) if ce else ""])); break
     else: print("gone")' "$rows" "$_c_who" 2>/dev/null || echo unknown
     }
     # The fields of one _c_read_info line: _c_state; _c_notice as "<at><TAB><text>" (the notice's identity, not its
-    # words alone) and _c_end (its mark); _c_ends, _c_kind and _c_endtext (the record). A one-word line sets the state
-    # only. Positional, since a read with tabs as the separator folds an empty field away.
+    # words alone) and _c_end (its mark); _c_ends, _c_endat, _c_kind and _c_endtext (the record; its identity is the
+    # count with the stamp, 2026-09-22). A one-word line sets the state only. Positional, since a read with tabs as
+    # the separator folds an empty field away.
     _c_parse_info() {
         local rest
-        _c_state="${1%%$'\t'*}"; _c_notice=""; _c_end=""; _c_ends=""; _c_kind=""; _c_endtext=""
+        _c_state="${1%%$'\t'*}"; _c_notice=""; _c_end=""; _c_ends=""; _c_endat=""; _c_kind=""; _c_endtext=""
         [[ "$1" == *$'\t'* ]] || return 0
         rest="${1#*$'\t'}"
         _c_notice="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
         _c_notice="$_c_notice"$'\t'"${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
         _c_end="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
         _c_ends="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
+        _c_endat="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
         _c_kind="${rest%%$'\t'*}"; _c_endtext="${rest#*$'\t'}"
     }
-    _c_base=""; _c_base_ends=""; _c_base_unknown=""
+    _c_base=""; _c_base_ends=""; _c_base_endat=""; _c_base_unknown=""
     if [[ -n "$_c_wait" ]]; then
-        # the baseline: what stood on the row BEFORE this request, the notice and the end record's count, so a
+        # the baseline: what stood on the row BEFORE this request, the notice and the end record's count and stamp, so a
         # compaction that ends loudly before the first poll is read as this wait's and not as a standing one (a
         # baseline taken from the first poll after the request read such an end as standing and waited out the
         # timeout; 2026-09-21). Read up to three times: a read
@@ -1907,7 +1911,7 @@ else:
             sleep 1
         done
         if [[ "$_c_info" == "unknown" ]]; then _c_base_unknown=1
-        else _c_parse_info "$_c_info"; _c_base="$_c_notice"; _c_base_ends="$_c_ends"; fi
+        else _c_parse_info "$_c_info"; _c_base="$_c_notice"; _c_base_ends="$_c_ends"; _c_base_endat="$_c_endat"; fi
     fi
     _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$_c_who")"
     _resp="$(_romp_token_cfg | curl -sf -m 10 --config - -X POST "http://127.0.0.1:$_kport/compact"                   -H 'Content-Type: application/json' -d "$_payload")"         || { echo "romp compact: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
@@ -1956,29 +1960,57 @@ else:
             # the timeout below, never attributed. Behind an open turn the bit reads not compacting for the whole
             # turn, so this sample lands mid-turn and the turn's own end notice (a rejection, a failure) can still
             # land after it: the judgment below reads only notices marked a compaction's end (review, 2026-09-21).
-            # The end record's count is baselined from the same sample (2026-09-21)
-            _c_armed=1; _c_base="$_c_notice"; _c_base_ends="$_c_ends"
+            # The end record, its count and its last end's stamp, is baselined from the same sample (2026-09-21)
+            _c_armed=1; _c_base="$_c_notice"; _c_base_ends="$_c_ends"; _c_base_endat="$_c_endat"
         fi
         # The end record, judged first when the row carries it and the baseline did (the post-merge review, 2026-09-21):
-        # the count advanced past the baseline (the read before the request; the arming sample for a queued compaction)
+        # a record that is not the baseline's (the read before the request; the arming sample for a queued compaction)
         # says a compaction ended since, and the last end's kind says how: clean is done, anything else is exit 1 with
         # the end's words. It is judged instead of the notice because the next accepted turn clears the notice, and a
         # message parked behind the compaction drains at the loud end's poke, so the notice was gone within
         # milliseconds, before this poll, which read quiet with nothing on the row and printed done over an uncompacted
         # thread; nothing erases the record. The notice and the bit below judge a row without the record (a Claude
-        # session, a kernel from before it). A count BELOW the baseline is the kernel having restarted since (the record
-        # lives in memory; the bracket's bit is in the session's registry row, and the restarted kernel ends a
-        # compaction it finds still running there with a notice, which the notice judgment below reads): a transient
-        # blip this wait tolerates, so from that sample on the row is judged as one without the record, neither failed
-        # for the blip nor held to a count it can no longer reach. From a baseline of zero the wait cannot tell by the
-        # count: a restarted kernel serves zero again, the same as the baseline, so the count never moves; the
-        # restart's notice exits 1 below while it stands, and a row read quiet with no notice is reported by the
-        # timeout (its third line below).
-        _c_rec=""
-        if [[ -n "$_c_armed" && -n "$_c_ends" && -n "$_c_base_ends" ]]; then
-            if (( _c_ends < _c_base_ends )); then _c_base_ends=""; else _c_rec=1; fi
+        # session, a kernel from before it). The record's identity is its count WITH its last end's stamp, the way the
+        # notice below is told by its stamp (2026-09-22): every end advances the count and takes a fresh stamp, so a
+        # count past the baseline is an end since it, and so is the same count under another stamp. That second
+        # shape is the kernel having restarted since (the record lives in memory, so it started over; the bracket's
+        # bit is in the session's registry row, and the restarted kernel ends a compaction it finds still running
+        # there as a loud end it RECORDS, the count at one with the restart notice's words, beside a notice saying the
+        # same): the restart's record always starts at one, so the count alone read it only below a baseline above
+        # one or above a baseline of zero, and from a baseline of exactly one (a session compacted once before) it
+        # read the baseline's own record, no branch fired, and the wait ran to the timeout's never-recorded line over
+        # an end the load had recorded (found in review, 2026-09-22). Judged by identity, the restart's loud end exits
+        # 1 with its words from every baseline (the notice read nothing here, since the message parked at the restart
+        # clears it within milliseconds of the boot, and the bit alone printed done over an unknown outcome). A count
+        # back AT zero is a restart that found no compaction running (ours ended and saved its bit before the death; a
+        # loud end saves its notice in the same write, which the notice judgment below reads while it stands: a death
+        # between that save and the parked message's ACK loses the record with the kernel and the boot's delivery
+        # clears the notice, a residual that persisting the record beside the bit in the registry row would close), a
+        # transient blip this wait tolerates, so from that sample on the row is judged as one without the record,
+        # neither failed for the blip nor held to a count it can no longer reach; the baseline is marked unjudged, a
+        # word and not the empty string, so that road never mixes with the next one. A row baselined WITHOUT the
+        # record (a live kernel from before it, the ordinary shape on a checkout pulled ahead of its refresh) that
+        # carries one on a later sample has been served by a newer kernel since, one that replaced the old mid-wait
+        # (found in review, 2026-09-22: guarded on a baselined record, this block skipped such a sample, so the
+        # restart's recorded loud end fell through to the bit, seen and then fallen, which printed done over the
+        # cleared notice; the load records an end only for a row whose bit the old kernel had saved, so the road is
+        # narrow, and the done was wrong all the same). It is judged from a baseline of no end, the count zero with no
+        # stamp: a count above zero is an end since, by its kind (the restart's loud end exits 1 with its words), while
+        # a count of zero keeps the judgment the baseline row had, the bit and the notice, since the kernel that ran
+        # the compaction kept no record for a bit that fell with the count unmoved to be held against. A row read
+        # quiet with no notice and the record unchanged is reported by the timeout (its third line below).
+        _c_rec=""; _c_new=""
+        if [[ -n "$_c_armed" && -n "$_c_ends" ]]; then
+            if [[ "$_c_base_ends" == "unjudged" ]]; then :
+            elif [[ -z "$_c_base_ends" ]]; then
+                if (( _c_ends > 0 )); then _c_rec=1; _c_new=1; fi
+            elif (( _c_ends == 0 && _c_base_ends > 0 )); then _c_base_ends="unjudged"; _c_base_endat=""
+            else
+                _c_rec=1
+                [[ "$_c_ends" == "$_c_base_ends" && "$_c_endat" == "$_c_base_endat" ]] || _c_new=1
+            fi
         fi
-        if [[ -n "$_c_rec" ]] && (( _c_ends > _c_base_ends )); then
+        if [[ -n "$_c_new" ]]; then
             if [[ "$_c_kind" == "clean" ]]; then
                 echo "romp compact: done — $_c_who compacted ($(( $(date +%s) - _c_start ))s)"
                 exit 0
@@ -2013,11 +2045,18 @@ else:
         fi
         if (( $(date +%s) - _c_start >= _c_to )); then
             if [[ -n "$_c_seen" && "$_c_state" == "quiet" && -n "$_c_rec" ]]; then
-                # compacting was seen, the last sample read quiet, and the row carries a record whose count did not move:
-                # every end advances the count, so the end was never recorded; a kernel restart mid-compaction from a
-                # baseline of zero has exactly this shape (the restarted kernel serves zero again), and the wait cannot
-                # tell it from the baseline (2026-09-21)
-                echo "romp compact: the compaction's end was never recorded (a kernel restart mid-compaction can do this); check the session" >&2
+                # compacting was seen, the last sample read quiet, and the row's record is still the baselined one (the
+                # same count under the same stamp): every end advances the count and takes a fresh stamp, so the serving
+                # kernel holds no end since the baseline. A kernel restart mid-compaction from a baseline of zero had
+                # exactly this shape (the restarted kernel served zero again, 2026-09-21) until the load recorded that
+                # end (2026-09-22), which the record's identity above reads from every baseline. On a kernel that
+                # records it, what still reaches this line is a record lost with the kernel: the compaction ended
+                # cleanly and saved its bit, the kernel died before the next poll, and the restarted one, finding no
+                # compaction running, serves zero again, equal to a zero baseline, over an end that was recorded and
+                # complete; or a kernel from before that change. The line names both (found in review, 2026-09-22: it
+                # blamed a restart mid-compaction, the one cause a kernel that records the restart's end no longer
+                # leaves here)
+                echo "romp compact: the compaction's end was never recorded, or its record was lost to a kernel restart right after it; check the session" >&2
             elif [[ -n "$_c_seen" ]]; then
                 echo "romp compact: still compacting after ${_c_to}s — check the session" >&2
             else
