@@ -87,7 +87,7 @@ EOF
     _romp_cmd "romp card -t <title> [-m <text>] [-k <key>] [-s <session> | --no-session] [-b <board>] [-c <category>]" - "Post a NOTICE CARD to the feed (no judge): with no session (none named outside one, or --no-session inside one) it shows at the TOP under Notes; -k names the card (a second post under it revises it; absent, a key is minted and printed); romp card \"title\" \"text\" is the shorthand; --body-file, --attach <path>, --needs-you, --expires <s>, --producer; the card moves only on your dismissal, a new revision or its expiry; a home shows at most fifty live cards, the oldest superseded past that"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> [--tag <label>] <text>" - "Hand a session a message; scripts/cron SHOULD pass --tag so it renders machine-sent, not as your typed words"
-    _romp_cmd "romp compact <session> [--wait]" -       "Compact a session's context in place (Claude's /compact; on a Codex session, Codex's own compaction, no summary text), queued safely if a turn is open; --wait blocks until it finishes (--timeout <s>, default 600) and exits 1 with the notice when a Codex compaction ended loudly instead (a notice new since the read before the request; for a queued compaction, new since the first sample after the request that reads not compacting); a failed Claude /compact leaves no notice on the row, so it reads as a clean end, never as a failure"
+    _romp_cmd "romp compact <session> [--wait]" -       "Compact a session's context in place (Claude's /compact; on a Codex session, Codex's own compaction, no summary text), queued safely if a turn is open; --wait blocks until it finishes (--timeout <s>, default 600) and exits 1 with the end's words when a Codex compaction ended loudly instead (the wait reads the compaction's end record on the session row: an end new since the read before the request; for a queued compaction, new since the first sample after the request that reads not compacting); a failed Claude /compact leaves no notice on the row, so it reads as a clean end, never as a failure"
     _romp_cmd "romp interrupt <session>"   -            "Interrupt a session's current turn"
     _romp_cmd "romp end <session>"         -            "End a session"
     _romp_cmd "romp checkin <host>"        -            "Publish this machine to an attached hub (romp checkout withdraws)"
@@ -1844,12 +1844,18 @@ if [[ "${1:-}" == "compact" ]]; then
         esac
     done
     _kport="${ROMP_KERNEL_PORT:-29855}"
-    # One /sessions read for the session named: its state ("compacting" or "quiet"), then its launch error as
-    # "<at><TAB><text><TAB><mark>" (all empty when none; the mark is "end" when the kernel flags the notice as a
-    # compaction's end, its noRetry, else empty); "gone" when no row wears the name; "unknown" when the kernel did
-    # not answer or the body did not parse (a transient kernel blip is not "session gone"). A compaction that ends
-    # loudly drops the compacting bit exactly as a clean end does and leaves the backend's notice on the row's
-    # launchError (2026-09-21), so the bit alone read "done" over an uncompacted thread.
+    # One /sessions read for the session named, as tab-separated fields: its state ("compacting" or "quiet"); its
+    # launch error as "<at><TAB><text><TAB><mark>" (all empty when none; the mark is "end" when the kernel flags the
+    # notice as a compaction's end, its noRetry, else empty); then the backend's compaction end record as
+    # "<ends><TAB><kind><TAB><words>" (the row's compactEnd: the bracket-end counter, the last end's kind and its
+    # words; all empty on a row that carries none, a Claude session or a kernel from before the record). One word
+    # instead: "gone" when no row wears the name; "unknown" when the kernel did not answer or the body did not parse
+    # (a transient kernel blip is not "session gone"). A compaction that ends loudly drops the compacting bit exactly
+    # as a clean end does and leaves the backend's notice on the row's launchError (2026-09-21), so the bit alone
+    # read "done" over an uncompacted thread; and the next accepted turn clears that notice, which a message parked
+    # behind the compaction brings within milliseconds of the loud end, before the next poll, so the notice alone
+    # read "done" over the same thread (the post-merge review, 2026-09-21): the record, which no turn erases, is
+    # what the wait judges when the row carries it.
     _c_read_info() {
         local rows
         rows="$(_romp_token_cfg | curl -sf -m 5 --config - "http://127.0.0.1:$_kport/sessions")" || rows=""
@@ -1863,16 +1869,34 @@ else:
     for r in rows:
         if r.get("name") == who or r.get("id") == who:
             le = r.get("launchError") if isinstance(r.get("launchError"), dict) else {}
+            ce = r.get("compactEnd") if isinstance(r.get("compactEnd"), dict) else None
             print("\t".join(["compacting" if r.get("compacting") else "quiet", str(le.get("at") or ""),
                              " ".join(str(le.get("text") or "").split()),
-                             "end" if le.get("noRetry") else ""])); break
+                             "end" if le.get("noRetry") else "",
+                             str(int(ce.get("ends") or 0)) if ce else "", str(ce.get("kind") or "") if ce else "",
+                             " ".join(str(ce.get("text") or "").split()) if ce else ""])); break
     else: print("gone")' "$rows" "$_c_who" 2>/dev/null || echo unknown
     }
-    _c_base=""; _c_base_unknown=""
+    # The fields of one _c_read_info line: _c_state; _c_notice as "<at><TAB><text>" (the notice's identity, not its
+    # words alone) and _c_end (its mark); _c_ends, _c_kind and _c_endtext (the record). A one-word line sets the state
+    # only. Positional, since a read with tabs as the separator folds an empty field away.
+    _c_parse_info() {
+        local rest
+        _c_state="${1%%$'\t'*}"; _c_notice=""; _c_end=""; _c_ends=""; _c_kind=""; _c_endtext=""
+        [[ "$1" == *$'\t'* ]] || return 0
+        rest="${1#*$'\t'}"
+        _c_notice="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
+        _c_notice="$_c_notice"$'\t'"${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
+        _c_end="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
+        _c_ends="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
+        _c_kind="${rest%%$'\t'*}"; _c_endtext="${rest#*$'\t'}"
+    }
+    _c_base=""; _c_base_ends=""; _c_base_unknown=""
     if [[ -n "$_c_wait" ]]; then
-        # the baseline notice: what stood on the row BEFORE this request, so a compaction that ends loudly before the
-        # first poll is read as this wait's and not as a standing one (a baseline taken from the first poll after the
-        # request read such an end as standing and waited out the timeout; 2026-09-21). Read up to three times: a read
+        # the baseline: what stood on the row BEFORE this request, the notice and the end record's count, so a
+        # compaction that ends loudly before the first poll is read as this wait's and not as a standing one (a
+        # baseline taken from the first poll after the request read such an end as standing and waited out the
+        # timeout; 2026-09-21). Read up to three times: a read
         # that fails (a kernel blip, a body that did not parse) is not an empty baseline, or a standing notice would
         # read as new and a clean compaction exit 1; still unknown after that, the wait is refused below, after the
         # request, since a compaction queued behind a turn takes its baseline from the arming sample instead.
@@ -1883,7 +1907,7 @@ else:
             sleep 1
         done
         if [[ "$_c_info" == "unknown" ]]; then _c_base_unknown=1
-        elif [[ "$_c_info" == *$'\t'* ]]; then _c_base="${_c_info#*$'\t'}"; _c_base="${_c_base%$'\t'*}"; fi
+        else _c_parse_info "$_c_info"; _c_base="$_c_notice"; _c_base_ends="$_c_ends"; fi
     fi
     _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$_c_who")"
     _resp="$(_romp_token_cfg | curl -sf -m 10 --config - -X POST "http://127.0.0.1:$_kport/compact"                   -H 'Content-Type: application/json' -d "$_payload")"         || { echo "romp compact: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
@@ -1922,12 +1946,7 @@ else:
     [[ -n "$_c_queued" ]] || _c_armed=1
     while :; do
         _c_info="$(_c_read_info)"
-        _c_state="${_c_info%%$'\t'*}"; _c_notice=""; _c_end=""
-        if [[ "$_c_info" == *$'\t'* ]]; then
-            _c_notice="${_c_info#*$'\t'}"            # "<at><TAB><text><TAB><mark>"
-            _c_end="${_c_notice##*$'\t'}"            # "end" when the kernel marks the notice a compaction's end
-            _c_notice="${_c_notice%$'\t'*}"          # "<at><TAB><text>": the notice's identity, not its words alone
-        fi
+        _c_parse_info "$_c_info"
         if [[ "$_c_state" == "quiet" && -z "$_c_armed" ]]; then
             # a QUEUED compaction arms on the first sample that reads not compacting, and takes its baseline from that
             # sample, not from the read before the request: ours cannot have fired before the session went quiet, so a
@@ -1936,8 +1955,36 @@ else:
             # compaction of ours that fired and failed before this sample is baselined away with it and reported by
             # the timeout below, never attributed. Behind an open turn the bit reads not compacting for the whole
             # turn, so this sample lands mid-turn and the turn's own end notice (a rejection, a failure) can still
-            # land after it: the judgment below reads only notices marked a compaction's end (review, 2026-09-21)
-            _c_armed=1; _c_base="$_c_notice"
+            # land after it: the judgment below reads only notices marked a compaction's end (review, 2026-09-21).
+            # The end record's count is baselined from the same sample (2026-09-21)
+            _c_armed=1; _c_base="$_c_notice"; _c_base_ends="$_c_ends"
+        fi
+        # The end record, judged first when the row carries it and the baseline did (the post-merge review, 2026-09-21):
+        # the count advanced past the baseline (the read before the request; the arming sample for a queued compaction)
+        # says a compaction ended since, and the last end's kind says how: clean is done, anything else is exit 1 with
+        # the end's words. It is judged instead of the notice because the next accepted turn clears the notice, and a
+        # message parked behind the compaction drains at the loud end's poke, so the notice was gone within
+        # milliseconds, before this poll, which read quiet with nothing on the row and printed done over an uncompacted
+        # thread; nothing erases the record. The notice and the bit below judge a row without the record (a Claude
+        # session, a kernel from before it). A count BELOW the baseline is the kernel having restarted since (the record
+        # lives in memory; the bracket's bit is in the session's registry row, and the restarted kernel ends a
+        # compaction it finds still running there with a notice, which the notice judgment below reads): a transient
+        # blip this wait tolerates, so from that sample on the row is judged as one without the record, neither failed
+        # for the blip nor held to a count it can no longer reach. From a baseline of zero the wait cannot tell by the
+        # count: a restarted kernel serves zero again, the same as the baseline, so the count never moves; the
+        # restart's notice exits 1 below while it stands, and a row read quiet with no notice is reported by the
+        # timeout (its third line below).
+        _c_rec=""
+        if [[ -n "$_c_armed" && -n "$_c_ends" && -n "$_c_base_ends" ]]; then
+            if (( _c_ends < _c_base_ends )); then _c_base_ends=""; else _c_rec=1; fi
+        fi
+        if [[ -n "$_c_rec" ]] && (( _c_ends > _c_base_ends )); then
+            if [[ "$_c_kind" == "clean" ]]; then
+                echo "romp compact: done — $_c_who compacted ($(( $(date +%s) - _c_start ))s)"
+                exit 0
+            fi
+            echo "romp compact: $_c_who did not compact: ${_c_endtext:-its compaction ended without compacting (the end was recorded as ${_c_kind:-unknown}, with no words)}" >&2
+            exit 1
         fi
         if [[ -n "$_c_armed" && ( "$_c_state" == "quiet" || "$_c_state" == "compacting" ) \
               && -n "${_c_notice#*$'\t'}" && "$_c_notice" != "$_c_base" && -n "$_c_end" ]]; then
@@ -1955,7 +2002,9 @@ else:
         fi
         if [[ "$_c_state" == "compacting" && -n "$_c_armed" ]]; then
             _c_seen=1
-        elif [[ "$_c_state" == "quiet" && -n "$_c_seen" ]]; then
+        elif [[ "$_c_state" == "quiet" && -n "$_c_seen" && -z "$_c_rec" ]]; then
+            # done on the bit alone only for a row without the record: with one, every end advances the count, so a
+            # bit that fell with the count unmoved is an end the kernel has not recorded, not a compaction (2026-09-21)
             echo "romp compact: done — $_c_who compacted ($(( $(date +%s) - _c_start ))s)"
             exit 0
         elif [[ "$_c_state" == "gone" ]]; then
@@ -1963,7 +2012,13 @@ else:
             exit 1
         fi
         if (( $(date +%s) - _c_start >= _c_to )); then
-            if [[ -n "$_c_seen" ]]; then
+            if [[ -n "$_c_seen" && "$_c_state" == "quiet" && -n "$_c_rec" ]]; then
+                # compacting was seen, the last sample read quiet, and the row carries a record whose count did not move:
+                # every end advances the count, so the end was never recorded; a kernel restart mid-compaction from a
+                # baseline of zero has exactly this shape (the restarted kernel serves zero again), and the wait cannot
+                # tell it from the baseline (2026-09-21)
+                echo "romp compact: the compaction's end was never recorded (a kernel restart mid-compaction can do this); check the session" >&2
+            elif [[ -n "$_c_seen" ]]; then
                 echo "romp compact: still compacting after ${_c_to}s — check the session" >&2
             else
                 echo "romp compact: didn't see the compaction start within ${_c_to}s — it may be queued behind a long turn (a kernel watch on the /sessions compacting field can keep an eye on it)" >&2

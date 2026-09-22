@@ -4211,6 +4211,12 @@ class NativeCompact(unittest.TestCase):
             self.assertFalse(s.compacting)
             self.assertEqual(s.compact_ends, 1, "kill is an end of the bracket: the counter advances")
         self.assertIsNone(be.compacting(sid), "ended: no signal")
+        self.assertIsNone(be.compact_end(sid), "a dead row publishes no record, as it publishes no bracket")
+        self.assertTrue(be.resume("web", sid))
+        rec = be.compact_end(sid)
+        self.assertEqual((rec["ends"], rec["kind"]), (1, "loud"), "revived, the row carries the kill as a loud end")
+        self.assertIn("ended while it was compacting", rec["text"])
+        self.assertIn("no outcome", rec["text"])
         n0 = s.compact_idles
         _status(fake, "T-1", "active")
         _status(fake, "T-1", "idle")
@@ -4388,6 +4394,219 @@ class NativeCompact(unittest.TestCase):
                              "the loud end advanced the end counter; no idle was ever seen for the thread")
         self.assertIsNone(be.launch_error(sid), "the accepted turn cleared the failed compaction's notice")
 
+    def test_the_end_record_outlives_the_accepted_turn_that_erases_the_notice(self):
+        # The race the post-merge review of `romp compact --wait` named (2026-09-21): a message is parked on the bracket,
+        # the compaction fails (systemError), and the loud end's poke drains the parked message, whose accepted turn/start
+        # sets launch_error None within milliseconds, before the wait's next poll. The row then reads quiet with no
+        # notice, a clean end's shape, and the wait printed done over an uncompacted thread. The bracket-end record
+        # (compact_end: the counter every end advances, with the last end's kind, words and stamp) is what the accepted
+        # turn does not erase, so the wait judges it instead. Red at the base: the backend has no record.
+        be, fake, tmp, sid = self._turned()
+        self.assertEqual(be.compact_end(sid), {"ends": 0, "kind": "", "text": "", "at": None},
+                         "before any end the record stands empty, never absent: a Codex row always carries one")
+        self.assertEqual(be.compact(sid), "")
+        _status(fake, "T-1", "active")
+        self.assertTrue(until(lambda: self._active_seen(be, sid)))
+        self.assertTrue(be.send(sid, "parked behind the compaction"))
+        self.assertEqual(be.pending_queued(sid), ["parked behind the compaction"])
+        self.assertEqual(be.compact_end(sid)["ends"], 0, "no end yet: the bracket stands")
+        _status(fake, "T-1", "systemError")
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)),
+                        "the loud end drained the parked message: its turn was accepted")
+        self.assertIsNone(be.launch_error(sid), "the accepted turn erased the notice: the row's launchError says nothing")
+        self.assertIs(be.compacting(sid), False)
+        rec = be.compact_end(sid)
+        self.assertEqual((rec["ends"], rec["kind"]), (1, "loud"), "the record says one end, loud")
+        self.assertIn("could not compact", rec["text"])
+        self.assertIn("systemError", rec["text"])
+        self.assertIsInstance(rec["at"], float)
+        self.assertEqual(_boundaries(_records(tmp)), [], "no divider: the thread was not compacted")
+        self.assertEqual(be.live_sessions()[sid]["state"], "waiting")
+
+    def test_a_clean_end_is_recorded_clean_and_the_record_stands_through_the_parked_turn(self):
+        # the same shape with the compaction completing: the record says clean with no words, the parked message's
+        # accepted turn leaves it standing, and a later loud end replaces the last end while the count advances
+        be, fake, tmp, sid = self._turned()
+        self.assertEqual(be.compact(sid), "")
+        _status(fake, "T-1", "active")
+        self.assertTrue(until(lambda: self._active_seen(be, sid)))
+        self.assertTrue(be.send(sid, "parked behind the compaction"))
+        _status(fake, "T-1", "idle")
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+        rec = be.compact_end(sid)
+        self.assertEqual((rec["ends"], rec["kind"], rec["text"]), (1, "clean", ""), "a compaction Codex completed")
+        self.assertIsInstance(rec["at"], float)
+        self.assertEqual(len(_boundaries(_records(tmp))), 1)
+        self.assertEqual(be.compact(sid), "")
+        _status(fake, "T-1", "active")
+        self.assertTrue(until(lambda: self._active_seen(be, sid)))
+        _status(fake, "T-1", "notLoaded")
+        self.assertTrue(until(lambda: be.compact_end(sid)["ends"] == 2))
+        rec2 = be.compact_end(sid)
+        self.assertEqual(rec2["kind"], "loud", "the LAST end's kind")
+        self.assertIn("notLoaded", rec2["text"])
+        self.assertGreaterEqual(rec2["at"], rec["at"])
+        self.assertEqual(len(_boundaries(_records(tmp))), 1, "no divider for the loud end")
+
+    def test_every_other_end_is_recorded_with_a_kind_and_the_accepted_turn_end_names_its_face(self):
+        # a kind for EVERY end (the post-merge review, 2026-09-21): an end with none would read as neither done nor
+        # failed to the wait. The accepted-turn end, on both its faces, the raising request, the client's death and the
+        # clean end with no normalizer to write its divider, each asserted on the record.
+        # (a) the accepted turn with no active seen (the log says "started nothing"; the record says the end was never
+        #     seen, since the compaction may have run with its statuses unread: the two queues have no order)
+        be, fake, tmp, sid = self._turned()
+        self.assertEqual(be.compact(sid), "")
+        self.assertTrue(be.send(sid, "probe"))
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)))
+        rec = be.compact_end(sid)
+        self.assertEqual((rec["ends"], rec["kind"]), (1, "loud"), "no divider was written: the wait must not print done")
+        self.assertIn("end was never seen", rec["text"])
+        self.assertIn("no divider was written", rec["text"])
+        self.assertNotIn("before the compaction started", rec["text"], "an order romp cannot know is not claimed")
+        self.assertIsNone(be.launch_error(sid), "no card for this end, as before: the record is not a notice")
+        # (b) the accepted turn while the active status landed during the request: "finished server-side", its end unseen
+        class ActiveDuringStart(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.arm = None                       # (be, sid): push the active status inside turn_start and wait for the pump
+            def turn_start(self, tid, input_items, params=None):
+                if self.arm:
+                    be2, sid2 = self.arm
+                    _status(self, tid, "active")
+                    until(lambda: be2._session(sid2).compact_active_seen)
+                return super().turn_start(tid, input_items, params)
+        fake2 = ActiveDuringStart()
+        be2, _, tmp2 = build(factory=lambda: fake2)
+        sid2 = be2.spawn("api", "/TESTDIR-active")
+        self.assertTrue(be2.send(sid2, "first synthetic turn"))
+        self.assertTrue(_lock_free(be2, sid2))
+        self.assertEqual(be2.compact(sid2), "")
+        fake2.arm = (be2, sid2)
+        self.assertTrue(be2.send(sid2, "into the request window"))
+        self.assertTrue(until(lambda: not be2.busy(sid2) and not be2.pending_queued(sid2)))
+        rec = be2.compact_end(sid2)
+        self.assertEqual((rec["ends"], rec["kind"]), (1, "loud"))
+        self.assertIn("end was never seen", rec["text"])
+        self.assertIn("no divider", rec["text"])
+        self.assertEqual(_boundaries(_records(tmp2, cwd="/TESTDIR-active", tid="T-1")), [])
+        # (c) a raising thread/compact/start: the words the caller shows are the record's
+        class Raising(FakeClient):
+            def thread_compact(self, tid):
+                self._rec("thread_compact", tid)
+                raise RuntimeError("synthetic compact failure")
+        fake3 = Raising()
+        be3, _, tmp3 = build(factory=lambda: fake3)
+        sid3 = be3.spawn("web", "/TESTDIR")
+        self.assertTrue(be3.send(sid3, "first synthetic turn"))
+        self.assertTrue(_lock_free(be3, sid3))
+        why = be3.compact(sid3)
+        self.assertIn("synthetic compact failure", why)
+        rec = be3.compact_end(sid3)
+        self.assertEqual((rec["ends"], rec["kind"], rec["text"]), (1, "loud", why))
+        # (d) the client's death: the notice's words are the record's
+        be4, fake4, tmp4, sid4 = self._turned()
+        self.assertEqual(be4.compact(sid4), "")
+        _status(fake4, "T-1", "active")
+        self.assertTrue(until(lambda: self._active_seen(be4, sid4)))
+        fake4.close()
+        self.assertTrue(until(lambda: be4.compacting(sid4) is False))
+        rec = be4.compact_end(sid4)
+        self.assertEqual((rec["ends"], rec["kind"]), (1, "loud"))
+        self.assertEqual(rec["text"], be4.launch_error(sid4)["text"])
+        self.assertIn("app-server ended", rec["text"])
+        # (e) the clean end with no normalizer to write its divider: the thread was compacted, so clean
+        be5, fake5, tmp5, sid5 = self._turned()
+        self.assertEqual(be5.compact(sid5), "")
+        s5 = be5._session(sid5)
+        with s5.norm_lock:
+            s5.norm = None                            # a normalizer the process lost after the latch: the writer meets None
+        _status(fake5, "T-1", "active")
+        self.assertTrue(until(lambda: self._active_seen(be5, sid5)))
+        _status(fake5, "T-1", "idle")
+        self.assertTrue(until(lambda: be5.compacting(sid5) is False))
+        rec = be5.compact_end(sid5)
+        self.assertEqual((rec["ends"], rec["kind"], rec["text"]), (1, "clean", ""))
+        self.assertEqual(_boundaries(_records(tmp5)), [], "no divider was written, and the end is still the compaction's")
+        self.assertIsNone(be5.launch_error(sid5))
+        # an unknown sid: the contract's None
+        self.assertIsNone(be.compact_end("11111111-2222-4333-8444-000000000000"))
+
+    def test_the_accepted_turn_waits_on_the_divider_write_and_the_end_is_recorded_clean_once(self):
+        """The crossing of the pump's clean end with the worker's accepted-turn end (review find, 2026-09-22). The
+        worker attempts turn/start under a bracket with no active seen (_work), and the compaction's active and idle
+        statuses are read while that request is out, so the pump reaches the divider write as the worker's ACK is
+        about to land. Before the fix the write ran under norm_lock alone and the end in a later s.lock block: an ACK
+        landing between them found the bracket standing with the active seen and ended it LOUD, worded as no divider
+        having been written, over a divider already on disk, and the pump then found no bracket and recorded nothing,
+        so compact_end() read loud and `romp compact --wait` exited saying the session did not compact. The fix makes
+        the write and the end one section under norm_lock and then s.lock, so the ACK can no longer land inside the
+        write, and this test drives the ordering the fix makes safe: the pump is held INSIDE the divider write (a
+        wrapped _append parks on an Event) while the scripted turn_start answers and the worker's ACK is attempted,
+        and the ACK is asserted to wait (no turn id, no end) until the pump is released; after that the one end on
+        record is clean, the divider is on disk once, and the turn runs. Red at the base: the ACK lands inside the
+        write, and the record reads loud over a compacted thread. Every wait is bounded; the fake and the wrapper
+        record a wait that ran out as a flag the test asserts on, since the pump and the worker swallow raises."""
+        class CompactionEndsDuringStart(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.arm = None                       # (s, reached, returned, stalled): armed after the first turn
+            def turn_start(self, tid, input_items, params=None):
+                if self.arm:
+                    s, reached, returned, stalled = self.arm
+                    _status(self, tid, "active")      # the compaction runs and ends while the request is out
+                    if not until(lambda: s.compact_active_seen):
+                        stalled.append("active")
+                    _status(self, tid, "idle")
+                    if not reached.wait(5):           # answered only once the pump is inside the divider write
+                        stalled.append("reached")
+                    res = super().turn_start(tid, input_items, params)
+                    returned.set()                    # the worker holds an accepted turn and goes for its ACK
+                    return res
+                return super().turn_start(tid, input_items, params)
+        fake = CompactionEndsDuringStart()
+        be, _, tmp = build(factory=lambda: fake)
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "first synthetic turn"))
+        self.assertTrue(_lock_free(be, sid))
+        s = be._session(sid)
+        reached, release, returned = threading.Event(), threading.Event(), threading.Event()
+        stalled = []                                  # bounded waits that ran out, by name
+        ends = []                                     # every end of the bracket, with its kind and words
+        real_append, real_end = be._append, be._end_compact_locked
+
+        def append(sess, recs):
+            if any(r.get("subtype") == "compact_boundary" for r in recs):
+                reached.set()
+                if not release.wait(5):
+                    stalled.append("append")
+            return real_append(sess, recs)
+
+        def end(sess, kind, text=""):
+            ends.append((kind, text))
+            return real_end(sess, kind, text)
+        be._append, be._end_compact_locked = append, end
+        self.assertEqual(be.compact(sid), "")
+        fake.arm = (s, reached, returned, stalled)
+        self.assertTrue(be.send(sid, "into the request window"))   # no active seen yet: the worker attempts (_work)
+        self.assertTrue(returned.wait(5), "turn_start answered: the worker holds an accepted turn to ACK")
+        self.assertEqual(stalled, [])
+        # The ACK waits on the pump's section: no turn id and no end while the divider write stands. The fields are
+        # read without s.lock, which the pump holds; the window is the bounded one the stale-idle test gives its
+        # ignored idle, and the deciding assertions are the record and the divider count below.
+        self.assertFalse(until(lambda: s.turn_id is not None or s.compact_ends, timeout=0.3),
+                         "the accepted turn's ACK landed inside the divider write: the crossing the fix closes")
+        self.assertEqual(ends, [], "no end yet: the pump ends the bracket after the write, before releasing s.lock")
+        release.set()
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)), "the parked message's turn ran")
+        self.assertEqual(stalled, [])
+        self.assertEqual(ends, [("clean", "")], "one end, the pump's, clean: the ACK found the bracket gone")
+        rec = be.compact_end(sid)
+        self.assertEqual((rec["ends"], rec["kind"], rec["text"]), (1, "clean", ""),
+                         "the record the wait judges says the compaction completed")
+        self.assertEqual(len(_boundaries(_records(tmp))), 1, "the divider is on disk once")
+        self.assertIsNone(be.launch_error(sid), "no notice: the accepted turn ended no bracket")
+        self.assertEqual(be.live_sessions()[sid]["state"], "waiting")
+
     def test_the_divider_lands_before_the_end_is_published(self):
         # The order the docstrings promise, pinned (review find, 2026-09-21): a reader that sees the session no longer
         # compacting also finds the divider, so the boundary record is appended while the bracket still stands and the
@@ -4402,9 +4621,9 @@ class NativeCompact(unittest.TestCase):
                 seq.append(("boundary", sess.compacting))
             return real_append(sess, recs)
 
-        def end(sess):
+        def end(sess, *how):                      # the end's kind and words (2026-09-21): passed through, not read here
             seq.append(("end",))
-            return real_end(sess)
+            return real_end(sess, *how)
         be._append, be._end_compact_locked = append, end
         self.assertEqual(be.compact(sid), "")
         _status(fake, "T-1", "active")

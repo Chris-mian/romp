@@ -580,6 +580,10 @@ class _Session:
                                       # nothing; a refusal handled after that idle would re-latch a compaction already
                                       # over, with no status left to end it. A previous turn's late idle costs one
                                       # extra refused retry, never a wedge.
+        self.compact_last = None      # the bracket's last end, {kind, text, at} (_end_compact_locked, 2026-09-21): with
+                                      # compact_ends the record compact_end() publishes on the /sessions row for
+                                      # `romp compact --wait`, which the next accepted turn does not erase, where it
+                                      # clears launch_error within milliseconds of a loud end that drained a parked message
         self.turn_ended = False       # a turn ended under mode_lock; _run_turn pokes for it after the release
         self.loaded = False           # thread/resume done in THIS process
         self.loaded_client_generation = None  # ...on WHICH app-server (client generation): a
@@ -1254,9 +1258,9 @@ class CodexBackend:
                             # The save stays under s.lock, _save_registry's rule (the _work handlers' shape): saved after
                             # the release, a turn accepted in the window cleared the field and saved None, and this
                             # stale snapshot then committed the red card over it (review find, 2026-09-21).
-                            self._end_compact_locked(s)
                             text = ("The Codex app-server ended while this conversation was compacting — %s"
                                     % (str(e) or e.__class__.__name__))
+                            self._end_compact_locked(s, "loud", text)
                             s.launch_error = {"text": text, "at": time.time(), "limit": False, "noRetry": True}
                             self._save_compacting_locked(s, "launchError")   # the end and its notice in one write
                             ended = (s.name, text)     # built under the lock, logged after the release (below)
@@ -1483,6 +1487,30 @@ class CodexBackend:
             if s.dead:
                 return None
             return bool(s.compacting)
+
+    def compact_end(self, sid):
+        """The compaction bracket's end record (SessionBackend.compact_end, 2026-09-21): {ends, kind, text, at}, the
+        bracket-end counter every end advances (_end_compact_locked) with the last end's kind ("clean" for a compaction
+        Codex completed, "loud" for every end after which romp cannot vouch the thread was compacted, "" before any
+        end), its words (empty for a clean end) and its stamp (None before any end); None for no session or a dead one.
+        Published on the /sessions row for `romp compact --wait`, which judges it against the count it read before its
+        request. The notice alone (launch_error) was erased by the next accepted turn: a message parked on the bracket
+        drains at the loud end's poke and its accepted turn/start clears the field within milliseconds, before a wait
+        polling every two seconds reads again, so the row read quiet with no notice, a clean end's shape, and the
+        wait printed done over an uncompacted thread (the post-merge review of the wait). In memory: the bracket's bit
+        is in the registry row too (_save_compacting_locked), and a row still reading compacting at load is ended with a
+        noRetry notice and no record (_load_registry: this kernel had no bracket to end), so a kernel restart starts
+        the count over, the wait treats a count below its baseline as that, and reads the restart's end through the
+        notice."""
+        s = self._session(sid)
+        if not s:
+            return None
+        with s.lock:
+            if s.dead:
+                return None
+            last = s.compact_last or {}
+            return {"ends": s.compact_ends, "kind": last.get("kind", ""), "text": last.get("text", ""),
+                    "at": last.get("at")}
 
     # ── control ──────────────────────────────────────────────────────────────────────────────────
     def send(self, sid, text):
@@ -1970,17 +1998,18 @@ class CodexBackend:
             try:
                 c.thread_compact(tid)
             except Exception as e:
+                why = "Couldn't compact this conversation: %s" % str(e)[:200]
                 with s.lock:
-                    self._end_compact_locked(s)
+                    self._end_compact_locked(s, "loud", why)   # the words the caller shows are the end's record (2026-09-21)
                     self._save_compacting_locked(s)
                 self.push_session(sid)
                 self.log("compact %s: %s" % (s.name, e))
-                return "Couldn't compact this conversation: %s" % str(e)[:200]
+                return why
         finally:
             s.mode_lock.release()
         return ""
 
-    def _end_compact_locked(self, s):
+    def _end_compact_locked(self, s, kind, text=""):
         """End the compaction bracket; the caller holds s.lock (2026-09-19). Every end comes through here so the
         bracket-end counter advances with each — the clean idle-after-active end and the loud status end
         (_compact_status), the client's death (_global_pump), kill, a raising thread/compact/start (compact) and the
@@ -1990,10 +2019,24 @@ class CodexBackend:
         compacting False in the registry, rides each caller's own transaction (_save_compacting_locked for the ends
         that write nothing else; kill's dead, resume's flip and the accepted turn's ACK carry the field in theirs),
         never a write of its own here: the loud ends' notice lands in the same write as the bit, so a kernel death
-        between two writes cannot leave a row reading compacting False with no notice (2026-09-21)."""
+        between two writes cannot leave a row reading compacting False with no notice (2026-09-21).
+
+        Every end also names its `kind` and is recorded with its words and a stamp (compact_last, published with the
+        counter by compact_end(), 2026-09-21): "clean" for a compaction Codex completed (the idle after an active, a
+        thread/compacted; a clean end with no normalizer to write its divider is still one, since the thread was
+        compacted), "loud" for every end after which romp cannot vouch the thread was compacted, with `text` saying
+        why: the systemError and notLoaded statuses, the client's death, a raising request, kill, and the worker's
+        accepted turn, whose words say its end was never seen (no divider was written, whether the compaction ran or
+        not; the pump's and the worker's queues have no order between them, so "never started" is not knowable). A kind for
+        EVERY end, because `romp compact --wait` judges the record: an end with none would read as neither done
+        nor failed, and the wait would run to its timeout. The record is in memory, unlike the row's bit: the end
+        _load_registry gives a row still reading compacting (a compaction the previous kernel never saw end) comes
+        through no bracket of this kernel's, so it writes its notice and no record, and the count starts over at zero;
+        the wait reads that end through the notice, and a count below its baseline as the restart."""
         s.compacting = False
         s.compact_active_seen = False
         s.compact_ends += 1
+        s.compact_last = {"kind": kind, "text": text, "at": time.time()}
         if s.state == "compacting":
             s.state = "waiting"
             s.since = time.time()
@@ -2027,9 +2070,18 @@ class CodexBackend:
         it is the deciding event — the compact_boundary is written through the normalizer's thread/compacted writer,
         the same golden-covered record an emitted notification would have written (uuid cb-<last turn id> with
         _mint's suffix on a repeat, parentUuid None, logicalParentUuid the pre-compaction leaf; no summary record,
-        since Codex exposes no summary text), marked manual, THEN the bracket ends and the worker is kicked (a queue
-        parked on the bracket drains): the record lands before the end is published, so a reader that sees the
-        session no longer compacting also finds the divider. Runtime 0.153.3 sends no thread/compacted for a
+        since Codex exposes no summary text), marked manual, and the bracket ends in the SAME section, under norm_lock
+        and then s.lock (the order _append and set_model take), with the poke, the push and the worker's kick after
+        both are released (a queue parked on the bracket drains): the record lands before the end is published, so a
+        reader that sees the session no longer compacting also finds the divider, and no other end can land between
+        the write and the end. Before (review find, 2026-09-22), the divider was written under norm_lock alone and the
+        bracket ended in a later s.lock block: the worker's accepted turn/start, attempted under a bracket with no
+        active seen, could end the bracket in that window, loud and worded as no divider having been written, over a
+        divider already on disk, and the pump then found no bracket and recorded nothing, so compact_end() published
+        loud over a compacted thread and `romp compact --wait` exited saying the session did not compact. The section
+        re-checks the bracket (and, for an idle, the active seen: a bracket re-latched after another end has seen none)
+        before writing, and answers False when it is gone, so the notification is the normalizer's as with no
+        bracket. Runtime 0.153.3 sends no thread/compacted for a
         thread/compact/start and the pinned client's router discards the compaction turn's items, so the observed
         idle-after-active is the backend's own call to write it (live probe). An idle with NO active seen is the
         previous turn's tail — its idle status and its turn/completed leave the server at the same instant on two
@@ -2091,29 +2143,45 @@ class CodexBackend:
                     return False
             else:
                 return False
-        wrote = False
         if params is not None:
+            # The divider and the clean end are ONE section: norm_lock, then s.lock, the order _append (its echo prune)
+            # and set_model already take, so no new lock edge; s.lock is an RLock, so _append's own take nests. With
+            # the write under norm_lock alone and the end in a later s.lock block, the worker's accepted turn/start
+            # ended the bracket between them, loud and worded as no divider having been written, over a divider on
+            # disk, and this block then found no bracket and recorded nothing (review find, 2026-09-22; the docstring
+            # has the consequence). Now every other end waits on s.lock while the divider lands and finds the bracket
+            # gone; an end that landed first is found here instead, and nothing is written: the notification is the
+            # normalizer's, as with no bracket. An idle re-checks the active too: a bracket compact() re-latched after
+            # that end has seen none, and this idle is not its.
+            wrote = False
             with s.norm_lock:
-                if s.norm:
-                    recs = s.norm.handle("thread/compacted", params)
-                    if recs:
-                        self._append(s, recs)
-                        wrote = True
+                with s.lock:
+                    if not s.compacting or (method == "thread/status/changed" and not s.compact_active_seen):
+                        return False
+                    if s.norm:
+                        recs = s.norm.handle("thread/compacted", params)
+                        if recs:
+                            self._append(s, recs)
+                            wrote = True
+                    self._end_compact_locked(s, "clean", "")
+                    # the end is in the row (2026-09-21): compacting False
+                    self._save_compacting_locked(s)
+                    queued = bool(s.queue) and not s.dead
             if not wrote:
                 self.log("compaction of %s ended with no normalizer to write its boundary" % s.name)
-        with s.lock:
-            if s.compacting:                           # kill may have ended it meanwhile: one end, one advance
-                self._end_compact_locked(s)
-            if loud:
+        else:
+            with s.lock:
+                if s.compacting:                       # kill may have ended it meanwhile: one end, one advance
+                    self._end_compact_locked(s, "loud", loud)
                 # noRetry: nothing retries a compaction, so the chat's card carries no Retry and no countdown for this
                 # notice (build_session lifts it onto the status as apiNoRetry; review, 2026-09-21). Saved UNDER s.lock,
                 # _save_registry's rule and the _work handlers' shape: saved after the release, a turn accepted in that
                 # window cleared the field and saved None, and this stale snapshot then committed the red card over
                 # it, so the next restart restored a card the turn had cleared (review find, 2026-09-21).
                 s.launch_error = {"text": loud, "at": time.time(), "limit": False, "noRetry": True}
-            # the end is in the row (2026-09-21): compacting False, and a loud end's notice beside it in the same write
-            self._save_compacting_locked(s, *(("launchError",) if loud else ()))
-            queued = bool(s.queue) and not s.dead
+                # the end is in the row (2026-09-21): compacting False, and the loud end's notice beside it in the same write
+                self._save_compacting_locked(s, "launchError")
+                queued = bool(s.queue) and not s.dead
         # Every end pokes, OUTSIDE norm_lock (see _append) and s.lock: the end is the event a message parked on the
         # bracket waits on. The clean end poked through its boundary write; the loud ends only pushed and kicked, so a
         # parked message waited for the pusher's half-second backstop instead (review find, 2026-09-21).
@@ -2295,8 +2363,10 @@ class CodexBackend:
         with s.lock:
             s.dead = True
             if s.compacting:
-                self._end_compact_locked(s)    # the compaction finishes server-side; romp cannot stop it, and writes
-                                               # nothing for a session it ended (2026-09-19)
+                # the compaction finishes server-side; romp cannot stop it, and writes nothing for a session it ended
+                # (2026-09-19). Recorded loud: revived, the row cannot vouch the thread was compacted (2026-09-21)
+                self._end_compact_locked(s, "loud", "This session was ended while it was compacting; the compaction "
+                                         "finishes on Codex's side, and romp recorded no outcome for it")
             turn_id, tid, worker = s.turn_id, s.tid, s.worker
             # Persist the lifecycle mutation before releasing the session lock. A concurrent resume
             # must order after this write instead of being overwritten by a delayed kill snapshot.
@@ -2750,10 +2820,23 @@ class CodexBackend:
                     # An ACCEPTED turn is the exact event that no compaction is active on the thread (2026-09-19): a
                     # bracket compact() latched that the server never took up (acked, no active status ever), or
                     # whose compaction finished before this request went out. Ended here, with no divider written
-                    # for it — its statuses, if they come late, meet no bracket — and the line below says which.
+                    # for it, and the line below says which. Its statuses, if they come late, meet no bracket: the
+                    # pump re-checks the bracket under this same lock, in the one section that writes the divider
+                    # and ends it (_compact_status, 2026-09-22), so an idle whose divider is already landing holds
+                    # this ACK until the bracket has ended clean, and this end and that divider never cross.
                     bracket_ended = ("finished server-side before this accepted turn" if s.compact_active_seen
                                      else "started nothing on this thread")
-                    self._end_compact_locked(s)
+                    # Recorded LOUD on either face, worded as the end never having been seen (2026-09-21): no divider
+                    # was written, so romp cannot vouch the thread was compacted, and `romp compact --wait` must not
+                    # print done over it. The no-active face is not worded as the compaction never having started: the
+                    # pump and the worker drain independent queues, so the compaction may have run with its statuses
+                    # still unread when the turn was accepted, an order romp cannot know; the log line above keeps the
+                    # faces apart for the record's reader
+                    self._end_compact_locked(s, "loud", (
+                        "the compaction's end was never seen: Codex accepted a turn while it stood, so if it finished "
+                        "on Codex's side romp wrote no divider for it" if s.compact_active_seen else
+                        "the compaction's end was never seen: Codex accepted a turn while it stood and romp saw no status "
+                        "for it, so whether it ran or not, no divider was written"))
                 s.turn_id = turn_id
                 s.state = "working"
                 s.since = time.time()

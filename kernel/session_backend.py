@@ -145,6 +145,19 @@ class SessionBackend(ABC):
         @claude-state row did, until its removal 2026-09-11)."""
         return None
 
+    def compact_end(self, sid: str):
+        """The backend's record of the session's compaction ends, or None when it keeps none: {ends, kind, text,
+        at}, a counter every end of its compaction bracket advances, with the last end's kind ("clean" for a
+        compaction the backend saw complete, "loud" for one after which it cannot vouch the conversation was
+        compacted, "" before any end), the words that say why for a loud one, and its stamp. `romp compact --wait`
+        judges this on the /sessions row, against the count it read before its request: the launch error a loud
+        end leaves is cleared by the next accepted turn, and a message parked behind the compaction is delivered
+        at that end, so the notice was gone within milliseconds, before the wait's next poll, which then read a
+        clean end's shape (2026-09-21). The Codex backend keeps the record beside its bracket; the SDK backend's
+        compaction path keeps none, and a wait over a row with none is judged on the compacting bit and the launch
+        error as before."""
+        return None
+
     def clearing(self, sid: str) -> "bool | None":
         """AUTHORITATIVE 'is a /clear in progress right now', or None when the backend has no such signal.
         The bracket exists so the chat can show a live "clearing" indicator instead of a dead gap: between
