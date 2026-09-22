@@ -416,14 +416,23 @@ class SeedInflight(_OnThenOff):
         self.assertEqual(self._read(), "sonnet", "the pick that landed since stands; the stale reset stood down")
         self.assertNotIn("reset to the account default", self.err.getvalue())
 
-    def _gated_failing_fetch(self):
+    def _gated_failing_fetch(self, n=1):
+        """A failing fetch stub with ONE gate per call (review round ten: a shared gate let a dropped guard pass whenever
+        the stale thread happened to write last). Returns (gates, stub): call i waits on gates[i]."""
         import threading
-        gate = threading.Event()
+        gates = [threading.Event() for _ in range(n)]
+        calls = []
 
         def boom(url, timeout=4):
-            gate.wait(5)
+            i = len(calls); calls.append(url)
+            gates[min(i, n - 1)].wait(5)
             raise OSError("connection refused")
-        return gate, boom
+        return (gates[0] if n == 1 else gates), boom
+
+    @staticmethod
+    def _fetch_threads():
+        import threading
+        return [t for t in threading.enumerate() if t.name == "router-models" and t.is_alive()]
 
     def _wait(self, pred, what, timeout=5.0):
         deadline = time.time() + timeout
@@ -443,7 +452,9 @@ class SeedInflight(_OnThenOff):
             self.assertIsNone(km._ROUTER_FETCH_FAILED_GEN[0], "nothing recorded before the failure")
             gate.set()
             self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the failed-listing event")
+            self._wait(lambda: not self._fetch_threads(), "the fetch thread's end")
             self.assertTrue(km._router_listing_failed_now(), "recorded at the current generation")
+            self.assertFalse(km._router_listing_inflight(), "and no longer in flight: both cleared in one hold")
             self.assertEqual(km._reset_unvouched_seed(), "hold")
             self.assertEqual(self._read(), "gw-7-nova", "the store is kept")
             self.assertIn("could not be fetched this generation", self.err.getvalue())
@@ -458,33 +469,91 @@ class SeedInflight(_OnThenOff):
             km._router_models_boot()
             gate.set()
             self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the failed-listing event")
+            self._wait(lambda: not self._fetch_threads(), "the fetch thread's end")
             self.assertTrue(km._router_listing_failed_now())
             self.assertEqual(km._reset_unvouched_seed(), "hold")
             self.assertEqual(self._read(), "gw-7-nova")
+            self.assertIn("could not be fetched this generation", self.err.getvalue())
 
     def test_a_failure_gated_past_a_later_flip_is_not_recorded(self):
         # the guard: a failure at an old generation records nothing, and the seed it would have held is reset
         self._seed("gw-7-nova")
         _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
         _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
-        gate, boom = self._gated_failing_fetch()
+        gates, boom = self._gated_failing_fetch(n=2)          # the stale fetch on gates[0], the current one on gates[1]
         with mock.patch.object(km, "_fetch_router_models", boom), mock.patch.object(km, "_models_changed", lambda: None):
             km._set_router_models(True, gt=1700000000010)
             km._set_router_models(False, gt=1700000000011)
             km._set_router_models(True, gt=1700000000012)     # a later on: the first fetch's generation is stale
-            gate.set()
-            self._wait(lambda: "failed" in self.err.getvalue(), "the failure line")
-            self._wait(lambda: not km._router_listing_inflight() or True, "settle")
-            time.sleep(0.05)
-            self.assertNotEqual(km._ROUTER_FETCH_FAILED_GEN[0], km._ROUTER_GEN[0] - 2, "the stale failure is not recorded at its old generation")
-            self.assertIsNone(km._ROUTER_FETCH_FAILED_GEN[0] if km._ROUTER_FETCH_FAILED_GEN[0] != km._ROUTER_GEN[0] else None,
-                              "and not at the current one either")
-            # the on at gt 12 started its own fetch, still gated: release is over; it fails too and IS recorded (current)
-            self._wait(lambda: km._router_listing_failed_now(), "the current generation's own failure")
+            self.assertEqual(len(self._fetch_threads()), 2, "both fetches are parked")
+            gates[0].set()                                    # the STALE one alone fails first
+            self._wait(lambda: len(self._fetch_threads()) == 1, "the stale thread's end")
+            self.assertIsNone(km._ROUTER_FETCH_FAILED_GEN[0], "a failure at an old generation records nothing")
+            self.assertTrue(km._router_listing_inflight(), "the current fetch is still in flight")
+            gates[1].set()                                    # then the current one
+            self._wait(lambda: not self._fetch_threads(), "the current thread's end")
+            self.assertTrue(km._router_listing_failed_now(), "the current generation's own failure IS recorded")
         km._set_router_models(False, gt=1700000000013)          # an off: the record no longer matches the generation
         self.assertFalse(km._router_listing_failed_now())
         self.assertIsNone(km._reset_unvouched_seed(), "reset after all: the failure is stale")
         self.assertEqual(self._read(), "default")
+
+    def test_a_listing_in_flight_holds_the_seed_through_the_real_thread_and_vouches_it_when_it_lands(self):
+        # the in-flight hold through the real fetch thread (the other in-flight tests set the mark by hand)
+        import threading
+        self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        gate = threading.Event()
+
+        def listing(url, timeout=4):
+            gate.wait(5)
+            return ["gw-7-nova"]
+        with mock.patch.object(km, "_fetch_router_models", listing), mock.patch.object(km, "_models_changed", lambda: None):
+            km._set_router_models(True, gt=1700000000010)
+            self.assertEqual(km._reset_unvouched_seed(), "hold", "in flight: held")
+            self.assertIn("still being fetched", self.err.getvalue())
+            gate.set()
+            self._wait(lambda: not self._fetch_threads(), "the listing to land")
+            self.assertIsNone(km._reset_unvouched_seed(), "landed: the seed is vouched, nothing to reset")
+            self.assertEqual(self._read(), "gw-7-nova")
+
+    def test_a_listing_landing_between_the_snapshot_and_the_vouch_keeps_the_pick(self):
+        # review round ten: the vouch ran before the snapshot, so a listing that installed the id and cleared its mark
+        # in between reset an offered pick. The snapshot is taken first; the install precedes the clear.
+        self._seed("gw-7-nova")
+        km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]
+        real_state = km._router_listing_state
+        landed = []
+
+        def state_then_land():
+            snap = real_state()
+            if not landed:
+                landed.append(1)
+                km._apply_router_families(["gw-7-nova"])      # the listing lands: the install first…
+                km._ROUTER_FETCH_GEN[0] = None                 # …then its mark clears
+            return snap
+        with mock.patch.object(km, "_router_listing_state", state_then_land):
+            self.assertIsNone(km._reset_unvouched_seed(), "vouched by the time the vouch runs")
+        self.assertEqual(self._read(), "gw-7-nova", "the offered pick is kept")
+        self.assertNotIn("reset to the account default", self.err.getvalue())
+
+    def test_the_reset_reads_the_listing_state_once_and_names_each_cause(self):
+        # the single snapshot is pinned as a call count; the switch-off and declaration causes are pinned as phrases
+        self._seed("gw-7-nova")
+        with mock.patch.object(km, "_router_listing_state", wraps=km._router_listing_state) as snap, \
+                mock.patch.object(km, "_router_listing_inflight", wraps=km._router_listing_inflight) as inflight, \
+                mock.patch.object(km, "_router_listing_failed_now", wraps=km._router_listing_failed_now) as failed:
+            km._reset_unvouched_seed()
+        self.assertEqual((snap.call_count, inflight.call_count, failed.call_count), (1, 0, 0), "one snapshot, no second read")
+        self.assertIn("(the extra models switch is off)", self.err.getvalue())
+        # on, undeclared, no list configured: the declaration alone is named
+        self.err.truncate(0); self.err.seek(0)
+        self._seed("gw-7-nova")
+        km.jd.STATE.joinpath(km.ROUTER_MODELS_FILE).write_text(json.dumps({"enabled": True, "gt": 1}))
+        km._reset_unvouched_seed()
+        self.assertIn("(it is no longer declared)", self.err.getvalue())
+        self.assertNotIn("gateway's list", self.err.getvalue(), "no list is configured, so none is blamed")
 
     def test_the_reset_line_names_the_knob_when_it_gates_the_listing(self):
         self._seed("gw-7-nova")
@@ -552,6 +621,7 @@ class Seed(_OnThenOff):
         self.assertEqual(d["model"], "default")
         self.assertNotEqual(d.get("modelTok"), tok, "written through reset_sdk_default_model_if: a fresh token, never a raw file write")
         self.assertIn(REMOVED, self.err.getvalue(), "the reset is said, naming the id")
+        self.assertIn("the extra models switch is off", self.err.getvalue(), "and the cause established")
 
     def test_a_held_seed_launches_the_row_on_the_default_and_keeps_the_store(self):
         # the create door's half of the hold: the reg's copied model is cleared between the spawn and the connect

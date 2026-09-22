@@ -3479,6 +3479,8 @@ def _router_apply_declared(reason, gen=None):
                 with _catalog_lock:
                     if gen == _ROUTER_GEN[0]:
                         _ROUTER_FETCH_FAILED_GEN[0] = gen      # the create door reads it: no seed reset over a failed listing
+                    if _ROUTER_FETCH_GEN[0] == gen:
+                        _ROUTER_FETCH_GEN[0] = None            # in the same hold: a reader never sees "failed" and "in flight" at once
                 if _router_swap_note(gen, None, ROUTER_NOTE_LISTING_FAILED):   # at THIS generation, over an empty note only
                     _models_changed()        # the gear's line repaints from the models frame alone (verify find, 2026-09-22)
             finally:
@@ -17447,9 +17449,13 @@ def _reset_unvouched_seed():
     (_seed_write_refused). _vouched_model alone, not the Codex exception: the seed feeds SDK sessions."""
     sbmod = _sdk_defaults_module()
     seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
-    if not seed or seed == "default" or _vouched_model(seed):
+    if not seed or seed == "default":
         return
-    in_flight, failed = _router_listing_state()   # one snapshot: the line below is worded by a state that held at once
+    in_flight, failed = _router_listing_state()   # one snapshot, taken BEFORE the vouch: a listing that lands in between
+    #                                               installs the id before it clears its mark, so the vouch below sees it
+    #                                               (the other order reset a pick offered at that moment; review round ten)
+    if _vouched_model(seed):
+        return
     if not _router_first_party(seed) and (in_flight or failed):
         # the gateway's listing for the current generation has not landed (a create right after boot) or FAILED (nothing
         # retries it until the next flip or restart): the seed may be one of the ids that listing carries, so it is no
@@ -17467,8 +17473,10 @@ def _reset_unvouched_seed():
         cause = "the extra models switch is off"
     elif (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip() and not _router_fetch_allowed():
         cause = "the gateway's model list is not fetched under ROMP_MODEL_CATALOG=off"
-    else:
+    elif (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip():
         cause = "it is no longer declared, and the gateway's list does not carry it"
+    else:
+        cause = "it is no longer declared"     # no list is configured: nothing else could have offered it
     # a compare-and-swap on the value judged: a dormant pick landing between the read and the write (a vouched alias,
     # its own fresh modelTok) must not be overwritten by a reset aimed at the seed that preceded it (review round
     # three, 2026-09-22)
