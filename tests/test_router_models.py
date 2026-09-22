@@ -573,9 +573,15 @@ class Switch(_Catalog):
                 fired.append(1)
                 km._set_router_models(False, gt=12)      # the second off lands during the first's count
             return {"11111111-2222-4333-8444-555555555555": {"model": "gw-6-astra"}}
+        (km.jd.STATE / "judge-model").write_text("gw-6-astra\n")
+        (km.jd.STATE / "comment-model").write_text("gw-6-astra\n")
+        self.addCleanup(lambda: [(km.jd.STATE / f).unlink(missing_ok=True) for f in ("judge-model", "comment-model")])
         with mock.patch.object(km, "_live_map", live_map):
             self.assertEqual(km._set_router_models(False, gt=11), 11)
-        self.assertIn("1 live session", km._router_status_note[0], "the advisory stands, by the second off's recount")
+        note = km._router_status_note[0]
+        self.assertIn("1 live session", note, "the advisory stands, by the second off's recount")
+        self.assertIn("triage, distill judge tier", note, "the tiers are recounted against the ever-installed set too")
+        self.assertIn("new comment threads", note)
         self.assertIn("left the pickers", self.err.getvalue(), "the removal is on the log")
         self.assertEqual(self.frames, [False, False, False], "the on and both offs: a frame each, outside the lock")
         self.assertIs(km._router_status()["enabled"], False)
@@ -671,7 +677,17 @@ class Boot(_Catalog):
         self.assertEqual(km._router_models_boot(), IDS)
         self.assertTrue(km._vouched_model("gw-6-astra"))
         self.assertEqual(self.frames, [False], "the boot frames what it installed, outside the lock (the second reviewer's note)")
-        self.assertTrue(set(IDS) <= sb._router_declared(), "the boot's on branch tells the backend")
+
+    def test_the_boots_on_branch_tells_the_backend_itself(self):
+        # the told set is read on the backend's own field, with the apply's tell out of the way (stubbed stale): the
+        # subset check on _router_declared held from the environment alone (review round nine)
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        self.store.write_text(json.dumps({"enabled": True, "gt": 1}))
+        km._ROUTER_EVER.update(["gw-6-astra"])          # what an earlier apply installed this kernel life
+        sb._ROUTER_IDS = frozenset({"gw-stale-1-x"})
+        with mock.patch.object(km, "_router_apply_declared", lambda reason, gen=None: None):   # stale: no apply, no apply tell
+            self.assertEqual(km._router_models_boot(), [])
+        self.assertEqual(sb._ROUTER_IDS, frozenset({"gw-6-astra"}), "the boot's own tell, on the on branch")
 
     def test_the_boot_reads_the_store_under_the_lock_it_bumps_in(self):
         # the second reviewer's note: a store read hoisted above the lock passed the placement pin; behaviourally, a flip that lands inside

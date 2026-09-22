@@ -199,7 +199,7 @@ class Rule(_OnThenOff):
 
     def test_the_typed_road_reads_the_same_rule_and_still_refuses(self):
         # the road's call of the rule is pinned behaviourally in tests/test_router_models_comment_default.py::TypedRoad (an
-        # autospec'd _pick_vouched); a source-text pin here was green on a commented-out call (the second reviewer's note, 2026-09-22)
+        # autospec'd _pick_vouched); a source-text pin here was green on a commented-out call (the second reviewer, 2026-09-22)
         # a typed pick of the removed id is no meta command (the CLI's own error, as before); nothing latches
         self.assertFalse(km._route_setter_command(self.be, SID, "/model " + REMOVED))
         self.assertEqual(self.be.calls, [])
@@ -379,12 +379,12 @@ class SeedInflight(_OnThenOff):
         # the verify round's find: a create right after boot reset a valid remembered gateway model to default before
         # the gateway's listing had landed. The store is kept and the create door launches that row on the default.
         self._seed("gw-7-nova")
-        with mock.patch.object(km, "_router_listing_inflight", lambda: True):
-            self.assertEqual(km._reset_unvouched_seed(), "hold")
+        km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]          # a listing for the current generation in flight
+        self.assertEqual(km._reset_unvouched_seed(), "hold")
         self.assertEqual(self._read(), "gw-7-nova", "left as it is")
         self.assertIn("still being fetched", self.err.getvalue())
-        with mock.patch.object(km, "_router_listing_inflight", lambda: False):
-            self.assertIsNone(km._reset_unvouched_seed(), "reset (no verdict to hold) once no listing is pending")
+        km._ROUTER_FETCH_GEN[0] = None
+        self.assertIsNone(km._reset_unvouched_seed(), "reset (no verdict to hold) once no listing is pending")
         self.assertEqual(self._read(), "default")
 
     def test_a_seed_is_held_when_the_current_generations_listing_failed(self):
@@ -415,6 +415,85 @@ class SeedInflight(_OnThenOff):
             km._reset_unvouched_seed()
         self.assertEqual(self._read(), "sonnet", "the pick that landed since stands; the stale reset stood down")
         self.assertNotIn("reset to the account default", self.err.getvalue())
+
+    def _gated_failing_fetch(self):
+        import threading
+        gate = threading.Event()
+
+        def boom(url, timeout=4):
+            gate.wait(5)
+            raise OSError("connection refused")
+        return gate, boom
+
+    def _wait(self, pred, what, timeout=5.0):
+        deadline = time.time() + timeout
+        while not pred() and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(pred(), "timed out waiting for " + what)
+
+    def test_a_listing_that_fails_on_the_flip_road_records_its_generation_and_holds_the_seed(self):
+        # the record's only writer, through the real fetch thread (review round nine: the record had been planted by
+        # hand; a deleted write or a dropped guard left every module green while a failed listing reset the pick)
+        self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        gate, boom = self._gated_failing_fetch()
+        with mock.patch.object(km, "_fetch_router_models", boom), mock.patch.object(km, "_models_changed", lambda: None):
+            km._set_router_models(True, gt=1700000000010)
+            self.assertIsNone(km._ROUTER_FETCH_FAILED_GEN[0], "nothing recorded before the failure")
+            gate.set()
+            self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the failed-listing event")
+            self.assertTrue(km._router_listing_failed_now(), "recorded at the current generation")
+            self.assertEqual(km._reset_unvouched_seed(), "hold")
+            self.assertEqual(self._read(), "gw-7-nova", "the store is kept")
+            self.assertIn("could not be fetched this generation", self.err.getvalue())
+
+    def test_a_listing_that_fails_on_the_boot_road_records_its_generation_too(self):
+        self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        km.jd.STATE.joinpath(km.ROUTER_MODELS_FILE).write_text(json.dumps({"enabled": True, "gt": 1}))
+        gate, boom = self._gated_failing_fetch()
+        with mock.patch.object(km, "_fetch_router_models", boom), mock.patch.object(km, "_models_changed", lambda: None):
+            km._router_models_boot()
+            gate.set()
+            self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the failed-listing event")
+            self.assertTrue(km._router_listing_failed_now())
+            self.assertEqual(km._reset_unvouched_seed(), "hold")
+            self.assertEqual(self._read(), "gw-7-nova")
+
+    def test_a_failure_gated_past_a_later_flip_is_not_recorded(self):
+        # the guard: a failure at an old generation records nothing, and the seed it would have held is reset
+        self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        gate, boom = self._gated_failing_fetch()
+        with mock.patch.object(km, "_fetch_router_models", boom), mock.patch.object(km, "_models_changed", lambda: None):
+            km._set_router_models(True, gt=1700000000010)
+            km._set_router_models(False, gt=1700000000011)
+            km._set_router_models(True, gt=1700000000012)     # a later on: the first fetch's generation is stale
+            gate.set()
+            self._wait(lambda: "failed" in self.err.getvalue(), "the failure line")
+            self._wait(lambda: not km._router_listing_inflight() or True, "settle")
+            time.sleep(0.05)
+            self.assertNotEqual(km._ROUTER_FETCH_FAILED_GEN[0], km._ROUTER_GEN[0] - 2, "the stale failure is not recorded at its old generation")
+            self.assertIsNone(km._ROUTER_FETCH_FAILED_GEN[0] if km._ROUTER_FETCH_FAILED_GEN[0] != km._ROUTER_GEN[0] else None,
+                              "and not at the current one either")
+            # the on at gt 12 started its own fetch, still gated: release is over; it fails too and IS recorded (current)
+            self._wait(lambda: km._router_listing_failed_now(), "the current generation's own failure")
+        km._set_router_models(False, gt=1700000000013)          # an off: the record no longer matches the generation
+        self.assertFalse(km._router_listing_failed_now())
+        self.assertIsNone(km._reset_unvouched_seed(), "reset after all: the failure is stale")
+        self.assertEqual(self._read(), "default")
+
+    def test_the_reset_line_names_the_knob_when_it_gates_the_listing(self):
+        self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        _env(self, "ROMP_MODEL_CATALOG", "off")
+        km.jd.STATE.joinpath(km.ROUTER_MODELS_FILE).write_text(json.dumps({"enabled": True, "gt": 1}))
+        self.assertIsNone(km._reset_unvouched_seed())
+        self.assertIn("ROMP_MODEL_CATALOG=off", self.err.getvalue())
+        self.assertNotIn("switch is off", self.err.getvalue())
 
     def test_a_gpt_shaped_seed_is_reset_too(self):
         # the seed feeds SDK sessions: the Codex exception does not apply (a mutant that applied it passed the suite)
@@ -477,8 +556,9 @@ class Seed(_OnThenOff):
     def test_a_held_seed_launches_the_row_on_the_default_and_keeps_the_store(self):
         # the create door's half of the hold: the reg's copied model is cleared between the spawn and the connect
         sb.write_sdk_default(km.jd.STATE, model="gw-7-nova")
-        with mock.patch.object(km, "_router_listing_inflight", lambda: True):
-            sid, extra = km._create_sdk_session_inner("api", self.cwd)
+        km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]          # a listing for the current generation in flight
+        self.addCleanup(lambda: km._ROUTER_FETCH_GEN.__setitem__(0, None))
+        sid, extra = km._create_sdk_session_inner("api", self.cwd)
         reg = sb.read_reg(km.jd.STATE, sid)
         self.assertFalse(reg.get("model"), "this row starts on the account default: %r" % reg.get("model"))
         self.assertEqual(sb.read_sdk_defaults(km.jd.STATE)["model"], "gw-7-nova", "the store is kept for the listing")

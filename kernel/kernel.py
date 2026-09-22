@@ -3142,10 +3142,10 @@ _ROUTER_GEN = [0]                            # the switch's generation: bumped u
 #                                              off flip, a declared apply delayed past a concurrent off) and is discarded, never installed
 _router_status_note = [None]                 # the standing EVENT-sourced advisory (the off flip's live sessions and tiers on a removed
 #                                              model; a listing that failed): written only through _router_set_note (a flip's word) and
-#                                              _router_swap_note (the fetch thread filing a failure over an empty note; the no-op off
-#                                              clearing a failure), each under _catalog_lock at the writer's own generation. The
-#                                              probe-shaped advisories (nothing declared, no gateway, a settings fault) are derived LIVE
-#                                              in _router_status, never frozen here (verify find, 2026-09-22)
+#                                              _router_swap_note (the fetch thread filing a failure over an empty note), each under
+#                                              _catalog_lock at the writer's own generation. The probe-shaped advisories (nothing
+#                                              declared, no gateway, a settings fault) are derived LIVE in _router_status, never frozen
+#                                              here (verify find, 2026-09-22)
 _ROUTER_FETCH_GEN = [None]                   # the generation whose listing fetch is in flight (None when none): the create door reads it
 _ROUTER_FETCH_FAILED_GEN = [None]            # the generation whose listing fetch FAILED (None when none, or once a later flip owns the
 #                                              catalog): a remembered listing-sourced pick is not a removal while this is the current
@@ -3276,7 +3276,7 @@ def _apply_router_families(ids, gen=None, reason=""):
         if gen is not None and gen != _ROUTER_GEN[0]:
             sys.stderr.write("extra models%s: a stale apply (switch generation %d, now %d) discarded; nothing installed\n"
                              % (" (%s)" % reason if reason else "", gen, _ROUTER_GEN[0]))
-            return None      # STALE, distinct from nothing-to-do: the caller does no bookkeeping on it (review find, 2026-09-21)
+            return None      # STALE, distinct from nothing-to-do: the caller writes no note and starts no fetch on it (review find, 2026-09-21)
         have = {m["value"] for m in MODEL_CHOICES}
         added = [g for g in ids if g and g not in have and not _router_first_party(g)]
         if added:
@@ -3299,12 +3299,13 @@ def _remove_router_families(gen=None):
     loses only what the apply added to IT (_ROUTER_INSTALLED_BY_SET), never anything the first-party catalog holds. A
     session already running a removed id keeps running it (the pick just stops being offered; a later pick of it is
     refused by _vouched_model). `gen` as for the apply: an older generation than the current one is a remove delayed
-    past a later flip, discarded (None, distinct from [] for nothing installed). Returns the ids removed; the caller
-    sends the models frame OUTSIDE _catalog_lock."""
+    past a later flip, discarded (None, distinct from [] for nothing installed; the caller then writes no advisory,
+    and frames as every applied flip does). Returns the ids removed; the caller sends the models frame OUTSIDE
+    _catalog_lock."""
     with _catalog_lock:
         if gen is not None and gen != _ROUTER_GEN[0]:
             sys.stderr.write("extra models: a stale remove (switch generation %d, now %d) discarded\n" % (gen, _ROUTER_GEN[0]))
-            return None      # STALE: the caller writes no advisory and sends no frame on it
+            return None      # STALE: the caller writes no advisory on it (the flip's frame goes out regardless)
         gone = sorted(_ROUTER_INSTALLED)
         if not gone:
             return []
@@ -3356,11 +3357,11 @@ def _router_models_gt():
 
 def _router_set_note(gen, text):
     """One of the standing advisory's two writers (the other, _router_swap_note, is the compare-and-swap the fetch
-    thread and the no-op off arm use): a flip's plain write, under _catalog_lock, and only when `gen` is still the
-    current switch generation. A slower earlier flip's bookkeeping (its note write, its stderr summary, its models frame) must not land
-    over a later flip's: before this, the note was written after the apply or remove with no check, so two overlapping
-    flips could leave an on switch showing the off flip's advisory, or an off switch showing none (verify find,
-    2026-09-22). Returns whether the write landed; a caller that reads False says nothing and sends nothing."""
+    thread uses): a flip's plain write, under _catalog_lock, and only when `gen` is still the current switch
+    generation. A slower earlier flip's note must not land over a later flip's: before this, the note was written after
+    the apply or remove with no check, so two overlapping flips could leave an on switch showing the off flip's
+    advisory, or an off switch showing none (verify find, 2026-09-22). Returns whether the write landed; a caller that
+    reads False leaves the later flip's word standing (the models frame goes out on every applied flip regardless)."""
     with _catalog_lock:
         if gen is not None and gen != _ROUTER_GEN[0]:
             return False
@@ -3370,10 +3371,10 @@ def _router_set_note(gen, text):
 
 def _router_swap_note(gen, expected, text):
     """The note's other writer: a compare-and-swap, under _catalog_lock at the writer's own generation, from `expected`
-    to `text` alone. The fetch thread files a failed listing only over an empty note (a flip's word since is not
-    overwritten), and the no-op off arm clears only a failed listing (an off advisory that stands is not). Returns
-    whether the swap landed. Together with _router_set_note these are the note's only writers (review round five,
-    2026-09-22: an audit of one helper's callers missed the two in-line writes these replace)."""
+    to `text` alone. Its one caller is the fetch thread, filing a failed listing only over an empty note (a flip's word
+    since is not overwritten; an applied off rewrites the note by recount, so no other clear is needed). Returns whether
+    the swap landed. Together with _router_set_note these are the note's only writers (review round five, 2026-09-22:
+    an audit of one helper's callers missed the in-line writes these replace)."""
     with _catalog_lock:
         if gen is not None and gen != _ROUTER_GEN[0]:
             return False
@@ -3396,6 +3397,15 @@ def _router_listing_failed_now():
     the account default."""
     with _catalog_lock:
         return _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == _ROUTER_GEN[0]
+
+
+def _router_listing_state():
+    """(in_flight, failed) for the CURRENT generation's listing, read as ONE snapshot under _catalog_lock: a reader that
+    took the two in turn could see a listing land between them and word its line by a state that no longer held."""
+    with _catalog_lock:
+        cur = _ROUTER_GEN[0]
+        return (_ROUTER_FETCH_GEN[0] is not None and _ROUTER_FETCH_GEN[0] == cur,
+                _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == cur)
 
 
 def _router_declared_effective():
@@ -17439,24 +17449,32 @@ def _reset_unvouched_seed():
     seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
     if not seed or seed == "default" or _vouched_model(seed):
         return
-    if not _router_first_party(seed) and (_router_listing_inflight() or _router_listing_failed_now()):
+    in_flight, failed = _router_listing_state()   # one snapshot: the line below is worded by a state that held at once
+    if not _router_first_party(seed) and (in_flight or failed):
         # the gateway's listing for the current generation has not landed (a create right after boot) or FAILED (nothing
         # retries it until the next flip or restart): the seed may be one of the ids that listing carries, so it is no
         # evidence of a removal, and a reset would lose a valid remembered model and name untrue causes. The store is
         # left alone, said once with the cause established, and THIS row launches on the account default (the caller
         # clears the reg's copied model between the spawn and the connect), so the pick survives the outage and no
-        # session launches unvouched (verify find and the second reviewer, 2026-09-22).
-        why = ("is still being fetched" if _router_listing_inflight() else "could not be fetched this generation")
+        # session launches unvouched (verify find and the second reviewer's note, 2026-09-22).
+        why = "is still being fetched" if in_flight else "could not be fetched this generation"
         sys.stderr.write("sdk-defaults model %r is not offered yet; the gateway's model list %s, so the seed is kept and "
                          "this session starts on the account default\n" % (seed, why))
         return "hold"
+    # the cause, as established: the knob when it gates the listing the pick would need, the switch when it is off,
+    # else a declaration that no longer carries the id (or a listing that never did)
+    if not _router_models_on():
+        cause = "the extra models switch is off"
+    elif (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip() and not _router_fetch_allowed():
+        cause = "the gateway's model list is not fetched under ROMP_MODEL_CATALOG=off"
+    else:
+        cause = "it is no longer declared, and the gateway's list does not carry it"
     # a compare-and-swap on the value judged: a dormant pick landing between the read and the write (a vouched alias,
     # its own fresh modelTok) must not be overwritten by a reset aimed at the seed that preceded it (review round
     # three, 2026-09-22)
     if sbmod.reset_sdk_default_model_if(jd.STATE, seed):
-        sys.stderr.write("sdk-defaults model %r is not a model this kernel offers (an extra gateway model whose "
-                         "switch is off, or one no longer declared); reset to the account default for the new "
-                         "session\n" % seed)
+        sys.stderr.write("sdk-defaults model %r is not a model this kernel offers (%s); reset to the account default for the "
+                         "new session\n" % (seed, cause))
 
 
 def _create_sdk_session_inner(nm, cwd, auth="", prefs=None, client=None, env=None, parent="", tags=()):
