@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from romp_load import load_source
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -173,6 +174,36 @@ class ChatNotices(unittest.TestCase):
         self.assertIn("    _rows_now = _needs_you_rows(feed)", KSRC, "the feed build files the rows beside the needs-you set")
 
         self.assertIn("    if _needs_rows_face(_rows_now) != _needs_rows_face(_feed_needs_rows[0]):\n        _pusher_wake.set()", KSRC, "a row change wakes the pusher, as a set change does")
+
+    def test_a_rows_face_moving_with_the_set_unchanged_wakes_the_pusher(self):
+        """The second contributor's post-merge review of PR 1967 (2026-09-22): the row-face wake at the feed build's end was pinned by source
+        text alone. Three builds over one blocked goal, the bells and pushes stubbed: the first files the row (and wakes, as the set moved
+        too); the second, over an unchanged store, leaves the cleared wake unset; the third, after the brief changed on disk with the set
+        unchanged, finds it set. With the compare gated off the third finds it unset."""
+        brief = km.jd.STATE / "brief-on-disk.txt"; brief.write_text("which database does the suite target?")
+        gid = SID + ":g1"
+
+        def feed(now, live_map):
+            return {"type": "feed", "asks": [{"itemId": gid, "sid": SID, "name": "web", "text": "pick the suite's database", "column": "needs_input",
+                                             "category": "needs_input", "blockSummary": brief.read_text(), "blocked": None, "live": True,
+                                             "tree": [{"id": gid, "kind": "ask", "text": "pick the suite's database", "status": "open", "children": []}]}],
+                    "items": [], "working": [], "awaiting": [], "stateUnknown": [], "sessions": [{"sid": SID, "name": "web"}]}
+        saved = list(km._built_feed)
+        try:
+            with mock.patch.object(km, "build_feed", feed), mock.patch.object(km, "_task_tracking_on", lambda: True), \
+                 mock.patch.object(km, "_feed_notifications", lambda f: []), mock.patch.object(km, "_badge_push", lambda n: None):
+                km._pusher_wake.clear(); km._build_feed_locked(100, {}, "s1")
+                self.assertEqual([r["itemId"] for r in km._feed_needs_rows[0].get(SID, [])], [gid], "the first build files the row")
+                self.assertTrue(km._pusher_wake.is_set(), "and wakes: the set and the rows moved from nothing")
+                km._pusher_wake.clear(); km._build_feed_locked(101, {}, "s2")
+                self.assertFalse(km._pusher_wake.is_set(), "an unchanged store: the set and the rows' face stand, no wake")
+                brief.write_text("which database does the suite target, and which loader?")   # the brief changed on disk; the set unchanged
+                km._pusher_wake.clear(); km._build_feed_locked(102, {}, "s3")
+                self.assertTrue(km._pusher_wake.is_set(), "a row's line moved with the set unchanged: the pusher wakes, so the box follows the card by one build (before, pinned by source text alone)")
+                self.assertEqual(km._feed_needs_rows[0][SID][0]["body"], "which database does the suite target, and which loader?")
+        finally:
+            km._built_feed[:] = saved; km._pusher_wake.clear()
+            brief.unlink(missing_ok=True)
 
     def test_a_decision_a_clear_and_an_expiry_drop_the_row(self):
         km.post_notice(SID, "m1", "t", producer="postal", actions=_held("m1"), needs_you=True, dismiss_on_action=True, now=100, t=100)

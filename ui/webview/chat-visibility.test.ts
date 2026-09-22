@@ -76,7 +76,7 @@ test("no observer, or no body: nothing is installed and nothing published; the s
 // ── the source pins ──
 test("render.ts installs the publisher once, at top level, over the page's body, and gates no paint; the module reads the frame's own visibility", () => {
   assert.match(RENDER, /^import \{ watchChatVisibility, browserChatVisibilityDeps \} from "\.\/chat-visibility";/m);
-  assert.match(RENDER, /^watchChatVisibility\(document\.body, browserChatVisibilityDeps\(\)\);/m, "top level, so it runs when the bundle loads (the script sits at the end of the body)");
+  assert.match(RENDER, /^watchChatVisibility\(document\.body, \{ \.\.\.browserChatVisibilityDeps\(\), onShown: renderNoticeDisclosures \}\);/m, "top level, so it runs when the bundle loads (the script sits at the end of the body); the return edge re-measures the Needs you box's disclosures (the post-merge review of PR 1967)");
   assert.equal(RENDER.split("watchChatVisibility(").length - 1, 1, "once");
   assert.ok(!RENDER.includes("paintHeld(") && !RENDER.includes("paintReleased("), "the chat gates no paint: every frame paints");
   assert.ok(!SRC.includes("__rompPaneHidden"), "the flag's name lives in paint-gate.ts: one publisher shape for every pane");
@@ -87,4 +87,14 @@ test("render.ts installs the publisher once, at top level, over the page's body,
   assert.ok(!/set(Interval|Timeout)|requestAnimationFrame/.test(SRC), "on events only, never a timer");
   assert.ok(!SRC.includes("postMessage") && !SRC.includes("parent"), "the frame's own visibility: no shell message, no parent read");
   assert.match(SRC, /Observer: typeof IntersectionObserver === "undefined" \? null : IntersectionObserver,/, "the browser deps: the page's own observer, or none");
+});
+
+test("the pane's return (hidden published, then visible) calls onShown once, on the edge alone: not on the first show, not on the way to hidden, not on a repeated visible word (the post-merge review of PR 1967: a measure taken in a display:none pane is no information)", () => {
+  const w = world(); let shown = 0; (w.deps as ChatVisibilityDeps).onShown = () => { shown++; };
+  watchChatVisibility({} as Element, w.deps);
+  w.entry(true); assert.equal(shown, 0, "the first show is no return");
+  w.entry(false); assert.equal(shown, 0, "hiding is no return");
+  w.entry(true); assert.equal(shown, 1, "the return: hidden, then visible");
+  w.tab("visible"); assert.equal(shown, 1, "a repeated visible word is no edge");
+  w.tab("hidden"); w.tab("visible"); assert.equal(shown, 2, "the tab's own hide and return count the same way");
 });

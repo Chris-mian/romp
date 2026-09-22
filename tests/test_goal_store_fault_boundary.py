@@ -1414,7 +1414,7 @@ class ActsUnderAFailedWrite(_World):
             self.assertEqual(payloads(), (False, 0, False, 0), "the log alone while the note cannot be read")
             self.assertEqual(km._undo_stack_ids(), set())
         self.assertFalse(km._owed_note_read[0], "armed until a read lands")
-        self.assertEqual(len(self._rows("owed-note")) - rows0, 1, "five reads of the standing fault, one judge-errors row (before: one per read): %r" % self._rows("owed-note"))
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 1, "four reads of the standing fault (two per build, one per off frame, one direct), one judge-errors row (before: one per read): %r" % self._rows("owed-note"))
         self.assertIn("Permission denied", self._rows("owed-note")[-1]["note"])
         self.assertEqual(payloads(), (True, 1, True, 1), "readable again: the read lands and the button is back")
         with mock.patch.object(Path, "read_text", refusing_read):
@@ -1428,11 +1428,24 @@ class ActsUnderAFailedWrite(_World):
             km._undo_stack_ids()
         self.assertEqual(len(self._rows("owed-note")) - rows0, 3, "the same fault after the Undo's landed read is a new episode: a third row")
         self._dispatch({"type": "undoClear"})              # the last clear back too, so the log is empty again for the corrupt-note case
+        # an ABSENT note read by an Undo ends the episode too (the first contributor's note on PR 2014: the reset sat after the try, so the
+        # missing-note arm returned before it and the identical fault filed nothing)
+        with mock.patch.object(Path, "read_text", refusing_read):
+            km._rejournal_owed.clear(); km._owed_note_read[0] = False
+            km._undo_stack_ids()                                                              # a fourth row: a new episode after the landed read above
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 4)
+        owed_file.unlink(missing_ok=True)
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"}); self._dispatch({"type": "undoClear"})   # the Undo's read finds no note: a landed read
+        with mock.patch.object(Path, "read_text", refusing_read):
+            km._rejournal_owed.clear(); km._owed_note_read[0] = False
+            owed_file.write_text("")                                                          # present again, unreadable
+            km._undo_stack_ids()
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 5, "the same fault after an absent-note read is a new episode (before: the missing-note arm left the memo standing)")
         # a note whose bytes are not text (the thirteenth executed review: a ValueError raised through every builder, nothing filed)
         km._rejournal_owed.clear(); km._owed_note_read[0] = False; km._owed_read_fault[0] = ""
         owed_file.write_bytes(b"\xff\xfe\x00 not text")
         self.assertEqual(payloads(), (False, 0, False, 0), "a corrupt note: the builders proceed on the log alone, nothing raises")
-        self.assertEqual(len(self._rows("owed-note")) - rows0, 4, "and it is filed once")
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 6, "and it is filed once")
         self.assertIn("codec", self._rows("owed-note")[-1]["note"])
         sent = self._dispatch({"type": "undoClear"})
         self.assertIn("romp could not read its note of earlier owed cards", [m.get("title") for m in sent if m.get("type") == "err"], "an Undo over a corrupt note says so on its frame: %r" % sent)
@@ -1459,6 +1472,91 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no ack beside an account")
         sent = self._dispatch({"type": "askClear", "itemId": A + ":g2"})
         self.assertEqual([m for m in sent if m.get("type") in ("undoAck", "err")], [], "a clear that lands sends nothing: the floor is an undo's")
+
+    def test_an_undo_account_marks_the_clients_floor_pending_so_the_rebuild_past_it_goes_and_echoes_the_undos_sequence(self):
+        """The first contributor's post-merge review of PR 1967 (M1, M2) and round two of PR 2018's verifier. M1: a build claimed at or below
+        the floor whose clears snapshot followed the restore lists the card, which the pane refuses, while the rebuild past the floor carries
+        the same dedup signature (buildId is volatile) and would not go until the 60 s repost; a slot pop at the account could land between
+        the in-flight build's claim and its send, which then refilled the slot. While the undo's floor is unanswered the client's feed frames
+        carry their build id in the signature, so the in-flight build and the rebuild never share one; the mark clears once a build past the
+        floor has gone. M2: the feed's per-undo sequence rides the request and comes back on the ack and on every undo account frame."""
+        sent = []
+
+        def client_of(**extra):
+            return dict({"app": "feed", "alive": True, "send": lambda s: sent.append(json.loads(s)), "sent": {}}, **extra)
+
+        def push(c, bid):                                 # the pusher's road: one build to this client, identical content every time
+            p = {"type": "feed", "buildId": bid, "asks": [{"itemId": A + ":g1", "sid": A}], "now": NOW}; s_ = json.dumps(p)
+            n0 = len(sent); km._send_slot(c, "feed", p, s_, km._dedup_sig(p, s_)); return len(sent) > n0
+        for road, c in (("legacy", client_of()), ("delta", client_of(delta=True))):
+            self.assertTrue(push(c, 3), road + ": the first frame goes")
+            self.assertFalse(push(c, 4), road + ": an identical-content build is deduped (buildId is volatile)")
+            km._gesture_store_refusal(c, "undo", {}, ids=[], op="undoClear", seq=7)
+            floor = km._feed_build_id[0]
+            self.assertEqual([(m["op"], m["seq"], m["buildId"]) for m in sent if m.get("type") == "undoAck"][-1:], [("undoClear", 7, floor)], road + ": the ack echoes the sequence and the floor: %r" % sent[-1:])
+            # THE RACE (round two of PR 2018's verifier): the in-flight build, claimed at the floor before the account and sent after it,
+            # refills the slot; the rebuild past the floor carries the same content and must still go (False at 583ab08b)
+            self.assertTrue(push(c, floor), road + ": the in-flight build at the floor goes")
+            self.assertTrue(push(c, floor + 1), road + ": the rebuild past the floor goes though its content is the in-flight build's (before: deduped until the repost)")
+            self.assertNotIn("floorPending", c, road + ": a build past the floor sent, the mark clears")
+            self.assertNotEqual(c.get("floorPending"), floor, road + ": (the mark stood at the floor between the account and that build)")
+            if road == "delta":
+                self.assertTrue(push(c, floor + 2), "delta: the next build re-bases the delta stream with one whole frame (the base was forgotten under the mark)")
+            self.assertFalse(push(c, floor + 3 if road == "delta" else floor + 2), road + ": and the dedup stands again")
+        sent.clear()
+        client = client_of()
+        km._gesture_store_refusal(client, "clear", {}, ids=[A + ":g1"], op="askClear", seq=8)
+        self.assertEqual(sent, [], "a clear's account carries no floor and no ack: the sequence is an undo's"); self.assertNotIn("floorPending", client)
+        km._gesture_store_refusal(client, "undo", {km.LEDGER_KEY: {"fault": "the log refused", "ids": [A + ":g1"]}}, ids=[A + ":g1"], op="undoClear", seq=9)
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([(m["op"], m.get("seq"), "buildId" in m) for m in errs], [("undoClear", 9, True)], "the refusal's frame echoes the sequence beside the floor: %r" % errs)
+        self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no ack beside an account")
+        # the arm passes the request's sequence through, an int alone
+        sent = self._dispatch({"type": "askClear", "itemId": A + ":g1"}); sent = self._dispatch({"type": "undoClear", "seq": 11})
+        self.assertEqual([m.get("seq") for m in sent if m.get("type") == "undoAck"], [11])
+        sent = self._dispatch({"type": "askClear", "itemId": A + ":g1"}); sent = self._dispatch({"type": "undoClear", "seq": True})
+        self.assertEqual([("seq" in m) for m in sent if m.get("type") == "undoAck"], [False], "a sequence that is not a number is not echoed")
+
+    def test_every_clears_log_refusal_files_a_judge_errors_row(self):
+        """The second contributor's post-merge review (2026-09-22): the four clears-log refusal arms (a clear's rows, an undo's rows, the
+        flag-step re-journal, the re-journal-first rows) reached the pressing socket and nothing followed, while the note helpers' arms
+        record theirs. Each files one judge-errors row (clears-log) and a stderr line."""
+        rows = lambda: len(self._rows("clears-log"))
+        n0 = rows()
+        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+            self._dispatch({"type": "askClear", "itemId": A + ":g1"})                # the clear rows refused
+        self.assertEqual(rows() - n0, 1, "the clear rows' refusal files: %r" % self._rows("clears-log"))
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+            self._dispatch({"type": "undoClear"})                                     # the undo rows refused
+        self.assertEqual(rows() - n0, 2, "the undo rows' refusal files")
+        self._dispatch({"type": "undoClear"})                                         # A back
+        self._two_fault_undo_leaves_b_owed()                                           # the flag-step re-journal refused: B owed
+        self.assertEqual(rows() - n0, 3, "the flag-step re-journal's refusal files")
+        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+            self._dispatch({"type": "undoClear"})                                     # the owed id's re-journal-first rows refused
+        self.assertEqual(rows() - n0, 4, "the re-journal-first refusal files")
+        self.assertEqual([r["note"].split(" refused")[0] for r in self._rows("clears-log")[-4:]],
+                         ["clears log: the clear rows", "clears log: the undo rows", "clears log: the flag-step re-journal", "clears log: the re-journal-first rows"])
+
+    def test_a_clears_account_after_a_restart_carries_the_owing_the_note_holds(self):
+        """The second contributor's post-merge review (2026-09-22): the restart-owing load on a non-undo account was pinned by no behaviour
+        (a `pass` left the module green). After a restart (memory empty, the note on disk) a clear the log refuses carries the owed id
+        in its account's stack."""
+        self._two_fault_undo_leaves_b_owed()
+        km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_note_read[0] = False   # a restart
+        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+            sent = self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["owedBatch"] for m in errs], [[B + ":g1"]], "the account's stack carries the owing the note holds (before: empty until the first Undo read it): %r" % errs)
+
+    def test_a_note_row_that_is_not_json_is_skipped_and_the_others_load(self):
+        """The second contributor's post-merge review (2026-09-22): the note read's row guard was pinned by no behaviour. A row that is not
+        JSON is skipped; the id beside it loads; nothing raises."""
+        (jd.STATE / km.OWED_FILE).write_text("{not json\n" + json.dumps({"id": B + ":g1"}) + "\n")
+        km._rejournal_owed.clear(); km._owed_note_read[0] = False; km._owed_read_fault[0] = ""
+        self.assertEqual(km._undo_stack_ids(), {B + ":g1"}, "the garbage row is skipped, the id beside it loads")
+        self.assertTrue(km._owed_note_read[0], "and the read counts as landed")
 
     def test_the_off_frame_over_an_undecodable_clears_log_ships_zero_counts(self):
         """The thirteenth executed review (2026-09-22): the off frame's guarded clears-log read was dead code once the stack helper replaced it,

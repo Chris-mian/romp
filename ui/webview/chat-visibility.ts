@@ -20,6 +20,7 @@ export interface ChatVisibilityDeps {
   doc: { readonly hidden: boolean; addEventListener(type: "visibilitychange", listener: () => void): void };
   win: PaneHiddenHost;
   Observer: ObserverCtor | null;
+  onShown?: () => void;   // the pane's return into view (hidden published, then visible): a measure taken while hidden was no information
 }
 
 /** Publish the chat page's hidden word on its own events. `root` is the element the observer watches (the
@@ -27,7 +28,12 @@ export interface ChatVisibilityDeps {
 export function watchChatVisibility(root: Element | null, deps: ChatVisibilityDeps): void {
   if (!root || !deps.Observer) return;
   let intersecting: boolean | null = null;   // the observer's last word; null until it speaks
-  const publish = () => { publishPaneHidden(deps.doc.hidden, intersecting, deps.win); };
+  let lastHidden: boolean | null = null;      // the last word published, for the return's edge
+  const publish = () => {
+    const hidden = publishPaneHidden(deps.doc.hidden, intersecting, deps.win);
+    if (lastHidden === true && hidden === false) { try { deps.onShown?.(); } catch (e) { console.error(e); } }   // the return: hidden, then visible
+    lastHidden = hidden;
+  };
   new deps.Observer((entries) => { intersecting = entries.some((e) => e.isIntersecting); publish(); }).observe(root);
   deps.doc.addEventListener("visibilitychange", publish);
 }

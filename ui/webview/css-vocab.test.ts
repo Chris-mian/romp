@@ -233,16 +233,20 @@ test("the bubble's inner-markdown overrides OUTRANK .md — the doubled-selector
 });
 
 test("the Needs you box's rules (.ntc-, #notices) draw their colours from the tokens: the accent and its color-mix, the box and state tokens, transparent; the one literal is the destructive red (the box review of PR 1967, the round-thirteen verifier's low)", () => {
-  const rules = Array.from(CHAT.matchAll(/^((?:\.ntc-|#notices|body\.dense-chrome \.ntc-)[^{\n]*)\{([^}]*)\}/gm), (m) => m[1] + "{" + m[2].replace(/\n/g, " ") + "}");   // whole rule blocks, continuation lines included (the round-fourteen verifier's low: a colour on a continuation line passed)
+  // whole rule blocks wherever they start (a line's start or the previous block's close: the first contributor's note on PR 2014), continuation
+  // lines included (the round-fourteen verifier's low: a colour on a continuation line passed), comments stripped first
+  const boxRules = (css: string) => Array.from(css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(?<=^|\})\s*((?:\.ntc-|#notices|body\.dense-chrome \.ntc-)[^{]*?)\{([^}]*)\}/g), (m) => m[1].trim() + " {" + m[2].replace(/\n/g, " ") + "}");
+  const decls = (rule: string) => Array.from(rule.matchAll(/(?:^|[\s;{])(color|background(?:-color)?|border(?:-(?:color|top|bottom|left|right))?)\s*:\s*([^;}]+)[;}]/g), (m) => [m[1], m[2].trim()] as [string, string]);
+  // the scanner's own self-checks: a second rule on the same line is read, and a border-bottom literal on a continuation line is seen
+  assert.deepEqual(boxRules(".x { color: red } .ntc-a { color: var(--fg) } .ntc-b { background: #123456 }").map((r) => r.split(" {")[0]), [".ntc-a", ".ntc-b"], "two box rules on one line are both read");
+  assert.deepEqual(decls(".ntc-head { padding: 7px;\n  border-bottom: 1px solid #123456; }"), [["border-bottom", "1px solid #123456"]], "a border-bottom on a continuation line is a colour declaration");
+  const rules = boxRules(CHAT);
   assert.ok(rules.length >= 20, "the box's rules are present: " + rules.length);
   assert.ok(rules.some((r) => r.startsWith("#notices {") && r.includes("border-radius")), "the multi-line rules are read whole: " + rules.filter((r) => r.startsWith("#notices")).join(" | ").slice(0, 200));
   const vocab = (v: string) => /^var\(--[a-z-]+\)$/.test(v) || /^color-mix\(in srgb, var\(--[a-z-]+\) \d+%, transparent\)$/.test(v) || v === "transparent"
     || /^1px solid var\(--[a-z-]+\)$/.test(v) || /^linear-gradient\(var\(--[a-z-]+\), var\(--[a-z-]+\)\), var\(--[a-z-]+\)$/.test(v)   // the header's opaque ground, in tokens
     || v === "#e5484d" || v === "rgba(229, 72, 77, 0.6)" || v === "#fff";
-  for (const line of rules) {
-    const decl = line.replace(/\/\*.*?\*\//g, "");
-    for (const m of decl.matchAll(/(?:^|[\s;{])(color|background|border(?:-color|-top)?)\s*:\s*([^;]+);/g)) assert.ok(vocab(m[2].trim()), "a box colour outside the vocabulary: " + line.trim());
-  }
+  for (const rule of rules) for (const [, v] of decls(rule)) assert.ok(vocab(v), "a box colour outside the vocabulary: " + rule.trim());
   assert.match(CHAT, /\.ntc-head \{[^}]*background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "the header's opaque ground is the box wash over the page, in tokens");
   for (const [name, css, sel] of [["styles.css", CHAT, ".ntc-btn.ntc-ok"], ["feed.css", FEED, ".fdismiss.fq-ok"]] as const) {
     const rule = css.split("\n").find((l) => l.startsWith(sel + " {")) || "";

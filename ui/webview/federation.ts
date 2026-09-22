@@ -1520,7 +1520,7 @@ export class FederationManager {
       this.undoRefusers = []; this.clearRoutedSinceUndo = false;
       // the panes' word on where the undo went (round twelve of PR 1967): the feed releases the suppressions of the cards on these kernels, so their
       // payloads can show the restored cards; read from the routing's owner here, since the send consumes it and the board's Clear all fans out
-      window.dispatchEvent(new MessageEvent("message", { data: { type: "undoRouted", hosts: hosts.slice() } }));
+      window.dispatchEvent(new MessageEvent("message", { data: { type: "undoRouted", hosts: hosts.slice(), seq: typeof m.seq === "number" ? m.seq : undefined } }));   // the feed's per-undo sequence rides (the post-merge review of PR 1967, M2)
       for (const h of hosts) this.sendTo(h, m);
       return;
     }
