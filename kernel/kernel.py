@@ -3146,6 +3146,9 @@ _router_status_note = [None]                 # the standing EVENT-sourced adviso
 #                                              probe-shaped advisories (nothing declared, no gateway, a settings fault) are derived LIVE
 #                                              in _router_status, never frozen here (verify find, 2026-09-22)
 _ROUTER_FETCH_GEN = [None]                   # the generation whose listing fetch is in flight (None when none): the create door reads it
+_ROUTER_FETCH_FAILED_GEN = [None]            # the generation whose listing fetch FAILED (None when none, or once a later flip owns the
+#                                              catalog): a remembered listing-sourced pick is not a removal while this is the current
+#                                              generation, nothing retrying a failed listing (the second reviewer's note, 2026-09-22)
 _router_probe_said = [None]                  # the settings-read fault last said on stderr (once per distinct fault; the payload carries a
 #                                              static phrase, never the file's path)
 # The advisories the authed /models `router` section carries (the gear's status line prints them): static phrases, never a
@@ -3285,7 +3288,8 @@ def _apply_router_families(ids, gen=None, reason=""):
                     _ROUTER_INSTALLED_BY_SET[name].update(fresh)
             _ROUTER_INSTALLED.update(added)
             _ROUTER_EVER.update(added)
-    _router_tell_backend()   # in every case: a flip applied before the backend module registered must still reach it
+    _router_tell_backend()   # in every case, added or not: the told set is the kernel's whole _ROUTER_EVER, and a module that
+    #                          registered since the last apply learns it here (the boot's own tell covers the boot road)
     return added
 
 
@@ -3385,6 +3389,14 @@ def _router_listing_inflight():
         return _ROUTER_FETCH_GEN[0] is not None and _ROUTER_FETCH_GEN[0] == _ROUTER_GEN[0]
 
 
+def _router_listing_failed_now():
+    """Whether the CURRENT generation's listing fetch failed: an unvouched seed is then no evidence of a removal (the id
+    may be one the listing would have installed), and the create door keeps the store while launching that one row on
+    the account default."""
+    with _catalog_lock:
+        return _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == _ROUTER_GEN[0]
+
+
 def _router_declared_effective():
     """The declared list AFTER the first-party skip: what the payload reports as declared and what the pickers can
     gain (a declared Claude version id or family alias is never a gateway row; the apply says the skip)."""
@@ -3453,6 +3465,9 @@ def _router_apply_declared(reason, gen=None):
             except Exception as e:
                 sys.stderr.write("extra models (%s): the gateway's model list failed (%s: %s) — serving the "
                                  "declared list\n" % (reason, type(e).__name__, str(e)[:160]))
+                with _catalog_lock:
+                    if gen == _ROUTER_GEN[0]:
+                        _ROUTER_FETCH_FAILED_GEN[0] = gen      # the create door reads it: no seed reset over a failed listing
                 if _router_swap_note(gen, None, ROUTER_NOTE_LISTING_FAILED):   # at THIS generation, over an empty note only
                     _models_changed()        # the gear's line repaints from the models frame alone (verify find, 2026-09-22)
             finally:
@@ -3485,45 +3500,42 @@ def _set_router_models(enabled, gt=None):
             return None
         _ROUTER_GEN[0] += 1
         gen = _ROUTER_GEN[0]
+    # The models frame goes out on EVERY applied flip, the stale paths included (the second reviewer's note, 2026-09-22): the gear's line and
+    # the pickers redraw from that frame alone, and a flip whose catalog work a later flip superseded still changed the
+    # store the frame's readers consult.
     if enabled:
-        if _router_apply_declared("switch on", gen=gen) is None:
-            return stamp     # stale (a later flip owns the catalog): the store took the gesture, nothing else moves
+        _router_apply_declared("switch on", gen=gen)    # None when stale: a later flip owns the catalog and the note
     else:
         gone = _remove_router_families(gen=gen)
-        if gone is None:
-            return stamp     # stale: the on flip that followed keeps its advisory and its rows; no frame
-        if not gone:
-            # nothing was installed (a repeated off at a newer stamp; a first off after an empty on: a URL-only
-            # configuration whose listing failed, first-party ids alone, nothing declared): no recount and no off
-            # advisory, so the word of the flip that removed something stands (review round three); but a note the ON
-            # generation left (a failed listing) is cleared at this generation, and the models frame goes out as on
-            # every applied flip, the gear's line reading that frame alone (review round four, 2026-09-22)
-            _router_swap_note(gen, ROUTER_NOTE_LISTING_FAILED, None)
-            _models_changed()
-            return stamp
-        live = _router_live_on(set(gone)) if gone else 0
-        tiers = _router_tiers_on(set(gone)) if gone else []
-        judges = [t for t in tiers if t != "comment"]
-        parts = []
-        if live is None:
-            parts.append(ROUTER_NOTE_COUNT_UNKNOWN)
-        elif live:
-            parts.append("%d live session(s) still run a removed model; a later pick of one is refused" % live)
-        if judges:
-            parts.append("the %s judge tier(s) keep a removed model" % ", ".join(judges))
-        if "comment" in tiers:
-            parts.append("the default for new comment threads is a removed model; new threads inherit their parent until it is changed")
-        if not _router_set_note(gen, "; ".join(parts) if parts else None):
-            return stamp     # a later flip landed first: its advisory stands, and this one says and sends nothing
-        if gone:
-            tail = ""
-            if live or live is None:
-                tail += " — %s live session(s) keep running one" % ("?" if live is None else live)
+        if gone is not None:
+            # Every applied off recounts against EVERY id this kernel ever installed (_ROUTER_EVER), whatever this
+            # remove found: a second off landing during the first's count found nothing installed and used to return
+            # unrecounted while the first's note write was refused as stale, so the sessions still on the removed rows
+            # were named nowhere and the log carried no removal (the second reviewer's note, 2026-09-22). The stderr summary, gated on the
+            # removed set, is written BEFORE the note write, which a later flip may refuse.
+            ids = set(_ROUTER_EVER) | set(gone)
+            live = _router_live_on(ids) if ids else 0
+            tiers = _router_tiers_on(ids) if ids else []
+            judges = [t for t in tiers if t != "comment"]
+            parts = []
+            if live is None:
+                parts.append(ROUTER_NOTE_COUNT_UNKNOWN)
+            elif live:
+                parts.append("%d live session(s) still run a removed model; a later pick of one is refused" % live)
             if judges:
-                tail += " — the %s judge tier(s) keep one" % ", ".join(judges)
+                parts.append("the %s judge tier(s) keep a removed model" % ", ".join(judges))
             if "comment" in tiers:
-                tail += " — the default for new comment threads is one (new threads inherit their parent)"
-            sys.stderr.write("extra models (switch off): %d left the pickers: %s%s\n" % (len(gone), ", ".join(gone), tail))
+                parts.append("the default for new comment threads is a removed model; new threads inherit their parent until it is changed")
+            if gone:
+                tail = ""
+                if live or live is None:
+                    tail += " — %s live session(s) keep running one" % ("?" if live is None else live)
+                if judges:
+                    tail += " — the %s judge tier(s) keep one" % ", ".join(judges)
+                if "comment" in tiers:
+                    tail += " — the default for new comment threads is one (new threads inherit their parent)"
+                sys.stderr.write("extra models (switch off): %d left the pickers: %s%s\n" % (len(gone), ", ".join(gone), tail))
+            _router_set_note(gen, "; ".join(parts) if parts else None)   # refused when a later flip landed first: its word stands
     _models_changed()
     return stamp
 
@@ -3568,6 +3580,9 @@ def _router_models_boot():
         return []
     added = _router_apply_declared("boot", gen=gen)
     _router_tell_backend()
+    if added:
+        _models_changed()   # a page whose /models read landed before this boot's install keeps the stock list otherwise:
+        #                     the frame reaches every client bound by now, and the reconnect re-read covers the rest (the second reviewer's note)
     return added or []
 
 
@@ -17423,14 +17438,17 @@ def _reset_unvouched_seed():
     seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
     if not seed or seed == "default" or _vouched_model(seed):
         return
-    if _router_listing_inflight() and not _router_first_party(seed):
-        # the gateway's listing for the current generation has not landed yet (a create right after boot): the seed may
-        # be one of the ids it is about to install, and a reset here would lose a valid remembered model. Left alone,
-        # said once; the new row starts on the seed as before, vouched the moment the listing lands (verify find,
-        # 2026-09-22). A removed id that the listing does not carry is reset at the next create.
-        sys.stderr.write("sdk-defaults model %r is not offered yet; the gateway's model list is still being fetched, so "
-                         "the seed is left as it is for this session\n" % seed)
-        return
+    if not _router_first_party(seed) and (_router_listing_inflight() or _router_listing_failed_now()):
+        # the gateway's listing for the current generation has not landed (a create right after boot) or FAILED (nothing
+        # retries it until the next flip or restart): the seed may be one of the ids that listing carries, so it is no
+        # evidence of a removal, and a reset would lose a valid remembered model and name untrue causes. The store is
+        # left alone, said once with the cause established, and THIS row launches on the account default (the caller
+        # clears the reg's copied model between the spawn and the connect), so the pick survives the outage and no
+        # session launches unvouched (verify find and the second reviewer, 2026-09-22).
+        why = ("is still being fetched" if _router_listing_inflight() else "could not be fetched this generation")
+        sys.stderr.write("sdk-defaults model %r is not offered yet; the gateway's model list %s, so the seed is kept and "
+                         "this session starts on the account default\n" % (seed, why))
+        return "hold"
     # a compare-and-swap on the value judged: a dormant pick landing between the read and the write (a vouched alias,
     # its own fresh modelTok) must not be overwritten by a reset aimed at the seed that preceded it (review round
     # three, 2026-09-22)
@@ -17469,11 +17487,16 @@ def _create_sdk_session_inner(nm, cwd, auth="", prefs=None, client=None, env=Non
     push."""
     bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
     _commands_for_cwd(cwd)   # pre-warm the slash-command list — a new session predicts a composer (the user 2026-08-13)
-    _reset_unvouched_seed()   # BEFORE the spawn, which copies the seed into the new row unchecked
+    hold = _reset_unvouched_seed()   # BEFORE the spawn, which copies the seed into the new row unchecked
     # env rides the SPAWN (the reg is born with it), not the prefs pass behind it: the prefs pass
     # runs pre-connect (pure reg writes), so its env leg sees the reg already carrying this env and
     # skips the set — the echo still comes back through `extra`.
     sid = _sdk().spawn(nm, cwd, bg, fg, auth=auth, env=env)
+    if hold == "hold":
+        # the seed stays for a listing still pending or failed (see _reset_unvouched_seed); this row alone starts on the
+        # account default: the reg's copied model is cleared here, between the spawn and the connect, a reg write and
+        # never set_model (which would re-seed the store)
+        _sdk()._update_reg(sid, model="", liveModel="")
     extra = _apply_new_session_prefs(sid, prefs or {})
     # `parent` (a sid) + `tags` (names) — tab groups on tags (the user 2026-09-04): the child inherits
     # the parent's tag memberships and joins the named tags BEFORE the direct push below, so the very
@@ -38976,6 +38999,13 @@ def _apply_pending_ops(now=None):
                             be.set_model(sid, op[1])
                         else:
                             refused = True
+                            # the stamp the setter put up at park time rides both surfaces' dots for 20 s: taken back
+                            # when it is this pick's (a later pick's stamp is left), as _model_park_refused does
+                            # (the second reviewer's note, 2026-09-22)
+                            st = _model_switch_pending.get(str(sid))
+                            if st and st.get("target") == op[1]:
+                                _model_switch_pending.pop(str(sid), None)
+                                _mark_views_dirty()
                     elif op[0] == "effort":
                         # the verdict is READ, as the command and compact arms read theirs: a level the backend refuses
                         # at fire time (a Codex model whose catalog does not offer it after a model change under the

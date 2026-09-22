@@ -81,6 +81,7 @@ class _Catalog(unittest.TestCase):
         self._by_set = {k: set(v) for k, v in km._ROUTER_INSTALLED_BY_SET.items()}
         self._ever = set(km._ROUTER_EVER)
         self._gen = km._ROUTER_GEN[0]
+        km._ROUTER_FETCH_GEN[0] = None; km._ROUTER_FETCH_FAILED_GEN[0] = None   # a previous test's generation numbers recur here
         self._note = km._router_status_note[0]
         self._said = km._router_probe_said[0]
         self._sb_ids = sb._ROUTER_IDS
@@ -115,6 +116,7 @@ class _Catalog(unittest.TestCase):
             km._ROUTER_INSTALLED_BY_SET[k].clear(); km._ROUTER_INSTALLED_BY_SET[k].update(v)
         km._ROUTER_EVER.clear(); km._ROUTER_EVER.update(self._ever)
         km._ROUTER_GEN[0] = self._gen
+        km._ROUTER_FETCH_GEN[0] = None; km._ROUTER_FETCH_FAILED_GEN[0] = None
         km._router_status_note[0] = self._note
         km._router_probe_said[0] = self._said
         sb._ROUTER_IDS = self._sb_ids
@@ -436,7 +438,7 @@ class Switch(_Catalog):
             with mock.patch.object(km, "_remove_router_families", late_remove):
                 self.assertEqual(km._set_router_models(False, gt=11), 11, "the store took the gesture")
             self.assertEqual(km._router_status_note[0], note_on, "the standing advisory is not nulled")
-            self.assertEqual(len(self.frames), n_on, "no frame on a stale remove")
+            self.assertEqual(len(self.frames), n_on + 1, "a frame on every applied flip, the stale remove included")
             self.assertTrue(km._vouched_model("gw-6-astra"), "the later on's rows stand")
 
             def late_apply(ids, gen=None, reason=""):
@@ -448,7 +450,7 @@ class Switch(_Catalog):
             # is the evidence, not a sleep (review round four)
             self.assertIsNone(km._ROUTER_FETCH_GEN[0], "a stale apply arms no listing fetch")
             self.assertEqual(len(calls), n_calls, "and none ran")
-            self.assertEqual(len(self.frames), n_on, "and sends no frame")
+            self.assertEqual(len(self.frames), n_on + 2, "but the flip frames, as every applied flip does")
 
     def test_a_slower_earlier_flip_cannot_overwrite_a_later_flips_advisory(self):
         # the verify round's find: the note was written after the apply or remove with no generation check, so an on
@@ -475,7 +477,7 @@ class Switch(_Catalog):
         n = len(self.frames)
         gate.set(); t.join(5)
         self.assertEqual(km._router_status_note[0], off_note, "the later off flip's advisory stands")
-        self.assertEqual(len(self.frames), n, "the stale on flip sent no frame")
+        self.assertEqual(len(self.frames), n + 1, "the stale on flip still frames (every applied flip does); it wrote nothing")
         self.assertFalse(km._vouched_model("gw-6-astra"))
         st = km._router_status()
         self.assertIs(st["enabled"], False)
@@ -547,13 +549,36 @@ class Switch(_Catalog):
         km._set_router_models(True, gt=10)
         with mock.patch.object(km, "_live_map", lambda: {"11111111-2222-4333-8444-555555555555": {"model": "gw-6-astra"}}):
             km._set_router_models(False, gt=11)
-        note = km._router_status_note[0]
-        self.assertIn("1 live session", note)
-        n = len(self.frames)
-        self.assertEqual(km._set_router_models(False, gt=12), 12, "the store takes the newer stamp")
-        self.assertEqual(km._router_status_note[0], note, "nothing removed: the advisory stands")
+            note = km._router_status_note[0]
+            self.assertIn("1 live session", note)
+            n = len(self.frames)
+            # every applied off RECOUNTS against every id ever installed (the second reviewer's note): the session is still there, so the
+            # advisory stands by recount, not by being skipped
+            self.assertEqual(km._set_router_models(False, gt=12), 12, "the store takes the newer stamp")
+        self.assertEqual(km._router_status_note[0], note, "nothing removed, the session still counted: the advisory stands")
         self.assertEqual(len(self.frames), n + 1, "and the frame goes out as on every applied flip (the gear reads it alone)")
         self.assertIs(self.frames[-1], False, "sent outside the catalog lock")
+
+    def test_two_interleaved_offs_keep_the_advisory_and_the_removal_line(self):
+        # the second reviewer's note: a second off landing during the first's live-session count found nothing installed and returned
+        # unrecounted, while the first's note write was refused as stale: the sessions on the removed rows were named
+        # nowhere and the log carried no removal. Every applied off recounts against the ever-installed set, and the
+        # stderr summary is written before the note write a later flip may refuse.
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        km._set_router_models(True, gt=10)
+        fired = []
+
+        def live_map():
+            if not fired:
+                fired.append(1)
+                km._set_router_models(False, gt=12)      # the second off lands during the first's count
+            return {"11111111-2222-4333-8444-555555555555": {"model": "gw-6-astra"}}
+        with mock.patch.object(km, "_live_map", live_map):
+            self.assertEqual(km._set_router_models(False, gt=11), 11)
+        self.assertIn("1 live session", km._router_status_note[0], "the advisory stands, by the second off's recount")
+        self.assertIn("left the pickers", self.err.getvalue(), "the removal is on the log")
+        self.assertEqual(self.frames, [False, False, False], "the on and both offs: a frame each, outside the lock")
+        self.assertIs(km._router_status()["enabled"], False)
 
     def test_an_off_after_an_empty_on_clears_the_listing_note_and_sends_the_frame(self):
         # review round four: the no-op off skipped the note clear and the frame, so a URL-only configuration whose
@@ -645,6 +670,30 @@ class Boot(_Catalog):
         self.store.write_text(json.dumps({"enabled": True, "gt": 1}))
         self.assertEqual(km._router_models_boot(), IDS)
         self.assertTrue(km._vouched_model("gw-6-astra"))
+        self.assertEqual(self.frames, [False], "the boot frames what it installed, outside the lock (the second reviewer's note)")
+        self.assertTrue(set(IDS) <= sb._router_declared(), "the boot's on branch tells the backend")
+
+    def test_the_boot_reads_the_store_under_the_lock_it_bumps_in(self):
+        # the second reviewer's note: a store read hoisted above the lock passed the placement pin; behaviourally, a flip that lands inside
+        # the lock's acquisition must be what the boot reads
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        self.store.write_text(json.dumps({"enabled": True, "gt": 1}))
+        real = km._SETTINGS_LOCK
+        flipped = []
+
+        class Flipping:
+            def __enter__(self_):
+                r = real.__enter__()
+                if not flipped:
+                    flipped.append(1)
+                    self.store.write_text(json.dumps({"enabled": False, "gt": 2}))   # the off lands as the lock is taken
+                return r
+
+            def __exit__(self_, *a):
+                return real.__exit__(*a)
+        with mock.patch.object(km, "_SETTINGS_LOCK", Flipping()):
+            self.assertEqual(km._router_models_boot(), [], "the boot read the store under the lock and saw the off")
+        self.assertFalse(km._vouched_model("gw-6-astra"))
 
     def test_catalog_off_gates_the_listing_alone_on_both_roads(self):
         # the knob is the hermetic lab's no-network rule; the declared install is network-free and is never suppressed
@@ -656,9 +705,10 @@ class Boot(_Catalog):
         with mock.patch.object(km, "_fetch_router_models", lambda url, timeout=4: calls.append(url) or ["gw-7-nova"]):
             self.store.write_text(json.dumps({"enabled": True, "gt": 1}))
             self.assertEqual(km._router_models_boot(), IDS, "the declared list installs at boot under the knob")
+            self.assertIsNone(km._ROUTER_FETCH_GEN[0], "no fetch armed by the boot")
             km._set_router_models(False, gt=2)
             km._set_router_models(True, gt=3)
-            time.sleep(0.1)
+            self.assertIsNone(km._ROUTER_FETCH_GEN[0], "no fetch armed by the flip")
         self.assertEqual(calls, [], "the listing is never fetched under the knob, on either road")
         self.assertIn("ROMP_MODEL_CATALOG=off", self.err.getvalue())
         self.assertFalse(km._vouched_model("gw-7-nova"))
@@ -674,9 +724,9 @@ class Boot(_Catalog):
         self.store.write_text(json.dumps({"enabled": True, "gt": 1}))
         with mock.patch.object(km, "_fetch_router_models", lambda url, timeout=4: ["gw-7-nova", "gw-6-astra"]):
             self.assertEqual(km._router_models_boot(), ["gw-6-astra"], "the declared list lands synchronously")
-            self._wait(lambda: len(self.frames) >= 1, "the listing's models frame (the thread's last act)")
+            self._wait(lambda: len(self.frames) >= 2, "the listing's models frame (the thread's last act), after the boot's own")
         self.assertTrue(km._vouched_model("gw-7-nova"))
-        self.assertEqual(self.frames, [False], "the augment sends its own frame, outside the lock")
+        self.assertEqual(self.frames, [False, False], "the boot's frame for the declared install, then the augment's, outside the lock")
 
     def test_a_failing_listing_is_loud_and_the_declared_list_still_serves(self):
         _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
@@ -691,8 +741,8 @@ class Boot(_Catalog):
         self.assertIn("connection refused", self.err.getvalue())
         self.assertTrue(km._vouched_model("gw-6-astra"))
         self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the listing-failed advisory")
-        self._wait(lambda: len(self.frames) >= 1, "the frame that carries it")
-        self.assertEqual(self.frames, [False], "the advisory reaches the gear through the models frame, outside the lock")
+        self._wait(lambda: len(self.frames) >= 2, "the frame that carries it")
+        self.assertEqual(self.frames, [False, False], "the boot's frame, then the advisory's: the gear reads the models frame alone")
 
 
 class Fetch(unittest.TestCase):
@@ -747,6 +797,20 @@ class Gateway(unittest.TestCase):
         self.assertEqual(km._router_gateway_configured(), (False, None))
         self._settings(None)
         self.assertEqual(km._router_gateway_configured(), (False, None))
+
+    def test_the_status_runs_no_probe_while_off(self):
+        # the second reviewer's note: a probe run unconditionally and masked while off passed the tests; over a bad settings file and no
+        # store, the status must not probe and must say nothing
+        self._settings("{not json")
+        (km.jd.STATE / km.ROUTER_MODELS_FILE).unlink(missing_ok=True)
+        calls = []
+        real = km._router_gateway_configured
+        with mock.patch.object(km, "_router_gateway_configured", lambda: calls.append(1) or real()), \
+                mock.patch.object(km.sys, "stderr", io.StringIO()) as err:
+            st = km._router_status()
+        self.assertEqual(calls, [], "no probe while the switch is off")
+        self.assertEqual(err.getvalue(), "", "and nothing said")
+        self.assertEqual((st["enabled"], st["gateway"], st["error"]), (False, None, None))
 
     def test_an_unparsable_settings_file_is_a_static_fault_with_the_detail_on_stderr_once(self):
         self._settings("{not json")

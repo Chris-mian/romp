@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -102,6 +103,7 @@ class _OnThenOff(unittest.TestCase):
         self._by_set = {k: set(v) for k, v in km._ROUTER_INSTALLED_BY_SET.items()}
         self._ever = set(km._ROUTER_EVER)
         self._gen = km._ROUTER_GEN[0]
+        km._ROUTER_FETCH_GEN[0] = None; km._ROUTER_FETCH_FAILED_GEN[0] = None
         self._sb_ids = sb._ROUTER_IDS
         for v in ("ROMP_ROUTER_MODELS", "ROMP_ROUTER_MODELS_URL", "ROMP_MODEL_CATALOG", "ANTHROPIC_BASE_URL"):
             _env(self, v, None)
@@ -242,6 +244,20 @@ class ParkedDrain(_OnThenOff):
                          [{"type": "settingRefused", "gesture": "command", "sid": SID, "flag": "model",
                            "text": km._model_refusal(REMOVED)}])
 
+    def test_the_refusal_takes_this_picks_switching_dots_stamp_back(self):
+        # the second reviewer's note: the refusal popped the op and sent the frame but left the stamp the setter put up at park time, so
+        # both surfaces' dots rode it for 20 s
+        with mock.patch.object(km, "_send_to_app", lambda app, frame: None):
+            km._model_switch_pending[SID] = {"target": REMOVED, "until": time.time() + 20}
+            km._pending_ops[SID] = [("model", REMOVED)]
+            km._apply_pending_ops()
+            self.assertNotIn(SID, km._model_switch_pending, "this pick's stamp is taken back")
+            km._model_switch_pending[SID] = {"target": "sonnet", "until": time.time() + 20}   # a later pick's stamp
+            km._pending_ops[SID] = [("model", REMOVED)]
+            km._apply_pending_ops()
+            self.assertIn(SID, km._model_switch_pending, "another pick's stamp is left")
+        km._model_switch_pending.pop(SID, None)
+
     def test_a_parked_first_party_pick_still_fires(self):
         with mock.patch.object(km, "_send_to_app", lambda app, frame: None):
             km._pending_ops[SID] = [("model", "sonnet")]
@@ -360,17 +376,30 @@ class SeedInflight(_OnThenOff):
     def _read(self):
         return str(km._sdk_defaults_module().read_sdk_defaults(km.jd.STATE).get("model") or "")
 
-    def test_a_seed_the_listing_may_still_vouch_is_left_alone_while_the_fetch_is_in_flight(self):
+    def test_a_seed_the_listing_may_still_vouch_is_held_while_the_fetch_is_in_flight(self):
         # the verify round's find: a create right after boot reset a valid remembered gateway model to default before
-        # the gateway's listing had landed
+        # the gateway's listing had landed. The store is kept and the create door launches that row on the default.
         self._seed("gw-7-nova")
         with mock.patch.object(km, "_router_listing_inflight", lambda: True):
-            km._reset_unvouched_seed()
+            self.assertEqual(km._reset_unvouched_seed(), "hold")
         self.assertEqual(self._read(), "gw-7-nova", "left as it is")
         self.assertIn("still being fetched", self.err.getvalue())
         with mock.patch.object(km, "_router_listing_inflight", lambda: False):
-            km._reset_unvouched_seed()
-        self.assertEqual(self._read(), "default", "reset once no listing is pending")
+            self.assertIsNone(km._reset_unvouched_seed(), "reset (no verdict to hold) once no listing is pending")
+        self.assertEqual(self._read(), "default")
+
+    def test_a_seed_is_held_when_the_current_generations_listing_failed(self):
+        # the second reviewer's note: a listing that failed at the current generation is not a removal (nothing retries it until the next
+        # flip or restart): the store is kept, the line names the cause established, the row starts on the default
+        self._seed("gw-7-nova")
+        km._ROUTER_FETCH_FAILED_GEN[0] = km._ROUTER_GEN[0]
+        self.assertEqual(km._reset_unvouched_seed(), "hold")
+        self.assertEqual(self._read(), "gw-7-nova")
+        self.assertIn("could not be fetched this generation", self.err.getvalue())
+        self.assertNotIn("switch is off", self.err.getvalue(), "no untrue cause")
+        km._ROUTER_FETCH_FAILED_GEN[0] = km._ROUTER_GEN[0] - 1    # an older generation's failure: a removal after all
+        self.assertIsNone(km._reset_unvouched_seed())
+        self.assertEqual(self._read(), "default")
 
     def test_the_reset_is_a_compare_and_swap_on_the_seed_it_judged(self):
         # review round three: a dormant pick landing between the read and the write was overwritten; the reset lands
@@ -445,6 +474,15 @@ class Seed(_OnThenOff):
         self.assertEqual(d["model"], "default")
         self.assertNotEqual(d.get("modelTok"), tok, "written through reset_sdk_default_model_if: a fresh token, never a raw file write")
         self.assertIn(REMOVED, self.err.getvalue(), "the reset is said, naming the id")
+
+    def test_a_held_seed_launches_the_row_on_the_default_and_keeps_the_store(self):
+        # the create door's half of the hold: the reg's copied model is cleared between the spawn and the connect
+        sb.write_sdk_default(km.jd.STATE, model="gw-7-nova")
+        with mock.patch.object(km, "_router_listing_inflight", lambda: True):
+            sid, extra = km._create_sdk_session_inner("api", self.cwd)
+        reg = sb.read_reg(km.jd.STATE, sid)
+        self.assertFalse(reg.get("model"), "this row starts on the account default: %r" % reg.get("model"))
+        self.assertEqual(sb.read_sdk_defaults(km.jd.STATE)["model"], "gw-7-nova", "the store is kept for the listing")
 
     def test_a_vouched_seed_is_left_alone(self):
         sb.write_sdk_default(km.jd.STATE, model="claude-fable-5")
