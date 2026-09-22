@@ -4796,6 +4796,41 @@ class NativeCompact(unittest.TestCase):
         self.assertIsNone(be4.launch_error(sid))
         self.assertEqual(_boundaries(_records(tmp)), [], "no divider for an end nobody saw")
 
+    def test_a_restart_over_a_recorded_clean_end_does_not_claim_the_conversation_holds_no_marker(self):
+        # The clean end appends its compact_boundary to the transcript and then saves the bit to the registry row, two
+        # writes in one locked section, so a kernel death between them leaves one boundary in the transcript with the
+        # disk row still reading compacting.
+        # The load's restart notice fires over that row, and it used to end by claiming that no compaction is marked
+        # in the conversation, which the load cannot know, so the wait exited 1 quoting a claim the transcript
+        # contradicted (the post-merge note on the durable bracket, 2026-09-22). The notice now says what the load
+        # knows: the restart, the compaction, the unknown outcome. The death is staged by hand: a real clean end
+        # records its boundary and writes the bit down, then the row is put back to compacting True.
+        be, fake, tmp, sid = self._turned()
+        self.assertEqual(be.compact(sid), "")
+        _status(fake, "T-1", "active")
+        _status(fake, "T-1", "idle")
+        self.assertTrue(until(lambda: be.compacting(sid) is False), "the clean end")
+        self.assertEqual(len(_boundaries(_records(tmp))), 1, "the boundary is recorded")
+        self.assertIs(self._row(be, sid)["compacting"], False, "and the bit is down: both writes landed")
+        reg = be._reg_path()
+        rows = json.loads(reg.read_text())
+        rows[sid]["compacting"] = True                 # the kernel died between the two writes
+        reg.write_text(json.dumps(rows))
+        logs = []
+        be2 = cb.CodexBackend(tmp, client_factory=lambda: fake, log=logs.append)   # the kernel restart
+        err = be2.launch_error(sid)
+        self.assertIsNotNone(err, "the restart is still a loud end")
+        self.assertIn("restarted", err["text"])
+        self.assertIn("compacting", err["text"])
+        self.assertIn("unknown", err["text"])
+        self.assertNotIn("no compaction is marked", err["text"], "the load cannot know what the transcript holds")
+        self.assertNotIn("marked in the conversation", err["text"])
+        self.assertIs(err.get("noRetry"), True, "still the mark the wait reads as a compaction's end")
+        self.assertEqual(len(_boundaries(_records(tmp))), 1, "the boundary the old clause denied is still there")
+        self.assertIs(self._row(be2, sid)["compacting"], False, "written back as before")
+        self.assertEqual([l for l in logs if l.startswith("compaction of")],
+                         ["compaction of web ended: %s" % err["text"]])
+
     def test_a_row_saved_with_the_bracket_down_or_without_the_field_loads_quietly(self):
         # the snapshot carries the bracket (down after the first turn), and neither that row nor one from before the
         # field existed fires the restart notice
