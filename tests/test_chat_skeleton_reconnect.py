@@ -2715,6 +2715,173 @@ class SkeletonReconnect(unittest.TestCase):
                              "and no empty frame went")
         self.assertIn(S1, km._chat_baseline_raced, "the mark stands")
 
+    def _t_held_then_c_seeds(self):
+        """Test 27's opening without its tails cycle (2026-09-21, for tests 53 and 54): the targeted push T reads the
+        baseline absent, builds the list with the u3 card pending and hands a and b its full, its seed step held back;
+        the connect push C for page b builds the filled list, hands b its full and seeds it. Returns (a, b, replay): the
+        baseline is C's list, a holds the pending card, b the filled one, nothing is marked, and `replay` is T's seed step
+        with T's arguments, the pop-and-mark when it runs (T's list differs from C's), on whichever thread calls it."""
+        a = self._client(active=S1, proto=2)
+        b = self._client(active=S1, proto=2)
+        km._clients.extend([a, b])
+        real_seed = km._seed_chat_baseline
+        held = []
+
+        def hold_first(sid, m, seen):
+            if not held:                                 # T's seed step, held back
+                held.append((sid, m, seen))
+                return
+            real_seed(sid, m, seen)
+        km._seed_chat_baseline = hold_first
+        try:
+            km._push_session_now(S1)                     # T: the baseline absent, u3 pending, a full to a and to b
+            self.assertEqual([h[2] for h in held], [None], "T read the baseline absent; its seed step is held")
+            self.assertNotIn(S1, km._prev_chat_events)
+            self.SESS[S1]["events"][3]["md"] = "m3 filled"   # the card fills after T's build
+            km._push([b], connect=True)                  # C: b's full with u3 filled, and the seed
+        finally:
+            km._seed_chat_baseline = real_seed
+        self.assertEqual(km._prev_chat_events.get(S1), self.SESS[S1]["events"], "premise: C seeded the filled list")
+        self.assertNotIn(S1, km._chat_baseline_raced, "premise: nothing is marked, T's seed step has not run")
+        self.assertEqual(self._u3(a)[-1], ("session", "m3"), "premise: a holds the pending card")
+        self.assertEqual(self._u3(b)[-1], ("session", "m3 filled"), "premise: b holds the filled one")
+        return a, b, lambda: real_seed(*held[0])
+
+    def _pop_at_the_guards_read(self, replay, run):
+        """Run `run`, a sender whose S1 build comes back empty, with T's held seed step `replay` landing at the empty-build
+        guard's read of the mark: the calling thread's FIRST membership test of S1 in the detector's map computes its
+        answer, then fires the step on a second thread, as in the live kernel (a targeted push's sender thread beside
+        the pusher's), and returns the answer as computed before it. A one-thread call there deadlocks on the
+        non-reentrant lock once the guard holds it. The handshake is the lock itself and a join, no sleeps: with the
+        lock free at that instant (the guard reading unlocked, the kernel before this change) the pop-and-mark is joined
+        before the guard's next read, so it lands between the two; with the lock held (the guard's one step) the seed
+        waits at it, lands after the step and is joined once `run` has returned or raised. The lock is probed at BOTH of
+        the guard's reads (the review of this change, 2026-09-21): at the membership test, and at the reading thread's
+        first `get` of S1 from the baseline map after it, since a guard that read the mark under the lock and the
+        baseline outside it again passed a probe at the mark alone. Returns (stderr text, the lock held at the mark
+        read, the lock held at the baseline read)."""
+        real_marks, real_prev = km._chat_baseline_raced, km._prev_chat_events
+        t = threading.Thread(target=replay, name="T-seed")
+        fired, held_at_mark, held_at_base, reader = [], [], [], []
+
+        def probe():
+            """Whether the calling thread holds _chat_baseline_lock at this instant (a non-blocking acquire that fails)."""
+            free = km._chat_baseline_lock.acquire(blocking=False)
+            if free:
+                km._chat_baseline_lock.release()
+            return not free
+
+        class Marks(dict):
+            def __contains__(self, sid):
+                hit = dict.__contains__(self, sid)
+                if sid == S1 and not fired:
+                    fired.append(1)
+                    reader.append(threading.get_ident())
+                    held_at_mark.append(probe())
+                    t.start()
+                    if not held_at_mark[0]:
+                        t.join()                         # the pop-and-mark lands between this read and the guard's next
+                return hit
+
+        class Prev(dict):
+            def get(self, sid, default=None):
+                # the guard's baseline read: the reading thread's first `get` of the sid after its mark read (the seed's own
+                # `get` on the second thread, under the lock, is not it)
+                if sid == S1 and fired and not held_at_base and threading.get_ident() == reader[0]:
+                    held_at_base.append(probe())
+                return dict.get(self, sid, default)
+        km._chat_baseline_raced = Marks(real_marks)
+        km._prev_chat_events = Prev(real_prev)
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                run()
+        finally:
+            if t.ident is not None:                      # started at the read: joined before the copy-back, whatever `run` did
+                t.join()
+            real_marks.clear(); real_marks.update(km._chat_baseline_raced)
+            real_prev.clear(); real_prev.update(km._prev_chat_events)
+            km._chat_baseline_raced, km._prev_chat_events = real_marks, real_prev
+        self.assertEqual(fired, [1], "the guard read the mark once for the sid, and T's seed step ran at that read")
+        self.assertEqual(len(held_at_base), 1, "the reading thread read the baseline map for the sid after its mark read")
+        return err.getvalue(), held_at_mark[0], held_at_base[0]
+
+    def test_53_a_pop_and_mark_landing_at_the_cycles_guard_read_cannot_leave_it_seeing_neither(self):
+        """The guard's two reads as one step (the post-merge review of the stand-in change, 2026-09-21). The empty-build
+        guard read the mark, then the baseline, outside _chat_baseline_lock, while the seed's pop-and-mark is one step
+        under it on a sender's thread: a pop landing between the two reads left the guard seeing neither, the mark not
+        yet set at the first read and the baseline gone at the second, so the cycle sent every base holder a 0-event
+        session frame with no stderr line, counted `empty` with a chatFull row each, while the mark stood and the
+        baseline was absent (the write block declines under a mark), a cost of one cycle until the next content cycle's
+        full. The shape: T's seed step (test 27's fixture, T's list the pending card, C's the filled one seeded) runs on a
+        second thread at the guard's first read. Now the guard reads both under the lock in one step; the step lands
+        after it, so the guard rules on the baseline it read present (the seeded road: the failed read said on stderr,
+        nothing sent for the sid with no cache), the mark the step then sets stands, the baseline is absent, and the next
+        content cycle's full repairs a. A pop landing before the step takes the marked road (tests 35 and 37), and no
+        instant inside the step exists. Red before the change at the S1-frame assertion, `[0] != []`, a 0-event frame at
+        each base holder."""
+        km._PERF_STATS.reset()
+        a, b, replay = self._t_held_then_c_seeds()
+        km._EMPTY_BUILD_NOTED.discard(S1)
+        rows0 = len(self._diag_rows("chatFull"))
+        a["_frames"].clear(); b["_frames"].clear()
+        content = self.SESS[S1]["events"]
+        self.SESS[S1]["events"] = []                     # the next read comes back empty
+        km._built_chat.clear()                           # nothing cached: no stand-in on either road
+        err, held_mark, held_base = self._pop_at_the_guards_read(replay, lambda: km._push([a, b]))   # the cycle
+        for cl in (a, b):
+            self.assertEqual([len(f["events"]) for f in self._frames(cl, "session") if f["id"] == S1], [],
+                             "no session frame for the sid reaches a base holder: a 0-event full is the guard seeing neither")
+            self.assertEqual([t for t in self._frames(cl, "chatTail") if t["id"] == S1], [], "and no tail")
+        self.assertNotIn("empty", self._why(), "no full counted as `empty`")
+        self.assertEqual(len(self._diag_rows("chatFull")), rows0, "and no chatFull row")
+        self.assertIn("came back EMPTY", err, "the failed read is said on stderr, whichever road the guard took")
+        self.assertEqual((held_mark, held_base), (True, True),
+                         "the guard held _chat_baseline_lock at the membership test AND at the baseline read: the two reads are one step")
+        self.assertIn(S1, km._chat_baseline_raced, "T's seed step popped C's list and marked the sid, after the step")
+        self.assertNotIn(S1, km._prev_chat_events, "the baseline is absent: the cycle wrote nothing over the pop")
+        self.assertNotIn(S1, km._prev_chat_ledger)
+        chat = km._PERF_STATS.snapshot()["builds"]["chat"]
+        self.assertEqual((chat["baselineRaced"], chat["baselineRepaired"]), (1, 0), "one pop counted, no repair yet")
+        self.SESS[S1]["events"] = content                # content returns
+        self.SESS[S1]["status"]["state"] = "waiting"     # flipped, so b's repair full is not C's frame deduping on the slot (test 44)
+        self._the_cycle_repairs(a, b)                    # the next content cycle's full to every base holder
+        self.assertNotIn(S1, km._chat_baseline_raced, "...and its write takes the mark off")
+        chat = km._PERF_STATS.snapshot()["builds"]["chat"]
+        self.assertEqual((chat["baselineRaced"], chat["baselineRepaired"]), (1, 1), "the repair counted")
+
+    def test_54_the_targeted_pushs_guard_reads_the_mark_and_the_baseline_as_one_step_too(self):
+        """Test 53 over the targeted push (2026-09-21): a handshake or a stream event for the sid whose transcript read
+        comes back empty, with T's seed step landing at its guard's first read on a second thread. Read as two unlocked
+        steps the push handed every target a 0-event session frame with no stderr line, the mark standing and the
+        baseline absent; now the guard rules from one instant and sends nothing for the sid. Red before the change at
+        the S1-frame assertion, `[0] != []`."""
+        km._PERF_STATS.reset()
+        a, b, replay = self._t_held_then_c_seeds()
+        km._EMPTY_BUILD_NOTED.discard(S1)
+        rows0 = len(self._diag_rows("chatFull"))
+        a["_frames"].clear(); b["_frames"].clear()
+        content = self.SESS[S1]["events"]
+        self.SESS[S1]["events"] = []                     # the next read comes back empty
+        err, held_mark, held_base = self._pop_at_the_guards_read(replay, lambda: km._push_session_now(S1))   # the targeted push
+        for cl in (a, b):
+            self.assertEqual([len(f["events"]) for f in self._frames(cl, "session") if f["id"] == S1], [],
+                             "no session frame for the sid reaches a target: a 0-event full is the guard seeing neither")
+            self.assertEqual([t for t in self._frames(cl, "chatTail") if t["id"] == S1], [], "and no tail")
+        self.assertNotIn("empty", self._why(), "no full counted as `empty`")
+        self.assertEqual(len(self._diag_rows("chatFull")), rows0, "and no chatFull row")
+        self.assertIn("came back EMPTY", err, "the failed read is said on stderr")
+        self.assertEqual((held_mark, held_base), (True, True),
+                         "the targeted push's guard held _chat_baseline_lock at the membership test AND at the baseline read")
+        self.assertIn(S1, km._chat_baseline_raced, "T's seed step popped C's list and marked the sid, after the step")
+        self.assertNotIn(S1, km._prev_chat_events,
+                         "the baseline is absent: the push returned at its guard and wrote nothing, and T's seed step popped it after the step")
+        chat = km._PERF_STATS.snapshot()["builds"]["chat"]
+        self.assertEqual((chat["baselineRaced"], chat["baselineRepaired"]), (1, 0), "one pop counted, no repair")
+        self.SESS[S1]["events"] = content                # content returns
+        self.SESS[S1]["status"]["state"] = "waiting"     # flipped, so b's repair full is not C's frame deduping on the slot (test 44)
+        self._the_cycle_repairs(a, b)                    # the next content cycle's full to every base holder
+        self.assertNotIn(S1, km._chat_baseline_raced, "...and its write takes the mark off")
 
 class RestartDiet(unittest.TestCase):
     """The user's ruling (2026-09-14): after a reload the selected tab builds first, the strip's other tabs spread over later refreshes,
