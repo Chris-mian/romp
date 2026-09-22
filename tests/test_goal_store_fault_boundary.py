@@ -1567,6 +1567,13 @@ class ActsUnderAFailedWrite(_World):
             km._set_session_flag(A, "hideFromFeed", True)
         self.assertEqual(rows() - n0, 5, "the mute's refusal files a row too"); self.assertEqual(len(stderr[-1]), 1)
         self.assertIn("the mute's clear rows", self._rows("clears-log")[-1]["note"])
+        self.assertFalse(self._flag(A, A + ":g1"), "the refused mute sealed nothing: the raise at its site skips the node flags (the second contributor's post-merge review of PR 2021: with it deleted a refused mute sealed every open top and the module stayed green)")
+        # the row names the session and its tops, the stderr line the session's first eight characters (the review's low: the two new writers'
+        # rows named neither, so the card modal's warnings join never showed them); the four gesture arms' rows stay session-less, as before
+        mute_row = self._rows("clears-log")[-1]
+        self.assertEqual(mute_row["fsid"], A, "the mute's row names the session: %r" % mute_row); self.assertIn(A + ":g1", mute_row.get("goal") or [], "and its tops")
+        self.assertIn("(session %s)" % A[:8], stderr[-1][0], "the stderr line names the session too: %r" % stderr[-1])
+        self.assertEqual([r["fsid"] for r in self._rows("clears-log")[-5:-1]], ["", "", "", ""], "the gesture arms' rows name no session, as before")
         km._set_session_flag(A, "hideFromFeed", False)
 
     def test_a_present_clears_log_that_cannot_be_read_is_said_once_per_episode_and_on_the_undos_account(self):
@@ -1650,6 +1657,98 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual([m for m in sent if m.get("type") == "err"], [], "and a stale flag files no false account: the undo's own read landed")
         getattr(km, "_cleared_read_fault", [""])[0] = ""
 
+    def test_a_clears_log_row_that_is_not_an_object_or_whose_id_is_not_a_string_is_skipped_by_the_kernels_reader(self):
+        """The second contributor's post-merge review of PR 2021: the id lookup ran on whatever the parse returned, so a `[]` row raised
+        AttributeError out of the read (an undo, a build). Such a row, and one whose id is not a string, are skipped per row like a row that
+        is not JSON; the rows beside them load."""
+        log = jd.STATE / "cleared.jsonl"
+        log.write_text("[]\n" + json.dumps({"id": 5, "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": A + ":g1", "t": 2, "op": "clear"}) + "\n"
+                       + json.dumps({"id": {"k": "v"}, "t": 3, "op": "clear"}) + "\n" + json.dumps({"id": "", "t": 4, "op": "clear"}) + "\n")
+        km._CLEARED_MEMO["slot"] = None
+        try:
+            got = km._cleared_ids()
+        except AttributeError as e:
+            self.fail("the reader raised on a row that is not an object: %r" % e)
+        self.assertEqual(got, {A + ":g1": 2}, "the array row, the non-string ids and the empty id are skipped, the row beside them loads")
+        self.assertEqual(km._undo_stack_ids(), {A + ":g1"}, "the stack helper reads the same")
+
+    def test_a_standing_undecodable_clears_log_is_read_once_per_file_state_and_the_served_state_names_its_fault(self):
+        """The second contributor's post-merge review of PR 2021: the fault arm returned before the memo, a permanent miss, so a standing
+        undecodable log was re-read on every call (every build, every walk). Bytes that are not text are a function of the file, so the stat
+        is an exact key: the empty set is served with its fault while the file stands, an Undo over the served state still names the fault,
+        and the note stays once per episode (round two's shape). The OSError road stays uncached: a permission bit lifts with the stat unmoved."""
+        log = jd.STATE / "cleared.jsonl"
+        log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None; km._cleared_read_fault[0] = ""
+        orig_read, reads = Path.read_text, []
+
+        def counting(p, *a, **kw):
+            if p == log:
+                reads.append(1)
+            return orig_read(p, *a, **kw)
+        with mock.patch.object(Path, "read_text", counting), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(km._cleared_ids(), {}); self.assertEqual(km._cleared_ids(), {}); km._undo_stack_ids()
+            self.assertEqual(len(reads), 1, "the undecodable log is read once per file state (before: on every call)")
+            sent = self._dispatch({"type": "undoClear", "seq": 10})
+            self.assertEqual(len(reads), 1, "the undo's read is served too")
+        self.assertEqual([m["title"] for m in sent if m.get("type") == "err"], ["romp could not read its record of cleared cards"], "the served state names its fault on the undo's account: %r" % sent)
+        self.assertEqual(len([r for r in self._rows("cleared-unreadable") if "the read" in r["note"]]), 1, "one row for the episode: the served reads file nothing")
+        log.write_bytes(b"\xff\xfe\x00 not text either\n")              # a new file state: read once more
+        with mock.patch.object(Path, "read_text", counting), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(km._cleared_ids(), {}); self.assertEqual(km._cleared_ids(), {})
+        self.assertEqual(len(reads), 2, "a moved stat is read again, once")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()   # a landed read ends the episode
+
+        def refusing(p, *a, **kw):
+            if p == log:
+                reads.append(1)
+                raise OSError(errno.EACCES, "Permission denied", str(p))
+            return orig_read(p, *a, **kw)
+        with mock.patch.object(Path, "read_text", refusing), contextlib.redirect_stderr(io.StringIO()):
+            km._CLEARED_MEMO["slot"] = None
+            km._cleared_ids(); km._cleared_ids()
+        self.assertEqual(len(reads), 4, "an unreadable log is read on every call: the fault can lift with the stat unmoved")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_the_accounts_stack_gate_reads_its_own_ledger_reads_fault_not_a_flag_a_landed_read_may_have_cleared(self):
+        """The round-two verifier of PR 2025: the clear road's stack gate read the module flag AFTER the ledger read, the window round one
+        named for the undo: a landed read on another thread between the two cleared the flag, and the refused clear's frame carried the
+        faulted read's EMPTY stack. The gate reads the ledger read's own fault, returned beside the stack."""
+        log = jd.STATE / "cleared.jsonl"
+        log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None; km._cleared_read_fault[0] = ""
+        real = km._ledger_batches
+
+        def landing_between(*a, **kw):
+            out = real(*a, **kw)                                      # the account's ledger read, over the undecodable log
+            km._cleared_read_fault[0] = ""                            # an injected landed read on another thread, before the gate
+            return out
+        with mock.patch.object(km, "_ledger_batches", landing_between), _nth_append_faults(log, 1), contextlib.redirect_stderr(io.StringIO()):
+            km._CLEARED_MEMO["slot"] = None
+            sent = self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual(len(errs), 1, "the clear's refusal: %r" % sent)
+        self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(errs[0]), set(), "no stack: the gate reads the ledger read's own fault (before: the flag, cleared by the injected read, attached the empty stack): %r" % errs[0])
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_the_read_fault_account_ships_no_stack_even_when_the_log_reads_again_before_the_frame_is_built(self):
+        """The round-two verifier of PR 2025: the read-key guard was held by a source regex alone (with it gone, the gate below kept the
+        Python pins green). The undo's own read faulted; the log reads again before the account is built, so the account's ledger read lands
+        and no fault gates the stack: the read-fault account still ships none, since the read it answers for found nothing to stand on."""
+        log = jd.STATE / "cleared.jsonl"
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_read_fault[0] = ""
+        real, calls = km._cleared_ids_read, [0]
+
+        def first_faults(*a, **kw):
+            calls[0] += 1
+            if calls[0] == 1:
+                return {}, "the undo's read refused (stand-in)"       # the undo's own read
+            return real(*a, **kw)                                      # the log reads again: every later read lands
+        with mock.patch.object(km, "_cleared_ids_read", first_faults):
+            sent = self._dispatch({"type": "undoClear", "seq": 11})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["romp could not read its record of cleared cards"], "the undo's own read faulted: %r" % sent)
+        self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(errs[0]), set(), "no stack on the read-fault account though the ledger read behind the frame landed (with the key guard gone, that landed read's stack rode it)")
+        self.assertEqual(real(), ({}, ""), "premise: the log reads again, so a ledger read behind the frame would land (under the guard the read-fault-only account runs none)")
+
     def test_the_two_new_judge_errors_kinds_are_documented(self):
         """The second contributor's post-merge note on PR 2018: `clears-log` and `owed-note` were in neither kind list; the round-one verifier
         of PR 2025: the sentences must name each kind's writer and shape, the kernel's read filing under `cleared-unreadable` per episode."""
@@ -1662,6 +1761,9 @@ class ActsUnderAFailedWrite(_World):
         self.assertRegex(ds, r'"clears-log" \(a clears-log write refused')
         self.assertRegex(ds.replace("\n", " "), r'"cleared-unreadable" is also the kernel\'s own reader\'s\s+kind for the clears log[^)]*one row per fault episode')
         self.assertIn('"owed-note"', ds)
+        # the note helper's and the refusal sender's own docstrings (the round-two verifier of PR 2025: the helper's sentence was pinned by nothing)
+        self.assertRegex(km._clears_log_fault_note.__doc__.replace("\n", " "), r"the kernel's own READ of the log files under `cleared-unreadable`,\s+the kind the judge's side-file reader files for the same file, one row per fault episode", "the helper names the read as the kind's second writer")
+        self.assertIn("`cleared-unreadable` for the read-fault account's read of it", km._gesture_store_refusal.__doc__, "the sender names the read-fault account's kind")
 
     def test_a_clears_account_after_a_restart_carries_the_owing_the_note_holds(self):
         """The second contributor's post-merge review (2026-09-22): the restart-owing load on a non-undo account was pinned by no behaviour
@@ -1989,7 +2091,7 @@ class UndoStackSequences(_World):
         return [i for i in (A + ":g1", B + ":g1") if i not in cur and not self._flag(i.rsplit(":", 1)[0], i)]
 
     def _state_key(self):
-        batches, owed, _total = km._ledger_batches()
+        batches, owed, _total, _fault = km._ledger_batches()
         p = jd.STATE / km.OWED_FILE
         note = [json.loads(l)["id"] for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
         return json.dumps({"batches": batches, "owed": owed, "flags": [i for i in (A + ":g1", B + ":g1") if self._flag(i.rsplit(":", 1)[0], i)],

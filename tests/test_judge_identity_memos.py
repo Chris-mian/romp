@@ -337,6 +337,33 @@ class ViewCleared(_Memos):
             os.chmod(p, 0o644)
         self.assertEqual(jd._view_cleared(), {a}, "readable again: the real answer, no stale empty")
 
+    def test_bytes_that_are_not_text_answer_empty_unmemoized_and_file_a_row_and_a_row_that_is_not_an_object_is_skipped(self):
+        # the second contributor's post-merge review of PR 2021: the scan caught OSError alone, so a log whose bytes are not text raised
+        # UnicodeDecodeError out of every judge pass, and a `[]` row raised AttributeError from the id lookup
+        p = jd.STATE / "cleared.jsonl"
+        a = SID + ":g1"
+        p.write_text("[]\n" + json.dumps({"id": 7, "t": T0, "op": "clear"}) + "\n" + json.dumps({"id": a, "t": T0, "op": "clear"}) + "\n")
+        try:
+            self.assertEqual(jd._view_cleared(), {a}, "the array row and the non-string id are skipped, the row beside them loads")
+        except AttributeError as e:
+            self.fail("the scan raised on a row that is not an object: %r" % e)
+        p.write_bytes(b"\xff\xfe\x00 not text\n")
+        jd._judge_ctx.stage_incomplete = False
+        calls = self._count("_view_cleared_scan")
+        try:
+            self.assertEqual(jd._view_cleared(), frozenset(), "bytes that are not text read as nothing cleared")
+        except ValueError as e:
+            self.fail("the decode error raised out of the reader: %r" % e)
+        self.assertTrue(jd._judge_ctx.stage_incomplete, "the running stage is marked incomplete")
+        rows = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()] if jd.ERRORS.exists() else []
+        self.assertEqual([r["err"] for r in rows], ["cleared-unreadable"], "one cleared-unreadable row (before: none, the pass raised): %r" % rows)
+        self.assertEqual(jd._view_cleared(), frozenset())
+        self.assertEqual(len(calls), 2, "and the state is not memoized: the scan runs on every call (the good read's entry stands under its own key)")
+        self.assertEqual(len(jd.ERRORS.read_text().splitlines()), 1, "one row per episode")
+        jd._judge_ctx.stage_incomplete = False
+        p.write_text(json.dumps({"id": a, "t": T0, "op": "clear"}) + "\n")
+        self.assertEqual(jd._view_cleared(), {a}, "text again: the real answer")
+
     def test_the_answer_is_immutable_and_a_rebind_starts_empty(self):
         p = jd.STATE / "cleared.jsonl"
         p.write_text(json.dumps({"id": SID + ":g1", "t": T0, "op": "clear"}) + "\n")

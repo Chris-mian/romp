@@ -235,6 +235,41 @@ class EpisodeBoundaryTest(unittest.TestCase):
         self.assertIsNone(jd.episode_settles(SID).get("root2"), "no settle annotation for a settle that did not happen")
         self.assertEqual(self._cleared_rows(), [], "no clear rows")
 
+    def test_the_tick_says_a_refused_boundary_append_without_a_traceback_and_settles_nothing(self):
+        """The second contributor's post-merge review of PR 2021: the direct-call pin above cannot tell the arm from the tick's own catch, which
+        prints a traceback for any raise out of the check. Driven through _episode_boundary_tick over this one session: the convention's one
+        stderr line and one judge-errors row naming the session and its tops, NO traceback, no flag, no settle annotation, no clear rows (red
+        under a bare raise: a traceback; under a dropped return: the annotation and the flags; under a dropped note call: no row, no line)."""
+        self._store()
+        anchor = self.proj / (SID + ".jsonl")
+        _write_jsonl(anchor, [_rec("root1")])
+        km._episode_boundary_check(SID, str(anchor), NOW)
+        fork = self.proj / "aaaaaaaa-0000-0000-0000-000000000006.jsonl"
+        _write_jsonl(fork, [_rec("root2", ts="2026-01-02T00:00:00Z")])
+        log = jd.STATE / "cleared.jsonl"; orig_open = Path.open
+
+        def refusing_append(p, mode="r", *a, **kw):
+            if p == log and "a" in mode:
+                raise OSError(errno.EROFS, "Read-only file system", str(p))
+            return orig_open(p, mode, *a, **kw)
+        one = [{"sid": SID, "path": str(fork), "name": "web", "anchor": 0, "mtime": 0}]
+        buf = io.StringIO()
+        with mock.patch.object(Path, "open", refusing_append), mock.patch.object(km, "_sessions", lambda now, *a, **k: list(one)), contextlib.redirect_stderr(buf):
+            km._episode_boundary_tick(NOW)
+        out = buf.getvalue()
+        self.assertNotIn("Traceback", out, "no traceback: the arm answers the refusal (before it, the tick's catch printed one): %r" % out)
+        lines = [l for l in out.splitlines() if l.startswith("clears log: ")]
+        self.assertEqual(len(lines), 1, "one stderr line: %r" % out); self.assertIn("(session %s)" % SID[:8], lines[0], "the line names the session")
+        rows = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()] if jd.ERRORS.exists() else []
+        mine = [r for r in rows if r["err"] == "clears-log"]
+        self.assertEqual(len(mine), 1, "one clears-log row: %r" % rows)
+        self.assertEqual(mine[0]["fsid"], SID, "the row names the session (before: neither the session nor the nodes): %r" % mine[0]); self.assertIn(self.g("g1"), mine[0].get("goal") or [], "and its tops")
+        store = jd.load_goals(SID)
+        self.assertFalse(store["nodes"][self.g("g1")].get("cleared"), "the top stays unflagged")
+        self.assertIsNone(jd.episode_settles(SID).get("root2"), "no settle annotation: the settle did not happen, and it is not retried (the head is recorded)")
+        self.assertEqual(self._cleared_rows(), [], "no clear rows")
+        self.assertEqual([r["head"] for r in jd.episode_rows(SID)], ["root1", "root2"], "the head is recorded before the rows, so the lost settle is final")
+
     def test_interleaved_seed_race_still_settles(self):
         """Two kernel instances overlapped for ~1s on 2026-07-27 (a restart-churn morning): a
         stale-path writer SEEDED row 1 between the fresh writer's read and its append, so the fresh

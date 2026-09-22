@@ -235,7 +235,9 @@ sends carries a sequence of its own, which the kernel echoes on that account, so
 undo alone (two undos to one kernel with a clear between them keep their floors apart). A build past the floor
 read the store after every clear that socket sent before the undo had applied and after the undo's batch was restored, so a card
 it lists is restored; a build claimed before it, however it is stamped, is no evidence, and until the account lands the check
-releases nothing (the card stays off, and the absence rule stands). The account rides the pressing client's own socket, which a
+releases nothing (the card stays off, and the absence rule stands). A later undo's account from the same kernel releases that
+kernel's older checks that have no floor, since the pressing socket delivers in order and their accounts will never come, while a
+check with a floor keeps waiting for evidence. The account rides the pressing client's own socket, which a
 redial can abandon, so a kernel's socket coming back drops that kernel's waiting checks and their suppressions, on the socket's
 own reopen (the local shim's `wsup`; a remote relay socket's `romp:hostRelayUp`, the exact event a redial fires) and, as a second
 trigger, on the tunnel poll's word that a remote kernel came back (`hostUp`): a listed card is never covered by the absence rule, and a lost account must not hold a
@@ -251,6 +253,13 @@ from one of them, or on the backstop; an account from one kernel of a fanned-out
 is still in flight, an accepted residual. The reason for the round trip: stamps across kernels do not order, so a merged stack
 cannot say which kernel's batch the next Undo reaches, and an optimistic pop would restore one kernel's card while another
 restored its own.
+
+Every writer of the clears log says an append it refuses, one stderr line and one judge-errors row (`clears-log`) per refusal, and
+the kernel's own reader says a present log it cannot read or decode, once per fault episode (`cleared-unreadable`, the kind the
+judges' readers of the same file use); an Undo over such a log restores nothing and its account says so, and the page takes back
+the restore the click made, by the undo's sequence. The episode boundary's settle is the one writer without a retry: its head is
+recorded before its clear rows, so a refused append leaves the pre-clear open cards in the fresh conversation, and that settle is
+lost; the row and the line name the session.
 
 ### Completed is safe to clear unread
 
