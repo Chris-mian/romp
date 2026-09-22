@@ -5,7 +5,7 @@ run over copies of it with the judge module rebound onto scratch roots, the four
     judge_experiment.py build-corpus --state-root ~/.local/state/romp --claude-root ~/.claude --dest DIR [--per-class N]
     judge_experiment.py run --corpus DIR --run-root DIR --arm NAME[=PROMPTS.json] ... --budget-usd X --claude-bin PATH
     judge_experiment.py label --corpus DIR --run-root DIR --live-state ROOT --claude-bin PATH [--model M]
-    judge_experiment.py report --corpus DIR --run-root DIR [--figure PNG]
+    judge_experiment.py report --corpus DIR --run-root DIR --live-state ROOT --live-claude ROOT [--figure PNG]
 
 Every path the experiment writes is under the destination the caller names, and a destination inside a git checkout is
 refused: the corpus is the user's own history and stays out of the repository. The corpus builder reads the live state
@@ -41,7 +41,8 @@ UNDONE_RE = re.compile(r"\b(not (yet )?done|left (undone|for later|open)|to ?do|
 QUESTION_RE = re.compile(r"\?\s*$")
 BUDGET_OVERRUN = 1.2          # a run stops once its ledger passes this multiple of its budget
 COLUMN_OF = {"blocked": "needs_input", "completed": "completed", "cleared": "cleared"}   # the store-derivable part of the feed's rule
-AGREEMENT_GATE_PCT = 90.0     # the labeller's agreement with the user's recorded actions must reach this before its labels count
+STABILITY_GATE_PCT = 90.0     # the labeller's OWN gate: the fraction that get the same class in both shuffled orders (road (b): the
+#                               class is a stratification frame, not a truth, so its agreement with the user's actions is reported, not gated)
 FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",
                  "unregistered-caller", "history-unreadable", "store-quarantined")   # judge-errors rows that mean the ending was not judged:
 #   a rejected reply, a crashed or refused call, the two pause kinds (`auth`, `rate-limited`), the call-level stand-downs (`fast-refused`,
@@ -799,39 +800,164 @@ def _scored(build):
     return out
 
 
-def measure(manifest, results):
-    """Per arm: leaks into Completed (an offer, question or undone ending with a SCORED top read completed), false interrupts
-    (a finished ending with a scored top read needs_input), flaps (a scored top whose column differs between builds), the
-    failures (calls that failed or replies the parser rejected: a row with any is not comparable), and cost."""
-    classes = {e["id"]: e["class"] for e in manifest["endings"]}
-    leaks = false_interrupts = flaps = 0
+PLACEMENT_KINDS = ("done", "block", "awaiting")   # a top-level verdict the live judges filed in the ending's turn: the placement
+#                                                   whose own ev_t/at bounds which later user gestures count (never the arm's wall clock)
+
+
+def _session_user_turn_times(live_claude, cwd, fsids):
+    """The timestamps of the user's own typed turns across the session's live transcripts (the sid, its /clear and resume
+    leaves, and a lane's own stem), from the live Claude root. Used only for the false-interrupt guard: a card the user
+    cleared after answering it in the session is not a false interrupt, so a user turn between the placement and the clear
+    clears the count."""
+    times = []
+    if not (live_claude and cwd):
+        return times
+    pdir = Path(live_claude) / "projects" / munge(cwd)
+    for fsid in fsids:
+        p = pdir / (fsid + ".jsonl")
+        if not p.is_file():
+            continue
+        for r in _records(p):
+            if r.get("type") == "user" and not r.get("isMeta"):
+                t = _ts(r)
+                if t is not None:
+                    times.append(t)
+    return sorted(times)
+
+
+def placement_gestures(live_state, live_claude, store_key, sid, cwd, start_t, cut_t, faults=None):
+    """The user's OWN later actions on each top the live judges placed in the ending's turn, keyed by the node's suffix
+    (`gN` in the full `<rompUuid>:g<N>` key), read from the live root only. Per top-level node with a verdict in the turn's
+    window, the placement time is that verdict's own ev_t/at (never the arm's clock); a followup, unclear or restore after
+    it re-opened the card; a user clear or resolve after it, with no re-open and no answering user turn between the placement
+    and the clear, is a plain cross-off. Returns {suffix: {"reopened": bool, "clearedNoReply": bool}}; {} when the live store
+    cannot be read (recorded in `faults`, never read as 'nothing applies')."""
+    live_state = Path(live_state)
+    live_path = live_state / "goals" / (store_key + ".json")
+    if live_path.is_file():
+        try:
+            json.loads(live_path.read_text(encoding="utf-8"))   # a corrupt LIVE store is a fault, recorded, never read as "nothing applies"
+        except (OSError, ValueError) as e:
+            if faults is not None:
+                faults.append((hashlib.sha256(str(store_key).encode()).hexdigest()[:12], type(e).__name__))
+            return {}
+    try:
+        store = store_with_archive(live_state, store_key)       # the archive alone may hold a session's tops (all cleared); it carries the clear
+    except (OSError, ValueError) as e:
+        if faults is not None:
+            faults.append((hashlib.sha256(str(store_key).encode()).hexdigest()[:12], type(e).__name__))
+        return {}
+    ops = []
+    p = live_state / "overrides" / (store_key + ".jsonl")
+    if p.is_file():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            try:
+                ops.append(json.loads(line))
+            except ValueError:
+                continue
+    try:
+        leaves = known_fsids(live_state, sid) if sid else set()             # the session's /clear and resume leaves
+    except (OSError, ValueError):
+        leaves = set()
+    user_turns = _session_user_turn_times(live_claude, cwd, {store_key} | leaves)   # the store's own transcript plus the leaves
+    out = {}
+    for nid, nd in (store.get("nodes") or {}).items():
+        if nd.get("parentId") is not None:
+            continue
+        placed = [event_time(ev) for ev in (nd.get("log") or [])
+                  if ev.get("kind") in PLACEMENT_KINDS and event_time(ev) is not None and in_turn_window(event_time(ev), start_t, cut_t)]
+        if not placed:
+            continue                                            # the live judges placed this top outside the turn: no placement time to bound gestures
+        t_place = max(placed)
+
+        def on_node(o):
+            if o.get("node") == nid:
+                return True
+            nn = o.get("nodes")                                 # the restore row carries `nodes`, a dict, not `node`
+            return isinstance(nn, dict) and nid in nn
+        later = [o for o in ops if on_node(o) and float(o.get("t") or 0) > t_place]
+        reopened = any(o.get("op") in NOT_FINISHED_OPS for o in later)
+        clears = [float(o.get("t") or 0) for o in later if o.get("op") in FINISHED_OPS and o.get("src") in (None, "user")]
+        cleared_no_reply = False
+        if not reopened and clears:
+            clear_t = min(clears)
+            answered = any(t_place < ut < clear_t for ut in user_turns)   # the user replied before crossing it off: not a false interrupt
+            cleared_no_reply = not answered
+        out[nid.split(":")[-1]] = {"reopened": reopened, "clearedNoReply": cleared_no_reply}
+    return out
+
+
+def _live_key_maps(live_state):
+    """The three lookups the measures need from the live root, by the manifest's hashes (the corpus carries no live id): the
+    session/lane hash to the store key (the lane stem or the sid), the session hash to the sid, and the sid to its cwd."""
+    live_state = Path(live_state)
+    names_dir, goals_dir = live_state / "names", live_state / "goals"
+    key_of, sid_of, cwd_of = {}, {}, {}
+    for n in (sorted(os.listdir(names_dir)) if names_dir.is_dir() else []):
+        h = hashlib.sha256(n.encode()).hexdigest()[:12]
+        key_of[h] = n
+        sid_of[h] = n
+        try:
+            fields = (names_dir / n).read_text(encoding="utf-8").strip().split("\t")
+        except OSError:
+            continue
+        if len(fields) > 1:
+            cwd_of[n] = fields[1]
+    for f in (sorted(os.listdir(goals_dir)) if goals_dir.is_dir() else []):
+        if f.endswith(".json"):
+            key_of.setdefault(hashlib.sha256(f[:-5].encode()).hexdigest()[:12], f[:-5])
+    return key_of, sid_of, cwd_of
+
+
+def measure(manifest, results, live_state, live_claude):
+    """Per arm, scored against the user's OWN later actions on the live cards (road (b): NOT the labeller's class, which the
+    pilot showed is not a truth about an ending's shape). Leaks into Completed: the arm placed a top completed that the user
+    then re-opened. False interrupts: the arm left a top needs_input that the user then plainly cleared, with no re-open and
+    no answering turn. Flaps: a scored top whose column differs between the two builds. Failures: a row with any is not
+    comparable. Cost from the ledger. The live root is read only; an ending whose live session no longer lists, or whose
+    live judges placed no card in the turn, scores no leak or interrupt (it still contributes flaps and cost)."""
+    by_id = {e["id"]: e for e in manifest["endings"]}
+    key_of, sid_of, cwd_of = _live_key_maps(live_state)
+    leaks = false_interrupts = flaps = gestured = unresolved = 0
+    faults = []
     for eid, r in results["endings"].items():
-        cls = classes.get(eid, r.get("class"))
+        e = by_id.get(eid, {})
+        store_key = key_of.get(e.get("lane") or e.get("session"))
+        sid = sid_of.get(e.get("session"))
         builds = [_scored(b) for b in r["builds"]]
         final = builds[-1] if builds else {}
-        if cls in ("offer", "question", "undone") and "completed" in set(final.values()):
-            leaks += 1
-        if cls == "finished" and "needs_input" in set(final.values()):
-            false_interrupts += 1
+        if store_key:
+            g = placement_gestures(live_state, live_claude, store_key, sid, cwd_of.get(sid),
+                                    e.get("startT"), float(e.get("cutT") or 0), faults=faults)
+            if g:
+                gestured += 1
+            if any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in final.items()):
+                leaks += 1
+            if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in final.items()):
+                false_interrupts += 1
+        else:
+            unresolved += 1                                     # the manifest hash resolves to no live session: cannot be scored, told apart
         if len(builds) >= 2:
             for nid in set(builds[0]) | set(builds[1]):
                 if builds[0].get(nid) != builds[1].get(nid):
                     flaps += 1
     failures = int(results.get("failures") or 0)
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
-            "flaps": flaps, "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0),
-            "callMsMean": results.get("callMsMean", 0), "stopped": results.get("stopped"), "failures": failures,
-            "comparable": failures == 0}
+            "flaps": flaps, "gesturedEndings": gestured, "unresolvedEndings": unresolved, "costUsd": results.get("cost", 0.0),
+            "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0), "stopped": results.get("stopped"),
+            "failures": failures, "comparable": failures == 0,
+            "liveReadErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
 
 
-def report(corpus, run_root, figure=None):
+def report(corpus, run_root, live_state, live_claude, figure=None):
     """The table (markdown, written beside the arms) and the figure (the cleanplots skill; skipped with a note when the
-    library is absent). Counts and dollars only: nothing from the corpus."""
+    library is absent). Counts and dollars only: nothing from the corpus. The measures read the live root (read only) for the
+    user's later gestures per placed card; it exists only while the live root still lists the session."""
     corpus, run_root = Path(corpus), Path(run_root)
     manifest = json.loads((corpus / "manifest.json").read_text())
     rows = []
     for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
-        rows.append(measure(manifest, json.loads((d / "results.json").read_text())))
+        rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, live_claude))
     lines = ["| arm | endings | leaks into Completed | false interrupts | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
              "|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
@@ -978,10 +1104,11 @@ def ask_class(claude_bin, model, text, order, ledger_path):
 
 
 def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921):
-    """The labelling pass: tier one from the live journals (read only) for every ending whose session the live names directory
-    still lists; tier two twice per ending with the classes in two orders, the label their agreement; the agreement of tier
-    two with tier one on every ending that has both, against AGREEMENT_GATE_PCT. Writes labels.json and labels-summary.json
-    under the run root; every call's cost on labeller-ledger.jsonl there."""
+    """The labelling pass (road (b)): tier one from the live journals (read only) for every ending whose session the live
+    names directory still lists; tier two twice per ending with the classes in two orders, the label their agreement. The
+    labeller's OWN gate is STABILITY: the fraction of endings labelled the same in both orders must reach STABILITY_GATE_PCT.
+    Its agreement with the user's own actions is reported (a stratification frame, not a truth), never gated. Writes
+    labels.json and labels-summary.json under the run root; every call's cost on labeller-ledger.jsonl there."""
     import random
     corpus, run_root, live_state = Path(corpus), Path(run_root), Path(live_state)
     refuse_inside_repo(run_root)
@@ -1021,12 +1148,15 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
                      "spanS": int(time.time() - float(e["cutT"] or 0)),
                      "tierOneError": row_err})   # a faulted read or an unresolved key, told apart from a genuine tierOne null
     (run_root / "labels.json").write_text(json.dumps(rows, indent=1))
-    both = [r for r in rows if r["tierOne"] and r["label"]]
+    stable = sum(1 for r in rows if r["label"])
+    stable_pct = round(100.0 * stable / len(rows), 1) if rows else None
+    both = [r for r in rows if r["tierOne"] and r["label"]]     # the agreement of the class with the user's actions is REPORTED, never gated (road (b))
     agree = sum(1 for r in both if (r["label"] == "finished") == (r["tierOne"] == "finished"))
-    pct = round(100.0 * agree / len(both), 1) if both else None
+    agree_pct = round(100.0 * agree / len(both), 1) if both else None
     summary = {"endings": len(rows), "tierOneLabelled": sum(1 for r in rows if r["tierOne"]),
-               "labellerStable": sum(1 for r in rows if r["label"]), "both": len(both), "agree": agree, "agreementPct": pct,
-               "gatePct": AGREEMENT_GATE_PCT, "gatePassed": bool(both) and pct >= AGREEMENT_GATE_PCT,
+               "labellerStable": stable, "stablePct": stable_pct, "stabilityGatePct": STABILITY_GATE_PCT,
+               "gatePassed": stable_pct is not None and stable_pct >= STABILITY_GATE_PCT,
+               "both": len(both), "agree": agree, "agreementPct": agree_pct,
                "heuristicMatchesLabel": sum(1 for r in rows if r["label"] and r["label"] == r["class"]), "spentUsd": round(spent, 4),
                "tierOneErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
     (run_root / "labels-summary.json").write_text(json.dumps(summary, indent=1))
@@ -1046,7 +1176,8 @@ def main(argv=None):
     ra = sub.add_parser("run-arm"); ra.add_argument("--corpus", required=True); ra.add_argument("--run-root", required=True)
     ra.add_argument("--arm", required=True); ra.add_argument("--prompts", default=None); ra.add_argument("--budget-usd", type=float, default=None)
     ra.add_argument("--claude-bin", required=True); ra.add_argument("--now", type=int, default=None)
-    rp = sub.add_parser("report"); rp.add_argument("--corpus", required=True); rp.add_argument("--run-root", required=True); rp.add_argument("--figure", default=None)
+    rp = sub.add_parser("report"); rp.add_argument("--corpus", required=True); rp.add_argument("--run-root", required=True)
+    rp.add_argument("--live-state", required=True); rp.add_argument("--live-claude", required=True); rp.add_argument("--figure", default=None)
     lb = sub.add_parser("label"); lb.add_argument("--corpus", required=True); lb.add_argument("--run-root", required=True)
     lb.add_argument("--live-state", required=True); lb.add_argument("--claude-bin", required=True); lb.add_argument("--model", default="fable")
     a = ap.parse_args(argv)
@@ -1063,7 +1194,7 @@ def main(argv=None):
     elif a.cmd == "run-arm":
         run_arm_inprocess(a.corpus, a.arm, a.prompts, a.run_root, a.budget_usd, a.claude_bin, now=a.now)
     elif a.cmd == "report":
-        rows = report(a.corpus, a.run_root, figure=a.figure)
+        rows = report(a.corpus, a.run_root, a.live_state, a.live_claude, figure=a.figure)
         print(json.dumps(rows, indent=1))
     elif a.cmd == "label":
         print(json.dumps(label(a.corpus, a.run_root, a.live_state, claude_bin=a.claude_bin, model=a.model), indent=1))
