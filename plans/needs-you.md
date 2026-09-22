@@ -256,8 +256,9 @@ restored its own.
 
 Every writer of the clears log says an append it refuses, one stderr line and one judge-errors row (`clears-log`) per refusal, and
 the kernel's own reader says a present log it cannot read or decode, once per fault episode (`cleared-unreadable`, the kind the
-judges' readers of the same file use); an Undo over such a log restores nothing and its account says so, and the page takes back
-the restore the click made, by the undo's sequence. The episode boundary's settle is the one writer without a retry: its head is
+judges' readers of the same file use); an Undo over such a log restores nothing and its account says so, marked as the read's fault
+(`readFault`), and the page takes back the restore the click made on that marked account alone, by the undo's sequence; an account
+without the marker (an owed-note refusal beside a landed undo) settles nothing about the click. The episode boundary's settle is the one writer without a retry: its head is
 recorded before its clear rows, so a refused append leaves the pre-clear open cards in the fresh conversation, and that settle is
 lost; the row and the line name the session.
 

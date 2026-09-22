@@ -1183,6 +1183,7 @@ class ActsUnderAFailedWrite(_World):
         titles = [m["title"] for m in sent if m.get("type") == "err"]
         self.assertEqual(titles, ["romp could not read its note of earlier owed cards"], "an unreadable note is said, a missing one is not")
         self.assertFalse(self._flag(A, A + ":g1"), "and the undo went ahead")
+        self.assertNotIn("readFault", [k for m in sent if m.get("type") == "err" for k in m], "the owed-note refusal carries no read-fault marker: the feed must not take back the click's restore on it (round six of PR 2025)")
 
     def _two_fault_undo_leaves_b_owed(self):
         """Two cards cleared in one batch, then Undo with B's store faulting at its flag step and the log refusing the re-journal: A back,
@@ -1600,6 +1601,7 @@ class ActsUnderAFailedWrite(_World):
         errs = [m for m in sent if m.get("type") == "err"]
         self.assertEqual([(m["title"], m.get("seq"), "buildId" in m) for m in errs], [("romp could not read its record of cleared cards", 5, True)], "the undo's account names the fault, with the floor and the sequence (before: a bare ack): %r" % sent)
         self.assertIn("codec", errs[0]["text"]); self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no bare ack beside it")
+        self.assertIs(errs[0].get("readFault"), True, "the read-fault account carries its POSITIVE marker: the feed's take-back keys on it, not on what an account lacks (round six of PR 2025): %r" % errs[0])
         self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(errs[0]), set(), "the read-fault account ships NO stack: an empty one from the faulted read emptied the feed's stack and released its suppressions (the round-one verifier of PR 2025): %r" % errs[0])
         # the sibling: a refused CLEAR over the unreadable log ships no stack either (the base sent an empty one)
         with _nth_append_faults(log, 1):
@@ -1607,6 +1609,7 @@ class ActsUnderAFailedWrite(_World):
             sent2 = self._dispatch({"type": "askClear", "itemId": A + ":g1"})
         errs2 = [m for m in sent2 if m.get("type") == "err"]
         self.assertEqual(len(errs2), 1, "the clear's refusal: %r" % sent2); self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(errs2[0]), set(), "no stack while the log cannot be read")
+        self.assertNotIn("readFault", errs2[0], "a refused clear's account carries no read-fault marker")
         self.assertEqual(len(rows()), 1, "one judge-errors row for the read: %r" % rows()); self.assertEqual(len(lines), 1, "one stderr line: %r" % lines)
         with captured(lines):
             km._CLEARED_MEMO["slot"] = None; km._cleared_ids(); km._undo_stack_ids()
@@ -1791,6 +1794,44 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual([m for m in sent if m.get("type") == "err"], [], "the press lands: %r" % sent)
         self.assertFalse(self._flag(B, B + ":g1"), "the peer's clear, the newest batch when the press read the log again, is what Undo restored (before: the batch newest at entry)")
         self.assertTrue(self._flag(A, A + ":g1"), "and A's clear stands")
+
+    def test_a_read_fault_after_the_owed_rows_landed_files_the_account_and_the_reorder_and_leaves_the_owed_row_for_the_next_press(self):
+        """The round-three verifier of PR 2025 (round six): the unconditional re-read's fault arm had no behavioural pin (a mutant dropping the
+        reorder, or the arm, left the module green). B owed, a further clear so the click's batch is non-empty, the read after the lock block
+        refused: the read-fault account (no stack, the marker), the reorder frame saying the owed cards did not come back and naming the popped
+        batch, the owed row appended once, nothing restored; the next press, the log readable, restores B."""
+        self._two_fault_undo_leaves_b_owed()                                 # B owed, in memory and in the note
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})            # a further clear: the batch the click pops is A's
+        log = jd.STATE / "cleared.jsonl"
+        rows_b = lambda: sum(1 for l in log.read_text().splitlines() if json.loads(l).get("id") == B + ":g1" and json.loads(l).get("op") == "clear")
+        nb0 = rows_b()
+        real_read, real_rewrite, armed = km._cleared_ids_read, km._owed_rewrite, [False]
+
+        def rewrite_then_arm(*a, **kw):                                      # the note rewritten with nothing still owed: the re-journal-first rows landed, so the NEXT read (after the lock block) faults
+            out = real_rewrite(*a, **kw)
+            if not (a[0] if a else kw.get("still_owed")):
+                armed[0] = True
+            return out
+
+        def faulting_once(*a, **kw):
+            if armed[0]:
+                armed[0] = False
+                return {}, "the read refused after the rows landed (stand-in)"
+            return real_read(*a, **kw)
+        with mock.patch.object(km, "_owed_rewrite", rewrite_then_arm), mock.patch.object(km, "_cleared_ids_read", faulting_once):
+            sent = self._dispatch({"type": "undoClear", "seq": 15})
+        errs = [m for m in sent if m.get("type") == "err"]
+        fault = [m for m in errs if m.get("title") == "romp could not read its record of cleared cards"]
+        self.assertEqual(len(fault), 1, "the read-fault account (with the arm gone the press went on over an empty read): %r" % sent)
+        self.assertIs(fault[0].get("readFault"), True); self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(fault[0]), set(), "no stack on it")
+        reorder = [m for m in errs if m.get("ok") is True]
+        self.assertEqual(len(reorder), 1, "the reorder frame (with its call gone the click's batch stood restored on the page): %r" % errs)
+        self.assertEqual((reorder[0]["owedIds"], reorder[0]["itemIds"]), ([B + ":g1"], [A + ":g1"]), "saying the owed cards did not come back and naming the batch the click popped: %r" % reorder[0])
+        self.assertEqual(rows_b() - nb0, 1, "the owed row was appended once")
+        self.assertTrue(self._flag(A, A + ":g1") and self._flag(B, B + ":g1"), "nothing restored this press")
+        self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no ack")
+        sent = self._dispatch({"type": "undoClear", "seq": 16})              # the log readable again: B's re-journal row is the newest batch
+        self.assertFalse(self._flag(B, B + ":g1"), "the next press restores B: %r" % sent); self.assertTrue(self._flag(A, A + ":g1"), "and A's clear stands")
 
     def test_the_two_new_judge_errors_kinds_are_documented(self):
         """The second contributor's post-merge note on PR 2018: `clears-log` and `owed-note` were in neither kind list; the round-one verifier
@@ -2102,7 +2143,7 @@ class UndoStackSequences(_World):
     ACTIONS = ("clearA", "clearB", "clearAll", "undo")
     STORE = ("lands", "refuses")
     LOG = ("lands", "refuses", "refuses2")
-    FRAME_KEYS = ("type", "op", "ok", "sid", "itemId", "itemIds", "owedIds", "batches", "owedBatch", "batchesTotal", "title")
+    FRAME_KEYS = ("type", "op", "ok", "sid", "itemId", "itemIds", "owedIds", "batches", "owedBatch", "batchesTotal", "title", "readFault")   # readFault: the read-fault account's marker (round six of PR 2025)
 
     def setUp(self):                                      # the acts class's world (its sessions, live map and app sink), without its tests
         super().setUp()

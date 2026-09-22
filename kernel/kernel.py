@@ -41599,8 +41599,9 @@ def _cleared_ids_read():
         return cur, ""
     except (OSError, ValueError) as e:
         # a PRESENT log that cannot be read (a permission bit, EIO) or whose bytes are not text (UnicodeDecodeError is a ValueError: it raised at the
-        # undo arm before the restore, and the account never went; the second contributor's post-merge note on PR 2018): the empty uncached set, as
-        # before, but SAID (the first contributor's post-merge review of PR 2021: the arm was silent while the note reader files all three for the
+        # undo arm before the restore, and the account never went; the second contributor's post-merge note on PR 2018): the empty set, cached under
+        # its stat with its fault when the bytes are not text and uncached for an OSError (the memo write below; round three of PR 2025), and SAID (the
+        # first contributor's post-merge review of PR 2021: the arm was silent while the note reader files all three for the
         # same bytes): one stderr line and one judge-errors row per fault episode, the first failed read after a good or an absent one, and the
         # undo account names it (_undo_clear, LEDGER_READ_KEY)
         _CLEARED_STATS["derived"] += 1
@@ -42133,6 +42134,10 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op="", seq=None):
                 frame["ok"] = True                    # information, not a refusal: the feed shows the dialog and files no bell entry (the round-four verifier)
             if owed:
                 frame["owedIds"] = [str(i) for i in owed]   # the owed ids that did NOT come back this press (the sixth and seventh executed reviews)
+            if key == LEDGER_READ_KEY:
+                frame["readFault"] = True             # the POSITIVE marker of the read-fault account (round six of PR 2025, the first contributor's round-two comment):
+                #                                      the feed's take-back keyed on what an account lacked (no stack, no ids) and fired on an owed-note refusal whose ledger
+                #                                      read faulted after the undo rows landed, taking back a batch the kernel restored; only this account says it restored nothing
             if key != LEDGER_READ_KEY:
                 # the kernel's stack rides the account (round eight) with the count before the bound (round ten): the feed takes it as its own.
                 # NOT on the read-fault account, nor on any account while the log cannot be read (the round-one verifier of PR 2025): an empty

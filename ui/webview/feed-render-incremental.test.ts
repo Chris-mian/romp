@@ -2244,7 +2244,7 @@ test("an undo account without a stack (the kernel's clears log could not be read
   card("g3")._clr.onclick(ev); card("g1")._clr.onclick(ev); mock.timers.tick(700);
   body.byId("feed-undoclear")!.onclick!(ev);                                                  // pops g1's entry optimistically
   assert.deepEqual(stackIds(), [["g3"]]); assert.ok(card("g1") && !card("g3"));
-  await dispatch({ type: "err", op: "undoClear", title: "romp could not read its record of cleared cards", text: "This Undo found nothing to bring back: romp could not read the record it keeps of cleared cards (a stand-in fault). The cards stay as they are. Once the record can be read again, press Undo again.", itemId: "", itemIds: [], buildId: 1, seq: lastSeq() });
+  await dispatch({ type: "err", op: "undoClear", title: "romp could not read its record of cleared cards", text: "This Undo found nothing to bring back: romp could not read the record it keeps of cleared cards (a stand-in fault). The cards stay as they are. Once the record can be read again, press Undo again.", itemId: "", itemIds: [], buildId: 1, seq: lastSeq(), readFault: true });
   mock.timers.tick(700);
   assert.deepEqual(stackIds(), [["g1"], ["g3"]], "the frame carried no stack, so the feed's stands (before round two: an empty one emptied it), and the popped entry is back on top, newest first (before round three: it stayed popped): the kernel restored nothing");
   assert.ok(!card("g3"), "the other clear stays off (before: released, the card repainted beside a dialog saying the cards stay)");
@@ -2255,7 +2255,7 @@ test("an undo account without a stack (the kernel's clears log could not be read
   await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
 });
 
-test("the read-fault account takes back the click's optimistic restore by the undo's sequence (the second contributor's post-merge review of PR 2021): a two-card batch goes back off and back on the stack, an account for another sequence moves nothing, a second account for the same one moves nothing, a payload omitting the cards shows none, and Undo once the log reads restores them again", async (t) => {
+test("the read-fault account takes back the click's optimistic restore by the undo's sequence and its positive marker (the second contributor's post-merge review of PR 2021; round six: the first contributor's round-two comment): an owed-note refusal with no stack and no ids takes nothing back and leaves the record standing, a two-card batch goes back off and back on the stack on the marked account, an account for another sequence moves nothing, a second account for the same one moves nothing, a payload omitting the cards shows none, and Undo once the log reads restores them again", async (t) => {
   t.after(() => mock.timers.reset());
   mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
   const hooks = (await import("./feed")) as any;
@@ -2269,7 +2269,11 @@ test("the read-fault account takes back the click's optimistic restore by the un
   assert.deepEqual(stackIds(), [["g1", "g3"], ["g2"]], "newest first: Clear all's batch on top");
   body.byId("feed-undoclear")!.onclick!(ev); const s1 = lastSeq();                            // pops the two-card batch optimistically
   assert.ok(card("g1") && card("g3") && !card("g2")); assert.deepEqual(stackIds(), [["g2"]]);
-  const readFault = (seq: number, buildId: number) => ({ type: "err", op: "undoClear", title: "romp could not read its record of cleared cards", text: "This Undo found nothing to bring back: romp could not read the record it keeps of cleared cards (a stand-in fault). The cards stay as they are. Once the record can be read again, press Undo again.", itemId: "", itemIds: [], buildId, seq });
+  const readFault = (seq: number, buildId: number) => ({ type: "err", op: "undoClear", title: "romp could not read its record of cleared cards", text: "This Undo found nothing to bring back: romp could not read the record it keeps of cleared cards (a stand-in fault). The cards stay as they are. Once the record can be read again, press Undo again.", itemId: "", itemIds: [], buildId, seq, readFault: true });
+  const owedRead = (seq: number) => ({ type: "err", op: "undoClear", title: "romp could not read its note of earlier owed cards", text: "The undo went ahead, but romp could not read the note it keeps of cards an earlier undo left owed (a stand-in fault). If some cards stay hidden after this, press Undo again once romp can read it.", itemId: "", itemIds: [], buildId: 1, seq });
+  await dispatch(owedRead(s1)); mock.timers.tick(700);
+  assert.ok(card("g1") && card("g3"), "an owed-note refusal with no stack and no ids says nothing about the click's restore: nothing is taken back (before round six: keyed on what the account lacked, the batch went back off and the next Undo popped a phantom)"); assert.deepEqual(stackIds(), [["g2"]]);
+  for (const d of body.querySelectorAll("#err-dialog")) d.remove();
   await dispatch(readFault(s1 - 1, 1)); mock.timers.tick(700);
   assert.ok(card("g1") && card("g3"), "an account for another undo's sequence takes nothing back"); assert.deepEqual(stackIds(), [["g2"]]);
   for (const d of body.querySelectorAll("#err-dialog")) d.remove();
