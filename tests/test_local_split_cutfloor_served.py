@@ -135,6 +135,7 @@ try {
   } catch (e) {
     out.atTimeout = await tf.evaluate((sid) => ({ url: location.href, readyState: document.readyState, tabs: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id")),
       active: (document.querySelector("#tabs .tab.active[data-id]") || { getAttribute: () => null }).getAttribute("data-id"), turns: document.querySelectorAll("#content .turn[data-uuid]").length,
+      shownTurns: document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length,   // the shown session's own thread, the predicate's count (turns above counts every cached thread)
       regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null })).catch((e2) => ({ readError: String(e2) }));
     out.atTimeout.strip = await page.evaluate(() => window.__labStrip || null).catch((e2) => ({ readError: String(e2) }));   // guarded like the frame read: a crashing top page must not replace the rethrow
     throw e;
