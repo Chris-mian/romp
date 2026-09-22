@@ -41936,6 +41936,18 @@ _owed_read_fault = [""]          # the fault copy filed for a STANDING unreadabl
 #                                  _read_failed shape), cleared when a read lands; _undo_clear's own read files per gesture (the thirteenth executed review)
 
 
+def _clears_log_fault_note(what, e):
+    """The durable record of a refused clears-log write (the second contributor's post-merge review of PR 1967, 2026-09-22: the four arms
+    reached the pressing socket and nothing followed, while the note helpers' arms record theirs): one stderr line and a judge-errors row
+    (`clears-log`), the write-fault convention. Never raises: it runs inside the refusal arms it records."""
+    line = "clears log: %s refused: %s" % (what, _store_fault_copy(e))
+    try:
+        sys.stderr.write(line + "\n")
+        jd._log_judge_error("romp", "", "clears-log", note=line)
+    except Exception:
+        pass
+
+
 def _owed_fault_note(what, e):
     """The durable record of a refused note write or read (the second contributor's review, 2026-09-22: seven refusal arms said nothing
     beyond the frame): one stderr line and a judge-errors row (jd._log_judge_error, the rows the card modal's diagnostics read), the
@@ -42003,7 +42015,7 @@ def _ledger_batches(limit=LEDGER_BATCHES_ON_WIRE):
     return ([owed] if owed else []) + out[:limit], owed, len(out)
 
 
-def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
+def _gesture_store_refusal(client, gesture, skipped, ids=None, op="", seq=None):
     """A user gesture (a clear, a sub-goal drop, an undo) that a session's UNREADABLE goal store made us
     skip must say so on the socket that made it (the standing rule: a refusal of a user gesture reaches
     the user). The feed's `err` dialog is the existing "that action did not land" surface, bell included;
@@ -42030,6 +42042,17 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
     # and an `undoAck` for an undo that landed with nothing to say
     _floor = _feed_build_id[0] if gesture == "undo" else None
     _said = [False]
+    if _floor is not None and client is not None:
+        # the pressing client's feed dedup slot dropped (the first contributor's post-merge review of PR 1967, M1): a build claimed at or below
+        # the floor whose clears snapshot followed the restore lists the card, which the pane refuses (at or below the floor), while the
+        # rebuild past the floor carries the same dedup signature (buildId is volatile) and would not go until the repost; with the slot
+        # gone the next build goes whatever its content, whole (the delta base goes with it, as the failure path forgets it)
+        try:
+            with _client_lock(client):
+                client.get("sent", {}).pop(_DELTA_SLOTS["feed"][0], None)
+                client.get("dstate", {}).pop("feed", None)
+        except Exception:
+            sys.stderr.write("undo account: the feed slot: %s\n" % traceback.format_exc())
     if skipped and gesture != "undo":
         _owed_ensure_loaded(gesture)                    # a clear's or a drop's account after a restart carries the owing too (the second contributor's review)
     for key, value in (skipped or {}).items():
@@ -42053,6 +42076,8 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
             frame["batches"], frame["owedBatch"], frame["batchesTotal"] = _lb[0]   # the kernel's stack, which the feed takes as its own (round eight), and the count before the bound (round ten)
             if _floor is not None:
                 frame["buildId"] = _floor             # the undo's build floor (round fifteen): the feed judges a restore by a build past it
+                if seq is not None:
+                    frame["seq"] = seq                # the feed's per-undo sequence, echoed: the floor lands on the checks written for THIS undo alone (the post-merge review, M2)
             _said[0] = True
             try:
                 client["send"](json.dumps(frame))
@@ -42172,7 +42197,10 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
         # the undo landed with nothing to account for: the ack alone carries the floor (one frame per undo per kernel; an older kernel sends
         # none, and the feed's payload flag `undoAck` tells it which kernels do)
         try:
-            client["send"](json.dumps({"type": "undoAck", "op": op or "", "buildId": _floor}))
+            _ack = {"type": "undoAck", "op": op or "", "buildId": _floor}
+            if seq is not None:
+                _ack["seq"] = seq
+            client["send"](json.dumps(_ack))
         except Exception:
             sys.stderr.write("undo ack: %s\n" % traceback.format_exc())
 
@@ -42200,6 +42228,7 @@ def _clear_all(item_ids):
         # flagged either, and the gesture's socket hears it under LEDGER_KEY (_gesture_store_refusal). Left to raise, the receive
         # loop's OSError arm, which is for the socket's own failures, tore every pane's connection down and the redial brought
         # the card back with no word why.
+        _clears_log_fault_note("the clear rows", e)
         return {LEDGER_KEY: _store_fault_copy(e)}
     _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     skipped = _mark_nodes_cleared(item_ids, True)     # durable node flag → no grouper re-wrap, no column bounce
@@ -42262,6 +42291,7 @@ def _undo_clear(batch_out=None):
                     for iid in owed_ids:
                         f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
             except OSError as e:
+                _clears_log_fault_note("the re-journal-first rows", e)
                 named = popped + [i for i in owed_ids if i not in popped]   # what the feed restored on the click, plus the owed: the revert's ids
                 if batch_out is not None:
                     batch_out.extend(named)
@@ -42311,6 +42341,7 @@ def _undo_clear(batch_out=None):
         # the clears log refused the undo rows (the second executed review of PR 1935, 2026-09-21): nothing is journaled, so the batch stays the
         # newest and the next Undo retries exactly it (the tops the archive restore pulled back a moment ago sit flag-cleared
         # in the live store, hidden as before, and the retry's restore passes them over as not archived); said on the socket
+        _clears_log_fault_note("the undo rows", e)
         skipped[LEDGER_KEY] = _store_fault_copy(e)
         _reorder(False, owed_ids, 1)                  # the owed batch did not come back either (one stamp, the re-journal-first's): the reorder frame says so
         return skipped
@@ -42341,6 +42372,7 @@ def _undo_clear(batch_out=None):
             with _OWED_LOCK:                          # the memory update and the persist under the one lock a peer's read-rewrite section holds
                 _rejournal_owed.update({iid: None for iid in _rj})
                 _owed_mem_only[0] = bool(_owed_persist(_rj))   # beside the log (a restart keeps it); refused too: memory alone, said (the third review of PR 1967, 2026-09-21)
+            _clears_log_fault_note("the flag-step re-journal", e)
             skipped[LEDGER_REJOURNAL_KEY] = {"fault": _store_fault_copy(e), "ids": list(_rj)}   # the account names the ids it owes, not the batch
         skipped.update(late); skipped.update({"notice:" + s: f for s, f in nlate.items()})   # keyed apart: the refusal is worded per store
     _undone = set(restored + notices) - set(_rj)      # the ids whose undo row landed and whose flag step ran
@@ -71710,7 +71742,9 @@ class Handler(BaseHTTPRequestHandler):
             _mark_views_dirty()
         elif msg and msg.get("type") == "undoClear":
             _ub = []
-            _gesture_store_refusal(client, "undo", _undo_clear(batch_out=_ub), ids=_ub, op=str(msg.get("type") or ""))
+            _seq = msg.get("seq")
+            _gesture_store_refusal(client, "undo", _undo_clear(batch_out=_ub), ids=_ub, op=str(msg.get("type") or ""),
+                                   seq=_seq if isinstance(_seq, int) and not isinstance(_seq, bool) else None)   # the feed's per-undo sequence (the post-merge review, M2)
             _mark_views_dirty()
         elif msg and msg.get("type") == "dismissLane" and msg.get("id"):
             # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). DURABLE since 2026-08-14

@@ -269,7 +269,8 @@ const lastSeenBuild = new Map<string, number>();   // per kernel: the build of t
 // that lists the card is the evidence the card was restored (releaseRestoredByEvidence); an id suppressed after the send has no entry, so no payload
 // releases it by evidence (a per-kernel record measured every later clear against the old undo's moment and painted the card back for a beat). An
 // entry leaves once judged, or when the absence rule ends the suppression
-const restoreChecks = new Map<string, { host: string; sentBuild: number; floor?: number }>();   // `floor` (round fifteen): the kernel's build counter when it processed the undo, from its account; until it lands a check on an accounting kernel releases nothing
+const restoreChecks = new Map<string, { host: string; sentBuild: number; floor?: number; seq?: number }>();   // `seq`: the undo the check was written for (the per-undo sequence this page mints); an account's floor lands on that undo's checks alone
+let undoSeq = 0;   // the per-undo sequence (the post-merge review of PR 1967, M2): minted on each undoClear, carried by federation's routing frame and echoed by the kernel on the ack and every undo err frame   // `floor` (round fifteen): the kernel's build counter when it processed the undo, from its account; until it lands a check on an accounting kernel releases nothing
 let ackHosts = new Set<string>();   // the kernels whose last payload says they account for every undo with a build floor (`undoAck`; `ackHosts` on a merged payload): their checks wait for the account; an older kernel's take the build seen at the send, as before
 let payloadHosts: string[] = [];   // the kernels whose builds the last merged payload carried (its per-host map, the local key aside): federation's word on the attachment, with pendingHosts and pendingDead (attachedHosts)
 // The inverse of pendingCleared: ids we've optimistically RESTORED, kept (with their cached card) until a
@@ -361,11 +362,12 @@ export function _clearedStackIdsForTests(): string[][] {
 export function _clearedItemsIdsForTests(): string[] { return Array.from(clearedItems.keys()); }
 export function _restoreChecksForTests(): [string, string, number][] { return Array.from(restoreChecks, ([id, c]) => [id, c.host, c.sentBuild] as [string, string, number]); }
 export function _restoreFloorsForTests(): [string, number | null][] { return Array.from(restoreChecks, ([id, c]) => [id, c.floor ?? null] as [string, number | null]); }
+export function _restoreSeqsForTests(): [string, number | null][] { return Array.from(restoreChecks, ([id, c]) => [id, c.seq ?? null] as [string, number | null]); }
 export function _clearedStackItemsForTests(): AskItem[][] { return clearedStack.map((e) => e.slice()).reverse(); }
 export function _clearedStackFrameIdsForTests(): (string[] | null)[] {
   return clearedStack.map((e) => ((e as any)._ids as string[] | undefined) ?? null).reverse();
 }
-export function _resetClearGestureStateForTests(): void { clearedStack.length = 0; clearedItems.clear(); pendingCleared.clear(); pendingRestored.clear(); lastUndoHosts = new Set([""]); undoSentBuild.clear(); lastSeenBuild.clear(); restoreChecks.clear(); payloadHosts = []; ackHosts = new Set(); }
+export function _resetClearGestureStateForTests(): void { clearedStack.length = 0; clearedItems.clear(); pendingCleared.clear(); pendingRestored.clear(); lastUndoHosts = new Set([""]); undoSentBuild.clear(); lastSeenBuild.clear(); restoreChecks.clear(); payloadHosts = []; ackHosts = new Set(); undoSeq = 0; }
 // Finish an optimistic dismiss: the 180ms fade just removed the card element, so drop the item(s) from the
 // LOCAL model and re-render NOW — in grouped mode a run whose last card left takes its session-name header
 // with it, and the column count follows, instead of both lingering until the next kernel push (the user
@@ -787,10 +789,19 @@ function releaseRestoredByEvidence(incomingAsks: AskItem[], m: any): void {
     if (built > floor) { pendingCleared.delete(a.itemId); restoreChecks.delete(a.itemId); }
   }
 }
-// an undo's account from kernel `host` (the ack of a landed undo, a refusal, the reorder's frame): its build floor lands on that kernel's checks alone
-function setUndoFloor(host: string, floor: unknown): void {
+// an undo's account from kernel `host` (the ack of a landed undo, a refusal, the reorder's frame): its build floor lands on the checks written
+// for THAT undo on that kernel alone, by the per-undo sequence the kernel echoes (the post-merge review of PR 1967, M2: two undos to one kernel
+// with a clear between them put the first undo's floor on the second undo's check, and a build claimed before that clear applied passed it);
+// an account with no sequence (a kernel between round fifteen and this) lands on every check of its kernel, as before
+function setUndoFloor(host: string, seq: unknown, floor: unknown): void {
   if (typeof floor !== "number") return;
-  for (const c of restoreChecks.values()) if (c.host === host) c.floor = floor;
+  for (const c of restoreChecks.values()) if (c.host === host && (typeof seq !== "number" || c.seq === seq)) c.floor = floor;
+}
+// a kernel's socket came back (the shim's `wsup` for the local kernel, federation's `hostUp` for a remote): the undo's account rides the
+// pressing client's queue alone, which the redial may have abandoned, so a check still waiting for it would hold a restored card off the
+// board for good (the absence rule never covers a listed card); its suppressions take the click-time release instead (the post-merge review)
+function dropChecksOnReconnect(host: string): void {
+  for (const [id, c] of Array.from(restoreChecks)) if (c.host === host) { restoreChecks.delete(id); pendingCleared.delete(id); }
 }
 
 // the kernels attached, by federation's own account and never by sessions or cards (rounds twelve and thirteen of PR 1967: a remote card's coming
@@ -4261,7 +4272,7 @@ function makeUndoClearBtn(): HTMLElement {
       window.clearTimeout(undoBusyBackstop);
       undoBusyBackstop = window.setTimeout(clearUndoBusy, 6000);
     }
-    vscodeApi?.postMessage({ type: "undoClear" });
+    vscodeApi?.postMessage({ type: "undoClear", seq: ++undoSeq });   // the per-undo sequence: the kernel echoes it on the undo's account, so its floor lands on this undo's checks alone
   };
   return b;
 }
@@ -6858,7 +6869,11 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
   } else if (m.type === "undoAck") {
     // a landed undo's account (round fifteen of PR 1967): nothing to say but the build floor, the kernel's counter when it processed the undo;
     // the checks on that kernel judge their payloads by it from here on. Federation stamps a remote kernel's ack with its host
-    setUndoFloor(typeof m.host === "string" ? m.host : "", m.buildId);
+    setUndoFloor(typeof m.host === "string" ? m.host : "", m.seq, m.buildId);
+  } else if (m.type === "wsup") {
+    dropChecksOnReconnect("");                                   // the local kernel's socket reopened (the shim's frame): a lost account holds nothing off the board
+  } else if (m.type === "hostUp" && Array.isArray(m.hosts)) {
+    for (const h of m.hosts) if (typeof h === "string" && h) dropChecksOnReconnect(h);   // a remote kernel's link recovered (federation's frame): the same
   } else if (m.type === "retryRefused" && typeof m.sid === "string" && m.sid) {
     // the backend could not take the manual retry's send: the Retry this page latched lets go, and says why
     if (rearmLatches({ kind: "retry", sid: m.sid })) feedToast(String(m.text || "Couldn't retry: the kernel refused it."));
@@ -6883,9 +6898,10 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       for (const id of Array.from(pendingCleared)) {
         const h = suppressedHostOf(id);
         if (!lastUndoHosts.has(h)) continue;
+        if (restoreChecks.has(id)) continue;                     // a check stands until judged: the undo that wrote it accounts for it, a later undo does not re-arm it for its own sequence
         const seen = lastSeenBuild.get(h);
         if (seen === undefined) { pendingCleared.delete(id); restoreChecks.delete(id); continue; }
-        restoreChecks.set(id, { host: h, sentBuild: seen });
+        restoreChecks.set(id, { host: h, sentBuild: seen, seq: typeof m.seq === "number" ? m.seq : undefined });
       }
     }
   } else if (m.type === "err" && typeof m.text === "string" && m.text) {
@@ -6916,7 +6932,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     const refusedIds = Array.isArray(m.itemIds) ? m.itemIds.map(String) : (op === "askClear" && itemId ? [itemId] : []);
     const storeOp = op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll" || op === "undoClear";
     const fromHost = typeof m.host === "string" ? m.host : "";   // federation stamps a remote kernel's account with its host (prefixInbound); the local kernel's has none
-    if (op === "undoClear") setUndoFloor(fromHost, m.buildId);   // the refusal's and the reorder's frames carry the undo's build floor (round fifteen)
+    if (op === "undoClear") setUndoFloor(fromHost, m.seq, m.buildId);   // the refusal's and the reorder's frames carry the undo's build floor (round fifteen) and its sequence
     if (storeOp && Array.isArray(m.batches) && !fromHost && !federatedPane()) {
       // the kernel's stack rides every gesture account (round eight of PR 1967): this page takes it as its own, which covers a refused clear (its
       // ids are not in the batches: back where they were), a refused undo (the batch the click popped is still the newest: back on top), a

@@ -156,6 +156,28 @@ await setBox(true);
 out.on = { shown: await page.waitForFunction(() => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && b.querySelectorAll(".ntc-row").length >= 1; }, null, { timeout: 10000 }).then(() => true).catch(() => false) };
 out.on.moreAfterRebuild = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);   // the rebuilt row (host.replaceChildren, then the rows built anew) wears the disclosure too
 out.on.box = await readBox();
+// 6. a HIDDEN pane (the first contributor's post-merge review of PR 1967): the chat page inside a display:none iframe lays nothing out, so a
+// fresh long-brief row measured there reads zero by zero; a zero measure is no information, and the pane's return re-runs the pass
+const shell = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+await shell.goto(cfg.landing);                                                                     // the kernel's own shell: the chat pane is one of its iframes
+let fr = null; for (let i = 0; i < 150 && !fr; i++) { fr = shell.frames().find((f) => /\/chat(\?|$)/.test(f.url())) || null; if (!fr) await shell.waitForTimeout(200); }   // loop-ok: bounded
+out.hiddenPane = { frame: !!fr };
+if (fr) {
+  out.hiddenPane.loaded = await fr.waitForSelector("#notices .ntc-row", { timeout: 60000 }).then(() => true).catch(() => false);   // the box on screen once
+  await shell.evaluate(() => { window.__rompPaneToggle("chat", false); });                                                    // the rail hides the pane (display:none on its wrapper): the observer's word
+  out.hiddenPane.hidden = await shell.waitForFunction(() => !document.body.classList.contains("po-chat"), null, { timeout: 10000 }).then(() => true).catch(() => false);
+  const store4 = JSON.parse(fs.readFileSync(cfg.store, "utf8"));
+  store4.nodes[cfg.g6] = { id: cfg.g6, text: cfg.g6q, parentId: null, nodeComplete: false, blocked: true, blockWhy: cfg.g6q, blockSummary: cfg.longBrief, cleared: false, trail: [],
+    t: Math.floor(Date.now() / 1000), log: [{ ev_t: Math.floor(Date.now() / 1000), src: "planner", kind: "block", why: "asked: " + cfg.g6q, at: Math.floor(Date.now() / 1000) }] };
+  store4.status[cfg.g6] = "blocked"; store4.seq = (store4.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store4));
+  fs.utimesSync(cfg.order, new Date(), new Date());
+  out.hiddenPane.row = await fr.waitForSelector(rowSel(cfg.g6), { state: "attached", timeout: 60000 }).then(() => true).catch(() => false);
+  out.hiddenPane.landed = await fr.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g6), brief: cfg.longBrief }, { timeout: 60000 }).then(() => true).catch(() => false);
+  out.hiddenPane.whileHidden = await fr.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); return b ? { h: b.clientHeight, sh: b.scrollHeight, more: !!r.querySelector(".ntc-more") } : null; }, rowSel(cfg.g6));
+  await shell.evaluate(() => { window.__rompPaneToggle("chat", true); });                                                     // shown again
+  out.hiddenPane.moreAfterShow = await fr.waitForSelector(rowSel(cfg.g6) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);
+  out.hiddenPane.clipped = await fr.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); return !!b && b.scrollHeight > b.clientHeight + 1; }, rowSel(cfg.g6));
+}
 process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
 """
@@ -289,7 +311,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
                 json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
-                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "ledger": self.ledger, "order": self.order}, f)
+                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "g6": SID + ":g6", "g6q": "which of the two fixture loaders should the CI job run first?", "landing": base + "/?token=" + self.token, "ledger": self.ledger, "order": self.order}, f)
             driver = os.path.join(self.lab, "needsbox.mjs")
             Path(driver).write_text(DRIVER)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=600,
@@ -367,6 +389,16 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(r["fresh"]["landed"] and r["fresh"]["clipped"], "with its long brief, clipped: %r" % r["fresh"])
         self.assertTrue(r["fresh"]["more"], "and wears the More button with no gesture (before: measured detached, 0 by 0, no button): %r" % r["fresh"]["box"])
         self.assertTrue(r["on"]["shown"]); self.assertTrue(r["on"]["moreAfterRebuild"], "the rebuilt row wears it too (before: none after the switch's off-then-on)")
+
+    def test_a_pane_hidden_while_a_long_brief_row_arrives_gets_its_disclosure_when_shown(self):
+        """The first contributor's post-merge review of PR 1967 (low 1): a disclosure measured in a display:none pane read zero by zero and
+        removed a closed row's button or left a fresh row without one until the next repaint. A zero measure is no information, and the
+        chat visibility watcher's return edge (hidden, then visible) re-runs the pass, so the button appears when the pane is shown."""
+        r = self._result(); h = r["hiddenPane"]
+        self.assertTrue(h["frame"] and h["loaded"] and h["hidden"] and h["row"] and h["landed"], "the shell's chat pane, shown once then hidden by the rail, builds the fresh row with its brief while hidden: %r (kernel: %s)" % (h, self._kernel_tail()))
+        self.assertEqual((h["whileHidden"] or {}).get("h"), 0, "hidden, the body measures zero: %r" % h["whileHidden"])
+        self.assertTrue(h["moreAfterShow"], "shown, the pane's return re-measures and the button appears (before: none until the next repaint): %r" % h)
+        self.assertTrue(h["clipped"], "and the brief is clipped at four lines once laid out")
 
     def test_a_clear_the_clears_log_refuses_leaves_the_row_and_re_arms_its_buttons_and_says_so(self):
         r = self._result()

@@ -1414,7 +1414,7 @@ class ActsUnderAFailedWrite(_World):
             self.assertEqual(payloads(), (False, 0, False, 0), "the log alone while the note cannot be read")
             self.assertEqual(km._undo_stack_ids(), set())
         self.assertFalse(km._owed_note_read[0], "armed until a read lands")
-        self.assertEqual(len(self._rows("owed-note")) - rows0, 1, "five reads of the standing fault, one judge-errors row (before: one per read): %r" % self._rows("owed-note"))
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 1, "four reads of the standing fault (two per build, one per off frame, one direct), one judge-errors row (before: one per read): %r" % self._rows("owed-note"))
         self.assertIn("Permission denied", self._rows("owed-note")[-1]["note"])
         self.assertEqual(payloads(), (True, 1, True, 1), "readable again: the read lands and the button is back")
         with mock.patch.object(Path, "read_text", refusing_read):
@@ -1459,6 +1459,78 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no ack beside an account")
         sent = self._dispatch({"type": "askClear", "itemId": A + ":g2"})
         self.assertEqual([m for m in sent if m.get("type") in ("undoAck", "err")], [], "a clear that lands sends nothing: the floor is an undo's")
+
+    def test_an_undo_account_drops_the_pressing_clients_feed_dedup_slot_and_echoes_the_undos_sequence(self):
+        """The first contributor's post-merge review of PR 1967 (M1, M2). M1: a build claimed at or below the floor whose clears snapshot
+        followed the restore lists the card, which the pane refuses, while the rebuild past the floor carries the same dedup signature
+        (buildId is volatile) and would not go until the 60 s repost; the undo account drops the pressing client's feed slot, so the next
+        build goes whatever its content. M2: the feed's per-undo sequence rides the request and comes back on the ack and on every undo
+        account frame, so a floor lands on the checks written for that undo alone."""
+        sent = []
+        client = {"app": "feed", "alive": True, "send": lambda s: sent.append(json.loads(s)), "sent": {}}
+        payload = {"type": "feed", "buildId": 3, "asks": [{"itemId": A + ":g1"}], "now": NOW}
+        s1 = json.dumps(payload); sig = km._dedup_sig(payload, s1)
+        self.assertTrue(km._send_client(client, ("feed",), payload, pre=s1, sig=sig), "the first frame goes")
+        p2 = dict(payload, buildId=4); s2 = json.dumps(p2)
+        self.assertFalse(km._send_client(client, ("feed",), p2, pre=s2, sig=km._dedup_sig(p2, s2)), "an identical-content build is deduped (buildId is volatile)")
+        km._gesture_store_refusal(client, "undo", {}, ids=[], op="undoClear", seq=7)
+        self.assertEqual([(m["op"], m["seq"], m["buildId"]) for m in sent if m.get("type") == "undoAck"], [("undoClear", 7, km._feed_build_id[0])], "the ack echoes the sequence: %r" % sent)
+        p3 = dict(payload, buildId=5); s3 = json.dumps(p3)
+        self.assertTrue(km._send_client(client, ("feed",), p3, pre=s3, sig=km._dedup_sig(p3, s3)), "after the undo account the build past the floor goes whatever its content (before: deduped until the repost)")
+        self.assertFalse(km._send_client(client, ("feed",), dict(payload, buildId=6), pre=s3, sig=km._dedup_sig(p3, s3)), "and the dedup stands again after it")
+        sent.clear()
+        km._gesture_store_refusal(client, "feed" and "clear", {}, ids=[A + ":g1"], op="askClear", seq=8)
+        self.assertEqual(sent, [], "a clear's account carries no floor and no ack: the sequence is an undo's")
+        km._gesture_store_refusal(client, "undo", {km.LEDGER_KEY: {"fault": "the log refused", "ids": [A + ":g1"]}}, ids=[A + ":g1"], op="undoClear", seq=9)
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([(m["op"], m.get("seq"), "buildId" in m) for m in errs], [("undoClear", 9, True)], "the refusal's frame echoes the sequence beside the floor: %r" % errs)
+        self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no ack beside an account")
+        # the arm passes the request's sequence through, an int alone
+        sent = self._dispatch({"type": "askClear", "itemId": A + ":g1"}); sent = self._dispatch({"type": "undoClear", "seq": 11})
+        self.assertEqual([m.get("seq") for m in sent if m.get("type") == "undoAck"], [11])
+        sent = self._dispatch({"type": "askClear", "itemId": A + ":g1"}); sent = self._dispatch({"type": "undoClear", "seq": True})
+        self.assertEqual([("seq" in m) for m in sent if m.get("type") == "undoAck"], [False], "a sequence that is not a number is not echoed")
+
+    def test_every_clears_log_refusal_files_a_judge_errors_row(self):
+        """The second contributor's post-merge review (2026-09-22): the four clears-log refusal arms (a clear's rows, an undo's rows, the
+        flag-step re-journal, the re-journal-first rows) reached the pressing socket and nothing followed, while the note helpers' arms
+        record theirs. Each files one judge-errors row (clears-log) and a stderr line."""
+        rows = lambda: len(self._rows("clears-log"))
+        n0 = rows()
+        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+            self._dispatch({"type": "askClear", "itemId": A + ":g1"})                # the clear rows refused
+        self.assertEqual(rows() - n0, 1, "the clear rows' refusal files: %r" % self._rows("clears-log"))
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+            self._dispatch({"type": "undoClear"})                                     # the undo rows refused
+        self.assertEqual(rows() - n0, 2, "the undo rows' refusal files")
+        self._dispatch({"type": "undoClear"})                                         # A back
+        self._two_fault_undo_leaves_b_owed()                                           # the flag-step re-journal refused: B owed
+        self.assertEqual(rows() - n0, 3, "the flag-step re-journal's refusal files")
+        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+            self._dispatch({"type": "undoClear"})                                     # the owed id's re-journal-first rows refused
+        self.assertEqual(rows() - n0, 4, "the re-journal-first refusal files")
+        self.assertEqual([r["note"].split(" refused")[0] for r in self._rows("clears-log")[-4:]],
+                         ["clears log: the clear rows", "clears log: the undo rows", "clears log: the flag-step re-journal", "clears log: the re-journal-first rows"])
+
+    def test_a_clears_account_after_a_restart_carries_the_owing_the_note_holds(self):
+        """The second contributor's post-merge review (2026-09-22): the restart-owing load on a non-undo account was pinned by no behaviour
+        (a `pass` left the module green). After a restart (memory empty, the note on disk) a clear the log refuses carries the owed id
+        in its account's stack."""
+        self._two_fault_undo_leaves_b_owed()
+        km._rejournal_owed.clear(); km._owed_settled.clear(); km._owed_note_read[0] = False   # a restart
+        with _nth_append_faults(jd.STATE / "cleared.jsonl", 1):
+            sent = self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["owedBatch"] for m in errs], [[B + ":g1"]], "the account's stack carries the owing the note holds (before: empty until the first Undo read it): %r" % errs)
+
+    def test_a_note_row_that_is_not_json_is_skipped_and_the_others_load(self):
+        """The second contributor's post-merge review (2026-09-22): the note read's row guard was pinned by no behaviour. A row that is not
+        JSON is skipped; the id beside it loads; nothing raises."""
+        (jd.STATE / km.OWED_FILE).write_text("{not json\n" + json.dumps({"id": B + ":g1"}) + "\n")
+        km._rejournal_owed.clear(); km._owed_note_read[0] = False; km._owed_read_fault[0] = ""
+        self.assertEqual(km._undo_stack_ids(), {B + ":g1"}, "the garbage row is skipped, the id beside it loads")
+        self.assertTrue(km._owed_note_read[0], "and the read counts as landed")
 
     def test_the_off_frame_over_an_undecodable_clears_log_ships_zero_counts(self):
         """The thirteenth executed review (2026-09-22): the off frame's guarded clears-log read was dead code once the stack helper replaced it,

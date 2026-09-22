@@ -14880,6 +14880,10 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
 // the brief's disclosure button, on the row's own delegate (act ntc-more) and not on the body div; present only while the clamped body hides
 // lines, so a short brief shows no control; kept out of the latch (a disclosure is not a decision)
 function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
+  // a zero measure is no information (the post-merge review of PR 1967): a display:none pane lays nothing out, so the pass would remove a
+  // closed row's button or leave a fresh row without one until the next repaint; the row stands as it is, and the pane's return re-runs the
+  // pass (renderNoticeDisclosures, from the chat visibility watcher)
+  if (body && body.style.display !== "none" && body.clientHeight === 0 && body.scrollHeight === 0) return;
   let b = row.querySelector<HTMLButtonElement>(".ntc-more");
   const overflows = !!body && body.style.display !== "none" && body.scrollHeight > body.clientHeight + 1;
   const open = row.classList.contains("ntc-open");
@@ -14918,6 +14922,12 @@ function renderNotices(): void {
   // the brief's disclosure measured IN the document (the round-thirteen verifier of PR 1967): a row is built detached and joined after
   // updateNoticeRow ran, so its clamped body measured 0 by 0 there and no button was ever made for a fresh row, nor for the rows the
   // switch's off-then-on rebuilt; the pass runs over the rows once they stand in the box
+  renderNoticeDisclosures();
+}
+// the disclosure pass over the rows in the box: at the end of every render, and again when the pane comes back into view (a hidden pane measured zero)
+function renderNoticeDisclosures(): void {
+  const host = document.getElementById("notices");
+  if (!host || host.style.display === "none") return;
   for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) noticeMoreButton(r, r.querySelector<HTMLElement>(".ntc-body"));
 }
 
@@ -21392,7 +21402,7 @@ setupSettings();
 })();
 // The chat page's hidden word for the kernel's pane shim (chat-visibility.ts): the chat gates no paint, so this
 // is the one place it measures its own visibility. Once, at top level, over the page's body.
-watchChatVisibility(document.body, browserChatVisibilityDeps());
+watchChatVisibility(document.body, { ...browserChatVisibilityDeps(), onShown: renderNoticeDisclosures });   // the pane's return re-measures the box's disclosures (the post-merge review of PR 1967)
 // right-click a selection in the transcript → Reply (quote it) / Copy
 document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
 // The chat document hosts the viewer itself (openPath), so it boots the viewer's listener with the
