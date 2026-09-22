@@ -37,6 +37,25 @@ import uuid
 from collections import deque
 from pathlib import Path
 
+# #1735: the gc-freeze release note. A backend session and its backend hold each other (a cycle), so a session
+# dropped from self.sessions releases a frozen cycle the record cache's acyclic pops never signal; the kernel
+# injects gcf.note_release here, and the session-end pops call _note_release() so the freeze reconciles it at the
+# next idle boundary. A no-op until injected (a bare backend in a unit test needs no wiring).
+_RELEASE_NOTE = [None]
+
+
+def set_release_note(fn):
+    _RELEASE_NOTE[0] = fn
+
+
+def _note_release():
+    fn = _RELEASE_NOTE[0]
+    if fn is not None:
+        try:
+            fn()
+        except Exception:
+            pass
+
 # ---------------------------------------------------------------------------
 # Pure translation logic (no SDK import — unit-tested in CI without the dep).
 # ---------------------------------------------------------------------------
@@ -14804,6 +14823,7 @@ class SdkBackend:
                     write_reg(self.state_dir, sid, reg)
             s = self.sessions.pop(sid, None)
         if s:
+            _note_release()                        # #1735: a session (a cyclic owner) left; a frozen cycle it held needs a reclaim
             if s._host is not None:                # a kill is not graceful today: the host's `end` gets the short bound (T315)
                 s._host.end_grace = _ht().sh.END_GRACE_KILL_S
             s.shutdown()
@@ -14918,6 +14938,7 @@ class SdkBackend:
             s = self.sessions.pop(sid, None)
         if not s:
             return False
+        _note_release()                            # #1735: a session (a cyclic owner) left; a frozen cycle it held needs a reclaim
         try:
             s.shutdown()
         except Exception as e:
@@ -17011,8 +17032,11 @@ class SdkBackend:
 
     def _on_session_gone(self, sess: SdkSession):
         with self._lock:
-            if self.sessions.get(sess.sid) is sess:
+            popped = self.sessions.get(sess.sid) is sess
+            if popped:
                 self.sessions.pop(sess.sid, None)
+        if popped:
+            _note_release()                        # #1735: a session (a cyclic owner) left; a frozen cycle it held needs a reclaim
         if not sess.ended and not sess.detached:
             if sess.inflight > 0 and not sess._interrupted:
                 # ABNORMAL death mid-turn (killed / crashed — not a user interrupt, not a clean

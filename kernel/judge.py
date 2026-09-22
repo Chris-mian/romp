@@ -3105,6 +3105,8 @@ def _parse_store(fsid, cut, key, session, leaf, human, mode="full"):
         _lru_touch(_PARSE_CACHE, slot)
         while len(_PARSE_CACHE) > _PARSE_CACHE_MAX:
             del _PARSE_CACHE[next(iter(_PARSE_CACHE))]   # the least recently used goes, never everything at once
+        # #1735: no gc-freeze note here. A parsed session tree measured acyclic (Session/Turn/Atom of json dicts),
+        # so it dies by reference counting when the store drops it; an unfreeze reclaim would collect nothing.
 
 
 def _parse_entry(fsid, session=None, turns=None):

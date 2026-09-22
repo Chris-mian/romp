@@ -677,6 +677,11 @@ _JSONL_CACHE_BUDGET_BYTES = (int(float(os.environ["ROMP_RECORD_CACHE_BUDGET_MB"]
                              if os.environ.get("ROMP_RECORD_CACHE_BUDGET_MB") else _record_cache_default_budget_bytes())
 _JSONL_CACHE_BYTES = [0]          # the sum of every held entry's weight, kept in step with _JSONL_CACHE under its lock
 _RECORD_CACHE_STATS = {"inserts": 0, "evictions": 0, "evictedBytes": 0, "budgetEvictions": 0, "dropped": 0, "droppedBytes": 0,
+                       "released": 0,   # #1735: EVERY pop that removed an entry, whatever the cause (eviction, a re-read
+                       #                   replacement, an OSError pop, a quiescent drop). A /perf STATISTIC only, never a
+                       #                   gc-freeze reclaim trigger: these entries are decoded json, acyclic, freed by refcount
+                       #                   whether frozen or not, so an unfreeze reclaim on a pop would collect nothing (the
+                       #                   2026-09-21 review's correction)
                        "wholeReads": {}}   # "kind<-caller" -> {"count", "bytes"}: every read that pulled a file WHOLE (from zero, or a
 #                                          tail entry upgraded to the whole file), named by the reader's kind and the first frame
 #                                          outside this module (T384: the way hydratedBy named the planner; the 0.8 GB of whole
@@ -711,10 +716,13 @@ def _entry_weight(ent) -> int:
 
 
 def _cache_pop_locked(path):
-    """Under _JSONL_CACHE_LOCK: drop `path`'s entry and its weight; returns the weight (0 when absent)."""
+    """Under _JSONL_CACHE_LOCK: drop `path`'s entry and its weight; returns the weight (0 when absent). Every pop
+    that actually removed an entry counts under `released` (the gc-freeze release trigger, #1735): a removed
+    decoded tree may be a frozen cycle that now needs an unfreeze to collect."""
     ent = _JSONL_CACHE.pop(path, None)
     if ent is None:
         return 0
+    _RECORD_CACHE_STATS["released"] += 1
     w = _entry_weight(ent)
     _JSONL_CACHE_BYTES[0] = max(0, _JSONL_CACHE_BYTES[0] - w)
     return w
@@ -5131,6 +5139,8 @@ def _mat_trim():
         else:
             list.__setitem__(lz, j, _UNMAT)
             _ASM_INDEX_STATS["evictions"] += 1
+            # #1735: no gc-freeze note here. A materialized atom is decoded json (a dict), acyclic: it dies by
+            # reference counting when the slot drops it, frozen or not, so an unfreeze reclaim would collect nothing.
 
 
 class LazyIndex:
@@ -5228,6 +5238,8 @@ class LazyIndex:
             self._minted[:] = live                        # in place: a constructor holding this list appends to the one list
             _ASM_INDEX_STATS["released"] += n
             _ASM_INDEX_STATS["resident"] = len(_MAT_LRU)
+        # #1735: no gc-freeze note here, as in _mat_trim. The slots reset to _UNMAT release materialized atoms, which
+        # are decoded json (dicts), acyclic: they die by reference counting, so an unfreeze reclaim would collect nothing.
         return n
 
     def user_facts(self, k):

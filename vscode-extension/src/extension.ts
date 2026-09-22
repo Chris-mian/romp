@@ -591,6 +591,7 @@ function openPanel(preserveFocus = false) {
     { viewColumn: vscode.ViewColumn.Beside, preserveFocus },
     {
       enableScripts: true,
+      enableFindWidget: true,   // Cmd/Ctrl+F opens VS Code's find bar over the rendered pane (the user 2026-09-21): a webview gets no editor find, and the bundle has none of its own
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
     },
@@ -673,6 +674,7 @@ function openFeedPanel(preserveFocus = false, column?: vscode.ViewColumn) {
     { viewColumn: column ?? vscode.ViewColumn.Beside, preserveFocus },
     {
       enableScripts: true,
+      enableFindWidget: true,   // Cmd/Ctrl+F opens VS Code's find bar over the rendered pane (the user 2026-09-21): a webview gets no editor find, and the bundle has none of its own
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
     },
@@ -854,6 +856,7 @@ function openFleetPanel(preserveFocus = false, column?: vscode.ViewColumn) {
     { viewColumn: column ?? vscode.ViewColumn.Beside, preserveFocus },
     {
       enableScripts: true,
+      enableFindWidget: true,   // Cmd/Ctrl+F opens VS Code's find bar over the rendered pane (the user 2026-09-21): a webview gets no editor find, and the bundle has none of its own
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
     },
