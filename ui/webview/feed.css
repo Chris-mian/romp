@@ -1107,7 +1107,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    a read-only prose block above the actions, shown IN FULL — the human is deciding on this text, so
    none of it hides behind a scroll (the user 2026-07-26). */
 .fdismiss.fq:disabled { opacity: 0.55; cursor: default; }
-.fdismiss.fq-ok { color: var(--accent); border-color: rgba(156, 210, 255, 0.6); }
+.fdismiss.fq-ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 60%, transparent); }   /* the accent's own 60%, as the chat page's ok button (the round-thirteen verifier of PR 1967): the dark accent's rgba drew a blue border round orange text on the light theme */
 .fdismiss.fq-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
 .fdismiss.fq-no { color: #e5484d; border-color: rgba(229, 72, 77, 0.6); }
 .fdismiss.fq-no:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }

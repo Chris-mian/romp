@@ -20,14 +20,16 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
 
 test("kernel: every predicted move is answered, right after the prediction it answers", () => {
-  assert.match(KERNEL, /def _ack_card_move\(ids, ok\):/);
+  assert.match(KERNEL, /def _ack_card_move\(ids, ok, why=""\):/);
   assert.match(KERNEL, /"type": "cardMoveAck", "ids": ids, "ok": bool\(ok\),/);
+  // the cause rides the ack when the reopen's WRITE refused (the second executed review of PR 1935): the card is still there
+  assert.match(KERNEL, /if why:\s+frame\["why"\] = why/);
   assert.match(KERNEL, /"buildId": _feed_build_id\[0\]/);
   // the follow-up route: reopen, mark the write so it beats the pass snapshot, then answer
   // (sliced to the retirement comment that replaced the removed cardMove handler, 2026-07-25)
   const fu = KERNEL.slice(KERNEL.indexOf('elif t == "askFollowUp":'), KERNEL.indexOf('the cardMove op'));
   assert.match(fu, /ok = bool\(jd\.optimistic_followup\(/);
-  assert.ok(fu.indexOf('_predict_working("followup"') < fu.indexOf("_ack_card_move([iid], ok)"),
+  assert.ok(fu.indexOf('_predict_working("followup"') < fu.indexOf("_ack_card_move([iid], ok, why=why)"),
     "the ack FOLLOWS its prediction, so a client can never see the answer before the question");
   assert.match(fu, /_note_user_goal_write\(sid\)/);
 });
@@ -58,10 +60,13 @@ test("kernel: the feed payload carries the build id, claimed BEFORE the read it 
 });
 
 test("client: ok=false is the only thing that interrupts the user, and it says what actually happened", () => {
-  assert.match(FEED, /function ackFollowMove\(itemId: string, ok: boolean, buildId: number, host: string\)/);
+  assert.match(FEED, /function ackFollowMove\(itemId: string, ok: boolean, buildId: number, host: string, why = ""\)/);
   assert.match(FEED, /m\.type === "cardMoveAck" && Array\.isArray\(m\.ids\)/);
   // a follow-up's MESSAGE still went out even when the card is gone — say so rather than implying it vanished
   assert.match(FEED, /Your reply was sent, but that card isn’t on the board any more to move to Working\./);
+  // …and when the store refused the reopen's write the card is NOT gone: the ack's cause is said instead (the second review of PR 1935)
+  assert.match(FEED, /Your reply was sent, but the card could not be moved to Working: " \+ why/);
+  assert.match(FEED, /const why = typeof m\.why === "string" \? m\.why : "";/);
   // …and the old accusation that the session ignored the reply is gone for good
   assert.doesNotMatch(FEED, /the session may not have picked it up/);
   assert.doesNotMatch(FEED, /didn’t move the card to Working/);

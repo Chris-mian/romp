@@ -98,7 +98,7 @@ CENSUS = {
     "_effort_color": ("pure", "over the effort string and the colormap name"),
     "_effort_tone": ("pure", "over the effort string"),
     "_feed_needs_input_of": ("sig", "needs", "the last feed build's needs-you set, as the boolean for this session (None and False share a value)"),
-    "_chat_notices": ("sig", "notices", "the approval box's rows by id: this session's needs-you notices with actions, the notice store's projection with the cleared ledger applied (2026-09-19)"),
+    "_chat_notices": ("sig", "notices", "the Needs you box's rows by id and face: this session's goal rows from the last feed build (plans/needs-you.md, phase three: title, brief, Continue, the credential fix; the row's time is _NEEDS_ROW_UNKEYED) and its needs-you notices with actions, the notice store's projection with the cleared ledger applied (2026-09-19)"),
     "_fold_tasks": ("memo", "pure over the parse's turns (transcript, live); the per-turn memo is keyed on each turn's atoms and fingerprint"),
     "_genuine_queued": ("pure", "over a queued text"),
     "_git_branch": ("sig", "cwd"),
@@ -1030,6 +1030,56 @@ class Differential(_World):
             self.assertEqual(self.moved(a, self.sig()), ("needs",), "a card of this session under needs-you is the verdict that rebuilds")
         finally:
             km._feed_needs_input[0] = saved
+
+    def test_a_goal_rows_face_moves_notices_and_its_time_does_not(self):
+        # the Needs you box's goal rows (plans/needs-you.md, phase three) ride the `notices` label by id AND face: a brief landing, a
+        # Continue offered, a retitle (the judge retitles a top under its id) or the credential fix repaints the box; the row's `t` is
+        # unkeyed (_NEEDS_ROW_UNKEYED: the box does not draw it), so a re-file that moves only the time rebuilds nothing
+        saved_in, saved_rows = km._feed_needs_input[0], km._feed_needs_rows[0]
+        try:
+            km._feed_needs_input[0] = frozenset([SID])
+            row = {"itemId": SID + ":g9", "kind": "goal", "title": "wire the fixtures", "body": "", "cont": False, "t": 1}
+            km._feed_needs_rows[0] = {SID: [dict(row)]}
+            a = self.sig()
+            km._feed_needs_rows[0] = {SID: [dict(row, t=2)]}
+            self.assertEqual(self.sig(), a, "the time alone: unkeyed, nothing the row draws")
+            for k, v in (("body", "which database does the suite target?"), ("cont", True), ("title", "wire the fixtures into the suite"), ("fix", "credential")):
+                km._feed_needs_rows[0] = {SID: [dict(row)]}                  # from the base row each time: one field moves, nothing reverts
+                b = self.sig()
+                km._feed_needs_rows[0] = {SID: [dict(row, **{k: v})]}
+                self.assertEqual(self.moved(b, self.sig()), ("notices",), "the row's %s is its face: it moves the label" % k)
+            km._feed_needs_rows[0] = {SID: []}
+            self.assertEqual(self.moved(self.sig(), a), ("notices",), "a row coming or going moves it too")
+        finally:
+            km._feed_needs_input[0], km._feed_needs_rows[0] = saved_in, saved_rows
+
+    def test_the_unkeyed_row_field_is_pinned_by_value_and_the_rows_other_fields_are_the_key(self):
+        # _NEEDS_ROW_UNKEYED by value, as _CHAT_ROW_UNKEYED is; and every field a goal row carries but the unkeyed one is in the
+        # signature's tuple, so a field added to _needs_you_rows without a place in the key fails here (the third review of PR 1967)
+        self.assertEqual(km._NEEDS_ROW_UNKEYED, {"t"})
+        # the rows BUILT on a synthetic frame (the fourth executed review: the AST read kept only literals whose keys are all string constants,
+        # so a spread or a subscripted field passed it), so a field added under any name, by any shape, fails the equality below until the key
+        # reads it or the set declares it; both row shapes, the plain row and the credential row
+        feed = {"asks": [{"itemId": SID + ":g1", "sid": SID, "text": "wire the fixtures", "category": "needs_input", "blockSummary": "which database does the suite target?", "live": True, "t": 5},
+                         {"itemId": SID + ":g2", "sid": SID, "text": "fix the key", "category": "needs_input", "live": True, "t": 6,
+                          "blocked": {"state": "judgeAuth", "what": "the judges' credential was refused"}}]}
+        rows = km._needs_you_rows(feed).get(SID) or []
+        self.assertEqual([r["itemId"] for r in rows], [SID + ":g1", SID + ":g2"], "the plain row and the credential row: %r" % rows)
+        fields = set().union(*(set(r) for r in rows))
+        self.assertEqual(fields - km._NEEDS_ROW_UNKEYED, {"itemId", "kind", "title", "body", "cont", "fix"}, "every field a built row carries is keyed or declared unkeyed")
+        # and the row literals' keys from the AST (the third review) read the same set: a second reading of the same rows
+        tree = ast.parse(inspect.getsource(km._needs_you_rows).lstrip())
+        lit = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict) and node.keys and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in node.keys):
+                keys = {k.value for k in node.keys}
+                if "itemId" in keys:
+                    lit |= keys
+        self.assertEqual(lit, fields, "the literals and the built rows carry the same fields")
+        tup = inspect.getsource(km._chat_build_sig)
+        for f in sorted(fields - km._NEEDS_ROW_UNKEYED):
+            self.assertIn(('n["%s"]' % f) if f == "itemId" else ('n.get("%s")' % f), tup, "the key reads the row's %s" % f)
+        self.assertNotIn('n.get("t")', tup, "and not the unkeyed time")
 
     def test_the_billing_readers_move_acct(self):
         a = self.sig()

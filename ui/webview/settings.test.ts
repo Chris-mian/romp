@@ -45,6 +45,15 @@ test("Compact transcript defaults ON (the user 2026-07-14): fresh installs read 
 
 // The tab strip's one-group-per-row layout (T264) is the default and a per-device pick: an explicit false
 // lets the groups follow one another across the strip and wrap as they need (render.ts renderTabs).
+test("needsBox defaults ON: the chat's Needs you box shows (plans/needs-you.md, phase three); an explicit false round-trips, and a store from before the key reads as on", () => {
+  assert.equal(DEFAULT_SETTINGS.needsBox, true);
+  store["romp:settings"] = JSON.stringify({ needsBox: false });
+  assert.equal(loadSettings().needsBox, false, "the opt-out round-trips");
+  store["romp:settings"] = JSON.stringify({});
+  assert.equal(loadSettings().needsBox, true, "a store from before the key reads as on");
+  delete store["romp:settings"];
+});
+
 test("stripGroupRows defaults ON: every tag group on its own row; an explicit false round-trips, and a store from before the key reads as on", () => {
   assert.equal(DEFAULT_SETTINGS.stripGroupRows, true);
   store["romp:settings"] = JSON.stringify({ stripGroupRows: false });

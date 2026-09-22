@@ -1,0 +1,401 @@
+"""The chat page's NEEDS YOU BOX (plans/needs-you.md, phase three): a hermetic kernel over one synthetic live session in the
+notes-api demo world, the real /chat page served from a copy of the built bundle, driven by Playwright, the feed pane closed.
+The session's goal store holds three judge questions (diary block events in the fold's shape) and a fourth, working focus goal;
+the transcript ends on an API error record only the user can clear (isApiErrorMessage, "prompt is too long"), so the fourth
+card is a HARD STOP the kernel floors with a live-block object (state apiError) and the tab wears the red Blocked ring; a message
+from a DIRECTED peer is held under STATE/postal/quarantine before boot and becomes a needs-you notice card at the first build.
+The box lists the three questions (Reply, Continue, Clear) and the held message (Approve, Deny) under a "Needs you · 4" header,
+wears the Needs you token on its edge, and lists no row for the hard stop. Clear
+takes its row off the box with the next frame; Continue posts the card's own Continue wire and its row leaves once the kernel
+files the reply; Reply points the composer at the card (the chip with the card's title) and the row leaves once the typed reply
+is filed. The gear's Needs you box switch (a romp:settings save) hides the box and leaves the ring; back on, the box returns.
+Synthetic only: placeholder ids, invented text, hostname TESTHOST."""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+from tests.dist_copy import copy_dist  # noqa: E402
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+ROOT = os.path.dirname(HERE)
+BIN = os.path.join(ROOT, "bin")
+EXT = os.path.join(ROOT, "vscode-extension")
+sys.path.insert(0, HERE)
+import test_ship_reship_served as _lab  # noqa: E402  the lab kernel's environment
+from test_live_paused_window_browser import _free_port  # noqa: E402
+
+SID = "cccccccc-1111-2222-3333-444444444444"
+API = "dddddddd-1111-2222-3333-444444444444"     # a second session with a question and NO hard stop: its tab wears the Needs you ring
+API_Q = "which port should the api listen on in the fixtures?"
+BRIEF = "the suite targets Postgres in CI and SQLite locally; which should the fixtures load into?"
+LONG_BRIEF = " ".join("The fixtures load into one database and the suite has two: Postgres in CI and SQLite on a laptop, with different "
+                      "date handling, so a fixture written for one fails on the other." for _ in range(5))   # well past the row's four lines
+MID = "aaaaaaaa-bbbb-cccc-dddd-000000000301"
+TOKEN_RGB = "rgb(217, 70, 239)"          # --st-needs-bg, the dark theme (styles.css)
+QUESTIONS = ["which database does the suite target?", "should the parser keep the legacy header?", "is the fixtures directory versioned?"]
+
+DRIVER = r"""
+import { createRequire } from "node:module";
+import fs from "node:fs";
+const require = createRequire(process.env.EXT_PKG);
+const { chromium } = require("playwright");
+const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));
+let browser;
+try { browser = await chromium.launch(); }
+catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
+const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
+const out = { errors };
+const rowSel = (id) => '#notices .ntc-row[data-item="' + id + '"]';
+const readBox = () => page.evaluate(() => {
+  const box = document.getElementById("notices"); const cs = box ? getComputedStyle(box) : null;
+  const rows = box ? Array.from(box.querySelectorAll(".ntc-row")) : [];
+  const tab = document.querySelector('#tabs .tab[data-id]');
+  const tabs = Object.fromEntries(Array.from(document.querySelectorAll('#tabs .tab[data-id]')).map((t) => [t.getAttribute("data-id"), t.className]));   // every tab's classes by sid: the rings
+  return { shown: !!box && box.style.display !== "none" && !!cs && cs.display !== "none", border: cs ? cs.borderTopColor : null, borderLeft: cs ? cs.borderLeftWidth : null,
+           head: box ? ((box.querySelector(".ntc-head .ntc-label") || {}).textContent || null) : null,
+           dot: box && box.querySelector(".ntc-head .ntc-dot") ? getComputedStyle(box.querySelector(".ntc-head .ntc-dot")).backgroundColor : null,
+           rows: rows.map((r) => ({ id: r.getAttribute("data-item"), title: (r.querySelector(".ntc-title") || {}).textContent, body: (r.querySelector(".ntc-body") || {}).textContent,
+                                   buttons: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => b.textContent), disabled: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => b.disabled) })),
+           tabClasses: tab ? tab.className : null, tabs };
+});
+const waitRows = (n, ms) => page.waitForFunction((n) => document.querySelectorAll("#notices .ntc-row").length === n, n, { timeout: ms }).then(() => true).catch(() => false);
+await page.goto(cfg.chat);
+await page.waitForSelector("#tabs .tab", { timeout: 30000 }).catch(() => {});
+// 1. the box: four rows (the three questions and the held message), the header, the token edge, no row for the hard stop, the red ring on the tab
+out.fourRows = await waitRows(4, 60000);
+out.first = await readBox();
+// the hard stop as the feed pane shows it from the same kernel's pushed frame: the focus goal's card under Needs you with the on-you API error badge
+const feed = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+await feed.goto(cfg.feed);
+const g4Sel = '[data-key="a:' + cfg.g4 + '"]';
+out.hardStop = await feed.waitForSelector(g4Sel, { state: "attached", timeout: 60000 }).then(() => feed.evaluate((sel) => { const c = document.querySelector(sel);
+  const badge = c ? c.querySelector(".fask-api") : null; const badges = c ? Array.from(c.querySelectorAll("a, span")).map((x) => x.textContent || "").filter((t) => t.startsWith("⚠")) : [];
+  return { col: c ? c.parentElement.id : null, badges }; }, g4Sel)).catch(() => ({ col: null, badges: [] }));
+await feed.close();
+// 1b. a brief lands on the first question's card (the judge's blockSummary, written to the store): the row's body follows within the
+// next frames with no gesture (the second review of PR 1967: the box repainted only when a row came or went)
+const store = JSON.parse(fs.readFileSync(cfg.store, "utf8")); store.nodes[cfg.g1].blockSummary = cfg.brief; store.seq = (store.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store));
+fs.utimesSync(cfg.order, new Date(), new Date());   // the judge's own write ends a pass that bumps the view signature's generation; this stand-in moves a file the signature stats
+out.brief = { landed: await page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g1), brief: cfg.brief }, { timeout: 60000 }).then(() => true).catch(() => false) };
+out.brief.box = await readBox();
+// 1c. a brief past the four-line clamp gets a disclosure on its row (the second contributor's review of PR 1967): the More button shows
+// only once the body overflows, opens the row (the clamp lifted, the whole brief on screen), reads Less, and folds the row back
+const store2 = JSON.parse(fs.readFileSync(cfg.store, "utf8")); store2.nodes[cfg.g1].blockSummary = cfg.longBrief; store2.seq = (store2.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store2));
+fs.utimesSync(cfg.order, new Date(), new Date());
+const moreSel = rowSel(cfg.g1) + " .ntc-more";
+out.more = { shown: await page.waitForSelector(moreSel, { timeout: 60000 }).then(() => true).catch(() => false) };
+out.more.before = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); const m = r && r.querySelector(".ntc-more");
+  return b ? { open: r.classList.contains("ntc-open"), clamp: getComputedStyle(b).webkitLineClamp, clipped: b.scrollHeight > b.clientHeight + 1, label: m ? m.textContent : null } : null; }, rowSel(cfg.g1));
+await page.click(moreSel).catch(() => {});
+out.more.open = await page.waitForFunction((s) => { const r = document.querySelector(s); return !!r && r.classList.contains("ntc-open"); }, rowSel(cfg.g1), { timeout: 10000 }).then(() => true).catch(() => false);
+out.more.after = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); const m = r && r.querySelector(".ntc-more");
+  return b ? { clamp: getComputedStyle(b).webkitLineClamp, clipped: b.scrollHeight > b.clientHeight + 1, label: m ? m.textContent : null, text: (b.textContent || "").trim() } : null; }, rowSel(cfg.g1));
+await page.click(moreSel).catch(() => {});
+out.more.closed = await page.waitForFunction((s) => { const r = document.querySelector(s); return !!r && !r.classList.contains("ntc-open"); }, rowSel(cfg.g1), { timeout: 10000 }).then(() => true).catch(() => false);
+out.more.box = await readBox();
+// 2a. a Clear the clears log REFUSES (the log made read-only): the dialog says nothing changed, the row stays and its buttons let go
+fs.chmodSync(cfg.ledger, 0o444);
+await page.click(rowSel(cfg.g3) + ' [data-act="ntc-clear"]');
+out.refused = { dialog: await page.waitForSelector("#confirm", { timeout: 30000 }).then(() => page.evaluate(() => (document.getElementById("confirm") || {}).textContent || "")).catch(() => null) };
+out.refused.rearmed = await page.waitForFunction((s) => { const r = document.querySelector(s); return !!r && Array.from(r.querySelectorAll(".ntc-actions button")).every((b) => !b.disabled); }, rowSel(cfg.g3), { timeout: 30000 }).then(() => true).catch(() => false);
+out.refused.box = await readBox();
+out.refused.rowErr = await page.evaluate((s) => { const r = document.querySelector(s); const e = r && r.querySelector(".ntc-err"); return e && e.style.display !== "none" ? e.textContent : null; }, rowSel(cfg.g3));
+await page.evaluate(() => { const b = Array.from(document.querySelectorAll("#confirm button")).find((x) => /Dismiss/.test(x.textContent || "")); if (b) b.click(); });
+await page.waitForSelector("#confirm", { state: "detached", timeout: 10000 }).catch(() => {});
+fs.chmodSync(cfg.ledger, 0o644);
+// 2. Clear on the third question: the card's own askClear wire; the row leaves with the next frame
+await page.click(rowSel(cfg.g3) + ' [data-act="ntc-clear"]');
+out.clearLatched = await page.evaluate((s) => { const r = document.querySelector(s); return r ? Array.from(r.querySelectorAll("button")).every((b) => b.disabled) : null; }, rowSel(cfg.g3));
+out.afterClear = { left: await page.waitForFunction((s) => !document.querySelector(s), rowSel(cfg.g3), { timeout: 60000 }).then(() => true).catch(() => false) };
+out.afterClear.box = await readBox();
+// 3. Continue on the second question: the card's Continue wire (askFollowUp with cont); the kernel files the reply and the card leaves Needs you
+await page.click(rowSel(cfg.g2) + ' [data-act="ntc-cont"]');
+out.contLatched = await page.evaluate((s) => { const r = document.querySelector(s); return r ? Array.from(r.querySelectorAll("button")).every((b) => b.disabled) : null; }, rowSel(cfg.g2));
+out.afterCont = { left: await page.waitForFunction((s) => !document.querySelector(s), rowSel(cfg.g2), { timeout: 60000 }).then(() => true).catch(() => false) };
+out.afterCont.box = await readBox();
+// 4. Reply on the first question: the composer takes the card (the chip with its title); the typed reply is a follow-up on the card and the row leaves once filed
+await page.click(rowSel(cfg.g1) + ' [data-act="ntc-reply"]');
+out.chip = await page.waitForFunction(() => { const c = document.querySelector("#composer .composer-chip .composer-chip-label"); return c ? c.textContent : null; }, null, { timeout: 15000 }).then((h) => h.jsonValue()).catch(() => null);
+out.rowStaysOnReply = await page.evaluate((s) => !!document.querySelector(s), rowSel(cfg.g1));
+await page.fill("#composer-input", cfg.reply);
+await page.press("#composer-input", "Enter");
+out.afterReply = { left: await page.waitForFunction((s) => !document.querySelector(s), rowSel(cfg.g1), { timeout: 60000 }).then(() => true).catch(() => false) };
+out.afterReply.box = await readBox();
+// 4b. a BRAND-NEW card with a long brief (the round-thirteen verifier): its row is built detached and joined after, so the disclosure must be
+// measured once the row stands in the box; the button shows with no gesture
+const store3 = JSON.parse(fs.readFileSync(cfg.store, "utf8"));
+store3.nodes[cfg.g5] = { id: cfg.g5, text: cfg.g5q, parentId: null, nodeComplete: false, blocked: true, blockWhy: cfg.g5q, blockSummary: cfg.longBrief, cleared: false, trail: [],
+  t: Math.floor(Date.now() / 1000), log: [{ ev_t: Math.floor(Date.now() / 1000), src: "planner", kind: "block", why: "asked: " + cfg.g5q, at: Math.floor(Date.now() / 1000) }] };
+store3.status[cfg.g5] = "blocked"; store3.seq = (store3.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store3));
+fs.utimesSync(cfg.order, new Date(), new Date());
+out.fresh = { row: await page.waitForSelector(rowSel(cfg.g5), { timeout: 60000 }).then(() => true).catch(() => false) };
+out.fresh.more = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);
+out.fresh.box = await readBox();
+// 5. the switch: a romp:settings save with the box off hides it and leaves the ring; back on, the box returns
+const setBox = (on) => page.evaluate((on) => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.needsBox = on; localStorage.setItem("romp:settings", JSON.stringify(s)); window.dispatchEvent(new Event("romp:settings")); }, on);
+await setBox(false);
+out.off = { hidden: await page.waitForFunction(() => { const b = document.getElementById("notices"); return !!b && b.style.display === "none"; }, null, { timeout: 10000 }).then(() => true).catch(() => false) };
+out.off.box = await readBox();
+await setBox(true);
+out.on = { shown: await page.waitForFunction(() => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && b.querySelectorAll(".ntc-row").length >= 1; }, null, { timeout: 10000 }).then(() => true).catch(() => false) };
+out.on.moreAfterRebuild = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);   // the rebuilt row (host.replaceChildren, then the rows built anew) wears the disclosure too
+out.on.box = await readBox();
+process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
+await browser.close();
+"""
+
+
+def _block(t, why):
+    return {"ev_t": t, "src": "planner", "kind": "block", "why": why, "at": t}
+
+
+class NeedsYouBoxChatServed(unittest.TestCase):
+    maxDiff = None
+
+    @classmethod
+    def _skip(cls, why):
+        if os.environ.get("ROMP_SERVED_TESTS_REQUIRE") == "1":
+            raise AssertionError("ROMP_SERVED_TESTS_REQUIRE=1 but the served lab could not run: " + why)
+        raise unittest.SkipTest(why)
+
+    @classmethod
+    def setUpClass(cls):
+        if not os.path.isdir(os.path.join(EXT, "node_modules", "playwright")):
+            cls._skip("extension deps absent (npm ci not run here): the served guard needs them")
+        cls.lab = tempfile.mkdtemp(prefix="needs-you-box-")
+        b = subprocess.run(["node", "esbuild.js"], cwd=EXT, capture_output=True, text=True)
+        if b.returncode != 0:
+            cls._skip("esbuild failed here: " + (b.stderr or b.stdout)[-200:])
+        dist = os.path.join(cls.lab, "dist")
+        copy_dist(os.path.join(EXT, "dist"), dist)
+        state = os.path.join(cls.lab, "xdg", "romp")
+        cwd = os.path.join(cls.lab, "notes-api")
+        for d in ("names", "sdk", "states", "goals", os.path.join("postal", "quarantine")):
+            os.makedirs(os.path.join(state, d), exist_ok=True)
+        os.makedirs(cwd, exist_ok=True)
+        Path(state, "session-hosts").write_text("off\n")
+        claude = os.path.join(cls.lab, "claude")
+        proj = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cwd)))
+        os.makedirs(proj, exist_ok=True)
+        Path(state, "names", SID).write_text("web\t%s\t#9cd2ff\t#0c1a2e\n" % cwd)
+        Path(state, "sdk", SID + ".json").write_text(json.dumps(
+            {"sid": SID, "name": "web", "cwd": cwd, "mode": "auto", "effort": "high", "lastSid": SID, "alive": True,
+             "model": "claude-opus-5", "liveModel": "Opus 5"}))
+        # api: one question and no hard stop, so its tab wears the Needs you ring (the switch leg reads it: web's red ring is painted
+        # first and alone, so a regression dropping the magenta ring would pass on web's tab); web stays first, the active tab
+        Path(state, "names", API).write_text("api\t%s\t#1EA1EB\t#ffffff\n" % cwd)
+        Path(state, "sdk", API + ".json").write_text(json.dumps(
+            {"sid": API, "name": "api", "cwd": cwd, "mode": "auto", "effort": "high", "lastSid": API, "alive": True,
+             "model": "claude-opus-5", "liveModel": "Opus 5"}))
+        Path(state, "session-order.json").write_text(json.dumps([SID, API]))
+        Path(state, "cleared.jsonl").write_text("")      # present, so the refused-clear leg can take its write bit away and give it back
+        t0 = int(time.time()) - 3600
+        iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t))
+        recs, parent = [], None
+        for i in range(6):
+            u, a = "u%d" % i, "a%d" % i
+            recs.append({"type": "user", "uuid": u, "parentUuid": parent, "timestamp": iso(t0 + 10 * i), "sessionId": SID, "promptSource": "typed",
+                         "message": {"role": "user", "content": "question %d about the notes api" % i}})
+            recs.append({"type": "assistant", "uuid": a, "parentUuid": u, "timestamp": iso(t0 + 10 * i + 4), "sessionId": SID,
+                         "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn",
+                                     "content": [{"type": "text", "text": "answer %d: the notes api keeps its shape." % i}]}})
+            parent = a
+        # the session is STOPPED on an API error only the user can clear (the transcript's last record, Claude Code's
+        # isApiErrorMessage shape, "prompt is too long"): its focus goal (the store's lastNode) floors as a live block, the hard stop
+        recs.append({"type": "user", "uuid": "u6", "parentUuid": parent, "timestamp": iso(t0 + 60), "sessionId": SID, "promptSource": "typed",
+                     "message": {"role": "user", "content": "wire the fixtures directory into the integration suite"}})
+        recs.append({"type": "assistant", "uuid": "e6", "parentUuid": "u6", "timestamp": iso(t0 + 62), "sessionId": SID, "isApiErrorMessage": True,
+                     "apiErrorStatus": 400, "error": "invalid_request",
+                     "message": {"role": "assistant", "content": [{"type": "text", "text": "API Error: 400 prompt is too long"}]}})
+        Path(proj, SID + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+        Path(state, "states", SID + ".jsonl").write_text(json.dumps({"t": t0 + 70, "state": "idle"}) + "\n")
+        # three questions the judges filed (diary events in the fold's shape, so the rollup keeps the flags), and the working focus goal
+        cls.g = [SID + ":g%d" % i for i in range(1, 5)]
+        nodes, status = {}, {}
+        for i, q in enumerate(QUESTIONS):
+            g = cls.g[i]
+            nodes[g] = {"id": g, "text": q, "parentId": None, "nodeComplete": False, "blocked": True, "blockWhy": q, "cleared": False, "trail": [],
+                        "t": t0 + 100 + i, "log": [_block(t0 + 200 + i, "asked: " + q)]}
+            status[g] = "blocked"
+        g4 = cls.g[3]
+        nodes[g4] = {"id": g4, "text": "wire the fixtures directory into the integration suite", "parentId": None, "nodeComplete": False, "blocked": False,
+                     "cleared": False, "trail": [], "t": t0 + 300, "log": []}
+        status[g4] = "working"
+        cls.store = os.path.join(state, "goals", SID + ".json")
+        Path(cls.store).write_text(json.dumps(
+            {"rompUuid": SID, "seq": 5, "lastNode": g4, "closedTurns": [], "nodes": nodes, "placements": {}, "status": status}))
+        cls.ledger = os.path.join(state, "cleared.jsonl")
+        cls.order = os.path.join(state, "session-order.json")
+        Path(proj, API + ".jsonl").write_text(json.dumps(
+            {"type": "user", "uuid": "p1", "parentUuid": None, "timestamp": iso(t0 + 20), "sessionId": API, "promptSource": "typed",
+             "message": {"role": "user", "content": "set up the api fixtures"}}) + "\n" + json.dumps(
+            {"type": "assistant", "uuid": "q1", "parentUuid": "p1", "timestamp": iso(t0 + 24), "sessionId": API,
+             "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn", "content": [{"type": "text", "text": API_Q}]}}) + "\n")
+        Path(state, "states", API + ".jsonl").write_text(json.dumps({"t": t0 + 30, "state": "idle"}) + "\n")
+        ga = API + ":g1"
+        Path(state, "goals", API + ".json").write_text(json.dumps(
+            {"rompUuid": API, "seq": 1, "lastNode": ga, "closedTurns": [], "placements": {}, "status": {ga: "blocked"},
+             "nodes": {ga: {"id": ga, "text": "set up the api fixtures", "parentId": None, "nodeComplete": False, "blocked": True, "blockWhy": API_Q,
+                            "cleared": False, "trail": [], "t": t0 + 20, "log": [_block(t0 + 25, "asked: " + API_Q)]}}}))
+        # a message from a DIRECTED peer, held for the user's decision: a needs-you notice with Approve and Deny at the first build
+        Path(state, "postal", "quarantine", MID + ".json").write_text(json.dumps(
+            {"mid": MID, "to": "web", "toId": SID, "frm": "api", "frmId": "11111111-2222-3333-4444-666666666666",
+             "body": "the README draft is ready for a look, could you check the parser section before the release?",
+             "kind": "coordinate", "origin": "TESTHOST", "via": "peer", "at": int(time.time()) - 600}))
+        cls.port = _free_port()
+        cls.token = "testtok-needsbox"
+        env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token, ROMP_HOST_NAME="TESTHOST")
+        cls.klog = os.path.join(cls.lab, "kernel.log")
+        cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")], stdout=open(cls.klog, "w"), stderr=subprocess.STDOUT, env=env)
+        for _ in range(120):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:%d/healthz" % cls.port, timeout=1)
+                break
+            except Exception:
+                time.sleep(0.5)
+        else:
+            cls.kernel.kill()
+            cls._skip("hermetic kernel never served /healthz here")
+        cls._r = None
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls, "kernel", None):
+            cls.kernel.kill()
+            cls.kernel.wait()
+        shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
+
+    def _result(self):
+        if getattr(type(self), "_fail", None):
+            self.fail(type(self)._fail)
+        if self._r is None:
+            cfg = os.path.join(self.lab, "needsbox.json")
+            base = "http://127.0.0.1:%d" % self.port
+            with open(cfg, "w") as f:
+                json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
+                           "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "ledger": self.ledger, "order": self.order}, f)
+            driver = os.path.join(self.lab, "needsbox.mjs")
+            Path(driver).write_text(DRIVER)
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=600,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+            if "browser-launch-failed" in p.stderr:
+                self._skip("no playwright browser on this box")
+            line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
+            if line is None:
+                type(self)._fail = "the driver produced no RESULT (stderr: %s; kernel: %s)" % (p.stderr[-2000:], open(self.klog).read()[-1500:])
+                self.fail(type(self)._fail)
+            type(self)._r = json.loads(line[len("RESULT:"):])
+        return self._r
+
+    def _kernel_tail(self):
+        try:
+            return open(self.klog).read()[-1200:]
+        except OSError:
+            return ""
+
+    def test_the_box_lists_the_questions_and_the_held_message_under_the_header_in_the_token_and_no_row_for_the_hard_stop(self):
+        r = self._result()
+        self.assertEqual(r["errors"], [], "no page error")
+        self.assertTrue(r["fourRows"], "four rows within a minute: %r (kernel: %s)" % (r["first"], self._kernel_tail()))
+        b = r["first"]
+        self.assertTrue(b["shown"], "the box shows")
+        self.assertEqual(b["head"], "Needs you · 4", "the header: the title with the count")
+        self.assertEqual((b["border"], b["borderLeft"], b["dot"]), (TOKEN_RGB, "1px", TOKEN_RGB), "one thin edge and the dot in the Needs you token: %r" % b)
+        ids = [x["id"] for x in b["rows"]]
+        self.assertEqual(ids[:3], self.g[:3], "the three questions first, in the frame's order: %r" % ids)
+        self.assertEqual(ids[3], "notice:%s:%s:1" % (SID, MID), "then the held message")
+        self.assertNotIn(self.g[3], ids, "the hard stop (the focus goal under the on-you API error) has no row")
+        hard = r["hardStop"]
+        self.assertEqual(hard["col"], "col-needsInput-list", "the feed pane files the focus goal's card under Needs you from the same pushed frame: %r" % hard)
+        self.assertTrue(any("Prompt too long" in t for t in hard["badges"]), "wearing the on-you API error badge, the hard stop the box leaves out: %r" % hard)
+        self.assertTrue(any(x["id"] == self.g[0] for x in b["rows"]), "the questions are on the box while the hard stop is not")
+        for row, q in zip(b["rows"][:3], QUESTIONS):
+            self.assertEqual(row["title"], q, "the card's text is the row's title")
+            self.assertEqual(row["buttons"], ["Reply", "Continue", "Clear"], "a live session's question: Reply, Continue, Clear")
+            self.assertEqual(row["disabled"], [False, False, False])
+        self.assertEqual(b["rows"][3]["buttons"], ["Approve", "Deny"], "the held message keeps its stored actions")
+        self.assertIn("ring-needs-you", b["tabClasses"] or "", "the tab wears the red Blocked ring for the hard stop (it outranks the Needs you ring): %r" % b["tabClasses"])
+        self.assertIn("ring-waiting-on-you", (b["tabs"] or {}).get(API) or "", "api's tab, a question and no hard stop, wears the Needs you ring: %r" % b["tabs"])
+
+    def test_a_brief_landing_on_a_card_reaches_its_row_with_no_gesture(self):
+        r = self._result()
+        self.assertTrue(r["brief"]["landed"], "the row's body follows the brief written to the store within the next frames: %r (kernel: %s)" % (r["brief"]["box"], self._kernel_tail()))
+        row = next((x for x in r["brief"]["box"]["rows"] if x["id"] == self.g[0]), None)
+        self.assertEqual(row and row["body"].strip(), BRIEF, "the brief is the row's body (the face renders it as markdown, with its trailing newline)")
+        self.assertEqual(r["brief"]["box"]["head"], "Needs you · 4", "and nothing else moved")
+
+    def test_a_long_brief_gets_a_disclosure_on_its_row_that_lifts_the_clamp_and_folds_back(self):
+        """The second contributor's review (2026-09-22): the row clamped the brief to four lines with no way to the rest. A More button
+        shows once the body overflows, opens the row (the clamp lifted, the whole brief on screen), reads Less, and folds the row back."""
+        r = self._result()
+        m = r["more"]
+        self.assertTrue(m["shown"], "the More button shows on a brief past the clamp: %r (kernel: %s)" % (m, self._kernel_tail()))
+        self.assertEqual((m["before"] or {}).get("label"), "More"); self.assertEqual((m["before"] or {}).get("open"), False)
+        self.assertTrue((m["before"] or {}).get("clipped"), "the body hides lines before the click: %r" % m["before"])
+        self.assertEqual((m["before"] or {}).get("clamp"), "4", "the clamp stands on a closed row")
+        self.assertTrue(m["open"], "the click opens the row")
+        self.assertEqual((m["after"] or {}).get("clamp"), "none", "the clamp lifted: %r" % m["after"])
+        self.assertFalse((m["after"] or {}).get("clipped"), "the whole brief is on screen")
+        self.assertEqual((m["after"] or {}).get("label"), "Less"); self.assertEqual((m["after"] or {}).get("text"), LONG_BRIEF)
+        self.assertTrue(m["closed"], "the second click folds the row back")
+        self.assertEqual(m["box"]["head"], "Needs you · 4", "a disclosure is not a decision: nothing else moved")
+
+    def test_a_brand_new_long_brief_row_and_a_rebuilt_row_both_get_the_disclosure(self):
+        """The round-thirteen verifier (2026-09-22): the disclosure was measured while the row was still detached (built, then joined), so a
+        fresh row with a long brief never got its button, nor did the rows the switch's off-then-on rebuilt; the first scene passed because it
+        mutated a row already in the document. The measure runs over the rows once they stand in the box."""
+        r = self._result()
+        self.assertTrue(r["fresh"]["row"], "the new card's row arrives: %r (kernel: %s)" % (r["fresh"], self._kernel_tail()))
+        self.assertTrue(r["fresh"]["more"], "and wears the More button with no gesture (before: measured detached, 0 by 0, no button): %r" % r["fresh"]["box"])
+        self.assertTrue(r["on"]["shown"]); self.assertTrue(r["on"]["moreAfterRebuild"], "the rebuilt row wears it too (before: none after the switch's off-then-on)")
+
+    def test_a_clear_the_clears_log_refuses_leaves_the_row_and_re_arms_its_buttons_and_says_so(self):
+        r = self._result()
+        d = r["refused"]
+        self.assertIn("That clear did not land", d["dialog"] or "", "the dialog says so: %r" % d["dialog"])
+        self.assertIn("nothing was cleared", d["dialog"] or "")
+        self.assertTrue(d["rearmed"], "the row's buttons let go on the kernel's reply (they latched on the press): %r" % d["box"])
+        self.assertIn(self.g[2], [x["id"] for x in d["box"]["rows"]], "the row stays")
+        self.assertEqual(d["box"]["head"], "Needs you · 4")
+        self.assertEqual(d["rowErr"], "That clear did not land", "and the row says why, the frame's title alone (the verifier's low: no doubled refusal): %r" % d["rowErr"])
+
+    def test_clear_takes_its_row_off_the_box_with_the_next_frame(self):
+        r = self._result()
+        self.assertTrue(r["clearLatched"], "the row's buttons latch on the press")
+        self.assertTrue(r["afterClear"]["left"], "the cleared question's row left: %r (kernel: %s)" % (r["afterClear"]["box"], self._kernel_tail()))
+        self.assertEqual(r["afterClear"]["box"]["head"], "Needs you · 3")
+
+    def test_continue_posts_the_cards_continue_and_its_row_leaves_once_the_kernel_files_the_reply(self):
+        r = self._result()
+        self.assertTrue(r["contLatched"], "the row's buttons latch on the press")
+        self.assertTrue(r["afterCont"]["left"], "the continued question's row left: %r (kernel: %s)" % (r["afterCont"]["box"], self._kernel_tail()))
+        self.assertEqual(r["afterCont"]["box"]["head"], "Needs you · 2")
+
+    def test_reply_points_the_composer_at_the_card_and_the_typed_reply_takes_the_row_off(self):
+        r = self._result()
+        self.assertEqual(r["chip"], QUESTIONS[0], "the composer's chip names the card, as a feed card click that lands in the chat does")
+        self.assertTrue(r["rowStaysOnReply"], "Reply alone leaves the row: the reply is not written yet")
+        self.assertTrue(r["afterReply"]["left"], "the typed reply is a follow-up on the card and its row left: %r (kernel: %s)" % (r["afterReply"]["box"], self._kernel_tail()))
+        self.assertEqual(r["afterReply"]["box"]["head"], "Needs you · 1", "the held message alone remains")
+
+    def test_the_switch_hides_the_box_and_leaves_the_ring_and_back_on_the_box_returns(self):
+        r = self._result()
+        self.assertTrue(r["off"]["hidden"], "the box hides on the save: %r" % r["off"]["box"])
+        self.assertIn("ring-needs-you", r["off"]["box"]["tabClasses"] or "", "the red ring stays: the switch is the box's alone")
+        self.assertIn("ring-waiting-on-you", (r["off"]["box"]["tabs"] or {}).get(API) or "", "and the Needs you ring on api's tab stays too: %r" % r["off"]["box"]["tabs"])
+        self.assertTrue(r["on"]["shown"], "back on, the box returns with its rows: %r" % r["on"]["box"])
+        self.assertIn("ring-waiting-on-you", (r["on"]["box"]["tabs"] or {}).get(API) or "")
+
+
+if __name__ == "__main__":
+    unittest.main()

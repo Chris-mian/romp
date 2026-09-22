@@ -244,10 +244,128 @@ const pendingCleared = new Set<string>();
 // optimistic restore — so the card reappears on click instead of waiting on the kernel round-trip + next feed
 // build. Mirrors the kernel's _undo_clear (restores the most-recent clear batch). (the user 2026-06-27.)
 const clearedStack: AskItem[][] = [];
+const clearedItems = new Map<string, AskItem>();   // the cards this page cleared and no live payload has shown since, by id: what a refused clear re-shows, stack or no stack (a federated pane
+//                                                    keeps none; round ten of PR 1967); a record ends when a payload shows the card unsuppressed, and the map is bounded (the round-ten verifier)
+const CLEARED_ITEMS_CAP = 200;                        // past this the oldest EVICTABLE record goes: never one under suppression, on the stack, or in the batch being written (rounds twelve and thirteen of PR 1967)
+function recordCleared(it: AskItem): void { clearedItems.set(it.itemId, it); }   // the one writer of the record; the cap runs once the batch is held (evictClearedRecords)
+// the cap: past it the oldest EVICTABLE record goes, never one under suppression, on the stack, or in the batch being written (`writing`). The
+// twelfth executed review of PR 1967 found the batch's own oldest members evicted at the 201st record: the writers suppress a batch's ids after
+// the entry is pushed, and the board's Clear all never does, so the hold set is taken after the splice, with this batch named
+function evictClearedRecords(writing: Iterable<string>): void {
+  if (clearedItems.size <= CLEARED_ITEMS_CAP) return;
+  const held = new Set<string>(writing);
+  for (const id of pendingCleared) held.add(id);
+  for (const e of clearedStack) for (const x of e) held.add(x.itemId);
+  for (const id of Array.from(clearedItems.keys())) {   // insertion order: the oldest first
+    if (clearedItems.size <= CLEARED_ITEMS_CAP) break;
+    if (!held.has(id)) clearedItems.delete(id);
+  }
+}
+let lastUndoHosts = new Set<string>([""]);   // federation's word on where the last undo went (the undoRouted frame it hands the panes at the send; round twelve of PR 1967)
+const undoSentBuild = new Map<string, number>();   // per kernel the undo went to: the build of its this page had seen at the send, so a later payload of that kernel built past it is evidence
+const lastSeenBuild = new Map<string, number>();   // per kernel: the build of the last payload this page applied (the merged payload's per-host map; the payload's own build for the local kernel when the map lacks it)
+// per SUPPRESSION the last undo reached for (round thirteen of PR 1967, the round-twelve verifier's HIGH and the twelfth executed review): the ids
+// suppressed on the routed kernels at the send, each with the build of its kernel this page had seen then. A payload of that kernel built past it
+// that lists the card is the evidence the card was restored (releaseRestoredByEvidence); an id suppressed after the send has no entry, so no payload
+// releases it by evidence (a per-kernel record measured every later clear against the old undo's moment and painted the card back for a beat). An
+// entry leaves once judged, or when the absence rule ends the suppression
+const restoreChecks = new Map<string, { host: string; sentBuild: number; floor?: number }>();   // `floor` (round fifteen): the kernel's build counter when it processed the undo, from its account; until it lands a check on an accounting kernel releases nothing
+let ackHosts = new Set<string>();   // the kernels whose last payload says they account for every undo with a build floor (`undoAck`; `ackHosts` on a merged payload): their checks wait for the account; an older kernel's take the build seen at the send, as before
+let payloadHosts: string[] = [];   // the kernels whose builds the last merged payload carried (its per-host map, the local key aside): federation's word on the attachment, with pendingHosts and pendingDead (attachedHosts)
 // The inverse of pendingCleared: ids we've optimistically RESTORED, kept (with their cached card) until a
 // kernel push actually carries them again — otherwise the very next push (before the kernel un-archived) would
 // replace `asks` and drop the just-restored card, a flicker. Dropped once the kernel lists the id.
 const pendingRestored = new Map<string, AskItem>();
+
+// The Undo stack's writers (round eight of PR 1967). The kernel's own stack is the ids an earlier undo left owed (its next Undo writes
+// their rows first, so they are the newest batch) over the clears log's batches by stamp; this page's stack must read the same, press
+// after press, for the optimistic Undo to restore what the kernel restores. Two rules keep it so, proven by enumeration in
+// feed-render-incremental.test.ts over tests/fixtures/undo-stack-transitions.json: a batch this page makes goes UNDER the owed entries
+// (pushClearedEntry), and every gesture account the kernel sends carries its stack (`batches`, `owedBatch`, and `batchesTotal`, the count of
+// log batches before the wire's bound, so a truncated stack reads as truncated), which this page takes as its
+// own (reconcileClearedStack): a refusal leaves the kernel's stack as it was, so the entry the click popped comes back; ids that came back
+// leave; ids this page never held stand in an entry of their own (empty, so the Undo on it is the round trip).
+function pushClearedEntry(entry: AskItem[]): void {
+  for (const it of entry) recordCleared(it);
+  const writing = entry.map((it) => it.itemId);
+  if (federatedPane()) { evictClearedRecords(writing); return; }   // a federated pane keeps no stack: its Undo is the round trip (federatedPane)
+  let i = clearedStack.length;
+  const owedIds = new Set<string>();
+  while (i > 0 && (clearedStack[i - 1] as any)._owed) { i--; for (const it of clearedStack[i]) owedIds.add(it.itemId); for (const id of ((clearedStack[i] as any)._ids as string[] | undefined) ?? []) owedIds.add(id); }
+  // the owed entries stay on top: the kernel's next Undo is theirs. An id they hold counts once, as owed (a card cleared again while owed: the
+  // kernel's re-journal-first row supersedes its log row and one Undo restores it whole), so it does not enter the new entry
+  const rest = entry.filter((it) => !owedIds.has(it.itemId));
+  if (rest.length) clearedStack.splice(i, 0, rest);
+  evictClearedRecords(writing);                            // the cap, with this batch held: on the stack now, and named for the ids a writer suppresses after the push
+}
+
+function reconcileClearedStack(batches: string[][], owedBatch: string[], truncated = false, namedIds: string[] = []): void {
+  // a single-kernel pane's frame (federatedPane gates the call): every id is this kernel's
+  const known = new Map<string, AskItem>();
+  for (const [id, it] of clearedItems) known.set(id, it);   // the page's record of what it cleared, for cards no live payload has shown since (one source: the enumeration's mutant on it reds)
+  for (const a of asks) known.set(a.itemId, a);              // the live board's copy wins for a card on the board
+  const owed = new Set(owedBatch);
+  const cleared = new Set<string>();
+  for (const b of batches) for (const id of b) cleared.add(id);
+  // the kernel's next payload is the truth for every card its stack names: no optimistic stickiness past a gesture account. A log batch's
+  // cards are off the board (an optimistic restore the kernel did not make, or a clear that landed): gone now, suppressed until a payload
+  // omits them. An OWED id is a promise about the next Undo, not a word on its card: the card may well show (a clear whose flag step
+  // refused left no flag, and the undo's flag step refused too), so the payload says whether it stays
+  const hidden = new Set<string>();
+  for (const id of cleared) if (!owed.has(id)) hidden.add(id);
+  const named = new Set(namedIds);                          // the ids the account itself names (a refused batch)
+  for (const id of cleared) { pendingRestored.delete(id); if (hidden.has(id)) pendingCleared.add(id); }
+  // a card the kernel holds cleared leaves the board and enters the page's record with its live copy: a second frame in the same press (the
+  // ledger's account, then the reorder) builds its entry from that record, since the board no longer shows it
+  asks = asks.filter((a) => { if (!hidden.has(a.itemId)) return true; recordCleared(a); return false; });
+  evictClearedRecords([]);                                 // the cap, after the hidden ids are suppressed above (held)
+  // what this page suppressed and no log batch hides (a refused clear, an owed card that shows) comes back where it was, its collapse undone.
+  // A TRUNCATED frame says nothing about the batches it left out: a suppression the frame neither names nor carries stays until a payload
+  // omits or shows the card (the ninth executed review: read as "not cleared", the older clears flapped back and their Undo entries went)
+  for (const id of Array.from(pendingCleared)) {
+    if (hidden.has(id)) continue;
+    if (truncated && !named.has(id) && !cleared.has(id)) continue;
+    pendingCleared.delete(id);
+    const it = known.get(id);
+    if (!it) continue;
+    for (const c of cardTwins(id)) c.classList.remove("dismissing");
+    if (!asks.some((a) => a.itemId === id)) asks.push(it);
+  }
+  // the stack is the frame's, oldest first so the newest batch ends on top; under a TRUNCATED frame an entry the frame neither carries nor
+  // names is an older clear beyond the window and stays, below the rebuilt ones
+  const older: AskItem[][] = [];
+  if (truncated) {
+    for (const e of clearedStack) {
+      const ids = ((e as any)._ids as string[] | undefined) ?? e.map((it) => it.itemId);
+      if (ids.length && !ids.some((id) => cleared.has(id) || named.has(id))) older.push(e);
+    }
+  }
+  clearedStack.length = 0;
+  clearedStack.push(...older);
+  for (const ids of batches.slice().reverse()) {
+    const e: AskItem[] = [];
+    for (const id of ids) { const it = known.get(id); if (it) e.push(it); }
+    (e as any)._ids = ids.slice();                         // the batch's ids, whether or not this page holds their items
+    if (ids.length && ids.every((id) => owed.has(id))) (e as any)._owed = true;
+    clearedStack.push(e);
+  }
+  render();
+}
+
+// test hooks (the enumeration in feed-render-incremental.test.ts): the stack's entries by the ITEMS they hold, top first; the ids each
+// entry took from the kernel's frame, apart (the eighth executed review: one hook returning the frame's ids made the equality hold by
+// construction); and a reset between sequences
+export function _clearedStackIdsForTests(): string[][] {
+  return clearedStack.map((e) => e.map((it) => it.itemId)).reverse();
+}
+export function _clearedItemsIdsForTests(): string[] { return Array.from(clearedItems.keys()); }
+export function _restoreChecksForTests(): [string, string, number][] { return Array.from(restoreChecks, ([id, c]) => [id, c.host, c.sentBuild] as [string, string, number]); }
+export function _restoreFloorsForTests(): [string, number | null][] { return Array.from(restoreChecks, ([id, c]) => [id, c.floor ?? null] as [string, number | null]); }
+export function _clearedStackItemsForTests(): AskItem[][] { return clearedStack.map((e) => e.slice()).reverse(); }
+export function _clearedStackFrameIdsForTests(): (string[] | null)[] {
+  return clearedStack.map((e) => ((e as any)._ids as string[] | undefined) ?? null).reverse();
+}
+export function _resetClearGestureStateForTests(): void { clearedStack.length = 0; clearedItems.clear(); pendingCleared.clear(); pendingRestored.clear(); lastUndoHosts = new Set([""]); undoSentBuild.clear(); lastSeenBuild.clear(); restoreChecks.clear(); payloadHosts = []; ackHosts = new Set(); }
 // Finish an optimistic dismiss: the 180ms fade just removed the card element, so drop the item(s) from the
 // LOCAL model and re-render NOW — in grouped mode a run whose last card left takes its session-name header
 // with it, and the column count follows, instead of both lingering until the next kernel push (the user
@@ -387,11 +505,14 @@ function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
 // went out. ok=true records the buildId the prediction must outlive and re-arms the window SILENTLY: the
 // kernel has spoken, so nothing from here on is worth a toast, but a prediction must never outlive the
 // answer either, so the backstop stays armed in case a payload goes missing.
-function ackFollowMove(itemId: string, ok: boolean, buildId: number, host: string) {
+function ackFollowMove(itemId: string, ok: boolean, buildId: number, host: string, why = "") {
   if (!pendingFollowMove.has(itemId)) return;
   if (!ok) {
     clearFollowMove(itemId, "ack-fail");
-    feedToast("Your reply was sent, but that card isn’t on the board any more to move to Working.");
+    // `why` (the second executed review of PR 1935, 2026-09-21): the store REFUSED the reopen's write, so the card is still on the
+    // board and the toast says that; without it the one answer was "gone", and a card that had stayed read as vanished
+    feedToast(why ? "Your reply was sent, but the card could not be moved to Working: " + why
+                  : "Your reply was sent, but that card isn’t on the board any more to move to Working.");
     render();
     return;
   }
@@ -619,6 +740,88 @@ function prRepoOf(sid: string | undefined): string | null {
 // (pendingDead, from the merge's socket truth) names itself instead of waiting open-endedly.
 let pendingHosts: string[] = [];
 let pendingDead: string[] = [];
+// every kernel the last undo went to has a build in this payload past the one seen at the send: the cue's clear on a federated pane (the second
+// contributor's review, 2026-09-22). A kernel with no build on record gave no measure, so it does not hold the cue
+function undoRoutedBuilt(m: any): boolean {
+  const perHost = m.buildIds && typeof m.buildIds === "object" && !Array.isArray(m.buildIds) ? m.buildIds as Record<string, number> : undefined;
+  const local = typeof m.buildId === "number" ? m.buildId : undefined;
+  for (const h of lastUndoHosts) {
+    const sent = undoSentBuild.get(h); if (sent === undefined) continue;
+    const built = perHost && typeof perHost[h] === "number" ? perHost[h] : (h === "" ? local : undefined);
+    if (typeof built !== "number" || built <= sent) return false;
+  }
+  return true;
+}
+// On a FEDERATED pane a suppression ends on the EVIDENCE that the card was restored (round twelve of PR 1967, the round-eleven verifier's design;
+// per suppression since round thirteen, the round-twelve verifier's HIGH): federation's word at the send (undoRouted) writes a restore check on
+// every card then suppressed on the kernels the undo went to, with the build of its kernel this page had seen at that moment, and a payload from
+// that kernel built past it that lists the card releases the suppression. A stale held frame, built before the send, releases nothing; a kernel
+// the undo never reached never lists a restored card with a newer build; a kernel that restored an older batch shows exactly what it restored;
+// a card cleared AFTER the send has no check, so no payload releases it by evidence. A build below the one last seen from a kernel is its restart
+// (the counter is per process; the twelfth executed review): the check re-bases to the new life and that payload judges the card. The single-kernel
+// pane releases at the click instead, as the enumeration proves it, so the undoRouted branch writes no check there (the attachment read at the send,
+// the click's moment; the frame reaches every kernel-served pane, the thirteenth executed review); a pane that flips from federated to single-kernel
+// between the click and the restore keeps its checks, so no gate on the attachment stands HERE. Apart from applyFeedPayload's absence-driven writers,
+// which stand behind the cards-unknown gate: this one acts on presence and needs no such gate
+function releaseRestoredByEvidence(incomingAsks: AskItem[], m: any): void {
+  for (const id of Array.from(restoreChecks.keys())) if (!pendingCleared.has(id)) restoreChecks.delete(id);   // the absence rule, or a click, ended the suppression: judged elsewhere
+  if (!restoreChecks.size) return;
+  const perHost = m.buildIds && typeof m.buildIds === "object" && !Array.isArray(m.buildIds) ? m.buildIds as Record<string, number> : undefined;
+  const local = typeof m.buildId === "number" ? m.buildId : undefined;
+  const builtOf = (h: string): number | undefined => (perHost && typeof perHost[h] === "number" ? perHost[h] : (h === "" ? local : undefined));
+  for (const c of restoreChecks.values()) {                        // a kernel's restart re-bases every check on it, listed or not: the new life's payload judges
+    const built = builtOf(c.host), seen = lastSeenBuild.get(c.host);
+    if (typeof built === "number" && seen !== undefined && built < seen) { c.sentBuild = -1; c.floor = -1; }
+  }
+  for (const a of incomingAsks) {
+    const c = restoreChecks.get(a.itemId);
+    if (!c) continue;
+    const built = builtOf(c.host);
+    // the FLOOR (round fifteen of PR 1967, the round-thirteen verifier's ruling): on a kernel that accounts for its undos, the build counter it
+    // reported when it processed the undo; a build past it read the store after every earlier clear applied and the undo's batch restored, so
+    // a listed card is restored, while a build claimed before it (in flight, however it is stamped) is no evidence. Until the account lands the
+    // check releases nothing (the safe direction: the card stays off; the absence rule stands). An older kernel sends no account: the build
+    // seen at the send stands as its floor, as before
+    const floor = ackHosts.has(c.host) ? c.floor : c.sentBuild;
+    if (floor === undefined || typeof built !== "number") continue;
+    if (built > floor) { pendingCleared.delete(a.itemId); restoreChecks.delete(a.itemId); }
+  }
+}
+// an undo's account from kernel `host` (the ack of a landed undo, a refusal, the reorder's frame): its build floor lands on that kernel's checks alone
+function setUndoFloor(host: string, floor: unknown): void {
+  if (typeof floor !== "number") return;
+  for (const c of restoreChecks.values()) if (c.host === host) c.floor = floor;
+}
+
+// the kernels attached, by federation's own account and never by sessions or cards (rounds twelve and thirteen of PR 1967: a remote card's coming
+// and going flipped the reading, then a remote card whose kernel had no session row on the strip read as a single-kernel pane and took the
+// optimistic cross-kernel Undo): the hosts pending or down (the merge's lists), the kernels whose builds the last merged payload carried, and the
+// manager's host list where the page has one
+function attachedHosts(): Set<string> {
+  const out = new Set<string>();
+  for (const h of pendingHosts) out.add(h);
+  for (const h of pendingDead) out.add(h);
+  for (const h of payloadHosts) out.add(h);
+  const fed = (globalThis as any).__rompFed;   // the slot federation.js publishes (read off globalThis, as host-prefix reads it)
+  if (fed && typeof fed.hosts === "function") { try { for (const h of fed.hosts()) if (typeof h === "string") out.add(h); } catch (_) { /* the slot's shape is federation's; a throw is no attachment */ } }
+  out.delete("");
+  return out;
+}
+// A FEDERATED pane: more than one kernel attached. Undo on such a pane is the round trip (the round-nine verifier's ruling on PR 1967): stamps
+// across kernels do not order, so a merged stack cannot say which kernel's batch the next Undo reaches (federation routes undoClear to the
+// kernels of the most recent clear), and an optimistic pop would restore one kernel's card while another kernel restored its own. The optimistic
+// Undo, and the stack the enumeration proves equal to the kernel's, stay where the proof holds: a single-kernel pane. Here: no entry is cached,
+// none is popped, the button shows the working cue, and the payload restores what the kernels restored (releaseRestoredByEvidence); a remote
+// kernel's account re-shows the cards of a refused clear by their ids
+function federatedPane(): boolean { return attachedHosts().size > 0; }
+// the kernel a suppressed card belongs to: its recorded copy's session (a remote session wears federation's host prefix), else the id's own prefix
+// when it names an attached kernel (a notice card dismissed by its answer has no record), else the local kernel
+function suppressedHostOf(id: string): string {
+  const rec = clearedItems.get(id);
+  if (rec) return hostOf(rec.sid);
+  const h = hostOf(id);
+  return attachedHosts().has(h) ? h : "";
+}
 const hostloadTimers = new Map<string, number>();
 const hostloadLong = new Set<string>();
 function syncHostloadBackstops(): void {
@@ -1403,7 +1606,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     card.dispatchEvent(new MouseEvent("mouseleave"));
     dressHeaderIfLast(askEls.get(it.itemId) ?? card, it.sid);   // the run's last card takes its header with it — one motion (2026-08-24); the BOARD's element when Clear came from the section's copy (T347)
     pendingCleared.add(it.itemId);   // suppress from incoming pushes until the kernel confirms the clear
-    clearedStack.push([(card as any)._it ?? it]);   // cache the FRESHEST payload copy for an instant optimistic Undo (the closure's `it` is the card's creation-time object)
+    pushClearedEntry([(card as any)._it ?? it]);   // cache the FRESHEST payload copy for an instant optimistic Undo (the closure's `it` is the card's creation-time object)
     // BY ITEM, not by this element (T347): the focused-session section holds a second element for the same
     // card, and Clear on either copy clears the card, so both wear .dismissing now and both leave together.
     // The stale-timeout guard is per element: a render inside the window that revived the card (its update
@@ -2910,7 +3113,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     const cur = (card as any)._g as AskGroup;
     dressHeaderIfLast(groupEls.get(cur.turnId) ?? card, cur.sid);   // a group is one session's turn — same one-motion rule (2026-08-24); the board's element from a copy (T347)
     for (const c of groupTwins(cur.turnId)) c.classList.add("dismissing");   // both copies of the group (T347), see the ask card's Clear
-    clearedStack.push(cur.members.slice());   // cache the whole batch for an instant optimistic Undo
+    pushClearedEntry(cur.members.slice());   // cache the whole batch for an instant optimistic Undo
     for (const m of cur.members) pendingCleared.add(m.itemId);
     // ONE kernel batch for every member (askClearMany): the kernel's Undo restores a batch by its one
     // stamp, so per-member posts left N-1 members archived after an Undo the client had shown whole
@@ -4024,6 +4227,7 @@ function makeUndoClearBtn(): HTMLElement {
     // client cache, instead of waiting for the kernel to un-archive + rebuild + re-push the feed (the lag the
     // user felt). The kernel's undoClear reconciles on its next push; pendingCleared is dropped for these ids
     // so that push can't re-suppress them.
+    if (federatedPane()) clearedStack.length = 0;         // entries cached before a second kernel attached are one kernel's guesses: the round trip below
     const batch = clearedStack.pop();
     if (batch && batch.length) {
       for (const it of batch) {
@@ -4037,7 +4241,11 @@ function makeUndoClearBtn(): HTMLElement {
       }
       render();
     } else {
-      pendingCleared.clear();   // nothing cached (e.g. cleared in another session) → fall back to the round-trip
+      // the round trip restores the newest batch of the kernels federation sends the undo to. On a single-kernel pane that is this kernel: every
+      // suppression goes now, so the payload can show the restored cards. On a FEDERATED pane the click releases NOTHING (round twelve of PR 1967,
+      // the round-eleven verifier's design): a release by the routing's hosts freed cards the kernel did not restore, and a suppression ends only on
+      // the evidence that the card was restored, its own kernel's payload built after the send listing it (applyFeedPayload)
+      if (!federatedPane()) pendingCleared.clear();
       // WORKING cue (the user 2026-07-31): with nothing in this page's cache the restore is a full
       // kernel round-trip and the button read dead for a beat (the optimistic branch above needs no
       // cue — its card appears instantly). Three pulsing accent dots + an accent border say "on it"
@@ -4081,7 +4289,15 @@ function makeClearAllBtn(): HTMLElement {
   b.id = "feed-clearall";
   b.textContent = "Clear all";
   b.title = "clear every open card (inbox-zero) — Undo restores them";
-  b.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "clearAll" }); };
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    // the batch this gesture makes goes on the Undo stack as the session's Clear all does (round eight of PR 1967): Undo after it restores
+    // optimistically, and the page holds every batch it made, which keeps its stack equal to the kernel's (a refusal's frame reconciles it);
+    // the cards leave with the kernel's payload, as before
+    const members = asks.filter((a) => !pendingCleared.has(a.itemId));
+    if (members.length) pushClearedEntry(members.slice());
+    vscodeApi?.postMessage({ type: "clearAll" });
+  };
   return b;
 }
 
@@ -4974,7 +5190,7 @@ function clearSessionCards(sid: string): void {
   // comes from the click and the kernel's confirmation of the clear applies at once instead of queueing behind
   // the hold. freezeLeave ignores a key it does not hold, so the session's headers in the other columns are safe.
   for (const [key, head] of Array.from(sessHeadEls)) if (head.getAttribute("data-fsid") === sid) { head.dispatchEvent(new MouseEvent("mouseleave")); startSessHeadExit(key, head); }
-  clearedStack.push(members.slice());   // one batch: one Undo brings the whole session back
+  pushClearedEntry(members.slice());   // one batch: one Undo brings the whole session back
   for (const m of members) pendingCleared.add(m.itemId);
   vscodeApi?.postMessage({ type: "askClearMany", itemIds: ids, sid });   // ONE kernel batch (see above)
   setTimeout(() => {
@@ -6361,6 +6577,11 @@ function applyFeedPayload(m: any): void {
   // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
   // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
   if (!cardsUnknown) for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
+  { const acks = new Set<string>(Array.isArray(m.ackHosts) ? m.ackHosts.map(String) : []); if (m.undoAck === true) acks.add(""); ackHosts = acks; }   // which kernels account for an undo with a floor (round fifteen)
+  releaseRestoredByEvidence(incomingAsks, m);               // a federated pane's release: by the card's presence in its own kernel's newer build, never by absence
+  // the page's record of a cleared card ends when a live payload shows the card unsuppressed (a restore landed, a refused clear came back): the
+  // board's copy is the fresh one, and a later frame naming the id must not rebuild an entry from the old snapshot (the round-ten verifier)
+  if (!cardsUnknown) for (const id of Array.from(clearedItems.keys())) if (!pendingCleared.has(id) && incomingAsks.some((a) => a.itemId === id)) clearedItems.delete(id);
   // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name cards; the
   // clear/follow bookkeeping above still runs against the FULL payload, so hidden cards stay consistent.
   // Self-clean the persisted disclosure state against the AUTHORITATIVE live set (the user 2026-07-24).
@@ -6382,6 +6603,12 @@ function applyFeedPayload(m: any): void {
   // absent on a single-kernel payload, where the top-level buildId is the one counter there is
   const perHostBuildIds = m.buildIds && typeof m.buildIds === "object" && !Array.isArray(m.buildIds)
     ? m.buildIds as Record<string, number> : undefined;
+  // the build seen per kernel: what an undo's send moment is measured against (round twelve). The local kernel's from the map when it carries it,
+  // else the payload's own (a merged map without the local key left the local record standing still; the round-twelve verifier's low); no numeric
+  // build, no record (a kernel with none on record takes the click-time release at the send, never a baseline of zero)
+  if (perHostBuildIds) { for (const [h, n] of Object.entries(perHostBuildIds)) if (typeof n === "number") lastSeenBuild.set(h, n); }
+  if ((!perHostBuildIds || typeof perHostBuildIds[""] !== "number") && typeof m.buildId === "number") lastSeenBuild.set("", m.buildId);
+  payloadHosts = perHostBuildIds ? Object.keys(perHostBuildIds).filter((h) => h !== "") : [];   // federation's word on the kernels attached (attachedHosts)
   reconcileFollowMove(incomingAsks, lastPayloadBuildId, perHostBuildIds, !!cardsUnknown);
   reconcilePendingDone(incomingAsks, !!cardsUnknown);   // retire an optimistic tick once the real tree carries it
   // An optimistic Undo is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
@@ -6428,7 +6655,11 @@ function applyFeedPayload(m: any): void {
     Array.isArray(m.sdkNotices) ? m.sdkNotices : [],
     Array.isArray(m.syncNotices) ? m.syncNotices : [], { cardsUnknown });   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
   if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
-  clearUndoBusy();   // the push the undo was waiting on has landed (or any fresher one) — cue off
+  // the push the undo was waiting on has landed (or any fresher one): cue off. On a FEDERATED pane the merge lands on any kernel's push, so the
+  // cue waits until every kernel the undo went to has built past the send (a proxy for its restore having landed; the second contributor's
+  // review, 2026-09-22: an unrelated local push cleared it with the remote card still off and invited a re-press that went local); the
+  // six-second backstop and the account frame's clear stand
+  if (!federatedPane() || undoRoutedBuilt(m)) clearUndoBusy();
   if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
   if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
   render();
@@ -6605,13 +6836,17 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     const dismisses = twins.some((c) => !!((c as any)._it?.notice?.dismissOnAction)) || !!asks.find((a) => a.itemId === m.itemId)?.notice?.dismissOnAction;
     // the card's modal, when it shows this card (round four of PR 1831): a success on a dismissing card closes it with the card;
     // any other answer re-renders it, which rebuilds the notice face and so re-arms its buttons (the same rule as the card's)
-    if (fullscreenAskId === m.itemId) { if (m.ok && dismisses) fullscreenAskId = null; renderModal(); }
-    if (m.ok && dismisses) {
+    // `held` (the second executed review of PR 1935, 2026-09-21): the words went out but the dismissal's write refused, so the card
+    // STAYS and its buttons stay spent (a re-armed button would offer the delivery again; the kernel refuses it, but the pane
+    // should not ask); the toast says both halves. Before this the answer was ok false for a delivery that had happened.
+    const held = !!m.ok && !!m.held;
+    if (fullscreenAskId === m.itemId) { if (m.ok && dismisses && !held) fullscreenAskId = null; renderModal(); }
+    if (m.ok && dismisses && !held) {
       pendingCleared.add(m.itemId);   // a push already in flight must not paint it back before the kernel's rebuild lands
       for (const c of twins) c.dispatchEvent(new MouseEvent("mouseleave"));   // removed under the pointer: the card's own leave logic (freezeLeave, the hover highlight off or back to the pin), as the clear paths dispatch it (round six, low)
       for (const c of twins) { c.remove(); if (askEls.get(m.itemId) === c) askEls.delete(m.itemId); if (fsAskEls.get(m.itemId) === c) fsAskEls.delete(m.itemId); }
       dropDismissed([m.itemId]);
-    } else {
+    } else if (!held) {
       for (const c of twins) {
         for (const b of Array.from(((c as any)._nActions as HTMLElement | undefined)?.querySelectorAll("button") || []) as HTMLButtonElement[]) {
           b.disabled = false; b.textContent = (b as any)._idle || b.textContent;
@@ -6619,31 +6854,115 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       }
     }
     if (!m.ok) feedToast("The card's action was refused: " + String(m.error || "unknown error"));
+    else if (held) feedToast("The card's action ran, but " + String(m.error || "the card could not be dismissed") + ".");
+  } else if (m.type === "undoAck") {
+    // a landed undo's account (round fifteen of PR 1967): nothing to say but the build floor, the kernel's counter when it processed the undo;
+    // the checks on that kernel judge their payloads by it from here on. Federation stamps a remote kernel's ack with its host
+    setUndoFloor(typeof m.host === "string" ? m.host : "", m.buildId);
   } else if (m.type === "retryRefused" && typeof m.sid === "string" && m.sid) {
     // the backend could not take the manual retry's send: the Retry this page latched lets go, and says why
     if (rearmLatches({ kind: "retry", sid: m.sid })) feedToast(String(m.text || "Couldn't retry: the kernel refused it."));
+  } else if (m.type === "undoRouted" && Array.isArray(m.hosts)) {
+    // federation's word on where the undo went (round twelve of PR 1967, the round-eleven verifier's design): the send's moment, per kernel, as the
+    // build of that kernel this page had seen. The click releases NOTHING on a federated pane; a suppression ends on the EVIDENCE that the card was
+    // restored, a payload from the card's own kernel built past this moment that lists it (releaseRestoredByEvidence). A stale held frame, built before the
+    // send, cannot release it; a kernel the undo never reached never lists a restored card with a newer build; a kernel that restored an older batch
+    // shows exactly the cards it restored
+    lastUndoHosts = new Set<string>(m.hosts.map(String));
+    undoSentBuild.clear();
+    for (const h of lastUndoHosts) { const seen = lastSeenBuild.get(h); if (seen !== undefined) undoSentBuild.set(h, seen); }   // the cue's measure per kernel: none for a kernel with no build on record
+    // the restore checks, per suppression (round thirteen): every card suppressed on a routed kernel, at that kernel's seen build. A kernel with no
+    // build on record can give no evidence, so its suppressions take the click-time release here instead, never a baseline of zero (the round-twelve
+    // verifier's MEDIUM, the twelfth executed review)
+    // on a FEDERATED pane alone, read at the send, the click's moment: the kernel-served shim routes every send through the manager, so this frame
+    // reaches a single-kernel pane too, and there the click released the popped entry's ids while the OTHER pending clears stayed suppressed; a
+    // check on those let the kernel's in-flight build, claimed before the clear, paint the card back for a beat (the thirteenth executed review,
+    // 2026-09-22: a regression against the carry). The evidence PATH stays ungated, so a pane that flips to single-kernel between the click and
+    // the restore keeps the checks it wrote as a federated one
+    if (federatedPane()) {
+      for (const id of Array.from(pendingCleared)) {
+        const h = suppressedHostOf(id);
+        if (!lastUndoHosts.has(h)) continue;
+        const seen = lastSeenBuild.get(h);
+        if (seen === undefined) { pendingCleared.delete(id); restoreChecks.delete(id); continue; }
+        restoreChecks.set(id, { host: h, sentBuild: seen });
+      }
+    }
   } else if (m.type === "err" && typeof m.text === "string" && m.text) {
     // the dialog interrupts; the bell KEEPS it (the user 2026-07-29) — dismissing the modal must not erase
     // the fact that a message never landed. Same {romp:'notify'} bridge the card-badge mirror below uses.
     const title = typeof m.title === "string" && m.title ? m.title : "That action was not delivered";
     const copy = typeof m.copy === "string" ? m.copy : "";
-    window.parent?.postMessage({ romp: "notify", kind: "undelivered",
-                                 text: copy ? title + ": " + copy : title,
-                                 sid: typeof m.sid === "string" ? m.sid : "" }, "*");
+    // an information frame (`ok`: the landed reorder, "the last clear stands") is a dialog and no bell entry: nothing went undelivered (the round-four verifier of PR 1967)
+    if (m.ok !== true) window.parent?.postMessage({ romp: "notify", kind: "undelivered",
+                                                   text: copy ? title + ": " + copy : title,
+                                                   sid: typeof m.sid === "string" ? m.sid : "" }, "*");
     showErrDialog(title, m.text, copy);
     const sid = typeof m.sid === "string" ? m.sid : typeof m.id === "string" ? m.id : "";
     // the kernel's reply IS the event, for the request it names (rearmLatches): a refused apiRetry releases
     // that session's Retry; a refused askFollowUp releases that card's Continue, and its predicted move yields
     // to the kernel's answer (revertFollowMove; the no-answer backstop would have bounced it later with a toast
     // that blamed silence). A reply naming a session and no request is an older kernel's: the session's Retry
-    // and Revive, as before. One naming neither answers no request here.
+    // and Revive, as before. A store gesture's session account (a clear, a drop, an undo: `op` rides) re-arms NOTHING:
+    // no feed latch belongs to those requests, and a latch is released only by the reply to the request that made it
+    // (the fourth review of PR 1967 and the manager's ruling, 2026-09-21, reversing the round-three verifier's ask to
+    // re-arm on the session: the `!op` branch is for old kernels' frames, not because a store's refusal is those
+    // buttons' reply). One naming neither answers no request here.
     const op = typeof m.op === "string" ? m.op : "";
     const itemId = typeof m.itemId === "string" ? m.itemId : "";
+    // a clear the clears log refused (the second review of PR 1967, 2026-09-21): the reply names the batch's ids; they leave pendingCleared
+    // (the click's suppression, released before only when a payload omitted the card, which a refused clear never does) and the cached
+    // Undo entry, and the board repaints them where they were, as the dialog says nothing changed
+    const refusedIds = Array.isArray(m.itemIds) ? m.itemIds.map(String) : (op === "askClear" && itemId ? [itemId] : []);
+    const storeOp = op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll" || op === "undoClear";
+    const fromHost = typeof m.host === "string" ? m.host : "";   // federation stamps a remote kernel's account with its host (prefixInbound); the local kernel's has none
+    if (op === "undoClear") setUndoFloor(fromHost, m.buildId);   // the refusal's and the reorder's frames carry the undo's build floor (round fifteen)
+    if (storeOp && Array.isArray(m.batches) && !fromHost && !federatedPane()) {
+      // the kernel's stack rides every gesture account (round eight of PR 1967): this page takes it as its own, which covers a refused clear (its
+      // ids are not in the batches: back where they were), a refused undo (the batch the click popped is still the newest: back on top), a
+      // reorder (the owed batch restored, the last clear's entry back on top) and ids this page never held (an entry standing for them). The
+      // branches below are the road for an older kernel's frame, which carries no stack, and for every frame on a FEDERATED pane, which keeps
+      // no stack (federatedPane): there a refused clear's cards come back by their ids and nothing else moves
+      const owedB: string[] = Array.isArray(m.owedBatch) ? m.owedBatch.map(String) : [];
+      const bats: string[][] = m.batches.map((b: any) => (Array.isArray(b) ? b.map(String) : []));
+      // the frame carries the newest log batches and the count before the bound (round ten): with older batches left out, the frame says
+      // nothing about their cards, so the reconcile keeps their entries and suppressions
+      const truncated = typeof m.batchesTotal === "number" && m.batchesTotal > bats.length - (owedB.length ? 1 : 0);
+      reconcileClearedStack(bats, owedB, truncated, refusedIds);
+    } else if ((op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll") && refusedIds.length) {
+      for (const id of refusedIds) pendingCleared.delete(id);
+      // the card comes back NOW, in either window (the third review of PR 1967): inside the 180 ms collapse the per-card identity gate
+      // would keep `.dismissing` and the timer would remove the element, and after it dropDismissed has pruned the item from `asks`, so a
+      // bare render() brought nothing back until the next payload; the class comes off and the cached item is re-pushed, as Undo does
+      // the refused cards come back by their ids, stack or no stack (a federated pane keeps none, round ten of PR 1967): the collapse class off,
+      // the suppression released above, so the next render shows them again from `asks`
+      for (const id of refusedIds) for (const c of cardTwins(id)) c.classList.remove("dismissing");
+      for (let i = clearedStack.length - 1; i >= 0; i--) {
+        if (!clearedStack[i].some((it) => refusedIds.includes(it.itemId))) continue;
+        clearedStack.splice(i, 1);                                     // the optimistic Undo entry for a clear that never happened goes
+      }
+      for (const id of refusedIds) { const it = clearedItems.get(id); if (it && !asks.some((a) => a.itemId === id)) asks.push(it); }   // its cards back on the board, from the page's own record of them
+      render();
+    } else if (op === "undoClear" && refusedIds.length) {
+      // a refused undo (the third review of PR 1967): the optimistic restore stood as a phantom the dialog contradicted; the batch the
+      // kernel named leaves `asks` and pendingRestored, is suppressed again and goes back on the Undo stack, since the kernel keeps
+      // it owed and the next Undo reaches it
+      const back = asks.filter((a) => refusedIds.includes(a.itemId));
+      for (const id of refusedIds) { pendingRestored.delete(id); pendingCleared.add(id); }
+      asks = asks.filter((a) => !refusedIds.includes(a.itemId));
+      if (back.length) clearedStack.push(back);
+      // a reorder whose owed cards did not come back (`owedIds`; the sixth executed review of PR 1967): their re-journal is the kernel's newest
+      // batch, so the NEXT Undo is theirs; an empty entry above the last clear's stands for them (that pop restores nothing optimistically and
+      // takes the round-trip cue, the payload bringing them), and the pop after matches the kernel's: the last clear
+      if (Array.isArray(m.owedIds) && m.owedIds.length) clearedStack.push([]);
+      render();
+    }
+    if (op === "undoClear" && (!federatedPane() || lastUndoHosts.has(fromHost))) clearUndoBusy();   // an undo's account from a kernel the undo went to is the event the round trip's cue waits for: a refusal sends no payload (rounds eleven and twelve of PR 1967)
     if (op === "apiRetry" && sid) rearmLatches({ kind: "retry", sid });
     else if (op === "askFollowUp" && itemId) {
       rearmLatches({ kind: "followup", itemId });
       if (pendingFollowMove.has(itemId)) revertFollowMove(itemId);
-    } else if (!op && sid) rearmLatches({ kind: "session", sid });
+    } else if (!op && sid) rearmLatches({ kind: "session", sid });   // an old kernel's reply naming a session and no request; a store gesture's account (op rides) re-arms nothing (the fourth review of PR 1967)
   } else if (m.type === "pickerOptions" && typeof m.name === "string") {
     // the host read the blocked session's live resume-picker screen — show the
     // same options in-page; a choice goes back as keystrokes (transport only,
@@ -6675,9 +6994,10 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // which kernel's counter `bid` is on: federation stamps a remote ack with its host (prefixInbound);
     // an unstamped ack came from the local kernel — host "", the same value hostOf gives local cards
     const ackHost = typeof m.host === "string" ? m.host : "";
+    const why = typeof m.why === "string" ? m.why : "";   // the user's copy of a store fault, when the reopen's write refused
     for (const raw of m.ids.map(String)) {
       const top = asks.find((a) => a.itemId === raw) ?? asks.find((a) => a.tree?.some((n) => n.id === raw));
-      ackFollowMove(top ? top.itemId : raw, !!m.ok, bid, ackHost);
+      ackFollowMove(top ? top.itemId : raw, !!m.ok, bid, ackHost, why);
     }
   }
 }));
@@ -6732,6 +7052,7 @@ function showPickerDialog(name: string, options: string[]) {
   cancel.onclick = () => overlay.remove();
   box.append(cancel);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.appendChild(box);   // the box INTO the overlay (the verifier of PR 1967, 2026-09-21: built and never attached, so a refusal painted a bare dim sheet with no words and no button)
   document.body.appendChild(overlay);
   (box.querySelector("button") as HTMLElement | null)?.focus();
 }

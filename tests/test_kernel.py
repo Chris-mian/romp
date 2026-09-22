@@ -1010,8 +1010,8 @@ class ViewBuilder(unittest.TestCase):
         so the verdict ships on the next cycle, and the wake makes that cycle now; a rebuild that moves no verdict
         wakes nothing, so cycles cannot chain."""
         live_map = km._live_map()
-        saved = (list(km._built_feed), km._feed_needs_input[0], km._views_dirty[0])
-        km._built_feed[:] = [None, None, 0.0, 0.0]; km._feed_needs_input[0] = None; km._views_dirty[0] = 0.0
+        saved = (list(km._built_feed), km._feed_needs_input[0], km._views_dirty[0], km._feed_needs_rows[0])
+        km._built_feed[:] = [None, None, 0.0, 0.0]; km._feed_needs_input[0] = None; km._views_dirty[0] = 0.0; km._feed_needs_rows[0] = None
         try:
             m = km.build_session(SID, NOW)
             self.assertIsNone(m["ledger"]["needsInput"], "no feed build yet: None, not a verdict")
@@ -1053,7 +1053,7 @@ class ViewBuilder(unittest.TestCase):
             self.assertIs(m["status"]["needsYou"], False, "…so no ring either")
         finally:
             km._set_session_flag(SID, "hideFromFeed", False); km._flags_cache.clear()
-            km._built_feed[:], km._feed_needs_input[0], km._views_dirty[0] = saved
+            km._built_feed[:], km._feed_needs_input[0], km._views_dirty[0], km._feed_needs_rows[0] = saved
 
     def test_host_sleep_closes_a_turn_left_open(self):
         # A turn still open when the laptop slept must NOT keep reading as "working": the kernel records the

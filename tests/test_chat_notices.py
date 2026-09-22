@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""The chat page's approval box, kernel side (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): the
-session frame's status carries `notices`, this session's standing needs-you notices that carry actions (a held peer message's
-Approve and Deny), read from the same projection the feed card reads with the cleared ledger applied; a decision (the expire
-row) or a Clear drops the row; an informational notice or one without actions is not a decision and stays off the box. The
-chat signature carries the rows' ids so the box and the ring move in one frame, and the chat page's markup places the box
-between the transcript and the background box. Synthetic: a placeholder sid, invented names and text."""
+"""The chat page's NEEDS YOU BOX, kernel side (plans/needs-you.md, phase three; the approval box of plans/notice-cards.md,
+"Action kinds and the held-mail card", 2026-09-19, before it): the session frame's status carries `notices`, this session's
+Needs you items that are not hard stops, each with a way to act. Goal rows first (kind "goal": the card's text, its decision
+brief, whether Continue is offered), from the rows the last feed build filed (_needs_you_rows over the frame: a placeholder,
+a notice card and a hard stop, a card floored with a live-block object, stay out); then the standing needs-you notices from
+the same projection the feed card reads with the cleared ledger applied (kind "notice": the stored actions each with its
+kind; a notice without actions offers Clear). An informational notice is not the user's and stays off the box. A decision
+(the expire row) or a Clear drops the row. The chat signature carries the rows' ids and faces so the box and the ring move
+in one frame. Synthetic: a placeholder sid, invented names and text."""
 import inspect
 import json
 import os
@@ -60,9 +63,12 @@ class ChatNotices(unittest.TestCase):
         km._NOTICE_MEMO.clear(); km._CLEARED_MEMO["slot"] = None
         self._needs = km._feed_needs_input[0]
         km._feed_needs_input[0] = frozenset()             # a feed build happened: the slice answers (the gate is its own test)
+        self._rows = getattr(km, "_feed_needs_rows", [None])[0]   # getattr: absent at the base before the box's goal rows
+        getattr(km, "_feed_needs_rows", [None])[0] = {}
 
     def tearDown(self):
         km._feed_needs_input[0] = self._needs
+        getattr(km, "_feed_needs_rows", [None])[0] = self._rows
         for f in (km.jd.NAMES / SID, km.jd.STATE / "notices" / (SID + ".jsonl"), km.jd.STATE / "notices-archive" / (SID + ".jsonl"),
                   km.jd.STATE / "notices-archive" / (SID + ".revs.json")):
             if f.exists():
@@ -85,7 +91,7 @@ class ChatNotices(unittest.TestCase):
         self.assertIsNone(km._chat_notices(SID), "None, as needsYou is None then")
         km._feed_needs_input[0] = frozenset()
         self.assertEqual(len(km._chat_notices(SID)), 1, "the first build lets the slice answer")
-        self.assertIn('sig.append(tuple(n["itemId"] for n in (_chat_notices(sid) or ())))', KSRC, "the signature reads the absent slice as empty")
+        self.assertIn('for n in (_chat_notices(sid) or ())))', KSRC, "the signature reads the absent slice as empty")
 
     def test_the_row_carries_the_attachment_the_feed_card_shows(self):
         # the review of PR 1890, low e: one face for both surfaces; the row copies the stored attachment verdict as the card does
@@ -98,7 +104,7 @@ class ChatNotices(unittest.TestCase):
         km.post_notice(SID, "m1", "t", producer="postal", actions=_held("m1"), needs_you=True, dismiss_on_action=True, now=100, t=100)
         self.assertIsNone([r for r in km._chat_notices(SID) if r["key"] == "m1"][0]["attachment"], "a held message carries none")
 
-    def test_the_box_lists_needs_you_notices_with_actions_each_action_with_its_kind(self):
+    def test_the_box_lists_every_needs_you_notice_with_its_actions_by_kind_or_clear_when_it_has_none(self):
         # getattr: at the base before the box the helper is absent, and the test reds on its behaviour
         rows = getattr(km, "_chat_notices", lambda sid: None)(SID)
         self.assertEqual(rows, [], "a session with no notice file has an empty box")
@@ -110,12 +116,63 @@ class ChatNotices(unittest.TestCase):
             km._notice_append(SID, {"op": "post", "t": 103, "key": "again", "rev": 1, "sid": SID, "title": "Send it again?", "body": "", "producer": "cli",
                                     "needsYou": True, "actions": [{"label": "Send again", "route": "/send", "body": {"text": "please retry"}}]})
         rows = km._chat_notices(SID)
-        self.assertEqual([r["itemId"] for r in rows], ["notice:%s:m1:1" % SID, "notice:%s:again:1" % SID], "the two decisions, in post order")
+        self.assertEqual([r["itemId"] for r in rows], ["notice:%s:m1:1" % SID, "notice:%s:dropped:1" % SID, "notice:%s:again:1" % SID],
+                         "every needs-you notice in post order; the informational figure stays off (phase three: a notice with no action offers Clear)")
+        self.assertEqual([r["kind"] for r in rows], ["notice", "notice", "notice"], "each row says its kind")
+        self.assertEqual(rows[1]["actions"], [], "the dropped-sends notice has no stored action: the client offers Clear")
         r = rows[0]
         self.assertEqual((r["key"], r["rev"], r["title"], r["producer"]), ("m1", 1, "New message from api", "postal"))
         self.assertEqual(r["body"], "from TESTHOST:api to web, held because peer TESTHOST is DIRECTED\n\nhello", "the message text is the body")
         self.assertEqual(r["actions"], _held("m1"), "the stored actions with their kind")
-        self.assertEqual(rows[1]["actions"], [{"label": "Send again", "kind": "send", "route": "/send", "body": {"text": "please retry"}}], "an older row's route reads as its kind beside it")
+        self.assertEqual(rows[2]["actions"], [{"label": "Send again", "kind": "send", "route": "/send", "body": {"text": "please retry"}}], "an older row's route reads as its kind beside it")
+
+    def test_goal_rows_come_first_as_the_feed_build_filed_them_then_the_notices(self):
+        # the box's goal rows are the last feed build's (_feed_needs_rows), read without a second build; a notice follows them
+        rows_fn = getattr(km, "_needs_you_rows", None)
+        self.assertIsNotNone(rows_fn, "the kernel projects the box's goal rows from a feed frame")
+        g1, g2, g3, g4, g5 = (SID + ":g%d" % i for i in range(1, 6))
+        frame = {"asks": [
+            {"itemId": g1, "sid": SID, "text": "which database does the suite target?", "blockSummary": "Postgres or SQLite: the fixtures differ",
+             "live": True, "t": 100, "board": "feed", "category": "needs_input", "column": "needs_input", "blocked": None},
+            {"itemId": g2, "sid": SID, "text": "keep going on the parser", "live": True, "t": 101, "board": "feed", "category": "working", "column": "working", "blocked": None},
+            {"itemId": g3, "sid": SID, "text": "the suite's fixtures directory", "live": True, "t": 102, "board": "feed", "category": "needs_input", "column": "needs_input",
+             "blocked": {"state": "permission", "what": "this session is stopped awaiting your approval"}},
+            {"itemId": "blocked:" + SID, "sid": SID, "text": "Awaiting your approval", "live": True, "t": 103, "board": "feed", "category": "needs_input", "column": "needs_input",
+             "provisional": True, "blocked": {"state": "permission", "what": "stopped"}},
+            {"itemId": "notice:%s:m1:1" % SID, "sid": SID, "text": "New message from api", "live": True, "t": 104, "board": "feed", "category": "needs_input", "column": "needs_input",
+             "notice": {"producer": "postal", "key": "m1", "rev": 1}, "blocked": None},
+            {"itemId": g4, "sid": SID, "text": "a dead session's question", "blockSummary": None, "live": False, "t": 105, "board": "feed", "category": "needs_input", "column": "needs_input", "blocked": None},
+            {"itemId": "22222222-2222-3333-4444-000000000902:g1", "sid": "22222222-2222-3333-4444-000000000902", "text": "another session's question", "live": True, "t": 106,
+             "board": "feed", "category": "needs_input", "column": "needs_input", "blocked": None},
+            {"itemId": g5, "sid": SID, "text": "the judges cannot read this session", "live": True, "t": 107, "board": "feed", "category": "needs_input", "column": "needs_input",
+             "blocked": {"state": "judgeAuth", "mode": "key", "login": "", "what": "romp can't analyze this session: the API key its judges bill is being refused"}},
+        ]}
+        rows = rows_fn(frame)
+        self.assertEqual(sorted(rows), sorted([SID, "22222222-2222-3333-4444-000000000902"]), "rows per session, only sessions with one")
+        self.assertEqual(rows[SID], [
+            {"itemId": g1, "kind": "goal", "title": "which database does the suite target?", "body": "Postgres or SQLite: the fixtures differ", "cont": True, "t": 100},
+            {"itemId": g4, "kind": "goal", "title": "a dead session's question", "body": "", "cont": False, "t": 105},
+            {"itemId": g5, "kind": "goal", "title": "the judges cannot read this session", "body": "romp can't analyze this session: the API key its judges bill is being refused", "cont": False, "fix": "credential", "t": 107}],
+            "the judge's questions in the frame's order: a working card, a live-block card, the placeholder and the notice card stay out; "
+            "no brief yet reads as an empty line; Continue only on a live session; the judges' credential refusal is a row whose action is the fix")
+        self.assertTrue(km._hard_stop_card(frame["asks"][2]) and not km._hard_stop_card(frame["asks"][0]), "a hard stop is a card with a live-block object")
+        self.assertFalse(km._hard_stop_card(frame["asks"][7]), "the judges' credential refusal is NOT a hard stop (plans/needs-you.md, the sixth floor): the session runs")
+        km._feed_needs_rows[0] = rows
+        km.post_notice(SID, "m1", "New message from api", "hello", producer="postal", actions=_held("m1"), needs_you=True, dismiss_on_action=True, now=100, t=100)
+        box = km._chat_notices(SID)
+        self.assertEqual([(r["itemId"], r["kind"]) for r in box], [(g1, "goal"), (g4, "goal"), (g5, "goal"), ("notice:%s:m1:1" % SID, "notice")], "goal rows first, then the notices")
+        for r in box[:3]:
+            self.assertNotIn("t", r, "the unkeyed time never rides the wire (the third review of PR 1967): %r" % sorted(r))
+            self.assertEqual(set(r) - {"fix"}, {"itemId", "kind", "title", "body", "cont"}, "the row's face, and nothing else")
+        self.assertEqual(box[0]["title"], "which database does the suite target?"); self.assertEqual(box[3]["actions"], _held("m1"))
+        self.assertEqual((box[2]["fix"], box[2]["cont"]), ("credential", False), "the credential row: the fix as its action, no Continue")
+        km._feed_needs_rows[0] = {}
+        self.assertEqual([r["kind"] for r in km._chat_notices(SID)], ["notice"], "a frame that re-filed the goals drops their rows")
+        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))', KSRC,
+                      "the chat signature carries the rows' ids and faces in its one value: a brief landing or a Continue offered repaints the box")
+        self.assertIn("    _rows_now = _needs_you_rows(feed)", KSRC, "the feed build files the rows beside the needs-you set")
+
+        self.assertIn("    if _needs_rows_face(_rows_now) != _needs_rows_face(_feed_needs_rows[0]):\n        _pusher_wake.set()", KSRC, "a row change wakes the pusher, as a set change does")
 
     def test_a_decision_a_clear_and_an_expiry_drop_the_row(self):
         km.post_notice(SID, "m1", "t", producer="postal", actions=_held("m1"), needs_you=True, dismiss_on_action=True, now=100, t=100)
@@ -136,7 +193,7 @@ class ChatNotices(unittest.TestCase):
 
     def test_the_owner_less_run_and_a_fault_give_an_empty_box(self):
         km.post_notice("", "k", "Remember the standup moved", producer="cli", needs_you=True, now=100, t=100)
-        self.assertEqual(km._chat_notices(km.NOTICE_OWNERLESS_SID), [], "an owner-less card carries no actions: nothing to decide")
+        self.assertEqual(km._chat_notices(km.NOTICE_OWNERLESS_SID), [], "the owner-less home is not a session: no chat page, no box")
         saved = km._notice_projection
         try:
             def boom(*a, **k): raise OSError("unreadable")
@@ -150,7 +207,7 @@ class ChatNotices(unittest.TestCase):
         self.assertIn('"needsYou": needs_you,', src)
         self.assertIn('"notices": _chat_notices(sid),', src, "beside needsYou on the STATUS, so a status-only delta carries a decision")
         self.assertIn("sig.append(_feed_needs_input_of(sid) is True)\n", KSRC)
-        self.assertIn('sig.append(tuple(n["itemId"] for n in (_chat_notices(sid) or ())))', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
+        self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
         labels = km._CHAT_SIG_LABELS
         self.assertEqual(labels[labels.index("needs") + 1], "notices", "one label per signature position, the new one right after needs (the builder appends them in that order)")
 

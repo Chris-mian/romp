@@ -207,6 +207,45 @@ titled **Needs you** with the count. It shows when the session has such an item 
 frame that drops it (the answer, the judge's re-file, the clear). A settings row under Chat, **Needs you box**, on by default,
 hides it; with the box off the tab ring and the feed still say it.
 
+Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
+clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone; `batchesTotal`: the count of log batches before the
+wire's bound, so a truncated stack reads as truncated), and the feed takes it as its own stack, so the
+optimistic Undo restores what the kernel restores; the two are proven equal by enumeration over every press sequence of a
+two-card world under every fault (tests/fixtures/undo-stack-transitions.json). The stack on the wire is bounded to the newest
+20 log batches (`LEDGER_BATCHES_ON_WIRE`); the frame says how many there are. Past them, a page that did not make those clears (a
+reload, another browser) takes the round trip, while the page that made them keeps their entries below the window and restores
+them optimistically, which is what the kernel pops.
+The optimistic Undo and that stack hold on a single-kernel pane, where the proof holds. A pane is federated when more than one
+kernel is attached, read from federation's own account of the attachment and never from sessions or cards: a configured host that
+is pending or down counts as attached, and so does every kernel whose build the merged payload carries, cards or none, so a card's
+coming and going cannot flip the reading. On a federated pane Undo is the round trip. No entry is cached and none is popped, the
+button shows the working cue, and federation routes the request to the kernels of the most recent clear and hands the panes the
+kernels it went to. The send consumes that routing, so a second Undo goes to the local kernel alone; a kernel's account of that
+undo, a refusal or the landed reorder's information frame, re-arms it for every kernel that answered, until the next send, unless
+a clear was routed in between. The routing is read from its owner rather than shadowed on the page, since the send consumes it
+and the board's Clear all fans out to every kernel, two things a page-side record could not track.
+
+The click releases no suppression. At federation's word the page writes a restore check on every card then suppressed on the
+kernels the undo went to, each with the build of its kernel the page had seen at that moment (on a federated pane alone, read at
+the send: a single-kernel pane released at the click and writes none, though the frame reaches it too), and a suppression ends on
+the evidence that the card was restored: a payload from the card's own kernel that lists the card, built after that kernel
+processed the undo. The kernel names that point on every undo account as a build floor, its feed build counter as the undo was
+processed, on the refusal and reorder frames and on an ack for an undo that landed with nothing else to say. A build past the floor
+read the store after every clear that socket sent before the undo had applied and after the undo's batch was restored, so a card
+it lists is restored; a build claimed before it, however it is stamped, is no evidence, and until the account lands the check
+releases nothing (the card stays off, and the absence rule stands). An older kernel sends no account, which its payloads say
+(`undoAck` on a kernel's frame, `ackHosts` on the merge), and its checks take the build seen at the send as their floor, as
+before. A stale held frame cannot release a suppression; a kernel the undo never reached never lists a restored card past its
+floor; a kernel that restored an older batch shows exactly what it restored; a card cleared after the send has no check, so no
+payload releases it by evidence. A build below the one last seen from a kernel is its restart, since the counter is per process: the check re-bases to
+the new life and that payload judges the card. A kernel with no build on record can give no evidence, so its suppressions take
+the click-time release instead, never a baseline of zero. A remote kernel's account re-shows the cards of a refused clear by
+their ids and touches no stack. The working cue clears once every kernel the undo went to has built past the send, on an account
+from one of them, or on the backstop; an account from one kernel of a fanned-out undo clears it while the other kernel's payload
+is still in flight, an accepted residual. The reason for the round trip: stamps across kernels do not order, so a merged stack
+cannot say which kernel's batch the next Undo reaches, and an optimistic pop would restore one kernel's card while another
+restored its own.
+
 ### Completed is safe to clear unread
 
 Nothing left undone, offered as a next step, or asked about may land in Completed: those are Needs you's. That is the

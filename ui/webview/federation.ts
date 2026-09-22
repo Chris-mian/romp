@@ -156,7 +156,7 @@ export function prefixInbound(host: string, msg: any): any {
   if (!host || !msg || typeof msg !== "object" || Array.isArray(msg)) return msg;
   const out: any = { ...msg };
   for (const k of SCALAR_ID)
-    if (typeof out[k] === "string") out[k] = prefixId(host, out[k]);
+    if (typeof out[k] === "string" && out[k]) out[k] = prefixId(host, out[k]);   // an empty id is no id: prefixed, it read as the remote kernel's bare "HOST:" (the second contributor's review, 2026-09-22)
   for (const k of ARRAY_ID)
     if (Array.isArray(out[k])) out[k] = out[k].map((x: any) => (typeof x === "string" ? prefixId(host, x) : x));
   // a kernel's REPLY names the card it answers at the top level (noticeActionDone, settingRefused, an err naming its op): a
@@ -164,6 +164,11 @@ export function prefixInbound(host: string, msg: any): any {
   // four of PR 1831: a remote card's dismissing action stayed on the board with its button latched until the next push)
   if (typeof out.itemId === "string") out.itemId = prefixNoticeId(host, out.itemId);
   if (Array.isArray(out.itemIds)) out.itemIds = out.itemIds.map((x: any) => prefixNoticeId(host, x));
+  // the kernel's Undo stack on a gesture account (`batches`, `owedBatch`; round eight of PR 1967) names notice ids the same way (the eighth
+  // executed review: unprefixed, a refused undo of a remote notice batch reverted nothing and the card stayed a phantom until reload)
+  if (Array.isArray(out.batches)) out.batches = out.batches.map((b: any) => (Array.isArray(b) ? b.map((x: any) => prefixNoticeId(host, x)) : b));
+  if (Array.isArray(out.owedBatch)) out.owedBatch = out.owedBatch.map((x: any) => prefixNoticeId(host, x));
+  if (Array.isArray(out.owedIds)) out.owedIds = out.owedIds.map((x: any) => prefixNoticeId(host, x));   // the reorder frame's owed ids, the same way
   // a session frame's approval-box rows (status.notices, the chat's #notices box) carry notice ids too: prefixed like the feed's
   // cards, so a remote host's noticeActionDone (prefixed above) finds the row it answers (the review of PR 1890, medium 2)
   if (out.status && typeof out.status === "object" && !Array.isArray(out.status) && Array.isArray(out.status.notices))
@@ -191,6 +196,9 @@ export function prefixInbound(host: string, msg: any): any {
   // prefixed), but its buildId only means something on THAT kernel's counter — stamp the host so the
   // feed pane compares it against the same host's frame in the merged payload, never the local counter
   if (out.type === "cardMoveAck" || out.type === "cardPredict") out.host = host;
+  // a gesture account (err) carries its kernel's Undo stack, which is that kernel's alone: stamped with the host so the feed reconciles only
+  // the local kernel's frames against its own entries and takes a remote one by its ids (the eighth executed review of PR 1967)
+  if (out.type === "err" || out.type === "undoAck") out.host = host;   // an undo's account (the ack too, round fifteen): its build floor lands on its own kernel's checks alone
   // a remote kernel's stand-down reply to a settings gesture (settingStale) cannot name its own host;
   // the gear folds one flush's N refusals into one toast and names the refusing machines. The local
   // host ("") took the identity exit above, so a local frame has no host key: the gear words it as
@@ -609,11 +617,13 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // gone and drop their seen marks by absence. The mesh converges the switch across hosts on the supervisor's
   // steady pass, so a mixed state is a short one; the pane keeps every card mark while any host is named here.
   const offHosts: string[] = [];
+  const ackHosts: string[] = [];   // the kernels whose frames say they account for every undo with a build floor (`undoAck`, round fifteen of PR 1967): the feed holds their restore checks until the account lands; an older kernel is judged by the build seen at the send
   for (const h of hostSeq) {
     const f = perHost[h];
     if (!f) continue;
     if (typeof f.buildId === "number") buildIds[h] = f.buildId;
     if (f.off === true) offHosts.push(h);
+    if (f.undoAck === true) ackHosts.push(h);
     if (Array.isArray(f.syncNotices)) {
       for (const r of f.syncNotices) {
         if (!r || !r.sig) continue;
@@ -662,6 +672,7 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   merged.buildIds = buildIds;
   merged.boards = boards;   // the hosts' data-defined boards, the local definition winning on an id (plans/card-boards.md)
   merged.offHosts = offHosts;
+  merged.ackHosts = ackHosts;
   // Hosts ATTACHED but yet to contribute a feed payload (the user 2026-08-25: after attaching, the
   // sessions land via the faster tabOrder/timeline channels while the cards trail with no cue) —
   // the sessions-shown/cards-pending window, named per host so the board can say cards are coming.
@@ -1195,6 +1206,14 @@ export class FederationManager {
 
   private inboundNow(host: string, msg: any): void {
     const m = prefixInbound(host, msg);
+    // a kernel's ACCOUNT of an undo (a refusal, or the landed reorder's information frame): the next Undo the dialog invites must reach that
+    // kernel again, so every kernel that answered the undo last sent becomes the retry's target, the local kernel among them when it
+    // answered (the send reset the target to the local kernel, T286, and a second Undo after a landed one still goes there alone; rounds
+    // ten to thirteen of PR 1967). A clear routed since takes the routing back
+    if (m && m.type === "err" && m.op === "undoClear" && !this.clearRoutedSinceUndo) {
+      if (!this.undoRefusers.includes(host)) this.undoRefusers.push(host);
+      this.lastClearHosts = this.undoRefusers.slice();
+    }
     if (m && m.type === "session" && typeof m.id === "string") {
       (this.perHostSids[host] ||= new Set()).add(m.id);
     }
@@ -1487,6 +1506,8 @@ export class FederationManager {
   private lastClearHosts: string[] = [LOCAL]; // where the most recent clear routed (one kernel for a card or a
   //                                             session's batch, every attached kernel for the board-wide Clear
   //                                             all, T286) — undoClear follows it to each of them
+  private undoRefusers: string[] = [];        // the kernels that ANSWERED the undo last sent (a refusal, or the landed reorder's frame), the local among them, in order: one retry reaches every one (rounds eleven and thirteen of PR 1967)
+  private clearRoutedSinceUndo = false;       // a clear routed after that undo takes the routing back: a late refusal does not retarget it
 
   // browser → kernel: route each message to the owning kernel, prefix stripped.
   outbound(m: any): void {
@@ -1495,7 +1516,11 @@ export class FederationManager {
     // kernel that took a clear can undo it, and it undoes its own newest batch.)
     if (m && m.type === "undoClear") {
       const hosts = this.lastClearHosts.length ? this.lastClearHosts : [LOCAL];
-      this.lastClearHosts = [LOCAL];
+      this.lastClearHosts = [LOCAL];   // a second Undo has no clear to follow to a remote kernel (T286); a REFUSED remote undo puts its host back (inbound, round ten of PR 1967)
+      this.undoRefusers = []; this.clearRoutedSinceUndo = false;
+      // the panes' word on where the undo went (round twelve of PR 1967): the feed releases the suppressions of the cards on these kernels, so their
+      // payloads can show the restored cards; read from the routing's owner here, since the send consumes it and the board's Clear all fans out
+      window.dispatchEvent(new MessageEvent("message", { data: { type: "undoRouted", hosts: hosts.slice() } }));
       for (const h of hosts) this.sendTo(h, m);
       return;
     }
@@ -1525,6 +1550,7 @@ export class FederationManager {
     const routes = routeOutbound(m, new Set(this.hostSeq.filter((h) => h !== LOCAL)));
     if (m && (m.type === "askClear" || m.type === "askClearMany" || m.type === "clearAll")) {
       this.lastClearHosts = routes.length ? routes.map((r) => r.host) : [LOCAL];
+      this.clearRoutedSinceUndo = true;
     }
     for (const r of routes) this.sendTo(r.host, r.msg);
   }

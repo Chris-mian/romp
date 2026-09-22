@@ -56,7 +56,7 @@ test("what it clears: the session's CLEARABLE cards in the current view — neve
 
 test("one click, one Undo batch on the client AND on the kernel, through the group-clear path", () => {
   const fn = FEED.slice(FEED.indexOf("function clearSessionCards(sid: string): void {"), FEED.indexOf("function reconcileCol("));
-  assert.match(fn, /clearedStack\.push\(members\.slice\(\)\);/, "ONE client batch: one Undo restores the whole session");
+  assert.match(fn, /pushClearedEntry\(members\.slice\(\)\);/, "ONE client batch: one Undo restores the whole session (through the stack's one writer since round eight of PR 1967)");
   assert.match(fn, /for \(const m of members\) pendingCleared\.add\(m\.itemId\);/, "suppressed from incoming pushes until the kernel confirms");
   assert.match(fn, /vscodeApi\?\.postMessage\(\{ type: "askClearMany", itemIds: ids, sid \}\);/,
     "ONE kernel batch: N askClear posts stamped N batches and the kernel's Undo restored only the last");
@@ -75,7 +75,7 @@ test("one click, one Undo batch on the client AND on the kernel, through the gro
 test("the kernel takes the batch as one cleared.jsonl stamp and drops every member's citations", () => {
   const op = KERNEL.slice(KERNEL.indexOf('msg.get("type") == "askClearMany"'), KERNEL.indexOf('msg.get("type") == "noticeAction"'));   // the next op in the chain (the quarantine op left 2026-09-19)
   assert.match(op, /_ids = \[str\(i\) for i in msg\["itemIds"\] if i\]/);
-  assert.match(op, /_gesture_store_refusal\(client, "clear", _clear_all\(_ids\)\)/, "one _clear_all call = one batch stamp");
+  assert.match(op, /_skipped = _clear_all\(_ids\)\s+_gesture_store_refusal\(client, "clear", _skipped, ids=_ids, op=str\(msg\.get\("type"\) or ""\)\)/, "one _clear_all call = one batch stamp, its verdict bound (the second review of PR 1967: the refusal names the batch)");
   assert.match(op, /_subtree_item_ids\(_i\)/, "the citation drop covers every member's subtree");
   assert.match(op, /_send_to_app\("chat", \{"type": "dropCitation", "itemId": _ids\[0\], "itemIds": _gone\}\)/);
   assert.match(op, /_mark_views_dirty\(\)/);
@@ -89,6 +89,10 @@ test("the router sends the batch to the session's kernel with bare ids, and Undo
   assert.deepEqual(r[0].msg.itemIds, ["11111111-2222-3333-4444-555555555555:g1", "11111111-2222-3333-4444-555555555555:g2"]);
   assert.match(FED, /if \(m && \(m\.type === "askClear" \|\| m\.type === "askClearMany" \|\| m\.type === "clearAll"\)\) \{\s*\n\s*this\.lastClearHosts = routes\.length \? routes\.map\(\(r\) => r\.host\) : \[LOCAL\];/,
     "undoClear follows the LAST clear, batched or single, to the kernel that took it (T286: the board-wide Clear all to every kernel it reached)");
+  const ub = FED.slice(FED.indexOf('if (m && m.type === "undoClear") {'), FED.indexOf("for (const h of hosts) this.sendTo(h, m);"));
+  assert.match(ub, /this\.lastClearHosts = \[LOCAL\];/, "a second Undo after a landed one goes to the local kernel alone (T286)");
+  assert.match(FED, /if \(m && m\.type === "err" && m\.op === "undoClear" && !this\.clearRoutedSinceUndo\) \{\n\s+if \(!this\.undoRefusers\.includes\(host\)\) this\.undoRefusers\.push\(host\);\n\s+this\.lastClearHosts = this\.undoRefusers\.slice\(\);/, "every kernel that answered the undo (a refusal, or the landed reorder's frame), the local among them, is the retry's target, unless a clear was routed since (rounds ten to thirteen of PR 1967)");
+  assert.doesNotMatch(FED, /host !== LOCAL && m && m\.type === "err" && m\.op === "undoClear"/, "the local kernel's own account counts too (the second contributor's review: a fanned-out undo both kernels refused was retried on the remote alone)");
 });
 
 test("the header Clear's own class carries layout only; size, outline and the accent hover come from .fdismiss", () => {

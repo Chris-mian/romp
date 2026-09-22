@@ -895,6 +895,8 @@ actions entry stays `stored`.
 
 ### The chat pane's approval box
 
+_Since 2026-09-21 the box is the **Needs you box** of [needs-you.md](needs-you.md) (phase three): the same `#notices` slot, its slice widened from the needs-you notices with actions to every Needs you item of the session's that is not a hard stop (a goal card with Reply, Continue and Clear; a notice with its stored actions, or Clear when it has none), dressed like the background box in the Needs you token with a header and the count, behind a Chat settings row on by default. The section below is the box as first built._
+
 **Decision: the chat's session frame carries a per-session slice, `notices`, the session's standing
 needs-you notice cards; the chat page renders them in a box ABOVE the background-agents box; the box is
 the session's needs-you notice list, the held-mail card its first content, never a mail-only widget.**

@@ -335,7 +335,10 @@ interface ModelFallback { pick: string; pickValue: string; live: string; cause: 
 // A row of the chat's approval box (#notices): a needs-you notice with actions, as build_session ships status.notices
 // (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19); the actions are of a KIND the kernel defines.
 interface ChatNotice { itemId: string; key: string; rev: number; title: string; body: string; producer: string; attachment?: NoticeAttachment | null;
-                       actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[] }
+                       actions: { label: string; kind?: string; route?: string; body: Record<string, unknown> }[];
+                       kind?: "goal" | "notice";   // "goal": a judge's question on a goal card, Reply / Continue where offered / Clear; absent or "notice": a notice with its stored actions, Clear when it has none (plans/needs-you.md, phase three)
+                       cont?: boolean;              // a goal row offers Continue (the kernel: a live session; the feed card's own rule)
+                       fix?: "credential" }         // the judges' credential refused (plans/needs-you.md, the sixth floor): the row's one action is the fix, no Clear
 interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; apiNoRetry?: boolean; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you: the red tab) rather than a transient API error (amber, retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); apiNoRetry = the blocking notice is one nothing retries (a compaction that failed on the backend's side, the launch error's noRetry): the card draws no Retry, no Stop-all and no retrying-soon meta (2026-09-21); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Needs you ring widget wears a dashed magenta ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring of 2026-09-13, renamed and recoloured 2026-09-21); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
@@ -14810,7 +14813,7 @@ function renderSubHead(): void {
 // container (installed once, below, like the background box's), so a press lands whatever the rows did meanwhile. The body
 // and the attachment are the notice face the feed card shows (notice-face.ts): one face for both surfaces (low e).
 interface NoticeRowEl extends HTMLElement { _sig?: string; _title?: string; _body?: string; _att?: string }
-function noticeActionsSig(n: ChatNotice): string { return JSON.stringify((n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])); }
+function noticeActionsSig(n: ChatNotice): string { return JSON.stringify([n.kind || "notice", !!n.cont, n.fix || "", (n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])]); }
 function noticeRowSelector(itemId: string): string { return '#notices .ntc-row[data-item="' + itemId.replace(/["\\]/g, "\\$&") + '"]'; }
 function noticeButton(label: string, cls: string, act: string, idx: number): HTMLButtonElement {
   const b = document.createElement("button"); b.className = "ntc-btn " + cls; b.textContent = label; (b as any)._idle = label;
@@ -14823,6 +14826,17 @@ function noticeRowPlain(row: HTMLElement, n: ChatNotice): void {
   const acts = row.querySelector<HTMLElement>(".ntc-actions"), note = row.querySelector<HTMLElement>(".ntc-note");
   if (!acts || !note) return;
   acts.replaceChildren(); note.style.display = "none";
+  if (n.kind === "goal" && n.fix === "credential") {   // the judges' credential refused: the fix is the one action (the gear's Billing block); no Clear, which would hide the fault while the refusals go on
+    acts.appendChild(noticeButton("Fix credential…", "ntc-ok", "ntc-fix", 0));
+    return;
+  }
+  if (n.kind === "goal") {   // a goal card's row (plans/needs-you.md, phase three): Reply points the composer at the card, Continue where the card offers it, Clear
+    acts.appendChild(noticeButton("Reply", "ntc-ok", "ntc-reply", 0));
+    if (n.cont) acts.appendChild(noticeButton("Continue", "ntc-ok", "ntc-cont", 1));
+    acts.appendChild(noticeButton("Clear", "ntc-clear", "ntc-clear", 2));
+    return;
+  }
+  if (!(n.actions || []).length) { acts.appendChild(noticeButton("Clear", "ntc-clear", "ntc-clear", 0)); return; }   // a notice with no stored action: Clear is its one way to act
   (n.actions || []).forEach((act, i) => {
     const deny = act.kind === "quarantine" && !!act.body && (act.body as any).verdict === "deny";
     acts.appendChild(noticeButton(act.label, deny ? "ntc-deny" : "ntc-ok", deny ? "ntc-deny-step" : "ntc-go", i));
@@ -14850,6 +14864,10 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
   const title = row.querySelector<HTMLElement>(".ntc-title"), body = row.querySelector<HTMLElement>(".ntc-body"), att = row.querySelector<HTMLElement>(".ntc-attach");
   if (title && row._title !== (n.title || "")) { title.textContent = n.title || "Needs you"; row._title = n.title || ""; }
   if (body && row._body !== (n.body || "")) { body.replaceChildren(...noticeBodyNodes(n.body || "")); body.style.display = n.body && n.body.trim() ? "" : "none"; row._body = n.body || ""; }
+  // the brief past the clamp (the second contributor's review, 2026-09-22): a disclosure keyed by the item id in the one fold store, re-applied on
+  // every update (the switch's off-then-on rebuilds the rows), its button shown only when the body overflows its four lines
+  row.classList.toggle("ntc-open", openFolds.has("notice:" + n.itemId + ":brief"));   // both ways: applyFold only opens, and a closed disclosure must fold the row back
+  noticeMoreButton(row, body);
   const attKey = JSON.stringify(n.attachment || null);
   if (att && row._att !== attKey) { att.replaceChildren(...noticeAttachmentNodes(n.attachment, sid)); att.style.display = att.childNodes.length ? "" : "none"; row._att = attKey; }
   const sig = noticeActionsSig(n);
@@ -14858,25 +14876,49 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
     const err = row.querySelector<HTMLElement>(".ntc-err"); if (err) { err.textContent = ""; err.style.display = "none"; }
   }
 }
+// the box's header bar (plans/needs-you.md, phase three): the background box's grammar, the dot in the Needs you token, the title with the count
+// the brief's disclosure button, on the row's own delegate (act ntc-more) and not on the body div; present only while the clamped body hides
+// lines, so a short brief shows no control; kept out of the latch (a disclosure is not a decision)
+function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
+  let b = row.querySelector<HTMLButtonElement>(".ntc-more");
+  const overflows = !!body && body.style.display !== "none" && body.scrollHeight > body.clientHeight + 1;
+  const open = row.classList.contains("ntc-open");
+  if (!overflows && !open) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement("button"); b.className = "ntc-btn ntc-more"; b.dataset.act = "ntc-more"; body?.after(b); }
+  b.textContent = open ? "Less" : "More"; (b as any)._idle = b.textContent;
+}
+function buildNoticeHead(): HTMLElement {
+  const head = document.createElement("div"); head.className = "ntc-head";
+  head.appendChild(el("span", "ntc-dot"));
+  head.appendChild(el("span", "ntc-label"));
+  return head;
+}
 function renderNotices(): void {
   const host = document.getElementById("notices");
   if (!host) return;
   const s = activeId && !snapView ? liveSession(activeId) : null;
   const rows: ChatNotice[] = (s && s.status && s.status.notices) || [];
-  if (!s || !activeId || !rows.length) { host.replaceChildren(); host.style.display = "none"; return; }
+  if (!s || !activeId || !rows.length || !settings.needsBox) { host.replaceChildren(); host.style.display = "none"; return; }   // the gear's Needs you box switch hides it; the ring stays
   host.style.display = "";
+  let head = host.querySelector<HTMLElement>(".ntc-head");
+  if (!head) { head = buildNoticeHead(); host.prepend(head); }
+  const lab = head.querySelector<HTMLElement>(".ntc-label"); if (lab) lab.textContent = "Needs you · " + rows.length;
   const want = new Set(rows.map((n) => n.itemId));
   for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) r.remove();
-  let prev: HTMLElement | null = null;
+  let prev: HTMLElement = head;   // the rows follow the header, in the frame's order
   for (const n of rows) {
     let row = host.querySelector<NoticeRowEl>(noticeRowSelector(n.itemId).replace("#notices ", ""));
-    if (!row) { row = buildNoticeRow(n, s.id); if (prev) prev.after(row); else host.prepend(row); }
+    if (!row) { row = buildNoticeRow(n, s.id); prev.after(row); }
     else {
       updateNoticeRow(row, n, s.id);
-      if (row.previousElementSibling !== prev) { if (prev) prev.after(row); else host.prepend(row); }   // the frame's order; a move only when out of place (a move re-inserts the node, and a press on it would be lost)
+      if (row.previousElementSibling !== prev) prev.after(row);   // the frame's order; a move only when out of place (a move re-inserts the node, and a press on it would be lost)
     }
     prev = row;
   }
+  // the brief's disclosure measured IN the document (the round-thirteen verifier of PR 1967): a row is built detached and joined after
+  // updateNoticeRow ran, so its clamped body measured 0 by 0 there and no button was ever made for a fresh row, nor for the rows the
+  // switch's off-then-on rebuilt; the pass runs over the rows once they stand in the box
+  for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) noticeMoreButton(r, r.querySelector<HTMLElement>(".ntc-body"));
 }
 
 function renderBgTasks() {
@@ -18647,7 +18689,10 @@ function awaitKey(st: Status | undefined): string {
   return JSON.stringify([st.state, st.awaitingWhy || "", st.awaitingKind || "", st.awaitingCount ?? null,
                          st.awaitingTasks || [], st.awaitingTaskIds || [], st.bgServiceIds || [], st.awaitingItems || [],   // the verdict repaints the box (round two, low 1)
                          (st.awaitingPeers || []).map((p) => [p.host || "", p.name || ""]),
-                         (st.notices || []).map((n) => n.itemId + "/" + (n.actions || []).length)]);   // the approval box's rows (2026-09-19)
+                         // the approval box's rows by id AND face (2026-09-19; the second review of PR 1967, 2026-09-21): a brief landing, a Continue offered,
+                         // a retitle or the credential fix repaints the box, not only a row coming or going (the key was id and action count; goal rows
+                         // carry no actions, so a status-only frame with a new brief left the row's body empty until the next gesture)
+                         (st.notices || []).map((n) => JSON.stringify([n.itemId, n.kind || "notice", n.title || "", n.body || "", !!n.cont, n.fix || "", (n.actions || []).length]))]);
 }
 
 function statusOnly(msg: any) {
@@ -19167,22 +19212,34 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "noticeActionDone" && typeof m.itemId === "string" && m.itemId) {
     const row = document.querySelector<HTMLElement>(noticeRowSelector(m.itemId));
     if (row) {
-      if (m.ok) { row.remove(); const host = document.getElementById("notices"); if (host && !host.querySelector(".ntc-row")) host.style.display = "none"; }
+      // `held` (the second executed review of PR 1935, 2026-09-21): the words went out but the dismissal's write refused: the row
+      // stays with its buttons spent and says so; a plain success drops the row; a refusal re-arms it and says why
+      if (m.ok && !m.held) { row.remove(); const host = document.getElementById("notices"); if (host && !host.querySelector(".ntc-row")) host.style.display = "none"; }
       else {
-        for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
+        if (!m.ok) for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
         const e = row.querySelector<HTMLElement>(".ntc-err");
-        if (e) { e.textContent = "Refused: " + String(m.error || "the kernel did not say why"); e.style.display = ""; }
+        if (e) { e.textContent = (m.ok ? "That action ran, but " : "That action was refused: ") + String(m.error || "the kernel did not say why"); e.style.display = ""; }   // one shape for both refusal rows (the round-three verifier): a sentence, as the err path's title is
       }
     }
   }
   else if (m.type === "err" && typeof m.text === "string" && m.text) {
     const copy = typeof m.copy === "string" ? m.copy : "";
     const title = typeof m.title === "string" && m.title ? m.title : "That action was not delivered";
-    notifyShell("undelivered", copy ? title + ": " + copy : title, typeof m.sid === "string" ? m.sid : "");
+    // an information frame (`ok`) is a dialog and no bell entry, as on the feed page (the round-six verifier of PR 1967): no live route sends one to the chat socket today, and the next producer would file "not sent" for an act that landed
+    if (m.ok !== true) notifyShell("undelivered", copy ? title + ": " + copy : title, typeof m.sid === "string" ? m.sid : "");
     showConfirm(title, m.text,
                 copy ? [{ label: "Copy my text", value: "copy" }, { label: "Dismiss", value: "ok" }]
                      : [{ label: "Dismiss", value: "ok" }],
                 (v) => { if (v === "copy") navigator.clipboard?.writeText(copy); });
+    // a refused act from the Needs you box (the second review of PR 1967, 2026-09-21): the kernel's reply names the card (`itemId`; a
+    // clears-log refusal names the batch's `itemIds`), so the row's latched buttons let go with the reason in the row and the act can be
+    // retried from the box; before this only noticeActionDone re-armed a row, which a goal row's acts never receive
+    const refusedIds = [typeof m.itemId === "string" ? m.itemId : "", ...(Array.isArray(m.itemIds) ? m.itemIds.map(String) : [])].filter(Boolean);
+    for (const id of refusedIds) {
+      const row = document.querySelector<HTMLElement>(noticeRowSelector(id)); if (!row) continue;
+      for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) { b.disabled = false; b.textContent = (b as any)._idle || b.textContent; }
+      const e = row.querySelector<HTMLElement>(".ntc-err"); if (e) { e.textContent = title; e.style.display = ""; }   // the frame's title is a sentence already ("That clear did not land"): one line, no doubled refusal (the verifier of PR 1967)
+    }
   }
   else if (m.type === "dirCompletions") {                            // the owning kernel's path completions
     // a NEGATIVE reqId is the move dialog's ask (showMovePrompt) — routed before the picker's handler,
@@ -20773,7 +20830,8 @@ function setupSettings(): void {
   applyChatScheme(settings);   // the persisted pick applies at startup — it survives reloads
   // renderTabs too: the tab strip reads settings (the context gauge toggle) but rerenderAll only
   // rebuilds the transcript views, so without it a gear change waited for the next kernel push.
-  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); updateStatusline(); rerenderAll(); refillOpenCommentPop(); });   // updateStatusline: the line's widgets follow a gear switch live (T409), as the strip's do
+  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); updateStatusline(); rerenderAll(); refillOpenCommentPop(); });
+  onExternalSettingsChange(() => renderNotices());   // the Needs you box switch (plans/needs-you.md, phase three): the gear's save hides or shows the box at once   // updateStatusline: the line's widgets follow a gear switch live (T409), as the strip's do
 }
 
 // The feed's click echo (feed.ts focusEcho — the user 2026-08-24, "clicking into a not-shown
@@ -20826,13 +20884,20 @@ setupSettings();
     const s = activeId ? liveSession(activeId) : null;
     return ((s && s.status && s.status.notices) || []).find((n) => n.itemId === row.dataset.item) || null;
   };
-  const go = (row: HTMLElement, n: ChatNotice, act: ChatNotice["actions"][number], clicked: HTMLButtonElement, input?: Record<string, unknown>) => {
-    const kind = act.kind || (act.route === "/send" ? "send" : "");   // the KIND rides the wire; an older frame's route reads as send
-    vscodeApi?.postMessage({ type: "noticeAction", itemId: n.itemId, sid: activeId, kind, body: act.body, ...(input ? { input } : {}) });
+  const latch = (row: HTMLElement, clicked: HTMLButtonElement) => {
     for (const b of Array.from(row.querySelectorAll("button")) as HTMLButtonElement[]) b.disabled = true;   // every button of the row latches: one decision per message
     clicked.textContent = ((clicked as any)._idle || clicked.textContent) + "…";
     const err = row.querySelector<HTMLElement>(".ntc-err"); if (err) err.style.display = "none";
   };
+  const go = (row: HTMLElement, n: ChatNotice, act: ChatNotice["actions"][number], clicked: HTMLButtonElement, input?: Record<string, unknown>) => {
+    const kind = act.kind || (act.route === "/send" ? "send" : "");   // the KIND rides the wire; an older frame's route reads as send
+    vscodeApi?.postMessage({ type: "noticeAction", itemId: n.itemId, sid: activeId, kind, body: act.body, ...(input ? { input } : {}) });
+    latch(row, clicked);
+  };
+  // a goal row's acts (plans/needs-you.md, phase three) and a no-action notice's Clear: the card's own wires (askFollowUp with cont, askClear),
+  // so the kernel's one handler per gesture moves the card and the next frame drops the row; Reply only points the composer at the card
+  // (setCitation, as a feed card click that lands in the chat does) and leaves the row until the reply is judged
+  const item = (el: HTMLElement): [HTMLElement, ChatNotice] | null => { const row = rowOf(el); const n = row && noticeOf(row); return row && n ? [row, n] : null; };
   const pick = (el: HTMLElement): [HTMLElement, ChatNotice, ChatNotice["actions"][number]] | null => {
     const row = rowOf(el); const n = row && noticeOf(row); const act = n && (n.actions || [])[Number(el.dataset.idx)];
     return row && n && act ? [row, n, act] : null;
@@ -20842,7 +20907,12 @@ setupSettings();
     "ntc-deny-step": (el) => { const p = pick(el); if (p) noticeRowDenyStep(p[0], Number(el.dataset.idx)); },
     "ntc-deny-note": (el) => { const p = pick(el); if (!p) return; const t = (p[0].querySelector<HTMLTextAreaElement>(".ntc-note")?.value || "").trim(); go(p[0], p[1], p[2], el as HTMLButtonElement, t ? { note: t } : undefined); },
     "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
+    "ntc-more": (el) => { const row = rowOf(el); if (!row) return; const key = "notice:" + (row.dataset.item || "") + ":brief"; if (openFolds.has(key)) openFolds.delete(key); else openFolds.add(key); row.classList.toggle("ntc-open", openFolds.has(key)); noticeMoreButton(row, row.querySelector<HTMLElement>(".ntc-body")); },   // the brief's disclosure: no latch, a toggle (the second contributor's review)
     "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },
+    "ntc-reply": (el) => { const p = item(el); if (p && activeId) setCitation(activeId, { itemId: p[1].itemId, title: p[1].title }); },
+    "ntc-cont": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askFollowUp", itemId: p[1].itemId, sid: activeId, cont: true }); latch(p[0], el as HTMLButtonElement); },
+    "ntc-clear": (el) => { const p = item(el); if (!p || !activeId) return; vscodeApi?.postMessage({ type: "askClear", itemId: p[1].itemId, sid: activeId }); latch(p[0], el as HTMLButtonElement); },
+    "ntc-fix": () => openSettingsOn("general"),   // the Billing block sits at the top of the General tab; the row stays until the judges' next call succeeds and the card leaves the column
   });
 })();
 // Background-task rows toggle open/closed — delegated to the stable #bg-tasks container (installed once),

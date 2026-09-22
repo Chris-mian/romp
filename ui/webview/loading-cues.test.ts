@@ -37,13 +37,13 @@ test("previews: the cue CSS lives in the chat sheet (the one preview surface sin
 
 test("undo clear: the round-trip branch arms a busy cue that never disables the button", () => {
   // armed ONLY on the cache-miss branch — the optimistic restore's card appearing IS its feedback
-  assert.match(FEED, /pendingCleared\.clear\(\);[\s\S]{0,700}b\.classList\.add\("undo-busy"\);/);
+  assert.match(FEED, /if \(!federatedPane\(\)\) pendingCleared\.clear\(\);[\s\S]{0,700}b\.classList\.add\("undo-busy"\);/, "the single-kernel release (a federated pane waits for federation's word, round twelve of PR 1967), then the cue");
   assert.doesNotMatch(FEED, /feed-undoclear[\s\S]{0,2000}\.disabled = true/, "repeat clicks must keep popping older batches");
   assert.match(FEED, /undoBusyBackstop = window\.setTimeout\(clearUndoBusy, 6000\);/, "backstop — a lost push can't trap the cue");
 });
 
 test("undo clear: the cue clears on the NEXT feed payload (the event it waits for)", () => {
-  assert.match(FEED, /if \(typeof m\.dismissedCount === "number"\) dismissedCount = m\.dismissedCount;\s*\n\s*clearUndoBusy\(\);/);
+  assert.match(FEED, /if \(typeof m\.dismissedCount === "number"\) dismissedCount = m\.dismissedCount;\s*\n(\s*\/\/[^\n]*\n)*\s*if \(!federatedPane\(\) \|\| undoRoutedBuilt\(m\)\) clearUndoBusy\(\);/, "the payload clears the cue; on a federated pane once every kernel the undo went to has built past the send (the second contributor's review of PR 1967)");
   assert.match(FEED, /function clearUndoBusy\(\): void \{/);
   assert.match(FEED, /b\.querySelector\("\.undo-dots"\)\?\.remove\(\);/);
 });

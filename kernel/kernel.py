@@ -19720,17 +19720,22 @@ def _predict_working(flavor, ids=None, sid=None):
         _send_to_app("feed", {"type": "cardPredict", "ids": ids, "flavor": flavor})
 
 
-def _ack_card_move(ids, ok):
+def _ack_card_move(ids, ok, why=""):
     """ANSWER the prediction _predict_working just fired (the user 2026-07-21). The client used to give a
     prediction 4 seconds to be confirmed by a payload and then toast "that follow-up didn't move the card to
     Working" — a TIMER standing in for an event the kernel already knows exactly: whether the reopen applied.
     So say it. ok=False is the only genuine failure (the goal is gone from the store, or sealed by a view
     clear) and is the only thing worth interrupting the user about; ok=True hands the card back to the
-    kernel's own state, which `buildId` lets the client wait for without guessing (see _next_feed_build_id)."""
+    kernel's own state, which `buildId` lets the client wait for without guessing (see _next_feed_build_id).
+    `why` (the second executed review of PR 1935, 2026-09-21) is the user's copy of a store fault when the reopen's WRITE refused: the
+    card is still on the board then, and the client says so instead of calling it gone."""
     ids = [i for i in ids if i]
     if ids:
-        _send_to_app("feed", {"type": "cardMoveAck", "ids": ids, "ok": bool(ok),
-                              "buildId": _feed_build_id[0]})
+        frame = {"type": "cardMoveAck", "ids": ids, "ok": bool(ok),
+                 "buildId": _feed_build_id[0]}
+        if why:
+            frame["why"] = why
+        _send_to_app("feed", frame)
 
 
 def _ask_lost(sid, client):
@@ -19818,21 +19823,23 @@ def _refuse_drive(client, op, sid, msg, why=None):
             text = msg[k]
             break
     what = _FOREIGN_OP_VERB.get(op, "action")
+    _kept = ""                                   # the append's own outcome words the dialog (the second review of PR 1967, 2026-09-21: the text claimed the file while the append sat silent)
     try:
         with (jd.STATE / "undelivered.jsonl").open("a") as fh:
             fh.write(json.dumps({"at": int(time.time()), "op": op, "sid": sid, "what": what,
                                  "itemId": msg.get("itemId") or "", "text": text}) + "\n")
-    except OSError:
-        pass
+    except OSError as e:
+        _kept = _store_fault_copy(e)
     sys.stderr.write("undeliverable %s: %s %s — %r\n" % (op, why or "this kernel has no session", sid, text[:200]))
     # The why branch names the session by its registered name, the uuid only when no row names it, as moveFailed does
     # (2026-09-21): the End hand-back's frame lands on ONE pane, and on a chat column showing another session the uuid
     # said nothing to the person reading it. The wrong-kernel branch keeps the id: there the id IS the diagnosis.
     detail = ("Nothing was sent. %s, so it could not deliver your %s. "
-              "Your text is saved verbatim in undelivered.jsonl under romp's state directory."
               % ((why + " (session %s)" % (_name_of(sid) or sid)) if why else
                  ("This romp kernel has no session with id %s — on a board showing more than one machine, that "
-                  "means the pane addressed the wrong kernel" % sid), what))
+                  "means the pane addressed the wrong kernel" % sid), what)
+              + ("Your text is saved verbatim in undelivered.jsonl under romp's state directory." if not _kept else
+                 "romp could not write undelivered.jsonl either (%s); the Copy button below is the one record of your text." % _kept))
     try:
         # `sid` rides along so the shell's error-center entry carries the session it was meant for, the way
         # every card-badge entry does — the bell is a log you read later, and "which one?" is the first thing
@@ -19992,8 +19999,16 @@ def _drive(msg, client):
                 if iid else text)
         # Mid-compaction the whole send is PARKED (queued bubble; delivered when compaction ends — _send_or_park);
         # the backend echoes the send for itself.
-        if _send_or_park(be, sid, body, qid=_client_qid(msg, sid, be),
-                         user=not msg.get("nudge"), paths=_wire_paths(msg)) is None:   # a follow-up is the user's; a nudge is romp's; its attachments ride as a send's do (T373 fold round two)
+        try:
+            _handed = _send_or_park(be, sid, body, qid=_client_qid(msg, sid, be),
+                                    user=not msg.get("nudge"), paths=_wire_paths(msg))   # a follow-up is the user's; a nudge is romp's; its attachments ride as a send's do (T373 fold round two)
+        except OSError as e:
+            # the send's own state write refused (a parked op's file, the queue's mirror; the second executed review of PR 1935, 2026-09-21): the
+            # refusal this arm already has, with the cause, where the raise used to reach the receive loop's OSError arm and tear
+            # the socket down with the typed text (Continue, a typed reply and the modal's Check status all ride this arm)
+            _refuse_drive(client, t, sid, msg, why="romp could not write its state (%s)" % _store_fault_copy(e))
+            return True
+        if _handed is None:
             # the feed predicted the move on the click; the err frame carrying op + itemId is what it reverts
             # on (_refuse_drive's shape), so the card comes back at once with the reason, not on the backstop
             _refuse_drive(client, t, sid, msg, why="No running backend owns this session")
@@ -20002,7 +20017,7 @@ def _drive(msg, client):
             _predict_working("followup", ids=[iid])       # instant cue to every feed view (chat-typed citation
             #                                               follow-ups included) — the reopen below is what the
             #                                               next push confirms it against
-            ok = False
+            ok, why = False, ""
             try:
                 ok = bool(jd.optimistic_followup(sid, iid, text=text, now=int(time.time())))
                 if ok:
@@ -20018,9 +20033,24 @@ def _drive(msg, client):
                     # block, nothing to read (the audited case: 2h45m, ended only by the user noticing).
                     # Same event-voids-episode reasoning as the awaiting lift's call; live records stay.
                     _drop_auto_nudge_rec(str(iid))
+            except OSError as e:
+                # the store refused the reopen's write: the card stays where it was, and the ack carries the cause so the pane
+                # says that instead of "the card is gone" (the second executed review of PR 1935, 2026-09-21)
+                why = _store_fault_copy(e)
+                sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
             except Exception:
                 sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
-            _ack_card_move([iid], ok)                     # …and TELL the client, instead of it timing us out
+            _ack_card_move([iid], ok, why=why)            # …and TELL the client, instead of it timing us out
+            if not ok and client is not None and (client.get("app") or "feed") != "feed":
+                # the socket that pressed, when it is not a feed pane (the Needs you box on the chat page; the second contributor's review,
+                # 2026-09-22): the ack above reaches feed clients alone, so the box's row stayed latched on a refused Continue. The HELD shape:
+                # the words went out (the send above handed them over), the reopen did not land, its cause as the error, the row's buttons
+                # spent (a re-armed button would offer the delivery again); a goal gone from the store has its own words
+                try:
+                    client["send"](json.dumps({"type": "noticeActionDone", "itemId": str(iid), "ok": True, "held": True,
+                                               "error": why or "the card is no longer on the board, so there was nothing to continue"}))
+                except Exception:
+                    pass                                  # the socket's own failure is the receive loop's to notice
     # (the cardMove op — the feed's "Move to Working" button/drag — was REMOVED, the user 2026-07-25:
     # zero recorded uses, and a reply to the card reopens/unblocks it with actual context. jd's replay
     # still accepts historical "move" journal events.)
@@ -20123,7 +20153,18 @@ def _drive(msg, client):
         # ONE retry decision, all of it kernel state — see _fire_api_retry (shared with the kernel's own
         # _auto_retry_tick, which drives recovery unattended since 2026-08-11; this route remains for the
         # manual Retry-now button and the dashboard tick's redundant asks, both idempotent against it).
-        if not _fire_api_retry(sid, be, manual=bool(msg.get("manual"))) and msg.get("manual"):
+        _said = False
+        try:
+            _fired = _fire_api_retry(sid, be, manual=bool(msg.get("manual")))
+        except OSError as e:
+            # the retry's state write refused (the suppression ledger, a parked op; the second executed review of PR 1935, 2026-09-21): a manual
+            # Retry hears it on the frame it already has; the auto tick asks again, so its refusal is the log's alone
+            _fired, _said = False, True
+            sys.stderr.write("apiRetry %s: %s\n" % (sid[:8], _store_fault_copy(e)))
+            if msg.get("manual"):
+                client["send"](json.dumps({"type": "retryRefused", "sid": sid,
+                                           "text": "Couldn't retry: romp could not write its state (%s)." % _store_fault_copy(e)}))
+        if not _fired and not _said and msg.get("manual"):
             # the backend refused the send (review find, 2026-09-08): the feed's Retry latched "Retrying…" on
             # the click and re-arms on the kernel's reply for that request, matched by sid. Nothing answered a
             # refused send before, so the button stayed latched until the card happened to be re-sent. A SOFT
@@ -20206,11 +20247,15 @@ def _drive(msg, client):
         # per-session billing (login vs the manager env's API key) — SDK-only, applied via reconnect
         # like /effort; mid-compaction → parked in the same FIFO. LOUD on refusal (fail loudly): Codex
         # sessions and a keyless manager can't apply it, and a silent swallow leaves a dead control.
-        if not _set_auth_or_park(be, sid, str(msg["value"])):
+        try:
+            _took, _oswhy = _set_auth_or_park(be, sid, str(msg["value"])), ""
+        except OSError as e:                          # the park's or the backend's state write refused: said on the frame below, never a torn socket (the second executed review of PR 1935, 2026-09-21)
+            _took, _oswhy = False, "romp could not write its state (%s)" % _store_fault_copy(e)
+        if not _took:
             # the backend names the reason it refused (no login signed in / no apiKeyHelper / a managed
             # helper: auth_unavailable_why) when it had one; the generic text covers the rest (a Codex
             # session, an unknown sid)
-            why = str(getattr(be, "auth_unavailable_why", lambda v: "")(str(msg["value"])) or "")
+            why = _oswhy or str(getattr(be, "auth_unavailable_why", lambda v: "")(str(msg["value"])) or "")
             client["send"](json.dumps({"type": "warn",
                                        "text": ("Couldn't switch the account this session bills: %s." % why) if why
                                        else "Couldn't switch the account this session bills — "
@@ -24909,20 +24954,25 @@ def _notice_item_id(sid, key, rev):
 
 
 def _chat_notices(sid):
-    """The chat page's approval box (plans/notice-cards.md, "Action kinds and the held-mail card", 2026-09-19): this session's
-    standing needs-you notices that carry actions, as the box lists them (today a held peer message with its Approve and Deny).
-    The same projection the feed card reads, the cleared ledger applied, each action with its kind; a decision (the expire row)
-    or a Clear drops the row with the next frame. None before the first feed build since start, as needsYou (the review of PR
-    1890, low d: the box never shows before the ring); [] for a session with none, and on any fault."""
+    """The chat page's NEEDS YOU BOX (plans/needs-you.md, phase three; the approval box of plans/notice-cards.md before it):
+    this session's Needs you items that are not hard stops, each with a way to act. Goal rows first, as the last feed build
+    filed them (_needs_you_rows: kind "goal", the card's text and its decision brief; Reply, Continue where the card offers it,
+    Clear), then the standing needs-you NOTICES from the same projection the feed card reads, the cleared ledger applied
+    (kind "notice": the stored actions each with its kind, as the box listed them from 2026-09-19; a notice without actions
+    offers Clear, its one way to act). A decision (the expire row), a reply the judge files or a Clear drops the row with the
+    next frame. None before the first feed build since start, as needsYou (the review of PR 1890, low d: the box never shows
+    before the ring); [] for a session with none, and on any fault."""
     if _feed_needs_input[0] is None:
         return None
+    if str(sid) == NOTICE_OWNERLESS_SID:
+        return []                                         # the owner-less home is not a session: no chat page, no box
     try:
-        out = []
+        out = [{k: v for k, v in r.items() if k not in _NEEDS_ROW_UNKEYED} for r in ((_feed_needs_rows[0] or {}).get(str(sid)) or [])]   # the face only: an unkeyed field never rides the wire (the third review of PR 1967, 2026-09-21)
         for r in _notice_projection(sid, int(time.time()), _cleared_ids()):
-            if not r.get("needsYou") or not r.get("actions"):
+            if not r.get("needsYou"):
                 continue
             out.append({"itemId": _notice_item_id(sid, r.get("key"), r.get("rev") or 0), "key": r.get("key"), "rev": int(r.get("rev") or 0),
-                        "title": r.get("title") or "", "body": r.get("body") or "", "producer": r.get("producer") or "",
+                        "kind": "notice", "title": r.get("title") or "", "body": r.get("body") or "", "producer": r.get("producer") or "",
                         "attachment": r.get("attachment"),          # the feed card's pinned picture, on the row too (one face)
                         "actions": [dict(a, kind=_notice_action_kind(a)) for a in (r.get("actions") or [])]})
         return out
@@ -25098,6 +25148,7 @@ def _notice_cards(now, cleared, alive_sids=None):
 
 
 _notice_inflight = set()                   # (item id, kind, body json) of the actions running right now: one delivery per click
+_notice_spent_mem = set()                  # (sid, key, rev) whose acted row could not be WRITTEN: this kernel still refuses a second run (the second executed review of PR 1935, 2026-09-21)
 
 
 def _notice_action(item_id, kind, body, inp=None):
@@ -25146,7 +25197,7 @@ def _notice_action_run(m, item_id, kind, body, inp):
         # the one-shot mark is the store's own acted row (round five): the cleared ledger's Undo restores the card, and a
         # refusal keyed on the ledger let the restored card deliver the words a second time. A card that does not dismiss
         # on its action is meant to run again.
-        if any(a.get("op") == "acted" and a.get("key") == key and int(a.get("rev") or 0) == rev for a in _notice_rows(sid)):
+        if (sid, key, rev) in _notice_spent_mem or any(a.get("op") == "acted" and a.get("key") == key and int(a.get("rev") or 0) == rev for a in _notice_rows(sid)):
             return False, "that card's action ran already"
         if item_id in _cleared_ids():
             return False, "that card was dismissed"
@@ -25158,7 +25209,7 @@ def _notice_action_run(m, item_id, kind, body, inp):
         try:
             ok, err, _queued = _deliver_text(target, str(body.get("text") or ""), plain=True)
         except Exception as e:                         # a delivery fault is the answer, never the socket's death
-            return False, "the action could not be delivered (%s)" % e
+            return False, "the action could not be delivered (%s)" % _store_fault_copy(e)
     elif kind == "quarantine":
         # the verdict on a held message, by the bus that owns delivery and the held file, with the card's OWNER as the
         # recipient (the bus checks it serves that session, 2026-09-18); a deny's note rides as the bus's feedback. The held
@@ -25175,7 +25226,7 @@ def _notice_action_run(m, item_id, kind, body, inp):
         try:
             ok, err = _bus_quarantine_act(qbody)
         except Exception as e:
-            return False, "the verdict could not reach the postal bus (%s)" % e
+            return False, "the verdict could not reach the postal bus (%s)" % _store_fault_copy(e)
         if ok:
             with _notice_lock:                          # the decision retires the card whatever the ledger later says
                 _notice_append(sid, {"op": "expire", "t": int(time.time()), "key": key, "rev": rev, "sid": sid})
@@ -25186,15 +25237,29 @@ def _notice_action_run(m, item_id, kind, body, inp):
         try:
             ack = _answer_setting_proposal(dict(body))
         except Exception as e:
-            return False, "the answer could not be applied (%s)" % e
+            return False, "the answer could not be applied (%s)" % _store_fault_copy(e)
         ok, err = bool(ack.get("ok")), str(ack.get("error") or "")
     else:
         return False, "no such action on that card"
     if ok and row.get("dismissOnAction"):
         with _notice_lock:                              # the acted mark first, then the dismissal: a crash between the two leaves
-            _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "kind": kind})   # a spent card, never a re-runnable one
-        _clear_ask(item_id)
+            spent = _notice_append(sid, {"op": "acted", "t": int(time.time()), "key": key, "rev": rev, "sid": sid, "kind": kind})   # a spent card, never a re-runnable one
+        if spent:
+            _notice_spent_mem.add((sid, key, rev))      # the acted row could not be written: this kernel still refuses a second run
+        _skipped = _clear_ask(item_id)                  # _clear_all's verdict: {LEDGER_KEY: fault} when the clears log refused (never a raise), else the
+        #                                                 per-session store faults of the flag step, which a notice card has no node for: its dismissal
+        #                                                 IS the ledger row, so only the ledger's refusal leaves the card on the board (the verifier's
+        #                                                 read of PR 1967, 2026-09-21: a store fault alone answered "could not be dismissed (None)" for a card
+        #                                                 that was gone)
+        held = {LEDGER_KEY: _skipped[LEDGER_KEY]} if LEDGER_KEY in _skipped else {}
         _mark_views_dirty()
+        if held:
+            # delivered, not dismissed (the second executed review of PR 1935, 2026-09-21): the answer says both, so the pane keeps the card and
+            # leaves its button spent. The raise out of the dismissal used to answer ok false for words that had gone out, and
+            # the redial's click was then refused as already run with nothing on screen to say the words had landed. (An acted
+            # row that could not be written while the dismissal did land is the in-memory mark's case above: the card is gone
+            # as asked, so the answer is a plain success.)
+            return True, "the card could not be dismissed (%s)" % held.get(LEDGER_KEY)
     return ok, err
 
 
@@ -34946,7 +35011,7 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         # row reads the same (needsInput === true). Only True is a verdict.
         sig.append(_feed_needs_input_of(sid) is True)
         # notices: the approval box's rows by id (a hold posted, a decision taken), so the box and the ring move in one frame
-        sig.append(tuple(n["itemId"] for n in (_chat_notices(sid) or ())))
+        sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing, a Continue moving or a retitle (the judge retitles a top under its id; the second review of PR 1967, 2026-09-21) repaints the box; `t` is _NEEDS_ROW_UNKEYED; one value per label
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
         # per-push flag), so a payload built from turn 0 is never served from the cache once the floor climbs
         sig.append(bool(getattr(_live_scope, "chat_floor0", False)))
@@ -41565,7 +41630,12 @@ def _mark_nodes_cleared(item_ids, value, src="user", why=None):
                     # the live card, and the compaction archived the node unflagged, where the archive
                     # projections trusted the flag and the card came back after a restart. Journal-first,
                     # like the unclear row: this precedes the save below.
-                    jd.append_clear(sid, iid, src, why or "cleared from the feed", now)
+                    try:
+                        jd.append_clear(sid, iid, src, why or "cleared from the feed", now)
+                    except OSError as e:
+                        # the journal refused (a read-only root; the second contributor's review, 2026-09-22): record_verdict has moved memory
+                        # already, so the save is skipped and the caller answers the user; left to raise, the client was dropped
+                        skipped[sid] = _store_fault_copy(e); touched = False; break
                 if not value and applied:
                     # Journal the UN-CLEAR (the user 2026-07-23, the restore-then-reply flicker): the
                     # restore journal row carries only the ARCHIVED node payload — still flag-cleared —
@@ -41574,7 +41644,10 @@ def _mark_nodes_cleared(item_ids, value, src="user", why=None):
                     # board). The unclear row makes the un-seal itself replayable, with the verdict's
                     # exact `now` so replay's twin check matches the survived original. Journal-first:
                     # this precedes the save below, the write a racing pass save could clobber.
-                    jd.append_override(sid, iid, "unclear", now)
+                    try:
+                        jd.append_override(sid, iid, "unclear", now)
+                    except OSError as e:
+                        skipped[sid] = _store_fault_copy(e); touched = False; break   # as the clear row's refusal above: memory moved, the save skipped, the user answered
                 if not value and was_done and not nd.get("settledDone"):
                     # restore COMPLETION stickily (the user 2026-06-27): the undo-reopen restored the
                     # pre-clear state from its snapshot, but a top that had never settled (the ≈5% gap)
@@ -41583,7 +41656,7 @@ def _mark_nodes_cleared(item_ids, value, src="user", why=None):
                     jd.record_verdict(store, nd, "romp", "settle", now)
                 touched = True
         if not touched:
-            continue
+            continue                                  # (nothing to flag, or a journal refusal above: its account is filed, the save skipped)
         try:                                          # session_closed for the rollup, same as _resolve_node
             path = sess_paths.get(sid)
             closed = jd._session_closed(_parse(path, sid, now)) if path else False
@@ -41773,7 +41846,163 @@ def _store_fault_copy(fault):
     return text.replace(str(jd.STATE) + os.sep, "")
 
 
-def _gesture_store_refusal(client, gesture, skipped):
+LEDGER_KEY = "ledger:clears"   # the skipped-map key for the clears log itself refusing a write (no session to name; the second executed review of PR 1935, 2026-09-21)
+LEDGER_REJOURNAL_KEY = "ledger:rejournal"   # an undo whose undo rows landed and whose RE-JOURNAL the log then refused (the second review of PR 1967, 2026-09-21)
+LEDGER_REJOURNAL_AGAIN_KEY = "ledger:rejournal-again"   # a later undo whose re-journal-FIRST write refused again: nothing changed this press (the manager's read of round three, 2026-09-21)
+LEDGER_REORDER_KEY = "ledger:reorder"       # an undo that re-journaled owed cards first and restored THEM, not the batch the feed restored on the click (the third executed review of PR 1967, 2026-09-21)
+LEDGER_OWED_READ_KEY = "ledger:owed-read"   # the note of owed cards beside the log could not be read (a present, unreadable file; a missing one is nothing owed)
+LEDGER_OWED_WRITE_KEY = "ledger:owed-write" # the note beside the log could not be rewritten when the re-journal landed (before the flag step, so the account claims nothing about the restore): until it can, a restart may bring those cards back first once more
+# An account's value in the skipped map is the fault's copy (a string), or {"fault": copy, "ids": [...]} when the account names ids of its
+# own (the third executed review of PR 1967, 2026-09-21: the whole batch rode every account's frame, and the feed reverted cards whose act had landed)
+_rejournal_owed = {}           # {item id: None}: the clear rows a past undo could not re-journal; the next undo writes them FIRST (the second review of PR 1967, 2026-09-21)
+OWED_FILE = "cleared-owed.jsonl"   # STATE/cleared-owed.jsonl: the owed ids persisted beside the clears log, one {"id"} row each, so a kernel restart
+#                                    keeps the owing (the third review of PR 1967, 2026-09-21: a module dict alone dropped it silently, and the card stayed
+#                                    flag-cleared with no ledger row, hidden and then archived); truncated once the re-journal lands
+
+
+_OWED_LOCK = threading.RLock()  # ONE lock across the note's read, the re-journal-first write, the memory update and the rewrite (_undo_clear holds it; the helpers take it
+#                                 again, re-entrant): a peer socket's persist between a read and the rewrite waits its turn, so no rewrite truncates a row memory never
+#                                 read (the third executed review of PR 1967 asked for one writer; lows 3 and 4 of the fourth and the round-four verifier's medium, 2026-09-21, the span)
+_owed_settled = set()           # ids whose re-journal LANDED while the note's rewrite refused: the stale rows are not owed again until the file rewrites
+
+
+def _owed_persist(ids):
+    """Append the owed ids to OWED_FILE; "" or the fault's copy (the file sits beside the log, so a root that refused the log
+    refuses this too: then the owing lives in this kernel's memory alone, which the dialog says)."""
+    with _OWED_LOCK:
+        try:
+            p = jd.STATE / OWED_FILE
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a") as f:
+                for iid in ids:
+                    f.write(json.dumps({"id": iid}) + "\n")
+            return ""
+        except OSError as e:
+            _owed_fault_note("the note's append", e)
+            return _store_fault_copy(e)
+
+
+def _owed_load(note=True):
+    """The owed ids on disk joined into _rejournal_owed (a restart's memory is empty; the file is not); "" or the fault's copy. A
+    MISSING file is nothing owed; any other refusal is said on the frame (the third executed review of PR 1967, 2026-09-21: every OSError read as nothing owed).
+    Ids whose re-journal landed while the note's rewrite refused (_owed_settled) are not owed again. `note`: file the durable record here
+    (a gesture's read, one per gesture); the feed's once-per-life read files its own, one per episode (_owed_ensure_loaded)."""
+    with _OWED_LOCK:
+        try:
+            text = (jd.STATE / OWED_FILE).read_text()
+        except FileNotFoundError:
+            return ""
+        except (OSError, ValueError) as e:
+            # a permission bit, EIO; or a note whose bytes are not text (UnicodeDecodeError is a ValueError; the thirteenth executed review,
+            # 2026-09-22: it raised through every feed build and the off frame, no row filed, the read armed, until the file was repaired)
+            if note:
+                _owed_fault_note("the note's read", e)
+            return _store_fault_copy(e)
+    for line in text.splitlines():
+        try:
+            iid = json.loads(line).get("id")
+        except ValueError:
+            continue
+        if iid and str(iid) not in _owed_settled:
+            _rejournal_owed[str(iid)] = None
+    return ""
+
+
+def _owed_rewrite(still_owed):
+    """Rewrite the note with the ids still owed (none after a landed re-journal); "" or the fault's copy. On a refusal the ids that
+    came back are remembered as settled, so the stale rows are not re-journaled by the next Undo (the third executed review of PR 1967, 2026-09-21: three Undos
+    restored a stale id instead of the last clear)."""
+    with _OWED_LOCK:
+        try:
+            _atomic_write(jd.STATE / OWED_FILE, "".join(json.dumps({"id": i}) + "\n" for i in still_owed))   # never a 0-byte note from a crash mid-write (the second contributor's review)
+            _owed_settled.clear()
+            return ""
+        except OSError as e:
+            _owed_fault_note("the note's rewrite", e)
+            return _store_fault_copy(e)
+
+
+def _owed_note():
+    """The dialog's line on where the owing lives: on disk beside the log (a restart keeps it), or in memory alone when even that
+    file refused (a restart before the log writes again loses the owing, and the card stays hidden: the limit, stated)."""
+    return ("romp saved a note of them beside its records, so a restart keeps it." if not _owed_mem_only[0] else
+            "romp could not save a note of them either, so only this running romp remembers: a restart before it can write again "
+            "loses that, and the cards stay hidden.")
+
+
+_owed_mem_only = [False]         # the last persist refused: the owing is in memory alone (the dialog says so)
+_owed_read_fault = [""]          # the fault copy filed for a STANDING unreadable note on the feed's once-per-life read: one row per episode (the judge's
+#                                  _read_failed shape), cleared when a read lands; _undo_clear's own read files per gesture (the thirteenth executed review)
+
+
+def _owed_fault_note(what, e):
+    """The durable record of a refused note write or read (the second contributor's review, 2026-09-22: seven refusal arms said nothing
+    beyond the frame): one stderr line and a judge-errors row (jd._log_judge_error, the rows the card modal's diagnostics read), the
+    kernel's write-fault convention. Never raises: it runs inside the refusal arms it records. `e`: the exception, or a fault's copy."""
+    line = "owed note: %s refused: %s" % (what, e if isinstance(e, str) else _store_fault_copy(e))
+    try:
+        sys.stderr.write(line + "\n")
+        jd._log_judge_error("romp", "", "owed-note", note=line)
+    except Exception:
+        pass
+_owed_note_read = [False]        # the note beside the log read into memory once per kernel life (a restart's memory is empty); armed until a read lands
+
+
+def _owed_ensure_loaded(what):
+    """The owed ids on disk joined into memory once per kernel life, under the lock, so the feed's Undo button and every gesture account
+    see the owing a restart's memory lacks (the second contributor's review, 2026-09-22: the button hid exactly when the dialogs said to
+    press it, until the first Undo read the note). A present, unreadable note: ONE judge-errors row and stderr line per episode, the first
+    failed read after a good one (the judge's _read_failed shape; the thirteenth executed review, 2026-09-22: this read runs twice per feed
+    build and once per off frame, and filed a row each time while the fault stood), a different fault a new episode; the read stays armed
+    for the next caller. Returns the fault's copy, or ""."""
+    with _OWED_LOCK:
+        if _owed_note_read[0]:
+            return ""
+        err = _owed_load(note=False)
+        if err:
+            if _owed_read_fault[0] != err:
+                _owed_read_fault[0] = err
+                _owed_fault_note("the note's read for %s" % what, err)
+            return err
+        _owed_read_fault[0] = ""                      # the read landed: the next failure is a new episode (_read_ok)
+        _owed_note_read[0] = True
+        return ""
+
+
+def _undo_stack_ids():
+    """Every id the kernel's Undo stack holds: the clears log's ids and the owed ids (the note read once per life), as the Undo button
+    and the dismissed count read them (the second contributor's review, 2026-09-22: the log alone hid the button while a card was owed)."""
+    _owed_ensure_loaded("feed build")
+    return set(_cleared_ids()) | set(_rejournal_owed)
+
+
+LEDGER_BATCHES_ON_WIRE = 20   # the newest log batches an account carries (the eighth executed review of PR 1967: unbounded, a 1500-card log put 71 KB
+#                              on every refusal frame). Past them a page that did not make those clears (a reload, another browser) takes the round trip;
+#                              the page that made them keeps their entries below the window and restores them optimistically, which is what the kernel pops
+
+
+def _ledger_batches(limit=LEDGER_BATCHES_ON_WIRE):
+    """The kernel's Undo stack as the feed holds its own: the ids an earlier undo left owed (the next Undo writes their rows first, so they
+    are the newest batch though the log has no row for them yet), then the clears log's batches by stamp, newest first, each a sorted id
+    list; and the owed ids on their own. Every gesture account carries both (`batches`, `owedBatch`) and the count of log batches before the
+    wire's bound (`batchesTotal`), so a truncated stack reads as truncated; the feed takes them as its stack,
+    which keeps the two equal press after press (round eight of PR 1967: proven by enumeration in tests/test_goal_store_fault_boundary.py,
+    whose table ui/webview/feed-render-incremental.test.ts replays against the built feed)."""
+    cur = _cleared_ids()
+    by = {}
+    for iid, ct in cur.items():
+        if iid in _rejournal_owed:
+            continue                                  # an owed id counts once, as owed: its re-journal-first row supersedes any log row it holds (a card re-cleared while owed), and one Undo restores it whole
+        by.setdefault(ct, []).append(iid)
+    out = [sorted(by[t]) for t in sorted(by, reverse=True)]
+    owed = sorted(_rejournal_owed)
+    # the newest `limit` batches ride the frame with the count before the bound, so the feed reads a truncated stack as truncated and not as
+    # "nothing older is cleared" (the ninth executed review of PR 1967: it released the older suppressions and dropped their Undo entries); the
+    # tail is the round trip (plans/needs-you.md)
+    return ([owed] if owed else []) + out[:limit], owed, len(out)
+
+
+def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
     """A user gesture (a clear, a sub-goal drop, an undo) that a session's UNREADABLE goal store made us
     skip must say so on the socket that made it (the standing rule: a refusal of a user gesture reaches
     the user). The feed's `err` dialog is the existing "that action did not land" surface, bell included;
@@ -41791,9 +42020,132 @@ def _gesture_store_refusal(client, gesture, skipped):
     or the write itself), so the prose says "read or write" and lets the fault text name which; this is
     the user's copy (the save shape added on a review find, 2026-09-08: left to raise, it dropped the
     dashboard's socket without a word)."""
-    for key, fault in (skipped or {}).items():
+    _batch = [str(i) for i in (ids or []) if i]         # the batch the gesture named: the LEDGER account's ids (nothing of it landed)
+    _lb = [None]                                        # the kernel's stack after the gesture (_ledger_batches), read once, on every frame
+    # the undo's BUILD FLOOR (round fifteen of PR 1967, the round-thirteen verifier's ruling): the feed build counter as it stands now, the undo
+    # processed. Every build claimed after this point read the store after the undo applied, and after every clear this socket sent before it
+    # (the kernel applies them in order), so a payload with a greater build is exact evidence of what the undo restored; a build claimed before
+    # (in flight, its id at most this) may predate the clears and is none. Carried on every undo account: the refusal and reorder frames below,
+    # and an `undoAck` for an undo that landed with nothing to say
+    _floor = _feed_build_id[0] if gesture == "undo" else None
+    _said = [False]
+    if skipped and gesture != "undo":
+        _owed_ensure_loaded(gesture)                    # a clear's or a drop's account after a restart carries the owing too (the second contributor's review)
+    for key, value in (skipped or {}).items():
+        # each account names ONLY its own ids (the third executed review of PR 1967, 2026-09-21: the whole batch rode every frame, and the
+        # feed reverted cards whose act had landed): the ledger's refusal the whole batch; a re-journal account the ids it carries beside
+        # its fault; a skipped session its own ids out of the batch; a session whose act landed is not in the map at all
+        fault = value.get("fault", "") if isinstance(value, dict) else value
+        own = [str(i) for i in (value.get("ids") or [])] if isinstance(value, dict) else None
+
+        def _send(title, text, sid_, acct_ids, ok=False, owed=None):
+            frame = {"type": "err", "title": title, "text": text, "op": op or "",
+                     "itemId": acct_ids[0] if acct_ids else "", "itemIds": list(acct_ids)}
+            if sid_:
+                frame["sid"] = sid_                   # a session account names its session; an empty sid became a remote kernel's bare "HOST:" through federation's scalar pass (the second contributor's review)
+            if ok:
+                frame["ok"] = True                    # information, not a refusal: the feed shows the dialog and files no bell entry (the round-four verifier)
+            if owed:
+                frame["owedIds"] = [str(i) for i in owed]   # the owed ids that did NOT come back this press (the sixth and seventh executed reviews)
+            if _lb[0] is None:
+                _lb[0] = _ledger_batches()
+            frame["batches"], frame["owedBatch"], frame["batchesTotal"] = _lb[0]   # the kernel's stack, which the feed takes as its own (round eight), and the count before the bound (round ten)
+            if _floor is not None:
+                frame["buildId"] = _floor             # the undo's build floor (round fifteen): the feed judges a restore by a build past it
+            _said[0] = True
+            try:
+                client["send"](json.dumps(frame))
+            except Exception:
+                sys.stderr.write("gesture refusal (%s %s): %s\n" % (gesture, key[:24], traceback.format_exc()))
+        if key == LEDGER_REJOURNAL_AGAIN_KEY:
+            # the press after the two-fault undo, with the log still refusing (the manager's read of round three, 2026-09-21): nothing new was marked undone,
+            # the owed cards stay hidden and the last clear stands; the frame names the newest batch the feed restored on the click
+            # plus the owed ids, so the feed reverts exactly what it restored
+            _send("That undo did not land",
+                  "Nothing changed: romp still could not finish recording the earlier undo (%s), so those cards stay hidden and the "
+                  "last clear stands. Press Undo again once romp can write. %s" % (fault, _owed_note()), "", own or [])
+            continue
+        if key == LEDGER_REJOURNAL_KEY:
+            # the undo rows landed, a store then refused its flag step, and the log refused the re-journal that keeps those ids owed
+            # (the second review of PR 1967, 2026-09-21): they read as undone while their flags stand, so no later Undo reaches them by the ledger alone. The
+            # next Undo writes the re-journal first (_rejournal_owed) and restores them in the same gesture; said as such.
+            _send("That undo did not fully land",
+                  "Those cards were marked undone, but romp could not finish recording it (%s), so they are still hidden. Press Undo "
+                  "again once romp can write and they come back, ahead of the last clear. %s" % (fault, _owed_note()), "", own or [])
+            continue
+        if key == LEDGER_REORDER_KEY:
+            # not a refusal: the undo went to the cards an earlier undo left owed, which come first; the batch the feed restored on the click
+            # (the last clear) is not restored this press, so the frame names it and the feed puts it back as it was. `ok` rides: a dialog and
+            # no bell entry, since nothing went undelivered (the round-four verifier). The words say whether the owed cards came back: filed
+            # after the flag step, so an owed store's refusal (its own account beside this one) is not called a restore (the fourth review)
+            if (value.get("landed", True) if isinstance(value, dict) else True):
+                _send("Undo brought back earlier cards first",
+                      "Some cards were still owed from an earlier undo, so Undo brought them back first. The last clear stands: press Undo "
+                      "again for it.", "", own or [], ok=True)
+            else:
+                # the words name the CONDITION, not a press count (the sixth executed review, 2026-09-21: "press Undo again for it" promised the last clear while the owed
+                # ids' re-journal was the newest batch; the round-eight verifier: a count is pushed out by a second refusal, so the words say what one Undo
+                # does once the store reads). The sixth review's shape, for the record: the frame promised the last clear while the owed
+                # ids' re-journal was the newest batch, so the next Undo was theirs again, quietly, and the last clear came the press after; on the
+                # feed the reverted entry sat on top and that click restored it optimistically while the kernel restored the owed card). The frame
+                # names the owed ids too, so the feed keeps the last clear's entry BELOW an entry standing for them and its next pop matches
+                _n = value.get("stamps", 1) if isinstance(value, dict) else 1
+                # the one-stamp clause names its subject from the owed ids' stores (the second contributor's review, 2026-09-22: "that session's
+                # store" misnamed two sessions at one stamp, and a clears-log refusal, whose subject is the log)
+                _owed_now = [str(i) for i in (value.get("owed") or [])] if isinstance(value, dict) else []
+                _stores = {("notice:" + i.split(":", 2)[1]) if i.startswith("notice:") else i.rsplit(":", 1)[0] for i in _owed_now}   # the STORE keys: a notice archive against a goals file (the thirteenth executed review)
+                if skipped.get(LEDGER_KEY) or skipped.get(LEDGER_REJOURNAL_AGAIN_KEY):
+                    _subject = "the clears log"
+                elif len(_stores) > 1:
+                    _subject = "those stores"
+                elif any(k.startswith("notice:") for k in _stores):
+                    _subject = "that session's notice archive"
+                else:
+                    _subject = "that session's goals file"
+                _send("Undo went to earlier cards first",
+                      "Some cards were still owed from an earlier undo, so Undo went to them first, and that did not fully land (the other "
+                      "message says which). " + ("Once %s can be read and written again, one Undo brings them back and the next the last clear." % _subject if _n <= 1 else
+                                                 "Once their stores can be read they take more than one Undo, since they were left at different points, and the last clear comes back after them."),
+                      "", own or [], ok=True, owed=value.get("owed") if isinstance(value, dict) else None)
+            continue
+        if key == LEDGER_OWED_READ_KEY:
+            _send("romp could not read its note of earlier owed cards",
+                  "The undo went ahead, but romp could not read the note it keeps of cards an earlier undo left owed (%s). If some cards "
+                  "stay hidden after this, press Undo again once romp can read it." % fault, "", [])
+            continue
+        if key == LEDGER_OWED_WRITE_KEY:
+            # filed at the rewrite, BEFORE the flag step, so it claims nothing about the restore (the sixth executed review, 2026-09-21: "the owed
+            # cards came back" contradicted the store's account and the reorder frame when the owed store refused on the same press)
+            _send("romp could not update its note of earlier owed cards",
+                  "The undo went ahead, but romp could not rewrite the note it keeps of cards an earlier undo left owed (%s). Until it can, "
+                  "a restart may bring those cards back first once more." % fault, "", [])
+            continue
+        _ids = _batch
+        if key == LEDGER_KEY:
+            # the clears log itself refused the write (the second executed review of PR 1935, 2026-09-21): no session to name, and an account per gesture, since in every
+            # shape nothing at all changed on disk (a clear's rows never landed, so no node was flagged either). The frame names the REQUEST
+            # (`op`, the request's own type, so no arm repeats its literal; the batch's `itemIds`, the first as `itemId`; the second review of PR 1967, 2026-09-21): the feed releases the click's suppression of those cards
+            # and repaints them, the chat re-arms the row's buttons, the way _refuse_drive's frame names the post it answers.
+            if gesture == "undo":
+                title = "That undo did not land"
+                text = ("romp could not write its clears log (%s), so that undo was not recorded and its cards stay hidden. "
+                        "They are still held for you; press Undo again once it can." % fault)
+            elif gesture == "drop":
+                title = "That sub-goal was not cleared"
+                text = ("romp could not write its clears log (%s), so nothing changed and the row is as it was. "
+                        "Try it again once it can." % fault)
+            else:
+                title = "That clear did not land"
+                text = ("romp could not write its clears log (%s), so nothing was cleared and every card is as it was. "
+                        "Try it again once it can." % fault)
+            _send(title, text, "", _ids)
+            continue
         notices = key.startswith("notice:")          # an undo whose NOTICE archive faulted: worded per store (round six, low), since
         sid = key[len("notice:"):] if notices else key   # the session's goal cards did come back
+        _ids = [i for i in _batch if (i.startswith("notice:%s:" % sid) if notices else (not i.startswith("notice:") and i.rsplit(":", 1)[0] == sid))]   # this session's own
+        if gesture == "clear":
+            _ids = []                                  # a clear the ledger TOOK: the cards are off the board, nothing undelivered, so the frame names no card (the
+            #                                            round-three verifier: named, the feed undid a clear that happened and dropped its Undo entry)
         who = _name_of(sid) or sid[:8]
         if gesture == "undo" and notices:
             title = "That undo did not fully land for %s" % who
@@ -41814,10 +42166,14 @@ def _gesture_store_refusal(client, gesture, skipped):
             text = ("What you cleared there is off the board, but the clear was not written into that "
                     "session's goals file, which romp could not read or write (%s); nothing else changed there, "
                     "and the other sessions were not affected." % fault)
+        _send(title, text, sid, _ids)                  # the request and this session's own ids of the batch
+    if _floor is not None and not _said[0]:
+        # the undo landed with nothing to account for: the ack alone carries the floor (one frame per undo per kernel; an older kernel sends
+        # none, and the feed's payload flag `undoAck` tells it which kernels do)
         try:
-            client["send"](json.dumps({"type": "err", "sid": sid, "title": title, "text": text}))
+            client["send"](json.dumps({"type": "undoAck", "op": op or "", "buildId": _floor}))
         except Exception:
-            sys.stderr.write("gesture refusal (%s %s): %s\n" % (gesture, sid[:8], traceback.format_exc()))
+            sys.stderr.write("undo ack: %s\n" % traceback.format_exc())
 
 
 def _clear_all(item_ids):
@@ -41832,11 +42188,18 @@ def _clear_all(item_ids):
     seen = set(item_ids)
     item_ids = item_ids + [i for i in _delegation_linked_ids(item_ids) if i not in seen]   # + the delegation's peer copy
     p = jd.STATE / "cleared.jsonl"
-    p.parent.mkdir(parents=True, exist_ok=True)
     t = time.time()
-    with p.open("a") as f:
-        for iid in item_ids:
-            f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a") as f:
+            for iid in item_ids:
+                f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+    except OSError as e:
+        # the clears log itself refused the write (a read-only root; the second executed review of PR 1935, 2026-09-21): nothing hid, so no node is
+        # flagged either, and the gesture's socket hears it under LEDGER_KEY (_gesture_store_refusal). Left to raise, the receive
+        # loop's OSError arm, which is for the socket's own failures, tore every pane's connection down and the redial brought
+        # the card back with no word why.
+        return {LEDGER_KEY: _store_fault_copy(e)}
     _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     skipped = _mark_nodes_cleared(item_ids, True)     # durable node flag → no grouper re-wrap, no column bounce
     # CLEAR IS SILENT (the user 2026-08-23, reversing the 2026-07-24 wrap-up): the session hears
@@ -41854,7 +42217,7 @@ def _clear_all(item_ids):
 # <!-- romp-clear-wrap --> marker stays: recorded transcripts still contain old wraps.)
 
 
-def _undo_clear():
+def _undo_clear(batch_out=None):
     """Restore the most-recent clear BATCH — every id cleared at the latest timestamp. So one
     UndoClear undoes a Clear-all as a unit, and a single-card clear restores just that card.
     A session whose goals file cannot be read is left OWED, never consumed: its ids are journaled as
@@ -41867,21 +42230,93 @@ def _undo_clear():
     notices-archive after its undo row lands (_restore_notice_archive, round six), and a session whose notice
     archive could not be read is owed the same way, its fault keyed "notice:<sid>" so the refusal names the store that
     faulted and not the session's every card. Returns {sid | "notice:"+sid: fault} for the sessions skipped."""
+    skipped = {}
+    popped = []                                           # the newest batch BEFORE the re-journal-first step: what the feed restored on the click
+    owed_ids = []                                         # the ids this press re-journaled first (none when nothing was owed)
+    with _OWED_LOCK:
+        # ONE lock across the note's read, the re-journal-first write, the memory update and the rewrite (lows 3 and 4 of the fourth review of
+        # PR 1967 and the round-four verifier's medium, 2026-09-21): a peer socket's persist between the read and the rewrite waits, so a row it
+        # owes is never truncated off disk by a rewrite that never read it
+        _rerr = _owed_load()                              # a restart's memory is empty; the file beside the log is not (the third review of PR 1967, 2026-09-21)
+        if _rerr:
+            skipped[LEDGER_OWED_READ_KEY] = {"fault": _rerr, "ids": []}   # a present, unreadable note: said, and the undo goes ahead on what memory holds
+        elif _owed_settled:
+            _qerr = _owed_rewrite(list(_rejournal_owed))  # a note still carrying settled ids (its last rewrite refused): rewritten now that it reads
+            if _qerr:
+                skipped[LEDGER_OWED_WRITE_KEY] = {"fault": _qerr, "ids": []}   # refused again: said (the second contributor's review: the quiet rewrite discarded its return)
+        if _rejournal_owed:
+            # the re-journal a past undo could not write (the log refused after its undo rows landed; the second review of PR 1967, 2026-09-21): written FIRST,
+            # so those ids are the newest batch again and this very Undo restores them, AHEAD of the last clear (a reorder the dialog names, filed after
+            # the flag step below so its words match what happened); refused again, said under an account of its own, naming the batch the feed
+            # restored on the click (the newest clear as the ledger reads now) plus the owed ids, so the feed reverts exactly that (the manager's
+            # read of round three, 2026-09-21); nothing else runs
+            _cur0 = _cleared_ids()
+            if _cur0:
+                _nw = max(_cur0.values())
+                popped = [i for i, ct in _cur0.items() if ct == _nw]
+            owed_ids = list(_rejournal_owed)
+            t = time.time()
+            try:
+                with (jd.STATE / "cleared.jsonl").open("a") as f:
+                    for iid in owed_ids:
+                        f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+            except OSError as e:
+                named = popped + [i for i in owed_ids if i not in popped]   # what the feed restored on the click, plus the owed: the revert's ids
+                if batch_out is not None:
+                    batch_out.extend(named)
+                skipped[LEDGER_REJOURNAL_AGAIN_KEY] = {"fault": _store_fault_copy(e), "ids": named}
+                return skipped
+            _files_stat_mark()
+            for iid in owed_ids:
+                _rejournal_owed.pop(iid, None)            # the ids THIS press re-journaled, no other: a peer's new owing stays in memory and on disk
+            _owed_settled.update(owed_ids)
+            _owed_mem_only[0] = False
+            if not _rerr:
+                # the note rewritten with what is STILL owed, never a literal empty list (a peer's row is kept); after an UNREADABLE note nothing is
+                # rewritten, since a rewrite would wipe the rows memory never read (the fourth review of PR 1967: X on disk, the read refused, the note
+                # ended empty and X stayed flag-cleared with no ledger row); the settled ids keep the stale rows out until a read lands
+                _werr = _owed_rewrite(list(_rejournal_owed))
+                if _werr:
+                    skipped[LEDGER_OWED_WRITE_KEY] = {"fault": _werr, "ids": []}
+            popped = [i for i in popped if i not in owed_ids]   # an owed id in the newest batch too (a stale note across a restart, the card re-cleared) is
+            #                                                     restored THIS press: naming it as not restored parked a live card (the fourth review)
+
+    def _reorder(landed, not_back=(), stamps=1):
+        # the undo goes on to restore the OWED batch (newest now), not the one the feed restored on the click: the frame names that one as not
+        # restored this press, so the feed puts it back as it was (the third review, the manager's read). Filed AFTER the flag step, its words
+        # saying whether the owed cards came back (the fourth review: filed when the re-journal landed, it said "brought back" while the owed
+        # store was refusing, and both frames read cleared)
+        if popped:
+            skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped, "landed": bool(landed), "owed": [] if landed else list(not_back), "stamps": int(stamps)}
     cur = _cleared_ids()
     if not cur:
-        return {}
+        _reorder(False, owed_ids, 1)
+        return skipped
     newest = max(cur.values())
     restored = [i for i, ct in cur.items() if ct == newest]
+    if batch_out is not None:
+        batch_out.extend(restored)                        # the batch this undo reaches for: a refusal names it (the third review of PR 1967, 2026-09-21), so the feed
+        #                                                   reverts the optimistic restore of exactly these cards
     notices = [i for i in restored if i.startswith("notice:")]     # notice cards have no goal node: their rows come back below (round six)
     restored = [i for i in restored if not i.startswith("notice:")]
-    skipped = dict(_restore_goal_archive(restored))   # pull the restored tops back OUT of the archive FIRST,
+    skipped.update(_restore_goal_archive(restored))   # pull the restored tops back OUT of the archive FIRST,
     restored = [i for i in restored if i.rsplit(":", 1)[0] not in skipped]   # (a session it could not read
-    with (jd.STATE / "cleared.jsonl").open("a") as f:   # keeps its clear rows: still the newest batch)
-        for iid in restored + notices:
-            f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
+    try:
+        if restored + notices:                        # every session skipped at the archive read: no undo row, the batch stays the newest (the second contributor's review)
+            with (jd.STATE / "cleared.jsonl").open("a") as f:   # keeps its clear rows: still the newest batch)
+                for iid in restored + notices:
+                    f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
+    except OSError as e:
+        # the clears log refused the undo rows (the second executed review of PR 1935, 2026-09-21): nothing is journaled, so the batch stays the
+        # newest and the next Undo retries exactly it (the tops the archive restore pulled back a moment ago sit flag-cleared
+        # in the live store, hidden as before, and the retry's restore passes them over as not archived); said on the socket
+        skipped[LEDGER_KEY] = _store_fault_copy(e)
+        _reorder(False, owed_ids, 1)                  # the owed batch did not come back either (one stamp, the re-journal-first's): the reorder frame says so
+        return skipped
     _files_stat_mark()                                # the clears log is a keyed file of every session (plans/nudge-walk-events.md)
     late = _mark_nodes_cleared(restored, False) if restored else {}   # so this finds the nodes → un-set the durable flag → real status
     nlate = _restore_notice_archive(notices)          # a notice card's rows come back OUT of notices-archive now its undo row is down
+    _rj = []                                          # the ids re-journaled at the flag step (their undo did not land in full)
     if late or nlate:
         # The store read fine (or held nothing archived) a moment ago and faults NOW, after the undo row
         # landed (at the flag step's read, or at its publish): the node is restored flag-cleared, which
@@ -41892,12 +42327,28 @@ def _undo_clear():
         # per row split a two-card batch into two one-card batches and each further Undo brought back one
         # card, against the promise that the next Undo restores exactly them (review find, 2026-09-08).
         t = time.time()
-        with (jd.STATE / "cleared.jsonl").open("a") as f:
-            for iid in restored + notices:
-                if iid.rsplit(":", 1)[0] in late or (iid.startswith("notice:") and iid.split(":", 3)[1] in nlate):
+        _rj = [iid for iid in restored + notices if iid.rsplit(":", 1)[0] in late or (iid.startswith("notice:") and iid.split(":", 3)[1] in nlate)]
+        try:
+            with (jd.STATE / "cleared.jsonl").open("a") as f:
+                for iid in _rj:
                     f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
-        _files_stat_mark()                            # the re-journal is a clears-log write too
+            _files_stat_mark()                        # the re-journal is a clears-log write too
+        except OSError as e:
+            # the store and the log both refusing, AFTER the undo rows landed: those ids read as undone with their flags standing,
+            # so the ledger alone reaches them no more. Owed in memory, written first by the next Undo, and said under an account of
+            # its own beside the stores' faults (the second review of PR 1967, 2026-09-21; LEDGER_KEY's wording says nothing was recorded, which is false here)
+            with _OWED_LOCK:                          # the memory update and the persist under the one lock a peer's read-rewrite section holds
+                _rejournal_owed.update({iid: None for iid in _rj})
+                _owed_mem_only[0] = bool(_owed_persist(_rj))   # beside the log (a restart keeps it); refused too: memory alone, said (the third review of PR 1967, 2026-09-21)
+            skipped[LEDGER_REJOURNAL_KEY] = {"fault": _store_fault_copy(e), "ids": list(_rj)}   # the account names the ids it owes, not the batch
         skipped.update(late); skipped.update({"notice:" + s: f for s, f in nlate.items()})   # keyed apart: the refusal is worded per store
+    _undone = set(restored + notices) - set(_rj)      # the ids whose undo row landed and whose flag step ran
+    _not_back = [i for i in owed_ids if i not in _undone]
+    _cur2 = _cleared_ids() if _not_back else {}
+    # the owed cards came back only if every one did; the frame names the ones that did not (the seventh executed review: it named ids that
+    # came back), and how many batches they sit in now (a session skipped at the archive read keeps the re-journal-first stamp, one whose flag
+    # step refused is re-journaled at a fresh one: two presses, so the words carry a count only when they hold one stamp)
+    _reorder(not _not_back, _not_back, len({_cur2.get(i) for i in _not_back}) or 1)
     return skipped                                    # {sid: fault} for sessions whose store could not be read
 
 
@@ -42092,8 +42543,15 @@ def _restore_goal_archive(item_ids):
             # BOTH files, permanently. The journal carries the node payloads; jd.load_goals re-inserts any
             # that end up in neither file (and defers to the archive if the user re-clears later).
             rt = int(time.time())
-            jd.append_restore(sid, {nid: a_nodes[nid] for nid in move},
-                              {nid: a_status[nid] for nid in move if nid in a_status}, rt)
+            try:
+                jd.append_restore(sid, {nid: a_nodes[nid] for nid in move},
+                                  {nid: a_status[nid] for nid in move if nid in a_status}, rt)
+            except OSError as e:
+                # the restore journal's append refused (a read-only root; the second contributor's review, 2026-09-22): nothing has moved
+                # yet, so the archive keeps these nodes for the next Undo and the caller answers the user; left to raise, the OSError
+                # reached the receive loop and ended the client
+                skipped[sid] = _store_fault_copy(e)
+                continue
             for nid in move:
                 nodes[nid] = a_nodes.pop(nid)
                 if nid in a_status:
@@ -42121,7 +42579,12 @@ def _restore_goal_archive(item_ids):
             #                                             nodes for the next Undo, whose restore journal row replays
             #                                             idempotently; the caller answers the user (review find,
             #                                             2026-09-08: left to raise, this dropped the WS client)
-            jd.save_goal_archive(sid, arch)
+            try:
+                jd.save_goal_archive(sid, arch)
+            except OSError as e:
+                # the archive's save refused after the live store took the nodes (the second contributor's review): the next Undo's
+                # restore journal row replays idempotently and the sweep re-archives what is cleared; said to the user, the socket kept
+                skipped[sid] = _store_fault_copy(e)
             _compact_seen.pop(sid, None)               # force a re-stat next sweep (we just changed the live file)
     return skipped
 
@@ -44911,7 +45374,8 @@ def build_feed(now, live_map=None):
             # the data-defined boards (plans/card-boards.md, phase three): the definitions a producer or the user made through
             # the door, for the renderer to merge over its code constants; fixed across builds until a define or a remove
             "boards": _boards_data(),
-            "dismissedCount": len(cleared), "showDismissed": False,
+            "dismissedCount": len(_undo_stack_ids()), "showDismissed": False,
+            "undoAck": True,                          # this kernel accounts for every undo with a build floor (round fifteen of PR 1967): the feed holds a restore check until the account lands
             # the ledger's ids that belong to no session of THIS kernel (review find, 2026-09-09): clears this
             # kernel took for cards another kernel owns; the merged board applies them over that host's rows
             # (federation.ts mergeHostFeeds), since a remote kernel's projection reads only its own ledger
@@ -44941,7 +45405,7 @@ def build_feed(now, live_map=None):
             # user 2026-07-29: held mail should read sender-host:session -> recipient-host:session). A
             # local sid carries no host prefix, so the receiving end has no other way to name itself.
             "selfHost": _self_host(),
-            "canUndoClear": len(cleared) > 0}
+            "canUndoClear": len(_undo_stack_ids()) > 0}   # the owed ids head the kernel's stack: the button shows while any of it stands (the second contributor's review)
 
 
 # ───────────────────────── view-builder: segments → timeline (parity: timeline = ADAPT) ─────────────────────────
@@ -56854,6 +57318,51 @@ _built_timeline = [None, None, 0.0, 0.0]          # [fleet_sig, payload, built_a
 # the feed, so that is one push cycle). Set by _cached_feed on every rebuild, from the same payload the badge
 # and the bells read (_needs_you_count), never re-derived.
 _feed_needs_input = [None]
+_feed_needs_rows = [None]        # sid -> the Needs you box's GOAL rows from the last feed build (plans/needs-you.md, phase three); None before it
+_NEEDS_ROW_UNKEYED = frozenset(("t",))   # a goal row's fields the box does not draw: outside the chat key (_chat_build_sig) AND the wake compare
+#                                          below, as _CHAT_ROW_UNKEYED is for the liveness row; every other field (itemId, kind, title, body,
+#                                          cont, fix) is the row's face and moves both (the second review of PR 1967, 2026-09-21)
+
+
+def _needs_rows_face(rows):
+    """The box's goal rows without their unkeyed fields: what a change of must repaint the box, and nothing else."""
+    return {sid: [{k: v for k, v in r.items() if k not in _NEEDS_ROW_UNKEYED} for r in lst] for sid, lst in (rows or {}).items()}
+
+
+def _hard_stop_card(a):
+    """A card the kernel floored to needs-you with a LIVE-BLOCK object (`blocked`: a permission or picker prompt, an on-you
+    API error, a parked handoff): the chat shows the prompt inline and the card carries its own remedy, so the Needs you
+    box lists none of them (plans/needs-you.md: a hard stop is a red mark on the card and the red ring, never a row). A
+    judge's question, a stall floor or an interrupt block ships `blocked` as None. The judges' refused CREDENTIAL
+    (`blocked.state` judgeAuth) is the one live-block object that is NOT a stop: the session runs, romp's analysis of it is
+    down, and only the user can fix the key or the login (the design's sixth floor), so its card takes a row whose action is
+    that fix (_needs_you_rows)."""
+    b = a.get("blocked")
+    return isinstance(b, dict) and b.get("state") != "judgeAuth"
+
+
+def _needs_you_rows(feed):
+    """The Needs you box's goal rows per session (plans/needs-you.md, phase three): every GOAL card of the session's in its
+    board's needs-you category (_card_needs_you, the one rule the ring and the badge read) that is not a hard stop
+    (_hard_stop_card), in the frame's order. A placeholder (no stable identity) and a notice card (its row comes from the
+    notice store with its stored actions, see _chat_notices) stay out. Each row: the item id, the card's text as the title,
+    the decision brief as the line (empty until the distiller writes it; the client shows the title alone then), and whether
+    Continue is offered (a live session: the feed card's own rule for its Continue button)."""
+    out = {}
+    for a in (feed.get("asks") or []):
+        sid = a.get("sid")
+        if not sid or not _card_needs_you(a) or a.get("provisional") or a.get("notice") or _hard_stop_card(a):
+            continue
+        b = a.get("blocked") if isinstance(a.get("blocked"), dict) else None
+        if b and b.get("state") == "judgeAuth":
+            # the judges' credential refused (plans/needs-you.md, the sixth floor): the row's one action is the credential fix
+            # (the gear's Billing block), no Continue and no Clear, since a Clear would hide the fault while the refusals go on
+            out.setdefault(str(sid), []).append({"itemId": a.get("itemId"), "kind": "goal", "title": a.get("text") or "",
+                                                 "body": b.get("what") or "", "cont": False, "fix": "credential", "t": a.get("t")})
+            continue
+        out.setdefault(str(sid), []).append({"itemId": a.get("itemId"), "kind": "goal", "title": a.get("text") or "",
+                                             "body": a.get("blockSummary") or "", "cont": bool(a.get("live")), "t": a.get("t")})
+    return out
 
 
 def _needs_input_sids(feed):
@@ -57002,10 +57511,11 @@ def _feed_off_frame(now, live_map=None):
         _subagent_trees_forget(alive)                 #  build_feed never runs; the bound's home is the jobs pass; a FAILED alive
     #                                                    read evicts nothing (an empty set from a failure is no owner list)
     try:
-        cleared = _cleared_ids()
-    except Exception:
-        cleared = set()
-    f["dismissedCount"] = len(cleared); f["showDismissed"] = False; f["canUndoClear"] = len(cleared) > 0
+        _ids = _undo_stack_ids()                      # the log's ids and the owed ids, under the guard the carry's read had (the thirteenth executed review: an
+    except Exception:                                 # undecodable clears log raised UnicodeDecodeError out of the off frame, since _cleared_ids catches OSError alone)
+        _ids = set()
+    f["dismissedCount"] = len(_ids); f["showDismissed"] = False; f["canUndoClear"] = len(_ids) > 0
+    f["undoAck"] = True                               # as build_feed's frame: this kernel accounts for every undo with a build floor (round fifteen)
     f["clearNotices"] = _boundary_clear_notices(alive)
     f["sdkNotices"] = _sdk_problem_rows()
     f["syncNotices"] = _sync_notice_rows()
@@ -57091,6 +57601,11 @@ def _build_feed_locked(now, live_map, sig):
         # rebuild that moves no verdict cannot chain cycles.
         _pusher_wake.set()
     _feed_needs_input[0] = _needs_now
+    _rows_now = _needs_you_rows(feed)                    # the Needs you box's goal rows (plans/needs-you.md, phase three)
+    if _needs_rows_face(_rows_now) != _needs_rows_face(_feed_needs_rows[0]):
+        _pusher_wake.set()                               # a row's line, its Continue or its presence moved with the set unchanged: the box
+        #                                                  follows the card by one build, as the ring does above
+    _feed_needs_rows[0] = _rows_now
     _badge = _needs_you_count(feed)
     _fired = _feed_notifications(feed) if not feed.get("off") else []   # armed bells: fresh builds are the transition event; a
     #                                                       stand-in frame (off, empty) never feeds a writer that prunes by absence: the
@@ -71078,8 +71593,10 @@ class Handler(BaseHTTPRequestHandler):
             # (wireNodeZones sends the clicked node's own id), so collect the card's whole subtree BEFORE
             # the clear archives it out of the live store, and drop a chip citing ANY of those nodes.
             _gone = _subtree_item_ids(str(msg["itemId"]))
-            _gesture_store_refusal(client, "clear", _clear_ask(msg["itemId"]))
-            _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})
+            _skipped = _clear_ask(msg["itemId"])
+            _gesture_store_refusal(client, "clear", _skipped, ids=[str(msg["itemId"])], op=str(msg.get("type") or ""))
+            if LEDGER_KEY not in _skipped:     # a clear the log refused changed nothing, so the composer's citation stays too (the second review of PR 1967, 2026-09-21)
+                _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})
             _mark_views_dirty()                # cleared.jsonl is invisible to the fleet sig → dirty-rebuild now
         elif msg and msg.get("type") == "askClearMany" and isinstance(msg.get("itemIds"), list):
             # ONE batch for a multi-card gesture (the feed's session Clear and the ask-group Clear): one
@@ -71091,8 +71608,9 @@ class Handler(BaseHTTPRequestHandler):
             _gone = []
             for _i in _ids:
                 _gone.extend(x for x in _subtree_item_ids(_i) if x not in _gone)
-            _gesture_store_refusal(client, "clear", _clear_all(_ids))
-            if _ids:
+            _skipped = _clear_all(_ids)
+            _gesture_store_refusal(client, "clear", _skipped, ids=_ids, op=str(msg.get("type") or ""))
+            if _ids and LEDGER_KEY not in _skipped:   # (as askClear: a refused batch cleared nothing)
                 _send_to_app("chat", {"type": "dropCitation", "itemId": _ids[0], "itemIds": _gone})
             _mark_views_dirty()
         elif msg and msg.get("type") == "noticeAction" and msg.get("itemId"):
@@ -71104,8 +71622,14 @@ class Handler(BaseHTTPRequestHandler):
                                              msg.get("body") if isinstance(msg.get("body"), dict) else {},
                                              msg.get("input") if isinstance(msg.get("input"), dict) else {})
             except Exception as e:                     # said to the asking pane; the socket lives on
-                _nok, _nerr = False, "the action failed (%s)" % e
-            client["send"](json.dumps({"type": "noticeActionDone", "itemId": str(msg["itemId"]), "ok": bool(_nok), "error": _nerr or ""}))
+                _nok, _nerr = False, "the action failed (%s)" % _store_fault_copy(e)   # never the state root in a frame (the second executed review of PR 1935, 2026-09-21)
+            # `held`: the words went out but the card could not be dismissed (a state write refused after the delivery): the pane
+            # keeps the card and leaves its button spent (the second executed review of PR 1935, 2026-09-21: the raise out of the dismissal answered ok false for a delivery that
+            # had happened, and the redial's click was then refused as already run with nothing on screen saying the words landed)
+            _nframe = {"type": "noticeActionDone", "itemId": str(msg["itemId"]), "ok": bool(_nok), "error": _nerr or ""}
+            if _nok and _nerr:
+                _nframe["held"] = True                     # only when it applies: an older pane, and the pins on the plain answers, read the frame as before
+            client["send"](json.dumps(_nframe))
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
             # modal surgical override: cross a node off (op:resolve → nodeComplete) or drop it
             # (op:clear → the user-authority clear verdict, same seam as a card Clear, scoped to the
@@ -71129,14 +71653,16 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         _rok, _rerr = False, "the goal store would not accept that change"
                 except Exception as _e:
-                    _rok, _rerr = False, (str(_e) or _e.__class__.__name__)
+                    _rok, _rerr = False, _store_fault_copy(_e)   # the user's copy: no state root in a frame a federated pane may show (the second executed review of PR 1935, 2026-09-21)
                     sys.stderr.write("nodeOverride resolve: %s\n" % traceback.format_exc())
                 _send_to_app("feed", {"type": "nodeOverrideResult", "nodeId": _rnid,
                                       "op": "resolve", "ok": _rok, "error": _rerr})
             elif msg.get("op") == "clear":
                 _gone = _subtree_item_ids(str(msg["nodeId"]))
-                _gesture_store_refusal(client, "drop", _clear_all([str(msg["nodeId"])]))   # a SUB-goal: its own account
-                _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["nodeId"]), "itemIds": _gone})
+                _skipped = _clear_all([str(msg["nodeId"])])
+                _gesture_store_refusal(client, "drop", _skipped, ids=[str(msg["nodeId"])], op=str(msg.get("type") or ""))   # a SUB-goal: its own account
+                if LEDGER_KEY not in _skipped:   # (as askClear: a refused drop changed nothing)
+                    _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["nodeId"]), "itemIds": _gone})
                 _mark_views_dirty()
         elif msg and msg.get("type") == "redistill" and msg.get("sid") and msg.get("itemId"):
             # The warn modal's "Try again" (the user 2026-08-13): re-arm this card's GIVEN-UP summary
@@ -71156,7 +71682,7 @@ class Handler(BaseHTTPRequestHandler):
                     _dok, _derr = True, ""
                     _mark_views_dirty()
             except Exception as _e:
-                _dok, _derr = False, (str(_e) or _e.__class__.__name__)
+                _dok, _derr = False, _store_fault_copy(_e)   # as nodeOverrideResult: the frame never carries the state root
                 sys.stderr.write("redistill: %s\n" % traceback.format_exc())
             _send_to_app("feed", {"type": "redistillResult", "itemId": _dnid, "ok": _dok, "error": _derr})
         elif msg and msg.get("type") == "cardOpened" and msg.get("itemId"):
@@ -71175,13 +71701,15 @@ class Handler(BaseHTTPRequestHandler):
             d = build_feed(int(time.time())) if _task_tracking_on() else _feed_off_frame(int(time.time()))   # off (T404 round two, low 8): no build; nothing to clear
             # `items` (the old stream deliverables) is no longer a payload key; indexing it raised before
             # _clear_all ever ran, so Clear-all cleared nothing and only the receive loop's stderr line knew
-            _gesture_store_refusal(client, "clear",
-                                   _clear_all([a["itemId"] for a in d["asks"]]
-                                              + [c["itemId"] for c in (d.get("items") or [])]))
-            _send_to_app("chat", {"type": "dropCitationsAll"})   # every card cleared → drop every composer chip
+            _all = [a["itemId"] for a in d["asks"]] + [c["itemId"] for c in (d.get("items") or [])]
+            _skipped = _clear_all(_all)
+            _gesture_store_refusal(client, "clear", _skipped, ids=_all, op=str(msg.get("type") or ""))   # (the third review of PR 1967, 2026-09-21: this arm was left out of the three's fix)
+            if LEDGER_KEY not in _skipped:                  # every card cleared → drop every composer chip; a refused batch cleared none, so every chip stays
+                _send_to_app("chat", {"type": "dropCitationsAll"})
             _mark_views_dirty()
         elif msg and msg.get("type") == "undoClear":
-            _gesture_store_refusal(client, "undo", _undo_clear())
+            _ub = []
+            _gesture_store_refusal(client, "undo", _undo_clear(batch_out=_ub), ids=_ub, op=str(msg.get("type") or ""))
             _mark_views_dirty()
         elif msg and msg.get("type") == "dismissLane" and msg.get("id"):
             # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). DURABLE since 2026-08-14
