@@ -444,8 +444,10 @@ class Switch(_Catalog):
                 return real_apply(ids, gen=gen, reason=reason)
             with mock.patch.object(km, "_apply_router_families", late_apply):
                 self.assertEqual(km._set_router_models(True, gt=12), 12)
-            time.sleep(0.05)
-            self.assertEqual(len(calls), n_calls, "a stale apply starts no listing fetch")
+            # a stale _router_apply_declared returns before any fetch generation is set or a thread starts: the state
+            # is the evidence, not a sleep (review round four)
+            self.assertIsNone(km._ROUTER_FETCH_GEN[0], "a stale apply arms no listing fetch")
+            self.assertEqual(len(calls), n_calls, "and none ran")
             self.assertEqual(len(self.frames), n_on, "and sends no frame")
 
     def test_a_slower_earlier_flip_cannot_overwrite_a_later_flips_advisory(self):
@@ -550,7 +552,29 @@ class Switch(_Catalog):
         n = len(self.frames)
         self.assertEqual(km._set_router_models(False, gt=12), 12, "the store takes the newer stamp")
         self.assertEqual(km._router_status_note[0], note, "nothing removed: the advisory stands")
-        self.assertEqual(len(self.frames), n, "and no frame goes out")
+        self.assertEqual(len(self.frames), n + 1, "and the frame goes out as on every applied flip (the gear reads it alone)")
+
+    def test_an_off_after_an_empty_on_clears_the_listing_note_and_sends_the_frame(self):
+        # review round four: the no-op off skipped the note clear and the frame, so a URL-only configuration whose
+        # listing failed kept the failed-listing advisory under the off switch, and nothing repainted
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+
+        def boom(url, timeout=4):
+            raise OSError("connection refused")
+        with mock.patch.object(km, "_fetch_router_models", boom):
+            km._set_router_models(True, gt=10)
+            self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the failed-listing note")
+            self._wait(lambda: len(self.frames) >= 2, "its frame")
+        km._set_router_models(False, gt=11)
+        self.assertIsNone(km._router_status()["error"], "the on generation's note is cleared by the off")
+        self.assertEqual(len(self.frames), 3, "on, the listing's failure, off: a frame each")
+
+    def test_an_off_with_nothing_declared_still_sends_the_frame(self):
+        km._set_router_models(True, gt=10)
+        n = len(self.frames)
+        km._set_router_models(False, gt=11)
+        self.assertEqual(len(self.frames), n + 1)
+        self.assertIsNone(km._router_status()["error"])
 
     def test_a_gateway_id_that_cleans_to_a_first_party_alias_is_first_party(self):
         for mid in ("Opus", "OPUS", "claude-opus-4-8[1m]", "Claude-Fable-5-1"):

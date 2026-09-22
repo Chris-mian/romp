@@ -3480,9 +3480,16 @@ def _set_router_models(enabled, gt=None):
         if gone is None:
             return stamp     # stale: the on flip that followed keeps its advisory and its rows; no frame
         if not gone:
-            return stamp     # nothing was installed (a repeated off at a newer stamp, an off with nothing declared): the
-            #                  standing advisory of the flip that removed something stands, and no frame goes out
-            #                  (review round three, 2026-09-22: the second off nulled the note over live sessions)
+            # nothing was installed (a repeated off at a newer stamp; a first off after an empty on: a URL-only
+            # configuration whose listing failed, first-party ids alone, nothing declared): no recount and no off
+            # advisory, so the word of the flip that removed something stands (review round three); but a note the ON
+            # generation left (a failed listing) is cleared at this generation, and the models frame goes out as on
+            # every applied flip, the gear's line reading that frame alone (review round four, 2026-09-22)
+            with _catalog_lock:
+                if gen == _ROUTER_GEN[0] and _router_status_note[0] == ROUTER_NOTE_LISTING_FAILED:
+                    _router_status_note[0] = None
+            _models_changed()
+            return stamp
         live = _router_live_on(set(gone)) if gone else 0
         tiers = _router_tiers_on(set(gone)) if gone else []
         judges = [t for t in tiers if t != "comment"]
@@ -17397,9 +17404,10 @@ def _reset_unvouched_seed():
     dormant arm), and spawn seeds every new registry row from it unchecked, so a pick of an extra gateway model
     outlived the switch being turned off — every new session launched on the removed id, with nothing said
     (review find, 2026-09-21). Read at the create rather than reset at the off flip alone: a kernel restarted
-    under a shorter declaration never saw a flip. Through write_sdk_default, never a raw write: the fresh
-    modelTok tells a live pick's pending write it is no longer the store's head, so its later refusal stands
-    down (_seed_write_refused). _vouched_model alone, not the Codex exception: the seed feeds SDK sessions."""
+    under a shorter declaration never saw a flip. Through reset_sdk_default_model_if (a compare-and-swap under the
+    defaults lock, minting a fresh modelTok as write_sdk_default does), never a raw write: the fresh modelTok tells
+    a live pick's pending write it is no longer the store's head, so its later refusal stands down
+    (_seed_write_refused). _vouched_model alone, not the Codex exception: the seed feeds SDK sessions."""
     sbmod = _sdk_defaults_module()
     seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
     if not seed or seed == "default" or _vouched_model(seed):

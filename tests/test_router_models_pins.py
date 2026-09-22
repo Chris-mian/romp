@@ -176,29 +176,24 @@ class ModelsRouteRouterSection(unittest.TestCase):
 
 # --- the structural vendor-key check ------------------------------------------------------------------------------
 
-# String constants a router function may legitimately test against. By exact value, never a path or a pattern, so a
-# new vendor word cannot ride in: the first-party marker in both its shapes, Anthropic's own host (the gateway probe's
-# endswith), the CLI's default-model alias (model_label / _alias_label compare the chosen alias to it whole) and the
-# ROMP_MODEL_CATALOG knob's value (_router_models_boot compares the variable to it whole).
-# Whole-value constants the honest code compares against, none a vendor: Anthropic's host (the boundary match in
-# _router_gateway_configured; the token rule reads it as a token, so it passes ONLY through this list), the store
-# sentinels ("default", "off", "triage", "session"), a codec name, the setting's own store name, and the comment tier's
-# name (_set_router_models words that default apart). Every entry is load-bearing: dropping one flags honest code.
+# The allowlist: whole-value constants the honest router code compares against, none a vendor. Every entry is
+# load-bearing (dropping one flags honest code; a test below pins it):
+#   "claude-", "claude"   the first-party marker in both its shapes (pretty_model, the served-turn guard)
+#   "anthropic.com"       Anthropic's own host, the gateway probe's boundary match; the token rule DOES read it as a token
+#                         (a dot join), so it passes only through this list (".anthropic.com", the suffix match's
+#                         constant, starts with a dot and is never a token: no entry)
+#   "default", "off"      the CLI's default-model alias (model_label / _alias_label) and the ROMP_MODEL_CATALOG knob's value
+#   "triage", "session"   the judge tier stores' sentinels (_router_tiers_on reads them whole)
+#   "utf-8", "router-models"   a codec name and the setting's own store name (both tokens under the rule)
+#   "comment"             the tier _set_router_models words apart from the judge tiers
 VENDOR_ALLOW = frozenset({"claude-", "claude", "anthropic.com", "default", "off",
                           "triage", "session", "utf-8", "router-models", "comment"})
-# (".anthropic.com", the suffix match's constant, starts with a dot: the token rule never reads it as a vendor, so it
-#  needs no entry; a test below pins that the bare host DOES need one.)   # the wider token rule (verify round) reaches these two whole-value
-#                                                       compares: a codec name and the setting's own store name; not vendors   # triage/session: the judge tier stores' sentinels (_router_tiers_on reads
-#                                                   them whole-value: distill "triage" follows the triage pick, comment
-#                                                   "session"/"default" is no model id); not vendors
 
-# A model-vendor-looking token, narrowly: one lowercase word, optionally followed by version digits, optionally
-# followed by ONE trailing separator — the shape a vendor prefix or a family word takes ("gemini-", "gpt-", "gpt",
-# "grok", "o3", "gpt5-"). Anything with an internal separator ("utf-8", "router-models", "anthropic.com"), an
-# underscore, an uppercase letter, a space, a format directive or punctuation is not one, and neither is "".
-_VENDOR_TOKEN = re.compile(r"^[a-z][a-z0-9]*(?:[-.][a-z0-9]+)*[-.]?$")   # words and digits joined by - or .: gemini-2, gpt-5,
-#                                                                             gemini-1.5-, o4-mini (the verify round widened it from
-#                                                                             one word: a versioned prefix is the realistic vendor key)
+# A model-vendor-looking token: lowercase words and digits joined by "-" or ".", optionally ONE trailing separator — the
+# shape a vendor prefix or a family word takes ("gemini-", "gpt-", "gpt", "grok", "o3", "gpt5-", "gemini-2", "gpt-5",
+# "gemini-1.5-", "o4-mini"). An underscore, an uppercase letter, a space, a leading dot or digit, a format directive or
+# punctuation is not one, and neither is "". Constants that ARE tokens but are no vendor ride the allowlist above.
+_VENDOR_TOKEN = re.compile(r"^[a-z][a-z0-9]*(?:[-.][a-z0-9]+)*[-.]?$")
 # a regex pattern's leading literal run, after an optional anchor: the part a vendor prefix would occupy
 _REGEX_LEAD = re.compile(r"^\^?([a-z0-9.-]+)")
 
@@ -288,8 +283,8 @@ class NothingKeysOnAVendor(unittest.TestCase):
 
     def test_the_real_functions_do_exercise_the_allowlist(self):
         # the check is not vacuous: the honest code tests against allowlisted constants in the positions the
-        # checker visits, and would be flagged without the allowlist. ("anthropic.com" is on the list for the
-        # reviewer's reading; the token rule alone already passes it, an internal dot is not a vendor shape.)
+        # checker visits, and would be flagged without the allowlist (the bare host included: the rule reads it as a
+        # token, and only the list passes it)
         with mock.patch.object(sys.modules[__name__], "VENDOR_ALLOW", frozenset()):
             hits = [h[0] for fn in ROUTER_FUNCTIONS for h in vendor_keys(inspect.getsource(fn))]
         self.assertIn("startswith('claude-')", hits)

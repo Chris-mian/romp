@@ -12,7 +12,8 @@ unchecked, so every new session launched on the removed id. Pinned here:
   backend call, no pending stamp, no parked op, no pick memory), say so (a settingRefused frame on the WS arm in
   setEffort's shape, a `refused` echo on POST /new, one stderr line each), and still take a first-party pick
   and the Codex case;
-- the create door resets a seed the kernel cannot vouch for, LOUDLY, through write_sdk_default (a fresh modelTok,
+- the create door resets a seed the kernel cannot vouch for, LOUDLY, through reset_sdk_default_model_if (a
+  compare-and-swap on the value judged; a fresh modelTok,
   so a live pick's later refusal can stand down), and the new row launches on the account default; a vouched
   seed is left alone.
 
@@ -127,6 +128,12 @@ class _OnThenOff(unittest.TestCase):
         self.err = io.StringIO()
         self._p = mock.patch.object(km.sys, "stderr", self.err)
         self._p.start()
+        # the kernel tells the module registered as romp_sdk_backend: this harness's private copy is registered BEFORE
+        # the on flip below, so the ids never land on a copy an earlier module registered (review round three; round
+        # four found the lines had landed in tearDown, covering nothing)
+        self._modpatch = mock.patch.dict(sys.modules, {"romp_sdk_backend": sb})
+        self._modpatch.start()
+        self.addCleanup(self._modpatch.stop)
         _env(self, "ROMP_ROUTER_MODELS", DECLARED)
         km._set_router_models(True, gt=1700000000000)
         self.assertTrue(km._vouched_model(REMOVED), "installed while on")
@@ -151,11 +158,6 @@ class _OnThenOff(unittest.TestCase):
         sb._ROUTER_IDS = self._sb_ids
         self.store.unlink(missing_ok=True)
         self._clear_latches()
-        # the kernel tells the module registered as romp_sdk_backend: register this harness's private copy for the test,
-        # so the ids never land on a copy an earlier module registered (review round three, 2026-09-22)
-        self._modpatch = mock.patch.dict(sys.modules, {"romp_sdk_backend": sb})
-        self._modpatch.start()
-        self.addCleanup(self._modpatch.stop)
 
     def _clear_latches(self):
         km._model_switch_pending.clear()
@@ -317,10 +319,28 @@ class NewThreadRoad(_OnThenOff):
         self.assertEqual(claimed, ["t1"])
 
     def test_the_stored_default_refusal_is_said_once_per_create(self):
-        # review round three: the create resolved the prefs twice (the vouch, then the fork), two identical lines
+        # review round three: the create resolved the prefs twice (the vouch, then the fork past the name claim), two
+        # identical lines. Round four: the first cut of this test stopped at the claim and was green on stock; this one
+        # grants the claim and drives the create through the fork, with the fork's own doors stubbed
         (km.jd.STATE / "comment-model").write_text(REMOVED + "\n")
         self.addCleanup(lambda: (km.jd.STATE / "comment-model").unlink(missing_ok=True))
-        self._create("")
+        forks = []
+        self.be.fork = lambda *a, **k: forks.append((a, k))
+        self.be.connect = lambda sid: None
+        with mock.patch.object(km.Sessions, "backend_for", lambda sid: self.be), \
+                mock.patch.object(km, "_sdk_ready", lambda: True), \
+                mock.patch.object(km, "_session_row", lambda sid, now: {"name": "web", "path": str(km.jd.STATE / "none.jsonl")}), \
+                mock.patch.object(km, "_claim_session_name", lambda nm, kind, sid: None), \
+                mock.patch.object(km, "_load_comments", lambda sid: {"threads": []}), \
+                mock.patch.object(km, "_save_comments", lambda sid, data: None), \
+                mock.patch.object(km, "_user_send", lambda be, sid, text: None), \
+                mock.patch.object(km, "_release_name", lambda nm: None), \
+                mock.patch.object(km, "_push_soon", lambda: None), \
+                mock.patch.object(km, "_comment_launch_prefs", wraps=km._comment_launch_prefs) as prefs:
+            err, tid = km._comment_create(SID, "", "a passage", "a comment", name="t1", model="")
+        self.assertIsNone(err, "the create went through the fork")
+        self.assertEqual(len(forks), 1)
+        self.assertEqual(prefs.call_count, 1, "the launch prefs are resolved once (twice on the previous head)")
         self.assertEqual(self.err.getvalue().count("comment-model %r is not a model" % REMOVED), 1)
 
     def test_a_stored_comment_default_the_kernel_cannot_vouch_for_falls_to_the_parent(self):
@@ -423,7 +443,7 @@ class Seed(_OnThenOff):
         self.assertFalse(reg.get("model"), "the row launches on the account default: %r" % reg.get("model"))
         d = sb.read_sdk_defaults(km.jd.STATE)
         self.assertEqual(d["model"], "default")
-        self.assertNotEqual(d.get("modelTok"), tok, "written through write_sdk_default: a fresh token, never a raw file write")
+        self.assertNotEqual(d.get("modelTok"), tok, "written through reset_sdk_default_model_if: a fresh token, never a raw file write")
         self.assertIn(REMOVED, self.err.getvalue(), "the reset is said, naming the id")
 
     def test_a_vouched_seed_is_left_alone(self):
