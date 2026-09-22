@@ -1237,7 +1237,7 @@ _PERF_STATS = _PerfStats()
 _GC_FREEZE_ERRORS = [0]
 _GC_FREEZE_SAID = [False]
 _GC_FREEZE_LOAD_TREES, _gc_freeze_bad_knob = gcf.load_trees_from_env()   # parsed with a fallback, never a bare int() at import (#1735 high)
-_GC_FREEZE = gcf.GcFreeze(enabled=gcf.enabled_from_env(), load_trees=_GC_FREEZE_LOAD_TREES)   # the release note is wired when the SDK backend loads (below)
+_GC_FREEZE = gcf.GcFreeze(enabled=gcf.enabled_from_env(), load_trees=_GC_FREEZE_LOAD_TREES)   # the ended note (note_ended) is wired when the SDK backend loads (below)
 if _gc_freeze_bad_knob is not None:     # a bad ROMP_GC_FREEZE_LOAD_TREES fell back to the default: said once, counted, never fatal
     _GC_FREEZE_ERRORS[0] += 1
     try:
@@ -1260,7 +1260,13 @@ def _gc_freeze_tick(idle, first):
                                  % (type(e).__name__, repr(e)[:200]))
             except Exception:
                 pass
-    gcf.pusher_tick(_GC_FREEZE, idle, first, em.record_cache_stats, on_error)
+    kind = gcf.pusher_tick(_GC_FREEZE, idle, first, em.record_cache_stats, on_error)
+    if kind == "release":    # #1735: a release means a session ended with a surviving cycle and a full-heap pause; name it (one line per release, none per load tick)
+        try:
+            sys.stderr.write("gc-freeze: a release reclaimed a surviving cycle for ended session(s) %s in %.1f ms\n"
+                             % (",".join(_GC_FREEZE.last_release_sids) or "?", _GC_FREEZE.last_ms))
+        except Exception:
+            pass
 
 
 _STAGE_TL = threading.local()     # the calling thread's current stage name (T401): set by _job_stage and the push, read by the

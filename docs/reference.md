@@ -2048,14 +2048,21 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   seconds. It reconciles at the pusher's idle boundary, never on a timer: a
   LOAD fold-in (`collect` then `freeze`, walking only the unfrozen) when the
   record cache's insert counter grows by a material number of trees, and a
-  RELEASE reclaim (`unfreeze`, a full collection, `freeze`) when an ended
-  session is observed to be a surviving cycle, or the backstop fires. WHEN to
+  RELEASE reclaim when an ended session is observed to be a surviving cycle, or
+  the backstop fires. The release is STAGED: a cheap `collect` with the freeze in
+  place first (it takes a released cycle allocated since the last freeze), and only
+  a survivor of that then drives `unfreeze`, a full collection and `freeze` (the
+  frozen-heap walk); a release the cheap walk took whole counts as a load pass, so
+  the backstop's bound does not stretch. WHEN to
   reclaim is MEASURED, not guessed from a state flag: every session-end pop
   registers a weakref to the session (with its worker thread), and this tick
   judges each by observation. A ref that died went by reference counting
   (acyclic, no reclaim); a ref still alive whose worker thread has finished is a
   cycle the collector must take (a reclaim); a ref alive whose thread still runs
-  is not garbage yet (judged again next tick). A record-cache pop is never a
+  is not garbage yet (judged again next tick). A ref a live ROOT keeps (a
+  never-joined helper thread's `_target`), not a cycle, reads the same and is
+  treated as a surviving cycle: the reclaim frees nothing, so it costs one pause,
+  is counted a `survivor`, and is dropped (never re-registered). A record-cache pop is never a
   trigger: its decoded json is acyclic and dies by reference counting, so
   `recordCache.released` is a statistic. A BACKSTOP reclaim runs after `backstopFoldins`
   load fold-ins since the last reclaim (default 1000, about ten hours at the
@@ -2068,7 +2075,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `gen."2".collections` less their sum), `endedPending` (ended sessions
   registered by weakref and not yet judged, awaiting their worker thread to
   finish), `lastReconcileMs` and
-  `lastReconcileKind` (`initial`, `load`, `release` or `backstop`),
+  `lastReconcileKind` (`initial`, `load`, `release` or `backstop`), `survivors`
+  (owed refs a live root kept through a reclaim, a wasted pause each),
+  `lastReleaseSids` (the first eight characters of the sids the last release was
+  owed for, so a release names its sessions; a release also writes one stderr line),
   `totalReconcileMs` and `errors` (a reconcile that raised is counted here and
   said once on stderr, never ending the pusher). The reconcile's own collection
   pause lands after the cycle closed its ring row, so the pusher and jobs rings
