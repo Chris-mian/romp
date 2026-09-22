@@ -66,6 +66,24 @@ test("a remote kernel's refusal of an undo puts that kernel back as the next und
   });
 });
 
+test("two remote kernels refusing the same fanned-out undo both get the retry; a refusal arriving after a later clear leaves that clear's routing alone (the tenth executed review of PR 1967)", () => {
+  withManager((fm, localSent, remoteSent) => {
+    fm.outbound({ type: "clearAll" });
+    fm.outbound({ type: "undoClear" });
+    const acct = (h: string) => (fm as any).inboundNow(h, { type: "err", op: "undoClear", sid: SID, title: "That undo did not land", text: "the clears log refused", itemIds: [], batches: [], owedBatch: [], batchesTotal: 0 });
+    acct("box2"); acct("box3");
+    fm.outbound({ type: "undoClear" });
+    assert.deepEqual(remoteSent.slice(4).map(([h, m]) => [h, m.type]), [["box2", "undoClear"], ["box3", "undoClear"]], "every kernel that refused (before: the last refuser alone)");
+    assert.deepEqual(localSent.map((m) => m.type), ["clearAll", "undoClear"]);
+    // a clear routed after the undo: a late account does not take the routing back to the remote kernel
+    fm.outbound({ type: "askClear", itemId: SID + ":g1", sid: SID });        // a local card: routed locally
+    acct("box2");                                                             // the remote kernel's account of the earlier undo lands late
+    fm.outbound({ type: "undoClear" });
+    assert.equal(remoteSent.length, 6, "no remote kernel is asked");
+    assert.deepEqual(localSent.map((m) => m.type), ["clearAll", "undoClear", "askClear", "undoClear"], "the undo follows the later clear to the local kernel (before: it went to the remote kernel and the local one never saw an undo)");
+  });
+});
+
 test("the session header's Clear all still goes to that session's kernel alone, and Undo follows it there alone", () => {
   withManager((fm, localSent, remoteSent) => {
     fm.outbound({ type: "askClearMany", sid: "box2:" + SID, itemIds: ["box2:" + SID + ":g1", "box2:" + SID + ":g2"] });

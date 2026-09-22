@@ -211,14 +211,19 @@ Every clear or undo account the kernel sends carries its Undo stack (`batches`: 
 clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone), and the feed takes it as its own stack, so the
 optimistic Undo restores what the kernel restores; the two are proven equal by enumeration over every press sequence of a
 two-card world under every fault (tests/fixtures/undo-stack-transitions.json). The stack on the wire is bounded to the newest
-20 log batches (`LEDGER_BATCHES_ON_WIRE`): an Undo past them is the round trip, with nothing cached to restore optimistically.
+20 log batches (`LEDGER_BATCHES_ON_WIRE`); the frame says how many there are. Past them, a page that did not make those clears (a
+reload, another browser) takes the round trip, while the page that made them keeps their entries below the window and restores
+them optimistically, which is what the kernel pops.
 The optimistic Undo and that stack hold on a single-kernel pane, where the proof holds. On a federated pane (more than one
-kernel attached) Undo is the round trip: no entry is cached and none is popped, the button shows the working cue, federation
-routes the request to the kernels of the most recent clear (kept until the next clear, so a refused remote undo's retry
-reaches the kernel that refused it), and the payload restores what those kernels restored; a remote kernel's account re-shows
+kernel attached; a configured host that is pending or down counts as attached, so a single live kernel beside one is a
+federated pane for the pane's life) Undo is the round trip: no entry is cached and none is popped, the button shows the working cue, federation
+routes the request to the kernels of the most recent clear (the send consumes that routing, so a second Undo goes to the local
+kernel alone; a remote kernel's refusal re-arms it for every kernel that refused, until the next send, unless a clear was routed
+in between), and the payload restores what those kernels restored; a remote kernel's account re-shows
 the cards of a refused clear by their ids and touches no stack. The reason: stamps across kernels do not order, so a merged
 stack cannot say which kernel's batch the next Undo reaches, and an optimistic pop would restore one kernel's card while
-another restored its own.
+another restored its own. A live remote kernel with no session and no card on the board reads as a single-kernel pane; it has
+no clear to undo, so nothing is lost.
 
 ### Completed is safe to clear unread
 

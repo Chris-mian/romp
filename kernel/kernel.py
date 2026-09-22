@@ -41356,7 +41356,8 @@ _owed_mem_only = [False]         # the last persist refused: the owing is in mem
 
 
 LEDGER_BATCHES_ON_WIRE = 20   # the newest log batches an account carries (the eighth executed review of PR 1967: unbounded, a 1500-card log put 71 KB
-#                              on every refusal frame); a page's Undo past them is the round trip (nothing cached to restore optimistically)
+#                              on every refusal frame). Past them a page that did not make those clears (a reload, another browser) takes the round trip;
+#                              the page that made them keeps their entries below the window and restores them optimistically, which is what the kernel pops
 
 
 def _ledger_batches(limit=LEDGER_BATCHES_ON_WIRE):

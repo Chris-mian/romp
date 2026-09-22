@@ -1204,7 +1204,10 @@ export class FederationManager {
     const m = prefixInbound(host, msg);
     // a REMOTE kernel refused an undo: the retry the dialog invites must reach that kernel again, so it becomes the next undo's target
     // (the send reset the target to the local kernel, T286, and a second Undo after a LANDED one still goes there alone; round ten of PR 1967)
-    if (host !== LOCAL && m && m.type === "err" && m.op === "undoClear") this.lastClearHosts = [host];
+    if (host !== LOCAL && m && m.type === "err" && m.op === "undoClear" && !this.clearRoutedSinceUndo) {
+      if (!this.undoRefusers.includes(host)) this.undoRefusers.push(host);
+      this.lastClearHosts = this.undoRefusers.slice();   // every kernel that refused, so one retry reaches them all (round eleven)
+    }
     if (m && m.type === "session" && typeof m.id === "string") {
       (this.perHostSids[host] ||= new Set()).add(m.id);
     }
@@ -1497,6 +1500,8 @@ export class FederationManager {
   private lastClearHosts: string[] = [LOCAL]; // where the most recent clear routed (one kernel for a card or a
   //                                             session's batch, every attached kernel for the board-wide Clear
   //                                             all, T286) — undoClear follows it to each of them
+  private undoRefusers: string[] = [];        // the remote kernels that refused the undo last sent, in order: one retry reaches every one (round eleven of PR 1967)
+  private clearRoutedSinceUndo = false;       // a clear routed after that undo takes the routing back: a late refusal does not retarget it
 
   // browser → kernel: route each message to the owning kernel, prefix stripped.
   outbound(m: any): void {
@@ -1506,6 +1511,7 @@ export class FederationManager {
     if (m && m.type === "undoClear") {
       const hosts = this.lastClearHosts.length ? this.lastClearHosts : [LOCAL];
       this.lastClearHosts = [LOCAL];   // a second Undo has no clear to follow to a remote kernel (T286); a REFUSED remote undo puts its host back (inbound, round ten of PR 1967)
+      this.undoRefusers = []; this.clearRoutedSinceUndo = false;
       for (const h of hosts) this.sendTo(h, m);
       return;
     }
@@ -1535,6 +1541,7 @@ export class FederationManager {
     const routes = routeOutbound(m, new Set(this.hostSeq.filter((h) => h !== LOCAL)));
     if (m && (m.type === "askClear" || m.type === "askClearMany" || m.type === "clearAll")) {
       this.lastClearHosts = routes.length ? routes.map((r) => r.host) : [LOCAL];
+      this.clearRoutedSinceUndo = true;
     }
     for (const r of routes) this.sendTo(r.host, r.msg);
   }

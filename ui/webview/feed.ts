@@ -244,7 +244,10 @@ const pendingCleared = new Set<string>();
 // optimistic restore — so the card reappears on click instead of waiting on the kernel round-trip + next feed
 // build. Mirrors the kernel's _undo_clear (restores the most-recent clear batch). (the user 2026-06-27.)
 const clearedStack: AskItem[][] = [];
-const clearedItems = new Map<string, AskItem>();   // every card this page cleared, by id: what a refused clear re-shows, stack or no stack (a federated pane keeps none; round ten of PR 1967)
+const clearedItems = new Map<string, AskItem>();   // the cards this page cleared and no live payload has shown since, by id: what a refused clear re-shows, stack or no stack (a federated pane
+//                                                    keeps none; round ten of PR 1967); a record ends when a payload shows the card unsuppressed, and the map is bounded (the round-ten verifier)
+const CLEARED_ITEMS_CAP = 200;                        // the oldest record goes first past this
+let lastClearHostsPage = new Set<string>([""]);   // the hosts of this page's most recent clear: where federation routes the next undo, so whose suppressions the round trip releases (round eleven of PR 1967)   // every card this page cleared, by id: what a refused clear re-shows, stack or no stack (a federated pane keeps none; round ten of PR 1967)
 // The inverse of pendingCleared: ids we've optimistically RESTORED, kept (with their cached card) until a
 // kernel push actually carries them again — otherwise the very next push (before the kernel un-archived) would
 // replace `asks` and drop the just-restored card, a flicker. Dropped once the kernel lists the id.
@@ -259,6 +262,8 @@ const pendingRestored = new Map<string, AskItem>();
 // leave; ids this page never held stand in an entry of their own (empty, so the Undo on it is the round trip).
 function pushClearedEntry(entry: AskItem[]): void {
   for (const it of entry) clearedItems.set(it.itemId, it);
+  while (clearedItems.size > CLEARED_ITEMS_CAP) clearedItems.delete(clearedItems.keys().next().value as string);
+  if (entry.length) lastClearHostsPage = new Set(entry.map((it) => hostOf(it.sid)));
   if (federatedPane()) return;                             // a federated pane keeps no stack: its Undo is the round trip (federatedPane)
   let i = clearedStack.length;
   const owedIds = new Set<string>();
@@ -272,10 +277,8 @@ function pushClearedEntry(entry: AskItem[]): void {
 function reconcileClearedStack(batches: string[][], owedBatch: string[], truncated = false, namedIds: string[] = []): void {
   // a single-kernel pane's frame (federatedPane gates the call): every id is this kernel's
   const known = new Map<string, AskItem>();
-  for (const e of clearedStack) for (const it of e) known.set(it.itemId, it);
-  for (const it of pendingRestored.values()) known.set(it.itemId, it);
-  for (const [id, it] of clearedItems) known.set(id, it);
-  for (const a of asks) known.set(a.itemId, a);
+  for (const [id, it] of clearedItems) known.set(id, it);   // the page's record of what it cleared, for cards no live payload has shown since (one source: the enumeration's mutant on it reds)
+  for (const a of asks) known.set(a.itemId, a);              // the live board's copy wins for a card on the board
   const owed = new Set(owedBatch);
   const cleared = new Set<string>();
   for (const b of batches) for (const id of b) cleared.add(id);
@@ -287,7 +290,9 @@ function reconcileClearedStack(batches: string[][], owedBatch: string[], truncat
   for (const id of cleared) if (!owed.has(id)) hidden.add(id);
   const named = new Set(namedIds);                          // the ids the account itself names (a refused batch)
   for (const id of cleared) { pendingRestored.delete(id); if (hidden.has(id)) pendingCleared.add(id); }
-  asks = asks.filter((a) => !hidden.has(a.itemId));
+  // a card the kernel holds cleared leaves the board and enters the page's record with its live copy: a second frame in the same press (the
+  // ledger's account, then the reorder) builds its entry from that record, since the board no longer shows it
+  asks = asks.filter((a) => { if (!hidden.has(a.itemId)) return true; clearedItems.set(a.itemId, a); return false; });
   // what this page suppressed and no log batch hides (a refused clear, an owed card that shows) comes back where it was, its collapse undone.
   // A TRUNCATED frame says nothing about the batches it left out: a suppression the frame neither names nor carries stays until a payload
   // omits or shows the card (the ninth executed review: read as "not cleared", the older clears flapped back and their Undo entries went)
@@ -327,10 +332,12 @@ function reconcileClearedStack(batches: string[][], owedBatch: string[], truncat
 export function _clearedStackIdsForTests(): string[][] {
   return clearedStack.map((e) => e.map((it) => it.itemId)).reverse();
 }
+export function _clearedItemsIdsForTests(): string[] { return Array.from(clearedItems.keys()); }
+export function _clearedStackItemsForTests(): AskItem[][] { return clearedStack.map((e) => e.slice()).reverse(); }
 export function _clearedStackFrameIdsForTests(): (string[] | null)[] {
   return clearedStack.map((e) => ((e as any)._ids as string[] | undefined) ?? null).reverse();
 }
-export function _resetClearGestureStateForTests(): void { clearedStack.length = 0; clearedItems.clear(); pendingCleared.clear(); pendingRestored.clear(); }
+export function _resetClearGestureStateForTests(): void { clearedStack.length = 0; clearedItems.clear(); pendingCleared.clear(); pendingRestored.clear(); lastClearHostsPage = new Set([""]); }
 // Finish an optimistic dismiss: the 180ms fade just removed the card element, so drop the item(s) from the
 // LOCAL model and re-render NOW — in grouped mode a run whose last card left takes its session-name header
 // with it, and the column count follows, instead of both lingering until the next kernel push (the user
@@ -4136,7 +4143,11 @@ function makeUndoClearBtn(): HTMLElement {
       }
       render();
     } else {
-      pendingCleared.clear();   // nothing cached (e.g. cleared in another session) → fall back to the round-trip
+      // the round trip restores the newest batch of the kernels the undo reaches, the hosts of this page's most recent clear (federation routes it
+      // there): those cards' suppressions go, so the payload can show them. A card of another host whose clear is still in flight keeps its
+      // suppression (round eleven of PR 1967: released wholesale, it came back for a beat from that host's last held frame and left again on
+      // the confirming one). A suppression with no record of its card (cleared in another session) goes too, as before: the round trip
+      for (const id of Array.from(pendingCleared)) { const it = clearedItems.get(id); if (!it || lastClearHostsPage.has(hostOf(it.sid))) pendingCleared.delete(id); }
       // WORKING cue (the user 2026-07-31): with nothing in this page's cache the restore is a full
       // kernel round-trip and the button read dead for a beat (the optimistic branch above needs no
       // cue — its card appears instantly). Three pulsing accent dots + an accent border say "on it"
@@ -6468,6 +6479,9 @@ function applyFeedPayload(m: any): void {
   // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
   // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
   if (!cardsUnknown) for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
+  // the page's record of a cleared card ends when a live payload shows the card unsuppressed (a restore landed, a refused clear came back): the
+  // board's copy is the fresh one, and a later frame naming the id must not rebuild an entry from the old snapshot (the round-ten verifier)
+  if (!cardsUnknown) for (const id of Array.from(clearedItems.keys())) if (!pendingCleared.has(id) && incomingAsks.some((a) => a.itemId === id)) clearedItems.delete(id);
   // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name cards; the
   // clear/follow bookkeeping above still runs against the FULL payload, so hidden cards stay consistent.
   // Self-clean the persisted disclosure state against the AUTHORITATIVE live set (the user 2026-07-24).
@@ -6802,6 +6816,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       if (Array.isArray(m.owedIds) && m.owedIds.length) clearedStack.push([]);
       render();
     }
+    if (op === "undoClear") clearUndoBusy();   // the account frame is the event the round trip's cue waits for: a refusal sends no payload (round eleven of PR 1967)
     if (op === "apiRetry" && sid) rearmLatches({ kind: "retry", sid });
     else if (op === "askFollowUp" && itemId) {
       rearmLatches({ kind: "followup", itemId });

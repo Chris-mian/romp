@@ -55,13 +55,21 @@ test("kernel: the clears-log refusal names the request the way _refuse_drive's f
   assert.match(FEED, /function federatedPane\(\): boolean \{/);
   assert.match(FEED, /if \(federatedPane\(\)\) clearedStack\.length = 0;\s*\/\/[^\n]*\n\s+const batch = clearedStack\.pop\(\);/, "and pops none: the round trip");
   assert.match(FEED, /clearedStack\.push\(\.\.\.older\);/, "the older local entries stay below the rebuilt ones under a truncated frame");
+  assert.match(FEED, /for \(const id of Array\.from\(pendingCleared\)\) \{ const it = clearedItems\.get\(id\); if \(!it \|\| lastClearHostsPage\.has\(hostOf\(it\.sid\)\)\) pendingCleared\.delete\(id\); \}/, "the round trip releases the suppressions of the last clear's kernels alone (round eleven)");
+  assert.match(FEED, /if \(op === "undoClear"\) clearUndoBusy\(\);/, "an undo's account frame clears the round trip's cue");
+  // the page's record of cleared cards (the round-ten verifier): one source for the reconcile, pruned when a live payload shows the card, bounded
+  assert.doesNotMatch(FEED, /for \(const e of clearedStack\) for \(const it of e\) known\.set/, "one source for the record, so the enumeration's mutant on it reds");
+  assert.match(FEED, /for \(const id of Array\.from\(clearedItems\.keys\(\)\)\) if \(!pendingCleared\.has\(id\) && incomingAsks\.some\(\(a\) => a\.itemId === id\)\) clearedItems\.delete\(id\);/, "a record ends when a live payload shows the card unsuppressed");
+  assert.match(FEED, /^const CLEARED_ITEMS_CAP = 200;/m);
+  assert.match(FEED, /asks = asks\.filter\(\(a\) => \{ if \(!hidden\.has\(a\.itemId\)\) return true; clearedItems\.set\(a\.itemId, a\); return false; \}\);/, "a card the reconcile hides enters the record with its live copy, for the next frame of the same press");
+  assert.match(FEED, /while \(clearedItems\.size > CLEARED_ITEMS_CAP\) clearedItems\.delete\(clearedItems\.keys\(\)\.next\(\)\.value as string\);/, "bounded, the oldest first");
   assert.match(KERNEL, /^LEDGER_BATCHES_ON_WIRE = 20/m, "the stack on the wire is bounded (plans\/needs-you.md)");
   assert.match(KERNEL, /def _ledger_batches\(limit=LEDGER_BATCHES_ON_WIRE\):/);
   assert.match(KERNEL, /return \(\[owed\] if owed else \[\]\) \+ out\[:limit\], owed, len\(out\)/, "the newest batches within the bound, the owed ids, the count");
   assert.match(FEED, /const truncated = typeof m\.batchesTotal === "number" && m\.batchesTotal > bats\.length - \(owedB\.length \? 1 : 0\);/, "a frame that left older batches out says so (round ten)");
   assert.match(FEED, /reconcileClearedStack\(bats, owedB, truncated, refusedIds\);/);
   assert.match(FEED, /if \(truncated && !named\.has\(id\) && !cleared\.has\(id\)\) continue;/, "a suppression the truncated frame neither names nor carries stays");
-  assert.match(FEED, /function pushClearedEntry\(entry: AskItem\[\]\): void \{\n  for \(const it of entry\) clearedItems\.set\(it\.itemId, it\);\n  if \(federatedPane\(\)\) return;[^\n]*\n  let i = clearedStack\.length;\n  const owedIds = new Set<string>\(\);\n  while \(i > 0 && \(clearedStack\[i - 1\] as any\)\._owed\) \{/, "every cleared card is recorded; a federated pane caches no entry; a batch this page makes goes under the owed entries, and an id they hold counts once");
+  assert.match(FEED, /function pushClearedEntry\(entry: AskItem\[\]\): void \{\n  for \(const it of entry\) clearedItems\.set\(it\.itemId, it\);\n  while \(clearedItems\.size > CLEARED_ITEMS_CAP\) clearedItems\.delete\(clearedItems\.keys\(\)\.next\(\)\.value as string\);\n  if \(entry\.length\) lastClearHostsPage = new Set\(entry\.map\(\(it\) => hostOf\(it\.sid\)\)\);\n  if \(federatedPane\(\)\) return;[^\n]*\n  let i = clearedStack\.length;\n  const owedIds = new Set<string>\(\);\n  while \(i > 0 && \(clearedStack\[i - 1\] as any\)\._owed\) \{/, "every cleared card is recorded; a federated pane caches no entry; a batch this page makes goes under the owed entries, and an id they hold counts once");
   assert.match(FEED, /const rest = entry\.filter\(\(it\) => !owedIds\.has\(it\.itemId\)\);\n  if \(rest\.length\) clearedStack\.splice\(i, 0, rest\);/);
   assert.match(FEED, /function reconcileClearedStack\(batches: string\[\]\[\], owedBatch: string\[\], truncated = false, namedIds: string\[\] = \[\]\): void \{/);
   assert.equal((FEED.match(/pushClearedEntry\(/g) || []).length, 5, "the four writers (a card's Clear, a group's, a session's Clear all, the board's Clear all) and the definition");

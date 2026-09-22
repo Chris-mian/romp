@@ -37,7 +37,7 @@ test("previews: the cue CSS lives in the chat sheet (the one preview surface sin
 
 test("undo clear: the round-trip branch arms a busy cue that never disables the button", () => {
   // armed ONLY on the cache-miss branch — the optimistic restore's card appearing IS its feedback
-  assert.match(FEED, /pendingCleared\.clear\(\);[\s\S]{0,700}b\.classList\.add\("undo-busy"\);/);
+  assert.match(FEED, /lastClearHostsPage\.has\(hostOf\(it\.sid\)\)\) pendingCleared\.delete\(id\); \}[\s\S]{0,700}b\.classList\.add\("undo-busy"\);/, "the release of the last clear's kernels' suppressions (round eleven of PR 1967), then the cue");
   assert.doesNotMatch(FEED, /feed-undoclear[\s\S]{0,2000}\.disabled = true/, "repeat clicks must keep popping older batches");
   assert.match(FEED, /undoBusyBackstop = window\.setTimeout\(clearUndoBusy, 6000\);/, "backstop — a lost push can't trap the cue");
 });
