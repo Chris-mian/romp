@@ -21,6 +21,7 @@ import * as path from "path";
 import * as os from "os";
 import { execFile } from "child_process";
 import WebSocket from "ws";
+import { externalKernelBase } from "./kernel-base";
 import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
 import { ensureThenAttach, parseHealthz, warnAfter } from "./kernel-attach";
 import { intentOp, ReloadHold } from "./pipe-intent";
@@ -208,6 +209,36 @@ function cfgPort(key: "kernelPort" | "managerPort", env: string | undefined, dfl
 // from a shell that exported only the documented ROMP_KERNEL_PORT attaches to that kernel instead
 // of silently trying the default one.
 function kernelPort(): number { return cfgPort("kernelPort", process.env.ROMP_SERVE_PORT || process.env.ROMP_KERNEL_PORT, 29855); }
+// The kernel port, mapped to itself, for every webview's options. A webview's script runs on the
+// CLIENT: when VS Code is connected to a remote machine, its fetch of http://127.0.0.1:<kernel port>
+// goes to the client's own loopback — no kernel there — unless VS Code redirects it, and VS Code
+// redirects a localhost/127.0.0.1 request only for a port the webview's `portMapping` names
+// (WebviewPortMappingManager.getRedirect: a matching entry opens a tunnel to the remote; none → the
+// request is left alone). So every bundle's direct kernel fetch — the model pickers' /models, the
+// gear's /palette + /version, the strip's /usage — failed silently under Remote-SSH, and the pickers
+// opened with no rows while the browser listed every family (the user 2026-09-22). Both ports are the
+// kernel's own: the mapping buys the remote hop, not a port change; the API docs recommend declaring
+// it even when the two are equal. Read at each options build so a kernelPort setting change lands.
+function kernelPortMapping(): vscode.WebviewPortMapping[] {
+  return [{ webviewPort: kernelPort(), extensionHostPort: kernelPort() }];
+}
+
+// The kernel base a WEBVIEW fetches (kernel-base.ts): the loopback base handed through
+// `env.asExternalUri`, which opens the port forward to the remote and returns the local uri to it —
+// and is a no-op on a local window. The port mapping above did not carry a webview's fetch over
+// Remote-SSH on its own (the kernel's /perf counters: zero GET /models across an hour of use with the
+// mapping declared, 2026-09-22); this is the API the docs name for a webview reaching a remote's local
+// server. Re-resolved at every paint, never cached: the docs say the tunnel can be closed by the user.
+function resolveKernelBase(): Promise<string> {
+  return externalKernelBase((u) => vscode.env.asExternalUri(u as vscode.Uri), (s) => vscode.Uri.parse(s), HOST, kernelPort());
+}
+
+// Paint a webview: resolve the base, then build. Every surface's HTML goes through here — a
+// synchronous `webview.html = build(webview)` cannot know the resolved base, and one paint site
+// left on the loopback literal is one pane whose pickers open empty over Remote-SSH.
+function setWebviewHtml(webview: vscode.Webview, build: (w: vscode.Webview, kernelBase: string) => string): void {
+  void resolveKernelBase().then((kernelBase) => { webview.html = build(webview, kernelBase); });
+}
 function managerPort(): number { return cfgPort("managerPort", process.env.ROMP_MANAGER_PORT, 7432); }
 
 let ctx: vscode.ExtensionContext;
@@ -594,6 +625,7 @@ function openPanel(preserveFocus = false) {
       enableFindWidget: true,   // Cmd/Ctrl+F opens VS Code's find bar over the rendered pane (the user 2026-09-21): a webview gets no editor find, and the bundle has none of its own
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+      portMapping: kernelPortMapping(),
     },
   );
   wirePanel(p);
@@ -605,16 +637,17 @@ function wirePanel(p: vscode.WebviewPanel) {
   p.webview.options = {
     enableScripts: true,
     localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+    portMapping: kernelPortMapping(),
   };
   p.iconPath = vscode.Uri.joinPath(extUri, "media", "romp-swirl.svg");
-  p.webview.html = buildHtml(p.webview);
+  setWebviewHtml(p.webview, buildHtml);
   const pipe = new KernelPipe(
     "chat",
     (m) => {
       if (m.type === "kernelToast") { vscode.window.setStatusBarMessage(`romp: ${m.text}`, 5000); return; }
       p.webview.postMessage(m);
     },
-    () => { pendingToWebview = []; p.webview.html = buildHtml(p.webview); },
+    () => { pendingToWebview = []; setWebviewHtml(p.webview, buildHtml); },
     // Pipe state → the pane's own banner: while the socket is down the webview
     // must say so (and how many typed messages are held), never sit silently
     // frozen on its last frame (the user 2026-07-21, roof).
@@ -677,6 +710,7 @@ function openFeedPanel(preserveFocus = false, column?: vscode.ViewColumn) {
       enableFindWidget: true,   // Cmd/Ctrl+F opens VS Code's find bar over the rendered pane (the user 2026-09-21): a webview gets no editor find, and the bundle has none of its own
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+      portMapping: kernelPortMapping(),
     },
   );
   wireFeedPanel(p);
@@ -687,16 +721,17 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
   p.webview.options = {
     enableScripts: true,
     localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+    portMapping: kernelPortMapping(),
   };
   p.iconPath = vscode.Uri.joinPath(extUri, "media", "romp-swirl.svg");
-  p.webview.html = buildFeedHtml(p.webview);
+  setWebviewHtml(p.webview, buildFeedHtml);
   const pipe = new KernelPipe(
     "feed",
     (m) => {
       if (m.type === "kernelToast") { vscode.window.setStatusBarMessage(`romp: ${m.text}`, 5000); return; }
       p.webview.postMessage(m);
     },
-    () => { p.webview.html = buildFeedHtml(p.webview); },
+    () => { setWebviewHtml(p.webview, buildFeedHtml); },
     // Same pipe-down banner contract as the chat panel (the user 2026-07-21).
     (up, queued) => { void p.webview.postMessage({ type: "pipeState", up, queued: queued ?? 0 }); },
   );
@@ -838,10 +873,10 @@ function wireTimelineView(v: vscode.WebviewView) {
 // The webviews scale to the editor font — re-render every open surface when it
 // changes (same full-reload path a kernel-restart reconnect takes).
 function refreshWebviewHtml() {
-  if (panel) panel.webview.html = buildHtml(panel.webview);
-  if (feedPanel) feedPanel.webview.html = buildFeedHtml(feedPanel.webview);
-  if (fleetPanel) fleetPanel.webview.html = buildFleetHtml(fleetPanel.webview);
-  if (timelineView) timelineView.webview.html = buildTimelineHtml(timelineView.webview);
+  if (panel) setWebviewHtml(panel.webview, buildHtml);
+  if (feedPanel) setWebviewHtml(feedPanel.webview, buildFeedHtml);
+  if (fleetPanel) setWebviewHtml(fleetPanel.webview, buildFleetHtml);
+  if (timelineView) setWebviewHtml(timelineView.webview, buildTimelineHtml);
 }
 
 // Outline: an editor tab like chat/feed (same pipe pattern, app=fleet).
@@ -859,6 +894,7 @@ function openFleetPanel(preserveFocus = false, column?: vscode.ViewColumn) {
       enableFindWidget: true,   // Cmd/Ctrl+F opens VS Code's find bar over the rendered pane (the user 2026-09-21): a webview gets no editor find, and the bundle has none of its own
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+      portMapping: kernelPortMapping(),
     },
   );
   wireFleetPanel(p);
@@ -869,16 +905,17 @@ function wireFleetPanel(p: vscode.WebviewPanel) {
   p.webview.options = {
     enableScripts: true,
     localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+    portMapping: kernelPortMapping(),
   };
   p.iconPath = vscode.Uri.joinPath(extUri, "media", "romp-swirl.svg");
-  p.webview.html = buildFleetHtml(p.webview);
+  setWebviewHtml(p.webview, buildFleetHtml);
   const pipe = new KernelPipe(
     "fleet",
     (m) => {
       if (m.type === "kernelToast") { vscode.window.setStatusBarMessage(`romp: ${m.text}`, 5000); return; }
       p.webview.postMessage(m);
     },
-    () => { p.webview.html = buildFleetHtml(p.webview); },
+    () => { setWebviewHtml(p.webview, buildFleetHtml); },
   );
   fleetPipe = pipe;
   p.webview.onDidReceiveMessage((m) => {
@@ -902,21 +939,22 @@ function wireFleetPanel(p: vscode.WebviewPanel) {
 function wireView(
   v: vscode.WebviewView,
   app: "timeline" | "fleet",
-  build: (w: vscode.Webview) => string,
+  build: (w: vscode.Webview, kernelBase: string) => string,
   onGone: (p: KernelPipe) => void,
 ): KernelPipe {
   v.webview.options = {
     enableScripts: true,
     localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+    portMapping: kernelPortMapping(),
   };
-  v.webview.html = build(v.webview);
+  setWebviewHtml(v.webview, build);
   const pipe = new KernelPipe(
     app,
     (m) => {
       if (m.type === "kernelToast") { vscode.window.setStatusBarMessage(`romp: ${m.text}`, 5000); return; }
       v.webview.postMessage(m);
     },
-    () => { v.webview.html = build(v.webview); },
+    () => { setWebviewHtml(v.webview, build); },
   );
   v.webview.onDidReceiveMessage((m) => {
     if (!m) return;
@@ -1221,14 +1259,14 @@ function zoomStyle(): string {
   return z === 1 ? "" : `<style>body{zoom:${z.toFixed(4)};}</style>`;
 }
 
-function buildHtml(webview: vscode.Webview): string {
+function buildHtml(webview: vscode.Webview, kernelBase: string): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "render.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "styles.css"));
   const stripCss = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "strip.css"));
   const gearCss = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "gear.css"));
   const n = nonce();
-  // The romp strip's initial /usage fetch goes straight to the kernel.
-  const kernelBase = `http://${HOST}:${kernelPort()}`;
+  // The romp strip's initial /usage fetch goes straight to the kernel, at the base resolveKernelBase()
+  // handed us (the client-reachable one under Remote-SSH).
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
@@ -1258,15 +1296,15 @@ ${chatBody(ATTACH_TITLE_VSCODE)}
 </html>`;
 }
 
-function buildFeedHtml(webview: vscode.Webview): string {
+function buildFeedHtml(webview: vscode.Webview, kernelBase: string): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "feed.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "feed.css"));
   const n = nonce();
   // The gear modal (in the feed bundle) fetches /models, /palette, /version,
   // /analytics straight from the kernel: allow that origin and tell the bundle
   // where it is (the browser serves the feed FROM the kernel, so its base is
-  // ''; this webview's synthetic origin needs the explicit one).
-  const kernelBase = `http://${HOST}:${kernelPort()}`;
+  // ''; this webview's synthetic origin needs the explicit one — the base
+  // resolveKernelBase() handed us, client-reachable under Remote-SSH).
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
@@ -1296,15 +1334,22 @@ ${FEED_BODY}
 </html>`;
 }
 
-function buildTimelineHtml(webview: vscode.Webview): string {
+function buildTimelineHtml(webview: vscode.Webview, kernelBase: string): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "timeline-main.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "timeline-pane.css"));
   const n = nonce();
+  // The lane model picker reads /models straight from the kernel (the view's kernelUrl, the chat
+  // and feed bundles' twin): allow that origin and tell the view where it is and what token to
+  // carry. The browser is served BY the kernel, so its base is '' and its cookie rides; this
+  // webview's synthetic origin needs the explicit base, and its cross-origin fetch carries no
+  // cookie — without both the menu opened empty here while the browser listed every family (the
+  // user 2026-09-22). The base is the one resolveKernelBase() handed us.
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `font-src ${webview.cspSource}`,
+    `connect-src ${kernelBase}`,
     `script-src 'nonce-${n}'`,
   ].join("; ");
   return `<!DOCTYPE html>
@@ -1320,12 +1365,13 @@ function buildTimelineHtml(webview: vscode.Webview): string {
 <body>
 ${TIMELINE_BODY}
   ${mediaBaseTag(webview, n)}
+  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};window.__rompKernelToken=${JSON.stringify(serveToken())};</script>
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
 }
 
-function buildFleetHtml(webview: vscode.Webview): string {
+function buildFleetHtml(webview: vscode.Webview, _kernelBase: string): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "fleet.js"));
   // styles.css first (the .ledger-* goal-tree styling), fleet-pane.css after it
   // (the page layout) — same order as the kernel's /fleet page.
