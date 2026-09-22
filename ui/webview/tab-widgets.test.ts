@@ -493,7 +493,7 @@ test("state badge: a no-op when nothing needs you and the tab is not retrying; i
   assert.equal(badges[0].textContent, "7", "the count refreshed on the reused tab");
 });
 
-test("needsYouPhrase: the ONE Needs-you phrase for the badge aria-label, the rich-tip row and a cold tab's title", () => {
+test("needsYouPhrase: the ONE Needs-you phrase for the badge aria-label and a cold tab's title", () => {
   assert.equal(W.needsYouPhrase(3), "3 things need you");
   assert.equal(W.needsYouPhrase(1), "1 thing needs you", "the singular");
   assert.equal(W.needsYouPhrase(0), "needs you", "no count (an older kernel with the needsYou bit): the bare phrase");

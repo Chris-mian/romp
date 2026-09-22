@@ -44,7 +44,7 @@ test("the strip's signature reads the magenta ring's input for a loaded tab AND 
   const fn = RENDER.slice(RENDER.indexOf("function renderTabs() {"), RENDER.indexOf("function stripAftermath("));
   const sig = fn.slice(fn.indexOf("const stripSig = JSON.stringify(["), fn.indexOf("const mslotEl = "));
   assert.match(sig, /st\.state, tabStateClass\(st\), st\.needsYou === true, settings\.tabStateBadge \? st\.needsYouCount : null, !!st\.faded,/, "the loaded tab's row (needsYou and, in badge mode only, its count: the badge's number keys the sig only when it is drawn)");
-  assert.match(sig, /kst\?\.state, kst && tabStateClass\(kst\), kst\?\.needsYou === true, settings\.tabStateBadge \? kst\?\.needsYouCount : null, !!kst\?\.faded,/, "the skeleton's row, from the stored status frame (the count keyed only in badge mode)");
+  assert.match(sig, /kst\?\.state, kst && tabStateClass\(kst\), kst\?\.needsYou === true, kst\?\.needsYou === true \? kst\?\.needsYouCount : null, !!kst\?\.faded,/, "the skeleton's row: the count keys the sig whenever the status needs you, both modes, since the cold title carries it (PR 2033 review)");
   assert.ok(sig.includes("settings.tabWidgets"), "a switch flipped in the settings repaints the strip");
 });
 

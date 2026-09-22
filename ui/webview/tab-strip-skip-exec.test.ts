@@ -84,6 +84,7 @@ type Hooks = {
 type Api = {
   renderTabs: () => void; sig: () => string; folded: () => Set<string>;
   set: (patch: Record<string, unknown>) => void; pending: () => { renderPendingAfterRename: boolean; renderPendingWhilePressed: boolean };
+  skeletonTabs: { ids: Set<string>; status: Map<string, any> };
 };
 
 // renderTabs + stripAftermath, transpiled (TS → JS) with esbuild at run time — required dynamically so the test
@@ -174,7 +175,7 @@ function lift(): (hooks: Hooks) => Api {
     const focusActiveTab = () => {}; const syncNoSessionsPlaceholder = (v, t) => { H.aftermaths.push([v, t]); };
   `;
   const epilogue = `
-    return { renderTabs, sig: () => tabStripSig, folded: () => collapsedTabIds,
+    return { renderTabs, sig: () => tabStripSig, folded: () => collapsedTabIds, skeletonTabs,
       set: (p) => { for (const k of Object.keys(p)) {
         if (k === "activeId") activeId = p[k]; else if (k === "peekId") peekId = p[k]; else if (k === "order") order = p[k];
         else if (k === "sessions") sessions = p[k]; else if (k === "tabMeta") tabMeta = p[k]; else if (k === "settings") settings = p[k];
@@ -553,4 +554,17 @@ test("badge mode executed: the real applyTabBadgeMode re-inks an AFTER-side stat
   assert.deepEqual(dot!.className.split(/\s+/).filter(Boolean).sort(), ["retrying", "tab-dot"],
     "the real applyTabBadgeMode found the after-side slot and inked it amber; a lookup stopping at the label would miss it and leave tab-dot none");
   assert.equal(tabA!.has("ring-retrying"), false, "and took the retrying ring off the tab");
+});
+
+test("badge OFF, executed: a cold tab's needsYouCount change repaints it, so its title (the count in both modes) never goes stale (item 1)", () => {
+  const { H, api, sessions, tabMeta, settings } = world();
+  settings.tabStateBadge = false;                    // ring mode, the default
+  tabMeta.set("sk", { name: "dev", color: { bg: "#334455", fg: "#ffffff" } });
+  api.skeletonTabs.ids.add("sk");                    // a cold tab: listed, not a full session, its kernel status frame held
+  api.skeletonTabs.status.set("sk", { state: "working", needsYou: true, needsYouCount: 3 });
+  api.set({ order: ["a", "b", "p", "sk"], tabMeta, settings });
+  api.renderTabs();                                  // baseline: the cold tab painted with count 3
+  // a cold tab's title carries the count in BOTH modes (makeSkeletonTab), so a count move must repaint it even with the
+  // badge OFF; at the base the skeleton sig keyed the count only in badge mode, so a count move left the cold title stale.
+  repaintsOnce(H, api, "a cold tab's needsYouCount with the badge off", () => { api.skeletonTabs.status.set("sk", { state: "working", needsYou: true, needsYouCount: 5 }); });
 });

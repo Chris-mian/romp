@@ -135,8 +135,8 @@ test("a status without colours (an older kernel) leaves the values plain, as the
 
 test("at source: the rows carry the colour as a third member, the value span takes it inline, and metaColor is the footer's helper", () => {
   const stt = RENDER.slice(RENDER.indexOf("function showTabTip("), RENDER.indexOf("\n}\n", RENDER.indexOf("function showTabTip(")));
-  assert.match(stt, /const rows: Array<\[string, string, string\?, string\?\]> = \[\];/);
-  assert.match(stt, /if \(aria\) ve\.setAttribute\("aria-label", aria\);/, "the fourth tuple member is the value's aria-label");
+  assert.match(stt, /const rows: Array<\[string, string, string\?\]> = \[\];/);
+  assert.doesNotMatch(stt, /ve\.setAttribute\("aria-label"/, "no inert aria-label on the role-less value span (PR 2033 review)");
   assert.match(stt, /rows\.push\(\["Model", s\.status\.model, metaColor\("model", s\.status\)\]\);/);
   assert.match(stt, /rows\.push\(\["Effort", s\.status\.effort, metaColor\("effort", s\.status\)\]\);/);
   assert.match(stt, /if \(color\) ve\.style\.color = color;/);
@@ -176,7 +176,7 @@ test("the Mail row is a glance: an accent check mark when mail is on, the bare w
 // The Needs-you row (PR 2017; the first contributor's post-merge review of PR 2023, 2026-09-22, MEDIUM): showTabTip's only pointer route to the count phrase, the
 // dot's own title being inert under pointer-events:none. Red-first: with the `if (s.status.needsYou)` block deleted from
 // showTabTip, rowFor returns null, so the PRESENCE assertions below fail (the absence assertion expects that null and stays green).
-test("the Needs-you row: showTabTip carries the count as a short value with the full phrase in the aria-label, untinted, and is absent when the session does not need you", () => {
+test("the Needs-you row: showTabTip carries the count as a short untinted value with no inert aria-label, and is absent when the session does not need you", () => {
   bodyClasses.clear();
   const rowFor = (st: any): El | null => {
     mod.showTabTip(new El("div"), { id: "s", name: "web", cwd: "/tmp/notes-api", status: st } as any);
@@ -185,16 +185,16 @@ test("the Needs-you row: showTabTip carries the count as a short value with the 
     return null;
   };
   assert.equal(rowFor({ state: "ready", sinceEpoch: null }), null, "no Needs-you row when the session does not need you");
-  for (const [n, short, phrase] of [[1, "1 thing", "1 thing needs you"], [3, "3 things", "3 things need you"]] as const) {
+  for (const [n, short] of [[1, "1 thing"], [3, "3 things"]] as const) {
     const v = rowFor({ state: "working", sinceEpoch: null, needsYou: true, needsYouCount: n });
     assert.ok(v, n + ": the Needs-you row is present");
     assert.equal(v!.textContent, short, n + ": the value drops the redundant 'need you' (the key already says the state)");
     assert.equal(v!.style.color ?? "", "", n + ": the value inherits the foreground, no magenta tone (under the 4.5:1 floor on the raised surface, PR 2023)");
-    assert.equal(v!.getAttribute("aria-label"), phrase, n + ": the full phrase rides the value's aria-label, from the one helper the badge dot reads");
+    assert.equal(v!.getAttribute("aria-label"), null, n + ": no inert aria-label on the role-less value span (the phrase lives on the badge dot and the cold title)");
   }
   const v0 = rowFor({ state: "working", sinceEpoch: null, needsYou: true });
   assert.ok(v0, "needsYou with no count: still a row");
   assert.equal(v0!.textContent, "", "no count: the value is empty (the key says the state)");
   assert.equal(v0!.style.color ?? "", "", "…untinted");
-  assert.equal(v0!.getAttribute("aria-label"), "needs you", "…the bare phrase in the aria-label");
+  assert.equal(v0!.getAttribute("aria-label"), null, "…and no inert aria-label");
 });

@@ -456,8 +456,8 @@ pick to the key when a helper is configured. A remembered key pick on a box
 whose settings carry no helper leaves new sessions unpicked, and the kernel
 log says so once, naming the settings file to configure.
 
-A tab not yet loaded after a reconnect shows "Not loaded yet — click to load"
-as its hover tooltip, until its transcript arrives.
+A tab not yet loaded after a reconnect shows "Not loaded yet, click to load"
+as its hover tooltip, prefixed with what needs you when a card of it does, until its transcript arrives.
 
 A Claude Code session's chat tab carries the same fact as a `Billing` row in its
 hover tooltip, one-auth machines included; Codex sessions, which bill no Claude

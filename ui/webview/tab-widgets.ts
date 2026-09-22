@@ -158,10 +158,10 @@ export function composeTabRing(tab: HTMLElement, sid: string, status: WidgetStat
   tab.classList.add(win.ring);
   return win.ring;
 }
-/** The Needs-you PHRASE, one source for the badge dot's aria-label, the rich-tip row and a cold tab's title
+/** The Needs-you PHRASE, one source for the badge dot's aria-label and a cold tab's title
  *  (plans/tab-state-badge.md): a count carries the number, an absent or zero count (an older kernel with the
- *  needsYou bit but no number) reads the bare phrase. Never capped, so the phone leg and the tooltip agree with
- *  the desktop label above 99, where the visible dot reads "99+". */
+ *  needsYou bit but no number) reads the bare phrase. Never capped, so the phone leg agrees with the desktop
+ *  label above 99, where the visible dot reads "99+". */
 export function needsYouPhrase(count: number): string {
   return count > 1 ? count + " things need you" : count === 1 ? "1 thing needs you" : "needs you";
 }
