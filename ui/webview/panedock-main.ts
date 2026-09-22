@@ -77,7 +77,8 @@ export function isPaneDockingOn(rawSettings: string | null): boolean {
   }
 }
 
-/** The shell's title for a pane, for the free-floating outline (the keyboard palette's words, never chrome). `titles`
+/** The shell's title for a pane (the keyboard palette's words, never chrome; the live outline showed it until 2026-09-21,
+ *  when the user asked the square to say where by its place alone; kept exported, its mapping pinned by the node tests). `titles`
  *  is the pane records' word by rail key (plans/panes-as-data.md section 4: the engine reads it off the rail's buttons
  *  and the body's data-panes rows), so a data pane and the Artifacts pane are named as the rail names them; the shipped
  *  four keep their words when no map is given. */
@@ -242,7 +243,14 @@ class Engine {
     // the events the layout follows: the rail's toggles, the chat columns, the band's --tl, the window
     const on = (t: EventTarget, k: string, h: EventListenerOrEventListenerObject, o?: boolean | AddEventListenerOptions) => { t.addEventListener(k, h, o); this.offs.push(() => t.removeEventListener(k, h, o)); };
     on(window, "romp-panes", () => this.reconcile());
-    on(window, "romp-chat-cols", (e) => { const d = ((e as CustomEvent).detail || {}) as { frame?: HTMLIFrameElement }; if (d.frame) this.wire(d.frame); this.reconcile(); });
+    on(window, "romp-chat-cols", (e) => {
+      const d = ((e as CustomEvent).detail || {}) as { frame?: HTMLIFrameElement; col?: number | string; open?: boolean };
+      if (d.frame) this.wire(d.frame);
+      // a column closing under a TAB drag from it ends the drag (the user 2026-09-21): the source page's dragend, which posts the
+      // end, dies with the closed frame, so the hit areas would stand over every pane with no gesture behind them
+      if (d.open === false && this.tab && this.tab.from === "chat-pane-" + String(d.col)) this.endTabDrag();
+      this.reconcile();
+    });
     on(window, "resize", () => { if (this.mobile()) this.apply(); else this.render(); });
     on(this.col, "pointerdown", (e) => this.onShellPress(e as PointerEvent), true);
     on(document, "keydown", (e) => this.onKey(e as KeyboardEvent), true);
@@ -299,13 +307,6 @@ class Engine {
     return this.allPaneEls().map((p) => p.querySelector(":scope > iframe") as HTMLIFrameElement | null).filter((f): f is HTMLIFrameElement => !!f);
   }
   private poOn(key: string): boolean { return document.body.classList.contains("po-" + key); }
-  /** The pane records' titles as the shell shows them (paneTitle's map): the rail's buttons and the data-panes rows. */
-  private titleMap(): Record<string, string> {
-    const btns = Array.from(document.querySelectorAll(".rail-btn[data-pane]")).map((b) => ({ key: b.getAttribute("data-pane") || "", text: (b.textContent || "").trim() }));
-    let rows: unknown = null;
-    try { rows = JSON.parse(document.body.getAttribute("data-panes") || "null"); } catch { rows = null; }
-    return titleMapOf(btns, rows);
-  }
   private shown(): Shown {
     const row: PaneId[] = [];
     if (this.poOn("chat") && byId(CHAT)) {
@@ -639,11 +640,13 @@ class Engine {
     let r: Rect | null = zone ? landingRect(rects, zone, strips) : null;
     if (zone && zone.strip) {
       const joins = colNumberOf(p.pane) !== null && colNumberOf(zone.target) !== null && colNumberOf(p.pane) !== colNumberOf(zone.target);
-      if (joins) o.textContent = paneTitle(p.pane, this.titleMap()) + " joins";   // a chat pane's sessions join that strip (a group is separable, and rejoinable)
+      // the square says where by its place alone (the user 2026-09-21: no title, no "joins" in its centre); a refused drop
+      // keeps its one line, since a thin ring alone cannot say why the release will do nothing
+      if (joins) o.textContent = "";   // a chat pane's sessions join that strip (a group is separable, and rejoinable)
       else { o.classList.add("refused"); o.textContent = "A pane is not a tab"; }
     }
-    else if (zone) o.textContent = paneTitle(p.pane, this.titleMap());
-    else { o.classList.add("free"); o.textContent = paneTitle(p.pane, this.titleMap()); r = { x: pt.x - 80, y: pt.y - 40, w: 160, h: 80 }; }
+    else if (zone) o.textContent = "";
+    else { o.classList.add("free"); o.textContent = ""; r = { x: pt.x - 80, y: pt.y - 40, w: 160, h: 80 }; }
     if (r) { const rr = roundRect(r); o.style.left = rr.x + "px"; o.style.top = rr.y + "px"; o.style.width = rr.w + "px"; o.style.height = rr.h + "px"; }
   }
 
@@ -677,7 +680,7 @@ class Engine {
     let tree;
     try { tree = move(this.lay.tree, pane, target, edge); }
     catch (err) { this.notify(String((err as Error).message || err)); return; }
-    this.lay = { v: 1, tree, parked: this.lay.parked };
+    this.lay = { ...this.lay, tree };   // parked and the remembered tree ride along
     this.persist();
     this.render();
   }
@@ -731,7 +734,7 @@ class Engine {
     const r = zone ? landingRect(rects, zone, strips) : null;
     if (!zone || !r) { this.hideOutline(); return; }
     o.classList.add("on"); o.classList.remove("free", "refused");
-    o.textContent = zone.strip ? (this.tab.name || "the session") + " joins" : this.tab.name || "a session";
+    o.textContent = "";   // the square says where by its place alone (the user 2026-09-21): no name, no "joins"
     const rr = roundRect(r); o.style.left = rr.x + "px"; o.style.top = rr.y + "px"; o.style.width = rr.w + "px"; o.style.height = rr.h + "px";
   }
   /** A tab dropped in a zone: a strip joins that column (the shipped mutation); an edge opens a new column with the
@@ -757,7 +760,7 @@ class Engine {
     const pane: PaneId = plan.pane;   // moveColumn: the lone column's own pane goes to the drop edge
     this.reconcile();
     if (!this.lay || !has(this.lay.tree, pane) || zone.strip || pane === zone.target) return;
-    try { this.lay = { v: 1, tree: move(this.lay.tree, pane, zone.target, zone.edge as Edge), parked: this.lay.parked }; }
+    try { this.lay = { ...this.lay, tree: move(this.lay.tree, pane, zone.target, zone.edge as Edge) }; }
     catch (err) { this.notify(String((err as Error).message || err)); return; }
     this.persist(); this.render();
   }

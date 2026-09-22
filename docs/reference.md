@@ -45,7 +45,7 @@ These are for scripting and for agents rather than daily use:
 | `romp new --no-inherit <name>` | Run inside a romp session, `romp new` sends that session's stable id (`ROMP_SID`) as the new session's `parent` (marked `parentAuto`), and the kernel copies the parent's tags onto the child; inside a comment thread, the parent is the session the thread belongs to. This flag withholds the parent, so the new session starts outside them. A kernel that never ran the calling session creates the session untagged and echoes `parentIgnored`, which the CLI reports in one line. Raw POST /new callers pass `parent` (a live name or a known sid; an unknown one is a 400 unless `parentAuto` is set) and `tags` (a list of names); opening a name that already runs never inherits; a name that is being registered by another request right now is a 409 whose `error` says which door holds it |
 | `romp tag [<name>] [--add <session>…] [--remove <session>…] [--color <hex>] [--rename <new>] [--delete] [--host <kernel>]` | Session tags. Bare, it lists them; with a name, it merges one tag (created on first use). A tagged session leaves the untagged view, and its tab sits in that tag's section of the strip. `--host` edits an attached kernel's tag |
 | `romp interrupt <session>` | Interrupt whatever turn a session is taking |
-| `romp compact <session> [--wait] [--timeout <s>]` | Compact a session's context in place (Claude's `/compact`: summarize the history, keep the session's name, id, mailbox, and watches; on a Codex session, Codex's own compaction of the thread, which produces no summary text): the alternative to ending and recreating a long-lived session, and the external hand a session needs since it cannot `/compact` itself mid-turn. Quiet session → compacts now; open turn → queued, fires alone the moment the turn ends (the same safe path the chat's compact button uses). `--wait` blocks until the compaction has started and cleared, polling the kernel's own `compacting` signal on the `/sessions` rows (also the field to point a `romp watch` predicate at for scripted recycling, read beside the row's `launchError`: a compaction that ends loudly drops the compacting bit exactly as a clean end does); exits 1 honestly on timeout, and exits 1 with the notice's words on stderr when the compaction ended loudly instead of finishing: a `launchError` on the row that is new, judged against the row as the CLI read it before its request for a compaction that runs at once, and against the first sample that reads not compacting for a queued one (the earliest ours could have fired, so the prior compaction's loud end is not attributed to ours), and marked by the kernel as a compaction's end (the notice's `noRetry`), so a turn's own rejection or failure, which can land after a queued wait's arming sample, is never read as the compaction's; whether or not the compacting sample was caught; a notice standing at the baseline is not read as this one's. When the session list cannot be read before the request, the wait is refused on stderr and the compaction is still requested. A remote session's compaction is requested on its own kernel; `--wait` can't follow it from here and says so |
+| `romp compact <session> [--wait] [--timeout <s>]` | Compact a session's context in place (Claude's `/compact`: summarize the history, keep the session's name, id, mailbox, and watches; on a Codex session, Codex's own compaction of the thread, which produces no summary text): the alternative to ending and recreating a long-lived session, and the external hand a session needs since it cannot `/compact` itself mid-turn. Quiet session → compacts now; open turn → queued, fires alone the moment the turn ends (the same safe path the chat's compact button uses). `--wait` blocks until the compaction has started and cleared, polling the kernel's own `compacting` signal on the `/sessions` rows (also the field to point a `romp watch` predicate at for scripted recycling, read beside the row's `launchError`: a compaction that ends loudly drops the compacting bit exactly as a clean end does); exits 1 honestly on timeout, and exits 1 with the notice's words on stderr when a Codex compaction ended loudly instead of finishing (the failure exit reads the notices the Codex compaction's end leaves on the row; a failed Claude `/compact` leaves nothing on the row, so it reads as a clean end, never as a failure): a `launchError` on the row that is new, judged against the row as the CLI read it before its request for a compaction that runs at once, and against the first sample that reads not compacting for a queued one (the earliest ours could have fired, so the prior compaction's loud end is not attributed to ours), and marked by the kernel as a compaction's end (the notice's `noRetry`), so a turn's own rejection or failure, which can land after a queued wait's arming sample, is never read as the compaction's; whether or not the compacting sample was caught; a notice standing at the baseline is not read as this one's. When the session list cannot be read before the request, the wait on a compaction that runs at once is refused on stderr and the compaction is still requested; a queued compaction's wait is not refused, since its baseline is the first sample after the request that reads not compacting, not the read before the request. A remote session's compaction is requested on its own kernel; `--wait` can't follow it from here and says so |
 | `romp end <session>` | End a session |
 | `romp move <session> <dir>` | Move a session's working directory to `<dir>` (the folder must already exist); the conversation, name, mail and history stay with the session. Quiet session → moves now; open turn → queued, fires when the turn ends. See [Moving a session to another folder](#moving-a-session-to-another-folder) |
 | `romp checkin <host>` / `romp checkout <host>` | Publish this machine to an attached hub, or withdraw it. The hub files this machine under the name it declares only when that name is a machine name (letters, digits, dots, hyphens or underscores, starting with a letter or digit, at most 128 characters). Any other declared name is refused with a 400 that states the rule and echoes nothing, is recorded nowhere, and is said once on both machines: on the hub, one stderr line and one Log entry under the `refused` kind, naming the value as a clipped repr; on this machine, one stderr line, one dial-log record and one Log entry carrying the hub's reason, after which the same name is not re-sent until it, or the hub's kernel, changes. A hub's `POST /tunnels/trust` for a host it has never seen (the remembered-hosts entry that tiers relayed mail by origin) holds the wider rule that registry's writers share, a machine name or an ssh alias (letters, digits, dots, hyphens, underscores, at-signs, colons or square brackets, not starting with a hyphen, at most 255 characters), because a hub keys an attached peer by its ssh alias and carries that alias when you set trust between two of your machines; anything else is refused the same way, on the hub, with nothing recorded. `ROMP_HOST_NAME` (the kernel) and `ROMP_POSTAL_HOST` (the postal bus) override the declared name only when they clear the same rule; an unusable value (a space, an at-sign, a trailing newline) is set aside once, on stderr or in the bus log, and the derived name (the short hostname, else the platform's machine name, else a minted id) is used |
@@ -2036,11 +2036,44 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   are `gc.get_threshold()` and `gc.get_count()`, repeated from `heap.gc` so
   the block reads on its own (how near the next collection is); `frozen`
   counts the objects moved out of the collector's reach by `gc.freeze`, which
-  it never scans; `errors` counts callback failures (counted, never raised
+  it never scans (reading the count is a linear walk of the frozen generation,
+  about 7 ms per million frozen, paid by the `/perf` read); `errors` counts callback failures (counted, never raised
   into the collector; the first in the process is said once on stderr, a
   line prefixed `perf: gc hook:`, the rest counted only); `hooked` says
   whether the kernel's `gc.callbacks` hook is installed, so zeros with
-  `hooked` false mean no hook, not no collections. To read a slow cycle: find
+  `hooked` false mean no hook, not no collections. `freeze` reports the
+  freeze controller (issue #1735): the kernel keeps the loaded decoded heap
+  out of the collector's walk with `gc.freeze`, so a warm full collection
+  walks only what was allocated since and no longer pauses the pusher for
+  seconds. It reconciles at the pusher's idle boundary, never on a timer: a
+  LOAD fold-in (`collect` then `freeze`, walking only the unfrozen) when the
+  record cache's insert counter grows by a material number of trees, and a
+  RELEASE reclaim (`unfreeze`, a full collection, `freeze`) when a CYCLIC owner
+  is released or the backstop fires. The reclaim is keyed only on a cyclic
+  owner's release: a backend session and its backend hold each other, so a
+  session end notes a release; a record-cache pop does NOT, because its decoded
+  json is acyclic and dies by reference counting whether frozen or not (an
+  unfreeze reclaim there would collect nothing), so `recordCache.released` is a
+  statistic, not a trigger. A BACKSTOP reclaim runs after `backstopFoldins`
+  load fold-ins since the last reclaim, so a cycle released on a path no note
+  reaches lives at most that many fold-ins, never the process lifetime. The
+  sub-block carries `enabled`, `active` (whether a freeze is held now; named
+  apart from the integer `frozen` above, which is `gc.get_freeze_count()`),
+  `loadTrees` and `backstopFoldins` (the two thresholds), `freezes` and
+  `reclaims` (each ran one collection, so the organic full collections are
+  `gen."2".collections` less their sum), `lastReconcileMs` and
+  `lastReconcileKind` (`initial`, `load`, `release` or `backstop`),
+  `totalReconcileMs` and `errors` (a reconcile that raised is counted here and
+  said once on stderr, never ending the pusher). The reconcile's own collection
+  pause lands after the cycle closed its ring row, so the pusher and jobs rings
+  never show it; `lastReconcileMs` is where a reconcile's pause is read. The
+  freeze is on by default; `ROMP_GC_FREEZE=off` (or `0`/`false`) turns it off
+  for a measurement, and `ROMP_GC_FREEZE_LOAD_TREES` sets the load threshold (a
+  value that is not a positive integer falls back to the default, said once and
+  counted under `errors`, and it is floored at 1 so it cannot make the reconcile
+  fire every idle cycle). A request that arrives during a reconcile waits that
+  one collection; the idle boundary is the best moment for it, not a guarantee
+  none arrives. To read a slow cycle: find
   its row in `pusher.stageRing` (or `jobs.stageRing`) and read the row's `gc`
   (`null` when the cycle closed without an opening mark): `n0`, `n1` and
   `n2`, the collections per generation that ran anywhere in the process

@@ -106,6 +106,10 @@ os.environ["ROMP_CKPT_FIRST_DOC_KB"] = "0"   # the young-session floor is off fo
 #                                                pre-cut bytes is never written live); the floor's own test sets it. A plain assignment: an
 #                                                exported value in the shell (64, say) would red every checkpoint fixture (1721 round two);
 #                                                tests/__init__.py carries the same line for the unittest runner
+os.environ["ROMP_GC_FREEZE"] = "off"   # #1735: the freeze is on live, off in the suite, so an in-process pusher cycle never freezes the
+#                                        test interpreter's heap and leaks that state to another test; the freeze's own tests drive the
+#                                        controller directly (tests/test_gc_freeze.py), and a lab that wants it sets ROMP_GC_FREEZE=on in its
+#                                        kernel's env. tests/__init__.py carries the same line for the unittest runner
 # No test spawns a per-session HOST by omission (2026-09-11, T348): hosts are on by default now, so a backend built over
 # a state dir with no `session-hosts` file starts a real bin/romp-session-host for any session it connects. The root the
 # runner floors carries the toggle set to off from the start, re-asserted per test below (a test that deletes or rewrites

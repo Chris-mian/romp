@@ -175,6 +175,8 @@ const frameOf = async (fid) => { const h = await page.$("#" + fid); return h ? a
 const tabsIn = async (fid) => { const fr = await frameOf(fid); return fr ? await fr.evaluate(() => Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id"))) : []; };
 try {
   await page.addInitScript(() => { try { if (window === window.top) { localStorage.removeItem("romp-chat-cols"); Object.keys(localStorage).filter((k) => k.indexOf("romp-vscode-state-chat") === 0).forEach((k) => localStorage.removeItem(k)); } } catch (e) {} });   // TOP frame only
+  await page.addInitScript(() => { if (window !== window.top) return; window.__labStrip = {}; window.addEventListener("message", (e) => { const m = e && e.data; if (!m || m.romp !== "chatTabs" || !Array.isArray(m.tabs)) return;
+    Array.prototype.forEach.call(document.querySelectorAll("iframe"), (f) => { if (f.contentWindow === e.source) window.__labStrip[f.id] = m.tabs.map((t) => t && t.id); }); }); });   // the strip's membership per chat frame, as each page posts it
   await page.goto(cfg.url);
   // wait until col 1 (f-chat) lists the remote session (federation merged it)
   await page.waitForFunction((rid) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; return !!(d && d.querySelector('#tabs .tab[data-id="' + rid + '"]')); }, cfg.remote, { timeout: 40000 });
@@ -187,9 +189,10 @@ try {
     targetFid = "f-chat";
   } else if (cfg.scenario === "hidden") {
     await page.evaluate((rid) => window.__rompMoveTab(rid, "new"), cfg.remote);     // remote to col 2
-    await page.waitForTimeout(500);
+    await page.waitForFunction((sid) => ((window.__labStrip || {})["f-chat-2"] || []).includes(sid), cfg.remote, { timeout: 20000 });   // col 2's page lists the moved session: its own post, not a sleep
     await page.evaluate((r2) => window.__rompMoveTab(r2, 2), cfg.remote2);          // the short one JOINS col 2 and becomes active (the move focuses it)
-    await page.waitForTimeout(800);
+    await page.waitForFunction((s2) => ((window.__labStrip || {})["f-chat-2"] || []).includes(s2), cfg.remote2, { timeout: 20000 });   // and lists the short one
+    await page.waitForFunction((s2) => { const f = document.getElementById("f-chat-2"); const d = f && f.contentDocument; const t = d && d.querySelector("#tabs .tab.active[data-id]"); return !!(t && t.getAttribute("data-id") === s2); }, cfg.remote2, { timeout: 20000 });   // the join focused it
   }
   await page.waitForFunction((fid) => !!document.getElementById(fid), targetFid, { timeout: 20000 });
   out.paneRect = await page.evaluate((fid) => { const el = document.getElementById(fid); if (!el) return null; const pn = el.closest(".pane") || el; const r = pn.getBoundingClientRect(); const fr = el.getBoundingClientRect(); return { paneW: Math.round(r.width), paneH: Math.round(r.height), frameW: Math.round(fr.width), frameH: Math.round(fr.height) }; }, targetFid);
@@ -201,7 +204,21 @@ try {
     await tf.locator('#tabs .tab[data-id="' + cfg.remote + '"]').first().click();   // hidden -> active
   }
   // the target column shows the remote: wait for a rendered turn
-  await tf.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 1, null, { timeout: 30000 });
+  // the shown session's turns in the target column: the frame's own load first, then the page's strip post listing the session (its
+  // own event), then the rendered turns (the kernel's build of a long session is what this waits for, so the bound is wide); a
+  // timeout records the frame's state so a recurrence names its source (the 2026-09-21 CI red at 30 s left only the pane's rect)
+  const shownSid = cfg.remote;
+  try {
+    await tf.waitForLoadState("load", { timeout: 30000 });
+    await page.waitForFunction(({ fid, sid }) => ((window.__labStrip || {})[fid] || []).includes(sid), { fid: targetFid, sid: shownSid }, { timeout: 30000 });
+    await tf.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 1, null, { timeout: 60000 });
+  } catch (e) {
+    out.atTimeout = await tf.evaluate((sid) => ({ url: location.href, readyState: document.readyState, tabs: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id")),
+      active: (document.querySelector("#tabs .tab.active[data-id]") || { getAttribute: () => null }).getAttribute("data-id"), turns: document.querySelectorAll("#content .turn[data-uuid]").length,
+      regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null })).catch((e2) => ({ readError: String(e2) }));
+    out.atTimeout.strip = await page.evaluate(() => window.__labStrip || null);
+    throw e;
+  }
   await page.waitForTimeout(1000);
   out.tabs = { col1: await tabsIn("f-chat"), col2: await tabsIn("f-chat-2") };
   out.boot = await tf.evaluate((rid) => {

@@ -564,7 +564,11 @@ class _Session:
         self.compacting = False       # the compaction bracket (CodexBackend.compact, 2026-09-19): latched before
                                       # thread/compact/start, or by the worker on the server's Compact refusal; ended
                                       # by the thread's idle status after an active one, a loud status, the client's
-                                      # death, kill, or a turn/start the server accepted (_end_compact_locked)
+                                      # death, kill, or a turn/start the server accepted (_end_compact_locked). In the
+                                      # registry row too (2026-09-21): saved by both latches and by every end's own
+                                      # transaction (_save_compacting_locked); a row still reading True at load is a
+                                      # compaction whose outcome this kernel can never learn, and _load_registry ends
+                                      # it loudly
         self.compact_active_seen = False  # an "active" thread status (or the refusal, which says the same) seen while
                                           # the bracket stands: only an idle AFTER it ends the bracket, so the previous
                                           # turn's stale idle, drained late from the global queue, cannot
@@ -675,6 +679,7 @@ class CodexBackend:
                      "until it is repaired: %s" % e)
             self._registry_unreadable = True
             rows = {}
+        restart_ended = []          # rows still reading compacting: their bracket ends here (below the loop)
         with self._sessions_lock:
             for sid, r in rows.items():
                 if not isinstance(r, dict) or not isinstance(r.get("tid"), str):
@@ -693,7 +698,32 @@ class CodexBackend:
                 s.queue_ids = [entry["id"] for entry in queue_entries]
                 s.note = r.get("note", "")
                 s.launch_error = r.get("launchError") if isinstance(r.get("launchError"), dict) else None
+                if bool(r.get("compacting")):
+                    # A row still reading compacting at load is a compaction whose outcome this kernel can never learn
+                    # (2026-09-21, the post-merge review of the native compaction): the app-server was the previous
+                    # kernel's child and ended with it, so no status will ever end the bracket, and the compaction may
+                    # have finished, failed, or never run. Before the bracket was in the row, the load restored the
+                    # launch error and no bracket, so after a restart mid-compaction the row read compacting False with
+                    # no notice, and a wait that had seen compacting printed done over an outcome nobody recorded. The
+                    # bracket is not restored (nothing would end it, and every send would park behind it untimed); it
+                    # ends HERE, loudly, as every bracket end does: a noRetry notice, the mark the CLI's wait reads as a
+                    # compaction's end, replacing a restored notice, which is older than the restart. compacting False
+                    # is written back below the loop so a second restart does not re-fire it. Residual: the notice,
+                    # like every bracket end's, is cleared by the next accepted turn, and __init__ re-arms every
+                    # queued session at boot, so a message parked at the restart can clear it before the CLI's first
+                    # poll after the kernel returns; the wait stops depending on the notice when the CLI judges a
+                    # durable bracket-end record instead, that record's own change.
+                    s.launch_error = {"text": ("romp restarted while this conversation was compacting; whether "
+                                               "Codex compacted it is unknown, so no compaction is marked in the "
+                                               "conversation"),
+                                      "at": time.time(), "limit": False, "noRetry": True}
+                    restart_ended.append(s)
                 self._sessions[sid] = s
+        for s in restart_ended:
+            with s.lock:
+                text = s.launch_error["text"]
+                self._save_compacting_locked(s, "launchError")
+            self.log("compaction of %s ended: %s" % (s.name, text))
 
     def _republish_missing_names(self):
         """spawn writes the durable registry row, then names/<sid>. A kernel death between the two
@@ -779,7 +809,8 @@ class CodexBackend:
                     "queue": [{"id": entry_id, "text": text}
                               for entry_id, text in zip(s.queue_ids, s.queue)],
                     "note": s.note, "color": s.color,
-                    "launchError": s.launch_error}
+                    "launchError": s.launch_error,
+                    "compacting": s.compacting}   # the bracket, in the row since 2026-09-21 (_save_compacting_locked)
 
     def _registry_rows_for_update(self):
         try:
@@ -831,7 +862,7 @@ class CodexBackend:
         order. Snapshotting still happens before the registry lock, so no reverse lock edge exists.
         """
         allowed = {"tid", "name", "cwd", "model", "effort", "mode", "dead", "note", "color",
-                   "launchError"}
+                   "launchError", "compacting"}
         fields = set(fields)
         unknown = fields - allowed
         if unknown:
@@ -1227,10 +1258,7 @@ class CodexBackend:
                             text = ("The Codex app-server ended while this conversation was compacting — %s"
                                     % (str(e) or e.__class__.__name__))
                             s.launch_error = {"text": text, "at": time.time(), "limit": False, "noRetry": True}
-                            try:
-                                self._save_registry(s, fields=("launchError",))
-                            except Exception:
-                                self.log("compaction end registry save: %s" % traceback.format_exc())
+                            self._save_compacting_locked(s, "launchError")   # the end and its notice in one write
                             ended = (s.name, text)     # built under the lock, logged after the release (below)
                         queued = bool(s.queue) and not s.dead
                     if ended:
@@ -1862,11 +1890,11 @@ class CodexBackend:
         the session probes it (the kernel's gates read compacting() and park, and the drain skips the session); what
         ends such a bracket is a send that bypasses the kernel's gates (a peer's mail, a retry press, a raw-mode save:
         the worker attempts turn/start under a bracket with no active seen, and the accepted turn ends it), a kernel
-        restart, which loses the in-memory bracket and delivers the parked message from the kernel's disk mirror, or
-        End then Revive, which keeps the thread and its history but hands a parked message the user typed back as
-        not delivered and drops the rest of the parked queue with the session, logged (the kernel's End doors cancel
-        the ending session's parked ops, 2026-09-21). docs/codex.md names the two the user can reach, and which of
-        them keeps the message.
+        restart, which ends the bracket as an unknown outcome (the load's notice, below) and delivers the parked
+        message from the kernel's disk mirror, or End then Revive, which keeps the thread and its history but hands a
+        parked message the user typed back as not delivered and drops the rest of the parked queue with the session,
+        logged (the kernel's End doors cancel the ending session's parked ops, 2026-09-21). docs/codex.md names the
+        two the user can reach, and which of them keeps the message.
         The normalizer is built BEFORE the latch and outside norm_lock (_ensure_norm takes it): a session revived or
         restored in this process that has not run a turn has none, and the boundary writer would otherwise meet
         s.norm None inside the pump's try and lose the record silently; built here it also seeds last_uuid from the
@@ -1874,12 +1902,16 @@ class CodexBackend:
 
         Esc does not stop a running compaction (interrupt() needs a turn id romp never learns: the pinned wheel has
         no thread/turns/list binding and thread/read's full hydration is deprecated by the server) and a kill leaves
-        it to finish server-side. The bracket is in memory: the app-server is the kernel's child and ends with it,
-        so a kernel restart mid-compaction loses only the divider of a compaction that completed in the last seconds
-        before the restart, and a compaction romp did not start (Codex's own, or one whose bracket a restart lost)
-        re-latches the bracket through the worker's Compact refusal. A thread/resume during a foreign compaction is
-        unprobed. Codex takes no compaction instructions; the kernel refuses words after the head before reaching
-        here."""
+        it to finish server-side. The bracket is in the registry row too (compacting, saved by both latches and by
+        every end's own transaction, 2026-09-21): the app-server is the kernel's child and ends with it, so a kernel
+        restart mid-compaction can never learn the outcome, and _load_registry turns a row still reading compacting
+        into a loud end worded as an unknown outcome (a noRetry notice, the mark `romp compact --wait` reads as a
+        compaction's end), writing compacting False back, so the row restores no bracket that nothing would end and a
+        second restart does not re-fire the notice; before, the load restored the launch error and no bracket, and a
+        wait that had seen compacting printed done over an outcome nobody recorded. A compaction romp did not start
+        (Codex's own, or one a restart ended this way while it ran on) re-latches the bracket through the worker's
+        Compact refusal. A thread/resume during a foreign compaction is unprobed. Codex takes no compaction
+        instructions; the kernel refuses words after the head before reaching here."""
         s = self._session(sid)
         if not s:
             return _contract.SessionBackend.compact(self, sid)
@@ -1918,12 +1950,29 @@ class CodexBackend:
                 s.state = "compacting"
                 s.since = time.time()
                 tid = s.tid
+                # the latch is in the row (2026-09-21): a restart mid-compaction ends it loudly (_load_registry). The
+                # save is part of the request: a latch the row cannot hold would start a compaction whose restart
+                # outcome nothing could record, a false durability claim, so it is unlatched here, under the same
+                # lock and before anything was published, and refused in words (review find, 2026-09-21). No request
+                # went out and no bracket stood for anyone, so the end counter does not move: a refusal could name
+                # no compaction of this bracket's.
+                unrecorded = self._save_compacting_locked(s)
+                if unrecorded is not None:
+                    s.compacting = False
+                    s.compact_active_seen = False
+                    s.state = "waiting"
+                    s.since = time.time()
+            if unrecorded is not None:
+                self.log("compact %s: refused, the bracket could not be recorded: %s" % (s.name, unrecorded))
+                return ("Couldn't compact this conversation: romp could not record it on disk, so a restart could "
+                        "not tell how it ended (%s)" % str(unrecorded)[:160])
             self.push_session(sid)                 # the chip flips now; the ack is not the deciding event
             try:
                 c.thread_compact(tid)
             except Exception as e:
                 with s.lock:
                     self._end_compact_locked(s)
+                    self._save_compacting_locked(s)
                 self.push_session(sid)
                 self.log("compact %s: %s" % (s.name, e))
                 return "Couldn't compact this conversation: %s" % str(e)[:200]
@@ -1937,13 +1986,36 @@ class CodexBackend:
         (_compact_status), the client's death (_global_pump), kill, a raising thread/compact/start (compact) and the
         worker's accepted turn/start (_run_turn_in_mode) — which is what lets a Compact refusal that reaches the
         worker after the compaction it names has ended stand down (_CompactionInFlight). The state falls back to
-        waiting from compacting only; the worker's accepted turn sets working right after."""
+        waiting from compacting only; the worker's accepted turn sets working right after. The row's half of the end,
+        compacting False in the registry, rides each caller's own transaction (_save_compacting_locked for the ends
+        that write nothing else; kill's dead, resume's flip and the accepted turn's ACK carry the field in theirs),
+        never a write of its own here: the loud ends' notice lands in the same write as the bit, so a kernel death
+        between two writes cannot leave a row reading compacting False with no notice (2026-09-21)."""
         s.compacting = False
         s.compact_active_seen = False
         s.compact_ends += 1
         if s.state == "compacting":
             s.state = "waiting"
             s.since = time.time()
+
+    def _save_compacting_locked(self, s, *beside):
+        """Save the bracket's bit to the registry row, with the fields the same end writes beside it in ONE transaction
+        (2026-09-21, the post-merge review of the native compaction: the bracket lived in memory only, so a kernel
+        restart mid-compaction read the row as compacting False with no notice). The caller holds s.lock,
+        _save_registry's rule. A failing save is logged and RETURNED (the exception; None when it landed), never
+        raised: compact()'s latch reads it and refuses the compaction, since a bracket the row cannot hold would start
+        a compaction whose restart outcome nothing could record; every end ignores it, since the end has happened
+        whatever the row says, and stands in memory as it did before the bit was durable. The worker's next save
+        (the ACK, a rejection, a failure) carries the in-memory value whenever the registry is writable again, so
+        the residual is a save that fails and a restart before the next successful one: that load reads the row as
+        the last save left it (a bit still up after an end in memory fires the unknown-outcome notice over an end
+        this kernel did see; a bit still down after a re-latch restores no notice for a compaction that ran)."""
+        try:
+            self._save_registry(s, fields=("compacting",) + tuple(beside))
+        except Exception as e:
+            self.log("compaction bracket registry save: %s" % traceback.format_exc())
+            return e
+        return None
 
     def _compact_status(self, s, method, p):
         """The pump's half of the compaction bracket (2026-09-19; the other halves are compact() and the worker's
@@ -2039,10 +2111,8 @@ class CodexBackend:
                 # window cleared the field and saved None, and this stale snapshot then committed the red card over
                 # it, so the next restart restored a card the turn had cleared (review find, 2026-09-21).
                 s.launch_error = {"text": loud, "at": time.time(), "limit": False, "noRetry": True}
-                try:
-                    self._save_registry(s, fields=("launchError",))
-                except Exception:
-                    self.log("compaction end registry save: %s" % traceback.format_exc())
+            # the end is in the row (2026-09-21): compacting False, and a loud end's notice beside it in the same write
+            self._save_compacting_locked(s, *(("launchError",) if loud else ()))
             queued = bool(s.queue) and not s.dead
         # Every end pokes, OUTSIDE norm_lock (see _append) and s.lock: the end is the event a message parked on the
         # bracket waits on. The clean end poked through its boundary write; the loud ends only pushed and kicked, so a
@@ -2203,7 +2273,8 @@ class CodexBackend:
             s.change_generation += 1
             queued = bool(s.queue)
             try:
-                self._save_registry(s, fields=("dead", "name", "cwd"))
+                # compacting: the reset above, in the row (2026-09-21)
+                self._save_registry(s, fields=("dead", "name", "cwd", "compacting"))
             except BaseException:
                 # roll the flip back: with dead=False already published in memory, a FAILED
                 # revive rendered a live lane beside its own reviveFailed message, and the next
@@ -2230,7 +2301,8 @@ class CodexBackend:
             # Persist the lifecycle mutation before releasing the session lock. A concurrent resume
             # must order after this write instead of being overwritten by a delayed kill snapshot.
             try:
-                self._save_registry(s, fields=("dead",))
+                # compacting: a bracket kill ended, in the row (2026-09-21)
+                self._save_registry(s, fields=("dead", "compacting"))
             except Exception as e:
                 save_error = e
         c = self._client
@@ -2511,6 +2583,7 @@ class CodexBackend:
                                 if s.state != "compacting":
                                     s.state = "compacting"
                                     s.since = time.time()
+                                self._save_compacting_locked(s)   # the re-latch is in the row too (2026-09-21)
                         if dead:
                             # a kill landed between the request and this handler (it found no bracket to end, so the
                             # counters are unchanged): no latch on a dead row, which resume() would revive as compacting
@@ -2537,7 +2610,9 @@ class CodexBackend:
                                 # current after its RPC returned. A send/model change racing the RPC
                                 # must remain a fresh kick and immediately retry the new request.
                                 s.turn_rejection = (e.change_generation, e.client_generation)
-                                self._save_registry(s, fields=("launchError",))
+                                # compacting: the in-memory bracket rides the worker's every save, so the last write
+                                # before a restart carries an end whose own save failed (2026-09-21)
+                                self._save_registry(s, fields=("launchError", "compacting"))
                         except Exception:
                             self.log("turn rejection registry save: %s" % traceback.format_exc())
                         self.push_session(s.sid)
@@ -2550,7 +2625,8 @@ class CodexBackend:
                                                   "at": time.time(), "limit": False}
                                 s.state = "waiting"
                                 s.turn_id = None
-                                self._save_registry(s, fields=("launchError",))
+                                # compacting: as the rejection's save above (2026-09-21)
+                                self._save_registry(s, fields=("launchError", "compacting"))
                         except Exception:
                             self.log("turn failure registry save: %s" % traceback.format_exc())
                         self.push_session(s.sid)
@@ -2602,7 +2678,8 @@ class CodexBackend:
                 with s.lock:
                     s.launch_error = {"text": self._client_failure_text(), "at": time.time(),
                                       "limit": False}
-                    self._save_registry(s, fields=("launchError",))
+                    # compacting: as the worker's other saves (2026-09-21)
+                    self._save_registry(s, fields=("launchError", "compacting"))
             except Exception:
                 self.log("client failure registry save: %s" % traceback.format_exc())
             self.push_session(s.sid)
@@ -2684,8 +2761,9 @@ class CodexBackend:
                 s.turn_rejection = None
                 killed_during_start = s.dead
                 try:
+                    # compacting: a bracket this turn ended, in the row (2026-09-21)
                     ack_mismatch = self._save_registry(
-                        s, fields=("launchError",), queue_ack=batch_ids)
+                        s, fields=("launchError", "compacting"), queue_ack=batch_ids)
                 except Exception:
                     # turn/start already succeeded, but the durable ACK did not. Restore the exact
                     # prefix before retrying so this process agrees with the still-queued disk row.

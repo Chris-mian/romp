@@ -211,7 +211,7 @@ class Harness(unittest.TestCase):
         self.assertTrue(list(Path(dest, "claude", "projects").glob("*/%s.jsonl" % eid)), "each ending is its own truncated transcript")
         self.assertTrue(Path(dest, "state", "romp", "names", eid).exists(), "each ending has its names entry")
         self.assertEqual(Path(dest, "state", "romp", "session-hosts").read_text(), "off")
-        self.assertEqual(m.get("skipped"), {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0, "store-unreadable": 0}, "skips are counted, never named")
+        self.assertEqual(m.get("skipped"), {"no-transcript": 0, "few-turns": 0, "unreadable-names-entry": 0, "parse-failed": 0, "store-unreadable": 0, "registry-unreadable": 0}, "skips are counted, never named")
         # the journal is cut at the turn's start: a row before it stays, in the ending's own re-keyed journal; a later one goes
         e0 = self._ending(m, SIDS[0], 0)
         (self.state / "overrides" / (SIDS[0] + ".jsonl")).write_text(
@@ -289,14 +289,12 @@ class Harness(unittest.TestCase):
         old = {"id": sid + ":g1", "text": "The older goal", "parentId": None, "t": start_t - 5000, "mt": cut_t + 5000, "nodeComplete": True,
                "blocked": False, "cleared": False, "doneWhy": "synthetic", "settledDone": True, "settledAt": cut_t + 9, "rolledUp": False,
                "trail": [seg0, segp, segl], "blockCheckT": cut_t + 700, "closerLookT": start_t - 4000,
-               "log": [{"ev_t": start_t - 5000, "at": start_t - 4999, "src": "planner", "kind": "mint"},
-                       {"ev_t": start_t - 4000, "at": start_t - 3999, "src": "planner", "kind": "block", "why": "synthetic"},
+               "log": [{"ev_t": start_t - 4000, "at": start_t - 3999, "src": "planner", "kind": "block", "why": "synthetic"},
                        {"ev_t": start_t, "at": cut_t + 9, "src": "closer", "kind": "done", "why": "synthetic"},
                        {"ev_t": cut_t + 4000, "at": cut_t + 4001, "src": "closer", "kind": "block", "why": "synthetic later"}]}
         new = {"id": sid + ":g2", "text": "The turn's own goal", "parentId": None, "t": start_t, "mt": cut_t + 10, "nodeComplete": True,
                "blocked": False, "cleared": False, "doneWhy": "synthetic", "trail": [segp],
-               "log": [{"ev_t": start_t, "at": start_t + 1, "src": "planner", "kind": "mint"},
-                       {"ev_t": cut_t, "at": cut_t + 8, "src": "closer", "kind": "done", "why": "synthetic"}]}
+               "log": [{"ev_t": start_t, "at": cut_t + 8, "src": "closer", "kind": "done", "why": "synthetic"}]}   # ev_t is the turn it closed (its start), at the arrival (the cut)
         sub_later = {"id": sid + ":g3", "text": "A sub of the later turn", "parentId": sid + ":g2", "t": cut_t + 3000, "trail": [segl], "log": []}
         store = {"rompUuid": sid, "seq": 3, "nodes": {old["id"]: old, new["id"]: new, sub_later["id"]: sub_later},
                  "status": {old["id"]: "completed", new["id"]: "completed"}, "placementsV": 14, "rev": 4, "lastNode": sub_later["id"],
@@ -327,8 +325,8 @@ class Harness(unittest.TestCase):
         self.assertNotIn(sid, json.dumps(before), "every id prefix is the ending's now")
         g1, g2 = before["nodes"].get(eid + ":g1"), before["nodes"].get(eid + ":g2")
         self.assertEqual(sorted(before["nodes"]), [eid + ":g1", eid + ":g2"], "the older top and the turn's own prompt-run node; the later sub is gone")
-        self.assertEqual([ev["kind"] for ev in g1["log"]], ["mint", "block"], "the done filed at the cut and the later block are gone: %r" % g1["log"])
-        self.assertEqual([ev["kind"] for ev in g2["log"]], ["mint"], "the turn's own node keeps its mint and nothing the turn's judging wrote")
+        self.assertEqual([ev["kind"] for ev in g1["log"]], ["block"], "the older top keeps its pre-turn block; the done filed at the cut and the later block are gone: %r" % g1["log"])
+        self.assertEqual(g2["log"], [], "the turn's own node is kept by birth with an empty log; nothing the turn's judging wrote survives")
         for field in ("nodeComplete", "doneWhy", "settledDone", "settledAt", "rolledUp"):
             self.assertNotIn(field, g1, field)
         self.assertNotIn("blockCheckT", g1, "a gate stamp from after the cut is dropped"); self.assertIn("closerLookT", g1, "one from before stays")
@@ -398,12 +396,13 @@ class Harness(unittest.TestCase):
             "e1": {"class": "finished", "builds": [{"g1": {"column": "needs_input", "scored": False}, "g2": {"column": "completed", "scored": True}},
                                                    {"g1": {"column": "needs_input", "scored": False}, "g2": {"column": "completed", "scored": True}}]},
             "e2": {"class": "offer", "builds": [{"g1": {"column": "completed", "scored": False}, "g2": {"column": "needs_input", "scored": True}},
-                                                {"g1": {"column": "completed", "scored": False}, "g2": {"column": "working", "scored": True}}]},
+                                                {"g1": {"column": "cleared", "scored": False}, "g2": {"column": "working", "scored": True}}]},
             "e3": {"class": "finished", "builds": [{"g1": {"column": "needs_input", "scored": True}}, {"g1": {"column": "needs_input", "scored": True}}]}}}
         mm = self.je.measure(manifest, results)
         self.assertEqual((mm["leaks"], mm["falseInterrupts"], mm["flaps"]), (0, 1, 1),
                          "the inherited blocked and completed cards count nothing; the finished ending's own blocked card is the one false interrupt; "
-                         "the offer's own card that read needs_input then working is the one flap: %r" % mm)
+                         "the offer's own card that read needs_input then working is the one flap. e2's UNSCORED g1 also differs across builds "
+                         "(completed then cleared) and must not count: flaps run over the scored cards only: %r" % mm)
         old = {"arm": "old", "endings": {"e2": {"class": "offer", "builds": [{"g1": "completed"}, {"g1": "completed"}]}}}
         self.assertEqual(self.je.measure(manifest, old)["leaks"], 1, "an older results file counts every card")
 
@@ -608,12 +607,15 @@ class Harness(unittest.TestCase):
         usr("second ask", "u2", promptSource="sdk"); asst("second answer", "a7")   # a composer (text-string) opener
         pth = os.path.join(self.td, "parity.jsonl"); open(pth, "w").write("".join(json.dumps(r) + "\n" for r in recs))
         _recs, endings = self.je.session_endings(pth, sid)
-        # the event model's own ended turns, mapped the same way
+        # the event model's own ended turns the MODEL WORKED (an assistant atom not command-flagged), mapped the same way
         sess = em.parse_session(pth, rompuuid=sid)
         uuid_idx = {r.get("uuid"): i for i, r in enumerate(recs)}
-        want = sorted((max(uuid_idx[a["uuid"]] for a in tn["atoms"] if a.get("uuid") in uuid_idx), float(tn["t"]))
-                      for tn in sess["turns"] if tn.get("ended") and any(a.get("uuid") in uuid_idx for a in tn["atoms"]))
-        self.assertEqual(endings, want, "the builder's boundaries are the event model's own, over every record kind")
+        def worked(tn):
+            return any(a.get("type") == "assistant" and not a.get("command") for a in tn["atoms"])
+        want = sorted((max(uuid_idx[a["uuid"]] for a in tn["atoms"] if a.get("uuid") in uuid_idx),
+                       float(tn["t"]) if tn.get("trigger") else None)
+                      for tn in sess["turns"] if tn.get("ended") and worked(tn) and any(a.get("uuid") in uuid_idx for a in tn["atoms"]))
+        self.assertEqual([(i, st) for i, st, _tx in endings], want, "the builder's boundaries are the event model's own worked turns")
         self.assertTrue(endings, "the transcript has ended turns")
         # a wrapper mid-turn: one prompt, a non-final assistant, a system-reminder, the final assistant → ONE ended turn at the prompt
         mid = [{"type": "user", "timestamp": iso(T0), "uuid": "p1", "parentUuid": None, "sessionId": sid, "cwd": "/TESTDIR",
@@ -628,6 +630,7 @@ class Harness(unittest.TestCase):
         _r2, e2 = self.je.session_endings(pth2, sid)
         self.assertEqual(len(e2), 1, "the mid-turn system-reminder does not split the turn: %r" % e2)
         self.assertEqual((mid[e2[0][0]]["uuid"], e2[0][1]), ("m2", float(T0)), "one ending at the final assistant, its start at the prompt")
+        self.assertEqual(e2[0][2], "done", "the last non-command assistant text is carried")
 
     def test_eligible_endings_are_picked_oldest_first(self):
         """Round two: the branches were swapped, so the eligible endings came newest first, the ones the user had had the least
@@ -641,7 +644,7 @@ class Harness(unittest.TestCase):
         (self.state / "names" / sid3).write_text("api\t%s\t#abcdef\n" % self.cwd)
         # every offer of the third session completed by the judges in its own turn
         ends = self.je.turn_ends(recs)
-        log = [{"ev_t": self.je._ts(recs[i]), "at": self.je._ts(recs[i]) + 2, "src": "closer", "kind": "done", "why": "x"} for i in ends]
+        log = [{"ev_t": self.je.turn_start(recs, i), "at": self.je._ts(recs[i]) + 2, "src": "closer", "kind": "done", "why": "x"} for i in ends]   # ev_t at the turn's start, at the arrival (the cut)
         store = {"rompUuid": sid3, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
                  "nodes": {sid3 + ":g1": {"id": sid3 + ":g1", "text": "The goal", "parentId": None, "t": T0 + 49000, "trail": [], "log": log}}}
         (self.state / "goals" / (sid3 + ".json")).write_text(json.dumps(store))
@@ -651,19 +654,17 @@ class Harness(unittest.TestCase):
                          [(hashlib.sha256(sid3.encode()).hexdigest()[:12], 0, True)], "the oldest eligible offer, not the newest: %r" % offers)
 
     def test_a_pre_turn_top_the_arm_leaves_alone_is_not_scored(self):
-        """Round two: `scored` was unpinned. A seed with two older tops the arm does not touch and the turn's own card: the older
-        ones read unscored, the turn's own scored."""
+        """`scored` pinned: an older top the user CLEARED before the turn (off the arm's menu, so the arm files nothing on it)
+        reads unscored, its inherited `cleared` column counting against no measure; the turn's own card, which the arm rules
+        on this build, scores. The arm's own filing (`at` == the pass's now) parts the two from the seed's earlier `at`."""
         sid = SIDS[0]
         m = self._corpus()[1]
         e = self._ending(m, sid, 1)
         start = float(e["startT"])
         seg0 = "%s:%d:aaaaaaaa" % (sid, start - 5000)
-        nodes = {}
-        for n in ("g1", "g2"):
-            nodes[sid + ":" + n] = {"id": sid + ":" + n, "text": "An older goal %s" % n, "parentId": None, "t": start - 5000, "trail": [seg0],
-                                    "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"},
-                                            {"ev_t": start - 4000, "at": start - 3999, "src": "planner", "kind": "block", "why": "waiting"}]}
-        store = {"rompUuid": sid, "seq": 2, "placementsV": 14, "placements": {seg0: sid + ":g1"}, "status": {}, "nodes": nodes,
+        cleared = {"id": sid + ":g1", "text": "An older goal the user cleared", "parentId": None, "t": start - 5000, "trail": [seg0],
+                   "log": [{"ev_t": start - 4000, "at": start - 3999, "src": "user", "kind": "clear", "why": "seen"}]}
+        store = {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg0: sid + ":g1"}, "status": {}, "nodes": {cleared["id"]: cleared},
                  "closedTurns": [], "closedSig": {}}
         (self.state / "goals" / (sid + ".json")).write_text(json.dumps(store))
         dest, m = self._corpus(name="corpus-scored")
@@ -672,8 +673,11 @@ class Harness(unittest.TestCase):
         build = res["endings"][self._ending(m, sid, 1)["id"]]["builds"][-1]
         self.assertTrue(all(isinstance(v, dict) and "scored" in v for v in build.values()),
                         "each card carries a scored stamp (the base recorded a bare column): %r" % build)
-        flags = sorted(v["scored"] for v in build.values())
-        self.assertEqual(flags, [False, True], "the pre-turn top the arm rules on this turn scores; the one it leaves alone does not: %r" % build)
+        cleared_card = build.get("g1")
+        self.assertIsNotNone(cleared_card, "the inherited cleared top is in the build: %r" % build)
+        self.assertEqual((cleared_card["column"], cleared_card["scored"]), ("cleared", False),
+                         "the cleared top the arm leaves alone reads cleared and unscored: %r" % build)
+        self.assertTrue(any(v["scored"] for n, v in build.items() if n != "g1"), "the turn's own card scores: %r" % build)
         self.assertEqual(self.je.measure(m, res)["falseInterrupts"], 0, "the untouched inherited blocked top counts against no finished ending")
 
     def test_the_seed_is_rolled_up_before_the_first_menu(self):
@@ -685,13 +689,11 @@ class Harness(unittest.TestCase):
         start = float(e["startT"])
         seg0 = "%s:%d:aaaaaaaa" % (sid, start - 5000)
         top = {"id": sid + ":g1", "text": "An open top with a finished part", "parentId": None, "t": start - 5000, "trail": [seg0],
-               "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"}]}
+               "log": []}
         sub = {"id": sid + ":g2", "text": "The finished part nobody should see", "parentId": sid + ":g1", "t": start - 4900, "trail": [seg0],
-               "log": [{"ev_t": start - 4900, "at": start - 4899, "src": "planner", "kind": "mint"},
-                       {"ev_t": start - 4000, "at": start - 3999, "src": "closer", "kind": "done", "why": "x"}]}
+               "log": [{"ev_t": start - 4000, "at": start - 3999, "src": "closer", "kind": "done", "why": "x"}]}
         cleared = {"id": sid + ":g3", "text": "A top the user crossed off", "parentId": None, "t": start - 4800, "trail": [seg0],
-                   "log": [{"ev_t": start - 4800, "at": start - 4799, "src": "planner", "kind": "mint"},
-                           {"ev_t": start - 3000, "at": start - 2999, "src": "user", "kind": "clear", "why": "seen"}]}
+                   "log": [{"ev_t": start - 3000, "at": start - 2999, "src": "user", "kind": "clear", "why": "seen"}]}
         store = {"rompUuid": sid, "seq": 3, "placementsV": 14, "placements": {seg0: sid + ":g1"}, "status": {},
                  "nodes": {n["id"]: n for n in (top, sub, cleared)}, "closedTurns": [], "closedSig": {}}
         (self.state / "goals" / (sid + ".json")).write_text(json.dumps(store))
@@ -764,7 +766,7 @@ class Harness(unittest.TestCase):
         (self.state / "names" / short).write_text("short\t%s\t#abcdef\n" % self.cwd)
         m = self._corpus(name="skips")[1]
         self.assertIn("skipped", m, "the manifest counts skips (the base wrote none)")
-        self.assertEqual(m["skipped"], {"no-transcript": 1, "few-turns": 1, "unreadable-names-entry": 1, "parse-failed": 0, "store-unreadable": 0})
+        self.assertEqual(m["skipped"], {"no-transcript": 1, "few-turns": 1, "unreadable-names-entry": 1, "parse-failed": 0, "store-unreadable": 0, "registry-unreadable": 0})
         self.assertNotIn("nowhere", json.dumps(m["skipped"]))
 
     def test_the_label_entry_takes_no_default_binary(self):
@@ -832,8 +834,7 @@ class Harness(unittest.TestCase):
         user's clear at `cleared_at`; the clear also rides the override journal, as append_clear writes it."""
         node = {"id": sid + ":gA", "text": "A goal the user cleared", "parentId": None, "t": cut_t - 5000, "cleared": True,
                 "trail": ["%s:%d:aaaaaaaa" % (sid, cut_t - 5000)],
-                "log": [{"ev_t": cut_t - 5000, "at": cut_t - 4999, "src": "planner", "kind": "mint"},
-                        {"ev_t": cut_t - 3, "at": cut_t - 2, "src": "closer", "kind": "done", "why": "delivered"},
+                "log": [{"ev_t": cut_t - 3, "at": cut_t - 2, "src": "closer", "kind": "done", "why": "delivered"},
                         {"ev_t": cleared_at, "at": cleared_at + 1, "src": "user", "kind": "clear", "why": "seen"}]}
         arch = {"rompUuid": sid, "nodes": {node["id"]: node}, "status": {node["id"]: "cleared"}}
         (self.state / "goals-archive" / (sid + ".json")).write_text(json.dumps(arch))
@@ -870,6 +871,7 @@ class Harness(unittest.TestCase):
         self.assertFalse(self.je.in_turn_window(1000.5, 900.0, 1000.0), "a done after the cut belongs to the next turn")
         self.assertTrue(self.je.in_turn_window(950.0, 900.0, 1000.0))
         self.assertFalse(self.je.in_turn_window(899.0, 900.0, 1000.0), "before the turn start is not the ending's")
+        self.assertFalse(self.je.in_turn_window(950.0, None, 1000.0), "an ending with no turn opener (None start) has no window: never eligible")
 
     def test_tier_one_matches_the_journals_full_node_key(self):
         """A cross-session tail collision: a followup on ANOTHER session's g1 and a clear on this one. The tail compare (the base)
@@ -901,7 +903,7 @@ class Harness(unittest.TestCase):
         seg = "%s:%d:aaaaaaaa" % (sid, start - 5000)
         node = {"id": sid + ":g1", "text": "older", "parentId": None, "t": start - 5000, "trail": [seg],
                 "blockCheckT": cut, "blockCheckDoneT": cut + 50, "delegLookT": cut + 60, "titledT": cut + 70, "servingT": start - 20,
-                "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"}]}
+                "log": []}
         store = {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":g1"}, "status": {}, "nodes": {node["id"]: node},
                  "seams": [1, 2, 3], "confirming": [sid + ":g1"], "groupedSig": {"x": "y"}, "closeFails": 4}
         before = self.je.store_before(store, cut, start, e["id"])
@@ -946,15 +948,23 @@ class Harness(unittest.TestCase):
 
     def test_a_faulted_store_is_recorded_not_swallowed(self):
         sid = SIDS[0]
-        m = self._corpus()[1]
+        dest, m = self._corpus()                          # built clean (no store); the corruption comes after, so the endings are in the manifest
         (self.state / "goals" / (sid + ".json")).write_text("{ not json")
         faults = []
         out = self.je.tier_one_label(self.state, sid, float(self._ending(m, sid, 0)["cutT"]), float(self._ending(m, sid, 0)["startT"]), faults=faults)
         self.assertIsNone(out)
         self.assertEqual([f[0] for f in faults], [hashlib.sha256(sid.encode()).hexdigest()[:12]], "the fault is recorded by session hash, never the sid or path")
         self.assertNotIn(sid, json.dumps(faults))
-        summary = self.je.label(self._corpus(name="faulted")[0], os.path.join(self.td, "runs-fault"), self.state, claude_bin=self.fake, model="fake")
+        summary = self.je.label(dest, os.path.join(self.td, "runs-fault"), self.state, claude_bin=self.fake, model="fake")
         self.assertIn("tierOneErrors", summary, "the summary counts faulted sessions")
+        # per-row: a faulted read carries its error string, told apart from a genuine null tier one (a session with no store)
+        rows = json.loads(Path(self.td, "runs-fault", "labels.json").read_text())
+        h0 = hashlib.sha256(SIDS[0].encode()).hexdigest()[:12]; h1 = hashlib.sha256(SIDS[1].encode()).hexdigest()[:12]
+        faulted = [r for r in rows if r.get("tierOneError")]
+        self.assertTrue(faulted and all(f["tierOne"] is None for f in faulted), "the faulted rows carry an error and a null tier one: %r" % faulted)
+        clean = [r for r in rows if r["id"] in {e["id"] for e in m["endings"] if e["session"] == h1}]
+        self.assertTrue(clean and all(r["tierOne"] is None and r["tierOneError"] is None for r in clean),
+                        "a session with no store reads a null tier one with NO error: the two nulls are distinguished: %r" % clean)
 
     def test_a_clear_before_the_turn_reads_cleared_and_one_inside_the_turn_is_open(self):
         """M1: the seed is the store as at the turn's open. A top the user cleared BEFORE the turn start keeps its clear log and
@@ -967,12 +977,11 @@ class Harness(unittest.TestCase):
         seg = "%s:%d:aaaaaaaa" % (sid, start - 5000)
         def store_with_clear(clear_t):
             node = {"id": sid + ":gA", "text": "A cleared top", "parentId": None, "t": start - 5000, "cleared": True, "trail": [seg],
-                    "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"},
-                            {"ev_t": clear_t, "at": clear_t + 1, "src": "user", "kind": "clear", "why": "seen"}]}
+                    "log": [{"ev_t": clear_t, "at": clear_t + 1, "src": "user", "kind": "clear", "why": "seen"}]}
             return {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":gA"}, "status": {}, "nodes": {node["id"]: node}}
         before_start = self.je.store_before(store_with_clear(start - 100), cut, start, e["id"])
         ga = before_start["nodes"][e["id"] + ":gA"]
-        self.assertEqual([ev["kind"] for ev in ga["log"]], ["mint", "clear"], "a clear before the turn start survives in the seed")
+        self.assertEqual([ev["kind"] for ev in ga["log"]], ["clear"], "a clear before the turn start survives in the seed")
         jd = self.je.load_judge(Path(self.td) / "rollup-state", Path(self.td) / "noclaude", self.fake)   # roll it up as the arm would
         try:
             st = {"rompUuid": e["id"], "seq": 1, "placementsV": 14, "placements": {}, "status": {}, "nodes": before_start["nodes"]}
@@ -982,7 +991,7 @@ class Harness(unittest.TestCase):
             pass
         inside = self.je.store_before(store_with_clear(cut - 1), cut, start, e["id"])   # a clear one second before the cut, inside the turn
         gi = inside["nodes"][e["id"] + ":gA"]
-        self.assertEqual([ev["kind"] for ev in gi["log"]], ["mint"], "a clear inside the turn is dropped: the card is open at the seed, the arm's to make")
+        self.assertEqual(gi["log"], [], "a clear inside the turn is dropped: the card is open at the seed, the arm's to make")
 
     def test_a_corrupt_store_is_counted_never_swallowed(self):
         """M-low: store_with_archive swallowed a corrupt goals or goals-archive file, so a session lost its seed unseen. A
@@ -1003,6 +1012,70 @@ class Harness(unittest.TestCase):
         (self.state / "goals-archive" / (sid + ".json")).write_text("{ not json either")
         with self.assertRaises(ValueError):
             self.je.store_with_archive(self.state, sid)
+        # a well-formed JSON top that is not an object (a list, a bare string) is quarantined too, never read as an empty store
+        (self.state / "goals-archive" / (sid + ".json")).unlink()
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps(["not", "a", "store"]))
+        with self.assertRaises(ValueError, msg="a non-object store top raises, never reads as a store with no nodes"):
+            self.je.store_with_archive(self.state, sid)
+
+    def test_known_fsids_skips_absent_lineage_but_raises_on_a_corrupt_registry(self):
+        """known_fsids reads the sid's lineage as files: an absent episodes/states file (ENOENT/ENOTDIR) contributes nothing,
+        but a corrupt registry is a fault it raises (the builder counts registry-unreadable), never read as no lineage."""
+        sid = SIDS[0]
+        # no sdk/episodes/states files for this sid: known_fsids returns the sid alone, never raising on their absence
+        self.assertEqual(self.je.known_fsids(self.state, sid), {sid}, "absent lineage files are skipped, not a fault")
+        # a resume-fork leaf in states/ joins; an absent episodes file beside it still just skips
+        (self.state / "states" / (sid + ".jsonl")).write_text(json.dumps({"resumeFork": {"from": sid, "to": sid + "-r"}}) + "\n")
+        self.assertEqual(self.je.known_fsids(self.state, sid), {sid, sid + "-r"}, "the resume fork's ends join")
+        # a corrupt registry RAISES; the builder counts it under registry-unreadable and names no sid
+        (self.state / "sdk" / (sid + ".json")).write_text("{ not json")
+        with self.assertRaises(ValueError, msg="a corrupt registry raises, never read as no lineage"):
+            self.je.known_fsids(self.state, sid)
+        import io, contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            m = self._corpus(name="badreg")[1]
+        self.assertGreaterEqual(m["skipped"]["registry-unreadable"], 1, "the session with the corrupt registry is counted")
+        self.assertNotIn(sid, json.dumps(m["skipped"]) + err.getvalue())
+
+    def test_an_opener_less_ending_seeds_from_the_previous_ended_turns_cut(self):
+        """M2: an ending whose turn has no opener (start None) stays ineligible (its manifest startT is null), but its seed and
+        journal still cut SOMEWHERE: the previous ended turn's cut, never the ending's own cut. The base cut at the ending's own
+        cut, so a node born in the ending's own turn (and a journal row inside it) seeded the ending: the arm inherited what its
+        own turn produced. Here a node born and a journal row filed AFTER the previous cut are absent from the opener-less
+        ending's seed and journal, present in every earlier ending's."""
+        sid = SIDS[0]
+        recs, t, parent = [], T0, None
+        for j in range(3):
+            recs.append(uline(sid, t, "ask %d" % j, "u%d" % j, parent)); recs.append(aline(sid, t + 30, "Answer %d." % j, "a%d" % j, "u%d" % j))
+            parent = "a%d" % j; t += 600
+        (self.pdir / (sid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        seg = "%s:%d:aaaaaaaa" % (sid, T0 + 900)                     # born between turn 1's cut (T0+630) and turn 2's cut (T0+1230)
+        node = {"id": sid + ":gX", "text": "born after the previous cut", "parentId": None, "t": T0 + 900, "trail": [seg], "log": []}
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps(
+            {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":gX"}, "status": {}, "nodes": {node["id"]: node}}))
+        (self.state / "overrides" / (sid + ".jsonl")).write_text(
+            json.dumps({"node": sid + ":gX", "op": "followup", "t": T0 + 100}) + "\n"        # before every turn's start: always kept
+            + json.dumps({"node": sid + ":gX", "op": "followup", "t": T0 + 900}) + "\n")     # after turn 1's cut: in turn 2 only
+        real = self.je.session_endings
+        def patched(path, fsid):
+            records, endings = real(path, fsid)
+            if sid in str(path) and len(endings) >= 3:
+                i, _s, tx = endings[-1]
+                endings[-1] = (i, None, tx)                         # turn 2 loses its opener
+            return records, endings
+        self.je.session_endings = patched
+        try:
+            dest, m = self._corpus(name="openerless")
+        finally:
+            self.je.session_endings = real
+        e2 = self._ending(m, sid, 2)
+        self.assertIsNone(e2["startT"], "the opener-less ending keeps a null start: it is never eligible")
+        self.assertIs(e2["tierOneEligible"], False)
+        seed2 = json.loads(Path(dest, "state", "romp", "goals", e2["id"] + ".json").read_text())
+        self.assertNotIn(e2["id"] + ":gX", seed2["nodes"], "the node born after the previous cut is NOT in the opener-less ending's seed")
+        j2 = [json.loads(l) for l in Path(dest, "state", "romp", "overrides", e2["id"] + ".jsonl").read_text().splitlines()]
+        self.assertEqual([r["t"] for r in j2], [T0 + 100], "its journal keeps only the row before the previous cut, not the one inside its own turn")
 
     def test_the_dropped_blockcheckt_lets_the_unblocker_examine_the_node(self):
         """M-low: the drop-list pin was key absence; drive it by the unblocker's own due gate. A blocked top's seed, rolled up
@@ -1016,8 +1089,7 @@ class Harness(unittest.TestCase):
         seg = "%s:%d:aaaaaaaa" % (sid, start - 5000)
         node = {"id": sid + ":g1", "text": "A blocked top waiting on the user", "parentId": None, "t": start - 5000, "blocked": True,
                 "blockCheckT": start, "trail": [seg],
-                "log": [{"ev_t": start - 5000, "at": start - 4999, "src": "planner", "kind": "mint"},
-                        {"ev_t": start - 4000, "at": start - 3999, "src": "planner", "kind": "block", "why": "your call?"}]}
+                "log": [{"ev_t": start - 4000, "at": start - 3999, "src": "planner", "kind": "block", "why": "your call?"}]}
         store = {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":g1"}, "status": {}, "nodes": {node["id"]: node},
                  "closedTurns": [], "closedSig": {}}
         before = self.je.store_before(store, cut, start, e["id"])
@@ -1052,6 +1124,232 @@ class Harness(unittest.TestCase):
         self.assertEqual(summary["both"], 2, "two endings carry both a tier-one and a stable label: %r" % summary)
         self.assertEqual(summary["agree"], 1, "the offer disagrees (finished vs offer); the finished agrees")
         self.assertEqual((summary["agreementPct"], summary["gatePassed"]), (50.0, False), "below the 90 percent gate: %r" % summary)
+
+    # ── ksarma's review of 1946 ──
+    def test_store_with_archive_skips_rewind_swept_nodes(self):
+        sid = SIDS[0]
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps({"rompUuid": sid, "seq": 2, "nodes": {}, "status": {},
+                                                                        "rewindSwept": {sid + ":g9": 1}}))
+        (self.state / "goals-archive" / (sid + ".json")).write_text(json.dumps({"rompUuid": sid, "nodes": {
+            sid + ":gC": {"id": sid + ":gC", "text": "a cleared top", "parentId": None, "t": 1, "log": [{"ev_t": 1, "at": 2, "src": "user", "kind": "clear"}]},
+            sid + ":g9": {"id": sid + ":g9", "text": "a rewound node", "parentId": None, "t": 1, "log": []}}}))
+        merged = self.je.store_with_archive(self.state, sid)
+        self.assertIn(sid + ":gC", merged["nodes"], "the cleared top is unioned")
+        self.assertNotIn(sid + ":g9", merged["nodes"], "a rewind-swept node is not (its id is in the live store's rewindSwept)")
+
+    def test_a_title_lane_is_seeded_and_labelled_from_its_own_store(self):
+        """A same-titled fork lane's endings key their store, journal and dones under the LANE's stem, not the anchor's."""
+        sid = SIDS[0]; lane = "11111111-2222-3333-4444-fffffffffa01"
+        recs = [{"type": "custom-title", "customTitle": "web", "sessionId": lane, "timestamp": iso(T0 + 80000)},
+                uline(lane, T0 + 80000, "in the lane", "u1"), aline(lane, T0 + 80030, "Lane answer.", "a1", "u1"),
+                uline(lane, T0 + 80600, "more in the lane", "u2", "a1"), aline(lane, T0 + 80630, "Lane done. I can also tidy.", "a2", "u2")]
+        (self.pdir / (lane + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        # the lane's OWN store: a top the closer completed in the lane's first turn, at that turn's start
+        laneseg = "%s:%d:aaaaaaaa" % (lane, T0 + 80000)
+        (self.state / "goals" / (lane + ".json")).write_text(json.dumps({"rompUuid": lane, "seq": 1, "placementsV": 14,
+            "placements": {laneseg: lane + ":gL"}, "status": {},
+            "nodes": {lane + ":gL": {"id": lane + ":gL", "text": "The lane's own goal", "parentId": None, "t": T0 + 80000, "trail": [laneseg],
+                                     "log": [{"ev_t": T0 + 80000, "at": T0 + 80005, "src": "closer", "kind": "done", "why": "delivered"}]}}}))
+        (self.state / "overrides" / (lane + ".jsonl")).write_text(json.dumps({"node": lane + ":gL", "op": "followup", "t": T0 + 90000}) + "\n")
+        m = self._corpus(name="lane")[1]
+        h_anchor = hashlib.sha256(sid.encode()).hexdigest()[:12]; h_lane = hashlib.sha256(lane.encode()).hexdigest()[:12]
+        lane_endings = [e for e in m["endings"] if e.get("lane") == h_lane]
+        self.assertTrue(lane_endings, "the lane's endings carry its own lane hash: %r" % [(e["session"], e.get("lane")) for e in m["endings"]])
+        self.assertTrue(all(e["session"] == h_anchor for e in lane_endings), "the anchor's hash stays in `session`")
+        e0 = min(lane_endings, key=lambda e: e["turn"])
+        self.je.label(os.path.join(self.td, "lane"), os.path.join(self.td, "runs-lane"), self.state, claude_bin=self.fake, model="fake")
+        rows = {r["id"]: r for r in json.loads(Path(self.td, "runs-lane", "labels.json").read_text())}
+        self.assertEqual(rows[e0["id"]]["tierOne"], "not finished",
+                         "tier one reads the LANE's own store and journal (a done in the lane's first turn, a followup after): the anchor's store would give None")
+
+    def test_label_never_falls_from_an_unresolved_lane_to_the_anchor(self):
+        """M1: when an ending carries a lane hash, the label pass reads the LANE's store, never the anchor's. A lane the pass
+        cannot resolve (no names entry, no goals file) yields a null tier one, not the anchor's. The base fell through
+        `key_of.get(lane) or key_of.get(session)` to the anchor and read the wrong session's cards."""
+        sid = SIDS[0]
+        e = self._ending(self._corpus()[1], sid, 0)
+        # the anchor's own store reads FINISHED (a user clear after the cut); a lane hash that resolves to nothing must not borrow it
+        self._live_store_with_done(sid, float(e["startT"]), float(e["cutT"]), [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "x", "t": float(e["cutT"]) + 60}])
+        self.assertEqual(self.je.tier_one_label(self.state, sid, float(e["cutT"]), float(e["startT"])), "finished", "the anchor's store reads finished")
+        dest = os.path.join(self.td, "m1"); (Path(dest) / "claude" / "projects").mkdir(parents=True)
+        lane_hash = hashlib.sha256(b"an-unregistered-lane-with-no-store-or-name").hexdigest()[:12]
+        Path(dest, "manifest.json").write_text(json.dumps({"built": T0, "classes": list(self.je.CLASSES), "skipped": {}, "endings": [
+            {"id": e["id"], "session": hashlib.sha256(sid.encode()).hexdigest()[:12], "lane": lane_hash,
+             "class": "offer", "cutT": e["cutT"], "startT": e["startT"], "tierOneEligible": True}]}))
+        self.je.label(dest, os.path.join(self.td, "runs-m1"), self.state, claude_bin=self.fake, model="fake")
+        row = json.loads(Path(self.td, "runs-m1", "labels.json").read_text())[0]
+        self.assertIsNone(row["tierOne"], "an unresolved lane never falls through to the anchor's store: tier one is null, not the anchor's finished")
+        self.assertEqual(row["tierOneError"], "unresolved-key", "an unresolvable manifest hash is marked, not passed off as a store-less session's genuine null")
+
+    def test_a_registered_same_titled_transcript_is_not_a_lane(self):
+        """The `registered` half of the lane exclusion: a fork lane is an UNREGISTERED same-titled transcript. A second
+        REGISTERED session whose transcript's custom title matches the first session's name ("web") must not be claimed as the
+        first's lane; it keeps its own two endings under its own hash. Dropping the registered half folds its endings into the
+        first session (processed first) and leaves it reporting no transcript of its own."""
+        b = "11111111-2222-3333-4444-eeeeeeeeee03"    # registered, its transcript titled "web" (the first session's name), sorts AFTER it
+        recs = [{"type": "custom-title", "customTitle": "web", "sessionId": b, "timestamp": iso(T0 + 40000)},
+                uline(b, T0 + 40000, "b ask 0", "b0"), aline(b, T0 + 40030, "B answer 0.", "ba0", "b0"),
+                uline(b, T0 + 40600, "b ask 1", "b1", "ba0"), aline(b, T0 + 40630, "B answer 1.", "ba1", "b1")]
+        (self.pdir / (b + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        (self.state / "names" / b).write_text("apiweb\t%s\t#abcdef\n" % self.cwd)
+        m = self._corpus()[1]
+        hb = hashlib.sha256(b.encode()).hexdigest()[:12]
+        self.assertEqual(sum(1 for e in m["endings"] if e["session"] == hb), 2,
+                         "the registered same-titled session keeps its own two endings under its own hash, never folded into the first as a lane: %r"
+                         % [(e["session"], e.get("lane")) for e in m["endings"]])
+
+    def test_the_per_session_queue_is_sorted_by_cut_time_before_the_pop(self):
+        """The per-session sort by cut time: a session's candidates arrive in fsid (stem) order, not time order, once a fork
+        lane joins. With the anchor's turns NEWER than the lane's and per_class=2, the two OLDEST eligible offers (both the
+        lane's) win the slots; dropping the sort pops in stem order and takes the anchor's newer two. Its own state root."""
+        root = Path(self.td, "sortstate", "romp")
+        for sub in ("names", "goals", "goals-archive", "overrides", "sdk", "states", "episodes"):
+            (root / sub).mkdir(parents=True)
+        (root / "session-hosts").write_text("off")
+        claude = Path(self.td, "sortclaude")
+        cwd = os.path.join(self.td, "sortproj"); os.makedirs(cwd)
+        pdir = claude / "projects" / self.je.munge(cwd); pdir.mkdir(parents=True)
+        solo = "11111111-2222-3333-4444-aaaaaaaaaa01"; lane = "11111111-2222-3333-4444-ffffffffff90"   # lane's stem sorts AFTER, so it is appended after
+        def offers(sid, base):
+            recs, t, parent = [], base, None
+            for j in range(2):
+                u, a = "%s-u%d" % (sid[-2:], j), "%s-a%d" % (sid[-2:], j)
+                recs.append(uline(sid, t, "ask %d" % j, u, parent)); recs.append(aline(sid, t + 30, "Done %d. I can also tidy the names." % j, a, u))
+                parent = a; t += 600
+            return recs
+        (pdir / (solo + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in offers(solo, T0 + 10000)))       # the anchor's offers: newer
+        lane_recs = [{"type": "custom-title", "customTitle": "solo", "sessionId": lane, "timestamp": iso(T0 - 5000)}] + offers(lane, T0 - 5000)   # the lane's: older
+        (pdir / (lane + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in lane_recs))
+        (root / "names" / solo).write_text("solo\t%s\t#abcdef\n" % cwd)
+        def store_for(sid, base):
+            log = [{"ev_t": base + j * 600 + 5, "at": base + j * 600 + 6, "src": "closer", "kind": "done", "why": "x"} for j in range(2)]   # a done in each turn's window: every offer eligible
+            return {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
+                    "nodes": {sid + ":g1": {"id": sid + ":g1", "text": "g", "parentId": None, "t": base, "trail": [], "log": log}}}
+        (root / "goals" / (solo + ".json")).write_text(json.dumps(store_for(solo, T0 + 10000)))
+        (root / "goals" / (lane + ".json")).write_text(json.dumps(store_for(lane, T0 - 5000)))
+        m = self.je.build_corpus(root, claude, os.path.join(self.td, "sortcorpus"), per_class=2, now=T0 + 10**6)
+        offers_picked = [e for e in m["endings"] if e["class"] == "offer"]
+        h_lane = hashlib.sha256(lane.encode()).hexdigest()[:12]
+        self.assertEqual(len(offers_picked), 2, "the offer cap is two: %r" % offers_picked)
+        self.assertTrue(all(e["tierOneEligible"] for e in offers_picked), "the picked offers are eligible (in the oldest-first branch): %r" % offers_picked)
+        self.assertTrue(all(e["lane"] == h_lane for e in offers_picked),
+                        "sorted by cut time, the two OLDEST eligible offers (the lane's) win; the dropped sort would take the anchor's newer two: %r"
+                        % [(e["turn"], e["lane"], e["cutT"]) for e in offers_picked])
+
+    def test_the_arm_writes_its_summary_even_when_the_closing_ledger_read_raises(self):
+        """Item 3: the closing cost tally and the final results.json write live in the finally, so a raise from the ledger read
+        after the loop has run every ending does not abort the arm with an unhandled error and no closing write. The base ran
+        the tally and the final write after the loop, outside any finally, so a raise there propagated out of the arm."""
+        dest, m = self._corpus()
+        run_root = os.path.join(self.td, "runs-ledger")
+        n_endings = len(m["endings"])
+        real = self.je.ledger_cost
+        calls = [0]
+        def boom(usage):
+            calls[0] += 1
+            if calls[0] > n_endings:                 # the per-ending budget checks pass; only the CLOSING tally raises
+                raise RuntimeError("ledger read failed")
+            return real(usage)
+        self.je.ledger_cost = boom
+        raised = None
+        try:
+            self.je.run_arm_inprocess(dest, "ledgerboom", None, run_root, None, self.fake, now=T0 + 10**6, builds=1)
+        except Exception as ex:
+            raised = ex
+        finally:
+            self.je.ledger_cost = real
+        self.assertIsNone(raised, "the closing ledger read raised, but the finally swallowed it after writing the summary: %r" % raised)
+        res = json.loads(Path(run_root, "ledgerboom", "results.json").read_text())
+        self.assertEqual(len(res["endings"]), n_endings, "the finally wrote the summary with every ending that ran: %r" % list(res.get("endings", {})))
+        self.assertEqual(res.get("costError"), "RuntimeError", "the failed tally is RECORDED, not a bare pass: a reader tells a free arm from a broken tally: %r" % res.get("costError"))
+        self.assertNotIn("cost", res, "and no cost is written when the tally never produced one")
+
+    def test_a_bare_command_or_interrupt_turn_is_no_ending(self):
+        sid = SIDS[0]
+        # the interrupt tail is a real USER record reading "[Request interrupted by user]" (is_interrupt_record rejects an
+        # assistant one): the worked turn u2 -> a2 (no end_turn, so the turn stays open through the tail) ends at the interrupt
+        recs = [uline(sid, T0, "real ask", "u1"), aline(sid, T0 + 30, "Real answer.", "a1", "u1"),
+                {"type": "user", "timestamp": iso(T0 + 100), "uuid": "c1", "parentUuid": "a1", "sessionId": sid, "isMeta": True,
+                 "message": {"role": "user", "content": "<command-name>/usage</command-name>"}},
+                {"type": "user", "timestamp": iso(T0 + 101), "uuid": "s1", "parentUuid": "c1", "sessionId": sid, "isMeta": True,
+                 "message": {"role": "user", "content": "<local-command-stdout>usage</local-command-stdout>"}},
+                uline(sid, T0 + 600, "another ask", "u2", "s1"),
+                {"type": "assistant", "timestamp": iso(T0 + 630), "uuid": "a2", "parentUuid": "u2", "sessionId": sid,
+                 "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on it, calling a tool."}], "stop_reason": "tool_use"}},
+                {"type": "user", "timestamp": iso(T0 + 640), "uuid": "i1", "parentUuid": "a2", "sessionId": sid,
+                 "message": {"role": "user", "content": "[Request interrupted by user]"}}]
+        pth = os.path.join(self.td, "cmds.jsonl"); open(pth, "w").write("".join(json.dumps(r) + "\n" for r in recs))
+        _r, endings = self.je.session_endings(pth, sid)
+        self.assertEqual([r[0] for r in endings], [1], "only the real worked turn (ending at a1) is an ending; the bare /usage and the interrupt-tailed turn are not: %r" % endings)
+
+    def test_a_turn_ending_on_tool_use_still_ends(self):
+        sid = SIDS[0]
+        recs = [uline(sid, T0, "do it", "u1"),
+                {"type": "assistant", "timestamp": iso(T0 + 30), "uuid": "a1", "parentUuid": "u1", "sessionId": sid,
+                 "message": {"role": "assistant", "content": [{"type": "text", "text": "On it, running a tool."}], "stop_reason": "tool_use"}},
+                uline(sid, T0 + 600, "next", "u2", "a1"), aline(sid, T0 + 630, "Done.", "a2", "u2")]
+        pth = os.path.join(self.td, "tooluse.jsonl"); open(pth, "w").write("".join(json.dumps(r) + "\n" for r in recs))
+        _r, endings = self.je.session_endings(pth, sid)
+        self.assertEqual(len(endings), 1, "a tool_use assistant does not end the turn; it folds the next prompt until end_turn: one worked ending: %r" % endings)
+
+    def test_one_endings_crash_files_a_row_and_the_arm_goes_on(self):
+        """The per-ending guard: a raise inside one ending's build files a pass-crash row and records the ending, and the arm
+        runs its other endings and writes results.json, rather than aborting with nothing. The crash is forced with a seed
+        whose node log is not a list, which the rollup iterates and raises on."""
+        dest, m = self._corpus()
+        victim = m["endings"][1]["id"]
+        # a valid-JSON seed of a shape the rollup chokes on (a node log that is a string, not a list of events)
+        (Path(dest) / "state" / "romp" / "goals" / (victim + ".json")).write_text(json.dumps({
+            "rompUuid": victim, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
+            "nodes": {victim + ":gx": {"id": victim + ":gx", "parentId": None, "t": 1, "log": "not-a-list"}}}))
+        run_root = os.path.join(self.td, "runs-crash")
+        self.je.run_arm_inprocess(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
+        res = json.loads(Path(run_root, "current", "results.json").read_text())
+        self.assertIn(victim, res["endings"], "the crashed ending is recorded, not dropped")
+        self.assertIn("crashed", res["endings"][victim], "with its crash noted: %r" % res["endings"][victim])
+        self.assertGreaterEqual(res["failures"], 1, "the pass-crash is counted")
+        self.assertEqual(len(res["endings"]), len(m["endings"]), "the arm ran every other ending")
+        errs = [json.loads(l) for l in Path(run_root, "current", "state", "romp", "judge-errors.jsonl").read_text().splitlines() if l.strip()]
+        self.assertTrue(any(e.get("err") == "pass-crash" for e in errs), "a pass-crash row is filed: %r" % errs[-3:])
+
+    def test_the_restore_matcher_reads_the_ops_and_the_source(self):
+        sid = SIDS[0]
+        m = self._corpus()[1]
+        e = self._ending(m, sid, 0)
+        start, cut = float(e["startT"]), float(e["cutT"])
+        def label_with(ops):
+            self._live_store_with_done(sid, start, cut, ops)
+            return self.je.tier_one_label(self.state, sid, cut, start)
+        self.assertEqual(label_with([{"node": sid + ":g1", "op": "unclear", "t": cut + 10}]), "not finished", "an unclear alone re-opens")
+        self.assertIsNone(label_with([{"node": sid + ":g1", "op": "clear", "src": "romp", "why": "episode", "t": cut + 10}]), "a romp clear is not the user's finish")
+        self.assertIsNone(label_with([{"node": sid + ":g1", "op": "block", "src": "nudge", "t": cut + 10}]), "a nudge block is neither")
+        self.assertEqual(label_with([{"node": sid + ":g1", "op": "resolve", "t": cut + 10}]), "finished", "a resolve is the user finishing it")
+        self.assertEqual(label_with([{"op": "restore", "nodes": {sid + ":g1": {"text": "back"}}, "t": cut + 10}]), "not finished", "a restore by its nodes dict re-opens")
+
+    def test_tier_one_eligible_is_false_for_a_turn_outside_the_window(self):
+        """eligible must key on in_turn_window, not bool(dones): a session with a done far from a turn leaves that turn ineligible."""
+        sid = SIDS[0]
+        recs = [uline(sid, T0, "ask one", "u1"), aline(sid, T0 + 30, "Answer one.", "a1", "u1"),
+                uline(sid, T0 + 6000, "ask two", "u2", "a1"), aline(sid, T0 + 6030, "Answer two.", "a2", "u2")]
+        (self.pdir / (sid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
+        seg = "%s:%d:aaaaaaaa" % (sid, T0)
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps({"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":g1"}, "status": {},
+            "nodes": {sid + ":g1": {"id": sid + ":g1", "text": "g1", "parentId": None, "t": T0, "trail": [seg],
+                                    "log": [{"ev_t": T0 + 10, "at": T0 + 12, "src": "closer", "kind": "done", "why": "x"}]}}}))
+        m = self._corpus(name="win")[1]
+        h = hashlib.sha256(sid.encode()).hexdigest()[:12]
+        elig = {e["turn"]: e["tierOneEligible"] for e in m["endings"] if e["session"] == h}
+        self.assertEqual(elig.get(0), True, "turn 0 has the done in its window")
+        self.assertEqual(elig.get(1), False, "turn 1 (6000 s later) does not: eligible keys on the window, not bool(dones)")
+
+    def test_run_requires_the_binary_and_the_budget_each(self):
+        dest = self._corpus()[0]
+        run_root = os.path.join(self.td, "runs-flags")
+        for args in (["run", "--corpus", dest, "--run-root", run_root, "--arm", "x", "--budget-usd", "1"],       # no --claude-bin
+                     ["run", "--corpus", dest, "--run-root", run_root, "--arm", "x", "--claude-bin", self.fake]): # no --budget-usd
+            with self.assertRaises(SystemExit) as cm:
+                self.je.main(args)
+            self.assertNotEqual(cm.exception.code, 0)
 
 
 if __name__ == "__main__":

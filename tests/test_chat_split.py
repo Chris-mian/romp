@@ -159,7 +159,7 @@ class SplitSourcePins(unittest.TestCase):
         for needle in ["function edgeWidth(w){return Math.max(72,Math.min(180,0.2*w));}",
                        "function ghostRect(pane,rowRect){return {top:rowRect.top,height:rowRect.height,left:pane.left+pane.width/2,width:pane.width/2};}",
                        "function mountZones(){", "function unmountZones(){", "ghost=document.getElementById('col-ghost')",
-                       "ghost.textContent=refused?'Four panes at most':drag.name;"]:
+                       "ghost.textContent=refused?'Four panes at most':'';"]:
             self.assertIn(needle, split, needle)
         self.assertNotIn("setTimeout", split, "nothing is timed")
         # the rectangle's element: a child of .col after the pane row, never a flex item of the row (a divider drag draws no line, plans/pane-docking.md section 12)
@@ -1474,12 +1474,12 @@ class DragZonesExecute(unittest.TestCase):
         self.assertEqual(o["stillOver"], "col-drop over", "a crossing inside the zone's own subtree is not a leave")
         self.assertEqual(o["afterLeave"], "col-drop", "the leave clears the cue")
 
-    def test_the_edge_shows_the_rectangle_at_the_right_half_of_the_rightmost_pane_with_the_name_as_its_line(self):
+    def test_the_edge_shows_the_rectangle_at_the_right_half_of_the_rightmost_pane_with_no_text(self):
         o = self.out["edgeCue"]
         r = o["paneRect"]
-        self.assertEqual(o["ghost"], {"cls": "on", "text": "web", "top": "30px", "height": "800px",
+        self.assertEqual(o["ghost"], {"cls": "on", "text": "", "top": "30px", "height": "800px",
                                       "left": "%dpx" % (r["left"] + r["width"] / 2), "width": "%dpx" % (r["width"] / 2)},
-                         "top and height from the row, left and width the pane's right half — what the drop produces; the session's name, no verb")
+                         "top and height from the row, left and width the pane's right half: what the drop produces; no text in the square (the user 2026-09-21: the rectangle says where by its place alone)")
         self.assertEqual(o["z3"], "col-drop", "the column zone under the edge takes no cue of its own")
         self.assertEqual(o["afterLeave"]["cls"], "", "the leave hides the rectangle")
 
@@ -1554,7 +1554,7 @@ class DragZonesExecute(unittest.TestCase):
         for w in ("200", "400", "1000"):
             self.assertEqual(g[w]["edgeTop"], "0px", "not the source: from the top")
             half = int(w) / 2
-            self.assertEqual(g[w]["ghost"], {"cls": "on", "text": "web", "top": "30px", "height": "800px", "left": "%gpx" % (g[w]["paneLeft"] + half), "width": "%gpx" % half})
+            self.assertEqual(g[w]["ghost"], {"cls": "on", "text": "", "top": "30px", "height": "800px", "left": "%gpx" % (g[w]["paneLeft"] + half), "width": "%gpx" % half})   # no text in the square (the user 2026-09-21)
 
     def test_one_column_is_both_source_and_rightmost_so_the_edge_alone_sits_under_its_strip(self):
         o = self.out["single"]

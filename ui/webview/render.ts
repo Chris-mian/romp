@@ -10304,6 +10304,7 @@ function cmtStateChip(th: CommentThread): HTMLElement {
     const chip = el("span", "chip chip-working");
     const label = el("span", "chip-pulse");
     label.textContent = CHIP_LABEL.working;
+    label.dataset.label = CHIP_LABEL.working;   // the teal ::after layer repeats it (styles.css .chip-pulse)
     chip.appendChild(label);
     const timer = el("span", "status-timer");
     timer.id = "cmt-work-timer";
@@ -16299,6 +16300,7 @@ function updateStatusline() {
     const chip = el("span", "chip chip-working");
     const label = el("span", "chip-pulse");
     label.textContent = CHIP_LABEL.working;
+    label.dataset.label = CHIP_LABEL.working;   // the teal ::after layer repeats it (styles.css .chip-pulse)
     chip.appendChild(label);
     left.appendChild(chip);
     const timer = el("span", "status-timer");

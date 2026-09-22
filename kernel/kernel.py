@@ -55,6 +55,7 @@ cm = load_source("romp_colormap", HERE / "colormap.py")  # age → recency tint
 pal = load_source("romp_palette", HERE / "palette.py")  # session-identity palettes (selectable)
 sb = load_source("romp_session_backend", HERE / "session_backend.py")  # the SessionBackend ABC
 lg = load_source("romp_logins", HERE / "logins.py")  # stored Claude logins (T346): the registry beside the machine's own login
+gcf = load_source("romp_gc_freeze", HERE / "gc_freeze.py")  # Road B for #1735: freeze the loaded decoded heap out of the collector's walk
 CHAT_VIEW = ROOT / "vscode-extension"               # the tuned UI, current in this worktree via `git merge main`
 # ROMP_DIST_DIR: test seam (romp-lab serves a COPY of the built bundles, so its rebuild simulations —
 # mtime bumps that must raise the reload banner — never touch the dist the LIVE kernel serves).
@@ -1191,7 +1192,11 @@ class _PerfStats:
                     "counts": _gc_read("counts", lambda: list(gc.get_count())),
                     "frozen": _gc_read("frozen", lambda: gc.get_freeze_count()),
                     "errors": gc_errors,
-                    "hooked": _gc_read("hooked", lambda: self.gc_event in gc.callbacks)}
+                    "hooked": _gc_read("hooked", lambda: self.gc_event in gc.callbacks),
+                    # #1735: the freeze controller's state and the reconcile trade, so a reconcile collection is told
+                    # apart from an organic one (freezes + reclaims ran a collection each; organic = gen 2 collections
+                    # less those), beside the frozen count above
+                    "freeze": dict(_GC_FREEZE.perf(), errors=_GC_FREEZE_ERRORS[0])}
         now = time.time()
         stacks = _thread_stacks() if os.environ.get("ROMP_PERF_STACKS") else None   # every thread's frames, named and staged: under
         #                                                                              the switch here (T358's aid for a served test
@@ -1222,6 +1227,40 @@ class _PerfStats:
 
 
 _PERF_STATS = _PerfStats()
+
+# Road B for #1735: the freeze controller and the pusher's idle-boundary tick. The controller keeps the loaded
+# decoded heap out of the cycle collector's walk (a warm full collection over 5.6M loaded objects fell from
+# 2.83 s to 0.1 ms once frozen; plans/gc-full-collection-pause.md); it reconciles at the idle boundary, keyed on
+# the record cache's load and release counters, so the reconcile's own collection pause is paid with no browser
+# waiting. Default on; ROMP_GC_FREEZE=off turns it off for a measurement.
+_GC_FREEZE_ERRORS = [0]
+_GC_FREEZE_SAID = [False]
+_GC_FREEZE_LOAD_TREES, _gc_freeze_bad_knob = gcf.load_trees_from_env()   # parsed with a fallback, never a bare int() at import (#1735 high)
+_GC_FREEZE = gcf.GcFreeze(enabled=gcf.enabled_from_env(), load_trees=_GC_FREEZE_LOAD_TREES)   # the release note is wired when the SDK backend loads (below)
+if _gc_freeze_bad_knob is not None:     # a bad ROMP_GC_FREEZE_LOAD_TREES fell back to the default: said once, counted, never fatal
+    _GC_FREEZE_ERRORS[0] += 1
+    try:
+        sys.stderr.write("gc-freeze: ROMP_GC_FREEZE_LOAD_TREES=%r is not a positive integer; using the default %d\n"
+                         % (_gc_freeze_bad_knob[:80], gcf.DEFAULT_LOAD_TREES))
+    except Exception:
+        pass
+
+
+def _gc_freeze_tick(idle, first):
+    """The pusher's idle-boundary call (the reconcile logic is gcf.pusher_tick, pinned in-process): reconcile the
+    frozen set with the loaded set when the record cache's counters say a material load or a release happened since
+    the last freeze. Cheap when nothing is due. A failure never ends the pusher: it is counted for /perf and said
+    once on stderr."""
+    def on_error(e):
+        _GC_FREEZE_ERRORS[0] += 1
+        if not _GC_FREEZE_SAID[0]:
+            _GC_FREEZE_SAID[0] = True
+            try:
+                sys.stderr.write("gc-freeze: a reconcile raised %s and was skipped (counted under /perf gc.freeze.errors): %s\n"
+                                 % (type(e).__name__, repr(e)[:200]))
+            except Exception:
+                pass
+    gcf.pusher_tick(_GC_FREEZE, idle, first, em.record_cache_stats, on_error)
 
 
 _STAGE_TL = threading.local()     # the calling thread's current stage name (T401): set by _job_stage and the push, read by the
@@ -18779,6 +18818,8 @@ def _sdk_locked():
             # silently eating every message (the user 2026-07-28).
             _sdk_import_notice()
             sbmod = load_source("romp_sdk_backend", HERE / "sdk_backend.py")
+            if hasattr(sbmod, "set_release_note"):     # #1735: a backend session end (a cyclic owner) notes a release; wired
+                sbmod.set_release_note(gcf.note_release)   #  when the backend loads (a test stub of the module carries no note plumbing)
             # The backend claims the login tokens out of os.environ once (startup_auth_env), and the judges
             # read that same stash through this wire for their login-billed children. No key rides here:
             # romp holds none (credentials.py, 2026-09-08), and every child resolves Claude Code's own
@@ -19760,8 +19801,11 @@ def _refuse_drive(client, op, sid, msg, why=None):
     except OSError as e:
         _kept = _store_fault_copy(e)
     sys.stderr.write("undeliverable %s: %s %s — %r\n" % (op, why or "this kernel has no session", sid, text[:200]))
+    # The why branch names the session by its registered name, the uuid only when no row names it, as moveFailed does
+    # (2026-09-21): the End hand-back's frame lands on ONE pane, and on a chat column showing another session the uuid
+    # said nothing to the person reading it. The wrong-kernel branch keeps the id: there the id IS the diagnosis.
     detail = ("Nothing was sent. %s, so it could not deliver your %s. "
-              % ((why + " (session %s)" % sid) if why else
+              % ((why + " (session %s)" % (_name_of(sid) or sid)) if why else
                  ("This romp kernel has no session with id %s — on a board showing more than one machine, that "
                   "means the pane addressed the wrong kernel" % sid), what)
               + ("Your text is saved verbatim in undelivered.jsonl under romp's state directory." if not _kept else
@@ -28200,10 +28244,14 @@ _SESSIONS_LISTING = {"key": None, "rows": None, "json": None, "threads": None, "
 
 
 def _reg_rev():
-    """The SDK registry's ROWS revision (kernel/sdk_backend.py REG_ROWS_REV: moved by a write that changes a field the rows
-    read, lastSid, threadOf or alive, never by the per-cycle writes of other fields), read through the module the backend
-    was loaded as; 0 before the backend module is loaded (nothing has been written). Keyed on every write (REG_REV) the
-    listing rebuilt each cycle (the deploy read of 2026-09-15: built 778 in 776 s, 767 misses on the registry)."""
+    """The SDK registry's ROWS revision (kernel/sdk_backend.py REG_ROWS_REV: moved by a write that changes one of the fields
+    the rows read through it, lastSid, threadOf or alive, never by the per-cycle writes of other fields), read through the
+    module the backend was loaded as; 0 before the backend module is loaded (nothing has been written). Not every field a
+    row reads rides it: the row's launchError is read from the session's backend per cycle (_launch_error_scoped: the SDK
+    registry file for an SDK session, the Codex backend's own record for a Codex session, and only the Codex record ever
+    carries a compaction's end notice) and is a key input of its own, by text and stamp (_launch_error_key), outside this
+    revision (2026-09-21). Keyed on every write (REG_REV) the listing rebuilt each cycle (the deploy read of 2026-09-15: built
+    778 in 776 s, 767 misses on the registry)."""
     return int(getattr(sys.modules.get("romp_sdk_backend"), "reg_rows_rev", lambda: 0)())
 
 
@@ -28222,14 +28270,18 @@ def _sessions_listing_key(live_map, names):
     it moves the revision, a write of a field no row reads does not; the revision counts THIS process's writes, so a lastSid
     the outgoing kernel wrote during a handover reaches the rows when another input moves), each row's compacting bit (the live row against the cached parse) and each
     row's launch error (its text and stamp, _launch_error_key: the notice a compaction that ended loudly leaves while the
-    compacting bit falls, 2026-09-21; read once per sid per cycle, the row takes the same read). A field whose input is not
-    here cannot be added without adding the input."""
+    compacting bit falls, 2026-09-21). The bit and the notice are one read per sid per cycle, compacting then notice, kept
+    on the listing's pair memo and served to the row (_listing_pair_scoped): the row read the bit fresh while its notice
+    came from the key's read, so a loud end landing between the two built a row reading not compacting with no notice, a
+    clean end's shape, whenever another input moved in the same cycle or on the first cycle, and `romp compact --wait`
+    printed done over an uncompacted thread (the post-merge review of the native compaction, 2026-09-21). A field whose
+    input is not here cannot be added without adding the input."""
     try:
         paths = {s["sid"]: s["path"] for s in _sessions(time.time())}   # the cycle's own sweep (memoized on the scope): the
     except Exception:                                                   #  transcript the compacting read is disproved against
         paths = {}
-    rows = tuple(sorted((str(sid), (m or {}).get("state"), (m or {}).get("since"), (m or {}).get("backend"),
-                         bool(_compacting_now(sid, tm=m, path=paths.get(sid))), _launch_error_key(sid))
+    rows = tuple(sorted((str(sid), (m or {}).get("state"), (m or {}).get("since"), (m or {}).get("backend"))
+                        + _listing_pair_key(sid, m, paths.get(sid))
                         for sid, m in (live_map or {}).items()))
     try:
         with os.scandir(WORKING_DIR) as it:
@@ -28247,8 +28299,9 @@ def _sessions_listing_key(live_map, names):
 def _launch_error_scoped(sid):
     """_launch_error through the cycle's memo (2026-09-21): inside a pusher cycle the first read per sid is kept on
     _live_scope.launch_errors (opened and closed with the cycle's other memos, the _sessions idiom) and served to every
-    reader after it, so the listing's key and its rows, which both read it, cost one backend read per session per cycle
-    (the SDK backend's read is a registry file per session); outside a cycle every read is fresh, as _sessions behaves."""
+    reader after it, so the listing, which reads it once at its key through the pair memo (_listing_pair_scoped), costs
+    one backend read per session per cycle (the SDK backend's read is a registry file per session); outside a cycle every
+    read is fresh, as _sessions behaves."""
     sid = str(sid)
     memo = getattr(_live_scope, "launch_errors", None)
     if memo is None:
@@ -28258,15 +28311,42 @@ def _launch_error_scoped(sid):
     return memo[sid]
 
 
-def _launch_error_key(sid):
-    """The hashable identity of a row's launch error for the listing's key (2026-09-21): its text and stamp, None when
-    the session runs fine. The record itself rides the row (_session_listing_row, through the same cycle memo); the key
-    needs only what tells one notice from another, and _launch_error's own guard makes a backend hiccup read as none
-    here as it does there."""
-    le = _launch_error_scoped(sid)
+def _launch_error_key(le):
+    """The hashable identity of a row's launch error `le` for the listing's key (2026-09-21): its text and stamp, None when
+    the session runs fine. The record itself rides the row (_session_listing_row, the same read through the pair memo);
+    the key needs only what tells one notice from another, and _launch_error's own guard makes a backend hiccup read as
+    none here as it does there."""
     if not isinstance(le, dict):
         return None
     return (str(le.get("text") or ""), str(le.get("at") or ""))
+
+
+def _listing_pair_scoped(sid, tm, path):
+    """One row's (compacting, launchError) for the /sessions listing, read in that order: the compacting bit
+    (_compacting_now over the live meta `tm` and the transcript `path` the caller holds) and then the backend's launch
+    error (_launch_error_scoped). Inside a listing refresh the first read per sid is kept on _live_scope.listing_pairs
+    (opened and closed by _sessions_listing_refresh around its key and its build, the _sessions idiom, thread-confined)
+    and served to the row, so the key and the row read one world: the row read the bit fresh while its notice came from
+    the key's read, and a loud end (the bit falls, the notice lands) between the two yielded not compacting with no
+    notice, a clean end's shape, on any cycle another key input moved in or on the first cycle (the post-merge review of
+    the native compaction, 2026-09-21). The order matters on its own: an end landing between the pair's two reads yields (compacting, notice),
+    which `romp compact --wait` judges a loud end, where notice then bit would yield the clean end's shape again. Scoped
+    to the listing pair alone: the chip, the drive-op gates and the drain read _compacting_now fresh. Outside a refresh
+    (a request's own build, GET /sessions/by-fsid) the pair is read fresh, in the same order."""
+    sid = str(sid)
+    memo = getattr(_live_scope, "listing_pairs", None)
+    if memo is None:
+        return bool(_compacting_now(sid, tm=tm, path=path)), _launch_error_scoped(sid)
+    if sid not in memo:
+        compacting = bool(_compacting_now(sid, tm=tm, path=path))
+        memo[sid] = (compacting, _launch_error_scoped(sid))
+    return memo[sid]
+
+
+def _listing_pair_key(sid, tm, path):
+    """The pair's two key components: the compacting bit, and the launch error's identity (_launch_error_key)."""
+    compacting, le = _listing_pair_scoped(sid, tm, path)
+    return compacting, _launch_error_key(le)
 
 
 def _sessions_listing_miss(prev, cur):
@@ -28283,16 +28363,20 @@ def _sessions_listing_refresh(now, live_map):
     """The pusher's job (rule 1): the /sessions rows rebuilt once when their key moved, from the cycle's own liveness and
     names snapshots, and kept with their JSON for every request until the next change."""
     names = getattr(_live_scope, "names", None)
-    key = _sessions_listing_key(live_map, names)
-    if _SESSIONS_LISTING["key"] == key and _SESSIONS_LISTING["json"] is not None:
-        return
-    why = _sessions_listing_miss(_SESSIONS_LISTING["key"], key)
-    try:
-        rows = _session_rows_from(live_map)
-        body = json.dumps(rows)
-    except Exception:
-        _SESSIONS_LISTING["fault"] = time.time()          # the kept listing is stale from here: requests build for themselves
-        raise                                             #  (below) until a build lands; the job's own try writes the line
+    _live_scope.listing_pairs = {}                        # the pair memo (_listing_pair_scoped, 2026-09-21): the key's reads
+    try:                                                  #  below are the rows' reads, one world for both
+        key = _sessions_listing_key(live_map, names)
+        if _SESSIONS_LISTING["key"] == key and _SESSIONS_LISTING["json"] is not None:
+            return
+        why = _sessions_listing_miss(_SESSIONS_LISTING["key"], key)
+        try:
+            rows = _session_rows_from(live_map)
+            body = json.dumps(rows)
+        except Exception:
+            _SESSIONS_LISTING["fault"] = time.time()      # the kept listing is stale from here: requests build for themselves
+            raise                                         #  (below) until a build lands; the job's own try writes the line
+    finally:
+        _live_scope.listing_pairs = None
     _SESSIONS_LISTING.update({"key": key, "rows": rows, "json": body, "fault": None, "built": _SESSIONS_LISTING["built"] + 1})
     _SESSIONS_LISTING["missBy"][why] = _SESSIONS_LISTING["missBy"].get(why, 0) + 1   # the thread rows keep their own key (below)
 
@@ -28384,6 +28468,7 @@ def _session_listing_row(sid, meta, notes, path):
     on it), so the failing row is kept minimal. Same per-row contract as the SDK merge's guard (2026-08-31)."""
     try:
         bg, fg = _identity_of(sid)
+        compacting, launch_error = _listing_pair_scoped(sid, meta, path)
         return {"id": sid, "name": _name_of(sid) or sid[:8], "state": meta.get("state", ""),
                 "dir": _cwd_of(sid), "bg": bg, "fg": fg,
                 # lastSid: the session's CURRENT transcript fsid (SDK registry join, mtime-memoized).
@@ -28394,13 +28479,14 @@ def _session_listing_row(sid, meta, notes, path):
                 # compacting: the corroborated signal the chat chip uses (_compacting_now, cached
                 # parse), exposed so `romp compact --wait` and scripted recycling can watch a
                 # compaction start and clear through the kernel's own read, never a scrape.
-                "compacting": bool(_compacting_now(sid, tm=meta, path=path)),
+                "compacting": compacting,
                 # launchError: the backend's record of why the session cannot run ({text, at, limit, an optional
                 # noRetry}, SessionBackend.launch_error; None when it runs fine), beside compacting so `romp compact
                 # --wait` can tell a compaction that ended loudly (the bit falls as on a clean end, the notice stands)
-                # from one that finished (the second review of the native compaction, 2026-09-21). Through the cycle's
-                # memo: the listing's key read it already (_launch_error_scoped)
-                "launchError": _launch_error_scoped(sid),
+                # from one that finished (the second review of the native compaction, 2026-09-21). The two are one
+                # read, compacting then notice, taken at the listing's key and served here (_listing_pair_scoped): read
+                # apart, a loud end between them gave this row a clean end's shape (2026-09-21)
+                "launchError": launch_error,
                 "working": notes.get(sid, ""), "backend": meta.get("backend", "")}
     except Exception:
         sys.stderr.write("session row for %s failed (kept minimal): %s\n"
@@ -33660,11 +33746,13 @@ def _claudemd_paths(cwd):
 
 
 _prev_chat_events = {}                           # sid → the events list from the previous build (to diff against)
-_chat_baseline_lock = threading.Lock()           # held for the seed's read-back-and-write, the detector's pop, the cycle's write and
-#                                                  the strip-exit eviction's pop, nothing else held inside (2026-09-19): the seed's
-#                                                  get and set were two steps, so two whole-frame senders that both read the map
-#                                                  absent both wrote, the last writer won, the detector never fired, and a client
-#                                                  holding the first writer's list was stranded (the review's two-thread probe)
+_chat_baseline_lock = threading.Lock()           # held for the seed's read-back-and-write, the detector's pop, the cycle's write,
+#                                                  the strip-exit eviction's pop and the empty-build guard's read of the mark and the
+#                                                  baseline as one instant at both push roads (2026-09-21), nothing else held inside
+#                                                  (2026-09-19): the seed's get and set were two steps, so two whole-frame senders
+#                                                  that both read the map absent both wrote, the last writer won, the detector never
+#                                                  fired, and a client holding the first writer's list was stranded (the review's
+#                                                  two-thread probe)
 _chat_baseline_raced = {}                        # sid -> the length of the longest list some client was handed whole under the
 #                                                  mark (the longer of the two lists at the pop, then raised by every whole frame
 #                                                  a sender hands while the mark stands: _chat_prior_n), for every sid whose
@@ -34038,7 +34126,9 @@ def _empty_build_regresses(m, prev_events, marked=False):
     or the filled card the cache's older list lacks), so the mark and the absent baseline stand and the next content
     cycle's full repairs every base holder; the cached build still rides the feed frame's ledgers list, so the Outline
     row stays (tests 35 to 37, 44 to 46 and 50 to 52 of the skeleton-reconnect module pin the marked case). The seeded
-    case, a baseline present, takes the stand-in road as before (test 22 of the same module)."""
+    case, a baseline present, takes the stand-in road as before (test 22 of the same module). `prev_events` and `marked`
+    are the caller's read of the baseline and the mark as ONE step under _chat_baseline_lock (2026-09-21): this function
+    reads no map itself, so the pair it rules on is one instant's (tests 53 and 54 of the same module)."""
     return not (m.get("events") or []) and (bool(prev_events) or marked)
 
 
@@ -34050,7 +34140,8 @@ def _chat_prior_n(sid):
     the note, not what every holder has: the raise follows a connect push's full to ONE client, the pop's max can name a
     count no holder has, and a cycle that sent tails under the mark handed nothing whole, so its longer list never
     raised it (test 50 of the skeleton-reconnect module reads the pop's 5 while every client holds 6). Read outside
-    _chat_baseline_lock, like the guard's own reads beside it."""
+    _chat_baseline_lock: the count is a stderr figure, so a pop landing between its two reads costs the line its number
+    at most, where the guard's own reads beside it, which decide a send, are one step under the lock (2026-09-21)."""
     prev = _prev_chat_events.get(sid)
     if prev:
         return len(prev)
@@ -34168,7 +34259,8 @@ def _seed_chat_baseline(sid, m, seen):
     beside the attach handshake's targeted push, the transcript moving between the two reads): the sender's list the
     OLDER one is the strand face, whichever writer landed inside, a racing seed (tests 28 and 28b) or the non-connect
     cycle's every-client write (test 40), and the pop below is its repair (the sender's older fulls put the older card on
-    every base holder over the writer's newer one, the pop and the mark follow, the next cycle's fulls repair; the kernel
+    every base holder over the writer's newer one, the pop and the mark follow, and the next cycle whose loop reads the
+    baseline absent repairs with its fulls, a cycle that sent tails leaving the mark, test 27; the kernel
     before the read moved left every client on the older card for good, with no mark and no row). The sender's list the
     NEWER one is the pure-cost face, again whichever writer landed inside, the cycle's write (test 28c) or an older
     sender's seed (a second targeted push on the same sid, test 41): no client is stale, yet the pop fires alike, since
@@ -34209,8 +34301,8 @@ def _seed_chat_baseline(sid, m, seen):
     for, and the first content frame seeds instead). `seen` absent or empty but a DIFFERENT non-empty list in the map
     now: another whole-frame sender wrote while this one was sending; per-client delivery order is whichever thread
     reached each client's lock first, so some client may hold the OLDER build and no one list describes every base
-    holder; the entry is POPPED and the sid MARKED (_chat_baseline_raced, the popped list's length stashed under it for the
-    empty-build note and raised by every whole frame handed under the mark), and the next cycle whose loop reads the baseline absent sends every base holder the full and takes
+    holder; the entry is POPPED and the sid MARKED (_chat_baseline_raced, the longer of the two lists' length stashed under
+    it for the empty-build note and raised by every whole frame handed under the mark), and the next cycle whose loop reads the baseline absent sends every base holder the full and takes
     the mark off with its write, the repair the cycle made before the seed (the correctness review's two orderings, tests
     23 and 24 of the skeleton-reconnect module;
     a seed that only wrote when absent kept the newer list and stranded the older holder for good). The sid marked:
@@ -34233,7 +34325,8 @@ def _seed_chat_baseline(sid, m, seen):
     stamp of the build's start or a cycle write that declines to overwrite a seed it did not read, is its own change.
     The lock is what makes the read-back a guard (test 26): unlocked, two seeds that both read the map
     absent both wrote, the last writer won, and the detector never fired. Nothing else is held inside it; the cycle's
-    write and the strip-exit eviction take the same lock."""
+    write, the strip-exit eviction and the empty-build guard's one-step read of the mark and the baseline at both push
+    roads (2026-09-21) take the same lock."""
     evs = m.get("events") or []
     if seen or not evs:
         return
@@ -34255,7 +34348,7 @@ def _seed_chat_baseline(sid, m, seen):
         elif cur is not evs and (len(cur) != len(evs) or _chat_diff(cur, evs) < len(evs)):
             _prev_chat_events.pop(sid, None)
             _prev_chat_ledger.pop(sid, None)
-            _chat_baseline_raced[sid] = max(len(cur), len(evs))   # the mark, with the popped list's length (_chat_prior_n)
+            _chat_baseline_raced[sid] = max(len(cur), len(evs))   # the mark, with the longer of the two lists' length (_chat_prior_n)
             popped = True
     if popped:
         _PERF_STATS.build_chat_baseline_raced()      # decided under the lock, counted after it (2026-09-21)
@@ -36543,10 +36636,11 @@ def _drop_parked_on_end(sid, client=None):
     WHERE the modal lands (review find, 2026-09-21): on `client` only when its pane renders an err frame (the chat
     and the feed, _ERR_FRAME_APPS); an End pressed in the Sessions pane arrives on that pane's socket, whose bundle
     has no err arm, so handed there the frame showed nothing and reached no chat pane either. Every other case (a
-    pane that cannot show it, no socket at all) goes to ONE chat pane (_send_to_one_chat): the broadcast put a modal
-    and a bell entry in every chat column for one message. The op the drain is handing over right now is found by
-    SLOT (_inflight_slot), as _cancel_parked finds it, not by identity: two parked compact presses are one interned
-    tuple, and an identity filter kept the second behind the in-flight first."""
+    pane that cannot show it, no socket at all) goes to ONE pane that renders it (_send_to_one_chat: a chat pane first,
+    the feed when no chat pane is connected): the broadcast put a modal and a bell entry in every chat column for one
+    message. The op the drain is handing over right now is found by SLOT (_inflight_slot), as _cancel_parked finds it,
+    not by identity: two parked compact presses are one interned tuple, and an identity filter kept the second behind
+    the in-flight first."""
     sid = str(sid)
     with _pending_ops_lock:
         ops = _pending_ops.get(sid) or []
@@ -36585,19 +36679,33 @@ _ERR_FRAME_APPS = ("chat", "feed")   # the panes whose bundles render an err fra
 
 
 def _send_to_one_chat(msg, sid=""):
-    """One chat pane hears `msg` (2026-09-21): the live chat client watching `sid` when one does (its `active` is the
-    tab it shows), else the first live chat client. The not-delivered frame's modal and its bell entry are one notice,
-    and the broadcast drew them once per chat column. With no chat pane connected the frame goes through the chat
-    broadcast, which reaches nobody either; the undelivered file and the log are the record then. Returns whether a
-    pane took it."""
+    """One pane hears `msg` (2026-09-21): a live chat client watching `sid` when one does (its `active` is the tab it
+    shows), else a live chat client, else a live client of any pane whose bundle reads an err frame (_ERR_FRAME_APPS).
+    The feed hands the frame to the shell's bell through the notify bridge (a postMessage to the frame hosting it), so
+    the words reach the person where a shell hosts the pane; the standalone feed page and the extension's feed webview
+    have no bridge, so there the feed's own dialog carries the words (its box attached to the overlay since this
+    change: built and never attached before, the frame painted a bare dim sheet with no words and no button). The
+    not-delivered frame's
+    modal and its bell entry are one notice, and the broadcast drew them once per chat column. Two finds of the
+    post-merge review of the End hand-back (2026-09-21) shaped the tiers and the pick within one. The pick considered
+    chat clients only, so a socketless End (romp end, the self-close sweep) with a feed pane connected and no chat pane
+    sent the frame to the empty chat broadcast, though the feed's bundle reads it: now the third tier. And within a tier
+    the pick took the OLDEST socket, while _client_send answers True on the enqueue, so a chat pane whose peer went
+    silent without closing (a forwarder holding the kernel's end open) took the one dialog until the heartbeat dropped
+    it (WS_DEAD_S, three beats), and a pane whose peer was answering heard nothing: now the socket whose peer proved
+    itself alive LAST (`lastIn`, stamped on every inbound frame by _note_ws_inbound, a pong each beat included, so the
+    pick excludes a silent peer and promises no more); equal stamps keep the older socket, the order the pick had. With
+    no such pane connected the frame goes through the chat broadcast, which reaches nobody either; the undelivered file
+    and the log are the record then. Returns whether a pane took it."""
     s = json.dumps(msg)
     with _clients_lock:
-        live = [c for c in _clients if c["app"] == "chat" and c.get("alive", True)]
-    pick = next((c for c in live if sid and c.get("active") == sid), None) or (live[0] if live else None)
-    if pick is None:
+        live = [c for c in _clients if (c.get("app") or "") in _ERR_FRAME_APPS and c.get("alive", True)]
+    chat = [c for c in live if c.get("app") == "chat"]
+    tier = [c for c in chat if sid and c.get("active") == sid] or chat or live
+    if not tier:
         _send_to_app("chat", msg)
         return False
-    return _client_send(pick, s)
+    return _client_send(max(tier, key=lambda c: c.get("lastIn", 0)), s)
 
 
 def _cancel_backend_queued(be, sid, idx, md, qid=None):
@@ -55667,8 +55775,21 @@ def _push(targets, connect=False, live_map=None):
                     if _claimed:
                         _chat_inflight_done(s["sid"])
                     continue
-                marked = m["id"] in _chat_baseline_raced    # read once: the guard and the road under it see one value (2026-09-21)
-                if _empty_build_regresses(m, _prev_chat_events.get(m["id"]), marked=marked):
+                # The mark and the baseline as ONE instant, under _chat_baseline_lock (2026-09-21). Read as two unlocked steps,
+                # with the seed's pop-and-mark one step under that lock on a sender's thread, a pop landing between them left
+                # this guard seeing neither: the mark not yet set at the first read, the baseline gone at the second, so the
+                # empty build went to every base holder as a 0-event full with no stderr line, the mark standing and the
+                # baseline absent (the write below declines under a mark), until the next content cycle's full; the targeted
+                # push's guard read the same way. The helper rules on the pair from this one read and reads no map itself;
+                # the note's count beside it stays unlocked, a stderr figure (_chat_prior_n). Nothing is held inside the lock
+                # here, and no holder of it takes another: the seed's step is dict operations and a list compare, the write
+                # gate below and the strip-exit eviction dict operations, so the lock is a leaf and this read adds no order
+                # to it. The one value still binds the guard and the road under it (tests 53 and 54 of the
+                # skeleton-reconnect module).
+                with _chat_baseline_lock:
+                    marked = m["id"] in _chat_baseline_raced
+                    _prev_now = _prev_chat_events.get(m["id"])
+                if _empty_build_regresses(m, _prev_now, marked=marked):
                     # a failed read, not a conversation that emptied (see _empty_build_regresses): with a baseline present,
                     # the last cached build stands in (the baseline's own events, so the diff below finds nothing to send)
                     # or, with nothing cached, this cycle sends nothing for the sid; the file's return busts the stat key
@@ -56375,8 +56496,10 @@ def _push_session_now(sid):
         #   the first is the cold build; a boot where a history ask came first would read a warm first (round four, 2026-09-15)
         if not m:
             return
-        marked = sid in _chat_baseline_raced
-        if _empty_build_regresses(m, _prev_chat_events.get(sid), marked=marked):
+        with _chat_baseline_lock:                    # the mark and the baseline as one instant, as at the pusher's guard
+            marked = sid in _chat_baseline_raced     # (2026-09-21): a pop-and-mark landing between two unlocked reads left
+            _prev_now = _prev_chat_events.get(sid)   # this guard seeing neither, and a 0-event full went to every target
+        if _empty_build_regresses(m, _prev_now, marked=marked):   # (test 54 of the skeleton-reconnect module)
             # a marked sid's clients hold content though its baseline is popped (2026-09-21): no empty frame to any base
             # holder, the mark and the absent baseline stand for the cycle's repair; the note names the longest list
             # some client was handed whole under the mark, a minimum for what the clients hold (_chat_prior_n)
@@ -60221,14 +60344,15 @@ def _pusher_cycle():
         _live_scope.launch_errors = None
         _live_scope.subagent_trees = None
         _live_scope.msgsum = None
-        _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
-                          idle=(_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle)
+        _cycle_idle = (_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle
+        _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle, idle=_cycle_idle)
         if first:
             _first_cycle_sampler_stop()                         # the samples are complete before the row reads them
             _BOOT_FIRST_CLOSED_MONO[0] = time.monotonic()
             _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
         elif not _BOOT_HEALTH_DONE[0]:
             _boot_health_row_backstop(time.monotonic())         # the jobs pass still open long after: the row without it
+        _gc_freeze_tick(_cycle_idle, first)                     # #1735: reconcile the freeze at the idle boundary (the guard is inside pusher_tick)
 
 
 @contextlib.contextmanager
@@ -60434,10 +60558,11 @@ JOBS_PASS_S = 0.5                                  # the jobs thread's pace betw
 
 
 def _jobs_cycle():
-    """ONE pass of the jobs thread: the pass's liveness snapshot and scopes opened exactly as _pusher_cycle opens the pusher's
-    (thread-confined, so the two loops never share a snapshot), _jobs_pass inside them, the scopes closed in the finally, the
-    pass counted under /perf `jobs`, and the boot's first pass sampled and reported to the boot row like the pusher's first
-    cycle."""
+    """ONE pass of the jobs thread: the pass's liveness snapshot and scopes opened as _pusher_cycle opens the pusher's
+    (thread-confined, so the two loops never share a snapshot), less the launch-error memo: only the listing's key and rows
+    read it, and the listing is the pusher's job, so a memo opened here was filled by nothing (2026-09-21); _jobs_pass inside
+    them, the scopes closed in the finally, the pass counted under /perf `jobs`, and the boot's first pass sampled and
+    reported to the boot row like the pusher's first cycle."""
     _t = time.monotonic()
     first = not _BOOT_HEALTH_DONE[0] and _BOOT_FIRST["jobs"] is None
     if first:
@@ -60451,7 +60576,6 @@ def _jobs_cycle():
         _live_scope.paths = {}
         _live_scope.sessions = {}
         _live_scope.auth = {}
-        _live_scope.launch_errors = {}          # the pass's launch-error memo (_launch_error_scoped, 2026-09-21)
         _live_scope.subagent_trees = {}         # the pass's subagents-tree samples (2026-09-18): the reminder walk's
         #                                       _session_awaiting readers and _mark_nudge_failed read the same roots per pass
         _live_scope.msgsum = [_MSGSUM_UNSET]
@@ -60465,7 +60589,6 @@ def _jobs_cycle():
         _live_scope.paths = None
         _live_scope.sessions = None
         _live_scope.auth = None
-        _live_scope.launch_errors = None
         _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _live_scope.files_stat = None
@@ -65776,6 +65899,7 @@ try{tf.contentWindow.focus();}catch(e){}return tf;}
 // and its grow go; the Log drops its connection state; the ring moves to the column on its left. `keep` skips the
 // store write (a reconcile of another dashboard tab's write, which is already the truth).
 function close(n,keep){var i=idx(n);if(i<0)return;
+endDragFrom(n);   // a tab drag from this column ends with it: the source page's dragend dies with its frame (the user 2026-09-21, a tab dragged back onto the first strip left this script's zones over the first chat)
 if(isBelow(cols[i]))return closeBelow(i,keep);   // a bottom pane un-nests, it is not a column in the row
 var f=document.getElementById(frameId(n)),home=document.getElementById('f-chat');
 if(!keep&&busy(f)){notify(BUSY);return;}   // a create in flight would die with the document (its queued text with it)
@@ -65798,6 +65922,7 @@ try{pf&&pf.contentWindow.focus();}catch(e){}}
 // parent returns from a two-pane split to a single iframe. Reached when a bottom pane empties (colEmpty -> close) or a
 // close targets it directly.
 function closeBelow(i,keep){var ce=cols[i];var topId=ce.parent===1?'f-chat':frameId(ce.parent),pid=ce.parent===1?'chat-pane':paneId(ce.parent);
+endDragFrom(ce.n);   // as close(): a drag from the bottom pane ends with the pane
 var bf=document.getElementById(frameId(ce.n)),home=document.getElementById(topId);
 if(!keep&&busy(bf)){notify(BUSY);return;}   // a busy bottom pane a PEER's write drops is DEFERRED upstream by reconcile (frameOfCol resolves it), so this direct-close busy gate is the by-hand path
 if(bf&&home)ce.ids.forEach(function(sid){adopt(home,sid,take(bf,sid));});
@@ -65849,9 +65974,14 @@ function showGhost(z){if(!ghost)return;if(!z||!drag){ghost.classList.remove('on'
 var pr=z.parentElement.getBoundingClientRect(),bottom=z.classList.contains('col-drop-bottom');
 var r=bottom?ghostRectBottom(pr):ghostRect(pr,row.getBoundingClientRect()),refused=!!z.getAttribute('data-refused');
 ghost.style.top=r.top+'px';ghost.style.height=r.height+'px';ghost.style.left=r.left+'px';ghost.style.width=r.width+'px';
-ghost.textContent=refused?'Four panes at most':drag.name;ghost.classList.toggle('refused',refused);ghost.classList.add('on');}
+ghost.textContent=refused?'Four panes at most':'';ghost.classList.toggle('refused',refused);ghost.classList.add('on');}   // no name in the square (the user 2026-09-21: the rectangle says where by its place; the refusal keeps its line, a thin ring alone cannot say why)
 function cue(z,on){if(z.classList.contains('col-drop-edge')||z.classList.contains('col-drop-bottom'))showGhost(on?z:null);else z.classList.toggle('over',on);}   // the zone under the pointer: the rectangle for the edge/bottom, .over on a column zone itself
 function unmountZones(){zones.forEach(function(z){z.remove();});zones=[];showGhost(null);}   // idempotent: every drop and the page's dragend call it
+// A COLUMN CLOSING UNDER A DRAG FROM IT ends the drag here (the user 2026-09-21): the kit's hit areas sit above these zones and take
+// the drop of a tab on another chat's strip; the join closes the emptied source column INSIDE that drop handler, so the source
+// page's dragend, the one event that called unmountZones, never runs (its frame is gone). The zones stayed mounted over the
+// first chat: no tab could be clicked and the pointer wore the zone's arrow. The close is the event; nothing is timed.
+function endDragFrom(n){if(drag&&drag.from===n){drag=null;unmountZones();}}
 function zone(p,cls,col,onDrop){var z=document.createElement('div');z.className='col-drop'+(cls?' '+cls:'');if(col!==null)z.setAttribute('data-col',col===1?'':String(col));
 z.addEventListener('dragenter',function(ev){ev.preventDefault();cue(z,true);});
 z.addEventListener('dragover',function(ev){ev.preventDefault();try{if(ev.dataTransfer)ev.dataTransfer.dropEffect='move';}catch(e){}cue(z,true);});
