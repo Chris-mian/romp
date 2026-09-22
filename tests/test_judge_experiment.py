@@ -36,17 +36,22 @@ SIDS = ["11111111-2222-3333-4444-eeeeeeeeee%02d" % i for i in (1, 2)]
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 """A fake `claude -p` for the harness tests: answers by the judge named in the system prompt and by the candidate marker; with
 JE_TEST_PROSE set, a candidate-marked prompt gets a sentence of prose no parser accepts. Invented text only; a fixed cost.
-It does NOT exercise authentication (it never resolves a key): the arm's real-auth gate is preflight_auth, pinned separately;
-this fake always answers as logged in, so it stands in for the judges' shapes, never for the credential path."""
+It does NOT exercise authentication (it never resolves a key): it answers as logged in so it stands in for the judges'
+shapes, never for the credential path. With JE_TEST_NOAUTH set it answers a 'Not logged in' error envelope on EVERY call, so
+preflight_auth's not-logged-in road is driven the way the judges' own auth road would fail."""
 import json, os, re, sys
 args = sys.argv[1:]
 if args and args[0] in ("-v", "--version"):
     print("2.1.0 (fake)"); sys.exit(0)
+if os.environ.get("JE_TEST_NOAUTH"):
+    print(json.dumps({"type": "result", "subtype": "error", "is_error": True, "result": "Not logged in",
+                      "session_id": None, "total_cost_usd": 0})); sys.exit(0)
 sysp = args[args.index("--system-prompt") + 1] if "--system-prompt" in args else ""
 user = sys.stdin.read()
 cand = "CANDIDATE-MARK" in sysp
 judge = ("labeller" if "You classify the final assistant message" in sysp else "closer" if "turn-end auditor" in sysp
-         else "planner" if "planner" in sysp[:120] else "unblocker" if "marked blocked" in sysp else "other")
+         else "grouper" if "You are a grouper" in sysp else "planner" if "planner" in sysp[:120]
+         else "unblocker" if "marked blocked" in sysp else "other")
 log = os.environ.get("JE_TEST_LOG")
 if log:
     with open(log, "a") as fh:
@@ -80,6 +85,9 @@ elif judge == "planner":
         reply_text = json.dumps({"ops": [{"why": "delivered", "do": "done", "goal": 1}]})
 elif judge == "unblocker":
     reply_text = json.dumps({"verdicts": []})
+elif judge == "grouper":
+    reply_text = json.dumps({"ops": []})       # a valid no-op grouper reply (the harness disables the grouper; this is only
+    #                                            reached when a pin's mutation re-enables it, and must not add a parse failure)
 else:
     reply_text = json.dumps({"result": "ok"})
 env = {"type": "result", "subtype": "success", "is_error": False, "duration_ms": 7, "duration_api_ms": 5, "num_turns": 1,
@@ -165,6 +173,7 @@ class Harness(unittest.TestCase):
         os.environ["JE_TEST_LOG"] = self.log
         self.addCleanup(lambda: os.environ.pop("JE_TEST_LOG", None))
         self.addCleanup(lambda: os.environ.pop("JE_TEST_PROSE", None))
+        self.addCleanup(lambda: os.environ.pop("JE_TEST_NOAUTH", None))
 
     # ── helpers ──
     def _tree_hash(self, root):
@@ -217,7 +226,8 @@ class Harness(unittest.TestCase):
         written = [str(p.relative_to(dest)) for p in Path(dest).rglob("*") if p.is_file()]
         self.assertTrue(all(w.startswith(("claude/", "state/")) or w == "manifest.json" for w in written), written)
         # the corpus carries ONLY the apiKeyHelper into its claude root (so the arm can authenticate), never the rest of the
-        # live settings.json (personal settings and paths)
+        # live settings.json (personal settings and paths). The live root's helper is a USER helper, so it is copied
+        self.assertTrue(Path(dest, "claude", "settings.json").is_file(), "the builder copied the live user apiKeyHelper into the corpus root")
         self.assertEqual(json.loads(Path(dest, "claude", "settings.json").read_text()), {"apiKeyHelper": "echo synthetic-key"},
                          "only the apiKeyHelper entry is copied, nothing else")
         eid = m["endings"][0]["id"]
@@ -371,7 +381,7 @@ class Harness(unittest.TestCase):
         run_root = os.path.join(self.td, "runs")
         res = self.je.run_arm(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
         planner = self._calls("planner")
-        self.assertEqual(len(planner), 4 * 2, "one planner call per ending per build over four endings and two builds: %d" % len(planner))
+        self.assertEqual(len(planner), 4 * 3, "one planner call per ending per build over four endings and three builds: %d" % len(planner))
         for eid, r in res["endings"].items():
             e = next(x for x in m["endings"] if x["id"] == eid)
             for build in r["builds"]:
@@ -637,9 +647,9 @@ class Harness(unittest.TestCase):
         self.assertEqual((mm["falseInterrupts"], mm["unresolvedEndings"]), (0, 1), "an unreadable journal is unscorable: %r" % mm)
         self.assertIn({"session": h, "error": "UnicodeDecodeError"}, mm["liveReadErrors"], "the bad byte is a recorded fault: %r" % mm["liveReadErrors"])
 
-    def test_a_torn_journal_row_is_a_fault_and_the_other_rows_still_read(self):
-        """A torn (rejected JSON) journal row is recorded as a fault and skipped, and the rows after it still read (a torn
-        tail must not swallow the next row silently)."""
+    def test_a_torn_journal_row_is_a_fault_and_the_row_on_its_OWN_next_line_still_reads(self):
+        """A torn (rejected JSON) journal row on its OWN line is recorded as a torn-journal-row fault and skipped, and the
+        row on the NEXT line still reads (a torn line of its own must not swallow the row after it silently)."""
         sid = SIDS[1]
         e = self._ending(self._corpus()[1], sid, 0)
         s, c = float(e["startT"]), float(e["cutT"])
@@ -653,6 +663,25 @@ class Harness(unittest.TestCase):
         self.assertEqual(mm["falseInterrupts"], 1, "the good clear row after the torn one still read: a false interrupt: %r" % mm)
         self.assertIn({"session": h, "error": "torn-journal-row"}, mm["liveReadErrors"], "the torn row is a recorded fault: %r" % mm["liveReadErrors"])
 
+    def test_a_newlineless_tear_records_one_fault_and_does_not_silently_swallow_the_next_row(self):
+        """Review low 8: a torn fragment with NO trailing newline before the next row's JSON puts both on one physical line;
+        the reader splits on newlines, so that line is one rejected row. The decision (intended over reconstruction): it
+        records exactly one torn-journal-row fault, LOUD, not a silent skip; the merged clear is part of the torn line, so it
+        is not read as a cross-off and the ending scores untouched. The fault is what keeps the swallow from being silent."""
+        sid = SIDS[1]
+        e = self._ending(self._corpus()[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [])
+        ov = self.state / "overrides" / (sid + ".jsonl")
+        ov.write_text("{ torn not json" + json.dumps({"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}) + "\n")
+        manifest = {"endings": [e]}
+        results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        mm = self.je.measure(manifest, results, self.state)   # must not raise
+        h = hashlib.sha256(sid.encode()).hexdigest()[:12]
+        self.assertEqual([f for f in mm["liveReadErrors"] if f["session"] == h], [{"session": h, "error": "torn-journal-row"}],
+                         "exactly one torn-journal-row fault is recorded for the newline-less tear: %r" % mm["liveReadErrors"])
+        self.assertEqual(mm["falseInterrupts"], 0, "the clear merged into the torn line is not reconstructed: the ending scores untouched, not a false interrupt: %r" % mm)
+
     def test_tier_one_label_does_not_read_a_mute_clear_as_the_users_finish(self):
         """Item 3: tier_one_label shares the cross-off predicate, so a mute-only journal (a src-user clear with the mute's
         why on a done-in-window top) does not label the ending 'finished'; it is None (nothing the user did applies)."""
@@ -664,25 +693,43 @@ class Harness(unittest.TestCase):
         self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
         self.assertEqual(self.je.tier_one_label(self.state, sid, c, s), "finished", "an ordinary cross-off is the user's finish")
 
-    def test_the_auth_preflight_refuses_without_the_helper_and_passes_with_it(self):
-        """The pilot's fault storm: the arm ran the CLI with CLAUDE_CONFIG_DIR at a corpus claude root that carried no
-        apiKeyHelper, so every call read 'Not logged in' and the table was a silent zero. preflight_auth refuses, naming the
-        helper, when it is missing, and passes when it is present (the fake probe answers logged-in)."""
-        d = os.path.join(self.td, "cfg"); os.makedirs(d)
-        with self.assertRaises(SystemExit) as cm:
-            self.je.preflight_auth(self.fake, d)                # no settings.json: no helper
-        self.assertIn("apiKeyHelper", str(cm.exception), "the refusal names the missing helper: %r" % cm.exception)
-        Path(d, "settings.json").write_text(json.dumps({"apiKeyHelper": "echo k"}))
-        self.je.preflight_auth(self.fake, d)                    # helper present and the probe answers logged-in: no raise
+    def test_the_auth_preflight_runs_the_judges_road_and_is_the_sole_gate(self):
+        """Review M: preflight_auth runs the judges' OWN auth road, built from jd._judge_cmd and jd._judge_env with the
+        resolved billing (jd._judge_auth), not a bare `claude -p`, and is the SOLE gate: there is no hard apiKeyHelper-file
+        refusal (which false-refused a login-road operator). The fake answers logged-in, so the probe passes and returns a
+        cost note; with JE_TEST_NOAUTH it answers 'Not logged in' and preflight refuses, quoting the CLI's words (never
+        empty braces) and naming the hand-placed-helper remedy, never a rebuild (review low 3, low 4)."""
+        dest, m = self._corpus(name="preflight")
+        saved_env = dict(os.environ)
+        try:
+            jd = self.je.load_judge(Path(self.td, "pf-state"), Path(dest, "claude"), self.fake)
+            probe = self.je.preflight_auth(jd, self.fake, jd.TRIAGE_MODEL)   # the fake answers logged-in: no raise
+            self.assertIsInstance(probe, dict); self.assertIn("cost", probe); self.assertIn("sessionId", probe)
+            os.environ["JE_TEST_NOAUTH"] = "1"
+            with self.assertRaises(SystemExit) as cm:
+                self.je.preflight_auth(jd, self.fake, jd.TRIAGE_MODEL)
+        finally:
+            os.environ.clear(); os.environ.update(saved_env)
+        msg = str(cm.exception)
+        self.assertIn("Not logged in", msg, "the refusal quotes the CLI's own words: %r" % msg)
+        self.assertNotIn("{}", msg, "never empty braces (the decode-failure branch keeps and quotes the process): %r" % msg)
+        self.assertIn("hand-place", msg, "the refusal names the hand-placed-helper remedy: %r" % msg)
+        self.assertIn("do NOT rebuild", msg, "the refusal tells the operator NOT to rebuild (a rebuild re-picks endings): %r" % msg)
 
-    def test_a_paid_arm_refuses_before_walking_endings_without_the_helper(self):
-        """An arm over a corpus root lacking the helper refuses before its first ending (a short storm, not one per ending):
-        no results.json is written."""
+    def test_a_paid_arm_refuses_before_walking_endings_when_the_probe_is_not_logged_in(self):
+        """Review low 2: the arm runs the judges' auth road once before its first ending; when that probe reads 'Not logged
+        in', the arm refuses (a short storm, not one per ending) and writes no results.json, EVEN over a corpus that carries
+        the helper (the probe is the gate now, not the file's presence)."""
         dest, m = self._corpus(name="noauth")
-        (Path(dest) / "claude" / "settings.json").unlink()      # strip the helper the builder copied
+        self.assertTrue((Path(dest) / "claude" / "settings.json").is_file(),
+                        "the corpus carries the user helper, so the refusal is the probe's, not a missing file")
         run_root = os.path.join(self.td, "runs-noauth")
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.je.run_arm(dest, "baseline", None, run_root, None, self.fake)
+        os.environ["JE_TEST_NOAUTH"] = "1"
+        try:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.je.run_arm(dest, "baseline", None, run_root, None, self.fake)
+        finally:
+            os.environ.pop("JE_TEST_NOAUTH", None)
         self.assertFalse(os.path.exists(os.path.join(run_root, "baseline", "results.json")), "refused before writing any ending")
 
     def test_a_failed_call_or_a_rejected_reply_marks_the_row_not_comparable(self):
@@ -1010,6 +1057,17 @@ class Harness(unittest.TestCase):
         for k in ("auth", "rate-limited", "fast-refused", "scratch", "call", "parse", "give-up", "pass-crash", "unregistered-caller"):
             self.assertIn(k, self.je.FAILURE_KINDS)
         self.assertNotIn("timeout", self.je.FAILURE_KINDS)
+        # comparability excludes non-arm-judge failures (a grouper's stuck call is not an arm-judge fault; the arm exercises
+        # only the planner, closer and unblocker): a grouper 'call' row and a planner 'call' row count as ONE, not two
+        self.assertEqual(self.je.ARM_JUDGES, ("planner", "closer", "unblocker"), "the three judges an arm exercises")
+        mixed = os.path.join(self.td, "judge-errors-mixed.jsonl")
+        Path(mixed).write_text(json.dumps({"err": "call", "judge": "grouper"}) + "\n"
+                               + json.dumps({"err": "call", "judge": "planner"}) + "\n")
+        self.assertEqual(counter(mixed), 1, "the grouper 'call' row is excluded (a non-arm judge); the planner 'call' row counts")
+        for j in ("consolidator", "distiller"):
+            other = os.path.join(self.td, "judge-errors-%s.jsonl" % j)
+            Path(other).write_text(json.dumps({"err": "call", "judge": j}) + "\n")
+            self.assertEqual(counter(other), 0, "a %s 'call' row is excluded too" % j)
         # a rejected closer reply files its own row: it is counted once, not once as a row and once as a None
         dest, m = self._corpus()
         run_root = os.path.join(self.td, "runs")
@@ -1651,6 +1709,95 @@ class Harness(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 self.je.main(args)
             self.assertNotEqual(cm.exception.code, 0)
+
+
+    # ── this round: the three measure levers and the post-merge review items ──
+    def test_the_arm_disables_the_grouper_and_the_consolidator(self):
+        """Lever A: arm runs compare WITHOUT regrouping or consolidation. The grouper and consolidator are not measured
+        judges, their reshaping of the top set is the largest flap component, and the grouper's stuck calls are the
+        120s-alarm timeouts. _plan_session calls _group_store after each placement; the harness no-ops it, so a seed with
+        several open tops that would otherwise trip the grouper makes no grouper call. The fake logs each call's judge."""
+        dest, m = self._corpus(name="nogroup")
+        eid = m["endings"][0]["id"]
+        # a seed of THREE open tops: the planner's one placement leaves two, which without the no-op trips the grouper
+        nodes = {("%s:g%d" % (eid, i)): {"id": "%s:g%d" % (eid, i), "text": "Open top %d" % i, "parentId": None,
+                                         "t": T0 + i, "trail": [], "log": []} for i in (1, 2, 3)}
+        (Path(dest) / "state" / "romp" / "goals" / (eid + ".json")).write_text(json.dumps(
+            {"rompUuid": eid, "seq": 3, "placementsV": 14, "placements": {}, "status": {}, "nodes": nodes,
+             "closedTurns": [], "closedSig": {}}))
+        run_root = os.path.join(self.td, "runs-nogroup")
+        self.je.run_arm_inprocess(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6, builds=1)
+        self.assertEqual(self._calls("grouper"), [], "the arm made no grouper or consolidator model call: %r" % self._calls("grouper"))
+        self.assertTrue(self._calls("planner"), "the planner still ran (the grouper is what is disabled)")
+
+    def test_the_measure_takes_the_majority_of_three_builds_and_counts_the_residual_flap(self):
+        """Lever B: a card's column for scoring is the MAJORITY of the three builds of the same store; the flap figure is the
+        residual disagreement (the card's columns not all equal). A re-opened card that reads completed/completed/needs_input
+        is a leak (majority completed) and one flap; the same re-opened card reading needs_input/needs_input/completed is NOT
+        a leak (majority needs_input) though one build read completed; completed/completed/completed is no flap. Scoring by
+        the last build alone (not the majority) would flip both leak verdicts."""
+        m = self._corpus()[1]
+        e = self._ending(m, SIDS[0], 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(SIDS[0], s, c, [{"node": SIDS[0] + ":g1", "op": "followup", "t": c + 7200}])   # the user RE-OPENED g1
+        manifest = {"endings": [e]}
+
+        def scored(cols):
+            return {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": col, "scored": True}} for col in cols]}}}
+        leak = self.je.measure(manifest, scored(["completed", "completed", "needs_input"]), self.state)
+        self.assertEqual((leak["leaks"], leak["flaps"]), (1, 1),
+                         "majority completed on a re-opened card is a leak, and the three builds disagree (one flap): %r" % leak)
+        noleak = self.je.measure(manifest, scored(["needs_input", "needs_input", "completed"]), self.state)
+        self.assertEqual((noleak["leaks"], noleak["flaps"]), (0, 1),
+                         "majority needs_input is NOT a leak though one build read completed; still one flap: %r" % noleak)
+        agree = self.je.measure(manifest, scored(["completed", "completed", "completed"]), self.state)
+        self.assertEqual((agree["leaks"], agree["flaps"]), (1, 0), "three equal completed builds: a leak and no flap: %r" % agree)
+
+    def test_the_corpus_builder_resolves_the_helper_through_the_credentials_module(self):
+        """Review low 5: build_corpus resolves the apiKeyHelper through the credentials module, in Claude Code's own
+        precedence, not by reading claude_root/settings.json directly. A MANAGED helper (read by the child from the system
+        path) is NOT copied into the corpus; a USER helper is. A synthetic managed file stands in (pointed at through the
+        credentials module's managed_settings_path), so no real system file is touched."""
+        cred = self.je._credentials()
+        managed = os.path.join(self.td, "managed-settings.json")
+        Path(managed).write_text(json.dumps({"apiKeyHelper": "echo managed-key"}))
+        saved_msp = cred.managed_settings_path
+        empty_claude = Path(self.td, "empty-claude"); empty_claude.mkdir()   # no USER helper: the only helper is the managed one
+        dest = os.path.join(self.td, "managed-corpus")
+        try:
+            cred.managed_settings_path = lambda: managed
+            cred._SETTINGS_CACHE.clear()
+            helper, source = self.je._corpus_helper(empty_claude)
+            self.assertEqual((helper, source), ("echo managed-key", "managed"), "the managed helper resolves through the credentials module")
+            self.je.build_corpus(self.state, empty_claude, dest, per_class=10, now=T0 + 10**6)
+        finally:
+            cred.managed_settings_path = saved_msp
+            cred._SETTINGS_CACHE.clear()
+        self.assertFalse(Path(dest, "claude", "settings.json").exists(),
+                         "a managed helper is NOT copied into the corpus (the child reads it from the system path)")
+        # the setUp's live claude root carries a USER helper, which IS copied
+        dest2 = self._corpus(name="user-helper")[0]
+        self.assertEqual(json.loads(Path(dest2, "claude", "settings.json").read_text()), {"apiKeyHelper": "echo synthetic-key"},
+                         "a user helper is copied into the corpus")
+
+    def test_a_labeled_row_from_a_torn_journal_keeps_its_label_and_carries_no_tier_one_error(self):
+        """Review low 7: tierOneError marks a GENUINE read fault (tier one None). A torn journal row that still yields a
+        label (the surviving rows read) leaves the label standing with NO tierOneError beside it; the torn-row fault is
+        recorded at the run level (the summary's tierOneErrors), not on the labeled row."""
+        dest, m = self._corpus(name="lowseven")
+        sid = SIDS[0]
+        e = self._ending(m, sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [])            # a closer done on g1 in the window
+        ov = self.state / "overrides" / (sid + ".jsonl")     # a torn row on its own line, then the user's cross-off
+        ov.write_text("{ torn not json\n" + json.dumps({"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}) + "\n")
+        summary = self.je.label(dest, os.path.join(self.td, "runs-lowseven"), self.state, claude_bin=self.fake, model="fake")
+        row = {r["id"]: r for r in json.loads(Path(self.td, "runs-lowseven", "labels.json").read_text())}[e["id"]]
+        self.assertEqual(row["tierOne"], "finished", "the clear after the torn row still labels the ending finished: %r" % row)
+        self.assertIsNone(row["tierOneError"], "a torn row that still yields a label carries NO tierOneError on the row: %r" % row)
+        h = hashlib.sha256(sid.encode()).hexdigest()[:12]
+        self.assertIn({"session": h, "error": "torn-journal-row"}, summary["tierOneErrors"],
+                      "the torn-row fault rides the run-level summary, not the labeled row: %r" % summary["tierOneErrors"])
 
 
 if __name__ == "__main__":

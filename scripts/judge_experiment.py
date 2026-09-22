@@ -43,6 +43,10 @@ BUDGET_OVERRUN = 1.2          # a run stops once its ledger passes this multiple
 COLUMN_OF = {"blocked": "needs_input", "completed": "completed", "cleared": "cleared"}   # the store-derivable part of the feed's rule
 STABILITY_GATE_PCT = 90.0     # the labeller's OWN gate: the fraction that get the same class in both shuffled orders (road (b): the
 #                               class is a stratification frame, not a truth, so its agreement with the user's actions is reported, not gated)
+ARM_JUDGES = ("planner", "closer", "unblocker")   # the three judges an arm run actually exercises. A judge-errors row
+#   naming any OTHER judge (grouper, consolidator, distiller, a captioner, ...) is not one of these, so its failure does not
+#   mark the arm not comparable: a stuck grouper call (the pilot's 120s-alarm timeouts) is not an arm-judge fault. A row
+#   naming no judge is counted, so the generic pause and stand-down rows still tell the arm not comparable.
 FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",
                  "unregistered-caller", "history-unreadable", "store-quarantined")   # judge-errors rows that mean the ending was not judged:
 #   a rejected reply, a crashed or refused call, the two pause kinds (`auth`, `rate-limited`), the call-level stand-downs (`fast-refused`,
@@ -139,6 +143,19 @@ def _ts(rec):
 # theirs by construction. A copy of the opener rule drifted (round three of the review: it reproduced three of the fold's
 # refusals and none of the command-twin, local-command, skill-content or restore-replay handling), so the copy is gone.
 _EM = [None]
+_CRED = [None]
+
+
+def _credentials():
+    """kernel/credentials.py, loaded once (the judge module loads the same file under this name). The corpus builder
+    resolves Claude Code's apiKeyHelper through it, in the CLI's own precedence (managed settings outrank the user
+    file), rather than reading a settings file directly: a managed helper is read by the child from the system path and
+    must not be mistaken for a missing one (review 2026-09-08)."""
+    if _CRED[0] is None:
+        sys.path.insert(0, str(ROOT / "tests"))
+        from romp_load import load_source
+        _CRED[0] = sys.modules.get("romp_credentials") or load_source("romp_credentials", str(ROOT / "kernel" / "credentials.py"))
+    return _CRED[0]
 
 
 def _event_model():
@@ -462,6 +479,22 @@ def top_done_times(store):
     return out
 
 
+def _corpus_helper(claude_root):
+    """(the apiKeyHelper command the corpus should carry, its source) for `claude_root`, resolved through the credentials
+    module in Claude Code's own precedence. The source is "user", "managed" or None; only a "user" helper is copied into the
+    corpus (see build_corpus). CLAUDE_CONFIG_DIR is pointed at the live claude root for the resolution and restored after."""
+    cred = _credentials()
+    saved = os.environ.get("CLAUDE_CONFIG_DIR")
+    os.environ["CLAUDE_CONFIG_DIR"] = str(claude_root)
+    try:
+        return cred.api_key_helper(None, operator_only=True), cred.helper_source()
+    finally:
+        if saved is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = saved
+
+
 def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turns=2):
     """Read the live roots as files, write the corpus under `dest`: per ending a truncated transcript under
     dest/claude/projects/<munged cwd>/<ending id>.jsonl, a names entry, the store before the cut and the override journal
@@ -559,15 +592,16 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
         (dest / "state" / "romp" / sub).mkdir(parents=True, exist_ok=True)
     (dest / "state" / "romp" / "session-hosts").write_text("off")
     # an arm runs the real judges with CLAUDE_CONFIG_DIR pointed at this claude root (load_judge), so the CLI resolves the key
-    # from HERE: carry the live root's apiKeyHelper (a command reference, never the key itself) or the CLI reports "Not logged
-    # in" and every arm's table is a silent zero. Only the helper key is copied, no other setting or secret.
+    # from HERE. The helper is resolved through the credentials module, in Claude Code's own precedence, not by reading a
+    # settings file directly (review 2026-09-08). A USER helper (the operator's ~/.claude settings) is copied so the arm's
+    # CLI on the KEY road resolves the key from the corpus root; only the helper key is copied, no other setting or secret. A
+    # MANAGED helper is read by the child from the system path and needs no copy, and the LOGIN road needs no helper at all,
+    # so both write nothing: reading claude_root/settings.json directly used to copy a user helper a managed one outranks, and
+    # to false-refuse a login-road operator whose managed helper it never saw.
     (dest / "claude").mkdir(parents=True, exist_ok=True)
-    try:
-        live_settings = json.loads((Path(claude_root) / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        live_settings = {}
-    if live_settings.get("apiKeyHelper"):
-        (dest / "claude" / "settings.json").write_text(json.dumps({"apiKeyHelper": live_settings["apiKeyHelper"]}))
+    helper, helper_source = _corpus_helper(claude_root)
+    if helper_source == "user" and helper:
+        (dest / "claude" / "settings.json").write_text(json.dumps({"apiKeyHelper": helper}))
     manifest = {"built": now, "classes": list(CLASSES), "endings": [], "skipped": skipped}
     for c in CLASSES:
         for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key, seed_start in picked[c]:
@@ -645,31 +679,42 @@ def apply_prompts(jd, prompts):
     return saved
 
 
-def preflight_auth(claude_bin, claude_root):
-    """Before a paid arm walks a single ending: refuse if the corpus claude root carries no apiKeyHelper (an arm runs the CLI
-    with CLAUDE_CONFIG_DIR pointed here, so without it every call reads 'Not logged in' and the table is a silent zero), and
-    stop at once on a cheap probe whose envelope reads 'Not logged in'. The storm is loud and free, but it should also be
-    SHORT (one refusal, not one per ending). The fake validator does NOT exercise auth, so this is the arm's own gate."""
-    settings = Path(claude_root) / "settings.json"
-    has_helper = False
-    if settings.is_file():
-        try:
-            has_helper = bool(json.loads(settings.read_text(encoding="utf-8")).get("apiKeyHelper"))
-        except (OSError, ValueError):
-            has_helper = False
-    if not has_helper:
-        raise SystemExit("refused: the corpus claude root (%s) carries no apiKeyHelper; the judges cannot authenticate. "
-                         "Rebuild the corpus so its claude root has one." % claude_root)
+HELP_REMEDY = ("hand-place an apiKeyHelper into the existing corpus's claude root (do NOT rebuild it: a rebuild re-picks "
+               "the endings and orphans the labeller's id-keyed labels), or sign a Claude login in on this machine, then "
+               "re-run the arm")
+
+
+def preflight_auth(jd, claude_bin, model):
+    """Before a paid arm walks a single ending: run the judges' OWN auth road once and be the SOLE gate, so a login-road
+    operator with no helper is not false-refused (review 2026-09-08). The probe is built from `jd._judge_cmd` and
+    `jd._judge_env` with the resolved billing (`jd._judge_auth(None)`), so `_judge_env` strips the ambient credential and
+    the 1Password names and injects only the resolved login tokens, exactly as every judge call does: an environment-only
+    credential that would pass a bare `claude -p` fails here as the judges do. Refuse (SystemExit) when the envelope is an
+    error, reads 'Not logged in', or carries no session_id. The storm the gate replaces is loud and free, but it should be
+    SHORT (one refusal, not one per ending). Returns a {"cost", "ms", "sessionId"} note the arm ledgers in results.json.
+
+    The refusal QUOTES the CLI's own words (the envelope's `result`, else truncated stdout and stderr, else the exception
+    name), never empty braces: a decode failure keeps the process object and quotes it (review low 3). It names the
+    hand-placed-helper remedy, never a rebuild (review low 4)."""
+    auth = jd._judge_auth(None)
+    cmd = jd._judge_cmd(model, "Reply with the word ok.", auth=auth)
+    env = jd._judge_env("triage", auth=auth)
     try:
-        p = subprocess.run([str(claude_bin), "-p", "--safe-mode", "--model", "sonnet", "--output-format", "json"],
-                           input="ok", capture_output=True, text=True, timeout=120)
-        env = json.loads(p.stdout or "{}")
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        p, env = None, {}
-    blob = json.dumps(env) + ((p.stderr or "") if p is not None else "")
-    if env.get("is_error") or not env.get("session_id") or "Not logged in" in blob:
-        raise SystemExit("refused: the claude binary did not authenticate on a probe (%s); fix the apiKeyHelper before the "
-                         "paid arms" % ((env.get("result") or blob or "no envelope")[:200]))
+        p = subprocess.run(cmd, input="ok", env=env, capture_output=True, text=True, timeout=130)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise SystemExit("refused: the judges' auth probe could not run (%s); %s" % (type(e).__name__, HELP_REMEDY))
+    try:
+        envelope = json.loads(p.stdout or "")
+        envelope = envelope if isinstance(envelope, dict) else None
+    except ValueError:
+        envelope = None                                          # a decode failure: p is kept, its stdout/stderr quoted below
+    blob = (json.dumps(envelope) if envelope is not None else "") + (p.stderr or "")
+    if envelope is None or envelope.get("is_error") or not envelope.get("session_id") or "Not logged in" in blob:
+        detail = (envelope.get("result") if isinstance(envelope, dict) else None) or \
+                 ("stdout %r stderr %r" % ((p.stdout or "")[:200], (p.stderr or "")[:200]))
+        raise SystemExit("refused: the judges' auth probe did not authenticate (%s); %s" % (detail, HELP_REMEDY))
+    return {"cost": float(envelope.get("total_cost_usd") or 0), "ms": int(envelope.get("duration_ms") or 0),
+            "sessionId": envelope.get("session_id")}
 
 
 def restore_prompts(jd, saved):
@@ -682,16 +727,21 @@ def column_of(status):
 
 
 def count_failure_rows(errors_path):
-    """Rows on an arm's judge-errors ledger that mean a call failed, was skipped or its reply was rejected (FAILURE_KINDS); the
-    other rows there are the judges' anomaly notes (a stale close, a workless done), which are verdict facts, not failures."""
+    """Rows on an arm's judge-errors ledger that mean an ARM judge's call failed, was skipped or its reply was rejected
+    (`err` in FAILURE_KINDS); the other rows there are the judges' anomaly notes (a stale close, a workless done), which
+    are verdict facts, not failures. A row naming a NON-ARM judge (grouper, consolidator, distiller, ...) is excluded even
+    when its `err` is a failure kind: those judges are not among the three an arm exercises (ARM_JUDGES), so a stuck grouper
+    call must not mark the arm not comparable. A row naming no judge is counted, so the generic pause and stand-down rows
+    still tell the arm not comparable."""
     n = 0
     try:
         for line in Path(errors_path).open(encoding="utf-8"):
             try:
-                if json.loads(line).get("err") in FAILURE_KINDS:
-                    n += 1
+                r = json.loads(line)
             except ValueError:
                 continue
+            if r.get("err") in FAILURE_KINDS and (r.get("judge") is None or r.get("judge") in ARM_JUDGES):
+                n += 1
     except OSError:
         return 0
     return n
@@ -711,11 +761,13 @@ def ledger_cost(usage_path):
     return cost, n, (ms / n if n else 0.0)
 
 
-def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bin, now=None, builds=2):
+def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bin, now=None, builds=3):
     """One arm over the corpus, in this process: the corpus state copied under run_root/<arm>/state, the judge module
     loaded against it, the arm's prompts swapped in, and per ending and per build the planner, the closer over the last
-    closed turn and the unblocker, the tops' columns recorded. Two builds from the same store copy give the flaps. The
-    arm's ledger is read after every ending and the run stops past BUDGET_OVERRUN times the budget."""
+    closed turn and the unblocker, the tops' columns recorded. THREE builds from the same store copy give the majority
+    column per card and the residual flaps (the pilot's flaps are model sampling; a card's column is the majority of the
+    three, the flap figure the disagreement that remains). The arm's ledger is read after every ending and the run stops
+    past BUDGET_OVERRUN times the budget."""
     corpus, run_root = Path(corpus), Path(run_root)
     refuse_inside_repo(run_root)
     manifest = json.loads((corpus / "manifest.json").read_text())
@@ -725,11 +777,18 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
         shutil.rmtree(state)
     shutil.copytree(corpus / "state", state)
     jd = load_judge(state, corpus / "claude", claude_bin)
-    preflight_auth(claude_bin, corpus / "claude")               # refuse before the first ending if the arm cannot authenticate
     prompts = json.loads(Path(prompts_file).read_text()) if prompts_file else {}
-    saved = apply_prompts(jd, prompts)
     now = int(time.time()) if now is None else int(now)
     results = {"arm": arm, "prompts": sorted(prompts), "endings": {}, "stopped": None, "failures": 0, "closerNone": 0}
+    results["preflightProbe"] = preflight_auth(jd, claude_bin, jd.TRIAGE_MODEL)   # refuse before the first ending if the arm
+    #                            cannot authenticate; the probe's own cost is noted here, outside the arm's judge ledger
+    saved = apply_prompts(jd, prompts)
+    # arm runs compare WITHOUT regrouping/consolidation: the grouper and consolidator are not measured judges, their
+    # non-deterministic reshaping of the top set is the largest flap component, and the grouper's stuck model calls are the
+    # 120s-alarm timeouts. _plan_session calls _group_store as a module global after every placement, so patching it here
+    # no-ops the grouper; _consolidate_store is patched too though the harness never runs the consolidator pass.
+    jd._group_store = lambda *a, **k: 0
+    jd._consolidate_store = lambda *a, **k: 0
     usage = jd.USAGE
     errors_path = Path(jd.ERRORS)
     def error_rows():
@@ -840,6 +899,18 @@ def _scored(build):
         else:
             out[nid] = v                                 # an older results file: every card counted
     return out
+
+
+def _majority(cols):
+    """The majority column across the builds where a card was scored: the most common, and on a tie or an all-different
+    set the first-seen among the modal columns (a deterministic pick, so the same builds always score the same way). This
+    is the column a card is scored by (leaks / false interrupts / answered-then-cleared); the remaining disagreement is the
+    flap figure."""
+    counts = {}
+    for c in cols:
+        counts[c] = counts.get(c, 0) + 1
+    best = max(counts.values())
+    return next(c for c in cols if counts[c] == best)
 
 
 PLACEMENT_KINDS = ("done", "block", "awaiting")   # a top-level verdict the live judges filed in the ending's turn: the placement
@@ -966,12 +1037,13 @@ def measure(manifest, results, live_state):
     pilot showed is not a truth about an ending's shape). Leaks into Completed: the arm placed a top completed that the user
     then re-opened. False interrupts: the arm left a top needs_input that the user plainly crossed off, with no re-open and
     no unblocker ruling that a reply answered the block (a topic-blind later turn does NOT suppress). answeredThenCleared: a
-    needs_input top the kernel ruled answered before the user cleared it (the card did its job), a separate count. Flaps: a
-    scored top whose column differs between the two builds. Failures: a row with any is not comparable. The live root is read
-    only, and the store identity comes from the manifest (fixed at build). Every ending falls in exactly one column so they
-    partition: unresolved (live store gone or unreadable), unplaced (resolved, no card placed in the turn), gestured (a
-    placed card the user acted on, a re-open or a cross-off) or untouched (a placed card the user did nothing to). Every
-    ending contributes flaps and cost."""
+    needs_input top the kernel ruled answered before the user cleared it (the card did its job), a separate count. A card's
+    column for scoring is the MAJORITY of the (three) builds of the same store copy (`_majority`); the FLAP figure is the
+    residual disagreement, a scored card whose columns are not all equal across the builds where it is scored. Failures: a
+    row with any is not comparable. The live root is read only, and the store identity comes from the manifest (fixed at
+    build). Every ending falls in exactly one column so they partition: unresolved (live store gone or unreadable), unplaced
+    (resolved, no card placed in the turn), gestured (a placed card the user acted on, a re-open or a cross-off) or untouched
+    (a placed card the user did nothing to). Every ending contributes flaps and cost."""
     by_id = {e["id"]: e for e in manifest["endings"]}
     leaks = false_interrupts = answered_then_cleared = flaps = gestured = untouched = unresolved = unplaced = 0
     faults = []
@@ -979,7 +1051,12 @@ def measure(manifest, results, live_state):
         e = by_id.get(eid, {})
         store_key = e.get("storeKey")
         builds = [_scored(b) for b in r["builds"]]
-        final = builds[-1] if builds else {}
+        # per SCORED card, the columns from the builds where it is scored: the majority is its column, and it flaps when
+        # those columns are not all equal (the residual disagreement the majority resolves)
+        cards = set().union(*[set(b) for b in builds]) if builds else set()
+        cols_of = {nid: [b[nid] for b in builds if nid in b] for nid in cards}
+        majority = {nid: _majority(cols) for nid, cols in cols_of.items() if cols}
+        flaps += sum(1 for cols in cols_of.values() if len(set(cols)) > 1)
         if store_key:
             g = placement_gestures(live_state, store_key, e.get("startT"), float(e.get("cutT") or 0), faults=faults)
             if g is None:
@@ -993,18 +1070,14 @@ def measure(manifest, results, live_state):
                     untouched += 1                              # a placed card the user did nothing to: so the columns partition the endings
                 # the join is by the node suffix (gN): the results carry the ending id prefix, the live store the store key,
                 # so the full keys never coincide by construction, and a store's top-level suffixes are distinct (safe)
-                if any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in final.items()):
+                if any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in majority.items()):
                     leaks += 1
-                if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in final.items()):
+                if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in majority.items()):
                     false_interrupts += 1
-                if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("answeredThenCleared") for nid, col in final.items()):
+                if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("answeredThenCleared") for nid, col in majority.items()):
                     answered_then_cleared += 1
         else:
             unresolved += 1                                     # the manifest carries no live identity (an old or synthetic manifest): unresolvable
-        if len(builds) >= 2:
-            for nid in set(builds[0]) | set(builds[1]):
-                if builds[0].get(nid) != builds[1].get(nid):
-                    flaps += 1
     failures = int(results.get("failures") or 0)
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
             "answeredThenCleared": answered_then_cleared, "flaps": flaps, "gesturedEndings": gestured,
@@ -1191,7 +1264,10 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         row_faults = []
         if key:
             t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=row_faults)
-            row_err = row_faults[0][1] if row_faults else None
+            # a tierOneError marks a GENUINE read fault, when tier one could not be read AT ALL (t1 is None); a torn journal
+            # row that still yields a label leaves that label standing with NO error beside it, the fault recorded at the run
+            # level (tierOneErrors in the summary), not on the labeled row (review low 7)
+            row_err = (row_faults[0][1] if row_faults else None) if t1 is None else None
         else:
             t1 = None
             row_err = "unresolved-key"                # the manifest hash resolves to no live session: told apart from a store-less session's genuine null
