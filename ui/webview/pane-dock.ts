@@ -4,10 +4,12 @@
 // outline shows for a zone, the grab-surface gate and the slop, the SEED of a layout from the three shipped
 // stores (romp-panes for which leaves exist, romp-pane-grow for the row's ratios, the chat columns in row
 // order, the timeline band as a fixed-px kid) and the RECONCILE of a layout with the panes the shell shows
-// now (a pane turned off parks, a pane turned on opens at its default dock). Like pane-tree.ts: no window, no
+// now (a pane turned off parks and the arrangement is remembered; a pane turned on comes back where the memory had it, else
+// at its default dock). Like pane-tree.ts: no window, no
 // document; the engine hands it rects, ids and points. Node-tested in pane-dock.test.ts.
 import {
-  type Edge, type Layout, type Node, type PaneId, type Rect, closePane, dockRoot, has, leaves, openPane, resize, seedRowOverFixedBand, setFixed, edges, isLeaf, type EdgeRect,
+  type Edge, type Layout, type Node, type PaneId, type Rect, type Split, closePane, dockRoot, has, leaves, openPane, resize, seedRowOverFixedBand, setFixed, edges, isLeaf, type EdgeRect,
+  detach, splitAt, fixedOf, mkSplit,
 } from "./pane-tree";
 
 /** The gap between sibling panes, the shipped gutter's 7 px. */
@@ -159,7 +161,7 @@ export function seedLayout(sh: Shown): Layout {
  *  of the whole tree as a fixed kid. Returns the target leaf and edge, or null to dock against the root. */
 export function defaultDock(tree: Node, pane: PaneId): { target: PaneId; edge: Edge } | null {
   const ls = leaves(tree).filter((p) => !isBand(p));
-  if (!ls.length) return null;
+  if (!ls.length) return isBand(pane) || !has(tree, BAND) ? null : { target: BAND, edge: "top" };   // only the band shown: a pane comes back ABOVE it, never beside it as a row (the 1985 read)
   const chats = ls.filter(isChatPane);
   const lastChat = chats.length ? chats[chats.length - 1] : null;
   if (isBand(pane)) return null;
@@ -174,19 +176,159 @@ export function defaultDock(tree: Node, pane: PaneId): { target: PaneId; edge: E
   return { target: ls[ls.length - 1], edge: "right" };   // files, the artifacts pane, a data pane: the right end (plans/panes-as-data.md section 4)
 }
 
+// ── THE REMEMBERED ARRANGEMENT (plans/pane-buttons-with-many-chats.md section 6; the user 2026-09-21: a hide remembers the
+//    arrangement and a show restores it, as a rule for every rail button). The layout keeps, beside `parked`, the tree as it
+//    was with the parked panes in their places; a show puts a returning pane back beside the neighbour it had, with the
+//    share it had, and what the user did meanwhile (a move, a resize, a pane closed) stands. Pure helpers, node-tested
+//    through reconcileShown. ──
+
+/** The tree reduced to the panes in `keep`: every other leaf detached, splits collapsing as detach does; null when nothing
+ *  of it is kept. */
+export function pruneTo(tree: Node, keep: ReadonlyArray<PaneId>): Node | null {
+  const k = new Set(keep);
+  let t: Node | null = tree;
+  for (const p of leaves(tree)) { if (k.has(p) || !t) continue; t = detach(t, p).tree; }
+  return t;
+}
+
+/** The memory after a park from `before` (the tree as shown right before it): `before` itself, the freshest arrangement with
+ *  its ratios (so a resize made while a pane was hidden stands, and a pane turned on or a column opened meanwhile is known),
+ *  with every pane the standing memory knew and `before` does not (the earlier parked panes) re-inserted by the show's own
+ *  rule, beside its remembered neighbour with its remembered share (the 1985 read: a memory kept only while it pruned
+ *  to the shown tree's exact shape was replaced by a stranger and undid a resize). A pane whose neighbours are all hidden
+ *  waits in `parked` without a place and returns at its default dock. */
+export function remember(memory: Node | undefined, before: Node): Node {
+  if (!memory) return before;
+  let acc: Node = before;
+  for (const p of leaves(memory)) {
+    if (has(acc, p)) continue;
+    const placed = placeFrom(memory, acc, p);
+    if (placed) acc = placed;
+  }
+  return acc;
+}
+
+/** A node of `tree` holding exactly the leaves `set` (whatever its shape inside), or null. */
+function nodeWithLeaves(tree: Node, set: ReadonlyArray<PaneId>): Node | null {
+  const want = new Set(set), ls = leaves(tree);
+  if (ls.length === want.size && ls.every((p) => want.has(p))) return tree;
+  if (isLeaf(tree)) return null;
+  for (const k of tree.kids) { const f = nodeWithLeaves(k, set); if (f) return f; }
+  return null;
+}
+
+/** `pane` inserted beside the node `unit` of `tree` (found in it by identity): a sibling in the unit's parent split when that
+ *  parent is the remembered split reduced (the same direction, and every leaf of it either among `within`, the remembered
+ *  split's leaves, or a stranger the memory never knew, `known`), its share `rel` times the unit's; else the unit wrapped in
+ *  a new two-kid split of that direction (shares rel to 1), so a group the memory kept apart (a chat over its feed inside a
+ *  row) comes back as a group and the next returning pane finds it whole, while a stranger pane turned on meanwhile does
+ *  not make the neighbour alone pay for the return (the 1985 read). A pane fixed in the memory (the band) rides as a
+ *  fixed kid of `px`; a FIXED unit takes the pane as a ratio sibling of equal share and is never wrapped (a wrap would put
+ *  the pane inside the band's px): null then, for the caller to try further. */
+function insertBeside(tree: Node, unit: Node, pane: PaneId, dir: "row" | "col", first: boolean, rel: number, within: ReadonlySet<PaneId>, known: ReadonlySet<PaneId>, px: number | null = null): Node | null {
+  const leaf: Node = { pane };
+  const wrap = (u: Node): Node => px !== null
+    ? mkSplit(dir, first ? [leaf, u] : [u, leaf], first ? [0, 1] : [1, 0], first ? [px, null] : [null, px])
+    : mkSplit(dir, first ? [leaf, u] : [u, leaf], first ? [rel, 1] : [1, rel]);
+  if (unit === tree) return wrap(tree);
+  let ok = true;
+  const rebuilt = (n: Node): Node => {
+    if (isLeaf(n)) return n;
+    const idx = n.kids.indexOf(unit);
+    if (idx >= 0) {
+      const unitFixed = fixedOf(n, idx) !== null;
+      if (n.dir === dir && (unitFixed || leaves(n).every((q) => within.has(q) || !known.has(q)))) {
+        const kids = n.kids.slice(), ratios = n.ratios.slice(), fixed = n.fixed ? n.fixed.slice() : n.kids.map(() => null as number | null);
+        const at = first ? idx : idx + 1;
+        const free = n.kids.filter((_, k) => fixedOf(n, k) === null).length;
+        const share = unitFixed ? (free > 0 ? 1 / free : 1) : n.ratios[idx] * rel;   // a fixed pane's own ratio is zeroed by mkSplit's norm, whatever is written here (the 1985 read, round five: an explicit zero was an unobservable branch)
+        kids.splice(at, 0, leaf); ratios.splice(at, 0, share); fixed.splice(at, 0, px);
+        return mkSplit(n.dir, kids, ratios, fixed);
+      }
+      if (unitFixed) { ok = false; return n; }
+      const kids = n.kids.slice(); kids[idx] = wrap(unit);
+      return mkSplit(n.dir, kids, n.ratios, n.fixed);
+    }
+    return mkSplit(n.dir, n.kids.map(rebuilt), n.ratios, n.fixed);
+  };
+  const out = rebuilt(tree);
+  return ok ? out : null;
+}
+
+/** Where a returning pane goes, from the memory: beside the nearest remembered neighbour the tree still shows, on the side it
+ *  had, with its remembered share. From the pane's leaf upward, each remembered split's other kids are tried nearest first: a
+ *  kid the tree shows whole (its shown leaves are one node of the tree, whatever happened inside) takes the pane as a sibling
+ *  (or a wrap when the directions differ); failing that, the pane docks at the nearest shown leaf of the nearest kid; failing
+ *  that, when the band is ALL the tree shows, the band is the neighbour of last resort: the pane goes on its remembered side of
+ *  it, a column of the pane over the fixed band, never a row beside it (the 1985 read). Null when the memory has nothing to say
+ *  (the pane unknown to it, or none of its neighbours shown, unless the band is all the tree shows): the caller falls to the
+ *  default dock. When nothing moved since the hide, the insertions rebuild the remembered tree exactly,
+ *  shares included. */
+export function placeFrom(memory: Node, tree: Node, pane: PaneId): Node | null {
+  if (!has(memory, pane) || has(tree, pane)) return null;
+  const known = new Set(leaves(memory));
+  const chain: Array<{ split: Split; idx: number }> = [];
+  const walk = (n: Node): boolean => {
+    if (isLeaf(n)) return n.pane === pane;
+    for (let i = 0; i < n.kids.length; i++) { if (walk(n.kids[i])) { chain.push({ split: n, idx: i }); return true; } }
+    return false;
+  };
+  walk(memory);
+  const shown = leaves(tree);
+  // the pane's own px when it is a fixed kid of its remembered split (the band): it rides as a fixed kid again
+  const ownPx = chain.length ? fixedOf(chain[0].split, chain[0].idx) : null;
+  for (const { split: a, idx: i } of chain) {
+    let nearLeaf: { leaf: PaneId; first: boolean } | null = null;
+    let fixedKid: number | null = null;
+    const order: number[] = [];
+    for (let d = 1; d < a.kids.length; d++) { if (i - d >= 0) order.push(i - d); if (i + d < a.kids.length) order.push(i + d); }
+    for (const j of order) {
+      if (fixedOf(a, j) !== null) { if (fixedKid === null && leaves(a.kids[j]).some((q) => has(tree, q))) fixedKid = j; continue; }   // the band: the neighbour of last resort
+      const unit = pruneTo(a.kids[j], shown);
+      if (!unit) continue;
+      const first = i < j;
+      const node = nodeWithLeaves(tree, leaves(unit));
+      if (node) {
+        const sp = fixedOf(a, i) !== null ? 0 : a.ratios[i], su = a.ratios[j];
+        const placed = insertBeside(tree, node, pane, a.dir, first, sp > 0 && su > 0 ? sp / su : 1, new Set(leaves(a)), known, ownPx);
+        if (placed) return placed;
+      }
+      if (!nearLeaf) { const ls = leaves(unit); nearLeaf = { leaf: first ? ls[0] : ls[ls.length - 1], first }; }
+    }
+    if (nearLeaf && ownPx === null) {
+      const edge: Edge = a.dir === "row" ? (nearLeaf.first ? "left" : "right") : (nearLeaf.first ? "top" : "bottom");
+      return splitAt(tree, nearLeaf.leaf, pane, edge);
+    }
+    if (fixedKid !== null && leaves(tree).every(isBand)) {
+      // only when the band is ALL the tree shows: with a stranger shown above it, a pane whose neighbours are all hidden takes its
+      // default dock beside the stranger instead (the 1985 read, round four: the road fired between the stranger and the band and
+      // gave the pane a full-width row of its own at half the height, every later pane wrapping inside it)
+      const node = nodeWithLeaves(tree, leaves(a.kids[fixedKid]).filter((q) => has(tree, q)));
+      if (node) { const placed = insertBeside(tree, node, pane, a.dir, i < fixedKid, 1, new Set(leaves(a)), known, ownPx); if (placed) return placed; }
+    }
+  }
+  return null;
+}
+
 /** Reconcile a layout with what the shell SHOWS now: every leaf no longer shown is PARKED (its iframe stays
- *  mounted and hidden, today's togglePane feel), every shown pane not in the tree opens at its default dock,
- *  and the band's fixed px follows `bandPx`. The shown set is the rail's truth (body.po-* plus the columns
- *  present), so the tree can never allot a rectangle to a hidden pane or forget a visible one. Pure. */
+ *  mounted and hidden, today's togglePane feel) and the arrangement is REMEMBERED; every shown pane not in the
+ *  tree comes back where the memory had it (else at its default dock), and the band's fixed px follows `bandPx`.
+ *  The shown set is the rail's truth (body.po-* plus the columns present), so the tree can never allot a
+ *  rectangle to a hidden pane or forget a visible one. Pure. */
 export function reconcileShown(cur: Layout, sh: Shown): Layout {
   const want = new Set<PaneId>(sh.row.concat(sh.band ? [BAND] : []));
   let lay: Layout = cur;
-  // park what is gone (the only-pane refusal is fine: a tree of one hidden pane is replaced below)
+  // park what is gone (the only-pane refusal is fine: a tree of one hidden pane is replaced below), remembering the
+  // arrangement as shown right before (section 6): this tree, with every pane the standing memory knew and this tree lacks put
+  // back beside its remembered neighbour (remember)
+  const before = cur.tree;
+  let parkedAny = false;
   for (const p of leaves(lay.tree)) {
     if (want.has(p)) continue;
     const r = closePane(lay, p);
-    if (r.ok) lay = r.layout;
+    if (r.ok) { lay = r.layout; parkedAny = true; }
   }
+  if (parkedAny) lay = { ...lay, remembered: remember(cur.remembered, before) };
   // open what is new, in the ROW's order, which is the rail's (so the outline lands right of the chat before the feed
   // asks for the outline, and a data pane after the shipped columns): the row is read off the DOM in document order
   const missing = sh.row.filter((p) => want.has(p) && !has(lay.tree, p));
@@ -196,26 +338,36 @@ export function reconcileShown(cur: Layout, sh: Shown): Layout {
       // the tree holds only panes that should be hidden (every shown pane was parked): start over from this pane,
       // and PARK the hidden ones the tree held (their iframes stay mounted and hidden, as a rail close leaves them)
       const dropped = leaves(lay.tree).filter((q) => !lay.parked.includes(q));
-      lay = { v: 1, tree: { pane: p }, parked: lay.parked.concat(dropped).filter((q) => q !== p) };
+      lay = { ...lay, tree: { pane: p }, parked: lay.parked.concat(dropped).filter((q) => q !== p) };
       continue;
     }
     let d = defaultDock(lay.tree, p);
     if (hint && isChatPane(p) && p !== CHAT && has(lay.tree, hint.target) && hint.target !== p) { d = hint; hint = null; }   // the dropped tab's pane lands where the outline said
+    else if (lay.remembered && p !== BAND) {
+      // the remembered place (section 6): beside the neighbour it had, with the share it had; the band keeps its own road below
+      const placed = placeFrom(lay.remembered, lay.tree, p);
+      if (placed) { lay = { ...lay, tree: placed, parked: lay.parked.filter((q) => q !== p) }; continue; }
+    }
     if (d && has(lay.tree, d.target)) {
       const r = openPane(lay, p, d.target, d.edge);
       if (r.ok) lay = r.layout;
     } else {
-      lay = { v: 1, tree: dockRoot(lay.tree, p, "right"), parked: lay.parked.filter((q) => q !== p) };
+      lay = { ...lay, tree: dockRoot(lay.tree, p, "right"), parked: lay.parked.filter((q) => q !== p) };
     }
   }
   if (sh.band && !has(lay.tree, BAND)) {
-    lay = { v: 1, tree: dockRoot(lay.tree, BAND, "bottom", sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX), parked: lay.parked.filter((q) => q !== BAND) };
+    lay = { ...lay, tree: dockRoot(lay.tree, BAND, "bottom", sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX), parked: lay.parked.filter((q) => q !== BAND) };
   }
   if (sh.band) lay = { ...lay, tree: setFixed(lay.tree, BAND, sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX) };
   // a stale park of anything shown is dropped (the parked set never holds a docked pane), and so is the park of a
   // pane whose element is gone (a closed chat column: nothing is mounted to re-open)
   const parked = lay.parked.filter((q) => !has(lay.tree, q) && (!sh.present || sh.present.includes(q)));
-  return parked.length === lay.parked.length ? lay : { ...lay, parked };
+  // the memory (section 6): reduced to the panes the layout still knows (the tree's and the parked), so a column closed while
+  // hidden leaves no record; dropped when nothing is parked
+  const remembered = parked.length && lay.remembered ? pruneTo(lay.remembered, leaves(lay.tree).concat(parked)) : null;
+  const out: Layout = { v: 1, tree: lay.tree, parked };
+  if (remembered) out.remembered = remembered;
+  return out;
 }
 
 /** The chat column number a pane id names: the first chat pane is column 1, `chat-pane-<n>` is column n, any other
