@@ -67,14 +67,33 @@ await page.addInitScript(() => {
   try { if (window === window.top && !localStorage.getItem("__vsplit_started")) { localStorage.removeItem("romp-chat-cols"); Object.keys(localStorage).filter((k) => k.indexOf("romp-vscode-state-chat") === 0).forEach((k) => localStorage.removeItem(k)); localStorage.setItem("__vsplit_started", "1"); } } catch (e) {}   // clear ONCE (first load); the reload must keep the split to test persistence
   try { window.__dials = []; const N = window.WebSocket; window.WebSocket = function (u, p) { try { window.__dials.push(String(u)); } catch (e) {} return p === undefined ? new N(u) : new N(u, p); }; window.WebSocket.prototype = N.prototype; } catch (e) {}
 });
+await page.addInitScript(() => { if (window !== window.top) return; window.__labStrip = {}; window.addEventListener("message", (e) => { const m = e && e.data; if (!m || m.romp !== "chatTabs" || !Array.isArray(m.tabs)) return;
+  Array.prototype.forEach.call(document.querySelectorAll("iframe"), (f) => { if (f.contentWindow === e.source) window.__labStrip[f.id] = m.tabs.map((t) => t && t.id); }); }); });   // each chat frame's strip post, keyed by the posting frame's id (the shared wait shape of the cut-floor split labs)
 const out = { died: null };
 const frameOf = async (fid) => { const h = await page.$("#" + fid); return h ? await h.contentFrame() : null; };
+const waitStrip = (fid, sid, ms) => page.waitForFunction(({ fid, sid }) => ((window.__labStrip || {})[fid] || []).includes(sid), { fid, sid }, { timeout: ms });   // the pane page's own strip post listing the session
+const waitActive = (fr, sid, ms) => fr.waitForFunction((sid) => { const t = document.querySelector("#tabs .tab.active[data-id]"); return !!(t && t.getAttribute("data-id") === sid); }, sid, { timeout: ms });
+const frameState = (fr, sid) => fr.evaluate((sid) => ({ url: location.href, readyState: document.readyState, tabs: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id")),
+  active: (document.querySelector("#tabs .tab.active[data-id]") || { getAttribute: () => null }).getAttribute("data-id"), turns: document.querySelectorAll("#content .turn[data-uuid]").length,
+  shownTurns: document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length, regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null })).catch((e2) => ({ readError: String(e2) }));
+// the pane's session rendered: the frame's own load, the page's strip post listing the session, then a turn in THAT session's thread
+// (#content holds one .thread per cached session, shown by display) at a wide bound; a timeout records the frame's state and the strip map
+const waitRendered = async (fr, fid, sid) => {
+  try {
+    await fr.waitForLoadState("load", { timeout: 30000 });
+    await waitStrip(fid, sid, 30000);
+    await fr.waitForFunction((sid) => document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length >= 1, sid, { timeout: 60000 });
+  } catch (e) {
+    out.atTimeout = { fid, sid, frame: await frameState(fr, sid), strip: await page.evaluate(() => window.__labStrip || null).catch((e2) => ({ readError: String(e2) })) };
+    throw e;
+  }
+};
 // the fill observable for one pane: scroll #content to the top twice, let the observer fire and the head page land,
 // then read __rompRegions (a run region at lo 0 = filled to turn 0; a gap region at boot = a real head gap).
 const colState = async (fid, sid) => {
   const fr = await frameOf(fid);
   if (!fr) return { missing: true };
-  await fr.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 1, null, { timeout: 30000 }).catch(() => {});
+  await waitRendered(fr, fid, sid);
   const boot = await fr.evaluate((id) => {
     const c = document.getElementById("content");
     const regions = (typeof window.__rompRegions === "function") ? window.__rompRegions(id) : null;
@@ -99,13 +118,13 @@ try {
   await page.waitForFunction((t) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; return !!(d && d.querySelector('#tabs .tab[data-id="' + t + '"]')); }, cfg.top, { timeout: 40000 });
   // show the top session, then split the bottom one DOWN
   await frameOf("f-chat").then((fr) => fr && fr.locator('#tabs .tab[data-id="' + cfg.top + '"]').first().click().catch(() => {}));
-  await page.waitForTimeout(400);
+  await waitActive(await frameOf("f-chat"), cfg.top, 20000);   // the click took: the top session's tab active
   out.topDialsBefore = await dialsOf("f-chat");   // the top frame's dial BEFORE the split, to prove it is not reloaded (LOW a)
   out.split = await page.evaluate((bot) => { const f = window.__rompMoveTab(bot, "down"); return { frameId: f && f.id, cols: localStorage.getItem("romp-chat-cols") }; }, cfg.bot);
   const botFid = out.split.frameId;
   out.botFid = botFid;
   await page.waitForFunction((fid) => !!document.getElementById(fid), botFid, { timeout: 20000 });
-  await page.waitForTimeout(600);
+  await waitStrip(botFid, cfg.bot, 20000);   // the bottom pane's page lists its session: its own post, not a sleep
   // GEOMETRY: the bottom pane is stacked UNDER the top (same left, greater top), and the gutter between is row-resize
   out.geom = await page.evaluate((fid) => {
     const top = document.getElementById("f-chat"), bot = document.getElementById(fid);
@@ -176,6 +195,8 @@ page.on("pageerror", () => {});
 await page.addInitScript(() => {
   try { if (window === window.top && !localStorage.getItem("__vsplit_drag_started")) { localStorage.removeItem("romp-chat-cols"); Object.keys(localStorage).filter((k) => k.indexOf("romp-vscode-state-chat") === 0).forEach((k) => localStorage.removeItem(k)); localStorage.setItem("__vsplit_drag_started", "1"); } } catch (e) {}
 });
+await page.addInitScript(() => { if (window !== window.top) return; window.__labStrip = {}; window.addEventListener("message", (e) => { const m = e && e.data; if (!m || m.romp !== "chatTabs" || !Array.isArray(m.tabs)) return;
+  Array.prototype.forEach.call(document.querySelectorAll("iframe"), (f) => { if (f.contentWindow === e.source) window.__labStrip[f.id] = m.tabs.map((t) => t && t.id); }); }); });   // each chat frame's strip post, keyed by the posting frame's id (the shared wait shape of the cut-floor split labs)
 const out = { died: null };
 // A LATE timeline (cfg.holdTimeline): the band's document is held until the driver has the tab it drags, so the timeline's
 // loader and then its bars land while the driver waits on the settle below, before the point it measures from, and the band
@@ -223,12 +244,29 @@ const settled = () => page.waitForFunction(() => {
   throw new Error("the timeline band never settled (loader hidden, plot shown, band at its content height) within 40 s; seen " + JSON.stringify(seen) + "; " + ((e && e.message) || e));
 });
 const frameOf = async (fid) => { const h = await page.$("#" + fid); return h ? await h.contentFrame() : null; };
+const waitStrip = (fid, sid, ms) => page.waitForFunction(({ fid, sid }) => ((window.__labStrip || {})[fid] || []).includes(sid), { fid, sid }, { timeout: ms });   // the pane page's own strip post listing the session
+const waitActive = (fr, sid, ms) => fr.waitForFunction((sid) => { const t = document.querySelector("#tabs .tab.active[data-id]"); return !!(t && t.getAttribute("data-id") === sid); }, sid, { timeout: ms });
+const frameState = (fr, sid) => fr.evaluate((sid) => ({ url: location.href, readyState: document.readyState, tabs: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id")),
+  active: (document.querySelector("#tabs .tab.active[data-id]") || { getAttribute: () => null }).getAttribute("data-id"), turns: document.querySelectorAll("#content .turn[data-uuid]").length,
+  shownTurns: document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length, regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null })).catch((e2) => ({ readError: String(e2) }));
+// the pane's session rendered: the frame's own load, the page's strip post listing the session, then a turn in THAT session's thread
+// (#content holds one .thread per cached session, shown by display) at a wide bound; a timeout records the frame's state and the strip map
+const waitRendered = async (fr, fid, sid) => {
+  try {
+    await fr.waitForLoadState("load", { timeout: 30000 });
+    await waitStrip(fid, sid, 30000);
+    await fr.waitForFunction((sid) => document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length >= 1, sid, { timeout: 60000 });
+  } catch (e) {
+    out.atTimeout = { fid, sid, frame: await frameState(fr, sid), strip: await page.evaluate(() => window.__labStrip || null).catch((e2) => ({ readError: String(e2) })) };
+    throw e;
+  }
+};
 const rectIn = async (fid, sel) => { const fr = await frameOf(fid); if (!fr) return null; const h = await fr.$(sel); if (!h) return null; const b = await h.boundingBox(); return b ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null; };
 // the fill observable for the bottom pane (the dragged session): scroll #content to the top twice, let the observer
 // fire, read __rompRegions (a run region at lo 0 = filled to turn 0)
-const filled = async (fid) => {
+const filled = async (fid, sid) => {
   const fr = await frameOf(fid); if (!fr) return { missing: true };
-  await fr.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 1, null, { timeout: 30000 }).catch(() => {});
+  await waitRendered(fr, fid, sid);
   // WAIT for the fill (a run region at lo 0), re-nudging #content to the top on each poll so a slow observer keeps
   // getting a scroll to act on; bounded and event-based, never a fixed sleep (a starved runner needs far longer than
   // a fixed pause, a fast one far less). A genuine miss falls through and reports filled:false with the last regions.
@@ -343,7 +381,7 @@ try {
              ghostCls: g.className, zones: document.querySelectorAll(".col-drop").length, paneSplit: !!(bot && bot.closest(".pane") && bot.closest(".pane").classList.contains("split-v")) };
   });
   const botFid = out.afterDrop.botId;
-  if (botFid) { await page.waitForFunction((fid) => !!document.getElementById(fid), botFid, { timeout: 20000 }); out.botFill = await filled(botFid); }
+  if (botFid) { await page.waitForFunction((fid) => !!document.getElementById(fid), botFid, { timeout: 20000 }); out.botFill = await filled(botFid, cfg.bot); }
 } catch (e) { out.died = String(e).slice(0, 500); }
 process.stdout.write("RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
