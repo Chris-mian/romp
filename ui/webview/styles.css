@@ -1103,7 +1103,7 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .ntc-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .ntc-btn { font: inherit; font-size: 0.86em; cursor: pointer; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--box-border); background: transparent; color: var(--fg); }
 .ntc-btn:disabled { opacity: 0.55; cursor: default; }
-.ntc-btn.ntc-ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 60%, transparent); }   /* the accent's own 60%: the dark accent's rgba drew a blue border round orange text on the light theme (the second contributor's review) */
+.ntc-btn.ntc-ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 90%, transparent); }   /* the accent's own 90%: the dark accent's rgba drew a blue border round orange text on the light theme (the second contributor's review); 60% read 2.33:1 on the light wash, under the 3:1 non-text floor (the round-fourteen verifier) */
 .ntc-btn.ntc-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
 .ntc-btn.ntc-deny { color: #e5484d; border-color: rgba(229, 72, 77, 0.6); }
 .ntc-btn.ntc-deny:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }

@@ -38,7 +38,7 @@ API = "dddddddd-1111-2222-3333-444444444444"     # a second session with a quest
 API_Q = "which port should the api listen on in the fixtures?"
 BRIEF = "the suite targets Postgres in CI and SQLite locally; which should the fixtures load into?"
 LONG_BRIEF = " ".join("The fixtures load into one database and the suite has two: Postgres in CI and SQLite on a laptop, with different "
-                      "date handling, so a fixture written for one fails on the other." for _ in range(5))   # well past the row's four lines
+                      "date handling, so a fixture written for one fails on the other." for _ in range(30))   # past four lines at any width the lab runs at (CI's browser fit five repetitions in four; the round-fifteen CI red)
 MID = "aaaaaaaa-bbbb-cccc-dddd-000000000301"
 TOKEN_RGB = "rgb(217, 70, 239)"          # --st-needs-bg, the dark theme (styles.css)
 QUESTIONS = ["which database does the suite target?", "should the parser keep the legacy header?", "is the fixtures directory versioned?"]
@@ -93,9 +93,14 @@ out.brief.box = await readBox();
 const store2 = JSON.parse(fs.readFileSync(cfg.store, "utf8")); store2.nodes[cfg.g1].blockSummary = cfg.longBrief; store2.seq = (store2.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store2));
 fs.utimesSync(cfg.order, new Date(), new Date());
 const moreSel = rowSel(cfg.g1) + " .ntc-more";
-out.more = { shown: await page.waitForSelector(moreSel, { timeout: 60000 }).then(() => true).catch(() => false) };
+// held on the page's own events (the round-fifteen CI red read too early): the body carries the long brief, then its layout clips it, then the button
+const landedAt = (sel, brief) => page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel, brief }, { timeout: 60000 }).then(() => true).catch(() => false);
+const clippedAt = (sel) => page.waitForFunction((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); return !!b && b.scrollHeight > b.clientHeight + 1; }, sel, { timeout: 15000 }).then(() => true).catch(() => false);
+out.more = { landed: await landedAt(rowSel(cfg.g1), cfg.longBrief) };
+out.more.clipped = await clippedAt(rowSel(cfg.g1));
+out.more.shown = await page.waitForSelector(moreSel, { timeout: 15000 }).then(() => true).catch(() => false);
 out.more.before = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); const m = r && r.querySelector(".ntc-more");
-  return b ? { open: r.classList.contains("ntc-open"), clamp: getComputedStyle(b).webkitLineClamp, clipped: b.scrollHeight > b.clientHeight + 1, label: m ? m.textContent : null } : null; }, rowSel(cfg.g1));
+  return b ? { open: r.classList.contains("ntc-open"), clamp: getComputedStyle(b).webkitLineClamp, clipped: b.scrollHeight > b.clientHeight + 1, label: m ? m.textContent : null, chars: (b.textContent || "").length, width: b.clientWidth } : null; }, rowSel(cfg.g1));
 await page.click(moreSel).catch(() => {});
 out.more.open = await page.waitForFunction((s) => { const r = document.querySelector(s); return !!r && r.classList.contains("ntc-open"); }, rowSel(cfg.g1), { timeout: 10000 }).then(() => true).catch(() => false);
 out.more.after = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); const m = r && r.querySelector(".ntc-more");
@@ -139,6 +144,7 @@ store3.nodes[cfg.g5] = { id: cfg.g5, text: cfg.g5q, parentId: null, nodeComplete
 store3.status[cfg.g5] = "blocked"; store3.seq = (store3.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store3));
 fs.utimesSync(cfg.order, new Date(), new Date());
 out.fresh = { row: await page.waitForSelector(rowSel(cfg.g5), { timeout: 60000 }).then(() => true).catch(() => false) };
+out.fresh.landed = await landedAt(rowSel(cfg.g5), cfg.longBrief); out.fresh.clipped = await clippedAt(rowSel(cfg.g5));   // the same holds: the brief on the row, its layout clipping it
 out.fresh.more = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);
 out.fresh.box = await readBox();
 // 5. the switch: a romp:settings save with the box off hides it and leaves the ring; back on, the box returns
@@ -339,7 +345,9 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         shows once the body overflows, opens the row (the clamp lifted, the whole brief on screen), reads Less, and folds the row back."""
         r = self._result()
         m = r["more"]
-        self.assertTrue(m["shown"], "the More button shows on a brief past the clamp: %r (kernel: %s)" % (m, self._kernel_tail()))
+        self.assertTrue(m["landed"], "the long brief reaches the row (the read waits for it): %r (kernel: %s)" % (m, self._kernel_tail()))
+        self.assertTrue(m["clipped"], "and the layout clips it at four lines (the brief is long enough for any width): %r" % m["before"])
+        self.assertTrue(m["shown"], "the More button shows on a brief past the clamp: %r" % m)
         self.assertEqual((m["before"] or {}).get("label"), "More"); self.assertEqual((m["before"] or {}).get("open"), False)
         self.assertTrue((m["before"] or {}).get("clipped"), "the body hides lines before the click: %r" % m["before"])
         self.assertEqual((m["before"] or {}).get("clamp"), "4", "the clamp stands on a closed row")
@@ -356,6 +364,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         mutated a row already in the document. The measure runs over the rows once they stand in the box."""
         r = self._result()
         self.assertTrue(r["fresh"]["row"], "the new card's row arrives: %r (kernel: %s)" % (r["fresh"], self._kernel_tail()))
+        self.assertTrue(r["fresh"]["landed"] and r["fresh"]["clipped"], "with its long brief, clipped: %r" % r["fresh"])
         self.assertTrue(r["fresh"]["more"], "and wears the More button with no gesture (before: measured detached, 0 by 0, no button): %r" % r["fresh"]["box"])
         self.assertTrue(r["on"]["shown"]); self.assertTrue(r["on"]["moreAfterRebuild"], "the rebuilt row wears it too (before: none after the switch's off-then-on)")
 

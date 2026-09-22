@@ -233,10 +233,12 @@ test("the bubble's inner-markdown overrides OUTRANK .md — the doubled-selector
 });
 
 test("the Needs you box's rules (.ntc-, #notices) draw their colours from the tokens: the accent and its color-mix, the box and state tokens, transparent; the one literal is the destructive red (the box review of PR 1967, the round-thirteen verifier's low)", () => {
-  const rules = CHAT.split("\n").filter((l) => /^(\.ntc-|#notices|body\.dense-chrome \.ntc-)/.test(l));
+  const rules = Array.from(CHAT.matchAll(/^((?:\.ntc-|#notices|body\.dense-chrome \.ntc-)[^{\n]*)\{([^}]*)\}/gm), (m) => m[1] + "{" + m[2].replace(/\n/g, " ") + "}");   // whole rule blocks, continuation lines included (the round-fourteen verifier's low: a colour on a continuation line passed)
   assert.ok(rules.length >= 20, "the box's rules are present: " + rules.length);
+  assert.ok(rules.some((r) => r.startsWith("#notices {") && r.includes("border-radius")), "the multi-line rules are read whole: " + rules.filter((r) => r.startsWith("#notices")).join(" | ").slice(0, 200));
   const vocab = (v: string) => /^var\(--[a-z-]+\)$/.test(v) || /^color-mix\(in srgb, var\(--[a-z-]+\) \d+%, transparent\)$/.test(v) || v === "transparent"
-    || /^1px solid var\(--[a-z-]+\)$/.test(v) || v === "#e5484d" || v === "rgba(229, 72, 77, 0.6)" || v === "#fff";
+    || /^1px solid var\(--[a-z-]+\)$/.test(v) || /^linear-gradient\(var\(--[a-z-]+\), var\(--[a-z-]+\)\), var\(--[a-z-]+\)$/.test(v)   // the header's opaque ground, in tokens
+    || v === "#e5484d" || v === "rgba(229, 72, 77, 0.6)" || v === "#fff";
   for (const line of rules) {
     const decl = line.replace(/\/\*.*?\*\//g, "");
     for (const m of decl.matchAll(/(?:^|[\s;{])(color|background|border(?:-color|-top)?)\s*:\s*([^;]+);/g)) assert.ok(vocab(m[2].trim()), "a box colour outside the vocabulary: " + line.trim());
@@ -244,7 +246,7 @@ test("the Needs you box's rules (.ntc-, #notices) draw their colours from the to
   assert.match(CHAT, /\.ntc-head \{[^}]*background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "the header's opaque ground is the box wash over the page, in tokens");
   for (const [name, css, sel] of [["styles.css", CHAT, ".ntc-btn.ntc-ok"], ["feed.css", FEED, ".fdismiss.fq-ok"]] as const) {
     const rule = css.split("\n").find((l) => l.startsWith(sel + " {")) || "";
-    assert.ok(rule.includes("border-color: color-mix(in srgb, var(--accent) 60%, transparent)"), name + ": the ok button's border is the accent's own on both themes: " + rule);
+    assert.ok(rule.includes("border-color: color-mix(in srgb, var(--accent) 90%, transparent)"), name + ": the ok button's border is the accent's own on both themes, at the share that clears the 3:1 non-text floor on the light theme: " + rule);
     assert.doesNotMatch(rule, /rgba\(156, 210, 255/, name + ": never the dark accent's rgba");
   }
 });

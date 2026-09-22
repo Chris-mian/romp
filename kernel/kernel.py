@@ -41898,6 +41898,7 @@ def _owed_load(note=True):
             if note:
                 _owed_fault_note("the note's read", e)
             return _store_fault_copy(e)
+        _owed_read_fault[0] = ""                      # a landed read, whoever made it, ends the episode: the next refusal files again (the round-fourteen verifier's low: an Undo's read left the memo standing)
     for line in text.splitlines():
         try:
             iid = json.loads(line).get("id")
