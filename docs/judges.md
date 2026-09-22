@@ -663,7 +663,8 @@ permission/API-error floors: one interrupt at a time, the present event first.
   the kernel's own reader of the clears log as well, the Undo reading a present
   log that cannot be read or is not text as nothing to bring back and the feed
   build holding the last landed set meanwhile with one refused bell row per
-  episode, one row per fault episode ended by a landed read or an absent log).
+  episode, one row per fault episode ended by a landed read, an absent log or a
+  different fault).
   A file that does not parse is never deleted: it is moved beside its path as
   `<file>.corrupt-<utc stamp>` (a `-n` suffix when two land in the same second)
   before a fresh one is written, so the bytes survive for inspection, and the

@@ -125,9 +125,11 @@ class _World(unittest.TestCase):
         getattr(km, "_cleared_read_fault", [""])[0] = ""     # the clears-log read's episode memo (PR 2025)
         km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO.pop("landed", None); km._CLEARED_MEMO.setdefault("landed", None)   # the served and the last-landed slots (the post-merge note on PR 2025)
         km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]   # the display readers' bell episodes and the ring
+        self._needs_gate = km._feed_needs_input[0]               # the chat box's gate as this test found it (the second contributor's post-merge comment on PR 2032)
         (jd.STATE / km.OWED_FILE).unlink(missing_ok=True)
 
     def tearDown(self):
+        km._feed_needs_input[0] = self._needs_gate                # the pusher test's build writes the box's gate; restored so no later test's box pin passes through the leak
         for sid in (A, B, P):
             (jd._overrides_dir() / (sid + ".jsonl")).unlink(missing_ok=True)
         jd._rebind_state(self._saved)
@@ -1671,7 +1673,7 @@ class ActsUnderAFailedWrite(_World):
         log.write_text("[]\n" + json.dumps({"id": 5, "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": A + ":g1", "t": 2, "op": "clear"}) + "\n"
                        + json.dumps({"id": {"k": "v"}, "t": 3, "op": "clear"}) + "\n" + json.dumps({"id": "", "t": 4, "op": "clear"}) + "\n"
                        + json.dumps({"id": B + ":g1", "t": "yesterday", "op": "clear"}) + "\n" + json.dumps({"id": B + ":g2", "t": True, "op": "clear"}) + "\n"   # two ids: a shared one let the bool row shadow the string row (the round-one verifier of PR 2032)
-                       + json.dumps({"id": A + ":g1", "t": "later", "op": "undo"}) + "\n")   # an UNDO row with a string stamp is skipped too, so A's clear stands (the reading chosen and dated; the first contributor's round one on PR 2032)
+                       + json.dumps({"id": A + ":g1", "t": "x", "op": "undo"}) + "\n" + json.dumps({"id": A + ":g1", "t": None, "op": "undo"}) + "\n")   # UNDO rows stamped "x" and null are skipped too, so A's clear stands: every malformed row, not the max and the sort alone (the reading chosen and dated; the first contributor's round one and the second's post-merge comment on PR 2032)
         km._CLEARED_MEMO["slot"] = None
         try:
             got = km._cleared_ids()
@@ -1901,10 +1903,16 @@ class ActsUnderAFailedWrite(_World):
         nid = km._notice_item_id(A, "n1", row["rev"])
         row2, err2 = km.post_notice(A, "n2", "a second held note", producer="postal", needs_you=True, now=NOW, t=NOW)   # a second notice the log does NOT clear: it must stay on the box through the episode (a held box against an empty one; the first contributor's round one on PR 2032)
         self.assertIsNone(err2); nid2 = km._notice_item_id(A, "n2", row2["rev"])
-        boxed = lambda: [n["itemId"] for n in km._chat_notices(A) or []]
+        gate = km._feed_needs_input[0]; km._feed_needs_input[0] = frozenset(); self.addCleanup(km._feed_needs_input.__setitem__, 0, gate)   # the box answers None before the first
+        # feed build of a kernel life (only the locked build writes the gate), so armed here as the box's own tests arm it: alone, the pins below compared
+        # empty lists through an `or []` and were red-capable only through the pusher test's leak of the gate (the second contributor's post-merge comment on PR 2032)
+        def boxed():
+            rows = km._chat_notices(A)
+            self.assertIsNotNone(rows, "the box answers under the armed gate: a None here would compare nothing")
+            return [n["itemId"] for n in rows]
+        self.assertIn(nid, boxed(), "premise: the notice is on the box before its clear row"); self.assertIn(nid2, boxed())
         log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": nid, "t": 2, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None
         km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
-        km._cached_feed(NOW, self.live, {"prime": time.time()})   # the pusher's door once: the chat box's reader answers None before the first cached build of a kernel life (alone, this test met that None as an empty box)
         f = km.build_feed(NOW, self.live)
         self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (2, True, False), "the landed read: two dismissed, the button, A's card sealed by the log alone")
         self.assertNotIn(nid, boxed(), "premise: the cleared notice is off the chat box"); self.assertIn(nid2, boxed(), "premise: the uncleared notice is on it")
@@ -1964,15 +1972,23 @@ class ActsUnderAFailedWrite(_World):
         km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
         f = km.build_feed(NOW, self.live)
         self.assertEqual((f["dismissedCount"], f["canUndoClear"]), (2, True), "two clears: the count and the button")
+        rows = lambda: [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
         log.unlink(); km._CLEARED_MEMO["slot"] = None
         f = km.build_feed(NOW, self.live)
-        self.assertEqual((f["dismissedCount"], f["canUndoClear"]), (0, False), "the log removed: nothing cleared")
+        self.assertEqual((f["dismissedCount"], f["canUndoClear"], rows()), (0, False, []), "the log removed: nothing cleared, and no row (an absent log is a real state, said nowhere)")
         with contextlib.redirect_stderr(io.StringIO()):
             log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None
             f = km.build_feed(NOW, self.live)
-        self.assertEqual((f["dismissedCount"], f["canUndoClear"]), (0, False), "the path back unreadable: still nothing cleared (before: the pre-removal set, the count back at 2 and Undo lit)")
-        rowtext = [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]][-1]["text"]
-        self.assertIn("last-known", rowtext, "and the row calls the absent state the last-known value, which it is: nothing cleared (not the cold memo's row): %r" % rowtext); self.assertNotIn("no earlier read", rowtext)
+            self.assertEqual((f["dismissedCount"], f["canUndoClear"], len(rows())), (0, False, 1), "the path back unreadable: still nothing cleared, one refused row (before: the pre-removal set, the count back at 2 and Undo lit)")
+            rowtext = rows()[-1]["text"]
+            self.assertIn("last-known", rowtext, "and the row calls the absent state the last-known value, which it is: nothing cleared (not the cold memo's row): %r" % rowtext); self.assertNotIn("no earlier read", rowtext)
+            log.unlink(); km._CLEARED_MEMO["slot"] = None
+            f = km.build_feed(NOW, self.live)
+            self.assertEqual((f["dismissedCount"], f["canUndoClear"], len(rows())), (0, False, 1), "removed again: the absent read ends the episode and files nothing")
+            with _fault_on(log):                                                    # the stat finds nothing and the read faults (EIO): the permission road's shape
+                f = km.build_feed(NOW, self.live)
+            self.assertEqual((f["dismissedCount"], f["canUndoClear"], len(rows())), (0, False, 2), "an EIO fault on the absent path: nothing cleared, no Undo, one refused row of its own")
+            self.assertIn("last-known", rows()[-1]["text"])
         log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
     def test_the_two_new_judge_errors_kinds_are_documented(self):
@@ -1985,7 +2001,7 @@ class ActsUnderAFailedWrite(_World):
         self.assertRegex(flat, r"cleared-unreadable is filed by the kernel's own reader of the clears log as well[^.]{0,300}holding the last landed set[^.]{0,200}one row per fault episode", "the read kind's sentence names the kernel's reader and the episode")
         self.assertRegex(flat, r"owed-note: the note of owed cards beside the log could not be written or read")
         self.assertRegex(ds, r'"clears-log" \(a clears-log write refused')
-        self.assertRegex(ds.replace("\n", " "), r'"cleared-unreadable" is also the kernel\'s own reader\'s\s+kind for the clears log[^)]*one row per fault episode')
+        self.assertRegex(ds.replace("\n", " "), r'"cleared-unreadable" is also the kernel\'s own reader\'s\s+kind for the clears log[^)]*holding the last landed set[^)]*one row per fault episode', "the kind list mirrors the docs: the display reader serves the last landed set, the read still files the row (the second contributor's post-merge comment on PR 2032: it still said the build read the log as nothing cleared)")
         self.assertIn('"owed-note"', ds)
         # the note helper's and the refusal sender's own docstrings (the round-two verifier of PR 2025: the helper's sentence was pinned by nothing)
         self.assertRegex(km._clears_log_fault_note.__doc__.replace("\n", " "), r"the kernel's own READ of the log files under `cleared-unreadable`,\s+the kind the judge's side-file reader files for the same file, one row per fault episode", "the helper names the read as the kind's second writer")
