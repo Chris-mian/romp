@@ -656,22 +656,36 @@ def set_router_ids(ids):
     _ROUTER_IDS = frozenset(str(i) for i in (ids or ()) if i)
 
 
+# The first-party skip's twin (kernel._router_first_party): a declared Claude version id or family alias is never a
+# gateway id, so the badge keeps labelling it as first-party ('Opus 4.8', 'Opus') whatever the variable says. The
+# regex is the kernel's _MODEL_ID_RE byte for byte and the aliases its shipped families; tests/test_router_models.py
+# pins both equal. (The kernel's catalog-filed ids, _catalog_family, are beyond a twin: the told set carries only
+# ids the kernel actually installed, so they never arrive that way either.)
+_ROUTER_FIRST_PARTY_RE = re.compile(r"^claude-(fable|opus|sonnet|haiku)-(\d+(?:-\d+)*)$")
+_ROUTER_FIRST_PARTY_ALIASES = ("fable", "opus", "sonnet", "haiku")
+
+
+def _router_first_party(mid):
+    return mid in _ROUTER_FIRST_PARTY_ALIASES or bool(_ROUTER_FIRST_PARTY_RE.match(mid))
+
+
 def _router_declared():
-    """The gateway ids this process knows: the operator's ROMP_ROUTER_MODELS (the environment the manager handed the
-    process; a short split per call, no memo, so a test's env change is seen) united with the ids the kernel told it
-    (set_router_ids: a listing's ids). The BADGE's use: such an id is a real model id the CLI may report and is shown
-    verbatim — the Extra models switch's state plays no part, because a session still running a removed id keeps its
-    badge."""
-    return frozenset(_parse_router_models(os.environ.get("ROMP_ROUTER_MODELS"))) | _ROUTER_IDS
+    """The gateway ids this process knows: the operator's ROMP_ROUTER_MODELS after the first-party skip (the
+    environment the manager handed the process; a short split per call, no memo, so a test's env change is seen)
+    united with the ids the kernel told it (set_router_ids: what it installed, a listing's ids included). The BADGE's
+    use: such an id is a real model id the CLI may report and is shown verbatim — the Extra models switch's state
+    plays no part, because a session still running a removed id keeps its badge."""
+    return frozenset(m for m in _parse_router_models(os.environ.get("ROMP_ROUTER_MODELS"))
+                     if not _router_first_party(m)) | _ROUTER_IDS
 
 
 def pretty_model(raw: str) -> str:
     """A raw SDK model id → the short badge the tmux statusline shows, so SDK and tmux sessions read the
     same and the model picker's 'current' highlight (which matches on the leading word) lights up.
     'claude-opus-4-8' → 'Opus 4.8', 'claude-haiku-4-5-20251001' → 'Haiku 4.5', 'claude-fable-5' → 'Fable 5'.
-    A declared gateway id (ROMP_ROUTER_MODELS) shows VERBATIM: the picker's current-model tick is a startsWith
-    on the id and the colour helpers match the id's words, so the badge must carry the id itself (the picker
-    row wears the human label the kernel derives). Unrecognised ids pass through verbatim."""
+    A declared gateway id (ROMP_ROUTER_MODELS) shows VERBATIM, and the picker row reads the same id: one name per
+    model, so the pickers' current-model tick (the badge against the row's value, exactly or on a space boundary)
+    holds. Unrecognised ids pass through verbatim."""
     if not raw:
         return ""
     if raw in _router_declared():
@@ -8708,9 +8722,11 @@ class SdkSession:
             # Only adopt a REAL model id. Injected / synthetic assistant turns carry model="<synthetic>" (and
             # the CLI writes it to the transcript too); pretty_model passes unrecognised ids through verbatim,
             # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id contains
-            # "claude" (claude-opus-4-8, us.anthropic.claude-…) or is a gateway id the operator DECLARED
-            # (ROMP_ROUTER_MODELS, the Extra models switch); keep the last good one otherwise.
-            if m and ("claude" in m.lower() or m in _router_declared()):
+            # "claude" (claude-opus-4-8, us.anthropic.claude-…), is a gateway id this process knows (declared in
+            # ROMP_ROUTER_MODELS or told by the kernel, the Extra models switch), or is the id this session PICKED
+            # (self._model_id: after a kernel restart under an off switch the told set is empty, but the model the
+            # CLI reports for the pick it was given is real; review find, 2026-09-21); keep the last good one otherwise.
+            if m and ("claude" in m.lower() or m in _router_declared() or (self._model_id and m == self._model_id)):
                 self._learn_model(pretty_model(m), raw=str(m), served=True)
         elif isinstance(msg, ResultMessage) and self._consume_move_settle(msg):
             pass   # the accepted move's turn-less result — nothing ended, so nothing settles (see the def)

@@ -371,8 +371,10 @@ Which models the gateway serves is declared to the service, not picked in the ge
 `ROMP_ROUTER_MODELS` in `service.env`, a comma-separated list of model ids, and optionally
 `ROMP_ROUTER_MODELS_URL`, a gateway endpoint that lists its models, whose answer joins the declared
 ids. Both are read when the service starts, so a change to them needs a service restart; the switch
-itself applies live. At boot the declared families install into the catalog when the switch is on,
-and never under `ROMP_MODEL_CATALOG=off` (a hermetic lab serves the shipped list alone).
+itself applies live. At boot the declared families install into the catalog when the switch is on.
+`ROMP_MODEL_CATALOG=off` (a hermetic lab's no-network rule) stops the listing fetch alone, on the
+boot road and the live one; the declared install reads no network and is never held by it. A
+picker row and the badge both read the model id itself, one name per model.
 
 The gear's click posts `setRouterModels` (`{"enabled", "gt"}`) with a gesture stamp, under the
 ordering and stale rules every stamped setting follows; there is no echo frame of its own, since an
@@ -380,17 +382,20 @@ applied flip changes the catalog and the kernel sends its usual `models` frame, 
 picker and the gear redraw. Turning it on adds the families to the pickers; turning it off removes
 them, but does not touch a session already running one, which keeps its model until you pick
 another (a later pick of a removed model is refused). A gateway model has no capability tint in the
-pickers, and a swap to or from one is never read as a capacity fallback: it is a cross-provider
+pickers (unless the id carries a Claude family word, which the colour helpers match wherever it
+appears), and a swap to or from one is never read as a capacity fallback: it is a cross-provider
 change on an explicit pick.
 
 The switch's status line in the gear comes from the authed `/models` payload's `router` section,
 `{"enabled", "declared", "gateway", "error"}`: the ids the kernel parsed out of the variable, whether
 a gateway is configured (`ANTHROPIC_BASE_URL` in the service's environment first, else in Claude
-Code's managed or user settings, pointing anywhere but Anthropic), and the standing advisory while
-the switch is on: nothing declared, no gateway, live sessions still on a removed model, or a
-settings file that could not be read (a fixed phrase; the detail goes to the kernel log). A
-declared id the first-party grammar owns (a Claude version id) is skipped, said once in the log,
-and a listing that arrives after the switch was turned off installs nothing. `/version` carries
+Code's managed or user settings, pointing anywhere but Anthropic; `null` while the switch is off,
+when nothing is probed), and the standing advisory: while on, nothing declared, no gateway, a
+listing that could not be fetched, or a settings file that could not be read (a fixed phrase; the
+detail goes to the kernel log); after an off flip, the live sessions and the judge tiers still on a
+removed model. A declared id the first-party grammar owns (a Claude version id or family alias) is
+skipped, said once in the log, and reported as not declared; a listing or an apply that lands after
+a later flip installs nothing and changes nothing. `/version` carries
 `routerModels`, the switch's value, for the gear's checkbox.
 
 ### Per-session billing (login vs API key)

@@ -53,6 +53,7 @@ sb = load_source("romp_sdk_backend_router", os.path.join(BIN, "romp_sdk_backend.
 km.jd.STATE.mkdir(parents=True, exist_ok=True)
 (km.jd.STATE / "session-hosts").write_text("off")   # this root is outside conftest's belt (repo rule, 2026-09-11)
 
+FIRST_PARTY_AT_IMPORT = set(km._MODEL_VALUES)   # the shipped families, before any test's apply
 DECLARED = "gw-6-astra, gw-5.6-luna,gw-5.6-terra"
 IDS = ["gw-6-astra", "gw-5.6-luna", "gw-5.6-terra"]
 
@@ -95,8 +96,13 @@ class _Catalog(unittest.TestCase):
         self.err = io.StringIO()
         self._p = mock.patch.object(km.sys, "stderr", self.err)
         self._p.start()
+        # the kernel tells the module registered as romp_sdk_backend; this harness loads its private copy under another
+        # name, so register that copy for the test (the review's find: an earlier module's shared copy took the ids)
+        self._m = mock.patch.dict(sys.modules, {"romp_sdk_backend": sb})
+        self._m.start()
 
     def tearDown(self):
+        self._m.stop()
         self._p.stop()
         km._models_changed = self._orig_changed
         km._router_gateway_configured = self._orig_gw
@@ -148,11 +154,10 @@ class Parser(unittest.TestCase):
 
 
 class Label(unittest.TestCase):
-    def test_vendor_version_codename_reads_as_a_label_and_other_shapes_show_verbatim(self):
-        self.assertEqual(km._router_label("gw-6-astra"), "GW-6 Astra")
-        self.assertEqual(km._router_label("gw-5.6-luna"), "GW-5.6 Luna")
-        for odd in ("gw-6-astra-preview", "my-gateway-model", "claude-opus-4-8", "weird", ""):
-            self.assertEqual(km._router_label(odd), odd, odd)
+    def test_the_picker_label_is_the_id_itself(self):
+        # one name per model: the badge shows the raw id and the pickers' tick compares the two (review find)
+        for mid in ("gw-6-astra", "gw-5.6-luna", "Qwen/Qwen3-235B", "gw-6-astra-preview", "weird", ""):
+            self.assertEqual(km._router_label(mid), mid, mid)
 
 
 class ApplyRemove(_Catalog):
@@ -160,7 +165,7 @@ class ApplyRemove(_Catalog):
         added = km._apply_router_families(IDS[:2])
         self.assertEqual(added, IDS[:2])
         lbl = {c["value"]: c["label"] for c in km.MODEL_CHOICES}
-        self.assertEqual(lbl.get("gw-6-astra"), "GW-6 Astra", "a top-level choice with its picker label")
+        self.assertEqual(lbl.get("gw-6-astra"), "gw-6-astra", "a top-level choice labelled with its id")
         vals = [c["value"] for c in km.MODEL_CHOICES]
         self.assertLess(vals.index("fable"), vals.index("gw-6-astra"), "the first-party families keep the head")
         # a picked id is vouched (the WS setModel / '/model …' paths) and allowed for the judge
@@ -212,9 +217,18 @@ class PerSetRecords(_Catalog):
         self.assertIn("gw-x-9-held", km._JUDGE_MODEL_VALUES, "held before the apply, kept after the remove")
         self.assertFalse(any(c["value"] == "gw-x-9-held" for c in km.MODEL_CHOICES))
 
-    def test_a_first_party_id_is_skipped_on_the_listing_road_too(self):
+    def test_a_first_party_id_leaked_by_a_listing_is_skipped_on_that_road(self):
+        # the road itself: a gateway whose listing carries a Claude version id (the fetch filters the grammar, but the
+        # apply is the last word on both roads)
         vid = next(iter(km._VERSION_FAMILY))
-        self.assertEqual(km._apply_router_families([vid, "gw-6-astra"], reason="listing"), ["gw-6-astra"])
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        self.store.write_text(json.dumps({"enabled": True, "gt": 1}))
+        with mock.patch.object(km, "_fetch_router_models", lambda url, timeout=4: [vid, "gw-6-astra"]):
+            km._router_models_boot()
+            self._wait(lambda: len(self.frames) >= 1, "the listing's frame")
+        self.assertTrue(km._vouched_model("gw-6-astra"))
+        self.assertEqual(sum(1 for c in km.MODEL_CHOICES if c["value"] == vid), 0)
+        self.assertIn("skipped", self.err.getvalue())
         self.assertIn(vid, self.err.getvalue())
 
 
@@ -324,10 +338,11 @@ class Switch(_Catalog):
         # the same guard on the synchronous road: a declared apply delayed past a concurrent flip, a remove delayed
         # past a later on
         stale = km._ROUTER_GEN[0] - 1
-        self.assertEqual(km._apply_router_families(["gw-6-astra"], gen=stale), [])
+        self.assertIsNone(km._apply_router_families(["gw-6-astra"], gen=stale), "stale is its own verdict, not nothing-to-do")
         self.assertFalse(km._vouched_model("gw-6-astra"))
+        self.assertEqual(km._apply_router_families([], gen=km._ROUTER_GEN[0]), [], "nothing to do is a list")
         km._apply_router_families(["gw-6-astra"], gen=km._ROUTER_GEN[0])
-        self.assertEqual(km._remove_router_families(gen=stale), [], "a stale remove leaves a later install alone")
+        self.assertIsNone(km._remove_router_families(gen=stale), "a stale remove leaves a later install alone")
         self.assertTrue(km._vouched_model("gw-6-astra"))
         self.assertIn("stale", self.err.getvalue())
 
@@ -372,6 +387,7 @@ class Switch(_Catalog):
             km._set_router_models(False, gt=11)
         self.assertIn("could not be counted", km._router_status_note[0])
         self.assertIn("snapshot unavailable", self.err.getvalue())
+        self.assertIn("? live session(s) keep running one", self.err.getvalue(), "the off line says the count is unknown")
 
     def test_the_advisory_is_a_static_phrase_and_only_while_the_switch_is_on(self):
         # the review's find: a settings-read fault put the file's absolute path into the authed /models section, with
@@ -383,6 +399,77 @@ class Switch(_Catalog):
         err = km._router_status()["error"]
         self.assertEqual(err, km.ROUTER_SETTINGS_FAULT)
         self.assertNotIn("/", err, "never a path")
+
+    def test_the_off_flip_advisory_reaches_the_payload(self):
+        # the review's find: the live-sessions note is written on the off flip and was masked while off, so it could
+        # never reach the gear. Only the probe's fault is gated on the switch; gateway is null while off (not probed)
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        km._set_router_models(True, gt=10)
+        with mock.patch.object(km, "_live_map", lambda: {"11111111-2222-4333-8444-555555555555": {"model": "gw-6-astra"}}):
+            km._set_router_models(False, gt=11)
+        st = km._router_status()
+        self.assertIs(st["enabled"], False)
+        self.assertIn("1 live session", st["error"])
+        self.assertIsNone(st["gateway"], "not probed while off")
+
+    def test_a_stale_remove_or_apply_does_no_bookkeeping(self):
+        # the review's find: the guard stopped the install, but the caller still nulled the standing advisory, sent a
+        # frame, and started the listing fetch. A concurrent flip is simulated by bumping the generation between the
+        # store write and the catalog step.
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        km._router_gateway_configured = lambda: (False, None)
+        calls = []
+        real_remove, real_apply = km._remove_router_families, km._apply_router_families
+        with mock.patch.object(km, "_fetch_router_models", lambda url, timeout=4: calls.append(url) or []):
+            km._set_router_models(True, gt=10)
+            time.sleep(0.05)
+            note_on, n_on, n_calls = km._router_status_note[0], len(self.frames), len(calls)
+            self.assertEqual(note_on, km.ROUTER_NOTE_NO_GATEWAY)
+
+            def late_remove(gen=None):
+                km._ROUTER_GEN[0] += 1        # a later on flip lands first
+                return real_remove(gen=gen)
+            with mock.patch.object(km, "_remove_router_families", late_remove):
+                self.assertEqual(km._set_router_models(False, gt=11), 11, "the store took the gesture")
+            self.assertEqual(km._router_status_note[0], note_on, "the standing advisory is not nulled")
+            self.assertEqual(len(self.frames), n_on, "no frame on a stale remove")
+            self.assertTrue(km._vouched_model("gw-6-astra"), "the later on's rows stand")
+
+            def late_apply(ids, gen=None, reason=""):
+                km._ROUTER_GEN[0] += 1        # a later off flip lands first
+                return real_apply(ids, gen=gen, reason=reason)
+            with mock.patch.object(km, "_apply_router_families", late_apply):
+                self.assertEqual(km._set_router_models(True, gt=12), 12)
+            time.sleep(0.05)
+            self.assertEqual(len(calls), n_calls, "a stale apply starts no listing fetch")
+            self.assertEqual(len(self.frames), n_on, "and sends no frame")
+
+    def test_the_off_flip_names_the_judge_tiers_still_on_a_removed_model(self):
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        (km.jd.STATE / "judge-model").write_text("gw-6-astra\n")
+        self.addCleanup(lambda: (km.jd.STATE / "judge-model").unlink(missing_ok=True))
+        km._set_router_models(True, gt=10)
+        km._set_router_models(False, gt=11)
+        self.assertIn("triage, distill judge tier", km._router_status_note[0], "the distill tier follows the triage pick")
+        self.assertIn("triage, distill judge tier", self.err.getvalue())
+        self.assertEqual((km.jd.STATE / "judge-model").read_text().strip(), "gw-6-astra", "the store is left as it is")
+
+    def test_a_url_only_configuration_declares_nothing_but_says_nothing_wrong(self):
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        with mock.patch.object(km, "_fetch_router_models", lambda url, timeout=4: ["gw-7-nova"]):
+            km._set_router_models(True, gt=10)
+            self._wait(lambda: len(self.frames) >= 2, "the listing's frame")
+        self.assertTrue(km._vouched_model("gw-7-nova"))
+        st = km._router_status()
+        self.assertEqual(st["declared"], [])
+        self.assertIsNone(st["error"], "no nothing-declared advisory when a listing is configured")
+
+    def test_declared_is_reported_after_the_first_party_skip(self):
+        vid = next(iter(km._VERSION_FAMILY))
+        _env(self, "ROMP_ROUTER_MODELS", "%s, opus, gw-6-astra" % vid)
+        km._set_router_models(True, gt=10)
+        self.assertEqual(km._router_status()["declared"], ["gw-6-astra"])
 
     def test_version_carries_the_switch_alone(self):
         _env(self, "ROMP_ROUTER_MODELS", DECLARED)
@@ -404,11 +491,27 @@ class Boot(_Catalog):
         self.assertEqual(km._router_models_boot(), IDS)
         self.assertTrue(km._vouched_model("gw-6-astra"))
 
-    def test_catalog_off_serves_the_shipped_list_alone(self):
+    def test_catalog_off_gates_the_listing_alone_on_both_roads(self):
+        # the knob is the hermetic lab's no-network rule; the declared install is network-free and is never suppressed
+        # (a boot that installed nothing while the payload read on, then a live flip that fetched, was the review's find)
         _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
         _env(self, "ROMP_MODEL_CATALOG", "off")
-        self.store.write_text(json.dumps({"enabled": True, "gt": 1}))
+        calls = []
+        with mock.patch.object(km, "_fetch_router_models", lambda url, timeout=4: calls.append(url) or ["gw-7-nova"]):
+            self.store.write_text(json.dumps({"enabled": True, "gt": 1}))
+            self.assertEqual(km._router_models_boot(), IDS, "the declared list installs at boot under the knob")
+            km._set_router_models(False, gt=2)
+            km._set_router_models(True, gt=3)
+            time.sleep(0.1)
+        self.assertEqual(calls, [], "the listing is never fetched under the knob, on either road")
+        self.assertIn("ROMP_MODEL_CATALOG=off", self.err.getvalue())
+        self.assertFalse(km._vouched_model("gw-7-nova"))
+
+    def test_boot_tells_the_backend_even_when_off(self):
+        sb._ROUTER_IDS = frozenset({"gw-stale-1-x"})
         self.assertEqual(km._router_models_boot(), [])
+        self.assertEqual(sb._ROUTER_IDS, frozenset(), "the backend holds the kernel's current set, told unconditionally")
 
     def test_a_listing_gateway_unions_its_models_in_on_a_thread(self):
         _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
@@ -432,6 +535,7 @@ class Boot(_Catalog):
             self._wait(lambda: "failed" in self.err.getvalue(), "the failure line")
         self.assertIn("connection refused", self.err.getvalue())
         self.assertTrue(km._vouched_model("gw-6-astra"))
+        self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the listing-failed advisory")
 
 
 class Fetch(unittest.TestCase):
@@ -498,6 +602,13 @@ class Gateway(unittest.TestCase):
             km._router_gateway_configured()
             self.assertEqual(err.getvalue().count(km.ROUTER_SETTINGS_FAULT), 1, "once per distinct fault")
 
+    def test_anthropics_host_is_matched_on_a_label_boundary(self):
+        self._settings(None)
+        for base, is_gw in (("https://notanthropic.com/v1", True), ("https://api.anthropic.com", False),
+                            ("https://anthropic.com", False), ("http://127.0.0.1:8787", True)):
+            _env(self, "ANTHROPIC_BASE_URL", base)
+            self.assertEqual(km._router_gateway_configured(), (is_gw, None), base)
+
     def test_the_environment_is_consulted_first(self):
         # sessions inherit the kernel's environment and service.env is where the docs send the operator, so a base URL
         # there counts before any settings file (the review's find: env-only read as no gateway)
@@ -518,6 +629,17 @@ class SdkBadge(unittest.TestCase):
         # and the first-party labels are unchanged
         self.assertEqual(sb.pretty_model("claude-opus-4-8"), "Opus 4.8")
         self.assertEqual(sb._alias_label("opus"), "Opus")
+
+    def test_the_twin_skips_first_party_ids_the_variable_names(self):
+        # the review's find: with claude-opus-4-8 declared the badge showed the raw id instead of Opus 4.8, with the
+        # switch off; the twin applies the kernel's first-party skip (the regex and the family aliases, pinned equal)
+        vid = next(iter(km._VERSION_FAMILY))
+        _env(self, "ROMP_ROUTER_MODELS", "%s, opus, gw-6-astra" % vid)
+        self.assertEqual(sb._router_declared(), frozenset({"gw-6-astra"}))
+        self.assertEqual(sb.pretty_model("claude-opus-4-8"), "Opus 4.8")
+        self.assertEqual(sb._alias_label("opus"), "Opus")
+        self.assertEqual(sb._ROUTER_FIRST_PARTY_RE.pattern, km._MODEL_ID_RE.pattern, "the grammar twin, byte for byte")
+        self.assertEqual(set(sb._ROUTER_FIRST_PARTY_ALIASES), FIRST_PARTY_AT_IMPORT, "the alias twin is the shipped families")
 
     def test_an_undeclared_id_takes_the_ordinary_path(self):
         _env(self, "ROMP_ROUTER_MODELS", None)
@@ -540,6 +662,7 @@ class SdkBadge(unittest.TestCase):
         for fn in (km._parse_router_models, km._router_label, km._apply_router_families, km._remove_router_families,
                    km._router_apply_declared, km._set_router_models, km._router_models_boot, km._fetch_router_models,
                    km._router_first_party, km._router_tell_backend, km._router_live_on, km._router_gateway_configured,
+                   km._router_declared_effective, km._router_tiers_on, km._router_fetch_allowed,
                    sb.pretty_model, sb.model_label, sb._alias_label, sb._router_declared, sb.set_router_ids):
             node = ast.parse(inspect.getsource(fn)).body[0]
             code = "\n".join(ast.dump(s) for s in node.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)))

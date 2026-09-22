@@ -3126,7 +3126,8 @@ def _note_unknown_model(mid):
 # in the declared set is the test everywhere. Add-only and exactly reversible: _ROUTER_INSTALLED records what
 # the switch added, so turning it off removes that and nothing else. No sdk_backend _MODEL_TIERS entry and no
 # colour rank: a first-party<->gateway swap is a cross-provider change on an explicit pick, never a capacity
-# fallback, and a gateway row wears no capability tint. A gateway's presence is an ADVISORY (the authed
+# fallback, and a gateway id carrying no first-party family word wears no capability tint (the colour and tone
+# helpers match a family word wherever it appears). A gateway's presence is an ADVISORY (the authed
 # /models `router` section, one stderr line when the switch is on without one), never a gate: the switch is
 # the operator's explicit intent, and a silent gate is the detect-and-override this design replaces.
 ROUTER_MODELS_FILE = "router-models.json"    # the Extra models switch: {"enabled": bool, "gt": epoch-ms}; per-install
@@ -3141,6 +3142,12 @@ _ROUTER_GEN = [0]                            # the switch's generation: bumped u
 _router_status_note = [None]                 # the standing advisory (no gateway / nothing declared / N live on a removed id)
 _router_probe_said = [None]                  # the settings-read fault last said on stderr (once per distinct fault; the payload carries a
 #                                              static phrase, never the file's path)
+# The advisories the authed /models `router` section carries (the gear's status line prints them): static phrases, never a
+# stderr sentence with a path or a traceback in it. The live-session and tier phrases carry their counts and names.
+ROUTER_NOTE_NOTHING_DECLARED = "Nothing declared: set ROMP_ROUTER_MODELS in service.env and restart the service"
+ROUTER_NOTE_NO_GATEWAY = "No gateway configured: ANTHROPIC_BASE_URL is unset or points at Anthropic, so a pick would be refused"
+ROUTER_NOTE_LISTING_FAILED = "The gateway's model list could not be fetched; the declared models are offered"
+ROUTER_NOTE_COUNT_UNKNOWN = "The live sessions could not be counted; one may still run a removed model"
 
 
 def _parse_router_models(raw):
@@ -3163,12 +3170,11 @@ def _router_declared_families():
 
 
 def _router_label(mid):
-    """A gateway id's PICKER label. An id shaped vendor-version-codename ('gpt-6-astra') reads 'GPT-6 Astra' (the
-    vendor upper, the version verbatim, the codename capitalised); any other shape shows verbatim, never mangled.
-    The BADGE shows the raw id (sdk_backend.pretty_model), so the picker's current-model tick (a startsWith on the
-    id) and the colour helpers keep matching; only the picker row wears this label."""
-    m = re.match(r"^([a-z]+)-([0-9][0-9.]*)-([a-z]+)$", str(mid or ""))
-    return "%s-%s %s" % (m.group(1).upper(), m.group(2), m.group(3).capitalize()) if m else str(mid or "")
+    """A gateway id's PICKER label: the id itself. One name per model everywhere (the badge shows the raw id too,
+    sdk_backend.pretty_model): a derived label ('GPT-6 Astra' from gpt-6-astra) upper-cased vendors it had never
+    heard of and split from the badge, and the pickers' current-model tick compares the badge with the row's value
+    (exactly, or on a space boundary), so the two must read the same (review find, 2026-09-21)."""
+    return str(mid or "")
 
 
 ROUTER_SETTINGS_FAULT = "Claude Code settings could not be read"   # the advisory's static phrase for a read fault: never the path
@@ -3183,7 +3189,7 @@ def _router_gateway_configured():
     there) with the detail on stderr once per distinct fault."""
     def _gateway(base):
         host = (urlparse(base).hostname or "").lower()
-        return bool(host) and not host.endswith("anthropic.com")
+        return bool(host) and not (host == "anthropic.com" or host.endswith(".anthropic.com"))   # notanthropic.com is a gateway
     base = (os.environ.get("ANTHROPIC_BASE_URL") or "").strip()
     if base:
         return (_gateway(base), None)
@@ -3221,9 +3227,10 @@ def _fetch_router_models(url, timeout=4):
 
 
 def _router_first_party(mid):
-    """True for an id the first-party grammar owns (a family's version id, or an id the catalog files under a family):
-    such an id is never a gateway row, on either road (the declared list, the gateway's listing)."""
-    return bool(_catalog_family(mid)) or bool(_MODEL_ID_RE.match(mid))
+    """True for an id the first-party grammar owns (a family alias such as opus, a family's version id, or an id the
+    catalog files under a family): such an id is never a gateway row, on either road (the declared list, the
+    gateway's listing). sdk_backend._router_first_party is the twin (the regex and the shipped family names)."""
+    return mid in MODEL_VERSIONS or bool(_catalog_family(mid)) or bool(_MODEL_ID_RE.match(mid))
 
 
 def _router_tell_backend():
@@ -3247,8 +3254,8 @@ def _apply_router_families(ids, gen=None, reason=""):
     either road is skipped, said once on stderr: it would install a duplicate tinted row and its removal would
     strip a version id from the judge tiers' allowed set. `gen`, when given, is the switch generation the caller
     captured; under _catalog_lock an older generation than the current one is stale (a later flip happened) and
-    nothing is installed. No colour rank. Returns the ids newly added. The caller sends the models frame OUTSIDE
-    _catalog_lock."""
+    nothing is installed: None, distinct from [] for nothing new. No colour rank. Returns the ids newly added. The
+    caller sends the models frame OUTSIDE _catalog_lock."""
     skipped = [g for g in ids if g and _router_first_party(g)]
     if skipped:
         sys.stderr.write("extra models%s: %d first-party id(s) skipped (never a gateway row): %s\n"
@@ -3257,21 +3264,20 @@ def _apply_router_families(ids, gen=None, reason=""):
         if gen is not None and gen != _ROUTER_GEN[0]:
             sys.stderr.write("extra models%s: a stale apply (switch generation %d, now %d) discarded; nothing installed\n"
                              % (" (%s)" % reason if reason else "", gen, _ROUTER_GEN[0]))
-            return []
+            return None      # STALE, distinct from nothing-to-do: the caller does no bookkeeping on it (review find, 2026-09-21)
         have = {m["value"] for m in MODEL_CHOICES}
         added = [g for g in ids if g and g not in have and not _router_first_party(g)]
-        if not added:
-            return []
-        MODEL_CHOICES.extend({"value": g, "label": _router_label(g)} for g in added)
-        for name in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES"):
-            st = globals().get(name)
-            if isinstance(st, set):
-                fresh = [g for g in added if g not in st]
-                st.update(fresh)
-                _ROUTER_INSTALLED_BY_SET[name].update(fresh)
-        _ROUTER_INSTALLED.update(added)
-        _ROUTER_EVER.update(added)
-    _router_tell_backend()
+        if added:
+            MODEL_CHOICES.extend({"value": g, "label": _router_label(g)} for g in added)
+            for name in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES"):
+                st = globals().get(name)
+                if isinstance(st, set):
+                    fresh = [g for g in added if g not in st]
+                    st.update(fresh)
+                    _ROUTER_INSTALLED_BY_SET[name].update(fresh)
+            _ROUTER_INSTALLED.update(added)
+            _ROUTER_EVER.update(added)
+    _router_tell_backend()   # in every case: a flip applied before the backend module registered must still reach it
     return added
 
 
@@ -3280,11 +3286,12 @@ def _remove_router_families(gen=None):
     loses only what the apply added to IT (_ROUTER_INSTALLED_BY_SET), never anything the first-party catalog holds. A
     session already running a removed id keeps running it (the pick just stops being offered; a later pick of it is
     refused by _vouched_model). `gen` as for the apply: an older generation than the current one is a remove delayed
-    past a later flip, discarded. Returns the ids removed; the caller sends the models frame OUTSIDE _catalog_lock."""
+    past a later flip, discarded (None, distinct from [] for nothing installed). Returns the ids removed; the caller
+    sends the models frame OUTSIDE _catalog_lock."""
     with _catalog_lock:
         if gen is not None and gen != _ROUTER_GEN[0]:
             sys.stderr.write("extra models: a stale remove (switch generation %d, now %d) discarded\n" % (gen, _ROUTER_GEN[0]))
-            return []
+            return None      # STALE: the caller writes no advisory and sends no frame on it
         gone = sorted(_ROUTER_INSTALLED)
         if not gone:
             return []
@@ -3334,31 +3341,65 @@ def _router_models_gt():
     return _gt_int(d.get("gt")) if isinstance(d, dict) else 0
 
 
+def _router_declared_effective():
+    """The declared list AFTER the first-party skip: what the payload reports as declared and what the pickers can
+    gain (a declared Claude version id or family alias is never a gateway row; the apply says the skip)."""
+    return [d for d in _router_declared_families() if not _router_first_party(d)]
+
+
+def _router_tiers_on(ids):
+    """The judge tiers whose EFFECTIVE model is one of `ids`, read off the four tier stores (never the judge's value
+    set, which the removal edits): the distill tier's 'triage' follows the triage pick, the comment tier's 'session'
+    and 'default' are no gateway id. The stores are left as they are (a reset would write an ungestured setting);
+    the off flip names them so the operator knows the judges keep calling a removed model."""
+    judge = jd._state_str("judge-model", "")
+    eff = {"triage": judge, "index": jd._state_str("index-model", ""),
+           "distill": jd._state_str("distill-model", "triage"), "comment": jd._state_str("comment-model", "session")}
+    if eff["distill"] == "triage":
+        eff["distill"] = judge
+    if eff["comment"] in ("session", "default"):
+        eff["comment"] = ""
+    return [t for t, m in eff.items() if m and m in ids]
+
+
+def _router_fetch_allowed():
+    """Whether the gateway's listing may be fetched: not under ROMP_MODEL_CATALOG=off, the hermetic lab's no-network
+    knob. The declared install is network-free and is never gated by it, on the boot road or the live one."""
+    return (os.environ.get("ROMP_MODEL_CATALOG") or "").strip().lower() != "off"
+
+
 def _router_apply_declared(reason, gen=None):
     """Install the declared list now (synchronous and network-free), and when ROMP_ROUTER_MODELS_URL names a
     gateway that lists models, fetch that list on a thread and union it in — never on the caller's thread (the
     WS reader, the boot path). `gen` is the switch generation the caller captured under _SETTINGS_LOCK; both the
     synchronous apply and the fetch thread's apply carry it, so a flip that happens meanwhile makes them stale
     (nothing installs under an off store). Refreshes the advisory. Returns the ids the declared list added."""
-    declared = _router_declared_families()
+    raw = _router_declared_families()
+    added = _apply_router_families(raw, gen=gen, reason=reason)   # first: a stale apply does no bookkeeping at all
+    if added is None:
+        return None
+    declared = [d for d in raw if not _router_first_party(d)]
+    url = (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()
     gw, gerr = _router_gateway_configured()
-    if not declared:
-        _router_status_note[0] = "the switch is on but ROMP_ROUTER_MODELS declares nothing"
-        sys.stderr.write("extra models (%s): %s; nothing to offer\n" % (reason, _router_status_note[0]))
+    if not declared and not url:
+        _router_status_note[0] = ROUTER_NOTE_NOTHING_DECLARED
+        sys.stderr.write("extra models (%s): the switch is on but ROMP_ROUTER_MODELS declares nothing; nothing to offer\n" % reason)
     elif not gw:
-        _router_status_note[0] = gerr or ("no gateway is configured (ANTHROPIC_BASE_URL is Anthropic's or unset), "
-                                          "so the API would refuse a pick")
+        _router_status_note[0] = gerr or ROUTER_NOTE_NO_GATEWAY
         sys.stderr.write("extra models (%s): %s\n" % (reason, _router_status_note[0]))
     else:
         _router_status_note[0] = None
-    added = _apply_router_families(declared, gen=gen, reason=reason)
     if added:
         sys.stderr.write("extra models (%s): %d joined the pickers: %s\n" % (reason, len(added), ", ".join(added)))
-    url = (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()
-    if url:
+    if url and not _router_fetch_allowed():
+        sys.stderr.write("extra models (%s): ROMP_MODEL_CATALOG=off, the gateway's model list is not fetched; the declared "
+                         "list is offered\n" % reason)
+    elif url:
         def go():
             try:
                 more = _apply_router_families(_fetch_router_models(url), gen=gen, reason=reason)
+                if more is None:
+                    return       # stale: the apply said so; no frame, no note
                 if more:
                     sys.stderr.write("extra models (%s): %d more from the gateway's list: %s\n"
                                      % (reason, len(more), ", ".join(more)))
@@ -3366,6 +3407,9 @@ def _router_apply_declared(reason, gen=None):
             except Exception as e:
                 sys.stderr.write("extra models (%s): the gateway's model list failed (%s: %s) — serving the "
                                  "declared list\n" % (reason, type(e).__name__, str(e)[:160]))
+                with _catalog_lock:          # the advisory, at THIS generation only: a later flip owns the note
+                    if gen == _ROUTER_GEN[0] and _router_status_note[0] is None:
+                        _router_status_note[0] = ROUTER_NOTE_LISTING_FAILED
         threading.Thread(target=go, name="router-models", daemon=True).start()
     return added
 
@@ -3393,41 +3437,63 @@ def _set_router_models(enabled, gt=None):
         _ROUTER_GEN[0] += 1
         gen = _ROUTER_GEN[0]
     if enabled:
-        _router_apply_declared("switch on", gen=gen)
+        if _router_apply_declared("switch on", gen=gen) is None:
+            return stamp     # stale (a later flip owns the catalog): the store took the gesture, nothing else moves
     else:
         gone = _remove_router_families(gen=gen)
+        if gone is None:
+            return stamp     # stale: the on flip that followed keeps its advisory and its rows; no frame
         live = _router_live_on(set(gone)) if gone else 0
+        tiers = _router_tiers_on(set(gone)) if gone else []
+        parts = []
         if live is None:
-            _router_status_note[0] = "the live sessions could not be counted; one may still run a removed model"
-        else:
-            _router_status_note[0] = ("%d live session(s) still run a removed model; a later pick of one is refused" % live
-                                      if live else None)
+            parts.append(ROUTER_NOTE_COUNT_UNKNOWN)
+        elif live:
+            parts.append("%d live session(s) still run a removed model; a later pick of one is refused" % live)
+        if tiers:
+            parts.append("the %s judge tier(s) keep a removed model" % ", ".join(tiers))
+        _router_status_note[0] = "; ".join(parts) if parts else None
         if gone:
-            sys.stderr.write("extra models (switch off): %d left the pickers: %s%s\n"
-                             % (len(gone), ", ".join(gone),
-                                " — %s live session(s) keep running one" % ("?" if live is None else live) if live else ""))
+            tail = ""
+            if live or live is None:
+                tail += " — %s live session(s) keep running one" % ("?" if live is None else live)
+            if tiers:
+                tail += " — the %s judge tier(s) keep one" % ", ".join(tiers)
+            sys.stderr.write("extra models (switch off): %d left the pickers: %s%s\n" % (len(gone), ", ".join(gone), tail))
     _models_changed()
     return stamp
 
 
 def _router_status():
     """The authed /models payload's `router` section, what the gear's status line reads: the switch, the ids THIS
-    kernel parsed at start, whether a gateway is configured, and the standing advisory (or null)."""
+    kernel parsed at start (after the first-party skip), whether a gateway is configured (null while off: not
+    probed), and the standing advisory (or null)."""
     on = _router_models_on()
-    gw, gerr = _router_gateway_configured()
-    return {"enabled": on, "declared": _router_declared_families(), "gateway": bool(gw),
-            "error": (_router_status_note[0] or gerr) if on else None}   # an advisory is about a switch that is ON
+    gw, gerr = _router_gateway_configured() if on else (None, None)   # not probed while off: null, and no fault line for a
+    #                                                                   feature never turned on (review find, 2026-09-21)
+    return {"enabled": on, "declared": _router_declared_effective(), "gateway": gw,
+            "error": _router_status_note[0] or (gerr if on else None)}   # the standing note whatever the switch (the off
+    #                                                                     flip's live-session note is written while off);
+    #                                                                     the probe's fault only while on
 
 
 def _router_models_boot():
-    """The switch at kernel boot: install the declared families when it is on. Suppressed under
-    ROMP_MODEL_CATALOG=off (a hermetic lab serves the shipped list alone). Returns the ids installed."""
-    if (os.environ.get("ROMP_MODEL_CATALOG") or "").strip().lower() == "off" or not _router_models_on():
-        return []
+    """The switch at kernel boot: install the declared families when it is on. The store read and the generation
+    bump are one step under _SETTINGS_LOCK (an off flip between the two would otherwise install under an off store).
+    ROMP_MODEL_CATALOG=off (the hermetic lab's no-network knob) gates the gateway's listing alone, never the
+    network-free declared install (see _router_fetch_allowed). The backend is told the installed set whatever
+    happened, so a module registered before this point knows it. Returns the ids installed."""
     with _SETTINGS_LOCK:
-        _ROUTER_GEN[0] += 1
-        gen = _ROUTER_GEN[0]
-    return _router_apply_declared("boot", gen=gen)
+        on = _router_models_on()
+        if on:
+            _ROUTER_GEN[0] += 1
+            gen = _ROUTER_GEN[0]
+    if not on:
+        _router_tell_backend()
+        return []
+    added = _router_apply_declared("boot", gen=gen)
+    _router_tell_backend()
+    return added or []
 
 
 def _catalog_public_status():
