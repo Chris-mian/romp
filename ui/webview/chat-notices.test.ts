@@ -149,7 +149,7 @@ test("the box's chrome: the background box's frame, its one thin edge in the Nee
   assert.match(RENDER, /const overflows = !!body && body\.style\.display !== "none" && body\.scrollHeight > body\.clientHeight \+ 1;/, "the button shows only when the body overflows");
   assert.match(CSS, /\.ntc-head \{[^}]*position: sticky; top: 0; z-index: 1;\n  background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "an opaque ground under the box's wash, above the rows (the second contributor's review)");
   assert.match(CSS, /body\.dense-chrome \.ntc-head \{ padding: 5px 11px; \}/, "the header compacts with the background box's");
-  assert.match(CSS, /\.ntc-btn\.ntc-ok \{ color: var\(--accent\); border-color: color-mix\(in srgb, var\(--accent\) 60%, transparent\); \}/, "the ok border is the accent's own, on both themes");
+  assert.match(CSS, /\.ntc-btn\.ntc-ok \{ color: var\(--accent\); border-color: color-mix\(in srgb, var\(--accent\) 90%, transparent\); \}/, "the ok border is the accent's own, on both themes, at the share that clears the 3:1 non-text floor on the light theme");
   assert.match(CSS, /\.ntc-btn\.ntc-deny \{ color: #e5484d;/); assert.match(CSS, /\.ntc-btn\.ntc-ok \{ color: var\(--accent\); border-color: color-mix/);
   assert.match(CSS, /body\.dense-chrome #notices \{ margin: 4px 10px 0; \}/);
   assert.match(CSS, /\.ntc-attach \.fask-nimg \{ display: block; max-width: 100%;/, "the pinned picture in the row");

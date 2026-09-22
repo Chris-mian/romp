@@ -1421,11 +1421,18 @@ class ActsUnderAFailedWrite(_World):
             km._rejournal_owed.clear(); km._owed_note_read[0] = False
             self.assertEqual(km._undo_stack_ids(), set())
         self.assertEqual(len(self._rows("owed-note")) - rows0, 2, "a read that landed in between makes the next refusal a new episode: a second row")
+        # an UNDO's read landing ends the episode too (the round-fourteen verifier's low: it left the memo standing, so a same-fault re-break before the next build filed nothing)
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"}); self._dispatch({"type": "undoClear"})   # the Undo goes to the owed card first (the reorder); its note read lands
+        with mock.patch.object(Path, "read_text", refusing_read):
+            km._rejournal_owed.clear(); km._owed_note_read[0] = False
+            km._undo_stack_ids()
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 3, "the same fault after the Undo's landed read is a new episode: a third row")
+        self._dispatch({"type": "undoClear"})              # the last clear back too, so the log is empty again for the corrupt-note case
         # a note whose bytes are not text (the thirteenth executed review: a ValueError raised through every builder, nothing filed)
         km._rejournal_owed.clear(); km._owed_note_read[0] = False; km._owed_read_fault[0] = ""
         owed_file.write_bytes(b"\xff\xfe\x00 not text")
         self.assertEqual(payloads(), (False, 0, False, 0), "a corrupt note: the builders proceed on the log alone, nothing raises")
-        self.assertEqual(len(self._rows("owed-note")) - rows0, 3, "and it is filed once")
+        self.assertEqual(len(self._rows("owed-note")) - rows0, 4, "and it is filed once")
         self.assertIn("codec", self._rows("owed-note")[-1]["note"])
         sent = self._dispatch({"type": "undoClear"})
         self.assertIn("romp could not read its note of earlier owed cards", [m.get("title") for m in sent if m.get("type") == "err"], "an Undo over a corrupt note says so on its frame: %r" % sent)
