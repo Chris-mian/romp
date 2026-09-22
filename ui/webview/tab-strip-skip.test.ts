@@ -53,10 +53,13 @@ test("every input the strip renders is in the signature", () => {
     "st.ctx", "st.ctxColor", "st.ctxTone", "!!s.sub", "hostIsDown(id)", "hostDownNote(id)",
     "settings.tabWidgets", "tabHotkey(id)",   // T379: which widgets a tab carries (and their options), and the hot-key keycap's chord
     "st.needsYou === true", "kst?.needsYou === true",   // the magenta Needs you ring's input (the ask ring, 2026-09-13; a widget since 2026-09-14): a card of the session's entering or leaving the feed's needs-you column repaints, on a loaded tab and a skeleton alike; the switches ride settings.tabWidgets above
-    // the badge/ring toggle AND the numbered count on the loaded and skeleton rows, keyed ONLY in badge mode (only
-    // applyTabBadgeMode draws it, so a count move with the badge off never repaints a ring-mode tab). Each conditional
-    // needle carries the bare settings.tabStateBadge read as a substring (as tab-lock's needle carries its neighbours),
-    // so a separate needle for it would be redundant (the second contributor, PR 2017).
+    // the badge/ring TOGGLE (the settings row's bare read) AND the numbered count on the loaded and skeleton rows. The
+    // bare read is its OWN input, not covered by the conditionals: with no count both conditionals serialise to null, so
+    // only the bare `settings.tabStateBadge` repaints a toggle flip. It is pinned by a neighbour-carrying needle (as
+    // tab-lock's is), and the two conditionals key the count, drawn ONLY in badge mode by applyTabBadgeMode, so a count
+    // move with the badge off never repaints a ring-mode tab. (The first contributor's round-two item on PR 2017 dropped
+    // the bare needle as redundant; the PR 2023 post-merge review restored it: the bare read is load-bearing.)
+    "settings.tabsLocked, settings.tabStateBadge, settings.theme",
     "settings.tabStateBadge ? st.needsYouCount : null", "settings.tabStateBadge ? kst?.needsYouCount : null",
   ]) assert.ok(sig.includes(needle), "the signature reads " + needle);
   assert.match(fn, /const unions = viewTagUnion\(effViews\(\)\);\s*\n\s*const plan = planStrip\(visibleIds, unions, readTabGroups\(unions\), activeId, phoneLayout\(\),/,
