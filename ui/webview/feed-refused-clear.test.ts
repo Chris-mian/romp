@@ -74,7 +74,8 @@ test("kernel: the clears-log refusal names the request the way _refuse_drive's f
   assert.match(FEED, /\} else if \(m\.type === "hostUp" && Array\.isArray\(m\.hosts\)\) \{\n\s+for \(const h of m\.hosts\) if \(typeof h === "string" && h\) dropChecksOnReconnect\(h\);/, "a remote link's recovery (federation's frame)");
   assert.match(FED, /type: "undoRouted", hosts: hosts\.slice\(\), seq: typeof m\.seq === "number" \? m\.seq : undefined/, "the routing frame carries the sequence");
   assert.match(KERNEL, /frame\["seq"\] = seq/, "the kernel echoes it on every undo account");
-  assert.match(KERNEL, /client\.get\("sent", \{\}\)\.pop\(_DELTA_SLOTS\["feed"\]\[0\], None\)\n\s+client\.get\("dstate", \{\}\)\.pop\("feed", None\)/, "the pressing client's feed dedup slot dropped on an undo account (the post-merge review, M1)");
+  assert.match(KERNEL, /with _client_lock\(client\):\n\s+client\["floorPending"\] = _floor/, "the pressing client's floor marked pending on an undo account (the post-merge review, M1; round two of PR 2018: a slot pop could land between an in-flight build's claim and its send)");
+  assert.match(KERNEL, /fp = c\.get\("floorPending"\) if ftype == "feed" else None\n\s+if fp is not None:[\s\S]{0,700}sig="%s\|floor:%s\|build:%s" % \(sig, fp, bid\)\)\n\s+if went and isinstance\(bid, int\) and bid > fp:\n\s+c\.pop\("floorPending", None\)/, "while the floor is unanswered every feed build to that client goes whole, its signature carrying its build id, until one past the floor has gone");
   assert.match(FEED, /\} else if \(m\.type === "undoAck"\) \{/, "the landed undo's ack");
   assert.match(FED, /if \(out\.type === "err" \|\| out\.type === "undoAck"\) out\.host = host;/, "federation stamps the ack like the other accounts");
   assert.match(KERNEL, /_floor = _feed_build_id\[0\] if gesture == "undo" else None/, "the kernel's floor: the build counter as the undo is processed (claimed before a build's read)");

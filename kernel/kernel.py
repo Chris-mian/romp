@@ -42044,16 +42044,17 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op="", seq=None):
     _floor = _feed_build_id[0] if gesture == "undo" else None
     _said = [False]
     if _floor is not None and client is not None:
-        # the pressing client's feed dedup slot dropped (the first contributor's post-merge review of PR 1967, M1): a build claimed at or below
-        # the floor whose clears snapshot followed the restore lists the card, which the pane refuses (at or below the floor), while the
-        # rebuild past the floor carries the same dedup signature (buildId is volatile) and would not go until the repost; with the slot
-        # gone the next build goes whatever its content, whole (the delta base goes with it, as the failure path forgets it)
+        # the pressing client's feed frames carry their build id in the dedup signature while this undo's floor is UNANSWERED (the first
+        # contributor's post-merge review of PR 1967, M1: a build claimed at or below the floor whose clears snapshot followed the restore lists
+        # the card, which the pane refuses, while the rebuild past the floor carries the same signature, since buildId is volatile, and would
+        # not go until the repost; round two of PR 2018's verifier: a slot pop here could land between an in-flight build's claim and its send,
+        # which then refilled the slot with the very signature the rebuild carries). Build N at or below the floor and build N+1 past it never
+        # share a signature, so the rebuild goes; the mark clears once a build past the floor has been SENT to this client (_send_slot_locked)
         try:
             with _client_lock(client):
-                client.get("sent", {}).pop(_DELTA_SLOTS["feed"][0], None)
-                client.get("dstate", {}).pop("feed", None)
+                client["floorPending"] = _floor
         except Exception:
-            sys.stderr.write("undo account: the feed slot: %s\n" % traceback.format_exc())
+            sys.stderr.write("undo account: the floor mark: %s\n" % traceback.format_exc())
     if skipped and gesture != "undo":
         _owed_ensure_loaded(gesture)                    # a clear's or a drop's account after a restart carries the owing too (the second contributor's review)
     for key, value in (skipped or {}).items():
@@ -52011,6 +52012,18 @@ def _send_slot(c, ftype, payload, pre, sig, parts=None):
 
 def _send_slot_locked(c, ftype, payload, pre, sig, parts=None):
     key = _DELTA_SLOTS[ftype][0]
+    fp = c.get("floorPending") if ftype == "feed" else None
+    if fp is not None:
+        # an unanswered undo floor on this client (round two of PR 2018's verifier): the feed build goes as itself, whole, its signature carrying
+        # its build id, so the in-flight build at or below the floor and the rebuild past it never dedup against each other; the delta base is
+        # forgotten (a delta compare would find the two builds identical); the mark clears once a build past the floor has gone
+        bid = payload.get("buildId") if isinstance(payload, dict) else None
+        c.get("dstate", {}).pop(ftype, None)
+        went = _send_client(c, key, payload, pre=pre, sig="%s|floor:%s|build:%s" % (sig, fp, bid))
+        if went and isinstance(bid, int) and bid > fp:
+            c.pop("floorPending", None)
+            c.setdefault("sent", {})[key] = (sig, time.time())   # the slot holds the plain signature again, so the dedup stands from the next build (no extra full frame)
+        return
     if not c.get("delta"):
         _send_client(c, key, payload, pre=pre, sig=sig)
         return

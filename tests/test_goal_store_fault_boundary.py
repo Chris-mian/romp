@@ -1473,27 +1473,40 @@ class ActsUnderAFailedWrite(_World):
         sent = self._dispatch({"type": "askClear", "itemId": A + ":g2"})
         self.assertEqual([m for m in sent if m.get("type") in ("undoAck", "err")], [], "a clear that lands sends nothing: the floor is an undo's")
 
-    def test_an_undo_account_drops_the_pressing_clients_feed_dedup_slot_and_echoes_the_undos_sequence(self):
-        """The first contributor's post-merge review of PR 1967 (M1, M2). M1: a build claimed at or below the floor whose clears snapshot
-        followed the restore lists the card, which the pane refuses, while the rebuild past the floor carries the same dedup signature
-        (buildId is volatile) and would not go until the 60 s repost; the undo account drops the pressing client's feed slot, so the next
-        build goes whatever its content. M2: the feed's per-undo sequence rides the request and comes back on the ack and on every undo
-        account frame, so a floor lands on the checks written for that undo alone."""
+    def test_an_undo_account_marks_the_clients_floor_pending_so_the_rebuild_past_it_goes_and_echoes_the_undos_sequence(self):
+        """The first contributor's post-merge review of PR 1967 (M1, M2) and round two of PR 2018's verifier. M1: a build claimed at or below
+        the floor whose clears snapshot followed the restore lists the card, which the pane refuses, while the rebuild past the floor carries
+        the same dedup signature (buildId is volatile) and would not go until the 60 s repost; a slot pop at the account could land between
+        the in-flight build's claim and its send, which then refilled the slot. While the undo's floor is unanswered the client's feed frames
+        carry their build id in the signature, so the in-flight build and the rebuild never share one; the mark clears once a build past the
+        floor has gone. M2: the feed's per-undo sequence rides the request and comes back on the ack and on every undo account frame."""
         sent = []
-        client = {"app": "feed", "alive": True, "send": lambda s: sent.append(json.loads(s)), "sent": {}}
-        payload = {"type": "feed", "buildId": 3, "asks": [{"itemId": A + ":g1"}], "now": NOW}
-        s1 = json.dumps(payload); sig = km._dedup_sig(payload, s1)
-        self.assertTrue(km._send_client(client, ("feed",), payload, pre=s1, sig=sig), "the first frame goes")
-        p2 = dict(payload, buildId=4); s2 = json.dumps(p2)
-        self.assertFalse(km._send_client(client, ("feed",), p2, pre=s2, sig=km._dedup_sig(p2, s2)), "an identical-content build is deduped (buildId is volatile)")
-        km._gesture_store_refusal(client, "undo", {}, ids=[], op="undoClear", seq=7)
-        self.assertEqual([(m["op"], m["seq"], m["buildId"]) for m in sent if m.get("type") == "undoAck"], [("undoClear", 7, km._feed_build_id[0])], "the ack echoes the sequence: %r" % sent)
-        p3 = dict(payload, buildId=5); s3 = json.dumps(p3)
-        self.assertTrue(km._send_client(client, ("feed",), p3, pre=s3, sig=km._dedup_sig(p3, s3)), "after the undo account the build past the floor goes whatever its content (before: deduped until the repost)")
-        self.assertFalse(km._send_client(client, ("feed",), dict(payload, buildId=6), pre=s3, sig=km._dedup_sig(p3, s3)), "and the dedup stands again after it")
+
+        def client_of(**extra):
+            return dict({"app": "feed", "alive": True, "send": lambda s: sent.append(json.loads(s)), "sent": {}}, **extra)
+
+        def push(c, bid):                                 # the pusher's road: one build to this client, identical content every time
+            p = {"type": "feed", "buildId": bid, "asks": [{"itemId": A + ":g1", "sid": A}], "now": NOW}; s_ = json.dumps(p)
+            n0 = len(sent); km._send_slot(c, "feed", p, s_, km._dedup_sig(p, s_)); return len(sent) > n0
+        for road, c in (("legacy", client_of()), ("delta", client_of(delta=True))):
+            self.assertTrue(push(c, 3), road + ": the first frame goes")
+            self.assertFalse(push(c, 4), road + ": an identical-content build is deduped (buildId is volatile)")
+            km._gesture_store_refusal(c, "undo", {}, ids=[], op="undoClear", seq=7)
+            floor = km._feed_build_id[0]
+            self.assertEqual([(m["op"], m["seq"], m["buildId"]) for m in sent if m.get("type") == "undoAck"][-1:], [("undoClear", 7, floor)], road + ": the ack echoes the sequence and the floor: %r" % sent[-1:])
+            # THE RACE (round two of PR 2018's verifier): the in-flight build, claimed at the floor before the account and sent after it,
+            # refills the slot; the rebuild past the floor carries the same content and must still go (False at 583ab08b)
+            self.assertTrue(push(c, floor), road + ": the in-flight build at the floor goes")
+            self.assertTrue(push(c, floor + 1), road + ": the rebuild past the floor goes though its content is the in-flight build's (before: deduped until the repost)")
+            self.assertNotIn("floorPending", c, road + ": a build past the floor sent, the mark clears")
+            self.assertNotEqual(c.get("floorPending"), floor, road + ": (the mark stood at the floor between the account and that build)")
+            if road == "delta":
+                self.assertTrue(push(c, floor + 2), "delta: the next build re-bases the delta stream with one whole frame (the base was forgotten under the mark)")
+            self.assertFalse(push(c, floor + 3 if road == "delta" else floor + 2), road + ": and the dedup stands again")
         sent.clear()
-        km._gesture_store_refusal(client, "feed" and "clear", {}, ids=[A + ":g1"], op="askClear", seq=8)
-        self.assertEqual(sent, [], "a clear's account carries no floor and no ack: the sequence is an undo's")
+        client = client_of()
+        km._gesture_store_refusal(client, "clear", {}, ids=[A + ":g1"], op="askClear", seq=8)
+        self.assertEqual(sent, [], "a clear's account carries no floor and no ack: the sequence is an undo's"); self.assertNotIn("floorPending", client)
         km._gesture_store_refusal(client, "undo", {km.LEDGER_KEY: {"fault": "the log refused", "ids": [A + ":g1"]}}, ids=[A + ":g1"], op="undoClear", seq=9)
         errs = [m for m in sent if m.get("type") == "err"]
         self.assertEqual([(m["op"], m.get("seq"), "buildId" in m) for m in errs], [("undoClear", 9, True)], "the refusal's frame echoes the sequence beside the floor: %r" % errs)
