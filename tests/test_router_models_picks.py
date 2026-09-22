@@ -198,9 +198,8 @@ class Rule(_OnThenOff):
         self.assertTrue(km._pick_vouched(REMOVED, self.be), "installed again → vouched again")
 
     def test_the_typed_road_reads_the_same_rule_and_still_refuses(self):
-        import inspect
-        src = inspect.getsource(km._route_setter_command)
-        self.assertIn("_pick_vouched(value, be)", src, "the typed road is the rule's fourth reader, not a fork of it")
+        # the road's call of the rule is pinned behaviourally in tests/test_router_models_comment_default.py::TypedRoad (an
+        # autospec'd _pick_vouched); a source-text pin here was green on a commented-out call (the second reviewer's note, 2026-09-22)
         # a typed pick of the removed id is no meta command (the CLI's own error, as before); nothing latches
         self.assertFalse(km._route_setter_command(self.be, SID, "/model " + REMOVED))
         self.assertEqual(self.be.calls, [])

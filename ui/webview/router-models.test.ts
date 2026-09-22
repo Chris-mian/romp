@@ -163,3 +163,8 @@ test("a kernel restart re-reads the model list on both surfaces: the chat's pick
   assert.match(RENDER, /else if \(m\.type === "models"\) loadModelChoices\(\);/, "…which is still the models frame's");
   assert.ok(GEAR.includes("if (!m || (m.type !== 'models' && m.type !== 'wsup')) return;"), "the gear's cache block re-reads on the same frame");
 });
+
+test("source: an empty status line takes no layout (the browser leg measures it; this pin is the weaker, CI-visible form)", () => {
+  const css = read("ui", "webview", "gear.css");
+  assert.match(css, /#rsettings \.rs-line:empty \{ display: none; \}/);
+});
