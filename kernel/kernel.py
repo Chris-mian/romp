@@ -1230,9 +1230,10 @@ _PERF_STATS = _PerfStats()
 
 # Road B for #1735: the freeze controller and the pusher's idle-boundary tick. The controller keeps the loaded
 # decoded heap out of the cycle collector's walk (a warm full collection over 5.6M loaded objects fell from
-# 2.83 s to 0.1 ms once frozen; plans/gc-full-collection-pause.md); it reconciles at the idle boundary, keyed on
-# the record cache's load and release counters, so the reconcile's own collection pause is paid with no browser
-# waiting. Default on; ROMP_GC_FREEZE=off turns it off for a measurement.
+# 2.83 s to 0.1 ms once frozen; plans/gc-full-collection-pause.md); it reconciles at the idle boundary. A LOAD
+# fold-in keys on the record cache's insert counter; a RELEASE reclaim is owed when an ended session, registered
+# by weakref at its pop, is observed still alive with its worker thread finished (a surviving cycle), or by a
+# bounded fold-in backstop. The reconcile's pause is paid with no browser waiting. Default on; ROMP_GC_FREEZE=off.
 _GC_FREEZE_ERRORS = [0]
 _GC_FREEZE_SAID = [False]
 _GC_FREEZE_LOAD_TREES, _gc_freeze_bad_knob = gcf.load_trees_from_env()   # parsed with a fallback, never a bare int() at import (#1735 high)
@@ -1247,10 +1248,9 @@ if _gc_freeze_bad_knob is not None:     # a bad ROMP_GC_FREEZE_LOAD_TREES fell b
 
 
 def _gc_freeze_tick(idle, first):
-    """The pusher's idle-boundary call (the reconcile logic is gcf.pusher_tick, pinned in-process): reconcile the
-    frozen set with the loaded set when the record cache's counters say a material load or a release happened since
-    the last freeze. Cheap when nothing is due. A failure never ends the pusher: it is counted for /perf and said
-    once on stderr."""
+    """The pusher's idle-boundary call (the reconcile logic is gcf.pusher_tick, pinned in-process): fold in a
+    material load (the record cache's insert counter), reclaim when an ended session is observed cyclic or the
+    backstop fires. Cheap when nothing is due. A failure never ends the pusher: counted for /perf, said once."""
     def on_error(e):
         _GC_FREEZE_ERRORS[0] += 1
         if not _GC_FREEZE_SAID[0]:
@@ -18818,8 +18818,9 @@ def _sdk_locked():
             # silently eating every message (the user 2026-07-28).
             _sdk_import_notice()
             sbmod = load_source("romp_sdk_backend", HERE / "sdk_backend.py")
-            if hasattr(sbmod, "set_release_note"):     # #1735: a backend session end (a cyclic owner) notes a release; wired
-                sbmod.set_release_note(gcf.note_release)   #  when the backend loads (a test stub of the module carries no note plumbing)
+            if hasattr(sbmod, "set_ended_note"):       # #1735: each session-end pop registers the ended session with the freeze
+                sbmod.set_ended_note(_GC_FREEZE.note_ended)   #  controller, which measures cyclicity at the idle tick; wired when the
+                #                                                backend loads (a test stub of the module carries no note plumbing)
             # The backend claims the login tokens out of os.environ once (startup_auth_env), and the judges
             # read that same stash through this wire for their login-billed children. No key rides here:
             # romp holds none (credentials.py, 2026-09-08), and every child resolves Claude Code's own

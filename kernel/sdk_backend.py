@@ -37,22 +37,26 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-# #1735: the gc-freeze release note. A backend session and its backend hold each other (a cycle), so a session
-# dropped from self.sessions releases a frozen cycle the record cache's acyclic pops never signal; the kernel
-# injects gcf.note_release here, and the session-end pops call _note_release() so the freeze reconciles it at the
-# next idle boundary. A no-op until injected (a bare backend in a unit test needs no wiring).
-_RELEASE_NOTE = [None]
+# #1735: the gc-freeze ended-session note. Rather than GUESS at the pop whether an ended session is cyclic (three
+# review rounds each guessed from a state flag and each missed a path), every session-end pop REGISTERS the session
+# with the controller, which judges it by observation at the idle tick: a weakref that died means it was acyclic and
+# is gone; one still alive with its worker thread finished is a surviving cycle to reclaim. The kernel injects the
+# controller's note_ended here. A no-op until injected (a bare backend in a unit test needs no wiring).
+_ENDED_NOTE = [None]
 
 
-def set_release_note(fn):
-    _RELEASE_NOTE[0] = fn
+def set_ended_note(fn):
+    _ENDED_NOTE[0] = fn
 
 
-def _note_release():
-    fn = _RELEASE_NOTE[0]
+def _note_ended(session):
+    """Register an ended session (and its worker thread) with the gc-freeze controller, which decides at the idle
+    tick whether it was a surviving cycle. The three session-end pops call this; the controller measures, so no
+    per-path cyclicity guess is made here."""
+    fn = _ENDED_NOTE[0]
     if fn is not None:
         try:
-            fn()
+            fn(session, getattr(session, "thread", None))
         except Exception:
             pass
 
@@ -14829,7 +14833,7 @@ class SdkBackend:
                     write_reg(self.state_dir, sid, reg)
             s = self.sessions.pop(sid, None)
         if s:
-            _note_release()                        # #1735: a session (a cyclic owner) left; a frozen cycle it held needs a reclaim
+            _note_ended(s)                         # #1735: register the ended session; the controller measures cyclicity at the idle tick
             if s._host is not None:                # a kill is not graceful today: the host's `end` gets the short bound (T315)
                 s._host.end_grace = _ht().sh.END_GRACE_KILL_S
             s.shutdown()
@@ -14944,7 +14948,7 @@ class SdkBackend:
             s = self.sessions.pop(sid, None)
         if not s:
             return False
-        _note_release()                            # #1735: a session (a cyclic owner) left; a frozen cycle it held needs a reclaim
+        _note_ended(s)                             # #1735: register the ended session; the controller measures cyclicity at the idle tick
         try:
             s.shutdown()
         except Exception as e:
@@ -17042,7 +17046,7 @@ class SdkBackend:
             if popped:
                 self.sessions.pop(sess.sid, None)
         if popped:
-            _note_release()                        # #1735: a session (a cyclic owner) left; a frozen cycle it held needs a reclaim
+            _note_ended(sess)                      # #1735: register the ended session; the controller measures cyclicity at the idle tick
         if not sess.ended and not sess.detached:
             if sess.inflight > 0 and not sess._interrupted:
                 # ABNORMAL death mid-turn (killed / crashed — not a user interrupt, not a clean
