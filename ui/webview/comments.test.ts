@@ -282,7 +282,10 @@ test("the create dialog pre-reads the kernel's default-comment trio and shows it
   assert.match(UI, /const effVal = chosen \|\| setDef\(kind\);/);
   // a version id stored in the setting still labels correctly (families hold their versions)
   assert.match(UI, /function modelChoiceLabel\(value: string\)/);
-  assert.match(KERNEL, /"commentDefaults": \{"model": jd\._state_str\("comment-model", "session"\),/);
+  // the model is the EFFECTIVE default, the read the create makes too (a stored default the kernel no longer
+  // offers falls to "session" on both, so the dialog never shows a model the create will not launch on)
+  assert.match(KERNEL, /"commentDefaults": \{"model": _comment_default_model_effective\(\),/);
+  assert.match(KERNEL, /def _comment_default_model_effective\(\):/);
 });
 
 test("fast rides the create end to end, resolved dialog > setting > inherit at the kernel", () => {

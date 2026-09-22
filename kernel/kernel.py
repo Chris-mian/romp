@@ -18726,6 +18726,20 @@ def _retry_parked_creates():
                     pass
 
 
+def _comment_default_model_effective():
+    """The default-comment model as a new thread will actually take it: the stored value when it is the
+    "session" sentinel (inherit the parent), "default" (the account default) or a model this kernel vouches for
+    (_vouched_model), else "session". A stored default this kernel no longer offers (an extra gateway model whose
+    switch is off) is what the create falls away from, so the dialog's pre-read must fall the same way: before
+    this the /models route served the raw store and the dialog showed the removed id as the default while the
+    create launched on the parent (review find, 2026-09-22). The store is left as it is (a reset would write an
+    ungestured setting); the launch prefs say so on stderr when they fall."""
+    stored = jd._state_str("comment-model", "session")
+    if stored in ("session", "default") or _vouched_model(stored):
+        return stored
+    return "session"
+
+
 def _comment_launch_prefs(model="", effort="", fast=""):
     """Resolve what a new comment thread launches on: the dialog's explicit pick wins; else the
     kernel's default-comment setting (the user 2026-08-29, who wanted every new thread on one
@@ -18739,14 +18753,17 @@ def _comment_launch_prefs(model="", effort="", fast=""):
         v = str(arg or "")
         if not v:
             stored = jd._state_str(fname, "session")
+            if fname == "comment-model":
+                effective = _comment_default_model_effective()   # the read the dialog's pre-read makes too
+                if effective != stored:
+                    # the stored default is a model this kernel no longer offers (an extra gateway model whose switch
+                    # is off): every new thread would launch on it, with nothing said. Inherit the parent instead,
+                    # loudly; the store is left as it is (a reset would write an ungestured setting) — verify find,
+                    # 2026-09-22
+                    sys.stderr.write("comment-model %r is not a model this kernel offers; new threads inherit their "
+                                     "parent until the default is changed\n" % stored)
+                stored = effective
             v = "" if stored == "session" else stored
-            if fname == "comment-model" and v and v != "default" and not _vouched_model(v):
-                # the stored default is a model this kernel no longer offers (an extra gateway model whose switch is
-                # off): every new thread would launch on it, with nothing said. Inherit the parent instead, loudly; the
-                # store is left as it is (a reset would write an ungestured setting) — verify find, 2026-09-22
-                sys.stderr.write("comment-model %r is not a model this kernel offers; new threads inherit their parent "
-                                 "until the default is changed\n" % v)
-                v = ""
         out.append(v)
     return tuple(out)
 
@@ -70164,9 +70181,12 @@ class Handler(BaseHTTPRequestHandler):
                      "router": _router_status(), "codex": {"models": cx_models, "error": cx_err,
                                "efforts": list(cx_efforts.values())},
                      # the create dialog's pre-read (the user 2026-08-29): what a new comment thread
-                     # gets when the dialog is left untouched — RAW ("session" = same as the session),
-                     # so the dialog shows the effective default and a pick stays a deviation
-                     "commentDefaults": {"model": jd._state_str("comment-model", "session"),
+                     # gets when the dialog is left untouched ("session" = same as the session), so the
+                     # dialog shows the effective default and a pick stays a deviation. The model is the
+                     # read _comment_launch_prefs makes, not the raw store: a stored default this kernel
+                     # no longer offers falls to "session" on both, so the dialog never shows a model the
+                     # create will not launch on (review find, 2026-09-22); effort and fast ride raw
+                     "commentDefaults": {"model": _comment_default_model_effective(),
                                          "effort": jd._state_str("comment-effort", "session"),
                                          "fast": jd._state_str("comment-fast", "session")}}),
                     "application/json", cache="no-cache")
