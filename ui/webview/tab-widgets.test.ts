@@ -441,9 +441,14 @@ test("state badge: the amber left dot beats the 'grey dot when idle' option for 
   for (const st of [{ state: "retrying" }, { state: "blocked" }] as WidgetStatus[]) {
     const t = mkEl("div"); t.className = "tab ring-retrying";
     W.composeTabWidgets(t as unknown as HTMLElement, "before", "s", st, P({ opts: { dot: { idle: "grey" } } }));   // the real dot widget, grey option → the slot starts as `tab-dot idle`
+    // RING mode is byte-identical under the grey-idle option: applyTabBadgeMode never runs, so the slot stays the quiet
+    // grey idle dot titled "idle" (not the amber, not "retrying"), exactly as any other hidden-slot state under the option.
     assert.deepEqual(classes(leftDot(t)), ["tab-dot", "idle"], JSON.stringify(st) + ": under the grey option a none-state slot renders idle");
+    assert.equal(leftDot(t).title, "idle", JSON.stringify(st) + ": ring mode leaves the grey idle dot's title, no amber");
     W.applyTabBadgeMode(t as unknown as HTMLElement, "s", st, P({ opts: { dot: { idle: "grey" } } }));
     assert.deepEqual(classes(leftDot(t)), ["tab-dot", "retrying"], JSON.stringify(st) + ": none and idle both come off, so the amber is not painted at idle's dim opacity");
+    // BADGE mode: retrying is titled IFF visibly dotted: here it is both (the amber dot carries its hover title).
+    assert.equal(leftDot(t).title, "retrying an API error on its own", JSON.stringify(st) + ": the amber dot is titled (titled iff visibly dotted, badge mode)");
   }
 });
 
