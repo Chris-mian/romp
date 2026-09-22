@@ -803,6 +803,9 @@ function setUndoFloor(host: string, seq: unknown, floor: unknown): void {
 function dropChecksOnReconnect(host: string): void {
   for (const [id, c] of Array.from(restoreChecks)) if (c.host === host) { restoreChecks.delete(id); pendingCleared.delete(id); }
 }
+// a remote kernel's relay socket reopened: federation's own event on its onopen, the exact event a redial fires (the artifacts pane's pattern;
+// the post-merge note on PR 2018: the tunnel poll's hostUp is a proxy, silent on a watchdog redial and loud on an upSeq bump with the socket intact)
+window.addEventListener("romp:hostRelayUp", (ev) => { const h = String((ev as CustomEvent).detail?.host || ""); if (h) dropChecksOnReconnect(h); });
 
 // the kernels attached, by federation's own account and never by sessions or cards (rounds twelve and thirteen of PR 1967: a remote card's coming
 // and going flipped the reading, then a remote card whose kernel had no session row on the strip read as a single-kernel pane and took the
@@ -6873,7 +6876,10 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
   } else if (m.type === "wsup") {
     dropChecksOnReconnect("");                                   // the local kernel's socket reopened (the shim's frame): a lost account holds nothing off the board
   } else if (m.type === "hostUp" && Array.isArray(m.hosts)) {
-    for (const h of m.hosts) if (typeof h === "string" && h) dropChecksOnReconnect(h);   // a remote kernel's link recovered (federation's frame): the same
+    // the tunnel poll's word that a remote kernel came back (a down-to-up transition): a SECOND trigger beside the relay socket's own reopen
+    // below, kept for the kernel whose relay never reopened on this page (the post-merge note on PR 2018: this frame alone missed the
+    // watchdog redial that loses the account, and fired on an upSeq bump with the socket intact)
+    for (const h of m.hosts) if (typeof h === "string" && h) dropChecksOnReconnect(h);
   } else if (m.type === "retryRefused" && typeof m.sid === "string" && m.sid) {
     // the backend could not take the manual retry's send: the Retry this page latched lets go, and says why
     if (rearmLatches({ kind: "retry", sid: m.sid })) feedToast(String(m.text || "Couldn't retry: the kernel refused it."));

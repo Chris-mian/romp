@@ -2126,7 +2126,7 @@ test("a kernel's restart on the accounting road: a build below the last seen re-
   await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
 });
 
-test("a kernel's socket coming back drops its waiting checks and their suppressions, so a lost undo account never holds a restored card off the board: federation's hostUp for a remote kernel, the shim's wsup for the local one, each its own kernel's alone (the post-merge review of PR 1967, low 2)", async (t) => {
+test("a kernel's socket coming back drops its waiting checks and their suppressions, so a lost undo account never holds a restored card off the board: the remote relay socket's own reopen (romp:hostRelayUp, the event a redial fires) and the tunnel poll's hostUp as a second trigger for a remote kernel, the shim's wsup for the local one, each its own kernel's alone (the post-merge review of PR 1967, low 2; the post-merge note on PR 2018)", async (t) => {
   t.after(() => mock.timers.reset());
   mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
   const hooks = (await import("./feed")) as any;
@@ -2140,8 +2140,17 @@ test("a kernel's socket coming back drops its waiting checks and their suppressi
   card("g3")._clr.onclick(ev); mock.timers.tick(700);
   undo.onclick!(ev); await dispatch({ type: "undoRouted", hosts: [""], seq: lastSeq() });          // the local kernel's check; its account never comes
   assert.deepEqual(floors(), [[R + ":g1", null], ["g3", null]]);
-  await dispatch({ type: "hostUp", hosts: ["TESTHOST"] });                                       // the remote link recovered: its redial may have abandoned the account
-  assert.deepEqual(floors(), [["g3", null]], "the remote kernel's check is dropped, the local one stands");
+  win.dispatchEvent(Object.assign(new Event("romp:hostRelayUp"), { detail: { host: "TESTHOST" } }));   // the remote relay socket reopened (federation's own event on its onopen): the redial abandoned the account
+  assert.deepEqual(floors(), [["g3", null]], "the remote kernel's check is dropped on its socket's own reopen, the local one stands (before: only the tunnel poll's frame, silent on a watchdog redial)");
+  await dispatch({ type: "undoRouted", hosts: ["TESTHOST"], seq: 99 });                          // (nothing pending on the remote now: no new check)
+  card(R + ":g1"); hooks._resetClearGestureStateForTests();
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(1, 1) })); mock.timers.tick(700);
+  card(R + ":g1")._clr.onclick(ev); card("g3")._clr.onclick(ev); mock.timers.tick(700);
+  undo.onclick!(ev); await dispatch({ type: "undoRouted", hosts: ["TESTHOST"], seq: lastSeq() });
+  undo.onclick!(ev); await dispatch({ type: "undoRouted", hosts: [""], seq: lastSeq() });
+  assert.deepEqual(floors(), [[R + ":g1", null], ["g3", null]]);
+  await dispatch({ type: "hostUp", hosts: ["TESTHOST"] });                                       // the tunnel poll's word, the second trigger
+  assert.deepEqual(floors(), [["g3", null]], "the poll's frame drops it too, the local one stands");
   await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(1, 1) })); mock.timers.tick(700);
   assert.ok(card(R + ":g1"), "the remote card shows on the next payload listing it (before: held off until a reload)"); assert.ok(!card("g3"), "the local card still waits");
   await dispatch({ type: "wsup" });                                                                // the local socket reopened (the shim's frame)

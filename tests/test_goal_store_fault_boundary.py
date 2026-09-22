@@ -1499,10 +1499,19 @@ class ActsUnderAFailedWrite(_World):
             self.assertTrue(push(c, floor), road + ": the in-flight build at the floor goes")
             self.assertTrue(push(c, floor + 1), road + ": the rebuild past the floor goes though its content is the in-flight build's (before: deduped until the repost)")
             self.assertNotIn("floorPending", c, road + ": a build past the floor sent, the mark clears")
-            self.assertNotEqual(c.get("floorPending"), floor, road + ": (the mark stood at the floor between the account and that build)")
+            plain = {"type": "feed", "buildId": 0, "asks": [{"itemId": A + ":g1", "sid": A}], "now": NOW}
+            self.assertEqual(c["sent"][("feed",)][0], km._dedup_sig(plain, json.dumps(plain)), road + ": the slot holds the plain signature again once the mark clears (a mutant clearing it without the slot reset sends one frame more)")
+            # the mark itself (the post-merge note on PR 2018): equal to the floor after the account and after the at-floor push; a refusal's account
+            # sets it too and leaves it standing until a build past ITS floor has gone
+            km._gesture_store_refusal(c, "undo", {}, ids=[], op="undoClear", seq=10); floor2 = km._feed_build_id[0]
+            self.assertEqual(c.get("floorPending"), floor2, road + ": the mark equals the floor after the account")
+            self.assertTrue(push(c, floor2)); self.assertEqual(c.get("floorPending"), floor2, road + ": and after the at-floor push")
+            km._gesture_store_refusal(c, "undo", {km.LEDGER_KEY: {"fault": "the log refused", "ids": [A + ":g1"]}}, ids=[A + ":g1"], op="undoClear", seq=11); floor3 = km._feed_build_id[0]
+            self.assertEqual(c.get("floorPending"), floor3, road + ": a refusal's account leaves the mark standing, at its own floor (a mutant popping it after the err frame fails here)")
+            self.assertTrue(push(c, floor3 + 1)); self.assertNotIn("floorPending", c)
             if road == "delta":
-                self.assertTrue(push(c, floor + 2), "delta: the next build re-bases the delta stream with one whole frame (the base was forgotten under the mark)")
-            self.assertFalse(push(c, floor + 3 if road == "delta" else floor + 2), road + ": and the dedup stands again")
+                self.assertTrue(push(c, floor3 + 2), "delta: one whole frame re-bases the stream")
+            self.assertFalse(push(c, floor3 + 3 if road == "delta" else floor3 + 2), road + ": the dedup stands again")
         sent.clear()
         client = client_of()
         km._gesture_store_refusal(client, "clear", {}, ids=[A + ":g1"], op="askClear", seq=8)

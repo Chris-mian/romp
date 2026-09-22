@@ -52029,7 +52029,7 @@ def _send_slot_locked(c, ftype, payload, pre, sig, parts=None):
         went = _send_client(c, key, payload, pre=pre, sig="%s|floor:%s|build:%s" % (sig, fp, bid))
         if went and isinstance(bid, int) and bid > fp:
             c.pop("floorPending", None)
-            c.setdefault("sent", {})[key] = (sig, time.time())   # the slot holds the plain signature again, so the dedup stands from the next build (no extra full frame)
+            c.setdefault("sent", {})[key] = (sig, time.time())   # the slot holds the plain signature again: a legacy client dedups from the next build; a delta client, whose base went with each send under the mark, re-bases with one whole frame
         return
     if not c.get("delta"):
         _send_client(c, key, payload, pre=pre, sig=sig)

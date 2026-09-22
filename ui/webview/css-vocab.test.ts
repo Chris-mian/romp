@@ -235,11 +235,12 @@ test("the bubble's inner-markdown overrides OUTRANK .md — the doubled-selector
 test("the Needs you box's rules (.ntc-, #notices) draw their colours from the tokens: the accent and its color-mix, the box and state tokens, transparent; the one literal is the destructive red (the box review of PR 1967, the round-thirteen verifier's low)", () => {
   // whole rule blocks wherever they start (a line's start or the previous block's close: the first contributor's note on PR 2014), continuation
   // lines included (the round-fourteen verifier's low: a colour on a continuation line passed), comments stripped first
-  const boxRules = (css: string) => Array.from(css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(?<=^|\})\s*((?:\.ntc-|#notices|body\.dense-chrome \.ntc-)[^{]*?)\{([^}]*)\}/g), (m) => m[1].trim() + " {" + m[2].replace(/\n/g, " ") + "}");
+  const boxRules = (css: string) => Array.from(css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(?<=^|\}|\n)\s*((?:\.ntc-|#notices|body\.dense-chrome \.ntc-)[^{]*?)\{([^}]*)\}/g), (m) => m[1].trim() + " {" + m[2].replace(/\n/g, " ") + "}");   // a line start too: without the m flag ^ is the string's start (the post-merge note on PR 2018)
   const decls = (rule: string) => Array.from(rule.matchAll(/(?:^|[\s;{])(color|background(?:-color)?|border(?:-(?:color|top|bottom|left|right))?)\s*:\s*([^;}]+)[;}]/g), (m) => [m[1], m[2].trim()] as [string, string]);
   // the scanner's own self-checks: a second rule on the same line is read, and a border-bottom literal on a continuation line is seen
   assert.deepEqual(boxRules(".x { color: red } .ntc-a { color: var(--fg) } .ntc-b { background: #123456 }").map((r) => r.split(" {")[0]), [".ntc-a", ".ntc-b"], "two box rules on one line are both read");
   assert.deepEqual(decls(".ntc-head { padding: 7px;\n  border-bottom: 1px solid #123456; }"), [["border-bottom", "1px solid #123456"]], "a border-bottom on a continuation line is a colour declaration");
+  assert.deepEqual(boxRules(".x,\n.ntc-a { color: #123456 }").map((r) => r.split(" {")[0]), [".ntc-a"], "a box selector opening a selector-list continuation line is read");
   const rules = boxRules(CHAT);
   assert.ok(rules.length >= 20, "the box's rules are present: " + rules.length);
   assert.ok(rules.some((r) => r.startsWith("#notices {") && r.includes("border-radius")), "the multi-line rules are read whole: " + rules.filter((r) => r.startsWith("#notices")).join(" | ").slice(0, 200));
