@@ -1300,11 +1300,19 @@ function buildTimelineHtml(webview: vscode.Webview): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "timeline-main.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "timeline-pane.css"));
   const n = nonce();
+  // The lane model picker reads /models straight from the kernel (the view's kernelUrl, the chat
+  // and feed bundles' twin): allow that origin and tell the view where it is and what token to
+  // carry. The browser is served BY the kernel, so its base is '' and its cookie rides; this
+  // webview's synthetic origin needs the explicit base, and its cross-origin fetch carries no
+  // cookie — without both the menu opened empty here while the browser listed every family (the
+  // user 2026-09-22).
+  const kernelBase = `http://${HOST}:${kernelPort()}`;
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `font-src ${webview.cspSource}`,
+    `connect-src ${kernelBase}`,
     `script-src 'nonce-${n}'`,
   ].join("; ");
   return `<!DOCTYPE html>
@@ -1320,6 +1328,7 @@ function buildTimelineHtml(webview: vscode.Webview): string {
 <body>
 ${TIMELINE_BODY}
   ${mediaBaseTag(webview, n)}
+  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};window.__rompKernelToken=${JSON.stringify(serveToken())};</script>
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;

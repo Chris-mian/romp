@@ -1123,10 +1123,15 @@ function codexEffortChoices(model) {
 // counter — and two overlapping fetches (a frame during the page-load fetch; two quick frames) can resolve
 // out of order, so without the check the STALE list won until the next change. A payload without a rev (an
 // older kernel) always applies.
+// The URL rides kernelUrl (below, beside mediaUrl): a bare '/models' is right only on the web page, which the
+// kernel itself serves — in the VS Code webview it resolved against the pane's synthetic origin (no such route,
+// no cookie, and a CSP with no connect-src), so the lane menu opened EMPTY there while the browser listed every
+// family (the user 2026-09-22). The host injects the kernel base and the serve token; the web page injects
+// neither, so its URL is unchanged.
 let modelChoicesRev = -1;
 function loadModelChoices() {
   try {
-    if (typeof fetch !== 'undefined') return fetch('/models', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+    if (typeof fetch !== 'undefined') return fetch(kernelUrl('/models'), { cache: 'no-store' }).then((r) => r.json()).then((d) => {
       if (typeof d.rev === 'number') { if (d.rev < modelChoicesRev) return; modelChoicesRev = d.rev; }
       if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; for (const m of d.models) MODEL_CHOICES.push(m); MODEL_CHOICES.push({ label: 'Default', value: 'default' }); }
       if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; for (const e of effortDisplayOrder(d.efforts)) EFFORT_CHOICES.push(e); }
@@ -1201,6 +1206,19 @@ function crossX(lo0, hi0, xs, xe, obstacles) {
 // through here so both hosts resolve.
 function mediaUrl(name) {
   return ((typeof window !== 'undefined' && window.__rompMediaBase) || '/media') + '/' + name;
+}
+// Kernel HTTP endpoints this view fetches directly (/models). The twin of ui/webview/media.ts kernelUrl and
+// gear.js ku(), inlined here because this file is a CJS module bundled into the VS Code timeline pane AND
+// injected raw into the kernel's /timeline page, so it can import neither. The web page is served by the
+// kernel (no base, and the romp_token cookie rides a same-origin fetch); a VS Code webview's synthetic origin
+// needs the host-injected base, and its cross-origin fetch carries no cookie, so the host also injects the
+// serve token and it rides as ?token= — the kernel gates every request on it, loopback included.
+function kernelUrl(path) {
+  const w = (typeof window !== 'undefined') ? window : {};
+  const base = w.__rompKernelBase || '';
+  const tok = w.__rompKernelToken || '';
+  if (!tok) return base + path;
+  return base + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(tok);
 }
 
 // Does the SORTED numeric array hold a value within ±tol of t? Binary search for the first value ≥ t - tol.
