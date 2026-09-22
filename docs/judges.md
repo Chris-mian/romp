@@ -660,10 +660,10 @@ permission/API-error floors: one interrupt at a time, the present event first.
   value into a tier's signature exists and could not be read or parsed, so
   the gate runs the stage without a stamp (or the stage's own read marks the
   run incomplete), one row per failure episode; cleared-unreadable is filed by
-  the kernel's own reader of the clears log as well, the feed build and the Undo
-  reading a present log that cannot be read or is not text as nothing cleared for
-  that build or press, one row per fault episode ended by a landed read or an
-  absent log).
+  the kernel's own reader of the clears log as well, the Undo reading a present
+  log that cannot be read or is not text as nothing to bring back and the feed
+  build holding the last landed set meanwhile with one refused bell row per
+  episode, one row per fault episode ended by a landed read or an absent log).
   A file that does not parse is never deleted: it is moved beside its path as
   `<file>.corrupt-<utc stamp>` (a `-n` suffix when two land in the same second)
   before a fresh one is written, so the bytes survive for inspection, and the

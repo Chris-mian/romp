@@ -1843,6 +1843,7 @@ class StoreCompleteness(_Gate):
         s = self._st("group")
         self.assertEqual((s["ran"], s["incomplete"], s["stamped"]), (1, 1, 0), "a decode failure after a good stat marks the run incomplete")
         self.assertEqual(len(self._rows("cleared-unreadable")), 1, "one loud row (before: none, the decode error raised out of the pass)")
+        self.assertEqual(len(self._rows("pass-crash")), 0, "and no pass-crash row beside it: the decode fault is the reader's, not a crash of the tier (the second contributor's post-merge note on PR 2025)")
         self._reset()
         self._pass(tiers=("group",))
         self.assertEqual(len(self._rows("cleared-unreadable")), 1, "one row per failure episode, not per pass")

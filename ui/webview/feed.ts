@@ -284,7 +284,7 @@ const pendingRestored = new Map<string, AskItem>();
 // their rows first, so they are the newest batch) over the clears log's batches by stamp; this page's stack must read the same, press
 // after press, for the optimistic Undo to restore what the kernel restores. Two rules keep it so, proven by enumeration in
 // feed-render-incremental.test.ts over tests/fixtures/undo-stack-transitions.json: a batch this page makes goes UNDER the owed entries
-// (pushClearedEntry), and every gesture account the kernel sends carries its stack (`batches`, `owedBatch`, and `batchesTotal`, the count of
+// (pushClearedEntry), and every gesture account the kernel sends carries its stack except any sent while its clears log cannot be read (a refused clear alone ships none too; the branches below take those) (`batches`, `owedBatch`, and `batchesTotal`, the count of
 // log batches before the wire's bound, so a truncated stack reads as truncated), which this page takes as its
 // own (reconcileClearedStack): a refusal leaves the kernel's stack as it was, so the entry the click popped comes back; ids that came back
 // leave; ids this page never held stand in an entry of their own (empty, so the Undo on it is the round trip).
@@ -6953,10 +6953,11 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     const fromHost = typeof m.host === "string" ? m.host : "";   // federation stamps a remote kernel's account with its host (prefixInbound); the local kernel's has none
     if (op === "undoClear") setUndoFloor(fromHost, m.seq, m.buildId);   // the refusal's and the reorder's frames carry the undo's build floor (round fifteen) and its sequence
     if (storeOp && Array.isArray(m.batches) && !fromHost && !federatedPane()) {
-      // the kernel's stack rides every gesture account (round eight of PR 1967): this page takes it as its own, which covers a refused clear (its
+      // the kernel's stack rides every gesture account sent while its clears log reads (round eight of PR 1967; none while it cannot be read): this page takes it as its own, which covers a refused clear (its
       // ids are not in the batches: back where they were), a refused undo (the batch the click popped is still the newest: back on top), a
       // reorder (the owed batch restored, the last clear's entry back on top) and ids this page never held (an entry standing for them). The
-      // branches below are the road for an older kernel's frame, which carries no stack, and for every frame on a FEDERATED pane, which keeps
+      // branches below are the road for an older kernel's frame, which carries no stack, for the current kernel's stack-less frames (the read-fault
+      // account and any account beside it while the log cannot be read), and for every frame on a FEDERATED pane, which keeps
       // no stack (federatedPane): there a refused clear's cards come back by their ids and nothing else moves
       const owedB: string[] = Array.isArray(m.owedBatch) ? m.owedBatch.map(String) : [];
       const bats: string[][] = m.batches.map((b: any) => (Array.isArray(b) ? b.map(String) : []));

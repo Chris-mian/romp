@@ -10275,10 +10275,13 @@ def _cleared_context(fsid, store, cap=6):
             iid = o.get("id")
             if not isinstance(iid, str) or not iid:
                 continue
+            t = o.get("t", 0)
+            if isinstance(t, bool) or not isinstance(t, (int, float)):
+                continue                               # a stamp that is not a number: skipped, as the kernel's reader skips it (the sort below would raise on it)
             if o.get("op") == "undo":
                 times.pop(iid, None)                   # undone → not cleared context (its card is back)
             else:
-                times[iid] = o.get("t", 0)
+                times[iid] = t
     except FileNotFoundError:
         _read_ok(path_s)                               # absent: nothing cleared, a real state
     except (OSError, ValueError) as e:
@@ -12728,6 +12731,9 @@ def _view_cleared_scan(path):
         iid = o.get("id")
         if not isinstance(iid, str) or not iid:
             continue
+        t = o.get("t", 0)
+        if isinstance(t, bool) or not isinstance(t, (int, float)):
+            continue                                   # a stamp that is not a number: skipped like an unparseable line, as the kernel's reader skips it (the second contributor's post-merge note on PR 2025)
         cur.discard(iid) if o.get("op") == "undo" else cur.add(iid)
     return cur
 
