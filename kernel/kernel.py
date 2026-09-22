@@ -68494,11 +68494,14 @@ class Handler(BaseHTTPRequestHandler):
                 # The push worker's word on one push (the ledger block above _push_ledger): {pid, stage: 'shown' |
                 # 'clicked', v}. AUTHENTICATED BY THE PID ALONE, ahead of _authorize on purpose: a worker's fetch
                 # carries no token header, and the pid is 128 unguessable bits the kernel itself issued, handed only
-                # to the device the push went to, good for two timestamps on that one row and nothing else. An
-                # unknown pid is a 404 and a line, a bad body buys no state, and the body is capped far below
-                # _POST_MAX_BYTES before a byte is read, since no token gates the read here. A 'shown' ack also
-                # SUPERSEDES the older unsettled, untapped rows for the same session on the same device
-                # (_push_ledger_supersede: the per-session tag replaced their notifications), one line each.
+                # to the device the push went to. What a valid pid buys (the contributor's read of PR 1953): the row's
+                # shown or tapped time, the FIRST stamp standing, and the worker's build recorded on the row on every
+                # report; on a 'shown' report the older unsettled, untapped rows for the same session on the same device
+                # marked superseded (_push_ledger_supersede: the per-session tag replaced their notifications), one line
+                # each; and the request's origin recorded on the device's subscription when none is on file yet
+                # (_push_backfill_origin: the next declarative push's navigate URL). An unknown pid is a 404 and a
+                # line, a bad body buys no state, and the body is capped far below _POST_MAX_BYTES before a byte is
+                # read, since no token gates the read here.
                 _cl = str(self.headers.get("Content-Length") or "0").strip()
                 if not re.fullmatch(r"[0-9]{1,20}", _cl) or int(_cl) > _PUSH_ACK_MAX_BYTES:
                     self.close_connection = True
