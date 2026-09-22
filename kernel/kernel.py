@@ -3140,9 +3140,11 @@ _ROUTER_GEN = [0]                            # the switch's generation: bumped u
 #                                              apply or remove carrying an older generation is stale (a listing fetch that lands after an
 #                                              off flip, a declared apply delayed past a concurrent off) and is discarded, never installed
 _router_status_note = [None]                 # the standing EVENT-sourced advisory (the off flip's live sessions and tiers on a removed
-#                                              model; a listing that failed): written only through _router_set_note, at its own
-#                                              generation. The probe-shaped advisories (nothing declared, no gateway, a settings fault)
-#                                              are derived LIVE in _router_status, never frozen here (verify find, 2026-09-22)
+#                                              model; a listing that failed): written only through _router_set_note (a flip's word) and
+#                                              _router_swap_note (the fetch thread filing a failure over an empty note; the no-op off
+#                                              clearing a failure), each under _catalog_lock at the writer's own generation. The
+#                                              probe-shaped advisories (nothing declared, no gateway, a settings fault) are derived LIVE
+#                                              in _router_status, never frozen here (verify find, 2026-09-22)
 _ROUTER_FETCH_GEN = [None]                   # the generation whose listing fetch is in flight (None when none): the create door reads it
 _router_probe_said = [None]                  # the settings-read fault last said on stderr (once per distinct fault; the payload carries a
 #                                              static phrase, never the file's path)
@@ -3360,6 +3362,21 @@ def _router_set_note(gen, text):
         return True
 
 
+def _router_swap_note(gen, expected, text):
+    """The note's other writer: a compare-and-swap, under _catalog_lock at the writer's own generation, from `expected`
+    to `text` alone. The fetch thread files a failed listing only over an empty note (a flip's word since is not
+    overwritten), and the no-op off arm clears only a failed listing (an off advisory that stands is not). Returns
+    whether the swap landed. Together with _router_set_note these are the note's only writers (review round five,
+    2026-09-22: an audit of one helper's callers missed the two in-line writes these replace)."""
+    with _catalog_lock:
+        if gen is not None and gen != _ROUTER_GEN[0]:
+            return False
+        if _router_status_note[0] != expected:
+            return False
+        _router_status_note[0] = text
+        return True
+
+
 def _router_listing_inflight():
     """Whether a listing fetch for the CURRENT generation is still running (the create door leaves an unvouched seed
     alone while one is: the seed may be one of the ids the listing is about to install)."""
@@ -3435,12 +3452,7 @@ def _router_apply_declared(reason, gen=None):
             except Exception as e:
                 sys.stderr.write("extra models (%s): the gateway's model list failed (%s: %s) — serving the "
                                  "declared list\n" % (reason, type(e).__name__, str(e)[:160]))
-                noted = False
-                with _catalog_lock:          # the advisory, at THIS generation only: a later flip owns the note
-                    if gen == _ROUTER_GEN[0] and _router_status_note[0] is None:
-                        _router_status_note[0] = ROUTER_NOTE_LISTING_FAILED
-                        noted = True
-                if noted:
+                if _router_swap_note(gen, None, ROUTER_NOTE_LISTING_FAILED):   # at THIS generation, over an empty note only
                     _models_changed()        # the gear's line repaints from the models frame alone (verify find, 2026-09-22)
             finally:
                 with _catalog_lock:
@@ -3485,9 +3497,7 @@ def _set_router_models(enabled, gt=None):
             # advisory, so the word of the flip that removed something stands (review round three); but a note the ON
             # generation left (a failed listing) is cleared at this generation, and the models frame goes out as on
             # every applied flip, the gear's line reading that frame alone (review round four, 2026-09-22)
-            with _catalog_lock:
-                if gen == _ROUTER_GEN[0] and _router_status_note[0] == ROUTER_NOTE_LISTING_FAILED:
-                    _router_status_note[0] = None
+            _router_swap_note(gen, ROUTER_NOTE_LISTING_FAILED, None)
             _models_changed()
             return stamp
         live = _router_live_on(set(gone)) if gone else 0

@@ -176,18 +176,19 @@ class ModelsRouteRouterSection(unittest.TestCase):
 
 # --- the structural vendor-key check ------------------------------------------------------------------------------
 
-# The allowlist: whole-value constants the honest router code compares against, none a vendor. Every entry is
-# load-bearing (dropping one flags honest code; a test below pins it):
-#   "claude-", "claude"   the first-party marker in both its shapes (pretty_model, the served-turn guard)
-#   "anthropic.com"       Anthropic's own host, the gateway probe's boundary match; the token rule DOES read it as a token
-#                         (a dot join), so it passes only through this list (".anthropic.com", the suffix match's
-#                         constant, starts with a dot and is never a token: no entry)
-#   "default", "off"      the CLI's default-model alias (model_label / _alias_label) and the ROMP_MODEL_CATALOG knob's value
+# The allowlist: whole-value constants the honest router code compares against in a position the checker visits,
+# none a vendor. Every entry is load-bearing, and test_the_real_functions_do_exercise_the_allowlist pins each one:
+# dropping it flags honest code. (Constants that are tokens under the rule but reach the checked functions only as
+# call arguments — "utf-8" to .decode, "router-models" to _setting_stale and the thread's name, "claude" in the served-
+# turn guard, which sits outside ROUTER_FUNCTIONS — are never visited and need no entry; review round five.)
+#   "claude-"          the first-party marker (pretty_model's startswith, model_label's, _alias_label's)
+#   "anthropic.com"    Anthropic's own host, the gateway probe's boundary match; the token rule DOES read it as a token
+#                      (a dot join), so it passes only through this list (".anthropic.com", the suffix match's constant,
+#                      starts with a dot and is never a token: no entry)
+#   "default", "off"   the CLI's default-model alias (model_label / _alias_label) and the ROMP_MODEL_CATALOG knob's value
 #   "triage", "session"   the judge tier stores' sentinels (_router_tiers_on reads them whole)
-#   "utf-8", "router-models"   a codec name and the setting's own store name (both tokens under the rule)
-#   "comment"             the tier _set_router_models words apart from the judge tiers
-VENDOR_ALLOW = frozenset({"claude-", "claude", "anthropic.com", "default", "off",
-                          "triage", "session", "utf-8", "router-models", "comment"})
+#   "comment"          the tier _set_router_models words apart from the judge tiers
+VENDOR_ALLOW = frozenset({"claude-", "anthropic.com", "default", "off", "triage", "session", "comment"})
 
 # A model-vendor-looking token: lowercase words and digits joined by "-" or ".", optionally ONE trailing separator — the
 # shape a vendor prefix or a family word takes ("gemini-", "gpt-", "gpt", "grok", "o3", "gpt5-", "gemini-2", "gpt-5",
@@ -287,10 +288,19 @@ class NothingKeysOnAVendor(unittest.TestCase):
         # token, and only the list passes it)
         with mock.patch.object(sys.modules[__name__], "VENDOR_ALLOW", frozenset()):
             hits = [h[0] for fn in ROUTER_FUNCTIONS for h in vendor_keys(inspect.getsource(fn))]
+        # every entry of the list, in the position the honest code uses it (an entry none of these reach is inert)
         self.assertIn("startswith('claude-')", hits)
+        self.assertIn("Eq 'anthropic.com'", hits)             # the host's boundary match: on the list, not passed by the rule
         self.assertIn("Eq 'default'", hits)
         self.assertIn("NotEq 'off'", hits)      # _router_fetch_allowed: the catalog knob's whole-value compare
-        self.assertIn("Eq 'anthropic.com'", hits)             # the host's boundary match: on the list, not passed by the rule
+        self.assertIn("Eq 'triage'", hits)      # _router_tiers_on's sentinels
+        self.assertIn("In 'session'", hits)
+        self.assertIn("NotEq 'comment'", hits)  # _set_router_models words the comment default apart
+        for entry in VENDOR_ALLOW:
+            self.assertTrue(any(("'%s'" % entry) in h for h in hits), "an inert allowlist entry: %r" % entry)
+        # and the constants the checker never visits (call arguments) need no entry: never a hit, allowlist or not
+        for never in ("utf-8", "router-models", "claude"):
+            self.assertFalse(any(("'%s'" % never) in h for h in hits), never)
         self.assertNotIn("endswith('.anthropic.com')", hits, "a dotted suffix is no vendor token; it needs no entry")
         self.assertTrue(any(h.startswith("re.match('claude-") for h in hits), hits)
 
@@ -325,22 +335,38 @@ class NothingKeysOnAVendor(unittest.TestCase):
         def honest(mid, host, chosen, raw, d, knob):
             if mid.startswith("claude-") or host.endswith("anthropic.com") or host.endswith(".anthropic.com"):
                 return 1
-            if "claude" in mid.lower() or chosen == "default" or knob.lower() == "off":
+            if chosen == "default" or knob.lower() == "off" or knob == "triage" or knob in ("session", "default"):
                 return 2
             if re.match(r"claude-([a-z]+)-(\d+)", raw) or re.match(r"^([a-z]+)-([0-9][0-9.]*)-([a-z]+)$", raw):
                 return 3
-            if mid in d or mid not in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES"):
+            if mid in d or mid not in ("_MODEL_VALUES", "_JUDGE_MODEL_VALUES") or knob != "comment":
                 return 4
             return (d.get("data"), raw.split(","), raw.decode("utf-8", "replace"), "%s-%s" % (mid, host),
-                    "utf-8" == raw, "router-models" in raw, "" == raw, "<synthetic>" != raw)
+                    threading_name("router-models"), "" == raw, "<synthetic>" != raw)
+
+        def threading_name(x):
+            return x
         self.assertEqual(vendor_keys(inspect.getsource(honest)), [])
 
+        # the constants the list dropped in round five ARE tokens: a compare against one is flagged, which is why the
+        # checked code may only pass them as call arguments (the served-turn guard's `"claude" in m.lower()` sits
+        # outside ROUTER_FUNCTIONS and is pinned behaviourally in tests/test_router_models_backend.py)
+        def unlisted(mid, raw):
+            return "claude" in mid.lower() or "utf-8" == raw or "router-models" in raw
+        self.assertEqual([h[0] for h in vendor_keys(inspect.getsource(unlisted))],
+                         ["In 'claude'", "Eq 'utf-8'", "In 'router-models'"])
+
     def test_the_token_rule_is_narrow(self):
-        for s in ("gemini-", "gpt-", "gpt", "grok", "o3", "gpt5-", "llama.", "qwen3"):
-            self.assertTrue(_vendor_token(s), s)
-        for s in ("", "utf-8", "router-models", "anthropic.com", "_MODEL_VALUES", "<synthetic>", "Gemini-", "gpt 5",
-                  " (%s)", "romp_sdk_backend", "gemini--", "5-astra", "claude-", "claude", "default", "off"):
+        for s in ("gemini-", "gpt-", "gpt", "grok", "o3", "gpt5-", "llama.", "qwen3",
+                  "utf-8", "router-models", "claude"):   # tokens under the rule; unlisted, because the checked code never
+            self.assertTrue(_vendor_token(s), s)          # compares against them (they are call arguments there)
+        for s in ("", "_MODEL_VALUES", "<synthetic>", "Gemini-", "gpt 5", " (%s)", "romp_sdk_backend", "gemini--",
+                  "5-astra", ".anthropic.com"):
             self.assertFalse(_vendor_token(s), s)
+        for s in ("anthropic.com", "claude-", "default", "off"):   # tokens under the rule, passed by the list alone
+            self.assertFalse(_vendor_token(s), s)
+            with mock.patch.object(sys.modules[__name__], "VENDOR_ALLOW", frozenset()):
+                self.assertTrue(_vendor_token(s), s)
 
 
 if __name__ == "__main__":

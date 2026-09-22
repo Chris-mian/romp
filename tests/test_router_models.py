@@ -553,6 +553,7 @@ class Switch(_Catalog):
         self.assertEqual(km._set_router_models(False, gt=12), 12, "the store takes the newer stamp")
         self.assertEqual(km._router_status_note[0], note, "nothing removed: the advisory stands")
         self.assertEqual(len(self.frames), n + 1, "and the frame goes out as on every applied flip (the gear reads it alone)")
+        self.assertIs(self.frames[-1], False, "sent outside the catalog lock")
 
     def test_an_off_after_an_empty_on_clears_the_listing_note_and_sends_the_frame(self):
         # review round four: the no-op off skipped the note clear and the frame, so a URL-only configuration whose
@@ -567,13 +568,14 @@ class Switch(_Catalog):
             self._wait(lambda: len(self.frames) >= 2, "its frame")
         km._set_router_models(False, gt=11)
         self.assertIsNone(km._router_status()["error"], "the on generation's note is cleared by the off")
-        self.assertEqual(len(self.frames), 3, "on, the listing's failure, off: a frame each")
+        self.assertEqual(self.frames, [False, False, False], "on, the listing's failure, off: a frame each, outside the lock")
 
     def test_an_off_with_nothing_declared_still_sends_the_frame(self):
         km._set_router_models(True, gt=10)
         n = len(self.frames)
         km._set_router_models(False, gt=11)
         self.assertEqual(len(self.frames), n + 1)
+        self.assertIs(self.frames[-1], False, "sent outside the catalog lock")
         self.assertIsNone(km._router_status()["error"])
 
     def test_a_gateway_id_that_cleans_to_a_first_party_alias_is_first_party(self):

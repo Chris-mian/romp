@@ -340,7 +340,7 @@ class NewThreadRoad(_OnThenOff):
             err, tid = km._comment_create(SID, "", "a passage", "a comment", name="t1", model="")
         self.assertIsNone(err, "the create went through the fork")
         self.assertEqual(len(forks), 1)
-        self.assertEqual(prefs.call_count, 1, "the launch prefs are resolved once (twice on the previous head)")
+        self.assertEqual(prefs.call_count, 1, "the launch prefs are resolved once (twice before the round-three fold)")
         self.assertEqual(self.err.getvalue().count("comment-model %r is not a model" % REMOVED), 1)
 
     def test_a_stored_comment_default_the_kernel_cannot_vouch_for_falls_to_the_parent(self):
