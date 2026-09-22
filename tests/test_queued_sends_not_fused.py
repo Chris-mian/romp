@@ -1143,8 +1143,7 @@ class OneFedTextAtATime(unittest.TestCase):
         self._result_frame(c)
         self._wait(lambda: s.inflight == 0, "idle")
         s.loop.call_soon_threadsafe(setattr, s, "_move_settle_expected", True)
-        self._settle()
-        self.assertTrue(s._move_settle_expected)
+        self._wait(lambda: s._move_settle_expected, "the move arm set on the loop thread")   # wait on the loop's OWN event (the arm landed), not a wall-clock settle: the assertTrue after a fixed 0.15s _settle raced the scheduled setattr and flaked under load (the manager, 2026-09-22)
         s.request_reconnect()                            # idle: fires at once
         self._wait(lambda: len(self._Client.instances) == 2 and self._Client.instances[1] is s.client,
                    "the reconnect")
