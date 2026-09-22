@@ -46,15 +46,10 @@ test("the gear has an Extra models from your API gateway checkbox under General,
     "a stood-down gesture toasts under the row's own name");
   assert.match(GEAR, /STALE_TYPE = \{[\s\S]*?'router-models': 'setRouterModels'/,
     "the toast's Apply anyway may re-issue this one setting");
-  // the status line: written from the authed /models payload's `router` section, wherever the gear takes one
+  // the status line: written from the authed /models payload's `router` section, wherever the gear takes one; what
+  // it SAYS is executed below (the fillRouterLine tests), not pinned at the source
   const fnAt = GEAR.indexOf("function fillRouterLine(d) {");
   assert.ok(fnAt > 0, "the status line has one writer");
-  const fn = GEAR.slice(fnAt, GEAR.indexOf("\n  }\n", fnAt));
-  assert.ok(fn.includes("d.router") && fn.includes("r.error") && fn.includes("r.declared") && fn.includes("r.gateway"),
-    "…reading router.error, router.declared and router.gateway");
-  assert.ok(fn.includes("rtrLine.textContent = ''"), "…blank when the payload carries no router section (an older kernel)");
-  assert.ok(fn.includes("'Nothing declared yet'"), "…the empty declaration in plain words");
-  assert.ok(fn.includes("' declared'") && fn.includes("' · no gateway configured'"), "…the count, and the missing gateway named");
   // wired through the cache block's paint hook: the block is lifted and run alone by gear-models-frame.test.ts, so the
   // writer lives outside it and the block reaches it through a variable it leaves null
   const blockStart = GEAR.indexOf("  var choices = null");
@@ -68,9 +63,69 @@ test("the gear has an Extra models from your API gateway checkbox under General,
   assert.ok(!block.includes("fillRouterLine") && !block.includes("rtrLine"), "…and the block names neither the writer nor the element (the lifted harness has neither)");
   assert.ok(fnAt > blockStop, "the writer sits after the block");
   assert.ok(GEAR.includes("\n  onChoices = fillRouterLine;\n"), "…and is the hook's one assignee");
-  const frame = GEAR.slice(GEAR.indexOf("if (!m || m.type !== 'models') return;"), blockStop);
+  const frame = GEAR.slice(GEAR.indexOf("if (!m || (m.type !== 'models' && m.type !== 'wsup')) return;"), blockStop);
   assert.ok(frame.includes("if (d && Array.isArray(d.models) && adoptChoices(d)) paintChoices();"),
-    "the models frame (the kernel's only signal for an applied flip: no echo frame) repaints, which refreshes the line");
+    "the models frame (the kernel's only signal for an applied flip: no echo frame) and the shim's wsup frame (a kernel restart: the documented way to change the declared list) repaint, which refreshes the line");
+});
+
+// fillRouterLine, executed: the function is lifted out of gear.js (the way gear-models-frame.test.ts lifts the cache
+// block) and run against a stand-in element, so these pin what the line SAYS for each state of the payload's
+// `router` section — {enabled, declared: [ids], gateway: true|false|null, error: string|null}. The kernel probes the
+// gateway only while the switch is on (gateway null = not probed) and files an advisory only while on.
+function liftRouterLine(): { line: { textContent: string }; fill: (d: any) => void } {
+  const start = GEAR.indexOf("  function fillRouterLine(d) {");
+  const stop = GEAR.indexOf("\n  }\n", start) + "\n  }\n".length;
+  assert.ok(start > 0 && stop > start, "fillRouterLine located");
+  const line = { textContent: "unset" };
+  const fill = new Function("rtrLine", GEAR.slice(start, stop) + "\n  return fillRouterLine;")(line) as (d: any) => void;
+  return { line, fill };
+}
+const router = (over: any) => ({ router: { enabled: true, declared: ["gw-6-astra", "gw-7-nova"], gateway: true, error: null, ...over } });
+
+test("executed: the status line is blank for a payload with no router section (an older kernel), and for a missing element", () => {
+  const { line, fill } = liftRouterLine();
+  fill({ models: [], efforts: [] });
+  assert.equal(line.textContent, "");
+  line.textContent = "unset";
+  fill(null);
+  assert.equal(line.textContent, "");
+  line.textContent = "unset";
+  fill({ router: "yes" });
+  assert.equal(line.textContent, "", "a router field that is not an object counts as none");
+  const start = GEAR.indexOf("  function fillRouterLine(d) {");
+  const noEl = new Function("rtrLine", GEAR.slice(start, GEAR.indexOf("\n  }\n", start) + 4) + "\n  return fillRouterLine;")(null) as (d: any) => void;
+  assert.doesNotThrow(() => noEl(router({})), "no rs-router-line in the document: nothing to write, nothing thrown");
+});
+
+test("executed: an advisory wins over the count, verbatim (a swap of the two branches fails here)", () => {
+  const { line, fill } = liftRouterLine();
+  fill(router({ error: "the gateway address could not be read" }));
+  assert.equal(line.textContent, "the gateway address could not be read", "…with two declared and a gateway, the advisory still shows");
+  fill(router({ declared: [], error: "ROMP_ROUTER_MODELS named no model" }));
+  assert.equal(line.textContent, "ROMP_ROUTER_MODELS named no model", "…and over the empty-declaration wording");
+});
+
+test("executed: nothing declared says so while the switch is on, and shows nothing while it is off (a stock install)", () => {
+  const { line, fill } = liftRouterLine();
+  fill(router({ declared: [] }));
+  assert.equal(line.textContent, "Nothing declared yet");
+  fill(router({ enabled: false, declared: [], gateway: null }));
+  assert.equal(line.textContent, "", "off with nothing declared: a blank line under an off switch");
+  line.textContent = "unset";
+  fill(router({ enabled: false, gateway: null, declared: undefined }));
+  assert.equal(line.textContent, "", "…a declared field that is not a list reads as nothing declared");
+});
+
+test("executed: N declared, and the gateway named missing only when the probe RAN and said so", () => {
+  const { line, fill } = liftRouterLine();
+  fill(router({ gateway: true }));
+  assert.equal(line.textContent, "2 declared");
+  fill(router({ gateway: false }));
+  assert.equal(line.textContent, "2 declared · no gateway configured");
+  fill(router({ enabled: false, gateway: null }));
+  assert.equal(line.textContent, "2 declared", "off: the gateway is not probed (null), so nothing is said about it");
+  fill(router({ declared: ["gw-6-astra"], gateway: null }));
+  assert.equal(line.textContent, "1 declared", "null is not-probed whatever the switch says");
 });
 
 test("Extra models from your API gateway is per-install: not a KERNEL_SETTING, not mesh-adopted, not a converging row", () => {
@@ -98,4 +153,11 @@ test("the kernel keeps the switch: a reader, /version carries it, a WS arm, and 
   const gt = KERNEL.match(/_GT_STORES = \(([\s\S]*?)\)/);
   assert.ok(gt, "_GT_STORES located");
   assert.ok(gt![1].includes('"router-models"'), "the store is gt-ordered like every stamped setting");
+});
+
+test("a kernel restart re-reads the model list on both surfaces: the chat's picker and the gear's cache block take the shim's wsup frame", () => {
+  const RENDER = read("ui", "webview", "render.ts");
+  assert.match(RENDER, /\n  if \(m\.type === "wsup"\) loadModelChoices\(\);\n/, "the chat re-reads through the ONE reader the models frame uses (no second fetch path)");
+  assert.match(RENDER, /else if \(m\.type === "models"\) loadModelChoices\(\);/, "…which is still the models frame's");
+  assert.ok(GEAR.includes("if (!m || (m.type !== 'models' && m.type !== 'wsup')) return;"), "the gear's cache block re-reads on the same frame");
 });

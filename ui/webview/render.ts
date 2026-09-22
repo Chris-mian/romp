@@ -19122,6 +19122,12 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // ready (_client_reset_chat_base) drops every base and awaitingFull clears whole. A statement AHEAD of the chain, like
   // the tabOrder pre-step, so the chain's wsup arm stays the one line its pins read.
   if (m.type === "wsup") forgetHeldWm(sessions, null);
+  // the shim's socket-flip frame is also the kernel-restart signal this pane sees: re-read /models, because a restart is
+  // the documented way to change the extra models the API gateway declares (ROMP_ROUTER_MODELS is read when the service
+  // starts) and a restarted kernel sends no models frame for a list that changed while it was down. The same reader the
+  // models frame uses (loadModelChoices, rev-checked: a kernel seeds its rev from the clock at boot, so the restarted
+  // kernel's list reads newer than the one this page holds); the gear's cache block takes the frame the same way.
+  if (m.type === "wsup") loadModelChoices();
   if (m.type === "tabOrder") noteSkeletonTabOrder(m);   // BEFORE the chain's applyTabOrder below: one repaint, final skeleton set (2026-09-07)
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {

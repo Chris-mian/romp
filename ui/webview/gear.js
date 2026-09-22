@@ -1833,9 +1833,13 @@ function initGear(post, opts) {
   // (paintChoices keeps their values), so a frame that lands before the page-load fill has painted still
   // leaves populated pickers. The frame reaches this document because the kernel sends it to the FEED
   // app too (the gear lives in the feed bundle).
+  // The shim's wsup frame (the socket back up after a drop) re-reads too: a kernel restart is the documented way
+  // to change the declared extra models (ROMP_ROUTER_MODELS is read when the service starts), and a restarted
+  // kernel sends no models frame for a list that changed while it was down. Its rev is seeded from the clock at
+  // boot, so the restarted kernel's list is newer than the one this page holds and adoptChoices takes it.
   window.addEventListener('message', function (e) {
     var m = e.data;
-    if (!m || m.type !== 'models') return;
+    if (!m || (m.type !== 'models' && m.type !== 'wsup')) return;
     fetch(ku('/models'), { cache: 'no-store' }).then(function (r) { return r.json(); })
       .then(function (d) { if (d && Array.isArray(d.models) && adoptChoices(d)) paintChoices(); }).catch(function () {});
   });
@@ -1844,15 +1848,18 @@ function initGear(post, opts) {
   // through the onChoices hook above, from whichever /models payload WON (the `choices` adoptChoices kept): the open's
   // fill and every models frame's re-read, which is the kernel's one signal for an applied flip (setRouterModels has no
   // echo frame; the catalog moving IS the echo). So the line follows the kernel's catalog and never a page guess. An
-  // older kernel's payload has no `router`: blank.
+  // older kernel's payload has no `router`: blank. The section is {enabled, declared: [ids], gateway: true|false|null,
+  // error: string|null}: the kernel probes the gateway and files an advisory only while the switch is ON, so
+  // gateway null means not probed (nothing is said about it) and an off switch with nothing declared, a stock
+  // install, shows nothing at all under the box.
   function fillRouterLine(d) {
     if (!rtrLine) return;
     var r = d && d.router;
     if (!r || typeof r !== 'object') { rtrLine.textContent = ''; return; }
     if (r.error) { rtrLine.textContent = String(r.error); return; }
     var n = Array.isArray(r.declared) ? r.declared.length : 0;
-    if (!n) { rtrLine.textContent = 'Nothing declared yet'; return; }
-    rtrLine.textContent = n + ' declared' + (r.gateway ? '' : ' · no gateway configured');
+    if (!n) { rtrLine.textContent = r.enabled ? 'Nothing declared yet' : ''; return; }
+    rtrLine.textContent = n + ' declared' + (r.gateway === false ? ' · no gateway configured' : '');
   }
   onChoices = fillRouterLine;
   function lv() { var t = document.querySelector('script[src*="feed.js"]');
