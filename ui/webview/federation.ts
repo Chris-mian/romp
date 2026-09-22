@@ -198,7 +198,7 @@ export function prefixInbound(host: string, msg: any): any {
   if (out.type === "cardMoveAck" || out.type === "cardPredict") out.host = host;
   // a gesture account (err) carries its kernel's Undo stack, which is that kernel's alone: stamped with the host so the feed reconciles only
   // the local kernel's frames against its own entries and takes a remote one by its ids (the eighth executed review of PR 1967)
-  if (out.type === "err") out.host = host;
+  if (out.type === "err" || out.type === "undoAck") out.host = host;   // an undo's account (the ack too, round fifteen): its build floor lands on its own kernel's checks alone
   // a remote kernel's stand-down reply to a settings gesture (settingStale) cannot name its own host;
   // the gear folds one flush's N refusals into one toast and names the refusing machines. The local
   // host ("") took the identity exit above, so a local frame has no host key: the gear words it as
@@ -617,11 +617,13 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // gone and drop their seen marks by absence. The mesh converges the switch across hosts on the supervisor's
   // steady pass, so a mixed state is a short one; the pane keeps every card mark while any host is named here.
   const offHosts: string[] = [];
+  const ackHosts: string[] = [];   // the kernels whose frames say they account for every undo with a build floor (`undoAck`, round fifteen of PR 1967): the feed holds their restore checks until the account lands; an older kernel is judged by the build seen at the send
   for (const h of hostSeq) {
     const f = perHost[h];
     if (!f) continue;
     if (typeof f.buildId === "number") buildIds[h] = f.buildId;
     if (f.off === true) offHosts.push(h);
+    if (f.undoAck === true) ackHosts.push(h);
     if (Array.isArray(f.syncNotices)) {
       for (const r of f.syncNotices) {
         if (!r || !r.sig) continue;
@@ -670,6 +672,7 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   merged.buildIds = buildIds;
   merged.boards = boards;   // the hosts' data-defined boards, the local definition winning on an id (plans/card-boards.md)
   merged.offHosts = offHosts;
+  merged.ackHosts = ackHosts;
   // Hosts ATTACHED but yet to contribute a feed payload (the user 2026-08-25: after attaching, the
   // sessions land via the faster tabOrder/timeline channels while the cards trail with no cue) —
   // the sessions-shown/cards-pending window, named per host so the board can say cards are coming.

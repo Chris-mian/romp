@@ -1430,6 +1430,29 @@ class ActsUnderAFailedWrite(_World):
         sent = self._dispatch({"type": "undoClear"})
         self.assertIn("romp could not read its note of earlier owed cards", [m.get("title") for m in sent if m.get("type") == "err"], "an Undo over a corrupt note says so on its frame: %r" % sent)
 
+    def test_every_undo_account_carries_the_kernels_build_floor_and_a_landed_undo_sends_the_ack(self):
+        """Round fifteen (the round-thirteen verifier's ruling): the feed judges a restore by a payload built after the kernel PROCESSED the
+        undo, which every undo account names as a build floor: the counter as it stood then (claimed before a build's read, so a build past
+        it read the store after every earlier clear applied and the undo's batch restored). A landed undo, with nothing else to say, sends an
+        ack alone; the refusal and reorder frames carry the floor and no ack rides beside them; both payloads say this kernel accounts so."""
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        sent = self._dispatch({"type": "undoClear"})
+        acks = [m for m in sent if m.get("type") == "undoAck"]
+        self.assertEqual([(m["op"], m["buildId"]) for m in acks], [("undoClear", km._feed_build_id[0])], "one ack, the build counter as it stood when the undo was processed: %r" % sent)
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [], "and no account beside it")
+        self.assertGreater(km._next_feed_build_id(), acks[0]["buildId"], "a build claimed after the undo (the pusher claims the id before its read) is past the floor")
+        self.assertIs(km.build_feed(NOW, self.live)["undoAck"], True); self.assertIs(km._feed_off_frame(NOW, self.live)["undoAck"], True)
+        under_fault = self._two_fault_undo_leaves_b_owed()
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})
+        with mock.patch.object(km, "_mark_nodes_cleared", under_fault):
+            sent = self._dispatch({"type": "undoClear"})    # the owed store's refusal and the reorder: two accounts, one floor
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([m["title"] for m in errs], ["That undo did not land for api", "Undo went to earlier cards first"])
+        self.assertEqual([m.get("buildId") for m in errs], [km._feed_build_id[0]] * 2, "the refusal and the reorder frames carry the floor: %r" % errs)
+        self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no ack beside an account")
+        sent = self._dispatch({"type": "askClear", "itemId": A + ":g2"})
+        self.assertEqual([m for m in sent if m.get("type") in ("undoAck", "err")], [], "a clear that lands sends nothing: the floor is an undo's")
+
     def test_the_off_frame_over_an_undecodable_clears_log_ships_zero_counts(self):
         """The thirteenth executed review (2026-09-22): the off frame's guarded clears-log read was dead code once the stack helper replaced it,
         and _cleared_ids catches OSError alone, so with tracking off a clears log whose bytes are not text raised UnicodeDecodeError out of
@@ -1764,7 +1787,7 @@ class UndoStackSequences(_World):
             sent = self._dispatch(msg)
         frames = []
         for m in sent:
-            if m.get("type") != "err":
+            if m.get("type") not in ("err", "undoAck"):   # the accounts, the landed undo's ack among them (round fifteen); the build floor itself stays out of the table (the counter is process-global)
                 continue
             f = {k: m[k] for k in self.FRAME_KEYS if k in m}
             f["text"] = "(the account's words: not part of the table)"   # the feed's err road needs a text; the words carry a fault copy

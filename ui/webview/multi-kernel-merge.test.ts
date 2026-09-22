@@ -808,3 +808,10 @@ test("routeOutbound: redial ALWAYS stays local with its host field INTACT — it
   assert.deepEqual(routeOutbound({ type: "redial", host: "gpu1" }), [{ host: "", msg: { type: "redial", host: "gpu1" } }]);
   assert.deepEqual(routeOutbound({ type: "redial", host: "gpu1" }, new Set(["gpu1"])), [{ host: "", msg: { type: "redial", host: "gpu1" } }]);
 });
+
+test("the merge names the kernels whose frames say they account for every undo with a build floor (ackHosts, round fifteen of PR 1967); an older kernel's frame, without the flag, is left out, so the feed judges its checks by the build seen at the send", () => {
+  const frame = (extra: Record<string, unknown> = {}) => ({ type: "feed", items: [], asks: [], working: [], ...extra });
+  assert.deepEqual(mergeHostFeeds({ "": frame({ undoAck: true }), TESTHOST: frame() }, ["", "TESTHOST"]).ackHosts, [""], "the local kernel accounts, the remote one is older");
+  assert.deepEqual(mergeHostFeeds({ "": frame({ undoAck: true }), TESTHOST: frame({ undoAck: true }) }, ["", "TESTHOST"]).ackHosts, ["", "TESTHOST"]);
+  assert.deepEqual(mergeHostFeeds({ "": frame() }, [""]).ackHosts, [], "no flag, no host");
+});

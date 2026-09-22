@@ -41577,6 +41577,13 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
     dashboard's socket without a word)."""
     _batch = [str(i) for i in (ids or []) if i]         # the batch the gesture named: the LEDGER account's ids (nothing of it landed)
     _lb = [None]                                        # the kernel's stack after the gesture (_ledger_batches), read once, on every frame
+    # the undo's BUILD FLOOR (round fifteen of PR 1967, the round-thirteen verifier's ruling): the feed build counter as it stands now, the undo
+    # processed. Every build claimed after this point read the store after the undo applied, and after every clear this socket sent before it
+    # (the kernel applies them in order), so a payload with a greater build is exact evidence of what the undo restored; a build claimed before
+    # (in flight, its id at most this) may predate the clears and is none. Carried on every undo account: the refusal and reorder frames below,
+    # and an `undoAck` for an undo that landed with nothing to say
+    _floor = _feed_build_id[0] if gesture == "undo" else None
+    _said = [False]
     if skipped and gesture != "undo":
         _owed_ensure_loaded(gesture)                    # a clear's or a drop's account after a restart carries the owing too (the second contributor's review)
     for key, value in (skipped or {}).items():
@@ -41598,6 +41605,9 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
             if _lb[0] is None:
                 _lb[0] = _ledger_batches()
             frame["batches"], frame["owedBatch"], frame["batchesTotal"] = _lb[0]   # the kernel's stack, which the feed takes as its own (round eight), and the count before the bound (round ten)
+            if _floor is not None:
+                frame["buildId"] = _floor             # the undo's build floor (round fifteen): the feed judges a restore by a build past it
+            _said[0] = True
             try:
                 client["send"](json.dumps(frame))
             except Exception:
@@ -41712,6 +41722,13 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op=""):
                     "session's goals file, which romp could not read or write (%s); nothing else changed there, "
                     "and the other sessions were not affected." % fault)
         _send(title, text, sid, _ids)                  # the request and this session's own ids of the batch
+    if _floor is not None and not _said[0]:
+        # the undo landed with nothing to account for: the ack alone carries the floor (one frame per undo per kernel; an older kernel sends
+        # none, and the feed's payload flag `undoAck` tells it which kernels do)
+        try:
+            client["send"](json.dumps({"type": "undoAck", "op": op or "", "buildId": _floor}))
+        except Exception:
+            sys.stderr.write("undo ack: %s\n" % traceback.format_exc())
 
 
 def _clear_all(item_ids):
@@ -44913,6 +44930,7 @@ def build_feed(now, live_map=None):
             # the door, for the renderer to merge over its code constants; fixed across builds until a define or a remove
             "boards": _boards_data(),
             "dismissedCount": len(_undo_stack_ids()), "showDismissed": False,
+            "undoAck": True,                          # this kernel accounts for every undo with a build floor (round fifteen of PR 1967): the feed holds a restore check until the account lands
             # the ledger's ids that belong to no session of THIS kernel (review find, 2026-09-09): clears this
             # kernel took for cards another kernel owns; the merged board applies them over that host's rows
             # (federation.ts mergeHostFeeds), since a remote kernel's projection reads only its own ledger
@@ -57025,6 +57043,7 @@ def _feed_off_frame(now, live_map=None):
     except Exception:                                 # undecodable clears log raised UnicodeDecodeError out of the off frame, since _cleared_ids catches OSError alone)
         _ids = set()
     f["dismissedCount"] = len(_ids); f["showDismissed"] = False; f["canUndoClear"] = len(_ids) > 0
+    f["undoAck"] = True                               # as build_feed's frame: this kernel accounts for every undo with a build floor (round fifteen)
     f["clearNotices"] = _boundary_clear_notices(alive)
     f["sdkNotices"] = _sdk_problem_rows()
     f["syncNotices"] = _sync_notice_rows()

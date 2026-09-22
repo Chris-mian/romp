@@ -98,6 +98,8 @@ test("a remote notice card's item id is host-prefixed on the way in, in the rows
   assert.deepEqual([acct.batches, acct.owedBatch, acct.owedIds, acct.host], [[["TESTHOST:notice:notes:k:1", SID + ":g2"], [SID + ":g3"]], ["TESTHOST:notice:notes:k:1"], ["TESTHOST:notice:notes:k:1"], "TESTHOST"],
     "the kernel's stack on an account names notice ids the pane's way, the reorder's owed ids too, and the account wears its host (the eighth executed review of PR 1967; the second contributor's)");
   const bare = prefixInbound("TESTHOST", { type: "err", op: "undoClear", sid: "", title: "t", text: "x", itemIds: [] });
+  const ack = prefixInbound("TESTHOST", { type: "undoAck", op: "undoClear", buildId: 7 });
+  assert.deepEqual([ack.host, ack.buildId, ack.op], ["TESTHOST", 7, "undoClear"], "a landed undo's ack wears its kernel's host, its floor untouched (round fifteen of PR 1967): the floor lands on that kernel's checks alone");
   assert.ok(!("sid" in bare) || bare.sid === "", "an empty session id is not prefixed into the remote kernel's bare host (the second contributor's review): " + JSON.stringify(bare.sid));
   const r = routeOutbound({ type: "noticeAction", itemId: inb.asks[0].itemId, sid: inb.asks[0].sid, route: "/send", body: {} }, new Set(["TESTHOST"]));
   assert.deepEqual(r.map((x: any) => [x.host, x.msg.itemId, x.msg.sid]), [["TESTHOST", "notice:notes:k:1", "notes"]], "the action reaches the owning kernel with bare ids");
