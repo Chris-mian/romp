@@ -86,7 +86,7 @@ test("migrated families sit on the tokens (where main's T141/T151 rest didn't re
 
 test("destructive stays RED; a SELECTED .on keeps the reverse-highlight", () => {
   assert.match(FEED, /\.fdismiss\.fretry:hover:not\(:disabled\) \{ color: #fff; background: #e5484d; border-color: #e5484d; \}/);
-  assert.match(FEED, /\.fdismiss\.fq-no:hover:not\(:disabled\) \{ color: #fff; background: var\(--deny\); border-color: var\(--deny\); \}/, "the held-mail Deny fills with the per-theme deny token (the second contributor's post-merge note on PR 2014)"); assert.match(FEED, /\.fdismiss\.fq-no \{ color: var\(--deny\); border-color: color-mix\(in srgb, var\(--deny\) \d+%, transparent\); \}/);
+  assert.match(FEED, /\.fdismiss\.fq-no:hover:not\(:disabled\) \{ color: var\(--deny-fg\); background: var\(--deny\); border-color: var\(--deny\); \}/, "the held-mail Deny fills with the per-theme deny token and inks its text per theme (the second contributor's post-merge note on PR 2014; the manager's read of PR 2039)"); assert.match(FEED, /\.fdismiss\.fq-no \{ color: var\(--deny\); border-color: color-mix\(in srgb, var\(--deny\) \d+%, transparent\); \}/);
   assert.match(CHAT, /\.confirm-btn\.danger:hover \{ background: rgba\(244, 135, 113, 0\.15\); \}/);
   for (const css of [CHAT, FEED]) {
     assert.match(css, /\.fileview-btn\.on:hover \{ background: var\(--accent\); color: var\(--accent-fg\); border-color: var\(--accent\); \}/);

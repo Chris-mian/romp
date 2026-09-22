@@ -232,7 +232,7 @@ test("the bubble's inner-markdown overrides OUTRANK .md — the doubled-selector
   assert.match(CHAT, /\.user-bubble strong, \.user-bubble\.md strong \{ color: #fff; \}/);
 });
 
-test("the Needs you box's rules (.ntc-, #notices) draw their colours from the tokens: the accent and its color-mix, the box, state and deny tokens, transparent; no colour literal but the hover's white, the destructive red being a per-theme token since the second contributor's post-merge note on PR 2014 (the box review of PR 1967, the round-thirteen verifier's low)", () => {
+test("the Needs you box's rules (.ntc-, #notices) draw their colours from the tokens: the accent and its color-mix, the box, state and deny tokens, transparent; no colour literal, the destructive red and the filled deny's text being per-theme tokens since the second contributor's post-merge note on PR 2014 (the box review of PR 1967, the round-thirteen verifier's low)", () => {
   // whole rule blocks wherever they start (a line's start or the previous block's close: the first contributor's note on PR 2014), continuation
   // lines included (the round-fourteen verifier's low: a colour on a continuation line passed), comments stripped first
   const boxRules = (css: string) => Array.from(css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(?<=^|[{};,\n])\s*((?:\.ntc-|#notices|body\.dense-chrome \.ntc-|body\.dense-chrome #notices)[^{]*?)\{([^}]*)\}/g), (m) => m[1].trim() + " {" + m[2].replace(/\n/g, " ") + "}");   // a line start too: without the m flag ^ is the string's start (the post-merge note on PR 2018)
@@ -267,7 +267,7 @@ test("the Needs you box's rules (.ntc-, #notices) draw their colours from the to
   assert.ok(rules.some((r) => r.startsWith("#notices {") && r.includes("border-radius")), "the multi-line rules are read whole: " + rules.filter((r) => r.startsWith("#notices")).join(" | ").slice(0, 200));
   const vocab = (v: string) => /^var\(--[a-z-]+\)$/.test(v) || /^color-mix\(in srgb, var\(--[a-z-]+\) \d+%, transparent\)$/.test(v) || v === "transparent"
     || /^1px solid var\(--[a-z-]+\)$/.test(v) || /^linear-gradient\(var\(--[a-z-]+\), var\(--[a-z-]+\)\), var\(--[a-z-]+\)$/.test(v)   // the header's opaque ground, in tokens
-    || v === "#fff" || v === "none";   // the hover's white on the filled deny is the one literal; the destructive red is the per-theme --deny token
+    || v === "none";   // no colour literal: the destructive red is the per-theme --deny token and the filled deny's text its --deny-fg (the manager's read of PR 2039)
   for (const rule of rules) for (const [, v] of decls(rule)) assert.ok(vocab(v), "a box colour outside the vocabulary: " + rule.trim());
   assert.match(CHAT, /\.ntc-head \{[^}]*background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "the header's opaque ground is the box wash over the page, in tokens");
   for (const [name, css, sel] of [["styles.css", CHAT, ".ntc-btn.ntc-ok"]] as const) {   // the feed's fq-ok twin left with the rule no element wore (the second contributor's post-merge note on PR 2014)

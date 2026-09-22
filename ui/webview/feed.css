@@ -34,9 +34,12 @@
                        the await-paused outline rendered with NO border at all (the user 2026-07-02) */
   --accent: #9cd2ff;  /* the romp accent (CLAUDE.md Design) — feed.css has its OWN :root, so selected-state
                        chrome here needs it defined locally or var(--accent) silently falls back */
-  --accent-ink: #9cd2ff;   /* accent-coloured LABELS — mirrors styles.css (the light block inks its darker clay) */
-  --deny: #ee6266;   /* the destructive deny (the held-mail dialog's Deny buttons) — mirrors styles.css, per theme */
-  --box-bg: rgba(255, 255, 255, 0.03);   /* the box wash — mirrors styles.css (the light block had it, this block read the fileview rule's fallback) */
+  --accent-ink: #9cd2ff;   /* accent-coloured LABELS: mirrors styles.css (the light block inks its darker clay) */
+  --deny: #ee6266;   /* the destructive deny (the held-mail dialog's Deny buttons): mirrors styles.css, per theme */
+  --deny-fg: #000000;   /* the filled deny's text: mirrors styles.css */
+  --box-bg: rgba(255, 255, 255, 0.03);   /* the box wash: mirrors styles.css. The light block had it; this block did not, and the one rule reading it
+                                             (.fileview-md pre, below) fell back to this same value, so the dark rendering is byte-identical: the token
+                                             exists here so theme-parity can pair the ink and deny tokens with the wash in both themes of this sheet */
   --link: var(--vscode-textLink-foreground, #4daafc);  /* hyperlink ink — mirrors styles.css (one token
                        for every rendered link; the light block re-inks it) */
   /* the hljs syntax palette, as tokens — mirrors styles.css byte-for-byte (one treatment, two
@@ -165,8 +168,9 @@ body.theme-light {
   --box-border: rgba(0, 0, 0, 0.12);
   --err: #B02A1C;
   --accent: #C2410C; --accent-fg: #FFF8F2;
-  --accent-ink: #A83808;   /* accent-coloured labels on the cream — mirrors styles.css */
-  --deny: #B02A1C;   /* the deny label and border on the cream — mirrors styles.css */
+  --accent-ink: #A83808;   /* accent-coloured labels on the cream: mirrors styles.css */
+  --deny: #B02A1C;   /* the deny label and border on the cream: mirrors styles.css */
+  --deny-fg: #ffffff;   /* the filled deny's text on the cream theme's red: mirrors styles.css */
   --accent-wash: rgba(194, 65, 12, 0.10);
   --accent-tint: rgba(194, 65, 12, 0.04);
   --cmt-hl: #FFDF70;
@@ -1114,7 +1118,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    a re-inked rule no element wore); the live Approve is the notice card's `fnact` button, which rests in the card border by rule. */
 .fdismiss.fq:disabled { opacity: 0.55; cursor: default; }
 .fdismiss.fq-no { color: var(--deny); border-color: color-mix(in srgb, var(--deny) 90%, transparent); }   /* the twin of styles.css .ntc-btn.ntc-deny */
-.fdismiss.fq-no:hover:not(:disabled) { color: #fff; background: var(--deny); border-color: var(--deny); }
+.fdismiss.fq-no:hover:not(:disabled) { color: var(--deny-fg); background: var(--deny); border-color: var(--deny); }
 /* The held-mail Deny prompt (showDenyNoteDialog) rides the pickdlg overlay/box: a textarea for the optional note and two
    choices; the message text is the notice card's body, so the prompt has no read-only view (2026-09-19). */
 .qdlg-box { width: min(640px, 96%); }

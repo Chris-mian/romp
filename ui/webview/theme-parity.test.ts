@@ -72,6 +72,7 @@ const PAIRS: Array<[string, string, number]> = [
   ["--accent-fg", "--accent", 3],
   ["--accent-ink", "--box-bg", 4.5],   // accent-coloured LABELS on the Needs you box's wash (the second contributor's post-merge note on PR 2014: the accent read 4.07:1 there)
   ["--deny", "--box-bg", 4.5],         // the deny button's label on the wash (the same note: #e5484d read 3.08:1 on the light wash)
+  ["--deny-fg", "--deny", 4.5],        // the deny button's hover text on its own fill (the manager's read of PR 2039: white read 3.19:1 on the dark fill)
   ["--warn", "--bg", 3],
   ["--err", "--bg", 3],
   ["--green", "--bg", 3],
@@ -262,6 +263,15 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     const denyShare = Number(denyM![1]) / 100;
     const denyBorder = [0, 1, 2].map((i) => Math.round(deny[i] * denyShare + box[i] * (1 - denyShare))) as [number, number, number];
     assert.ok(contrast(denyBorder, box) >= 3, `${name}: the deny button's resting border (the deny token at ${denyM![1]}%) on the box wash = ${contrast(denyBorder, box).toFixed(2)} < 3`);
+    // the deny button's HOVER text on its own fill: text, so 4.5:1, read from the hover rule as the sheet inks it (a token or a literal; the manager's
+    // read of PR 2039: a white literal read 3.19:1 on the dark fill, a regression stated in the body and not to be shipped)
+    const hoverM = css.match(/\.ntc-btn\.ntc-deny:hover:not\(:disabled\) \{ color: ([^;]+); background: var\(--deny\);/);
+    assert.ok(hoverM, "the deny button's hover rule inks its text and fills with the deny token");
+    const inkV = hoverM![1].trim(); const inkTok = inkV.match(/^var\((--[a-z-]+)\)$/);
+    const expand = (v: string) => v.replace(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i, "#$1$1$2$2$3$3");   // a three-digit literal (the old #fff) measures too
+    const ink = inkTok ? rgbOf(expand(theme.get(inkTok[1]) || ""), deny) : rgbOf(expand(inkV), deny);
+    assert.ok(ink, `${name}: the deny hover ink resolves (${inkV})`);
+    assert.ok(contrast(ink!, deny) >= 4.5, `${name}: the deny button's hover text (${inkV}) on its fill = ${contrast(ink!, deny).toFixed(2)} < 4.5`);
     // the state badge's digit is 9px bold TEXT (plans/tab-state-badge.md), so the 4.5:1 text floor, NOT the 3:1 chrome
     // floor. Black on the dark magenta reads ~6.07:1 and clears; on the lighter light-theme magenta (#a21caf) black is
     // only 3.32:1, short of 4.5, so the light theme inks the digit in the state's own foreground token (--st-needs-fg,
