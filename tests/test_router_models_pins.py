@@ -178,10 +178,13 @@ class ModelsRouteRouterSection(unittest.TestCase):
 
 # The allowlist: whole-value constants the honest router code compares against in a position the checker visits,
 # none a vendor. Every entry is load-bearing, and test_the_real_functions_do_exercise_the_allowlist pins each one:
-# dropping it flags honest code. (Constants that are tokens under the rule but reach the checked functions only as
-# call arguments — "utf-8" to .decode, "router-models" to _setting_stale and the thread's name, "claude" in the served-
-# turn guard, which sits outside ROUTER_FUNCTIONS — are never visited and need no entry; review round five.)
-#   "claude-"          the first-party marker (pretty_model's startswith, model_label's, _alias_label's)
+# dropping it flags honest code. (Constants that are tokens under the rule but never reach a visited position need no
+# entry — "utf-8" and "router-models" are call arguments in the checked functions (.decode, _setting_stale, the
+# thread's name); a bare "claude" appears in NO checked function at all: its compares are the served-turn guard's in
+# kernel/sdk_backend.py, outside ROUTER_FUNCTIONS and pinned behaviourally in tests/test_router_models_backend.py;
+# review rounds five and six.)
+#   "claude-"          the first-party marker: model_label's and _alias_label's startswith (pretty_model's own compare
+#                      is its regex lead, which the checker reads too)
 #   "anthropic.com"    Anthropic's own host, the gateway probe's boundary match; the token rule DOES read it as a token
 #                      (a dot join), so it passes only through this list (".anthropic.com", the suffix match's constant,
 #                      starts with a dot and is never a token: no entry)
@@ -277,6 +280,33 @@ class GenerationBumpsUnderTheLock(unittest.TestCase):
                          "one bump per applied flip")
 
 
+class NoteWriters(unittest.TestCase):
+    """The standing advisory has exactly two writers, _router_set_note and _router_swap_note, each assigning inside a
+    `with _catalog_lock:` body (review round six: a guarded third in-line write that set the same value left every
+    behavioural test green, since they read the note's value, never its writer). Pinned on the kernel's AST."""
+
+    def test_every_assignment_to_the_note_sits_in_one_of_the_two_helpers_under_the_lock(self):
+        src = open(os.path.join(os.path.dirname(HERE), "kernel", "kernel.py"), encoding="utf-8").read()
+        tree = ast.parse(src)
+        writers = {}
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for t in targets:
+                        if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name) and t.value.id == "_router_status_note":
+                            writers.setdefault(fn.name, []).append(node)
+        self.assertEqual(sorted(writers), ["_router_set_note", "_router_swap_note"], writers)
+        for name, nodes in writers.items():
+            fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+            locked = [w for w in ast.walk(fn) if isinstance(w, ast.With)
+                      and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_catalog_lock" for i in w.items)]
+            for node in nodes:
+                self.assertTrue(any(node in ast.walk(w) for w in locked), "%s writes the note outside _catalog_lock" % name)
+
+
 class NothingKeysOnAVendor(unittest.TestCase):
     def test_no_router_function_keys_on_a_vendor_looking_constant(self):
         for fn in ROUTER_FUNCTIONS:
@@ -298,8 +328,9 @@ class NothingKeysOnAVendor(unittest.TestCase):
         self.assertIn("NotEq 'comment'", hits)  # _set_router_models words the comment default apart
         for entry in VENDOR_ALLOW:
             self.assertTrue(any(("'%s'" % entry) in h for h in hits), "an inert allowlist entry: %r" % entry)
-        # and the constants the checker never visits (call arguments) need no entry: never a hit, allowlist or not
-        for never in ("utf-8", "router-models", "claude"):
+        # and the two constants that are call arguments alone in the checked functions need no entry: never a hit,
+        # allowlist or not (a bare "claude" is absent from every checked function; no pin here would be about it)
+        for never in ("utf-8", "router-models"):
             self.assertFalse(any(("'%s'" % never) in h for h in hits), never)
         self.assertNotIn("endswith('.anthropic.com')", hits, "a dotted suffix is no vendor token; it needs no entry")
         self.assertTrue(any(h.startswith("re.match('claude-") for h in hits), hits)

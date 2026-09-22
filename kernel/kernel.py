@@ -3350,8 +3350,9 @@ def _router_models_gt():
 
 
 def _router_set_note(gen, text):
-    """The one writer of the standing advisory: under _catalog_lock, and only when `gen` is still the current switch
-    generation. A slower earlier flip's bookkeeping (its note write, its stderr summary, its models frame) must not land
+    """One of the standing advisory's two writers (the other, _router_swap_note, is the compare-and-swap the fetch
+    thread and the no-op off arm use): a flip's plain write, under _catalog_lock, and only when `gen` is still the
+    current switch generation. A slower earlier flip's bookkeeping (its note write, its stderr summary, its models frame) must not land
     over a later flip's: before this, the note was written after the apply or remove with no check, so two overlapping
     flips could leave an on switch showing the off flip's advisory, or an off switch showing none (verify find,
     2026-09-22). Returns whether the write landed; a caller that reads False says nothing and sends nothing."""

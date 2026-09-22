@@ -559,13 +559,19 @@ class Switch(_Catalog):
         # review round four: the no-op off skipped the note clear and the frame, so a URL-only configuration whose
         # listing failed kept the failed-listing advisory under the off switch, and nothing repainted
         _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        gate = threading.Event()
 
         def boom(url, timeout=4):
+            gate.wait(5)              # gated: the on flip's frame is recorded before the thread can hold the lock
             raise OSError("connection refused")
         with mock.patch.object(km, "_fetch_router_models", boom):
             km._set_router_models(True, gt=10)
+            self.assertEqual(self.frames, [False], "the on flip's frame, outside the lock")
+            gate.set()
             self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the failed-listing note")
             self._wait(lambda: len(self.frames) >= 2, "its frame")
+            self._wait(lambda: not km._router_listing_inflight(), "the fetch thread to end")   # before the off, so the
+            #                                                                                   recorder sees no other holder
         km._set_router_models(False, gt=11)
         self.assertIsNone(km._router_status()["error"], "the on generation's note is cleared by the off")
         self.assertEqual(self.frames, [False, False, False], "on, the listing's failure, off: a frame each, outside the lock")
