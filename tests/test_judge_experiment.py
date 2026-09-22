@@ -788,6 +788,34 @@ class Harness(unittest.TestCase):
         self.assertEqual(probe[0]["cwd"], str(jd._ensure_judge_scratch()),
                          "the probe runs in the romp judge scratch, not the checkout: %r" % probe[0]["cwd"])
 
+    def test_the_preflight_probe_timeout_tracks_the_alarm(self):
+        """Review round two low 3: the probe's timeout tracks the judge module's own alarm (CALL_ALARM_S + 5), not a
+        hardcoded 130, so raising the alarm does not kill a slow healthy probe. Pinned by the timeout the probe passes to
+        subprocess.run; a regression to 130 reddens it."""
+        dest, m = self._corpus(name="pf-timeout")
+        jd = self.je.load_judge(Path(self.td, "pf-timeout-state"), Path(dest, "claude"), self.fake)
+        seen = {}
+        real_run = self.je.subprocess.run
+        def spy(cmd, **kw):
+            seen["timeout"] = kw.get("timeout")
+            return real_run(cmd, **kw)
+        self.je.subprocess.run = spy
+        try:
+            self.je.preflight_auth(jd, jd.TRIAGE_MODEL)
+        finally:
+            self.je.subprocess.run = real_run
+        self.assertEqual(seen["timeout"], jd.CALL_ALARM_S + 5, "the probe timeout is CALL_ALARM_S + 5, not a hardcoded 130: %r" % seen["timeout"])
+
+    def test_the_report_note_names_the_non_arm_judges_from_the_constant(self):
+        """Review round two low 6: the report's scoring note renders the exclusion list from NON_ARM_JUDGES, so the table and
+        the constant stay one source (a hardcoded list would drift when the constant changes)."""
+        dest, m = self._corpus(name="notesrc")
+        run_root = os.path.join(self.td, "runs-notesrc")
+        self.je.run_arm(dest, "baseline", None, run_root, None, self.fake, now=T0 + 10**6)
+        self.je.report(dest, run_root, self.state, figure=None)
+        table = Path(run_root, "table.md").read_text()
+        self.assertIn(", ".join(self.je.NON_ARM_JUDGES), table, "the note lists the constant's judges verbatim: %r" % table[-300:])
+
     def test_the_preflight_passes_over_a_helper_less_corpus_on_a_login_token(self):
         """Review MED 2: the pre-flight is the SOLE gate, so a corpus with NO apiKeyHelper (the operator on the login road)
         passes on a synthetic login token, never a hard helper-file refusal. A helper-refusal-re-added mutant turns this
@@ -1429,6 +1457,27 @@ class Harness(unittest.TestCase):
                       "the ending turn's own ask is appended: %r" % storage[0][-200:])
         self.assertNotIn("flicker", storage[0], "not the session's first ask (the base appended turn zero's): %r" % storage[0])
 
+    def test_a_failed_ask_parse_is_recorded_not_swallowed(self):
+        """Review round two low 2: _ending_ask fails LOUD on a parse exception, like the corpus builder, recording the
+        exception per ending (labels.json askError) and a total (labels-summary.json askParseErrors); the labeller still runs
+        on the final text. The head swallowed every parse exception and returned '' like a legitimate opener-less ending."""
+        dest, m = self._corpus(name="askfault")
+        class _Boom:
+            def parse_session(self, *a, **k):
+                raise ValueError("synthetic parse boom")
+        saved = self.je._EM[0]
+        self.je._EM[0] = _Boom()
+        try:
+            summary = self.je.label(dest, os.path.join(self.td, "runs-askfault"), self.state, claude_bin=self.fake, model="fake")
+        finally:
+            self.je._EM[0] = saved
+        rows = json.loads(Path(self.td, "runs-askfault", "labels.json").read_text())
+        faulted = [r for r in rows if r.get("askError")]
+        self.assertTrue(faulted, "an ask parse fault is recorded on the row (the head swallowed it): %r" % rows[:1])
+        self.assertEqual(faulted[0]["askError"], "ValueError", "the fault names the exception type: %r" % faulted[0])
+        self.assertTrue(all(r.get("labelA") is not None for r in faulted), "the labeller still ran on the final text")
+        self.assertGreaterEqual(summary.get("askParseErrors", 0), 1, "the summary totals the ask parse faults: %r" % summary.get("askParseErrors"))
+
     def test_a_faulted_store_is_recorded_not_swallowed(self):
         sid = SIDS[0]
         dest, m = self._corpus()                          # built clean (no store); the corruption comes after, so the endings are in the manifest
@@ -1910,6 +1959,30 @@ class Harness(unittest.TestCase):
         self.assertEqual((mm.get("falseInterruptsByClass") or {}).get("finished"), 1, "the false interrupt is in the finished stratum: %r" % mm.get("falseInterruptsByClass"))
         self.assertEqual((mm.get("falseInterruptsByClass") or {}).get("question"), 0, "no false interrupt in the question stratum")
 
+    def test_the_measure_emits_per_ending_attribution_and_labeller_keyed_buckets(self):
+        """Review round two low 4: the landing bar reads strata from the labeller's class, so the measure emits per-ending
+        attribution (id, arm, leak, false interrupt, heuristic class, labeller class) and labeller-keyed buckets beside the
+        heuristic ones, from labels passed in. The labeller class is set apart from the heuristic here to prove the keying is
+        distinct."""
+        m = self._corpus(name="attrib")[1]
+        e_q = self._ending(m, SIDS[0], 1); e_f = self._ending(m, SIDS[1], 1)   # heuristic: question, finished
+        sq, cq = float(e_q["startT"]), float(e_q["cutT"]); sf, cf = float(e_f["startT"]), float(e_f["cutT"])
+        self._live_store_with_done(SIDS[0], sq, cq, [{"node": SIDS[0] + ":g1", "op": "followup", "t": cq + 7200}])   # leak
+        self._live_store_with_done(SIDS[1], sf, cf, [{"node": SIDS[1] + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": cf + 600}])   # false interrupt
+        manifest = {"endings": [e_q, e_f]}
+        results = {"arm": "x", "failures": 0, "endings": {
+            e_q["id"]: {"builds": [{e_q["id"] + ":g1": {"column": "completed", "scored": True}}] * 3},
+            e_f["id"]: {"builds": [{e_f["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 3}}}
+        labels = {e_q["id"]: "finished", e_f["id"]: "question"}   # labeller classes, deliberately swapped from the heuristic
+        mm = self.je.measure(manifest, results, self.state, labels=labels)
+        attr = {a["id"]: a for a in mm["attribution"]}
+        self.assertEqual((attr[e_q["id"]]["leak"], attr[e_q["id"]]["heuristicClass"], attr[e_q["id"]]["labellerClass"]),
+                         (True, "question", "finished"), "the leak ending carries both class keyings: %r" % attr[e_q["id"]])
+        self.assertEqual((attr[e_f["id"]]["falseInterrupt"], attr[e_f["id"]]["heuristicClass"], attr[e_f["id"]]["labellerClass"]),
+                         (True, "finished", "question"), "the false-interrupt ending carries both class keyings: %r" % attr[e_f["id"]])
+        self.assertEqual(mm["leaksByLabellerClass"].get("finished"), 1, "the leak is bucketed by the labeller class: %r" % mm["leaksByLabellerClass"])
+        self.assertEqual(mm["falseInterruptsByLabellerClass"].get("question"), 1, "the false interrupt is bucketed by the labeller class: %r" % mm["falseInterruptsByLabellerClass"])
+
     def test_a_card_scored_in_one_build_of_three_flaps_and_does_not_leak(self):
         """Review MED 1: the majority is over ALL builds with a value per build, an UNSCORED build taking a sentinel, not a
         skipped slot. A completed re-opened card scored in ONE build of three (unscored in the other two) is a FLAP (the
@@ -1926,6 +1999,28 @@ class Harness(unittest.TestCase):
         mm = self.je.measure(manifest, results, self.state)
         self.assertEqual((mm["leaks"], mm["flaps"]), (0, 1),
                          "one scored completed against two unscored: a flap, and no leak (the majority is the unscored sentinel): %r" % mm)
+
+    def test_a_tie_including_the_unscored_sentinel_scores_no_column_either_order(self):
+        """Review round two MEDIUM: a 1-1-1 tie that includes the UNSCORED sentinel must not let one build decide the column.
+        The sentinel wins any tie it is part of (no column; the flap still counts), deterministically in either order. The
+        head scored `completed` and a leak for [completed, needs_input, unscored] and flipped on a reorder."""
+        U = self.je._UNSCORED
+        self.assertIs(self.je._majority(["completed", "needs_input", U]), U, "a 1-1-1 tie with the sentinel scores no column")
+        self.assertIs(self.je._majority([U, "needs_input", "completed"]), U, "same values reordered: deterministic")
+        self.assertIs(self.je._majority(["needs_input", U, "completed"]), U)
+        self.assertEqual(self.je._majority(["completed", "completed", U]), "completed", "a real majority still wins over the sentinel")
+        # through the measure: a re-opened card scored completed / needs_input / unscored is no leak either order, one flap
+        m = self._corpus(name="tie3")[1]
+        e = self._ending(m, SIDS[0], 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(SIDS[0], s, c, [{"node": SIDS[0] + ":g1", "op": "followup", "t": c + 7200}])   # re-opened g1
+        manifest = {"endings": [e]}
+        def res(cols):
+            builds = [({} if col is None else {e["id"] + ":g1": {"column": col, "scored": True}}) for col in cols]
+            return {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": builds}}}
+        for cols in (["completed", "needs_input", None], [None, "needs_input", "completed"]):
+            mm = self.je.measure(manifest, res(cols), self.state)
+            self.assertEqual((mm["leaks"], mm["flaps"]), (0, 1), "sentinel-tie card: no leak, one flap, order %r: %r" % (cols, mm))
 
     def test_the_build_count_and_the_majority_rule_are_stamped(self):
         """Review MED 1: the per-card build count and the majority/flap definition are stamped in results.json and the report

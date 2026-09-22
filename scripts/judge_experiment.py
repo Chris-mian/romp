@@ -920,18 +920,21 @@ _UNSCORED = object()   # a card's per-build value when THAT build did not score 
 
 
 def _majority(cols):
-    """The majority value across ALL builds: the most common, and on a tie or an all-different set the first-seen among the
-    modal values (a deterministic pick, so the same builds always score the same way). The caller passes a value per build,
-    an unscored build as the `_UNSCORED` sentinel; when the sentinel is the majority (a card scored in a minority of builds),
-    the caller reads no scored column. The scored column decides leaks / false interrupts / answered-then-cleared; a build
-    disagreement (the sentinel included) is the flap figure."""
+    """The majority value across ALL builds: the most common, with a CONSERVATIVE tie rule (the `_UNSCORED` sentinel wins
+    any tie it is part of, so a card scored in a minority of builds gets no column even in a 1-1-1 tie; among real columns a
+    tie falls to the first-seen). The caller passes a value per build, an unscored build as the sentinel; when the sentinel
+    wins (a card scored in a minority of builds), the caller reads no scored column. A deterministic pick, so the same builds
+    always score the same way in any order. The scored column decides leaks / false interrupts / answered-then-cleared; a
+    build disagreement (the sentinel included) is the flap figure."""
     if not cols:
         return None                                             # a card scored in no build has no column
     counts = {}
     for c in cols:
         counts[c] = counts.get(c, 0) + 1
     best = max(counts.values())
-    return next(c for c in cols if counts[c] == best)
+    if counts.get(_UNSCORED, 0) == best:                        # the sentinel wins any tie it is part of: no column, no leak, the flap still counts (review round two MED)
+        return _UNSCORED
+    return next(c for c in cols if c is not _UNSCORED and counts[c] == best)
 
 
 PLACEMENT_KINDS = ("done", "block", "awaiting")   # a top-level verdict the live judges filed in the ending's turn: the placement
@@ -1057,7 +1060,7 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
     return out
 
 
-def measure(manifest, results, live_state):
+def measure(manifest, results, live_state, labels=None):
     """Per arm, scored against the user's OWN later actions on the live cards (road (b): NOT the labeller's class, which the
     pilot showed is not a truth about an ending's shape). Leaks into Completed: the arm placed a top completed that the user
     then re-opened. False interrupts: the arm left a top needs_input that the user plainly crossed off, with no re-open and
@@ -1074,6 +1077,10 @@ def measure(manifest, results, live_state):
     leaks = false_interrupts = answered_then_cleared = flaps = gestured = untouched = unresolved = unplaced = 0
     leaks_by_class = {c: 0 for c in CLASSES}                     # leaks and false interrupts split by the ending's heuristic
     fi_by_class = {c: 0 for c in CLASSES}                        # class: the loose-ended strata (offer/question/undone) vs finished
+    labels = labels or {}                                        # {ending id: labeller class} when labels.json exists (review round two low 4)
+    leaks_by_labeller = {}                                       # the same splits keyed on the LABELLER's class, so the landing bar's
+    fi_by_labeller = {}                                          # strata sentence (read from the labeller) is derivable from the outputs
+    attribution = []                                             # per-ending: id, arm, leak, false interrupt, both class keyings
     faults = []
     for eid, r in results["endings"].items():
         e = by_id.get(eid, {})
@@ -1101,16 +1108,27 @@ def measure(manifest, results, live_state):
                 # the join is by the node suffix (gN): the results carry the ending id prefix, the live store the store key,
                 # so the full keys never coincide by construction, and a store's top-level suffixes are distinct (safe)
                 cls = e.get("class")                            # the ending's heuristic class, for the by-class strata (review item 3, item 4)
-                if any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in majority.items()):
+                lbl = labels.get(eid)                           # the labeller's class for this ending, when labels.json exists (review round two low 4)
+                ending_leak = any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in majority.items())
+                ending_fi = any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in majority.items())
+                if ending_leak:
                     leaks += 1
                     if cls in leaks_by_class:
                         leaks_by_class[cls] += 1
-                if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in majority.items()):
+                    if lbl:
+                        leaks_by_labeller[lbl] = leaks_by_labeller.get(lbl, 0) + 1
+                if ending_fi:
                     false_interrupts += 1
                     if cls in fi_by_class:
                         fi_by_class[cls] += 1
+                    if lbl:
+                        fi_by_labeller[lbl] = fi_by_labeller.get(lbl, 0) + 1
                 if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("answeredThenCleared") for nid, col in majority.items()):
                     answered_then_cleared += 1
+                # per-ending attribution, so the landing bar's sentence (leaks per loose-ended stratum, false interrupts in
+                # the finished stratum) is derivable from the outputs under either keying
+                attribution.append({"id": eid, "arm": results["arm"], "leak": ending_leak, "falseInterrupt": ending_fi,
+                                    "heuristicClass": cls, "labellerClass": lbl})
         else:
             unresolved += 1                                     # the manifest carries no live identity (an old or synthetic manifest): unresolvable
     failures = int(results.get("failures") or 0)
@@ -1121,6 +1139,8 @@ def measure(manifest, results, live_state):
             "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
             "stopped": results.get("stopped"), "failures": failures, "comparable": failures == 0, "buildsPerCard": builds_n,
             "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
+            "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
+            "attribution": attribution,
             "liveReadErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
 
 
@@ -1130,9 +1150,16 @@ def report(corpus, run_root, live_state, figure=None):
     user's later gestures and the kernel's rulings per placed card; it exists only while the live root still lists the session."""
     corpus, run_root = Path(corpus), Path(run_root)
     manifest = json.loads((corpus / "manifest.json").read_text())
+    labels = {}                                                 # {ending id: labeller class} from labels.json when the labeller ran here (review round two low 4)
+    labels_f = run_root / "labels.json"
+    if labels_f.is_file():
+        try:
+            labels = {r["id"]: r.get("label") for r in json.loads(labels_f.read_text()) if r.get("id")}
+        except (OSError, ValueError):
+            labels = {}                                         # an unreadable labels.json leaves the labeller keying empty, never raises the report
     rows = []
     for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
-        rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state))
+        rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, labels=labels))
     lines = ["| arm | endings | gestured | untouched | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
@@ -1145,9 +1172,9 @@ def report(corpus, run_root, live_state, figure=None):
             ("builds per arm (" + ", ".join("%s %d" % (r["arm"], r.get("buildsPerCard") or 0) for r in rows) + ")" if rows else "the builds")
     note = ("Scoring: each card's column is the MAJORITY of %s per arm (a value per build, an unscored build as a sentinel); "
             "a flap is a card whose per-build columns disagree (review MED 1). Comparability EXCLUDES only the non-arm "
-            "reshaping and summarizing judges (grouper, consolidator, distiller, gister); every other failure row counts. Leaks and false interrupts "
+            "reshaping and summarizing judges (%s); every other failure row counts. Leaks and false interrupts "
             "by class are in measures.json (leaksByClass / falseInterruptsByClass): offer, question and undone are the "
-            "loose-ended strata, finished the tier-one stratum." % scope)
+            "loose-ended strata, finished the tier-one stratum." % (scope, ", ".join(NON_ARM_JUDGES)))
     (run_root / "table.md").write_text("\n".join(lines) + "\n\n" + note + "\n")
     (run_root / "measures.json").write_text(json.dumps(rows, indent=1))
     if figure:
@@ -1250,18 +1277,23 @@ def _last_assistant_text(path, cap=6000):
     return last[-cap:]
 
 
-def _ending_ask(path):
+def _ending_ask(path, faults=None):
     """The ending turn's OWN opening ask (the user's ask that opened the last turn), for the labeller. build_corpus writes
     the session truncated at the ending's last atom (records[:end+1] in build_corpus), so the LAST worked, ended turn of
     that transcript IS the ending; its opener is that turn's first non-command user atom. Read from the event model's own
     segmentation (never a copy of the opener rule, which drifted, review round three). Empty when the ending has no typed
     opener (a continuation), matching the manifest's None startT. The base scanned the whole transcript for its FIRST
-    non-meta user text, so every ending past a session's first turn got an earlier turn's ask (review 2026-09-22 item 1)."""
+    non-meta user text, so every ending past a session's first turn got an earlier turn's ask (review 2026-09-22 item 1). A
+    parse EXCEPTION fails LOUD like the corpus builder: it records the exception name in `faults` (the caller marks the row
+    and totals it in the summary) and returns "" so the labeller still runs on the final text, the degradation on the record
+    (review round two low 2)."""
     records = _records(path)
     fsid = next((r.get("sessionId") for r in records if r.get("sessionId")), "s")
     try:
         sess = _event_model().parse_session(str(path), rompuuid=fsid)
-    except Exception:
+    except Exception as e:
+        if faults is not None:
+            faults.append(type(e).__name__)
         return ""
     worked = [t for t in (sess.get("turns") or []) if t.get("ended") and _worked_assistant_atom(t)]
     if not worked or not worked[-1].get("trigger"):
@@ -1335,7 +1367,9 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         faults.extend(row_faults)
         path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % e["id"])), None)
         text = _last_assistant_text(path) if path else ""
-        ask = _ending_ask(path) if path else ""              # the ENDING turn's own opener, not the session's first (review item 1)
+        ask_faults = []
+        ask = _ending_ask(path, faults=ask_faults) if path else ""    # the ENDING turn's own opener, not the session's first (review item 1)
+        ask_err = ask_faults[0] if ask_faults else None               # a parse fault on the ask, recorded loud (review round two low 2)
         if ask:
             text = text + "\nThe user's ask that opened the last turn: %s" % ask[:1500]
         a, c1 = ask_class(claude_bin, model, text, list(CLASSES), ledger)
@@ -1346,7 +1380,8 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         spent += c1 + c2
         rows.append({"id": e["id"], "class": e["class"], "tierOne": t1, "labelA": a, "labelB": b, "label": a if a == b else None,
                      "spanS": int(time.time() - float(e["cutT"] or 0)),
-                     "tierOneError": row_err})   # a faulted read or an unresolved key, told apart from a genuine tierOne null
+                     "tierOneError": row_err,   # a faulted read or an unresolved key, told apart from a genuine tierOne null
+                     "askError": ask_err})      # the ending turn's ask could not be parsed; the labeller ran on the final text alone
     (run_root / "labels.json").write_text(json.dumps(rows, indent=1))
     stable = sum(1 for r in rows if r["label"])
     stable_pct = round(100.0 * stable / len(rows), 1) if rows else None
@@ -1358,7 +1393,8 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
                "gatePassed": stable_pct is not None and stable_pct >= STABILITY_GATE_PCT,
                "both": len(both), "agree": agree, "agreementPct": agree_pct,
                "heuristicMatchesLabel": sum(1 for r in rows if r["label"] and r["label"] == r["class"]), "spentUsd": round(spent, 4),
-               "tierOneErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
+               "tierOneErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))],
+               "askParseErrors": sum(1 for r in rows if r.get("askError"))}   # endings whose ask could not be parsed (review round two low 2)
     (run_root / "labels-summary.json").write_text(json.dumps(summary, indent=1))
     return summary
 
