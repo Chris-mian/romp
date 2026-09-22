@@ -177,6 +177,11 @@ await page.routeWebSocket((u) => /\/ws(\?|$)/.test(u.pathname + (u.search || "")
   server.onClose(() => ws.close()); ws.onClose(() => server.close());
 });
 const out = { focus: cfg.focus, died: null };
+const waitStrip = (fid, sid, ms) => page.waitForFunction(({ fid, sid }) => ((window.__labStrip || {})[fid] || []).includes(sid), { fid, sid }, { timeout: ms });   // the column page's own strip post listing the session
+const waitActive = (fr, sid, ms) => fr.waitForFunction((sid) => { const t = document.querySelector("#tabs .tab.active[data-id]"); return !!(t && t.getAttribute("data-id") === sid); }, sid, { timeout: ms });
+const frameState = (fr, sid) => fr.evaluate((sid) => ({ url: location.href, readyState: document.readyState, tabs: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id")),
+  active: (document.querySelector("#tabs .tab.active[data-id]") || { getAttribute: () => null }).getAttribute("data-id"), turns: document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length,
+  regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null })).catch((e2) => ({ readError: String(e2) }));
 const frameOf = async (fid) => { const h = await page.$("#" + fid); return h ? await h.contentFrame() : null; };
 const colState = async (fid, rid) => {
   const fr = await frameOf(fid);
@@ -203,37 +208,52 @@ const colState = async (fid, rid) => {
 };
 try {
   await page.addInitScript(() => { try { if (window === window.top && !sessionStorage.getItem("_labcleared")) { localStorage.removeItem("romp-chat-cols"); Object.keys(localStorage).filter((k) => k.indexOf("romp-vscode-state-chat") === 0).forEach((k) => localStorage.removeItem(k)); sessionStorage.setItem("_labcleared", "1"); } } catch (e) {} });   // first load only, so a reload preserves the split
+  await page.addInitScript(() => { if (window !== window.top) return; window.__labStrip = {}; window.addEventListener("message", (e) => { const m = e && e.data; if (!m || m.romp !== "chatTabs" || !Array.isArray(m.tabs)) return;
+    Array.prototype.forEach.call(document.querySelectorAll("iframe"), (f) => { if (f.contentWindow === e.source) window.__labStrip[f.id] = m.tabs.map((t) => t && t.id); }); }); });   // each chat frame's strip post, keyed by the posting frame's id (the down scenario's bottom pane is column 2's frame; a reloaded column re-posts under its id)
   await page.goto(cfg.url);
   await page.waitForFunction((ids) => { const f = document.getElementById("f-chat"); const d = f && f.contentDocument; return !!(d && d.querySelector('#tabs .tab[data-id="' + ids[0] + '"]') && d.querySelector('#tabs .tab[data-id="' + ids[1] + '"]')); }, [cfg.remote, cfg.remote2], { timeout: 40000 });
   // move SID_R2 to a NEW column (col 2), or DOWN into col 1's bottom pane (the vertical split); either focuses the new pane
   await page.evaluate((a) => window.__rompMoveTab(a.r2, a.to), { r2: cfg.remote2, to: cfg.focus === "down" ? "down" : "new" });
   await page.waitForFunction(() => !!document.getElementById("f-chat-2"), null, { timeout: 20000 });
-  await page.waitForTimeout(600);
+  await waitStrip("f-chat-2", cfg.remote2, 20000); await waitStrip("f-chat", cfg.remote, 20000);   // each column's page lists its session: its own post, not a sleep
   if (cfg.focus === "down") out.geom = await page.evaluate(() => { const top = document.getElementById("f-chat"), bot = document.getElementById("f-chat-2"); if (!top || !bot) return null; const tr = top.getBoundingClientRect(), br = bot.getBoundingClientRect(); const g = document.querySelector(".pane.split-v .gh-chat"); return { sameLeft: Math.abs(tr.left - br.left) <= 2, belowTop: br.top > tr.top + tr.height / 2, gutterCursor: g ? getComputedStyle(g).cursor : null, paneSplit: !!(top.closest(".pane") && top.closest(".pane").classList.contains("split-v")) }; });
   // focus col 1 (col1 / reload_empty leave col 2 as the NON-focused column), or col 2 for the mirror
   const focusCol1 = async () => { const f1 = await frameOf("f-chat"); await f1.locator('#tabs .tab[data-id="' + cfg.remote + '"]').first().click(); };
   if (cfg.focus === "col2") { const f2 = await frameOf("f-chat-2"); await f2.locator('#tabs .tab[data-id="' + cfg.remote2 + '"]').first().click(); }
   else { await focusCol1(); }
-  await page.waitForTimeout(500);
+  if (cfg.focus === "col2") await waitActive(await frameOf("f-chat-2"), cfg.remote2, 20000); else await waitActive(await frameOf("f-chat"), cfg.remote, 20000);   // the click took: the tab active in its frame
   if (cfg.focus === "host_offline") {
     // the user's exact road: col 2's remote host is OFFLINE at reload (no strip, !tabOrderSeen for that host), so the
     // one-shot fallback is blocked; then the host comes ONLINE (the relay reopens, the strip arrives) and the shown tab
     // must activate on that event. col 2 stays the NON-focused column and focus must not move off col 1.
     hostDown = true;   // the remote host goes offline
+    await page.evaluate(() => { if (window.__labStrip) delete window.__labStrip["f-chat-2"]; });   // the reloaded column's strip is a new post: the old listing must not satisfy the wait below
     const f2pre = await frameOf("f-chat-2");
     await f2pre.evaluate(() => { try { const k = "romp-vscode-state-chat:2"; const st = JSON.parse(localStorage.getItem(k) || "{}"); delete st.activeId; localStorage.setItem(k, JSON.stringify(st)); } catch (e) {} location.reload(); });
     await page.waitForTimeout(2600);   // col 2 reloads while the host is down: its relay dial is refused, no strip
     out.offlineFooter = await (async () => { const fr = await frameOf("f-chat-2"); try { return fr ? await fr.evaluate(() => document.querySelectorAll("#content .turn[data-uuid]").length) : null; } catch (e) { return "ERR"; } })();
     hostDown = false;   // the host comes back online: the relay reconnects (federation retry ~2s) and the strip arrives
     await page.waitForTimeout(5000);
+    await waitStrip("f-chat-2", cfg.remote2, 30000);   // the strip arrived over the reopened relay: column 2 lists its session again
     // low a: do NOT re-focus col 1 here. The common out.focusedFrame read below runs before any focusCol1 for this
     // scenario, so a focus hop from the activation is captured, not erased by a click.
   }
-  // both columns must have rendered a turn
+  // both columns must have rendered a turn of THEIR session: per column the frame's own load, the page's strip post listing the session,
+  // then a turn in that session's thread (#content holds one .thread per cached session, shown by display, so a count over every
+  // thread could be the other session's), at a wide bound (the relay's build of a long session); a timeout records both frames' state
   const f1 = await frameOf("f-chat"); const f2 = await frameOf("f-chat-2");
-  await f1.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 1, null, { timeout: 30000 });
-  await f2.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 1, null, { timeout: 30000 });
-  await page.waitForTimeout(800);
+  try {
+    for (const [fr, fid, sid] of [[f1, "f-chat", cfg.remote], [f2, "f-chat-2", cfg.remote2]]) {
+      await fr.waitForLoadState("load", { timeout: 30000 });
+      await waitStrip(fid, sid, 30000);
+      await fr.waitForFunction((sid) => document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length >= 1, sid, { timeout: 60000 });
+    }
+  } catch (e) {
+    out.atTimeout = { col1: await frameState(f1, cfg.remote), col2: await frameState(f2, cfg.remote2), strip: await page.evaluate(() => window.__labStrip || null).catch((e2) => ({ readError: String(e2) })) };
+    throw e;
+  }
+  // the first gap's rendered height in both frames, what colState's boot reads (bounded; the read reports the state either way)
+  for (const fr of [f1, f2]) await fr.waitForFunction(() => { const g = document.querySelector("#content .tx-gap"); return !!(g && g.offsetHeight > 4); }, null, { timeout: 10000 }).catch(() => {});
   out.focusedFrame = await page.evaluate(() => (document.activeElement && document.activeElement.id) || null);
   out.col1 = await colState("f-chat", cfg.remote);     // SID_R
   out.col2 = await colState("f-chat-2", cfg.remote2);  // SID_R2
