@@ -166,7 +166,7 @@ test("the Mail row is a glance: an accent check mark when mail is on, the bare w
   assert.equal(mailOf(thread).textContent, "off"); assert.equal(subOf(thread), null);
 });
 
-// The Needs-you row (PR 2017 / lcz's PR 2023 review, MEDIUM): showTabTip's only pointer route to the count phrase, the
+// The Needs-you row (PR 2017; the first contributor's post-merge review of PR 2023, 2026-09-22, MEDIUM): showTabTip's only pointer route to the count phrase, the
 // dot's own title being inert under pointer-events:none. Red-first: with the `if (s.status.needsYou)` block deleted from
 // showTabTip, rowFor returns null and every assertion below fails.
 test("the Needs-you row: showTabTip carries the count phrase and the Needs-you tone, and is absent when the session does not need you", () => {
