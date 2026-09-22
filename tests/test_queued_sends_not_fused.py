@@ -414,8 +414,8 @@ class OneFedTextAtATime(unittest.TestCase):
         self.assertEqual(len(c.writes), 2, "a frame of the running turn does not release the hold")
         c.phase = "after-result-1"
         self._result_frame(c)
-        self._wait(lambda: s.inflight == 0, "the turn's result settles it")
-        self._settle()
+        self._wait(lambda: s.inflight == 0 and s._untaken and s._untaken.get("settled"),
+                   "the turn's result settles it and marks the untaken hold settled")
         self.assertEqual(len(c.writes), 2, "the result alone does not release it: the CLI drains AFTER it")
         self.assertTrue(s._untaken and s._untaken.get("settled"), "the hold now waits for the next turn's frame")
         c.phase = "turn-2"
