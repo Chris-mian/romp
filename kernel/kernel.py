@@ -63869,7 +63869,7 @@ else if(m.type==="hover"&&panel.setHover)panel.setHover(m);
 // this inline copy serves the browser, that one the VS Code webview. net-popover-known.test.ts's sibling
 // timeline-boot.test.ts pins the pair.
 else if(m.type==="revealEvent"&&panel.revealEvent)panel.revealEvent(m.sid,m.t,m.id);
-else if(m.type==="models"&&panel.refreshModels)panel.refreshModels();
+else if((m.type==="models"||m.type==="wsup")&&panel.refreshModels)panel.refreshModels();   // wsup too: the shim's reconnect frame is the restart signal, and a restart is how ROMP_ROUTER_MODELS changes (timeline-boot.ts's dispatchFrame, the pinned pair)
 else if(m.type==="settingRefused"&&panel.settingRefused)panel.settingRefused(m);
 else if((m.type==="tagEditAck"||m.type==="viewsAck")&&panel.viewsAck)panel.viewsAck(m);
 else if(m.type==="caps"&&panel.setCaps)panel.setCaps(m);
