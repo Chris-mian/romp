@@ -16733,7 +16733,10 @@ def _session_has_history(sid):
 
 def _end_pending_sid(sid):
     """Tear down a session whose "Opening…" cue the webview cancelled — kill it on its owning backend,
-    hide the tab, and prune it from the live view. Best-effort: a kill failure is logged, not raised.
+    hide the tab, and prune it from the live view. Best-effort: a kill failure is logged, not raised. An End
+    door like the other three (the dashboard's End, the end route, the self-close sweep): the ending session's
+    parked queue is cancelled first and a message the user typed under the cue is handed back, not dropped
+    (_drop_parked_on_end, 2026-09-21).
 
     HISTORY GUARD (the user 2026-07-16, the staged-demo teardowns): the cancel names a SESSION NAME,
     and names are not identities — same-named generations coexist (api/tests/web reused across five
@@ -16745,10 +16748,16 @@ def _end_pending_sid(sid):
         sys.stderr.write("kill: REFUSED for %s — cancelCreate's name lookup resolved to a session "
                          "with conversation history, not a pending spawn\n" % sid)
         return
+    # the End doors' cancel of the parked queue, BEFORE the kill (2026-09-21, the post-merge review of the End
+    # hand-back): a message typed under the Opening cue and parked behind the account hold was dropped with the
+    # kill here, the drain popping it in this same wake and handing it to a row that by then read as unowned. No
+    # socket reaches this teardown (the cue names the session by name), so the words go to one pane that renders
+    # them (_send_to_one_chat: a chat pane first, the feed when no chat pane is connected), as the end route's do.
+    _drop_parked_on_end(sid)
     be = Sessions.backend_for(sid)
     if be:
         try:
-            be.kill(sid)
+            _kill_at_end_door(be, sid, "cancelCreate")   # a kill that raises lifts that latch (the session did not end), then raises on
             sys.stderr.write("kill: %s via cancelCreate (Opening-cue teardown)\n" % sid)
         except Exception:
             sys.stderr.write("cancelCreate kill '%s': %s\n" % (sid, traceback.format_exc()))
@@ -18318,6 +18327,7 @@ def _comment_reply(parent_sid, tid, text):
         # back for exactly this gesture, and a later relay sends only the new tail past relayedT
         reg = _thread_reg(tsid)
         be.resume(reg.get("name") or ("thread-" + tsid[:8]), tsid)   # alive again; names/ untouched
+        _lift_end_latch(tsid)                                        # ...and any End latch on its sid lifts with it (2026-09-21)
     if not _user_send(be, tsid, str(text)):
         return "couldn't reach this thread's session; it may have been removed."
     _push_soon()
@@ -18552,6 +18562,7 @@ def _comment_promote_inner(parent_sid, tid, new_name, now=None, client=None):
         return _revert("not promoted: sealing the thread's history failed: %s" % e)
     if prior == "resolved":
         be.resume(nm, tsid)                          # a resolved thread promotes straight to a live session
+        _lift_end_latch(tsid)                        # ...and any End latch on its sid lifts with it (2026-09-21)
     # the thread KEEPS its identity color (the user 2026-08-19: the color the dialog suggested must
     # persist to the session it becomes) — a fresh pick here handed the board session a different one
     col = str(th.get("color") or "")
@@ -19883,7 +19894,14 @@ def _drive(msg, client):
             _push_soon()
         else:
             if _send_or_park(be, sid, str(msg["text"]), echo="human", qid=_client_qid(msg, sid, be), user=True, paths=_wire_paths(msg)) is None:
-                client["send"](json.dumps({"type": "warn", "text": "the message was not delivered: no running backend owns this session"}))
+                if be is not _UNOWNED and sid in _ending_sids:
+                    # the session is ENDING (the End doors' cancel latched it, _drop_parked_on_end): its park was refused, or
+                    # its backend refused the handover, and the words come back to THIS pane the way End hands a parked
+                    # message back, through the not-delivered path with the text in the copy slot (2026-09-21). A session
+                    # no backend owns keeps the bare warn below.
+                    _refuse_drive(client, t, sid, msg, why="The session ended before romp could hand this over")
+                else:
+                    client["send"](json.dumps({"type": "warn", "text": "the message was not delivered: no running backend owns this session"}))
             _push_soon()  # idle → instant echo; SDK busy → queued bubble forwarded mid-turn + folded (but a SLASH COMMAND parks to fire alone at turn end — mid-turn it would land as text, not execute); a backend that cannot forward, busy → held + merged at turn end
     elif t == "rewindSend" and msg.get("uuid") and msg.get("text"):
         # Edit a past message (SDK sessions): rewind the conversation to just before it and send the
@@ -20113,7 +20131,12 @@ def _drive(msg, client):
     elif t == "setModel" and msg.get("value"):
         # mid-compaction → parked as a queued command; `floating` is the version submenu's Latest row —
         # forget the family's remembered pin and send the alias
-        _set_model_or_park(be, sid, str(msg["value"]), floating=bool(msg.get("floating"))); _push_soon()
+        if _set_model_or_park(be, sid, str(msg["value"]), floating=bool(msg.get("floating"))) is None:
+            # the park was refused: the session is ending (the third review, 2026-09-21); the same settingRefused frame
+            # the setEffort arm answers a refusal with, so the pick's dots end with the reason and nothing reads queued
+            client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "model",
+                                       "text": _ENDING_PARK_REFUSAL}))
+        _push_soon()
     elif t == "setEffort" and msg.get("value"):
         # SDK: reconnect with --effort; Codex: its engine's level at the next turn; mid-compaction → parked.
         # LOUD on refusal, as setFast below: a level the model's Codex catalog does not advertise (the menu
@@ -20320,7 +20343,8 @@ def _drive(msg, client):
     elif t == "endSession":
         sys.stderr.write("kill: %s via endSession WS op\n" % sid)   # kill attribution (the user 2026-07-16)
         _drop_parked_on_end(sid, client)   # a parked send is handed back to this pane, not dropped by the drain in this wake (2026-09-21)
-        be.kill(sid); _record_death(sid, int(time.time()), "kill")   # the one SDK event with no designed reviver
+        _kill_at_end_door(be, sid, "endSession WS op")   # a kill that raises lifts the latch that cancel set, then raises on (2026-09-21)
+        _record_death(sid, int(time.time()), "kill")   # the one SDK event with no designed reviver
         _comment_kill_all(sid, be)   # its comment threads must not outlive it as unreachable running CLIs
         _send_to_app("chat", {"type": "closed", "id": sid})
         _confirm_close_now(sid)      # the kill IS the event: the fresh tab set rides it, not the next pusher cycle
@@ -20610,6 +20634,7 @@ def _revive_session_inner(sid, client=None):
     be = _sdk()
     ok, detail = False, ""
     _commands_for_cwd(_cwd_of(sid))   # pre-warm the slash-command list — a revival predicts a composer (the user 2026-08-13)
+    since = _end_latch_now()          # the latch generation BEFORE the resume: an End that latches during it is newer (2026-09-21)
     try:
         cx = _codex()
         if be and be.owns(sid):
@@ -20633,6 +20658,11 @@ def _revive_session_inner(sid, client=None):
                       "is history; start a new session for the work)")
     except Exception as e:
         ok, detail = False, str(e)[:200]
+    # the door's EXIT, whatever its verdict (the third review, 2026-09-21): the SDK resume alone makes the row live and a
+    # connect may fail after it, so a lift on `ok` left a live row latched; the backends are asked now, and a listed
+    # sid's End latch lifts. Before the refusal branch, so the failed revive's row is not left refusing its parks. Only
+    # a latch that predates the resume lifts: an End that landed mid-revive has not killed its row yet (the fourth review)
+    _lift_end_latch_if_live(sid, since)
     if not ok:
         sys.stderr.write("revive '%s' (%s): %s\n" % (name, sid, detail))
         failed = {"type": "reviveFailed", "id": sid, "name": name, "text": detail or "unknown error"}
@@ -28896,7 +28926,7 @@ def _end_on_idle_sweep(now, live_map):
         sys.stderr.write("kill: %s via end-on-idle (self-close)\n" % sid)
         be = Sessions.backend_for(sid)
         _drop_parked_on_end(sid)                         # the End doors' cancel of the parked queue (2026-09-21)
-        be.kill(sid)
+        _kill_at_end_door(be, sid, "end-on-idle (self-close)")   # a kill that raises lifts that latch, then raises on (2026-09-21)
         _record_death(sid, int(now), "kill")
         _comment_kill_all(sid, be)
         _send_to_app("chat", {"type": "closed", "id": sid})
@@ -36172,8 +36202,8 @@ def _gate_or_park(sid, op):
     slips past a queue that another handler filled between the two reads."""
     sid = str(sid)
     if _ops_gate(sid):
-        _park_op(sid, op)
-        return True
+        return True if _park_op(sid, op) else None   # None: the park was refused, the session is ending (2026-09-21);
+        #                                              falsy, so the caller hands over and the backend's own refusal stands
     return _park_behind_queue(sid, op)
 
 
@@ -36192,7 +36222,9 @@ def _park_behind_queue(sid, op):
     with _pending_ops_lock:
         if not _pending_ops.get(sid):
             return False
-        _park_op_locked(sid, op)
+        if not _park_op_locked(sid, op):
+            return None               # refused: the session is ending (2026-09-21); falsy like "no queue", and distinct
+                                      # for the caller that must not hand over instead (_send_or_park)
     _mark_views_dirty()               # the wake AFTER the release, so the cycle it brings finds the lock free
     return True
 
@@ -36205,15 +36237,27 @@ def _park_op(sid, op):
     under the queue lock (_park_op_locked: the drain's pops, a ✕, the move thread's re-park all touch this
     list); the pusher wake comes AFTER the release, so the cycle it brings finds the lock free."""
     with _pending_ops_lock:
-        _park_op_locked(sid, op)
-    _mark_views_dirty()               # the chat signature's ops component carries the queue; the mark busts the feed
+        parked = _park_op_locked(sid, op)
+    if parked:
+        _mark_views_dirty()           # the chat signature's ops component carries the queue; the mark busts the feed
                                       # and timeline, and the wake renders the chip now
+    return parked                     # False: refused, the session is ending (2026-09-21); the caller says so
 
 
 def _park_op_locked(sid, op):
     """_park_op's mutation + mirror write, for a caller that already holds _pending_ops_lock and will wake
-    the pusher itself after releasing (_park_behind_queue)."""
-    q = _pending_ops.setdefault(str(sid), [])
+    the pusher itself after releasing (_park_behind_queue). True when parked; False when REFUSED because the
+    session is ending (2026-09-21, the post-merge review of the End hand-back): the End doors' cancel latched
+    the sid (_drop_parked_on_end writes _ending_sids under this lock), and a park landing after that cancel
+    would sit in a dead row's queue as a queued bubble until the drain handed it back, so it is refused here,
+    under the lock the latch is written under, and the caller says so (a send's road answers None, and the
+    sendMessage arm tells its pane through the not-delivered path). The latch lifts when the session comes
+    back under its sid (_lift_end_latch: End then Revive)."""
+    sid = str(sid)
+    if sid in _ending_sids:
+        sys.stderr.write("park refused: %s is ending (a %s op)\n" % (sid, op[0]))
+        return False
+    q = _pending_ops.setdefault(sid, [])
     if op[0] in ("model", "effort", "fast", "env", "cwd"):
         for i, o in enumerate(q):
             if o[0] == op[0]:
@@ -36224,6 +36268,7 @@ def _park_op_locked(sid, op):
     else:
         q.append(op)
     _save_pending_ops()               # mirror the park to disk (survives a kernel death)
+    return True
 
 
 def _parked_md(op):
@@ -36505,11 +36550,21 @@ def _move_now(be, sid, path, tries, wid):
     sid = str(sid)
     nm = _name_of(sid) or sid
     try:
+        returned = False
+        since = _end_latch_now()             # the latch generation BEFORE the call: an End that latches during it is newer (2026-09-21)
         try:
             res = be.move(sid, path) if hasattr(be, "move") else \
                 "this session's backend has no way to move a running session"
+            returned = hasattr(be, "move")
         except Exception as e:
             res = "%s: %s" % (type(e).__name__, str(e)[:200])
+        if returned:
+            # the backend's move RETURNED, whatever it answered (the third review, 2026-09-21): SdkBackend.move revives
+            # a dormant row in its old folder before it can refuse (the CLI not starting, the connect wait expiring, a
+            # claim refusal, busy, the CLI's rejection), so the row may be live behind any answer, and a latch left on it
+            # refused every later park as ending. The backends are asked now; the answer is not the event's proxy. Only
+            # a latch that predates the call lifts: an End that landed mid-move has not killed its row yet (the fourth review)
+            _lift_end_latch_if_live(sid, since)
         if res == "busy":
             # re-park and hold BEFORE `_moving` releases the queue (review find, #904): a drain cycle landing
             # between the release and the re-park would fire the op behind the move, or burn a retry. The
@@ -36517,9 +36572,19 @@ def _move_now(be, sid, path, tries, wid):
             # and its hold are one locked step against a handler's park and the drain's pops (2026-09-05)
             seq = be.turn_seq(sid) if hasattr(be, "turn_seq") else None  # the turn end this retry waits on
             with _pending_ops_lock:
-                _pending_ops.setdefault(sid, []).insert(0, ("cwd", path, tries + 1, seq))   # head: it was already first
-                _move_askers[sid] = wid
-                _hold_drain(sid, _MOVE_BUSY_RETRY_S)   # the retry waits out the CLI's post-result window (_hold_drain)
+                if sid in _ending_sids:
+                    # the End latch, read under the same lock hold as the re-insert (the fifth review, 2026-09-21): this
+                    # arm writes the queue directly, the one writer outside _park_op_locked, so an End that latched while
+                    # the move was in flight (its latch stands: the generation guard above) was answered with a cwd chip
+                    # on the dying row, and at the cancelled cue's door, which records no death, the drain later fired
+                    # that move and the SDK's move revived the session the user had cancelled. Dropped by kind, as the
+                    # End doors drop a parked cwd op: nothing typed rides it, so no hand-back frame; "busy" is still
+                    # answered below, and the row's own kill follows
+                    sys.stderr.write("parked cwd op dropped with the ending session %s\n" % sid)
+                else:
+                    _pending_ops.setdefault(sid, []).insert(0, ("cwd", path, tries + 1, seq))   # head: it was already first
+                    _move_askers[sid] = wid
+                    _hold_drain(sid, _MOVE_BUSY_RETRY_S)   # the retry waits out the CLI's post-result window (_hold_drain)
     finally:
         _moving.discard(sid)
     if res == "busy":
@@ -36645,8 +36710,17 @@ def _drop_parked_on_end(sid, client=None):
     drain's own contract), and keeping it for a later Revive would strand queued bubbles on a session never
     revived. Runs BEFORE the kill: the live row's gates hold the drain
     off, so nothing pops the queue between this cancel and the kill. An op the drain is handing over right now
-    (_inflight_ops: still the head) is left to it, popped by identity there. Returns how many texts were handed
-    back.
+    (_inflight_ops: still the head) is left to it, popped by identity there. A SEND RUN is never in that slot: the
+    drain pops it whole before the handover, so a run popped just before the End is already gone from here, and the
+    drain hands it back itself when the backend refuses it (_deliver_send_batch, 2026-09-21). Returns how many texts
+    were handed back.
+
+    THE LATCH (2026-09-21): the sid is recorded in _ending_sids under the queue lock before the queue is read, so a
+    park that lands after this cancel is refused (_park_op_locked) instead of sitting in a dead row's queue, and the
+    drain's own backstop (_apply_pending_ops, keyed on the death record and confirmed against the backends now)
+    covers a park that slipped in between. The
+    latch lifts on the event it stands for, the session coming back under its sid (_lift_end_latch, at the revive
+    door and every other road that makes an ended sid live again), never on a clock or a liveness snapshot.
 
     WHERE the modal lands (review find, 2026-09-21): on `client` only when its pane renders an err frame (the chat
     and the feed, _ERR_FRAME_APPS); an End pressed in the Sessions pane arrives on that pane's socket, whose bundle
@@ -36655,9 +36729,14 @@ def _drop_parked_on_end(sid, client=None):
     the feed when no chat pane is connected): the broadcast put a modal and a bell entry in every chat column for one
     message. The op the drain is handing over right now is found by SLOT (_inflight_slot), as _cancel_parked finds it,
     not by identity: two parked compact presses are one interned tuple, and an identity filter kept the second behind
-    the in-flight first."""
+    the in-flight first. Only the kinds the drain records are ever in that slot (a command, a compact, a clear, a
+    setting pick); a send run is popped, never recorded."""
+    global _end_latch_gen
     sid = str(sid)
     with _pending_ops_lock:
+        _end_latch_gen += 1
+        _ending_sids[sid] = _end_latch_gen   # the latch (see the docstring): read by _park_op_locked; its generation orders it
+        #                                      against a move or revive in flight (_lift_end_latch_if_live, the fourth review)
         ops = _pending_ops.get(sid) or []
         j = _inflight_slot(sid, ops)
         gone = [op for k, op in enumerate(ops) if k != j]
@@ -36677,20 +36756,196 @@ def _drop_parked_on_end(sid, client=None):
         target = {"send": lambda t: _send_to_one_chat(json.loads(t), sid)}
     handed = 0
     for op in gone:
-        typed = (op[0] in ("send", "command") and isinstance(op[1], str) and op[1].strip()
-                 and (_op_user(op) or _op_qid(op)))
-        if typed:
-            _refuse_drive(target, "sendMessage" if op[0] == "send" else "sendCommand", sid, {"text": op[1]},
-                          why="The session ended before romp could hand this over")
-            handed += 1
-        else:
-            sys.stderr.write("parked %s op dropped with the ending session %s\n" % (op[0], sid))
+        handed += _hand_back_parked(op, sid, target, "The session ended before romp could hand this over",
+                                    "with the ending session")
     _mark_views_dirty()
     return handed
 
 
+_ending_sids: dict = {}          # sid -> the GENERATION of the End doors' cancel that latched it (_drop_parked_on_end): the
+                                 # latch a park checks (_park_op_locked refuses) until the session comes back under its sid
+                                 # (_lift_end_latch, _lift_end_latch_if_live). Read and written under _pending_ops_lock
+                                 # (2026-09-21)
+_end_latch_gen = 0               # the monotonic counter every cancel bumps under the lock (the fourth review, 2026-09-21): a
+                                 # road that calls into a backend able to revive a row reads it BEFORE the call
+                                 # (_end_latch_now) so its lift can tell a latch that predates the call from one an End wrote
+                                 # while the call was in flight, whose kill the fresh liveness read cannot yet see
+
 _ERR_FRAME_APPS = ("chat", "feed")   # the panes whose bundles render an err frame (the modal, the bell entry); the
                                      # Sessions pane, the timeline, files and artifacts drop it (2026-09-21)
+
+
+def _hand_back_parked(op, sid, target, why, how):
+    """ONE parked op's hand-back (2026-09-21), shared by the End doors' cancel (_drop_parked_on_end) and the drain's
+    refusal road (_hand_back_refused_send), so the two never drift on WHOSE words come back: a send or command
+    wearing the user flag (_op_user) or a press-minted copy id (_op_qid) takes the not-delivered path at `target`
+    (_refuse_drive: the modal with the text in its copy slot, undelivered.jsonl verbatim, one stderr line) with `why`
+    as the reason; anything else (a machine's send, an op with no typed text) is dropped with one stderr line that
+    names the kind and `how`, never the body. Returns 1 when a text was handed back, else 0."""
+    typed = (op[0] in ("send", "command") and isinstance(op[1], str) and op[1].strip()
+             and (_op_user(op) or _op_qid(op)))
+    if typed:
+        _refuse_drive(target, "sendMessage" if op[0] == "send" else "sendCommand", sid, {"text": op[1]}, why=why)
+        return 1
+    sys.stderr.write("parked %s op dropped %s %s\n" % (op[0], how, sid))
+    return 0
+
+
+def _hand_back_refused_send(be, sid, op):
+    """A parked send the backend REFUSED after the drain popped its run (2026-09-21, the post-merge review of the End
+    hand-back). The run is popped whole before the handover, so an End landing in between finds the queue already
+    empty and hands nothing back, and the delivery discarded the send's False: the words were gone with no modal,
+    no undelivered row and only the backend's own log line. The typed ones now take the not-delivered path to one
+    pane that renders the frame (_send_to_one_chat, the socketless End's target: a chat pane first, the feed when no
+    chat pane is connected; no socket reaches the pusher thread); a machine's is dropped with the log line naming the
+    kind. The reason is read, not guessed, and the death is read FIRST, from the
+    kernel's own record with the backends' liveness read fresh (_ended_for_good with `fresh`): this runs inside the
+    pusher cycle whose snapshot predates the End, so the snapshot still lists the row, and the SDK backend's owns() is
+    registry presence, which a kill does not remove (review find, 2026-09-21). A session whose death stands ENDED
+    between the pop and the handover; else a backend that still owns the row refused the message itself; else no
+    running backend owns it (the follow-up arm's words for the same refusal). The kernel's EARLIEST record is read
+    first (the third review, 2026-09-21): the End latch (_ending_sids), which every door writes before its kill, where
+    the death marker is written only after the kill returns and the cancelled cue writes none, so a send the dying row
+    refused during the kill named the backend or the unowned route instead of the End."""
+    with _pending_ops_lock:
+        latched = str(sid) in _ending_sids
+    if latched or _ended_for_good(sid, fresh=True):
+        why = "The session ended before romp could hand this over"
+    else:
+        try:
+            owned = be is not None and be is not _UNOWNED and bool(be.owns(sid))
+        except Exception:
+            owned = False
+        why = ("The session's backend refused this message when romp handed it over" if owned
+               else "No running backend owns this session")
+    target = {"send": lambda t: _send_to_one_chat(json.loads(t), sid)}
+    return _hand_back_parked(op, sid, target, why, "after its backend refused it, for")
+
+
+def _lift_end_latch(sid):
+    """The End latch lifts on the EVENT it stands for (2026-09-21): the session coming back under its sid, or the End
+    that set it failing. THE RULE (the third and fourth reviews, 2026-09-21): a lift rests on the kernel's own
+    records and on FRESH liveness read at the return of the call, for a latch that PREDATES the call, never on a proxy
+    for the event (a call's success bit, a cycle's snapshot, a clock, or a liveness read alone: an End that latched
+    while the call was in flight has not yet killed its row, so the row reads live and the read alone would pop that
+    newer End's latch). So every kernel road that calls into a backend able to bring a row back reads the latch
+    generation before the call and asks the backends when it returns, whatever it answered
+    (_lift_end_latch_if_live): the revive door at its exit (the
+    SDK resume alone makes the row live, and a connect may fail after it) and a move after its backend answered
+    (SdkBackend.move revives a dormant row in its old folder before it can refuse: the CLI not starting, a claim
+    refusal, busy, the CLI's rejection). A relayed thread's reply and a resolved thread's promote lift on their
+    resume; the End doors lift when their kill RAISED (_kill_at_end_door: the session did not end). A road that
+    reaches no such call cannot revive a row, and the drain's backstop never writes a latch for a row the backends
+    report live (_ended_for_good). Never on a clock or a liveness snapshot: every End door stamps the latch BEFORE
+    the kill and wakes the pusher, so a cycle whose snapshot was taken while the kill was still pending listed the
+    sid live, and a lift keyed on that snapshot (with a second-boundary guard) popped the latch before the row died,
+    and a later park landed in the dead row (review find, 2026-09-21). Returns whether a latch stood."""
+    with _pending_ops_lock:
+        return _ending_sids.pop(str(sid), None) is not None
+
+
+def _end_latch_now():
+    """The latch generation as of now (the fourth review, 2026-09-21), read under the lock BEFORE a backend call that may
+    revive a row (_move_now, _revive_session_inner) and handed to _lift_end_latch_if_live as `since`."""
+    with _pending_ops_lock:
+        return _end_latch_gen
+
+
+def _lift_end_latch_if_live(sid, since):
+    """The lift keyed on FRESH liveness at the return of a backend call, for a latch that PREDATES the call (the third and
+    fourth reviews, 2026-09-21). A call that may have made an ended sid live again has returned (a move's answer, the
+    revive door's resume and connect), and the backends are asked NOW (Sessions.live, never the cycle's snapshot, never
+    the call's own verdict) whether they list the sid. A listed sid whose latch was written at or before `since` (the
+    generation the caller read before its call, _end_latch_now) is live again under that call, whatever it answered,
+    and its latch lifts. A latch with a NEWER generation is an End that landed while the call was in flight: every
+    door latches first, does its cancel's hand-back, and only then kills, so the row still reads live at the return
+    and a read alone popped that End's latch, leaving its dead row refused by nothing (executed by the fourth review
+    over a move that returned mid-End). It is left standing; its door's kill follows. The generation is compared and
+    the latch popped under one hold of the lock, so an End landing between the liveness read and the pop is left too.
+    A read that raises lifts nothing. Returns whether a latch lifted."""
+    sid = str(sid)
+    try:
+        live = sid in Sessions.live()
+    except Exception:
+        return False
+    if not live:
+        return False
+    with _pending_ops_lock:
+        gen = _ending_sids.get(sid)
+        if gen is None or gen > since:
+            return False
+        _ending_sids.pop(sid, None)
+        return True
+
+
+# What a door says when the End latch refused its park (the third review, 2026-09-21): the pick or the press went
+# nowhere, and the route must not answer queued for an op that vanished. One text for every door, so a settingRefused
+# frame, a compact refusal and POST /send's ok:false all carry the same words.
+_ENDING_PARK_REFUSAL = "This session is ending, so nothing more can be queued for it"
+
+
+def _kill_at_end_door(be, sid, door):
+    """be.kill at an End door, after the door's cancel of the parked queue latched the sid (_drop_parked_on_end): a kill
+    that RAISES lifts the latch (the session did not end, and its parks must stay welcome; left standing, every one
+    was refused as ending until a restart: the second review, 2026-09-21), writes one attribution line naming the
+    door, and re-raises, so each door's failure contract is unchanged: the dashboard's End, the end route and the
+    self-close sweep skip their death record and their caller's handler logs the raise (the WS loop, do_POST, the
+    jobs pass), and the Opening cue's teardown swallows it as its docstring promises. Returns the kill's answer."""
+    try:
+        return be.kill(sid)
+    except Exception:
+        _lift_end_latch(sid)
+        sys.stderr.write("kill: %s via %s raised; the End latch is lifted\n" % (sid, door))
+        raise
+
+
+def _death_marker(sid):
+    """The kernel's own death record for `sid` (STATE/gone/<sid>.json, written by _record_death at the End doors), or
+    None when there is none, it cannot be read, or it is not an object. One named reader (the third review,
+    2026-09-21), so the drain's cost pin can count this read beside the states file's."""
+    try:
+        m = json.loads((jd.STATE / "gone" / (str(sid) + ".json")).read_text())
+    except Exception:
+        return None
+    return m if isinstance(m, dict) else None
+
+
+def _ended_for_good(sid, fresh=False):
+    """Is this sid's newest recorded event its DEATH, with no backend reporting it live NOW (2026-09-21)? The drain's
+    backstop for a dead row's queue keys on this, at the top of the sid's pass, and the refused send's hand-back reads
+    its reason from it. The kernel's own death record (STATE/gone/<sid>.json, _record_death at the End doors) must
+    stand with no states row after it (the idempotence read the death writers share, _death_stamp_due's shape), and
+    the backends must have no row for the sid. A live row is never ended, whatever the marker says (End then Revive:
+    CodexBackend.resume writes no states row, so the marker outlives the revive); a sid with no marker is never ended
+    here, whatever the unowned route says: a kernel that has not yet built its backends reads every sid as unowned,
+    and so does a foreign sid.
+
+    THE ORDER, and what each read costs (the second review, 2026-09-21). The drain (`fresh` False) reads the cycle's
+    liveness snapshot FIRST: one dict lookup, and a sid the snapshot lists is live, so the common path (a live queued
+    sid) reads no file. Only for a sid the snapshot does not list: the marker (one file, a miss for a sid never
+    ended), then the states file (_last_states_row, a whole-file read), and a not-live verdict is CONFIRMED against
+    the backends now (Sessions.live) before it is answered, since a snapshot taken between an End and the revive
+    lists nothing for a row that is live again, and a verdict off that snapshot handed the revived row's park back as
+    ended and latched a live row until a restart. A reader whose event postdates the snapshot (`fresh`: the
+    hand-back of a send refused after its pop, where End landed inside the cycle and the snapshot still lists the
+    row it killed) skips the snapshot and takes the same marker, states and fresh reads."""
+    sid = str(sid)
+    if not fresh:
+        try:
+            if sid in _live_map():
+                return False                              # the snapshot lists it: live, and nothing else is read
+        except Exception:
+            return False
+    m = _death_marker(sid)
+    if m is None:
+        return False
+    last = _last_states_row(sid)
+    if int((last or {}).get("t") or 0) > int(m.get("t") or 0):
+        return False
+    try:
+        return sid not in Sessions.live()                 # the not-live verdict, confirmed against the backends now
+    except Exception:
+        return False
 
 
 def _send_to_one_chat(msg, sid=""):
@@ -37005,7 +37260,10 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False, paths=None):
     /send answers `queued` and `romp send` prints it — and None when the backend REFUSED the handover
     (be.send returned False: a session it no longer holds), which is falsy like a handover for the
     callers that only ask "queued?" and distinct for the one that must know (a watch notice retires
-    only on acceptance). Nothing is echoed for a refused send: the session never got it. An agent sending ITSELF a slash command from inside
+    only on acceptance), or when the PARK was refused because the session is ending (2026-09-21: the End
+    doors' cancel latched the sid, _park_op_locked; nothing is handed over in its place, since the row is
+    dying, and the sendMessage arm tells its pane through the not-delivered path). Nothing is echoed for a
+    refused send: the session never got it. An agent sending ITSELF a slash command from inside
     its own turn otherwise read 'ok' and had no way to know the command was waiting for that turn to end
     (2026-09-03, a /clear that then never fired).
 
@@ -37041,13 +37299,14 @@ def _send_or_park(be, sid, text, echo=None, qid=None, user=False, paths=None):
     if paths and not cmd:
         op = op + (None,) * (5 - len(op)) + (list(paths),)   # the sixth slot: the attachments the trailing line named (_op_paths, T373 fold)
     if _compacting_now(sid) or _pending_ops.get(sid) or _limit_hold(sid):
-        _park_op(sid, op)
-        return True
+        return True if _park_op(sid, op) else None       # None: the park was refused, the session is ending (2026-09-21)
     if _working_now(sid) and (cmd or not _forwards_sends(be)):
-        _park_op(sid, op)
+        return True if _park_op(sid, op) else None
+    parked = _park_behind_queue(sid, op)
+    if parked:
         return True
-    if _park_behind_queue(sid, op):
-        return True
+    if parked is None:
+        return None                                      # refused at the park: the session is ending; nothing is handed over
     if _send_with_id(be, sid, text, qid, user=user, paths=paths) is False:
         return None                                      # refused by the backend: not parked, not delivered
     return False
@@ -37083,8 +37342,10 @@ def _compact_or_park(be, sid, state=None, client=None, qid=None):
     if _native_compact(be):
         why = be.compact(sid)
         if why == "busy":
-            _park_op(sid, ("compact",))
-            return True
+            if _park_op(sid, ("compact",)):
+                return True
+            why = _ENDING_PARK_REFUSAL       # the re-park was refused: the session is ending (the third review, 2026-09-21);
+            #                                  said and filed as any other refusal below, never answered queued
         if why:
             if state is not None:
                 state["refused"] = why
@@ -37142,7 +37403,9 @@ def _set_model_or_park(be, sid, value, floating=False):
     version submenu's "Latest" row: the value is a family alias AND the family's remembered pin is
     forgotten, so the family follows the CLI's newest again — the one picker gesture back from a pin (the
     family row sends the pin, the version rows pin, and a typed bare alias leaves the memory alone by
-    design). Meaningless on a non-alias value. Returns True when the pick PARKED, False when it fired now."""
+    design). Meaningless on a non-alias value. Returns True when the pick PARKED, False when it fired now, and None
+    when the park was REFUSED because the session is ending (_park_op_locked's latch, the third review, 2026-09-21):
+    the pick went nowhere, the pending stamp is taken back, and the caller says so instead of answering queued."""
     if floating and value in _MODEL_VALUES:
         _forget_model_pick(value)
     _mark_model_pending(sid, value)
@@ -37168,17 +37431,27 @@ def _set_model_or_park(be, sid, value, floating=False):
     # over now — _route_meta_command reads it so POST /send answers `queued` truthfully (it used to infer
     # the park from _ops_gate, which this setter no longer parks under).
     if _compacting_now(sid) or str(sid) in _moving or _limit_hold(sid) is not None:
-        _park_op(sid, ("model", value))
-        return True
+        return True if _park_op(sid, ("model", value)) else _model_park_refused(sid)
     if _working_now(sid) and not _model_switches_live(be):
-        _park_op(sid, ("model", value))
-        return True
+        return True if _park_op(sid, ("model", value)) else _model_park_refused(sid)
     # the queue-presence check and the park are ONE locked step, as _gate_or_park's second step (#954):
     # an op must never slip past a queue another handler filled between an unlocked read and the park
-    if _park_behind_queue(sid, ("model", value)):
+    parked = _park_behind_queue(sid, ("model", value))
+    if parked:
         return True
+    if parked is None:
+        return _model_park_refused(sid)
     be.set_model(sid, value)
     return False
+
+
+def _model_park_refused(sid):
+    """A model pick whose park the End latch refused (the third review, 2026-09-21): the switching-dots stamp the door
+    put up for a pick it expected to land is taken back, and None is the verdict the doors answer as a refusal."""
+    _model_switch_pending.pop(str(sid), None)
+    _mark_views_dirty()
+    sys.stderr.write("model pick for %s refused: the session is ending\n" % sid)
+    return None
 
 
 def _set_effort_or_park(be, sid, value):
@@ -37318,6 +37591,16 @@ def _route_setter_command(be, sid, text, client=None, floating=False, state=None
         # model_switches_live — none shipped does yet, so the SDK still parks; #923), so its verdict is
         # read, not inferred from _ops_gate, which would say `queued` for a pick that had already applied
         parked = _set_model_or_park(be, sid, value, floating=floating)
+        if parked is None:
+            # the park was refused: the session is ending (the third review, 2026-09-21). Said on the timeline's own
+            # settingRefused frame, as the effort arm says its refusal, and filed in `state` so POST /send answers
+            # ok:false with the words instead of queued for a pick that vanished
+            if state is not None:
+                state["refused"] = _ENDING_PARK_REFUSAL
+            if client:
+                client["send"](json.dumps({"type": "settingRefused", "gesture": "command", "sid": sid, "flag": "model",
+                                           "text": _ENDING_PARK_REFUSAL}))
+            return True
     elif effort_pick:
         took, parked = _set_effort_or_park(be, sid, value)    # mid-compaction → parked as a queued command
         if not took:
@@ -37447,8 +37730,11 @@ def _codex_clear_command(be, sid, text, client=None, state=None, qid=None):
     parked = _gate_or_park(sid, ("clear", cmd))
     why = "" if parked else be.clear(sid, cmd)
     if why == "busy":
-        _park_op(sid, ("clear", cmd))
-        parked, why = True, ""
+        if _park_op(sid, ("clear", cmd)):
+            parked, why = True, ""
+        else:
+            why = _ENDING_PARK_REFUSAL      # the re-park was refused: the session is ending (the fourth review, 2026-09-21); the
+            #                                 refusal takes this arm's own road below, and `queued` stays False for an op that vanished
     if why:
         if state is not None:
             state["refused_clear"] = why
@@ -37631,18 +37917,29 @@ def _deliver_send_batch(be, sid, run):
     turn reached the agent fused). A backend that cannot forward (none today; the tmux backend, until its
     removal 2026-09-11) has no queue of its own, so MERGE them into a single message (the user okayed merging
     for that backend). Nothing is echoed here: every backend echoes inside send() (the kernel-side echo left
-    with the tmux backend)."""
+    with the tmux backend).
+
+    THE REFUSAL IS READ (2026-09-21, the post-merge review of the End hand-back): the run is popped from the queue
+    before this handover, so a row that ends in between (End's cancel finds the queue already empty) refuses every
+    send here with False, and until this change that False was discarded, the words gone with no modal, no
+    undelivered row and only the backend's own log line. Each refused send is handed back per op
+    (_hand_back_refused_send): the user's words to one pane through the not-delivered path (_send_to_one_chat), a
+    machine's to the log by kind. A merged handover refused refuses every op in the run."""
     if not run:
         return
     if _forwards_sends(be):
         for op in run:
-            _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op), paths=_op_paths(op) or None)   # under the id the press minted, with its attachment list
+            if _send_with_id(be, sid, op[1], _op_qid(op), user=_op_user(op), paths=_op_paths(op) or None) is False:   # under the id the press minted, with its attachment list
+                _hand_back_refused_send(be, sid, op)
         return
     merged = "\n\n".join(op[1] for op in run)          # one message, blank-line separated between turns
     if any(_op_user(op) for op in run):
-        _user_send(be, sid, merged)
+        ok = _user_send(be, sid, merged)
     else:
-        be.send(sid, merged)
+        ok = be.send(sid, merged)
+    if ok is False:
+        for op in run:
+            _hand_back_refused_send(be, sid, op)
 
 
 def _apply_pending_ops(now=None):
@@ -37663,7 +37960,14 @@ def _apply_pending_ops(now=None):
     session's queue is dropped (fails once, logged), never retried, and since 2026-09-21 the End doors cancel the
     ending session's queue themselves before the kill (_drop_parked_on_end), handing a parked send the user typed
     back as not delivered: left to this walk, the send was popped in End's own wake, handed to a row that read as
-    unowned, and its refusal ignored. An effort level or fast toggle the
+    unowned, and its refusal ignored. The walk's own BACKSTOP for a dead row's queue (a park that landed after
+    that cancel, a queue mirrored to disk before the End) runs at the top of the sid's pass, ahead of every gate
+    (_ended_for_good, 2026-09-21): behind the gates, a dead row's queue sat under a hold nothing would lift, and
+    past them it went to the unowned route with the refusal ignored; keyed on the cycle's snapshot first (a sid it
+    lists is live: one dict lookup, the whole cost on the common path), then the kernel's death record, and the
+    not-live verdict confirmed against the backends now before anything is handed back or latched (a snapshot
+    taken between an End and the revive lists nothing for a row that is live again); never on the unowned route
+    alone, which a kernel before its backends are built reads for every sid. An effort level or fast toggle the
     backend refuses when it fires here is reported (the walk's stderr line, a settingRefused frame to the
     chat), not popped silently.
 
@@ -37705,7 +38009,9 @@ def _apply_pending_ops(now=None):
     the parked /clear, as it did before the drain moved (the parent called first and popped after for
     these kinds), and the chip retires only once the backend accepted the op. The SEND run alone is
     popped before delivery — pre-existing on the parent, and kept as is: the batch is handed over as one
-    unit, and a ✕ on it after the pop is the same honest 'too late' it always was. The top-of-walk
+    unit, and a ✕ on it after the pop is the same honest 'too late' it always was; a send the backend
+    refuses after the pop (the row ended in between) is handed back by the delivery itself
+    (_deliver_send_batch, 2026-09-21), since the End doors' cancel no longer finds it. The top-of-walk
     acquire is NON-BLOCKING: a handler that owns the lock skips the drain for this cycle rather than
     stalling every session's push, and its own park wakes the pusher after it releases; the per-step
     acquires inside the walk block, since every holder owns the lock for a dict read, a list mutation and
@@ -37766,6 +38072,13 @@ def _apply_pending_ops(now=None):
                     _drain_hold.pop(sid, None)        # no queue, no hold
                     _held_working.pop(sid, None)
                     continue
+            if _ended_for_good(sid):
+                # a dead row's queue, handed back at the top of its pass, AHEAD of every gate (2026-09-21, the post-merge
+                # review of the End hand-back): the user's words through the not-delivered path to one pane (_send_to_one_chat), the rest
+                # dropped by kind, the sid's queue and latches gone (_drop_parked_on_end, the End doors' own cancel). The
+                # verdict is confirmed against the backends now, so a revived row a stale snapshot misses is never latched
+                _drop_parked_on_end(sid)
+                continue
             if sid in _moving:
                 continue                              # a move is mid-flight: its relocation must finish first
             hold = _drain_hold.get(sid)
@@ -69124,7 +69437,7 @@ class Handler(BaseHTTPRequestHandler):
                     undelivered = _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one pane that renders it, a chat pane first (2026-09-21)
                     if undelivered:
                         ans["undelivered"] = undelivered
-                    be.kill(sid)
+                    _kill_at_end_door(be, sid, "/kill route")   # a kill that raises lifts that latch, then raises on (2026-09-21)
                     _record_death(sid, int(time.time()), "kill")
                     _comment_kill_all(sid, be)   # its comment threads must not outlive it (the WS endSession twin)
                     _send_to_app("chat", {"type": "closed", "id": sid})

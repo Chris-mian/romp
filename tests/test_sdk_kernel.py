@@ -96,11 +96,15 @@ class KernelWiring(unittest.TestCase):
         # test's setModel PARK instead of applying (the intended mid-compaction behavior) — isolate both.
         km._compact_clicked.clear()
         km._pending_ops.clear()
+        # the End latch is module state too (2026-09-21): one test's endSession latches the sid, and a later test's park
+        # for the same sid would be refused as a park on an ending session; a live kernel lifts it when the sid reads live
+        km._ending_sids.clear()
 
     def tearDown(self):
         km._sdk, km._push_all, km._send_to_app, km.jd.optimistic_followup = self.saved
         km._compact_clicked.clear()
         km._pending_ops.clear()
+        km._ending_sids.clear()
         km._user_goal_write.pop("sid-sdk", None)         # the punch-through marker is module state — don't leak it
 
     def _route(self, msg):
