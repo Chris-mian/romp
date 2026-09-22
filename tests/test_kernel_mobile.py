@@ -364,7 +364,7 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("badgeNeeds:!!t.querySelector('.tab-badge'),", js)   # the phone reads the desktop tab's badge dot
         self.assertIn("retrying:!!t.querySelector('.tab-dot.retrying'),", js)   # …and the retrying left dot
         self.assertIn("wd.classList.toggle('retrying',!!s.retrying&&!s.working&&!s.awaitbg);", js)   # the row's amber retrying dot
-        self.assertIn("if(s.badgeNeeds){if(!mb){mb=document.createElement('span');mb.className='m-badge';row.appendChild(mb);}mb.textContent=s.needsCount||'';}", js)   # the row's Needs-you dot with its count
+        self.assertIn("if(s.badgeNeeds){if(!mb){mb=document.createElement('span');mb.className='m-badge';mb.setAttribute('role','img');row.appendChild(mb);}mb.textContent=s.needsCount||'';mb.setAttribute('aria-label',s.needsCount?(s.needsCount==='1'?'1 thing needs you':s.needsCount+' things need you'):'needs you');}", js)   # the row's Needs-you dot with its count, an image with a screen-reader label (the second contributor, PR 2017)
         self.assertIn(".m-badge:not(:empty){width:auto;min-width:14px;height:14px;border-radius:7px", css)   # the numbered pill
         self.assertIn("color:#000", css.split(".m-badge:not(:empty){", 1)[1].split("}", 1)[0])   # the digit is black by default (the dark theme, ~6.07:1 on the magenta)
         self.assertIn("body.theme-light .m-badge:not(:empty){color:var(--st-needs-fg", css)   # ...and the state's light-theme fg (white) where black falls short of the 4.5:1 text floor (plans/tab-state-badge.md)
@@ -385,9 +385,11 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertNotIn("(act.working?'• ':'')", js)
         # the state badge on the chip (plans/tab-state-badge.md): retrying on the leading dot (amber), the Needs-you dot with its count at the corner
         self.assertIn("wd.classList.toggle('retrying',!!(act&&act.retrying&&!act.working&&!act.awaitbg))", js)
-        self.assertIn("if(act&&act.badgeNeeds){if(!cb){cb=document.createElement('span');cb.className='m-badge';cur.appendChild(cb);}cb.textContent=act.needsCount||'';}", js)
+        self.assertIn("if(act&&act.badgeNeeds){if(!cb){cb=document.createElement('span');cb.className='m-badge';cb.setAttribute('role','img');cur.appendChild(cb);}cb.textContent=act.needsCount||'';cb.setAttribute('aria-label',act.needsCount?(act.needsCount==='1'?'1 thing needs you':act.needsCount+' things need you'):'needs you');}", js)   # the chip's dot, an image with a label
         self.assertIn("#mcur .wd.retrying{background:var(--st-retrying-bg,#e67e22)}", css)
-        self.assertIn(".m-badge{position:absolute;top:5px;right:7px", css)
+        self.assertIn(".m-badge{position:static;flex:0 0 auto", css)   # item 2: the pill RESERVES room (an inline flex item), never stacks over the chevron/close
+        self.assertIn("#mcur .cv{flex:0 0 auto;order:1", css)   # the caret is ordered right of the pill
+        self.assertIn(".mrow .mclose{flex:0 0 auto;order:1", css)   # the close x is ordered right of the pill
 
     def test_current_session_title_is_bold_color_on_the_grey_chip(self):
         # the user 2026-07-22: the mobile current-session title reads as the identity color in BOLD on the

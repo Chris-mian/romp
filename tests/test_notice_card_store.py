@@ -1253,5 +1253,32 @@ class TheDoors(unittest.TestCase):
         self.assertIn('_nmoved = _compact_notices()', KSRC, "the retention pass runs beside the goal-store sweep")
 
 
+class NeedsYouTallies(unittest.TestCase):
+    """The three needs-you tallies agree where they must and differ where they must (plans/tab-state-badge.md, the second
+    contributor on PR 2017): the COLUMN tally (_needs_input_counts, the numbered badge's value) keys exactly the membership
+    set (_needs_input_sids, needsYou) with every value at least 1; the app-ICON count (_needs_you_count) skips provisional
+    cards. Pure over a synthetic feed, so no state root is needed."""
+
+    def _card(self, sid, i, prov=False):
+        nb = km._board_needs_you("feed")
+        return {"sid": sid, "board": "feed", "category": nb, "provisional": prov, "itemId": "%s:g%d" % (sid, i)}
+
+    def test_the_column_tally_keys_the_membership_set_with_every_value_at_least_one(self):
+        nb = km._board_needs_you("feed")
+        self.assertIsNotNone(nb, "the feed board names a needs-you category")
+        feed = {"asks": [self._card("s1", 1), self._card("s1", 2), self._card("s2", 1), self._card("s3", 1, prov=True)]}
+        counts = km._needs_input_counts(feed)
+        sids = km._needs_input_sids(feed)
+        self.assertEqual(set(counts.keys()), set(sids), "the count's key set is exactly the membership set (the dot and the ring cannot name different sessions)")
+        self.assertTrue(all(isinstance(v, int) and v >= 1 for v in counts.values()), "every needs-you session's count is at least 1: %r" % counts)
+        self.assertEqual(counts, {"s1": 2, "s2": 1, "s3": 1}, "the column tally counts every needs-you card, a placeholder included")
+
+    def test_the_app_icon_count_skips_provisional_cards(self):
+        feed = {"asks": [self._card("s1", 1), self._card("s1", 2), self._card("s2", 1), self._card("s3", 1, prov=True)]}
+        # the column tally counts the placeholder; the icon count (a third tally) drops it, so the two differ by exactly it
+        self.assertEqual(km._needs_you_count(feed), 3, "the app-icon count skips the provisional s3: 3 real cards, not 4")
+        self.assertEqual(sum(km._needs_input_counts(feed).values()), 4, "the column tally includes the placeholder")
+
+
 if __name__ == "__main__":
     unittest.main()

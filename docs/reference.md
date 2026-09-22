@@ -4824,6 +4824,15 @@ with a magenta bar at the row's left edge, and the button that names the current
 dashed magenta border. One colour, the Needs you colour, marks the category everywhere: the column's
 chip, a card's question mark, the ring, the picker's bar.
 
+A per-browser setting, **State badge instead of the outline ring** (a checkbox in the gear's
+**Chat** tab, beside the tab lock), swaps two of these cues for dots. Needs you becomes a small
+magenta dot at the tab's top-right corner carrying a count of what needs you in the session (a
+number, "99+" past ninety-nine); retrying moves to the amber **left status dot**, but only while
+the **Status dot** widget is on, since that is the dot it moves to, so with the Status dot widget
+off retrying keeps its amber ring. Blocked keeps its red ring and fill either way, and the dashed
+rings are what shows when the setting is off (the default). On a phone the current-session chip and
+each picker row carry the same count dot in place of the magenta bar. The setting is off by default.
+
 ### Tags and groups in the tab strip
 
 A tag is a named, colored set of sessions; a session can be in

@@ -5999,6 +5999,10 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // association learned on the footer is reproduced and the two cannot drift. Model and effort carry the colormap
   // rank; the permission mode is untinted on the footer too, and the backend carries no tone, so they stay plain.
   const rows: Array<[string, string, string?]> = [];
+  if (s.status.needsYou) {   // the Needs-you count's phrase, reachable on hover in BOTH modes: the badge dot's own title is inert (pointer-events none), and ring mode shows no number at all
+    const nc = typeof s.status.needsYouCount === "number" ? s.status.needsYouCount : 0;
+    rows.push(["Needs you", nc > 0 ? (nc === 1 ? "1 thing needs you" : nc + " things need you") : "needs you", "var(--st-needs-bg)"]);
+  }
   if (s.cwd) rows.push(["📁", s.cwd]);
   if (s.gitBranch) rows.push(["⎇", s.gitBranch]);
   if (s.workTree) rows.push(["Worktree", s.workTree.dir + (s.workTree.branch ? "  ⎇ " + s.workTree.branch : "")]);
@@ -6369,10 +6373,8 @@ function applyTabStatus(tab: HTMLElement, s: { id?: string; status: Partial<Stat
   // tabDotTitle), composed here with every other before-the-name widget the user keeps on (tab-widgets.ts, the one
   // module the strip and the gear's live demos draw from); off in the gear, no slot at all.
   composeTabWidgets(tab, "before", s.id || "", s.status, settings.tabWidgets);
-  // BADGE MODE (the tabStateBadge setting): the Needs-you state becomes a top-right magenta dot and retrying moves to
-  // the left status dot (amber); the magenta and amber rings composeTabRing put on give way, the red Blocked ring stays.
-  // Ring mode never calls this, so it is byte-identical to today. The Needs-you dot's count is added last (plans/tab-state-badge.md).
-  if (settings.tabStateBadge) applyTabBadgeMode(tab, s.id || "", s.status, settings.tabWidgets);
+  // BADGE MODE is applied by appendTabAfterWidgets, AFTER both sides' widgets compose, so the left status-dot slot is
+  // found wherever the dot sits (a dot dragged past the name composes on the after side). Not here (plans/tab-state-badge.md).
   // compacting → a tiny animated compaction bar before the name (the tab gets no outline for this state,
   // so the bar IS the cue). A teal fill whose right edge slides left and loops — the same "compression"
   // motion as the statusline ctx-scan bar (.ctx-compress), miniaturised. Replaces the static ⇲ glyph the
@@ -6506,6 +6508,11 @@ function appendTabAfterWidgets(tab: HTMLElement, s: { id?: string; status: Parti
   // compacting and on dead tabs) and the hot-key keycap (when one is assigned), composed from the registry in the
   // configured order. Drawn AFTER the label by both callers, so the ✕ keeps the tab's right edge.
   composeTabWidgets(tab, "after", s.id || "", s.status, settings.tabWidgets);
+  // BADGE MODE (the tabStateBadge setting, plans/tab-state-badge.md): run here, AFTER both the before- and after-side
+  // widgets compose, so the left status-dot slot exists wherever the dot sits. The Needs-you state becomes a top-right
+  // magenta dot carrying its count and retrying moves to the amber left dot; the magenta and amber rings composeTabRing
+  // put on give way, the red Blocked ring stays. Ring mode never calls this, so it is byte-identical to today.
+  if (settings.tabStateBadge) applyTabBadgeMode(tab, s.id || "", s.status, settings.tabWidgets);
 }
 
 // A loading PLACEHOLDER tab (the user 2026-06-26): name + identity color from the kernel's tabOrder push,

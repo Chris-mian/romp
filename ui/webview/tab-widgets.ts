@@ -172,22 +172,29 @@ export function applyTabBadgeMode(tab: HTMLElement, sid: string, status: WidgetS
   if (rt && ringOn(rt, sid, status, prefs)) {
     const slot = tab.querySelector<HTMLElement>(".tab-dot");
     if (slot) {
-      // move the amber from the ring to the left status dot: toggle the class, never overwrite the slot's className
-      // (it may carry an option class), and only THEN drop the ring, so the amber never vanishes.
+      // move the amber from the ring to the left status dot: toggle the classes, never overwrite the slot's className
+      // (it may carry an option class). Drop BOTH `none` and `idle` before adding `retrying`: under the dot widget's
+      // "grey dot when idle" option a none-state slot renders as `tab-dot idle`, and the idle rule follows the retrying
+      // rule at equal specificity, so a leftover `idle` would paint the amber at idle's dim opacity. Drop the ring last,
+      // so the amber never vanishes.
       tab.classList.remove("ring-retrying");
-      slot.classList.remove("none");
+      slot.classList.remove("none", "idle");
       slot.classList.add("retrying");
       slot.title = "retrying an API error on its own";
     }
-    // else: the Status dot widget is switched off, so there is no slot to carry the amber; keep the retrying ring
-    // (badge mode still shows retrying, rather than dropping the ring for nothing).
+    // else: the Status dot widget is switched OFF, so there is no slot to carry the amber. This runs after BOTH the
+    // before- and after-side widgets compose (render.ts calls it from appendTabAfterWidgets), so a dot dragged past the
+    // name is found either way and the widget-off case is the only no-slot one; keep the retrying ring rather than drop it for nothing.
   }
   const nu = tabWidget("ring-waiting-on-you");
   if (nu && ringOn(nu, sid, status, prefs)) {
     const dot = el("span", "tab-badge badge-needs");
     const n = typeof status.needsYouCount === "number" ? status.needsYouCount : 0;
     if (n > 0) dot.textContent = n > 99 ? "99+" : String(n);   // a black number sized by the CSS (a pill for two-plus digits); empty stays a bare dot (an older kernel with no count)
-    dot.title = n > 0 ? (n === 1 ? "1 thing needs you" : n + " things need you") : "needs you";
+    // the dot is pointer-events:none (the close glyph sits under it), so its native title never shows; a screen reader
+    // reads the aria-label as an image (not the bare digit), and render.ts adds the phrase to the tab's rich tooltip.
+    dot.setAttribute("role", "img");
+    dot.setAttribute("aria-label", n > 0 ? (n === 1 ? "1 thing needs you" : n + " things need you") : "needs you");
     tab.appendChild(dot);
     return dot;
   }

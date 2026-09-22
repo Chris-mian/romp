@@ -47,6 +47,7 @@ SESS = [("one", 1), ("few", 3), ("many", 12), ("calm", 0)]
 SIDS = {n: "%s-1111-2222-3333-444444444444" % (chr(ord("a") + i) * 8) for i, (n, _) in enumerate(SESS)}
 PALETTE = {"one": ("#9cd2ff", "#0c1a2e"), "few": ("#1EA1EB", "#ffffff"), "many": ("#54B204", "#ffffff"), "calm": ("#c98cff", "#1a0c2e")}
 TOKEN = {"dark": "rgb(217, 70, 239)", "light": "rgb(162, 28, 175)"}   # --st-needs-bg: #d946ef and #a21caf
+AMBER = {"dark": "rgb(230, 126, 34)", "light": "rgb(156, 74, 12)"}   # --st-retrying-bg: #e67e22 and #9C4A0C, the retrying left dot
 
 
 def _free_port():
@@ -115,6 +116,11 @@ const readBadge = (p) => p.evaluate((ids) => {
   const o = {}; for (const [k, id] of Object.entries(ids)) o[k] = one(id); return o;
 }, cfg.ids);
 for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(150); out.badge[t] = await readBadge(page); }
+// (item 10, the second contributor on PR 2017) a probe: a bare `.tab-dot retrying` span's COMPUTED background is the
+// retrying amber token, so the left-dot amber is exercised without seeding a hard-to-mint retrying session.
+out.retryProbe = {};
+for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(100);
+  out.retryProbe[t] = await page.evaluate(() => { const p = document.createElement("span"); p.className = "tab-dot retrying"; document.body.appendChild(p); const bg = getComputedStyle(p).backgroundColor; p.remove(); return bg; }); }
 
 const geomEval = (id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const lbl = t.querySelector(".tab-label, .tab-name, .tab-title"); return { w: t.getBoundingClientRect().width, labelLeft: lbl ? lbl.getBoundingClientRect().left : null }; };
 await setTheme(page, "dark"); await page.waitForTimeout(120);
@@ -156,8 +162,11 @@ for (const t of themes) {
   out.phone[t] = await phone.evaluate((ids) => {
     const cur = document.getElementById("mcur"); const cb = cur ? cur.querySelector(".m-badge") : null;
     const row = document.querySelector('#mlist .mrow[data-id="' + ids.few + '"]'); const rb = row ? row.querySelector(".m-badge") : null;
+    const R = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width }; };
+    const cv = cur ? cur.querySelector(".cv") : null; const mclose = row ? row.querySelector(".mclose") : null;   // item 2: the chevron and the close must sit to the RIGHT of the pill, never under it
     return { curBadge: cb ? cb.textContent : null, curBg: cb ? getComputedStyle(cb).backgroundColor : null, curAsk: !!cur && cur.classList.contains("ask"),
-             rowBadge: rb ? rb.textContent : null, rowBg: rb ? getComputedStyle(rb).backgroundColor : null, rowAsk: !!row && row.classList.contains("ask") };
+             rowBadge: rb ? rb.textContent : null, rowBg: rb ? getComputedStyle(rb).backgroundColor : null, rowAsk: !!row && row.classList.contains("ask"),
+             curPill: R(cb), curChevron: R(cv), rowPill: R(rb), rowClose: R(mclose) };
   }, cfg.ids);
 }
 // ── (M) the count moves LIVE without a reload (plans/tab-state-badge.md, test 7): a needs-you card added climbs the
@@ -336,6 +345,12 @@ class TabBadgeServed(unittest.TestCase):
             self.assertEqual(p["curBadge"], "3", "%s: the current-session chip wears the .m-badge with its count: %r" % (t, p))
             self.assertEqual(p["curBg"], TOKEN[t], "%s: the chip's dot is the Needs-you token: %r" % (t, p))
             self.assertFalse(p["curAsk"], "%s: the chip's dashed .ask border gave way to the dot" % t)
+            # item 2 (the second contributor, PR 2017): the pill RESERVES room, so the chevron and the close x sit to its
+            # RIGHT, never stacked over it; their x-ranges are disjoint from the pill's (red at the merge, where it was absolute).
+            self.assertIsNotNone(p["curChevron"], "%s: the chip has a chevron" % t)
+            self.assertLessEqual(p["curPill"]["right"], p["curChevron"]["left"] + 0.5, "%s: the chip's count pill is left of the chevron, not over it: %r" % (t, p))
+            self.assertIsNotNone(p["rowClose"], "%s: the row has a close x" % t)
+            self.assertLessEqual(p["rowPill"]["right"], p["rowClose"]["left"] + 0.5, "%s: the row's count pill is left of the close x, not over it: %r" % (t, p))
 
 
     def test_the_count_moves_live_when_a_needs_you_card_is_added_and_cleared_without_a_reload(self):
@@ -343,8 +358,17 @@ class TabBadgeServed(unittest.TestCase):
         self.assertEqual(r["errors"], [], "no page error and every live wait resolved")
         live = r["live"]
         self.assertEqual(live["start"], "1", "the needs-you tab starts at one card")
-        self.assertEqual(live["added"], "2", "a second needs-you card climbs the number to 2 on the open page, no reload (the count's own chat-signature component and compare-and-wake)")
-        self.assertEqual(live["cleared"], "1", "clearing the card drops the number back to 1, live")
+        # this leg SHOWS only that the number moves on the open page with no reload; it cannot tell the chat-signature
+        # component from the compare-and-wake. Those two mechanisms are pinned separately in test_kernel.py
+        # (test_the_needs_you_count_wakes_the_pusher_on_a_count_only_change, the wake) and test_chat_build_sig_inputs.py
+        # (test_the_needs_you_count_keys_the_signature_so_a_stale_badge_never_survives_a_judge_pass, the signature differential).
+        self.assertEqual(live["added"], "2", "a second needs-you card climbs the number to 2 on the open page, no reload")
+        self.assertEqual(live["cleared"], "1", "clearing the card drops the number back to 1, live, no reload")
+
+    def test_the_retrying_left_dot_paints_the_amber_token(self):
+        r = self._result()
+        for t in ("dark", "light"):
+            self.assertEqual(r["retryProbe"][t], AMBER[t], "%s: a .tab-dot.retrying span (the retrying left dot under badge mode) computes to the amber token" % t)
 
 
 if __name__ == "__main__":

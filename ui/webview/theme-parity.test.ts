@@ -239,6 +239,11 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     for (const [g, ground] of [["hovered tab", hover], ["selected tab", active], ["Needs you box wash", box]] as const) {
       assert.ok(contrast(rings.ask, ground) >= 3, `${name}: the Needs you ring on the ${g} = ${contrast(rings.ask, ground).toFixed(2)} < 3`);
     }
+    // the RETRYING amber is a filled LEFT DOT under badge mode (plans/tab-state-badge.md), so it sits on the tab face like
+    // the Needs-you dot: 3:1 (large chrome, not text) on the page, the hovered tab and the selected tab's fill, both themes.
+    for (const [g, ground] of [["page", page], ["hovered tab", hover], ["selected tab", active]] as const) {
+      assert.ok(contrast(rings.retrying, ground) >= 3, `${name}: the retrying amber dot on the ${g} = ${contrast(rings.retrying, ground).toFixed(2)} < 3`);
+    }
     // the box's ok button rests in a border of the accent at 90% over the wash (color-mix in srgb): a non-text edge, so the 3:1 floor on its ground
     // in both themes (the round-fourteen verifier of PR 1967 measured 60% at 2.33:1 on the light theme)
     const accent = rgbOf(theme.get("--accent")!, page)!;
@@ -252,8 +257,17 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     // only 3.32:1, short of 4.5, so the light theme inks the digit in the state's own foreground token (--st-needs-fg,
     // white: ~6.32:1). The CSS is `color:#000` with a `body.theme-light` override to var(--st-needs-fg). The user chose
     // black in the dark theme; this is the user's call to veto (the manager relayed the light-theme swap, 2026-09-22).
-    const digit: [number, number, number] = name === "light" ? tok("--st-needs-fg") : [0, 0, 0];
-    assert.ok(contrast(digit, rings.ask) >= 4.5, `${name}: the badge's digit ink on the magenta = ${contrast(digit, rings.ask).toFixed(2)} < 4.5`);
+    // PARSE the ink from the sheet, never restate the constant (the second contributor on PR 2017): the base rule's
+    // color (a 3-digit hex, expanded), and for light the `body.theme-light` override resolved by cascade through the token.
+    const colorIn = (re: RegExp) => { const m = css.match(re); const c = m && m[1].match(/color:\s*([^;]+);/); return c ? c[1].trim() : ""; };
+    const rawInk = name === "light"
+      ? colorIn(/body\.theme-light \.tab-badge:not\(:empty\) \{([^}]*)\}/)
+      : colorIn(/\n\.tab-badge:not\(:empty\) \{([^}]*)\}/);
+    const varInk = rawInk.match(/^var\((--[a-z0-9-]+)\)$/i);
+    const hex3 = /^#[0-9a-f]{3}$/i.test(rawInk) ? "#" + rawInk.slice(1).split("").map((c) => c + c).join("") : rawInk;
+    const digit = varInk ? tok(varInk[1]) : rgbOf(hex3, page)!;   // the token by cascade, or the (expanded) literal
+    assert.ok(digit, `${name}: the badge digit ink parses from the sheet (read ${JSON.stringify(rawInk)})`);
+    assert.ok(contrast(digit, rings.ask) >= 4.5, `${name}: the badge's digit ink ${JSON.stringify(rawInk)} on the magenta = ${contrast(digit, rings.ask).toFixed(2)} < 4.5`);
   }
   // the light value itself, so a re-ink is a deliberate change here and in feed.css (tab-rings.test.ts pins the two sheets equal)
   assert.match(block(css, "body.theme-light {"), /--st-needs-bg: #a21caf; --st-needs-fg: #ffffff;/);

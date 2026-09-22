@@ -4616,6 +4616,10 @@ body.filebrowse-open { overflow: hidden; }
    (kernel.py _CHAT_MOBILE_CSS) the bar holds the session picker, not the strip, so on a phone only the panel
    tightens. */
 body.dense-chrome .tab { gap: 3px; padding: 3px 5px; font-size: 0.86em; }              /* 4px; 6px 7px; 0.92em */
+/* the Needs-you count pill on a dense ~25px tab sits a hair smaller and higher into the corner, so the hover-lifted
+   close glyph (z 4, above the badge) overpaints less of the digits (the second contributor on PR 2017, 2026-09-22). */
+body.dense-chrome .tab-badge { top: 1px; right: 1px; }
+body.dense-chrome .tab-badge:not(:empty) { min-width: 12px; height: 12px; border-radius: 6px; }
 /* a federated tab's host prefix is a 0.86em child of the label (host-prefix.ts hostNameNodes), so under the 0.86em tab
    it would compound to 9.6px (0.86 x 0.86 x 13), under the 10px floor; 0.92em (on the ladder) puts it back at the
    default's rendered 10.3px. The tab's other em child, .tab-close at 1.1em, stays above the floor on its own. */
