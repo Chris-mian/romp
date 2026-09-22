@@ -536,6 +536,8 @@ class Boot(_Catalog):
         self.assertIn("connection refused", self.err.getvalue())
         self.assertTrue(km._vouched_model("gw-6-astra"))
         self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the listing-failed advisory")
+        self._wait(lambda: len(self.frames) >= 1, "the frame that carries it")
+        self.assertEqual(self.frames, [False], "the advisory reaches the gear through the models frame, outside the lock")
 
 
 class Fetch(unittest.TestCase):

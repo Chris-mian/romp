@@ -3407,9 +3407,13 @@ def _router_apply_declared(reason, gen=None):
             except Exception as e:
                 sys.stderr.write("extra models (%s): the gateway's model list failed (%s: %s) — serving the "
                                  "declared list\n" % (reason, type(e).__name__, str(e)[:160]))
+                noted = False
                 with _catalog_lock:          # the advisory, at THIS generation only: a later flip owns the note
                     if gen == _ROUTER_GEN[0] and _router_status_note[0] is None:
                         _router_status_note[0] = ROUTER_NOTE_LISTING_FAILED
+                        noted = True
+                if noted:
+                    _models_changed()        # the gear's line repaints from the models frame alone (verify find, 2026-09-22)
         threading.Thread(target=go, name="router-models", daemon=True).start()
     return added
 

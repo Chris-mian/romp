@@ -105,10 +105,12 @@ test("executed: an advisory wins over the count, verbatim (a swap of the two bra
   assert.equal(line.textContent, "ROMP_ROUTER_MODELS named no model", "…and over the empty-declaration wording");
 });
 
-test("executed: nothing declared says so while the switch is on, and shows nothing while it is off (a stock install)", () => {
+test("executed: nothing declared shows nothing on its own, on or off; the kernel's advisory names the variable when that is the case", () => {
+  // on with nothing declared and no advisory is the URL-only install: the listing's rows are offered and the line has
+  // nothing to add (the verify round's find: it read "Nothing declared yet" beside three gateway rows)
   const { line, fill } = liftRouterLine();
   fill(router({ declared: [] }));
-  assert.equal(line.textContent, "Nothing declared yet");
+  assert.equal(line.textContent, "");
   fill(router({ enabled: false, declared: [], gateway: null }));
   assert.equal(line.textContent, "", "off with nothing declared: a blank line under an off switch");
   line.textContent = "unset";

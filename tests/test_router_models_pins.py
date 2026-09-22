@@ -177,7 +177,9 @@ class ModelsRouteRouterSection(unittest.TestCase):
 # endswith), the CLI's default-model alias (model_label / _alias_label compare the chosen alias to it whole) and the
 # ROMP_MODEL_CATALOG knob's value (_router_models_boot compares the variable to it whole).
 VENDOR_ALLOW = frozenset({"claude-", "claude", "anthropic.com", ".anthropic.com", "default", "off",
-                          "triage", "session"})   # triage/session: the judge tier stores' sentinels (_router_tiers_on reads
+                          "triage", "session",
+                          "utf-8", "router-models"})   # the wider token rule (verify round) reaches these two whole-value
+#                                                       compares: a codec name and the setting's own store name; not vendors   # triage/session: the judge tier stores' sentinels (_router_tiers_on reads
 #                                                   them whole-value: distill "triage" follows the triage pick, comment
 #                                                   "session"/"default" is no model id); not vendors
 
@@ -185,7 +187,9 @@ VENDOR_ALLOW = frozenset({"claude-", "claude", "anthropic.com", ".anthropic.com"
 # followed by ONE trailing separator — the shape a vendor prefix or a family word takes ("gemini-", "gpt-", "gpt",
 # "grok", "o3", "gpt5-"). Anything with an internal separator ("utf-8", "router-models", "anthropic.com"), an
 # underscore, an uppercase letter, a space, a format directive or punctuation is not one, and neither is "".
-_VENDOR_TOKEN = re.compile(r"^[a-z]+[0-9]*[-.]?$")
+_VENDOR_TOKEN = re.compile(r"^[a-z][a-z0-9]*(?:[-.][a-z0-9]+)*[-.]?$")   # words and digits joined by - or .: gemini-2, gpt-5,
+#                                                                             gemini-1.5-, o4-mini (the verify round widened it from
+#                                                                             one word: a versioned prefix is the realistic vendor key)
 # a regex pattern's leading literal run, after an optional anchor: the part a vendor prefix would occupy
 _REGEX_LEAD = re.compile(r"^\^?([a-z0-9.-]+)")
 
@@ -219,7 +223,7 @@ def vendor_keys(source):
                         s = _const_str(c)
                         if s is not None and _vendor_token(s):
                             hits.append(("%s(%r)" % (attr, s), node.lineno, node.col_offset))
-            elif attr in ("match", "search", "fullmatch") and isinstance(node.func.value, ast.Name) \
+            elif attr in ("match", "search", "fullmatch", "compile") and isinstance(node.func.value, ast.Name) \
                     and node.func.value.id == "re" and node.args:
                 s = _const_str(node.args[0])
                 lead = _REGEX_LEAD.match(s or "")
@@ -228,9 +232,10 @@ def vendor_keys(source):
         elif isinstance(node, ast.Compare):
             ops = [type(o).__name__ for o in node.ops]
             for c in [node.left] + node.comparators:
-                s = _const_str(c)
-                if s is not None and _vendor_token(s):
-                    hits.append(("%s %r" % ("/".join(ops), s), node.lineno, node.col_offset))
+                for e in (c.elts if isinstance(c, (ast.Tuple, ast.List, ast.Set)) else [c]):   # `x in ("gemini", "gpt")`
+                    s = _const_str(e)
+                    if s is not None and _vendor_token(s):
+                        hits.append(("%s %r" % ("/".join(ops), s), node.lineno, node.col_offset))
     hits.sort(key=lambda h: (h[1], h[2]))     # source order (ast.walk is breadth-first)
     return [(what, line) for what, line, _col in hits]
 
@@ -268,7 +273,7 @@ class NothingKeysOnAVendor(unittest.TestCase):
 
     def test_every_planted_shape_is_flagged(self):
         def planted(mid, d):
-            if mid.startswith("gemini-"):
+            if mid.startswith("gemini-") or mid.startswith("gemini-2") or mid.split("-")[0] in ("gemini", "gpt"):
                 return 1
             if mid.endswith(("-astra", "gpt-")):
                 return 2
@@ -282,7 +287,8 @@ class NothingKeysOnAVendor(unittest.TestCase):
                 return 6
             return d.get("gemini-")   # a .get argument is not a test: not flagged
         what = [h[0] for h in vendor_keys(inspect.getsource(planted))]
-        self.assertEqual(what, ["startswith('gemini-')", "endswith('gpt-')", "In 'grok'", "Eq 'o3'", "Eq 'gpt5-'",
+        self.assertEqual(what, ["startswith('gemini-')", "startswith('gemini-2')", "In 'gemini'", "In 'gpt'",
+                                "endswith('gpt-')", "In 'grok'", "Eq 'o3'", "Eq 'gpt5-'",
                                 "NotEq 'mistral'", "re.match('^gemini-\\\\d')"])
 
     def test_the_honest_shapes_are_not_flagged(self):

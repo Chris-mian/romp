@@ -1858,7 +1858,7 @@ function initGear(post, opts) {
     if (!r || typeof r !== 'object') { rtrLine.textContent = ''; return; }
     if (r.error) { rtrLine.textContent = String(r.error); return; }
     var n = Array.isArray(r.declared) ? r.declared.length : 0;
-    if (!n) { rtrLine.textContent = r.enabled ? 'Nothing declared yet' : ''; return; }
+    if (!n) { rtrLine.textContent = ''; return; }   // nothing declared: the kernel's own advisory (r.error, above) says so when that is the case; a URL-only install declares nothing and still offers the listing's rows (verify find, 2026-09-22)
     rtrLine.textContent = n + ' declared' + (r.gateway === false ? ' · no gateway configured' : '');
   }
   onChoices = fillRouterLine;
