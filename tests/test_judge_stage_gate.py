@@ -1828,7 +1828,9 @@ class StoreCompleteness(_Gate):
         """The second contributor's post-merge review of PR 2021: the grouper's scan caught OSError alone, so a clears log whose bytes are not
         text raised UnicodeDecodeError out of every pass with no cleared-unreadable row, and the store loaders raised the same way for a session
         whose override journal carries a move row (the reopen gate reads the log). The undecodable log reads as nothing cleared, said once per
-        episode, the run incomplete and unstamped; the loaders answer the store; a log of text again stamps."""
+        episode, the run incomplete and unstamped; the loaders answer the store, since the reader answers empty; the store boundary itself keeps
+        its OSError-only contract (a ValueError out of a loader is a bug and propagates; the round-three verifier of PR 2025 reverted a
+        widening there); a log of text again stamps."""
         self._session(SID)
         self._converge()
         cp = jd.STATE / "cleared.jsonl"
@@ -1854,11 +1856,10 @@ class StoreCompleteness(_Gate):
             self.fail("the loader raised past its boundary: %r" % e)
         self.assertTrue(store is not None and err is None and shared is not None and err2 is None, "the loaders answer the store over an undecodable log: %r %r" % (err, err2))
 
-        def bad(fsid):                                                   # and the boundary itself contains a ValueError out of a loader, as it does an OSError (the belt)
-            raise ValueError("a decode failure inside a reader")
-        got, e = jd._or_fault(SID, bad)
-        self.assertTrue(got is None and isinstance(e, ValueError), "the boundary files it and contains it: %r" % ((got, e),))
-        jd._end_store_fault(SID)
+        def bad(fsid):                                                   # a ValueError out of a loader is a BUG, not a read fault: the boundary keeps its OSError-only
+            raise ValueError("a decode failure inside a reader")         # contract (tests/test_backref_memo.py) and lets it reach the caller's own catch
+        with self.assertRaises(ValueError):
+            jd._or_fault(SID, bad)
         cp.write_text(json.dumps({"id": SID2 + ":g1", "op": "clear", "t": NOW}) + "\n")
         self._reset()
         self._pass(tiers=("group",))

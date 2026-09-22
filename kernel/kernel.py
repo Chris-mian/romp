@@ -41508,7 +41508,7 @@ def build_episode(sid, now):
 
 
 # ───────────────────────── feed clear / undo (inbox-zero) ─────────────────────────
-_CLEARED_MEMO = {"slot": None}     # (key, parsed set) or None: the clear log's stat taken BEFORE the read, and the set read under it
+_CLEARED_MEMO = {"slot": None}     # (key, parsed set, the read's fault copy) or None: the clear log's stat taken BEFORE the read, the set read under it, and "" for a landed read (an undecodable log's empty set is served with its fault; round three of PR 2025)
 _cleared_read_fault = [""]         # the fault copy filed for a STANDING unreadable or undecodable clears log: one stderr line and one judge-errors row per
 #                                    episode (the note read's shape), ended by a landed read or an absent log; the undo account names it (_undo_clear)
 _CLEARED_STATS = {"served": 0, "derived": 0}   # bumped from the pusher AND socket threads (undo, connect-time builds) with
@@ -42403,12 +42403,14 @@ def _undo_clear(batch_out=None):
         # store was refusing, and both frames read cleared)
         if popped:
             skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped, "landed": bool(landed), "owed": [] if landed else list(not_back), "stamps": int(stamps)}
-    if owed_ids:
-        cur, _rfault = _cleared_ids_read()                # the re-journal-first rows moved the log: read again, so they are the newest batch this press restores
-        if _rfault:
-            skipped[LEDGER_READ_KEY] = {"fault": _rfault, "ids": []}   # unreadable between the two reads: said; the owed rows stand as the newest batch for the next press
-            _reorder(False, owed_ids, 1)
-            return skipped
+    cur, _rfault = _cleared_ids_read()                    # read AGAIN after the lock block, always (the round-three verifier of PR 2025): the re-journal-first rows moved the
+    #                                                       log, and with nothing owed a peer's clear landing during the lock wait would otherwise be invisible to this press
+    #                                                       (it popped the batch newest at entry, or said "nothing to bring back" over a log with a row); the stat-keyed memo makes
+    #                                                       the unmoved case a served hit
+    if _rfault:
+        skipped[LEDGER_READ_KEY] = {"fault": _rfault, "ids": []}   # unreadable between the two reads: said; nothing else runs (owed rows, if any, stand as the newest batch for the next press)
+        _reorder(False, owed_ids, 1)
+        return skipped
     if not cur:
         _reorder(False, owed_ids, 1)
         return skipped

@@ -19,6 +19,7 @@ import errno
 import io
 import itertools
 import json
+import time
 import os
 import tempfile
 import unittest
@@ -1771,6 +1772,25 @@ class ActsUnderAFailedWrite(_World):
         sent = self._dispatch({"type": "undoClear", "seq": 13})
         self.assertEqual(km._rejournal_owed, {}, "the press that could read the log re-journals the owed row first and consumes the owing: %r" % sent)
         self.assertFalse(self._flag(B, B + ":g1"), "and the owed card is back")
+
+    def test_a_peers_clear_landing_while_the_undo_waits_for_the_owed_lock_is_the_batch_the_press_restores(self):
+        """The round-three verifier of PR 2025: round four moved the undo's own read above the owed lock and read again only when something
+        was owed, so with nothing owed a peer's clear landing during the lock wait was invisible to the press, which popped the batch newest
+        at entry. The log is read again after the lock block, always: the peer's clear is the batch this press restores."""
+        self._dispatch({"type": "askClear", "itemId": A + ":g1"})            # A's clear: the newest batch as the press enters
+        real = km._owed_load
+
+        def peer_clear_lands(*a, **kw):                                     # a peer socket's clear of B lands while this press holds the lock
+            out = real(*a, **kw)
+            with (jd.STATE / "cleared.jsonl").open("a") as f:
+                f.write(json.dumps({"id": B + ":g1", "t": time.time() + 1, "op": "clear"}) + "\n")
+            km._mark_nodes_cleared([B + ":g1"], True)
+            return out
+        with mock.patch.object(km, "_owed_load", peer_clear_lands):
+            sent = self._dispatch({"type": "undoClear", "seq": 14})
+        self.assertEqual([m for m in sent if m.get("type") == "err"], [], "the press lands: %r" % sent)
+        self.assertFalse(self._flag(B, B + ":g1"), "the peer's clear, the newest batch when the press read the log again, is what Undo restored (before: the batch newest at entry)")
+        self.assertTrue(self._flag(A, A + ":g1"), "and A's clear stands")
 
     def test_the_two_new_judge_errors_kinds_are_documented(self):
         """The second contributor's post-merge note on PR 2018: `clears-log` and `owed-note` were in neither kind list; the round-one verifier

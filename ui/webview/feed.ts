@@ -6991,7 +6991,9 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       // takes the round-trip cue, the payload bringing them), and the pop after matches the kernel's: the last clear
       if (Array.isArray(m.owedIds) && m.owedIds.length) clearedStack.push([]);
       render();
-    } else if (op === "undoClear" && !Array.isArray(m.batches) && typeof m.seq === "number" && undoPopped.has(m.seq)) {
+    } else if (op === "undoClear" && !fromHost && !federatedPane() && !Array.isArray(m.batches) && typeof m.seq === "number" && undoPopped.has(m.seq)) {
+      // the local kernel's frame on a single-kernel pane alone, as the stack branch above (the round-three verifier of PR 2025: a federated click
+      // keeps no record, so the guard is a belt; a remote kernel's account names no click of this page).
       // an undo account that carries no stack and names no ids: the kernel restored NOTHING (its clears log could not be read, the read-fault
       // account; the second contributor's post-merge review of PR 2021): the click's optimistic restore stood as cards the kernel never restored
       // beside a dialog saying the cards stay as they are, since the revert above runs on the ids an account names. The batch this click popped,

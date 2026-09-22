@@ -4985,12 +4985,13 @@ def _or_fault(fsid, loader):
     itself there, load_goals_shared for the pusher's read-only sites, and a pass's shared per-store read
     elsewhere (run_propagate's _get, so a recipient read through the boundary is still the one read that
     pass takes of the store). Same episode table, same `store-unreadable` row once per fault episode, same
-    `(store, None)` / `(None, exc)` answer. A ValueError out of the loader is caught the same way (the second contributor's post-merge
-    review of PR 2021: a decode error out of a reader the journal replay reaches raised past an OSError-only arm; the reader itself now
-    answers empty, and this arm is the belt)."""
+    `(store, None)` / `(None, exc)` answer. OSError ONLY, the contract every reader boundary keeps (tests/test_backref_memo.py): a
+    ValueError out of a loader is a bug, not a read fault, and reaches the caller's own catch; a widening to ValueError here (round three
+    of PR 2025, reverted by its verifier) swallowed such a bug into a misattributing store-unreadable row, and was dead code for the road it
+    was added for, since the two clears-log readers answer empty on undecodable bytes themselves."""
     try:
         store = loader(fsid)
-    except (OSError, ValueError) as e:
+    except OSError as e:
         _file_store_fault(fsid, e, "store-unreadable",
                           "goals store cannot be read; this session's goal-derived work is skipped until it "
                           "reads again")
