@@ -241,7 +241,7 @@ function insertBeside(tree: Node, unit: Node, pane: PaneId, dir: "row" | "col", 
         const kids = n.kids.slice(), ratios = n.ratios.slice(), fixed = n.fixed ? n.fixed.slice() : n.kids.map(() => null as number | null);
         const at = first ? idx : idx + 1;
         const free = n.kids.filter((_, k) => fixedOf(n, k) === null).length;
-        const share = px !== null ? 0 : unitFixed ? (free > 0 ? 1 / free : 1) : n.ratios[idx] * rel;
+        const share = unitFixed ? (free > 0 ? 1 / free : 1) : n.ratios[idx] * rel;   // a fixed pane's own ratio is zeroed by mkSplit's norm, whatever is written here (the 1985 read, round five: an explicit zero was an unobservable branch)
         kids.splice(at, 0, leaf); ratios.splice(at, 0, share); fixed.splice(at, 0, px);
         return mkSplit(n.dir, kids, ratios, fixed);
       }
@@ -261,7 +261,8 @@ function insertBeside(tree: Node, unit: Node, pane: PaneId, dir: "row" | "col", 
  *  (or a wrap when the directions differ); failing that, the pane docks at the nearest shown leaf of the nearest kid; failing
  *  that, when the band is ALL the tree shows, the band is the neighbour of last resort: the pane goes on its remembered side of
  *  it, a column of the pane over the fixed band, never a row beside it (the 1985 read). Null when the memory has nothing to say
- *  (the pane unknown to it, none of its neighbours shown and a stranger beside the band): the caller falls to the default dock. When nothing moved since the hide, the insertions rebuild the remembered tree exactly,
+ *  (the pane unknown to it, or none of its neighbours shown, unless the band is all the tree shows): the caller falls to the
+ *  default dock. When nothing moved since the hide, the insertions rebuild the remembered tree exactly,
  *  shares included. */
 export function placeFrom(memory: Node, tree: Node, pane: PaneId): Node | null {
   if (!has(memory, pane) || has(tree, pane)) return null;

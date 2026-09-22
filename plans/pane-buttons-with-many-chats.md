@@ -98,11 +98,14 @@ separate group (a chat over its feed inside a row) wraps, so that group comes ba
 The band is the neighbour of last resort only when it is ALL the tree shows (the second review of the feature PR,
 2026-09-21): with a stranger pane shown above the band, a returning pane whose remembered neighbours are all hidden takes
 its default dock beside the stranger instead of a full-width row of its own between the stranger and the band. The cost,
-accepted: with the band the only remembered neighbour left, the first pane back sits beside the stranger at the default
-dock's share, and the arrangement is rebuilt around it rather than exactly (every pane hidden, a stranger turned on and
-off again gives the seed back flat). And with the band OFF, a pane whose remembered neighbours are all hidden has no place
-to be re-inserted at a stranger's park: it waits in the parked list without a place and returns at its default dock,
-which the rule intends (keeping the old memory would cost the stranger its place).
+accepted: the memory is DROPPED at any park made while only strangers and the band are shown (a stranger turned off, a
+second stranger toggled, the band turned off), since none of the hidden panes has a shown neighbour to be re-inserted
+beside; the panes then come back at their default docks around the first one shown, so the shape may match the seed's but
+the shares are the default dock's (the seed, every pane hidden, a stranger on and off, the three back: 493, 246.5 and 246.5 px
+against the seed's 441.5, 250.2 and 294.3 px at 1000 px), and a non-flat arrangement (the feed under the chat) comes back a flat row.
+With the band OFF the same holds without the band: a pane whose remembered neighbours are all hidden has no place to be
+re-inserted at a stranger's park, waits in the parked list without a place, and returns at its default dock, which the
+rule intends (keeping the old memory would cost the stranger its place).
 
 ## 3. The options
 

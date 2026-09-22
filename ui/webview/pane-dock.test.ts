@@ -102,7 +102,7 @@ test("defaultDock: a column right of the last chat, the outline right of the cha
   assert.deepEqual(defaultDock({ pane: FLEET }, FEED), { target: FLEET, edge: "right" });
   assert.deepEqual(defaultDock(t2, CHAT), { target: CHAT, edge: "left" });
   assert.equal(defaultDock(t2, BAND), null, "the band docks against the whole tree");
-  assert.deepEqual(defaultDock({ pane: BAND }, FEED), { target: BAND, edge: "top" }, "only the band present: a pane opens ABOVE it (the round-three read: docking against the root put a row beside the band)");
+  assert.deepEqual(defaultDock({ pane: BAND }, FEED), { target: BAND, edge: "top" }, "only the band present: a pane opens ABOVE it (the 1985 read: docking against the root put a row beside the band)");
 });
 
 test("reconcileShown: a pane turned off PARKS, one turned on opens at its default dock, the band follows --tl", () => {
@@ -544,23 +544,48 @@ test("remembered: the band as a parked pane rides the rebuild fixed (band off, t
   lay = reconcileShown(lay, shown([CHAT, FLEET, FEED], { band: false }));                        // the band off: the memory taken with the band in it
   assert.deepEqual(lay.parked, [BAND]);
   lay = reconcileShown(lay, shown([CHAT, FLEET], { band: false }));                              // the feed off: the memory rebuilt from the row alone, the band re-inserted by the rebuild
-  const m = mem(lay) as Split;
-  assert.equal(shape(m), "col[row[chat-pane,fleet-pane,feed-pane],tl-pane]", "the memory holds the band under the row");
-  assert.equal(m.fixed && m.fixed[1], 200, "the band fixed at its px in the memory");
-  assert.equal(m.ratios[1], 0, "with a zero ratio, as a fixed kid has");
+  const m = mem(lay) as Split | undefined;
+  assert.equal(m ? shape(m) : "none", "col[row[chat-pane,fleet-pane,feed-pane],tl-pane]", "the memory holds the band under the row");
+  assert.equal(m && m.fixed && m.fixed[1], 200, "the band fixed at its px in the memory");
+  assert.equal(m && m.ratios[1], 0, "with a zero ratio, as a fixed kid has");
   lay = reconcileShown(lay, shown([CHAT, FLEET, FEED]));                                         // both back
   assert.equal(shape(lay.tree), shape(seed.tree));
   sameRects(lay.tree, seed.tree, "the seed's rectangles back, the band at the bottom");
   assert.equal(mem(lay), undefined);
 });
 
-test("remembered: a remembered neighbour whose leaves are shown but no longer one node (a stranger inside it) takes the returning pane at its nearest leaf", () => {
+test("remembered: a remembered neighbour whose leaves are shown but no longer one node (a stranger inside it) takes the returning pane at its nearest leaf, on its remembered side", () => {
+  // the outline left of the chat and the feed under the outline: the chat's remembered neighbour is the column col[fleet, feed], on its
+  // LEFT; the default dock would put the chat left of everything, so the two roads differ here (the 1985 read, round five: the first
+  // sequence of this pin had them coincide)
   let lay: Layout = seed3();
-  lay = { ...lay, tree: move(lay.tree, FEED, FLEET, "bottom") };                                 // the feed under the outline: row[chat, col[fleet, feed]]
+  lay = { ...lay, tree: move(lay.tree, FLEET, CHAT, "left") };
+  lay = { ...lay, tree: move(lay.tree, FEED, FLEET, "bottom") };
+  assert.equal(shape(lay.tree), "col[row[col[fleet-pane,feed-pane],chat-pane],tl-pane]");
   lay = reconcileShown(lay, shown([FLEET, FEED]));                                               // the chat hidden
   lay = reconcileShown(lay, shown([FLEET, FEED, FILES]));                                        // the files pane on: right of the feed, inside the outline's column
   assert.equal(shape(lay.tree), "col[col[fleet-pane,row[feed-pane,files-pane]],tl-pane]");
-  lay = reconcileShown(lay, shown([CHAT, FLEET, FEED, FILES]));                                  // the chat back: its neighbour col[fleet, feed] is scattered, so it docks left of the outline, the unit's first leaf
-  assert.equal(shape(lay.tree), "col[col[row[chat-pane,fleet-pane],row[feed-pane,files-pane]],tl-pane]");
-  assert.deepEqual(leaves(lay.tree), [CHAT, FLEET, FEED, FILES, BAND]);
+  lay = reconcileShown(lay, shown([CHAT, FLEET, FEED, FILES]));                                  // the chat back: its neighbour is scattered, so it docks at the neighbour's LAST leaf, the feed, on its right
+  assert.equal(shape(lay.tree), "col[col[fleet-pane,row[feed-pane,chat-pane,files-pane]],tl-pane]", "the memory's fallback (the default dock would give col[col[row[chat-pane,fleet-pane],row[feed-pane,files-pane]],tl-pane])");
+  assert.deepEqual(leaves(lay.tree), [FLEET, FEED, CHAT, FILES, BAND]);
+});
+
+test("remembered: the band re-inserted as a SIBLING by the rebuild rides fixed with a zero share (a one-pane seed, the band off, files on, moved under the chat, off; the band on, files on)", () => {
+  let lay: Layout = seedLayout({ row: [CHAT], band: true, bandPx: 200, grow: {} });
+  assert.equal(shape(lay.tree), "col[chat-pane,tl-pane]");
+  lay = reconcileShown(lay, shown([CHAT], { band: false }));                                     // the band off: the memory col[chat, tl]
+  lay = reconcileShown(lay, shown([CHAT, FILES], { band: false }));                              // the files pane on beside the chat
+  lay = { ...lay, tree: move(lay.tree, FILES, CHAT, "bottom") };                                 // and moved under it: col[chat, files]
+  assert.equal(shape(lay.tree), "col[chat-pane,files-pane]");
+  lay = reconcileShown(lay, shown([CHAT], { band: false }));                                     // files off: the memory rebuilt from col[chat, files] with the band spliced in as a sibling under the chat
+  const m = mem(lay) as Split | undefined;
+  assert.equal(m ? shape(m) : "none", "col[chat-pane,tl-pane,files-pane]", "the band a sibling between the chat and the files pane");
+  assert.deepEqual(m && m.fixed, [null, 200, null], "fixed at its px");
+  assert.deepEqual(m && m.ratios.map((r) => Math.round(r * 1000) / 1000), [0.5, 0, 0.5], "with a zero share, the two ratio kids halving");
+  lay = reconcileShown(lay, shown([CHAT]));                                                      // the band on: its own road, the root's bottom
+  assert.equal(shape(lay.tree), "col[chat-pane,tl-pane]");
+  lay = reconcileShown(lay, shown([CHAT, FILES]));                                               // files on: beside the chat, above the band, as remembered
+  assert.equal(shape(lay.tree), "col[chat-pane,files-pane,tl-pane]");
+  const rs = rectsOf(lay.tree);
+  assert.deepEqual([rs[BAND].y, rs[BAND].h], [800, 200], "the band fixed at the bottom");
 });
