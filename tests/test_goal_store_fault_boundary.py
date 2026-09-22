@@ -1606,7 +1606,7 @@ class ActsUnderAFailedWrite(_World):
             sent2 = self._dispatch({"type": "askClear", "itemId": A + ":g1"})
         errs2 = [m for m in sent2 if m.get("type") == "err"]
         self.assertEqual(len(errs2), 1, "the clear's refusal: %r" % sent2); self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(errs2[0]), set(), "no stack while the log cannot be read")
-        self.assertEqual(len(rows()), 1, "one judge-errors row for the read: %r" % self._rows("clears-log")); self.assertEqual(len(lines), 1, "one stderr line: %r" % lines)
+        self.assertEqual(len(rows()), 1, "one judge-errors row for the read: %r" % rows()); self.assertEqual(len(lines), 1, "one stderr line: %r" % lines)
         with captured(lines):
             km._CLEARED_MEMO["slot"] = None; km._cleared_ids(); km._undo_stack_ids()
         self.assertEqual((len(rows()), len(lines)), (1, 1), "the standing fault files nothing more: one row and one line per episode")
@@ -1748,6 +1748,29 @@ class ActsUnderAFailedWrite(_World):
         self.assertEqual([m["title"] for m in errs], ["romp could not read its record of cleared cards"], "the undo's own read faulted: %r" % sent)
         self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(errs[0]), set(), "no stack on the read-fault account though the ledger read behind the frame landed (with the key guard gone, that landed read's stack rode it)")
         self.assertEqual(real(), ({}, ""), "premise: the log reads again, so a ledger read behind the frame would land (under the guard the read-fault-only account runs none)")
+
+    def test_an_undo_over_an_unreadable_log_with_a_card_owed_touches_nothing_and_files_the_account(self):
+        """The first contributor's round-one comment on PR 2025 (pre-existing): the re-journal-first block ran before the undo's own read, so
+        over a log it could not read the press appended the owed row after the garbage, emptied the owing, rewrote the note and then filed the
+        read-fault account whose words say nothing was touched; a truncation repair then left that card flag-cleared with no row and no note,
+        unreachable by Undo. The undo's own read comes first: on a fault the account is filed and nothing is touched; the press after the
+        repair re-journals the owed row first and restores the card."""
+        self._two_fault_undo_leaves_b_owed()                                 # B owed, in memory and in the note beside the log
+        log, note = jd.STATE / "cleared.jsonl", jd.STATE / km.OWED_FILE
+        prefix = b"\xff\xfe\x00 not text\n"
+        log.write_bytes(prefix + log.read_bytes()); km._CLEARED_MEMO["slot"] = None; km._cleared_read_fault[0] = ""
+        before_log, before_note, before_owed = log.read_bytes(), note.read_bytes(), dict(km._rejournal_owed)
+        with contextlib.redirect_stderr(io.StringIO()):
+            sent = self._dispatch({"type": "undoClear", "seq": 12})
+        self.assertEqual([m["title"] for m in sent if m.get("type") == "err"], ["romp could not read its record of cleared cards"], "the read-fault account, alone: %r" % sent)
+        self.assertEqual([m for m in sent if m.get("type") == "undoAck" or m.get("ok")], [], "no ack and no reorder frame beside it")
+        self.assertEqual(log.read_bytes(), before_log, "no row appended behind the bytes the undo could not read (before: the owed row went in after the garbage)")
+        self.assertEqual(km._rejournal_owed, before_owed, "the owing stands in memory (before: emptied)"); self.assertEqual(note.read_bytes(), before_note, "and the note is unchanged (before: rewritten)")
+        self.assertTrue(self._flag(B, B + ":g1"), "the owed card stays as it was")
+        log.write_bytes(before_log[len(prefix):]); km._CLEARED_MEMO["slot"] = None   # the repair: the log reads again
+        sent = self._dispatch({"type": "undoClear", "seq": 13})
+        self.assertEqual(km._rejournal_owed, {}, "the press that could read the log re-journals the owed row first and consumes the owing: %r" % sent)
+        self.assertFalse(self._flag(B, B + ":g1"), "and the owed card is back")
 
     def test_the_two_new_judge_errors_kinds_are_documented(self):
         """The second contributor's post-merge note on PR 2018: `clears-log` and `owed-note` were in neither kind list; the round-one verifier

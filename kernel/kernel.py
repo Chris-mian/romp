@@ -42333,10 +42333,20 @@ def _undo_clear(batch_out=None):
     row on disk before the flag step runs (its comment says why). A notice card's rows come back OUT of
     notices-archive after its undo row lands (_restore_notice_archive, round six), and a session whose notice
     archive could not be read is owed the same way, its fault keyed "notice:<sid>" so the refusal names the store that
-    faulted and not the session's every card. Returns {sid | "notice:"+sid: fault} for the sessions skipped."""
+    faulted and not the session's every card. The undo's OWN read of the log comes FIRST: over a log it cannot read the press files
+    the read-fault account and touches nothing, no re-journal-first rows, no note rewrite (the first contributor's round-one comment on PR
+    2025: with a card owed, the owed row went in after the bytes the read could not decode, the owing emptied and the note rewritten empty,
+    while the account said nothing was touched; a truncation repair then left that card flag-cleared with no row and no note, unreachable by
+    Undo). Returns {sid | "notice:"+sid: fault} for the sessions skipped."""
     skipped = {}
     popped = []                                           # the newest batch BEFORE the re-journal-first step: what the feed restored on the click
     owed_ids = []                                         # the ids this press re-journaled first (none when nothing was owed)
+    cur, _rfault = _cleared_ids_read()                    # the undo's OWN read and its fault, in one statement (the round-one verifier of PR 2025: a module flag read two statements later raced the pusher's reads), taken FIRST
+    if _rfault:
+        skipped[LEDGER_READ_KEY] = {"fault": _rfault, "ids": []}   # the log could not be read: said on the socket, where a bare ack went before (the post-merge review of PR 2021)
+        return skipped                                    # and NOTHING touched: no re-journal-first rows behind bytes the read cannot decode, no note rewrite, no reorder (the first
+        #                                                   contributor's round-one comment on PR 2025: the owed row went in after the garbage, the owing emptied, the note rewritten, while
+        #                                                   the account said nothing was touched, and a truncation repair then left that card flag-cleared with no row and no note)
     with _OWED_LOCK:
         # ONE lock across the note's read, the re-journal-first write, the memory update and the rewrite (lows 3 and 4 of the fourth review of
         # PR 1967 and the round-four verifier's medium, 2026-09-21): a peer socket's persist between the read and the rewrite waits, so a row it
@@ -42393,9 +42403,12 @@ def _undo_clear(batch_out=None):
         # store was refusing, and both frames read cleared)
         if popped:
             skipped[LEDGER_REORDER_KEY] = {"fault": "", "ids": popped, "landed": bool(landed), "owed": [] if landed else list(not_back), "stamps": int(stamps)}
-    cur, _rfault = _cleared_ids_read()                    # the undo's OWN read and its fault, in one statement (the round-one verifier of PR 2025: a module flag read two statements later raced the pusher's reads)
-    if _rfault:
-        skipped[LEDGER_READ_KEY] = {"fault": _rfault, "ids": []}   # the log could not be read: said on the socket, where a bare ack went before (the post-merge review of PR 2021)
+    if owed_ids:
+        cur, _rfault = _cleared_ids_read()                # the re-journal-first rows moved the log: read again, so they are the newest batch this press restores
+        if _rfault:
+            skipped[LEDGER_READ_KEY] = {"fault": _rfault, "ids": []}   # unreadable between the two reads: said; the owed rows stand as the newest batch for the next press
+            _reorder(False, owed_ids, 1)
+            return skipped
     if not cur:
         _reorder(False, owed_ids, 1)
         return skipped
