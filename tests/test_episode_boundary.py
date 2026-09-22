@@ -10,10 +10,14 @@ cards untouched. The judge's _placed_key fuzzy match is scoped to the current ep
 identical prompt plans again instead of deduping against its dead twin. Synthetic data only.
 """
 import json
+import io
+import errno
+import contextlib
 import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from romp_load import load_source
 from pathlib import Path
 
@@ -203,6 +207,33 @@ class EpisodeBoundaryTest(unittest.TestCase):
         km._episode_boundary_check(SID, str(p), NOW)
         km._episode_boundary_check(SID, str(p), NOW)
         self.assertEqual(len(jd.episode_rows(SID)), 1)
+
+    def test_an_append_the_clears_log_refuses_at_the_boundary_is_said_and_settles_nothing(self):
+        """The first contributor's post-merge review of PR 2021: the arm around the boundary's clear rows had no behavioural pin. An append the
+        log refuses files one clears-log judge-errors row and one stderr line, flags no top and writes no settle annotation (the base raised)."""
+        self._store()
+        anchor = self.proj / (SID + ".jsonl")
+        _write_jsonl(anchor, [_rec("root1")])
+        km._episode_boundary_check(SID, str(anchor), NOW)
+        fork = self.proj / "aaaaaaaa-0000-0000-0000-000000000002.jsonl"
+        _write_jsonl(fork, [_rec("root2", ts="2026-01-02T00:00:00Z")])
+        log = jd.STATE / "cleared.jsonl"; orig_open = Path.open
+
+        def refusing_append(p, mode="r", *a, **kw):
+            if p == log and "a" in mode:
+                raise OSError(errno.EROFS, "Read-only file system", str(p))
+            return orig_open(p, mode, *a, **kw)
+        buf = io.StringIO()
+        with mock.patch.object(Path, "open", refusing_append), contextlib.redirect_stderr(buf):
+            km._episode_boundary_check(SID, str(fork), NOW)
+        rows = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()] if jd.ERRORS.exists() else []
+        self.assertEqual([r["err"] for r in rows if r["err"] == "clears-log"], ["clears-log"], "one clears-log row: %r" % rows)
+        self.assertIn("the episode boundary's clear rows", rows[-1]["note"])
+        self.assertEqual(len([l for l in buf.getvalue().splitlines() if l.startswith("clears log: ")]), 1, "one stderr line: %r" % buf.getvalue())
+        store = jd.load_goals(SID)
+        self.assertFalse(store["nodes"][self.g("g1")].get("cleared"), "the top stays unflagged: its rows did not land")
+        self.assertIsNone(jd.episode_settles(SID).get("root2"), "no settle annotation for a settle that did not happen")
+        self.assertEqual(self._cleared_rows(), [], "no clear rows")
 
     def test_interleaved_seed_race_still_settles(self):
         """Two kernel instances overlapped for ~1s on 2026-07-27 (a restart-churn morning): a

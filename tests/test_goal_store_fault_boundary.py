@@ -1507,8 +1507,10 @@ class ActsUnderAFailedWrite(_World):
             km._gesture_store_refusal(c, "undo", {}, ids=[], op="undoClear", seq=10); floor2 = km._feed_build_id[0]
             self.assertEqual(c.get("floorPending"), floor2, road + ": the mark equals the floor after the account")
             self.assertTrue(push(c, floor2)); self.assertEqual(c.get("floorPending"), floor2, road + ": and after the at-floor push")
+            km._next_feed_build_id()                                                          # a build claimed between the accounts: the refusal's floor is its own (the post-merge review of PR 2021)
             km._gesture_store_refusal(c, "undo", {km.LEDGER_KEY: {"fault": "the log refused", "ids": [A + ":g1"]}}, ids=[A + ":g1"], op="undoClear", seq=11); floor3 = km._feed_build_id[0]
-            self.assertEqual(c.get("floorPending"), floor3, road + ": a refusal's account leaves the mark standing, at its own floor (a mutant popping it after the err frame fails here)")
+            self.assertGreater(floor3, floor2, road + ": the build between the accounts moved the floor")
+            self.assertEqual(c.get("floorPending"), floor3, road + ": a refusal's account sets the mark to its own floor (a mutant skipping the mark on the refused path leaves floor2 here; one popping it after the err frame leaves none)")
             self.assertTrue(push(c, floor3 + 1)); self.assertNotIn("floorPending", c)
             if road == "delta":
                 self.assertTrue(push(c, floor3 + 2), "delta: one whole frame re-bases the stream")
@@ -1566,16 +1568,63 @@ class ActsUnderAFailedWrite(_World):
         self.assertIn("the mute's clear rows", self._rows("clears-log")[-1]["note"])
         km._set_session_flag(A, "hideFromFeed", False)
 
-    def test_an_undo_over_an_undecodable_clears_log_answers_the_socket_with_the_floor(self):
-        """The second contributor's post-merge note on PR 2018: _cleared_ids caught OSError alone, so a clears log whose bytes are not text raised
-        UnicodeDecodeError at the undo arm before the restore and the account never went. It reads as the empty uncached set now, as an
-        unreadable log does, and the undo answers with its floor and sequence."""
-        (jd.STATE / "cleared.jsonl").write_bytes(b"\xff\xfe\x00 not text\n")
-        km._CLEARED_MEMO["slot"] = None
-        sent = self._dispatch({"type": "undoClear", "seq": 5})
-        acks = [m for m in sent if m.get("type") == "undoAck"]
-        self.assertEqual([(m["seq"], m["buildId"]) for m in acks], [(5, km._feed_build_id[0])], "the socket is answered with the floor and the sequence (before: a raise, no frame): %r" % sent)
-        self.assertEqual(km._cleared_ids(), {}, "the undecodable log reads as empty, uncached")
+    def test_a_present_clears_log_that_cannot_be_read_is_said_once_per_episode_and_on_the_undos_account(self):
+        """The second contributor's post-merge note on PR 2018 made an undecodable clears log read as the empty uncached set (a raise before);
+        the first contributor's post-merge review of PR 2021: that read, and the older OSError arm, said nothing anywhere while the note reader
+        files a stderr line, a judge-errors row and an account for the same bytes. An ABSENT log stays silent; a present log that cannot be
+        read, or whose bytes are not text, files ONE stderr line and ONE judge-errors row per fault episode (ended by a landed read or an absent
+        log), and an Undo over it names the fault on its account, with the floor and the sequence, where a bare ack went."""
+        log = jd.STATE / "cleared.jsonl"
+        rows = lambda: [r for r in self._rows("clears-log") if "the read" in r.get("note", "")]
+
+        @contextlib.contextmanager
+        def captured(lines):
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                yield
+            lines.extend(l for l in buf.getvalue().splitlines() if l.startswith("clears log: the read"))
+        # non-text bytes: said once, on the socket too
+        log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None; getattr(km, "_cleared_read_fault", [""])[0] = ""   # (tolerant of the base without the memo: the red lands on the account below)
+        lines = []
+        with captured(lines):
+            sent = self._dispatch({"type": "undoClear", "seq": 5})
+        errs = [m for m in sent if m.get("type") == "err"]
+        self.assertEqual([(m["title"], m.get("seq"), "buildId" in m) for m in errs], [("romp could not read its record of cleared cards", 5, True)], "the undo's account names the fault, with the floor and the sequence (before: a bare ack): %r" % sent)
+        self.assertIn("codec", errs[0]["text"]); self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no bare ack beside it")
+        self.assertEqual(len(rows()), 1, "one judge-errors row for the read: %r" % self._rows("clears-log")); self.assertEqual(len(lines), 1, "one stderr line: %r" % lines)
+        with captured(lines):
+            km._CLEARED_MEMO["slot"] = None; km._cleared_ids(); km._undo_stack_ids()
+        self.assertEqual((len(rows()), len(lines)), (1, 1), "the standing fault files nothing more: one row and one line per episode")
+        # a landed read ends the episode; the same fault after it files again
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; self.assertEqual(km._cleared_ids(), {}); self.assertEqual(getattr(km, "_cleared_read_fault", [""])[0], "")
+        log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None
+        with captured(lines):
+            km._cleared_ids()
+        self.assertEqual((len(rows()), len(lines)), (2, 2), "a new episode after the landed read")
+        # an unreadable log (a permission bit): the same shape, its own copy
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+        orig_read = Path.read_text
+
+        def refusing_read(p, *a, **kw):
+            if p == log:
+                raise OSError(errno.EACCES, "Permission denied", str(p))
+            return orig_read(p, *a, **kw)
+        with mock.patch.object(Path, "read_text", refusing_read), captured(lines):
+            km._CLEARED_MEMO["slot"] = None
+            sent = self._dispatch({"type": "undoClear", "seq": 6})
+            km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+        self.assertEqual([(m["title"], m.get("seq")) for m in sent if m.get("type") == "err"], [("romp could not read its record of cleared cards", 6)])
+        self.assertIn("Permission denied", rows()[-1]["note"]); self.assertEqual((len(rows()), len(lines)), (3, 3), "one row and one line for the unreadable log's episode")
+        # an absent log: nothing cleared, said nowhere, and it ends the episode
+        log.unlink(); km._CLEARED_MEMO["slot"] = None
+        with captured(lines):
+            self.assertEqual(km._cleared_ids(), {})
+        self.assertEqual((len(rows()), len(lines)), (3, 3), "an absent log is a real state: no row, no line"); self.assertEqual(getattr(km, "_cleared_read_fault", [""])[0], "")
+        log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None
+        with captured(lines):
+            km._cleared_ids()
+        self.assertEqual((len(rows()), len(lines)), (4, 4), "the same bytes after an absent read are a new episode")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
     def test_the_two_new_judge_errors_kinds_are_documented(self):
         """The second contributor's post-merge note on PR 2018: `clears-log` and `owed-note` were in neither kind list."""
