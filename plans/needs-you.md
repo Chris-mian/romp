@@ -209,7 +209,8 @@ hides it; with the box off the tab ring and the feed still say it.
 
 Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
 clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone; `batchesTotal`: the count of log batches before the
-wire's bound, so a truncated stack reads as truncated), and the feed takes it as its own stack, so the
+wire's bound, so a truncated stack reads as truncated), except any sent while the clears log cannot be read (a refused clear alone
+ships none too), and the feed takes it as its own stack, so the
 optimistic Undo restores what the kernel restores; the two are proven equal by enumeration over every press sequence of a
 two-card world under every fault (tests/fixtures/undo-stack-transitions.json). The stack on the wire is bounded to the newest
 20 log batches (`LEDGER_BATCHES_ON_WIRE`); the frame says how many there are. Past them, a page that did not make those clears (a
@@ -261,6 +262,16 @@ judges' readers of the same file use); an Undo over such a log restores nothing 
 without the marker (an owed-note refusal beside a landed undo) settles nothing about the click. The episode boundary's settle is the one writer without a retry: its head is
 recorded before its clear rows, so a refused append leaves the pre-clear open cards in the fresh conversation, and that settle is
 lost; the row and the line name the session.
+
+While the clears log cannot be read, the pane holds. The feed build, the off frame and the chat box's notice rows take the last
+landed set the reader memoized, so the dismissed count, the Undo button, the foreign clears and the log-only seals stand as the last
+landed read left them until a read lands, and the bell carries one refused row per fault episode naming the file: the display
+readers' convention (the last-known value shown, one row, a clean read ends the episode). A cold memo has nothing to serve: the pane
+shows nothing cleared and the row says so. The gestures never take the memo's set: an Undo answers for its own read, and an
+account's stack for the read behind it. Every clear or undo account carries its stack except any sent while the clears log cannot be
+read, a refused clear alone shipping none too, so a stack-less frame from the current kernel is that road beside an older kernel's
+frame and a federated pane's. A served read carries its state's fault into the episode: a set served from the memo after a fault
+that lifted with the file unmoved ends the episode, so the same fault before the next append is a new one and is said again.
 
 ### Completed is safe to clear unread
 
