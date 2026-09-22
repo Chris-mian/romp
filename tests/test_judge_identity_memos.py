@@ -343,9 +343,10 @@ class ViewCleared(_Memos):
         p = jd.STATE / "cleared.jsonl"
         a = SID + ":g1"
         p.write_text("[]\n" + json.dumps({"id": 7, "t": T0, "op": "clear"}) + "\n" + json.dumps({"id": a, "t": T0, "op": "clear"}) + "\n"
-                     + json.dumps({"id": SID + ":g9", "t": "yesterday", "op": "clear"}) + "\n")
+                     + json.dumps({"id": SID + ":g9", "t": "yesterday", "op": "clear"}) + "\n" + json.dumps({"id": SID + ":g8", "t": True, "op": "clear"}) + "\n"   # a bool stamp, its own id (the first contributor's round one on PR 2032: the bool half had no test here)
+                     + json.dumps({"id": a, "t": "later", "op": "undo"}) + "\n")   # an undo row with a string stamp is skipped too: a's clear stands
         try:
-            self.assertEqual(jd._view_cleared(), {a}, "the array row, the non-string id and the row whose stamp is not a number are skipped, the row beside them loads")
+            self.assertEqual(jd._view_cleared(), {a}, "the array row, the non-string id, the string- and bool-stamped rows and the string-stamped undo row are skipped, the row beside them loads and stands")
         except AttributeError as e:
             self.fail("the scan raised on a row that is not an object: %r" % e)
         p.write_bytes(b"\xff\xfe\x00 not text\n")

@@ -1670,13 +1670,14 @@ class ActsUnderAFailedWrite(_World):
         log = jd.STATE / "cleared.jsonl"
         log.write_text("[]\n" + json.dumps({"id": 5, "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": A + ":g1", "t": 2, "op": "clear"}) + "\n"
                        + json.dumps({"id": {"k": "v"}, "t": 3, "op": "clear"}) + "\n" + json.dumps({"id": "", "t": 4, "op": "clear"}) + "\n"
-                       + json.dumps({"id": B + ":g1", "t": "yesterday", "op": "clear"}) + "\n" + json.dumps({"id": B + ":g2", "t": True, "op": "clear"}) + "\n")   # two ids: a shared one let the bool row shadow the string row (the round-one verifier of PR 2032)
+                       + json.dumps({"id": B + ":g1", "t": "yesterday", "op": "clear"}) + "\n" + json.dumps({"id": B + ":g2", "t": True, "op": "clear"}) + "\n"   # two ids: a shared one let the bool row shadow the string row (the round-one verifier of PR 2032)
+                       + json.dumps({"id": A + ":g1", "t": "later", "op": "undo"}) + "\n")   # an UNDO row with a string stamp is skipped too, so A's clear stands (the reading chosen and dated; the first contributor's round one on PR 2032)
         km._CLEARED_MEMO["slot"] = None
         try:
             got = km._cleared_ids()
         except AttributeError as e:
             self.fail("the reader raised on a row that is not an object: %r" % e)
-        self.assertEqual(got, {A + ":g1": 2}, "the array row, the non-string ids, the empty id and the rows whose stamp is not a number (a string, a bool) are skipped, the row beside them loads")
+        self.assertEqual(got, {A + ":g1": 2}, "the array row, the non-string ids, the empty id and the rows whose stamp is not a number (a string, a bool) are skipped, the row beside them loads, and the string-stamped undo row does not undo A's clear")
         self.assertEqual(km._undo_stack_ids(), {A + ":g1"}, "the stack helper reads the same")
         # the undo over such a log answers normally (the second contributor's post-merge note on PR 2025: the stamp stored unchecked, the undo's max over
         # the stamps raised TypeError into the socket handler's catch-all and no account went)
@@ -1898,11 +1899,15 @@ class ActsUnderAFailedWrite(_World):
         row, err = km.post_notice(A, "n1", "a held note", producer="postal", needs_you=True, now=NOW, t=NOW)   # a needs-you notice this page cleared: its row in the log
         self.assertIsNone(err, "premise: the notice posts: %r" % err)
         nid = km._notice_item_id(A, "n1", row["rev"])
+        row2, err2 = km.post_notice(A, "n2", "a second held note", producer="postal", needs_you=True, now=NOW, t=NOW)   # a second notice the log does NOT clear: it must stay on the box through the episode (a held box against an empty one; the first contributor's round one on PR 2032)
+        self.assertIsNone(err2); nid2 = km._notice_item_id(A, "n2", row2["rev"])
+        boxed = lambda: [n["itemId"] for n in km._chat_notices(A) or []]
         log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": nid, "t": 2, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None
         km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        km._cached_feed(NOW, self.live, {"prime": time.time()})   # the pusher's door once: the chat box's reader answers None before the first cached build of a kernel life (alone, this test met that None as an empty box)
         f = km.build_feed(NOW, self.live)
         self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (2, True, False), "the landed read: two dismissed, the button, A's card sealed by the log alone")
-        self.assertNotIn(nid, [n["itemId"] for n in km._chat_notices(A) or []], "premise: the cleared notice is off the chat box")
+        self.assertNotIn(nid, boxed(), "premise: the cleared notice is off the chat box"); self.assertIn(nid2, boxed(), "premise: the uncleared notice is on it")
         outline = lambda: [r for r in km._goal_tree_walk(A, jd.load_goals(A), anchors=False)[0] if r["id"] == A + ":g1"][0]["cleared"]   # the Outline's own call (anchors off)
         archive = lambda: km._ledger_cleared_overlay([{"id": A + ":g1", "depth": 0, "derived": True, "cleared": False, "summary": "", "text": "x"}])
         self.assertTrue(outline(), "premise: the Outline reads A's node cleared"); self.assertEqual(archive(), [], "premise: the archive projection drops the cleared root")
@@ -1910,12 +1915,13 @@ class ActsUnderAFailedWrite(_World):
             log.write_bytes(b"\xff\xfe\x00 not text\n")                        # the log cannot be read: a new file state, the memo's last landed set stands
             f = km.build_feed(NOW, self.live)
             self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (2, True, False), "the pane holds the last landed set (before: zero, no button, the seal lifted): %r" % ({k: f[k] for k in ("dismissedCount", "canUndoClear")},))
-            self.assertNotIn(nid, [n["itemId"] for n in km._chat_notices(A) or []], "the chat box's notice rows hold too (the round-one verifier of PR 2032: unpinned, the set-only reader let the cleared notice back)")
+            self.assertNotIn(nid, boxed(), "the chat box's notice rows hold too (the round-one verifier of PR 2032: unpinned, the set-only reader let the cleared notice back)")
+            self.assertIn(nid2, boxed(), "and the uncleared notice stays on the box: a held box, not an empty one (a projection raising during the fault emptied it and passed)")
             self.assertTrue(outline(), "the Outline's cleared flag holds (the round-one verifier: it flipped to False on the set-only reader)")
             self.assertEqual(archive(), [], "the archive projection keeps dropping the cleared root (the round-one verifier: it stopped on the set-only reader)")
             bell = [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
             self.assertEqual([(n["kind"], n["ok"]) for n in bell], [("refused", False)], "one refused bell row names the file: %r" % km._SYNC_NOTICES)
-            self.assertIn("last-known", bell[0]["text"])
+            self.assertIn("last-known", bell[0]["text"]); self.assertLessEqual(len(bell[0]["text"]), km.SYNC_NOTICE_FIT, "the warm row fits the bell's cut")
             self.assertIn("clears still record, and Undo waits until the file can be read again", bell[0]["text"], "the row's remedy is this file's own: a clear still appends its row and sets the flag while the log cannot be read, only Undo waits (before: the convention's sentence promised refused changes): %r" % bell[0]["text"])
             self.assertNotIn("changes to it are refused", bell[0]["text"])
             km._note_state_fault(km._StateUnreadable(jd.STATE / "session-flags.json", "a stand-in fault"))   # another file keeps the convention's sentence
@@ -1924,12 +1930,20 @@ class ActsUnderAFailedWrite(_World):
             f2 = km.build_feed(NOW, self.live); off = km._feed_off_frame(NOW, self.live)
             self.assertEqual((off["dismissedCount"], off["canUndoClear"]), (2, True), "the off frame holds too")
             self.assertEqual(len([n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]), 1, "a second build and the off frame file no second row: one per episode")
+            # a repair only the nudge walk sees (the dashboard closed: no feed build), then the same bytes again: the walk's clean read ends the bell's
+            # episode too, so the second fault files a second bell row (the first contributor's round one on PR 2032: only the display read's own clean
+            # call ended it, so the same bytes filed a second judge row and no bell row)
+            log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": nid, "t": 2, "op": "clear"}) + "\n")
+            self.assertEqual(set(km._cleared_ids()), {A + ":g1", nid}, "the walk's clean read alone")
+            log.write_bytes(b"\xff\xfe\x00 not text\n")
+            km.build_feed(NOW, self.live)
+            self.assertEqual(len([n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]), 2, "the same bytes after a repair the walk alone saw: a second bell row (before: one, the bell's episode ended only on a clean display read)")
             log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": B + ":g1", "t": 2, "op": "clear"}) + "\n" + json.dumps({"id": nid, "t": 3, "op": "clear"}) + "\n")
             f = km.build_feed(NOW, self.live)
             self.assertEqual(f["dismissedCount"], 3, "a landed read: the pane follows the log again")
             log.write_bytes(b"\xff\xfe\x00 not text either\n")
             km.build_feed(NOW, self.live)
-            self.assertEqual(len([n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]), 2, "the landed read ended the bell's episode: the next fault files again")
+            self.assertEqual(len([n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]), 3, "the landed read ended the bell's episode: the next fault files again")
             # a cold memo: nothing to serve, the empty set, and the row says so
             km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None; km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
             log.write_bytes(b"\xff\xfe\x00 not text at all\n")
@@ -1937,6 +1951,28 @@ class ActsUnderAFailedWrite(_World):
             self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (0, False, True), "a cold memo: the empty set")
             bell = [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
             self.assertEqual(len(bell), 1, "and one refused row: %r" % km._SYNC_NOTICES); self.assertIn("no earlier read", bell[0]["text"], "saying nothing reads as cleared: %r" % bell[0]["text"])
+            self.assertLessEqual(len(bell[0]["text"]), km.SYNC_NOTICE_FIT, "the cold row fits the bell's cut too (the first contributor's round one on PR 2032: 247 characters with a real decode error): %d %r" % (len(bell[0]["text"]), bell[0]["text"]))
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_an_absent_log_is_the_last_landed_state_so_a_path_that_comes_back_unreadable_serves_nothing_cleared(self):
+        """The first contributor's round one on PR 2032: only a landed read of a present file wrote the last-landed slot, so after the log was
+        removed the pane rightly showed nothing cleared, but when the path came back unreadable the display served the set from before the
+        removal: the count jumped back, Undo lit and the cards hid again with no new information about them. The absent state is the last
+        landed one: landed, unlinked, undecodable reads count 0 with no Undo."""
+        log = jd.STATE / "cleared.jsonl"
+        log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n" + json.dumps({"id": B + ":g1", "t": 2, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None
+        km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        f = km.build_feed(NOW, self.live)
+        self.assertEqual((f["dismissedCount"], f["canUndoClear"]), (2, True), "two clears: the count and the button")
+        log.unlink(); km._CLEARED_MEMO["slot"] = None
+        f = km.build_feed(NOW, self.live)
+        self.assertEqual((f["dismissedCount"], f["canUndoClear"]), (0, False), "the log removed: nothing cleared")
+        with contextlib.redirect_stderr(io.StringIO()):
+            log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None
+            f = km.build_feed(NOW, self.live)
+        self.assertEqual((f["dismissedCount"], f["canUndoClear"]), (0, False), "the path back unreadable: still nothing cleared (before: the pre-removal set, the count back at 2 and Undo lit)")
+        rowtext = [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]][-1]["text"]
+        self.assertIn("last-known", rowtext, "and the row calls the absent state the last-known value, which it is: nothing cleared (not the cold memo's row): %r" % rowtext); self.assertNotIn("no earlier read", rowtext)
         log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
     def test_the_two_new_judge_errors_kinds_are_documented(self):

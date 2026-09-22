@@ -41581,6 +41581,9 @@ def _cleared_ids_read():
     if key is not None and slot is not None and slot[0] == key:
         _CLEARED_STATS["served"] += 1
         _cleared_read_fault[0] = slot[2]                 # the served state's fault IS the episode's: a served landed set ends an episode a stat-level fault opened (the second
+        if not slot[2]:
+            _clear_state_fault(path)                     # and the bell's episode with it (the first contributor's round one on PR 2032: only the display read's own clean call ended
+        #                                                  the bell's, so a repair the nudge walk alone saw with the dashboard closed left it standing and the same bytes filed no second row)
         #                                                  contributor's post-merge note on PR 2025: a permission flap on the log's directory set the flag, the lift was served from
         #                                                  the memo with the flag still holding the copy, and the same fault before the next append filed no second row or line)
         return slot[1], slot[2]                          # the slot holds the fault beside the set: a served undecodable state still names it (round three of PR 2025)
@@ -41599,7 +41602,9 @@ def _cleared_ids_read():
             t = o.get("t", 0)
             if isinstance(t, bool) or not isinstance(t, (int, float)):
                 continue                                 # a stamp that is not a number: skipped like an unparseable line (the second contributor's post-merge note on PR 2025: stored
-            #                                              unchecked, the undo's max over the stamps raised TypeError into the socket handler's catch-all, no account)
+            #                                              unchecked, the undo's max over the stamps raised TypeError into the socket handler's catch-all, no account). An UNDO row
+            #                                              stamped so is skipped too and its clear stands (2026-09-22, the first contributor's round one on PR 2032: the kernel stamps
+            #                                              time.time(), so a hand-edited or foreign row is the only source; one reading, pinned in all three readers' tests)
             if o.get("op") == "undo":
                 cur.pop(iid, None)
             else:
@@ -41607,6 +41612,10 @@ def _cleared_ids_read():
     except FileNotFoundError:
         _CLEARED_STATS["derived"] += 1
         _cleared_read_fault[0] = ""                      # absent, or vanished after the stat: nothing cleared, a real state, said nowhere; it ends an episode too
+        _clear_state_fault(path)                         # the bell's episode too
+        _CLEARED_MEMO["landed"] = ((str(path),), {})     # the absent state IS the last landed one: after an unlink the pane shows nothing cleared, and a path that comes back
+        #                                                  unreadable must not serve the set from before the removal (the first contributor's round one on PR 2032: the count jumped
+        #                                                  back, Undo lit and the cards hid again with no new information about them)
         return cur, ""
     except (OSError, ValueError) as e:
         # a PRESENT log that cannot be read (a permission bit, EIO) or whose bytes are not text (UnicodeDecodeError is a ValueError: it raised at the
@@ -41627,6 +41636,7 @@ def _cleared_ids_read():
         return cur, copy
     _CLEARED_STATS["derived"] += 1
     _cleared_read_fault[0] = ""                          # a landed read ends the episode
+    _clear_state_fault(path)                             # and the bell's: every reader's clean read, not the display read's alone (the first contributor's round one on PR 2032)
     if key is not None:
         _CLEARED_MEMO["slot"] = (key, cur, "")
         _CLEARED_MEMO["landed"] = (key, cur)             # the last landed set, for the display readers while the log cannot be read
@@ -41658,7 +41668,7 @@ def _cleared_ids_display():
     if landed is not None and landed[0][0] == str(p):
         _note_state_fault(_StateUnreadable(p, fault, remedy="showing the last-known value; clears still record, and Undo waits until the file can be read again"))
         return landed[1]
-    _note_state_fault(_StateUnreadable(p, fault, remedy="nothing reads as cleared until the file can be read again (no earlier read of it in this kernel's life); clears still record, and Undo waits"))
+    _note_state_fault(_StateUnreadable(p, fault, remedy="nothing reads as cleared until the file reads again (no earlier read this life); clears still record, Undo waits"))   # short: the row fits the bell's cut with a decode error's position digits (SYNC_NOTICE_FIT; the first contributor's round one on PR 2032)
     return cur
 
 def _mark_nodes_cleared(item_ids, value, src="user", why=None):
