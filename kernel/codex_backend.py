@@ -716,10 +716,16 @@ class CodexBackend:
                     # like every bracket end's, is cleared by the next accepted turn, and __init__ re-arms every
                     # queued session at boot, so a message parked at the restart can clear it before the CLI's first
                     # poll after the kernel returns; the wait stops depending on the notice when the CLI judges a
-                    # durable bracket-end record instead, that record's own change.
+                    # durable bracket-end record instead, that record's own change. The notice says what this load
+                    # knows and nothing about the conversation's markers (2026-09-22, the post-merge note on the
+                    # durable bracket): it used to end by claiming that no compaction is marked in the conversation,
+                    # but the clean end appends its compact_boundary to the transcript and then saves the bit to the
+                    # registry row, two writes in one locked section, so a kernel death between them leaves the
+                    # boundary in the transcript with this row still reading compacting, and the wait then exited 1
+                    # quoting a claim the transcript contradicted (_compact_status keeps that order on purpose, and
+                    # says why).
                     s.launch_error = {"text": ("romp restarted while this conversation was compacting; whether "
-                                               "Codex compacted it is unknown, so no compaction is marked in the "
-                                               "conversation"),
+                                               "Codex compacted it is unknown"),
                                       "at": time.time(), "limit": False, "noRetry": True}
                     restart_ended.append(s)
                 self._sessions[sid] = s
@@ -2153,6 +2159,14 @@ class CodexBackend:
             # gone; an end that landed first is found here instead, and nothing is written: the notification is the
             # normalizer's, as with no bracket. An idle re-checks the active too: a bracket compact() re-latched after
             # that end has seen none, and this idle is not its.
+            # Within the section, two writes to two files in a fixed order, the divider to the transcript (_append)
+            # first and the bit to the registry row (_save_compacting_locked) second, kept on purpose (2026-09-22, the
+            # post-merge note on the durable bracket). A kernel death between them leaves the divider recorded with the
+            # row still reading compacting, and the next load fires its unknown-outcome notice over a compaction that
+            # did end, which is why that notice claims nothing about the conversation's markers (_load_registry). The
+            # other order would leave, on the same death, a row reading compacting False with no notice over a
+            # compaction whose divider was never written, and nothing revisits a clean row: a loud notice over a
+            # recorded end beats a silent clean row over a compaction that may never have run.
             wrote = False
             with s.norm_lock:
                 with s.lock:
