@@ -589,3 +589,36 @@ test("remembered: the band re-inserted as a SIBLING by the rebuild rides fixed w
   const rs = rectsOf(lay.tree);
   assert.deepEqual([rs[BAND].y, rs[BAND].h], [800, 200], "the band fixed at the bottom");
 });
+
+// ── round six (the fourth review): the two fixed-unit branches of insertBeside, reachable from a STORED layout whose band is a plain
+//    row sibling (a shape the kit never writes: it seeds the band as a fixed kid of the root column; parse accepts it), so the memory
+//    taken at the first park keeps the band as a ratio kid while the tree fixes it, and a pane whose remembered neighbour is the band
+//    meets a fixed unit ──
+const STORED_ROW_BAND = JSON.stringify({ v: 1, tree: { dir: "row", kids: [{ pane: CHAT }, { pane: FLEET }, { pane: FEED }, { pane: BAND }], ratios: [0.25, 0.25, 0.25, 0.25] }, parked: [] });
+
+test("remembered: a returning pane never wraps a FIXED band into its slot: with the band fixed in a column, the pane whose remembered neighbour is the band falls to its next neighbour (a store-only road)", () => {
+  let lay = parse(STORED_ROW_BAND)!;
+  lay = reconcileShown(lay, shown([CHAT]));                                                      // the outline and the feed hidden: the memory keeps the band a plain row sibling, the tree fixes it
+  assert.equal(shape(lay.tree), "row[chat-pane,tl-pane]");
+  assert.equal(shape(mem(lay)!), "row[chat-pane,fleet-pane,feed-pane,tl-pane]");
+  lay = { ...lay, tree: move(lay.tree, CHAT, BAND, "top") };                                     // the chat dragged above the band: a column now
+  lay = reconcileShown(lay, shown([CHAT, FILES]));                                               // a stranger on beside the chat, no park: the band fixed in the column
+  assert.equal(shape(lay.tree), "col[row[chat-pane,files-pane],tl-pane]");
+  assert.deepEqual((lay.tree as Split).fixed, [null, 200]);
+  lay = reconcileShown(lay, shown([CHAT, FEED, FILES]));                                         // the feed back: its remembered neighbour, the band, is a fixed kid of a column
+  assert.equal(shape(lay.tree), "col[row[chat-pane,feed-pane,files-pane],tl-pane]", "the feed beside the chat, its next remembered neighbour (a wrap would have put the feed inside the band's 200 px slot: col[row[chat-pane,files-pane],row[feed-pane,tl-pane]])");
+  const rs = rectsOf(lay.tree);
+  assert.deepEqual([rs[BAND].y, rs[BAND].h, rs[BAND].w], [800, 200, 1000], "the band full width at its px");
+  assert.ok(rs[FEED].h > 700, "the feed a full-height column: " + JSON.stringify(rs[FEED]));
+});
+
+test("remembered: a returning pane spliced beside a FIXED band in a same-direction split takes an equal share of the ratio kids (a store-only road)", () => {
+  let lay = parse(STORED_ROW_BAND)!;
+  lay = reconcileShown(lay, shown([CHAT]));                                                      // the outline and the feed hidden in one reconcile
+  lay = reconcileShown(lay, shown([CHAT, FILES]));                                               // the files pane on: right of the chat, halving it
+  assert.deepEqual((lay.tree as Split).ratios, [0.5, 0.5, 0]);
+  lay = reconcileShown(lay, shown([CHAT, FEED, FILES]));                                         // the feed back before the band, its remembered neighbour, in the same row: an equal share
+  assert.equal(shape(lay.tree), "row[chat-pane,files-pane,feed-pane,tl-pane]");
+  assert.deepEqual((lay.tree as Split).ratios.map((r) => Math.round(r * 1000) / 1000), [0.333, 0.333, 0.333, 0]);
+  assert.deepEqual((lay.tree as Split).fixed, [null, null, null, 200]);
+});

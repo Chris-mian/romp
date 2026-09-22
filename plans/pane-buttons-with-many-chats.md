@@ -98,9 +98,11 @@ separate group (a chat over its feed inside a row) wraps, so that group comes ba
 The band is the neighbour of last resort only when it is ALL the tree shows (the second review of the feature PR,
 2026-09-21): with a stranger pane shown above the band, a returning pane whose remembered neighbours are all hidden takes
 its default dock beside the stranger instead of a full-width row of its own between the stranger and the band. The cost,
-accepted: the memory is DROPPED at any park made while only strangers and the band are shown (a stranger turned off, a
-second stranger toggled, the band turned off), since none of the hidden panes has a shown neighbour to be re-inserted
-beside; the panes then come back at their default docks around the first one shown, so the shape may match the seed's but
+accepted: at any park made while only strangers and the band are shown (a stranger turned off, a second stranger toggled,
+the band turned off) the HIDDEN panes' remembered places are dropped, since none of them has a shown neighbour to be
+re-inserted beside; the memory itself stands, rebuilt from the strangers' tree, which keeps only their places (the store
+keeps writing it, and a parked stranger keeps its place). The hidden panes then come back at their default docks around the
+first one shown, so the shape may match the seed's but
 the shares are the default dock's (the seed, every pane hidden, a stranger on and off, the three back: 493, 246.5 and 246.5 px
 against the seed's 441.5, 250.2 and 294.3 px at 1000 px), and a non-flat arrangement (the feed under the chat) comes back a flat row.
 With the band OFF the same holds without the band: a pane whose remembered neighbours are all hidden has no place to be
