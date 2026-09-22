@@ -3400,12 +3400,14 @@ def _router_listing_failed_now():
 
 
 def _router_listing_state():
-    """(in_flight, failed) for the CURRENT generation's listing, read as ONE snapshot under _catalog_lock: a reader that
-    took the two in turn could see a listing land between them and word its line by a state that no longer held."""
+    """(in_flight, failed, generation) for the CURRENT generation's listing, read as ONE snapshot under _catalog_lock:
+    a reader that took the fields in turn could see a listing land between them and word its line by a state that no
+    longer held. The generation rides along so the reader can tell whether a flip moved it after the snapshot."""
     with _catalog_lock:
         cur = _ROUTER_GEN[0]
         return (_ROUTER_FETCH_GEN[0] is not None and _ROUTER_FETCH_GEN[0] == cur,
-                _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == cur)
+                _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == cur,
+                cur)
 
 
 def _router_declared_effective():
@@ -3444,6 +3446,9 @@ def _router_apply_declared(reason, gen=None):
     raw = _router_declared_families()
     added = _apply_router_families(raw, gen=gen, reason=reason)   # first: a stale apply does no bookkeeping at all
     if added is None:
+        with _catalog_lock:
+            if _ROUTER_FETCH_GEN[0] == gen:
+                _ROUTER_FETCH_GEN[0] = None   # the flip published the mark with its generation; no thread starts for a stale apply
         return None
     declared = [d for d in raw if not _router_first_party(d)]
     url = (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip()
@@ -3513,6 +3518,10 @@ def _set_router_models(enabled, gt=None):
             return None
         _ROUTER_GEN[0] += 1
         gen = _ROUTER_GEN[0]
+        if enabled and (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip() and _router_fetch_allowed():
+            with _catalog_lock:
+                _ROUTER_FETCH_GEN[0] = gen      # published with the generation: a create between this bump and the
+                #                                 thread's start reads the listing as in flight (review round eleven)
     # The models frame goes out on EVERY applied flip, the stale paths included (the second reviewer's note, 2026-09-22): the gear's line and
     # the pickers redraw from that frame alone, and a flip whose catalog work a later flip superseded still changed the
     # store the frame's readers consult.
@@ -3588,6 +3597,9 @@ def _router_models_boot():
         if on:
             _ROUTER_GEN[0] += 1
             gen = _ROUTER_GEN[0]
+            if (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip() and _router_fetch_allowed():
+                with _catalog_lock:
+                    _ROUTER_FETCH_GEN[0] = gen  # published with the boot's generation, as the flip does
     if not on:
         _router_tell_backend()
         return []
@@ -17451,11 +17463,22 @@ def _reset_unvouched_seed():
     seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
     if not seed or seed == "default":
         return
-    in_flight, failed = _router_listing_state()   # one snapshot, taken BEFORE the vouch: a listing that lands in between
-    #                                               installs the id before it clears its mark, so the vouch below sees it
-    #                                               (the other order reset a pick offered at that moment; review round ten)
+    in_flight, failed, gen = _router_listing_state()   # one snapshot, taken BEFORE the vouch: a listing that lands in
+    #                                                    between installs the id before it clears its mark, so the vouch
+    #                                                    below sees it (the other order reset a pick offered at that
+    #                                                    moment; review round ten)
     if _vouched_model(seed):
         return
+    if not _router_first_party(seed) and not (in_flight or failed):
+        with _catalog_lock:
+            moved = _ROUTER_GEN[0] != gen
+        if moved:
+            # an on flip landed between the snapshot and the vouch: its listing may yet vouch the seed, and the cause
+            # read below would blame the gateway's list for a state one flip old. Held, said so; this row starts on the
+            # account default like the other holds (review round eleven)
+            sys.stderr.write("sdk-defaults model %r is not offered yet; the extra models switch changed while this session "
+                             "was being created, so the seed is kept and this session starts on the account default\n" % seed)
+            return "hold"
     if not _router_first_party(seed) and (in_flight or failed):
         # the gateway's listing for the current generation has not landed (a create right after boot) or FAILED (nothing
         # retries it until the next flip or restart): the seed may be one of the ids that listing carries, so it is no
