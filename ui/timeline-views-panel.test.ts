@@ -646,9 +646,10 @@ test("the lane gear carries the SAME tag editor — the shared builders, never a
 
 test("the lane model menu labels a family by its own label and marks a learned version as new", () => {
   // the family row's text is the family label from /models — no version-table lookup — so the
-  // kernel's alias default ("fable") renders exactly as a pinned id did; ✓ matches the leading word
+  // kernel's alias default ("fable") renders exactly as a pinned id did; ✓ matches the leading word or the whole
+  // badge (a declared gateway id shows verbatim), both sides downcased — current-meta-tick.test.ts executes the rule
   assert.match(SRC, /const item = menu\.createDiv\(\{ text: c\.label \}\);/);
-  assert.match(SRC, /return kind === 'effort' \? cur === value : cur\.startsWith\(value\);/);
+  assert.match(SRC, /return !!v && \(cur === v \|\| cur\.startsWith\(v \+ ' '\)\);/);
   // a version a running session's CLI reported that the seed table lacks (kernel /models `learned`)
   // is offered AND marked — same treatment as the chat's meta-menu, inlined for the foreign document
   assert.match(SRC, /if \(v\.learned\) \{[\s\S]{0,600}row\.createSpan\(\{ text: ' new' \}\)/);
