@@ -69,7 +69,7 @@ test("locked, nothing moves: every draggable gate, both dragstart guards, the me
   assert.match(CSS, /\n\.ctx-sub \.ctx-item\.ctx-item-locked > \.ctx-item-body \{ opacity: 0\.45; \}/, "the dim on the body, so the + keeps full strength (round one, LOW 1)");
   assert.match(CSS, /\n\.ctx-sub \.ctx-item\.ctx-item-locked \{ cursor: default; \}\n\.ctx-sub \.ctx-item\.ctx-item-locked > \.ctx-item-body/);
   assert.match(RENDER, /row\.addEventListener\("click", \(e2\) => \{ e2\.stopPropagation\(\); if \(settings\.tabsLocked\) return; moveUnion\(home, g\);/, "and do nothing");
-  assert.match(RENDER, /settings\.tabCtx, settings\.stripGroupRows, settings\.tabsLocked, settings\.theme,/, "in the strip's signature: the toggle repaints");
+  assert.match(RENDER, /settings\.tabCtx, settings\.stripGroupRows, settings\.tabsLocked, settings\.tabStateBadge, settings\.theme,/, "in the strip's signature: the toggle repaints");
   assert.match(RENDER, /__rompMovableSession = \(sid: unknown\): boolean => typeof sid === "string" && !!sid && !isProvisionalId\(sid\) && !isSubId\(sid\) && !settings\.tabsLocked;/, "the shell's question before a move into another column answers no while locked");
   assert.match(RENDER, /__rompMoveRefusal = \(sid: unknown\): string => typeof sid !== "string" \|\| !sid \|\| isProvisionalId\(sid\) \|\| isSubId\(sid\) \? "not-open" : settings\.tabsLocked \? "locked" : "";/, "…and the reason behind it (round one, MEDIUM 2)");
   assert.match(KERNEL, /function refusal\(f,sid\)\{try\{var w=f&&f\.contentWindow&&f\.contentWindow\.__rompMoveRefusal;return typeof w==='function'\?String\(w\(sid\)\|\|''\):'';\}catch\(e\)\{return '';\}\}/);

@@ -14,6 +14,7 @@ export interface TabStateLike {
   apiAuthErr?: boolean;
   apiRefusal?: boolean;
   needsYou?: boolean | null;   // the FEED's per-session needs-you verdict (build_session's status; null before the first feed build)
+  needsYouCount?: number | null;   // the count of this session's needs-you cards (needsYouCount, additive beside needsYou, the same feed rule tallied); the numbered badge's value, null/absent before the first feed build or from an older kernel (plans/tab-state-badge.md)
 }
 
 /** The tab's state class for a status, or "" for a state with no tab treatment (ready/idle). */

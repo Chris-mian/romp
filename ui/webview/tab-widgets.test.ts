@@ -9,11 +9,23 @@ import * as path from "node:path";
 const STRIP_CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 import type { WidgetStatus, TabWidgetPrefs } from "./tab-widgets";
 
-type El = { tag: string; className: string; textContent: string; title: string; attrs: Record<string, string>; children: El[]; style: Record<string, string>;
-            appendChild: (c: El) => El; setAttribute: (k: string, v: string) => void };
+type El = { tag: string; className: string; textContent: string; title: string; attrs: Record<string, string>; children: El[]; style: Record<string, string>; parent: El | null;
+            appendChild: (c: El) => El; setAttribute: (k: string, v: string) => void; remove: () => void;
+            classList: { add: (...c: string[]) => void; remove: (...c: string[]) => void; contains: (c: string) => boolean; toggle: (c: string, on?: boolean) => void };
+            querySelector: (sel: string) => El | null; getElementsByClassName: (cls: string) => El[] };
+// The tiny DOM applyTabBadgeMode and composeTabRing read: className tokens, a live classList, appendChild/remove that keep
+// a parent backref, and the two lookups applyTabBadgeMode uses (querySelector(".tab-dot") for the left dot it re-inks,
+// getElementsByClassName("tab-badge") for the prior badge it clears). Nothing here is inferred from source: the node is real.
 function mkEl(tag: string): El {
-  const e: El = { tag, className: "", textContent: "", title: "", attrs: {}, children: [], style: {},
-    appendChild: (c) => { e.children.push(c); return c; }, setAttribute: (k, v) => { e.attrs[k] = v; } };
+  const has = (c: string) => e.className.split(/\s+/).filter(Boolean).includes(c);
+  const drop = (c: string) => { e.className = e.className.split(/\s+/).filter((x) => x && x !== c).join(" "); };
+  const put = (c: string) => { if (!has(c)) e.className = (e.className + " " + c).trim(); };
+  const e: El = { tag, className: "", textContent: "", title: "", attrs: {}, children: [], style: {}, parent: null,
+    appendChild: (c) => { c.parent = e; e.children.push(c); return c; }, setAttribute: (k, v) => { e.attrs[k] = v; },
+    remove: () => { if (e.parent) { e.parent.children = e.parent.children.filter((x) => x !== e); e.parent = null; } },
+    classList: { add: (...cs: string[]) => cs.forEach(put), remove: (...cs: string[]) => cs.forEach(drop), contains: has, toggle: (c, on) => { (on === undefined ? !has(c) : on) ? put(c) : drop(c); } },
+    querySelector: (sel) => { const cls = sel.startsWith(".") ? sel.slice(1) : sel; const walk = (n: El): El | null => { for (const ch of n.children) { if (ch.className.split(/\s+/).includes(cls)) return ch; const d = walk(ch); if (d) return d; } return null; }; return walk(e); },
+    getElementsByClassName: (cls) => { const out: El[] = []; const walk = (n: El) => { for (const ch of n.children) { if (ch.className.split(/\s+/).includes(cls)) out.push(ch); walk(ch); } }; walk(e); return out; } };
   return e;
 }
 const store = new Map<string, string>();
@@ -163,7 +175,7 @@ test("source: the strip and the gear draw from this ONE module; the dot rule has
   assert.equal((SRC.match(/tabDotClass\(status\.state\)/g) || []).length, 1, "the dot slot's one site (tab-dot-slot.test.ts's rule)");
   assert.match(SRC, /^export function tabCtxGauge\(ctxStr: string, ctxColor\?: number\[\]\): HTMLElement \{/m, "the gauge builder lives here now (the ctx widget calls it)");
   const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
-  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the rings compose from here too (2026-09-14)");
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the rings compose from here too (2026-09-14); badge mode via applyTabBadgeMode (the state badge)");
   assert.doesNotMatch(RENDER, /^function tabCtxGauge\(/m, "one builder, not two");
   assert.equal((RENDER.match(/const dotCls = tabDotClass\(st\);/g) || []).length, 0, "render.ts no longer appends the dot itself");
   const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
@@ -343,4 +355,104 @@ test("the built-in rings: registration order IS RING_ORDER; a ring renders no no
   assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "needsInput", needsYou: true }, P()), "ring-needs-you", "red over magenta");
   assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "retrying", needsYou: true }, P()), "ring-waiting-on-you", "magenta over amber");
   assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "needsInput", needsYou: true }, P({ on: { "ring-needs-you": false } })), "ring-waiting-on-you", "the red switched off hands the tab to the magenta");
+});
+
+// ── the state badge (plans/tab-state-badge.md): applyTabBadgeMode, run only in badge mode, swaps the Needs-you ring for a
+//    numbered magenta top-right dot, moves retrying to the left status dot (amber), leaves Blocked's red ring alone, and is
+//    a no-op when neither the Needs-you nor the retrying predicate holds. The count and the dot are read from the DOM the
+//    function builds, never inferred from source. Ring-mode byte-identity (badge off → the ring, no dot) is render.ts's
+//    gate, pinned by the served lab; here the function's own behaviour over the status matrix is the subject.
+const badgeTab = (stale = "") => {   // a strip tab as render hands it to applyTabBadgeMode: the ring composeTabRing painted, and the "before" .tab-dot slot already inside
+  const t = mkEl("div"); t.className = ("tab " + stale).trim();
+  const dot = mkEl("span"); dot.className = "tab-dot none"; t.appendChild(dot);
+  return t;
+};
+const leftDot = (t: El) => t.children.find((c) => classes(c).includes("tab-dot"))!;
+const badgeOf = (t: El) => t.children.find((c) => classes(c).includes("tab-badge")) || null;
+
+test("state badge: the Needs-you dot is a black numbered magenta dot, per state at 1, 3 and 12, singular at 1, '99+' past 99, a bare dot when the count is absent", () => {
+  for (const [n, text, title] of [[1, "1", "1 thing needs you"], [3, "3", "3 things need you"], [12, "12", "12 things need you"], [99, "99", "99 things need you"], [100, "99+", "100 things need you"]] as const) {
+    const t = badgeTab("ring-waiting-on-you");   // the magenta ring the render painted; badge mode replaces it with the dot
+    const dot = W.applyTabBadgeMode(t as unknown as HTMLElement, "s", { state: "working", needsYou: true, needsYouCount: n }, P()) as unknown as El | null;
+    assert.ok(dot, n + ": a Needs-you dot is drawn");
+    assert.deepEqual(classes(dot!), ["tab-badge", "badge-needs"], n + ": the dot's classes");
+    assert.equal(dot!.textContent, text, n + ": the black number");
+    assert.equal(dot!.title, title, n + ": the hover count");
+    assert.equal(badgeOf(t)!.textContent, text, n + ": the one dot lives on the tab");
+    assert.deepEqual(classes(t).filter((c) => c.startsWith("ring-")), [], n + ": the run-state ring gave way to the dot");
+    assert.deepEqual(classes(leftDot(t)), ["tab-dot", "none"], n + ": the left status dot is untouched (Needs you rides the run state, it is not one)");
+  }
+  for (const st of [{ state: "working", needsYou: true }, { state: "working", needsYou: true, needsYouCount: 0 }, { state: "working", needsYou: true, needsYouCount: null }] as WidgetStatus[]) {
+    const t = badgeTab(); const dot = W.applyTabBadgeMode(t as unknown as HTMLElement, "s", st, P()) as unknown as El | null;
+    assert.ok(dot, JSON.stringify(st) + ": still a dot");
+    assert.equal(dot!.textContent, "", JSON.stringify(st) + ": no number, a bare dot (an older kernel, or nothing pending)");
+    assert.equal(dot!.title, "needs you", JSON.stringify(st) + ": the plain title");
+  }
+});
+
+test("state badge: retrying moves to the left status dot (amber), no top-right dot; Needs you rides retrying, so both show at once", () => {
+  const t = badgeTab("ring-retrying");
+  const dot = W.applyTabBadgeMode(t as unknown as HTMLElement, "s", { state: "retrying" }, P());
+  assert.equal(dot, null, "retrying alone: no Needs-you dot");
+  assert.equal(badgeOf(t), null, "…and none on the tab");
+  assert.deepEqual(classes(leftDot(t)), ["tab-dot", "retrying"], "the left dot goes amber");
+  assert.equal(leftDot(t).title, "retrying an API error on its own", "…with its hover");
+  assert.deepEqual(classes(t).filter((c) => c.startsWith("ring-")), [], "the amber ring gave way");
+  const t2 = badgeTab("ring-retrying ring-waiting-on-you");
+  const dot2 = W.applyTabBadgeMode(t2 as unknown as HTMLElement, "s", { state: "retrying", needsYou: true, needsYouCount: 2 }, P()) as unknown as El | null;
+  assert.ok(dot2, "both: the Needs-you dot is drawn");
+  assert.equal(dot2!.textContent, "2", "…with its count");
+  assert.deepEqual(classes(leftDot(t2)), ["tab-dot", "retrying"], "and the left dot is still amber");
+  assert.deepEqual(classes(t2).filter((c) => c.startsWith("ring-")), [], "both run-state rings gave way");
+});
+
+test("state badge: the close glyph outranks the count pill (z 4 > z 3) so a wide '99+' never blocks the x (low, the manager 2026-09-22)", () => {
+  assert.match(STRIP_CSS, /\.tab-badge \{[^}]*z-index: 3;/, "the badge sits at z-index 3");
+  assert.match(STRIP_CSS, /\.tab:hover \.tab-close, \.tab\.active \.tab-close \{ position: relative; z-index: 4; \}/, "the close glyph rises above the badge on hover and active, so its click target stays clickable over the pill");
+});
+
+test("state badge: with the Status dot widget off there is no slot, so retrying KEEPS its amber ring rather than vanishing; the re-ink toggles the slot's class, never overwriting it", () => {
+  // no ".tab-dot" child (the dot widget is switched off): the amber ring has nowhere to move, so it stays
+  const noSlot = mkEl("div"); noSlot.className = "tab ring-retrying";
+  const r = W.applyTabBadgeMode(noSlot as unknown as HTMLElement, "s", { state: "retrying" }, P());
+  assert.equal(r, null, "no Needs-you dot");
+  assert.deepEqual(classes(noSlot).filter((c) => c.startsWith("ring-")), ["ring-retrying"], "the amber ring is kept: badge mode does not drop it for nothing when there is no dot slot");
+  assert.equal(badgeOf(noSlot), null, "and no dot");
+  // the re-ink toggles the slot's class rather than overwriting className: an option class the dot carries survives
+  const t = mkEl("div"); t.className = "tab ring-retrying";
+  const slot = mkEl("span"); slot.className = "tab-dot none extra-opt"; t.appendChild(slot);
+  W.applyTabBadgeMode(t as unknown as HTMLElement, "s", { state: "retrying" }, P());
+  assert.deepEqual(classes(leftDot(t)), ["tab-dot", "extra-opt", "retrying"], "the slot keeps its other classes: none removed, retrying added, extra-opt untouched");
+  assert.deepEqual(classes(t).filter((c) => c.startsWith("ring-")), [], "with a slot, the ring moved to the dot");
+});
+
+test("state badge: Blocked is untouched, its red ring and the left dot stay, no top-right dot; a blocked-and-needs-you tab keeps the red ring AND wears the dot", () => {
+  for (const st of [{ state: "awaiting" }, { state: "blocked", apiTooLong: true }, { state: "blocked", apiAuthErr: true }] as WidgetStatus[]) {
+    const t = badgeTab("ring-needs-you");   // the red ring composeTabRing painted
+    const dot = W.applyTabBadgeMode(t as unknown as HTMLElement, "s", st, P());
+    assert.equal(dot, null, JSON.stringify(st) + ": no top-right dot for Blocked");
+    assert.equal(badgeOf(t), null, JSON.stringify(st) + ": none on the tab");
+    assert.deepEqual(classes(t).filter((c) => c.startsWith("ring-")), ["ring-needs-you"], JSON.stringify(st) + ": the red ring stays (Blocked keeps its ring in both modes)");
+    assert.deepEqual(classes(leftDot(t)), ["tab-dot", "none"], JSON.stringify(st) + ": the left dot is untouched");
+  }
+  const t = badgeTab("ring-needs-you");
+  const dot = W.applyTabBadgeMode(t as unknown as HTMLElement, "s", { state: "awaiting", needsYou: true, needsYouCount: 4 }, P()) as unknown as El | null;
+  assert.ok(dot, "the Needs-you dot rides the red ring");
+  assert.equal(dot!.textContent, "4", "…carrying its count");
+  assert.deepEqual(classes(t).filter((c) => c.startsWith("ring-")), ["ring-needs-you"], "the red ring is kept, never removed");
+});
+
+test("state badge: a no-op when nothing needs you and the tab is not retrying; idempotent (one dot on a reused tab, its count refreshed)", () => {
+  for (const st of [{ state: "working" }, { state: "idle" }, { state: "ready", needsYou: false }, { state: "closed", needsYou: true }] as WidgetStatus[]) {
+    const t = badgeTab(); const dot = W.applyTabBadgeMode(t as unknown as HTMLElement, "s", st, P());
+    assert.equal(dot, null, JSON.stringify(st) + ": no dot");
+    assert.equal(badgeOf(t), null, JSON.stringify(st) + ": nothing added");
+    assert.deepEqual(classes(leftDot(t)), ["tab-dot", "none"], JSON.stringify(st) + ": the left dot is untouched");
+  }
+  const t = badgeTab();
+  W.applyTabBadgeMode(t as unknown as HTMLElement, "s", { state: "working", needsYou: true, needsYouCount: 3 }, P());
+  W.applyTabBadgeMode(t as unknown as HTMLElement, "s", { state: "working", needsYou: true, needsYouCount: 7 }, P());
+  const badges = t.children.filter((c) => classes(c).includes("tab-badge"));
+  assert.equal(badges.length, 1, "one dot after two paints");
+  assert.equal(badges[0].textContent, "7", "the count refreshed on the reused tab");
 });

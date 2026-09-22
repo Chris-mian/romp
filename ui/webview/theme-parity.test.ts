@@ -247,6 +247,13 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     const share = Number(shareM![1]) / 100;   // the share the sheet carries, mixed as the sheet mixes it (the first contributor's note on PR 2014: a fixed 0.9 beside a literal pin let a lockstep re-ink pass)
     const okBorder = [0, 1, 2].map((i) => Math.round(accent[i] * share + box[i] * (1 - share))) as [number, number, number];
     assert.ok(contrast(okBorder, box) >= 3, `${name}: the ok button's resting border (the accent at ${shareM![1]}%) on the box wash = ${contrast(okBorder, box).toFixed(2)} < 3`);
+    // the state badge's digit is 9px bold TEXT (plans/tab-state-badge.md), so the 4.5:1 text floor, NOT the 3:1 chrome
+    // floor. Black on the dark magenta reads ~6.07:1 and clears; on the lighter light-theme magenta (#a21caf) black is
+    // only 3.32:1, short of 4.5, so the light theme inks the digit in the state's own foreground token (--st-needs-fg,
+    // white: ~6.32:1). The CSS is `color:#000` with a `body.theme-light` override to var(--st-needs-fg). The user chose
+    // black in the dark theme; this is the user's call to veto (the manager relayed the light-theme swap, 2026-09-22).
+    const digit: [number, number, number] = name === "light" ? tok("--st-needs-fg") : [0, 0, 0];
+    assert.ok(contrast(digit, rings.ask) >= 4.5, `${name}: the badge's digit ink on the magenta = ${contrast(digit, rings.ask).toFixed(2)} < 4.5`);
   }
   // the light value itself, so a re-ink is a deliberate change here and in feed.css (tab-rings.test.ts pins the two sheets equal)
   assert.match(block(css, "body.theme-light {"), /--st-needs-bg: #a21caf; --st-needs-fg: #ffffff;/);

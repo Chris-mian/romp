@@ -237,7 +237,7 @@ class ChatNotices(unittest.TestCase):
         src = inspect.getsource(km.build_session)
         self.assertIn('"needsYou": needs_you,', src)
         self.assertIn('"notices": _chat_notices(sid),', src, "beside needsYou on the STATUS, so a status-only delta carries a decision")
-        self.assertIn("sig.append(_feed_needs_input_of(sid) is True)\n", KSRC)
+        self.assertIn("sig.append((_feed_needs_input_of(sid) is True, _feed_needs_input_count_of(sid) or 0))\n", KSRC)
         self.assertIn('sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))', KSRC, "the chat signature: a hold posted or a decision taken brings a frame forward")
         labels = km._CHAT_SIG_LABELS
         self.assertEqual(labels[labels.index("needs") + 1], "notices", "one label per signature position, the new one right after needs (the builder appends them in that order)")

@@ -158,6 +158,41 @@ export function composeTabRing(tab: HTMLElement, sid: string, status: WidgetStat
   tab.classList.add(win.ring);
   return win.ring;
 }
+/** Badge mode (the tabStateBadge setting, plans/tab-state-badge.md): adjust a tab already composed for ring mode. The
+ *  magenta (Needs you) and amber (retrying) rings give way, the Needs-you state becomes a top-right magenta dot and the
+ *  retrying state moves to the left status dot in amber; the red ring (Blocked) stays, since Blocked outranks the run
+ *  states. Called once per tab per paint from render.ts ONLY when the setting is on, so ring mode never touches this and
+ *  stays byte-identical to today. Idempotent: clears any prior badge dot first (a reused tab). The Needs-you dot carries
+ *  status.needsYouCount as a black number (the numbered style, plans/tab-state-badge.md), "99+" past 99, a bare dot when
+ *  the count is absent (an older kernel). Returns the Needs-you dot when one is drawn, else null. */
+export function applyTabBadgeMode(tab: HTMLElement, sid: string, status: WidgetStatus, prefs: TabWidgetPrefs): HTMLElement | null {
+  for (const d of Array.from(tab.getElementsByClassName("tab-badge"))) d.remove();
+  tab.classList.remove("ring-waiting-on-you");   // the Needs-you dot (appended below) replaces the magenta ring, whether or not there is a status-dot slot
+  const rt = tabWidget("ring-retrying");
+  if (rt && ringOn(rt, sid, status, prefs)) {
+    const slot = tab.querySelector<HTMLElement>(".tab-dot");
+    if (slot) {
+      // move the amber from the ring to the left status dot: toggle the class, never overwrite the slot's className
+      // (it may carry an option class), and only THEN drop the ring, so the amber never vanishes.
+      tab.classList.remove("ring-retrying");
+      slot.classList.remove("none");
+      slot.classList.add("retrying");
+      slot.title = "retrying an API error on its own";
+    }
+    // else: the Status dot widget is switched off, so there is no slot to carry the amber; keep the retrying ring
+    // (badge mode still shows retrying, rather than dropping the ring for nothing).
+  }
+  const nu = tabWidget("ring-waiting-on-you");
+  if (nu && ringOn(nu, sid, status, prefs)) {
+    const dot = el("span", "tab-badge badge-needs");
+    const n = typeof status.needsYouCount === "number" ? status.needsYouCount : 0;
+    if (n > 0) dot.textContent = n > 99 ? "99+" : String(n);   // a black number sized by the CSS (a pill for two-plus digits); empty stays a bare dot (an older kernel with no count)
+    dot.title = n > 0 ? (n === 1 ? "1 thing needs you" : n + " things need you") : "needs you";
+    tab.appendChild(dot);
+    return dot;
+  }
+  return null;
+}
 /** A settings row's live rendering of a ring: its class when its predicate lights on its demo status and its switch is
  *  on, else null (the row's demo is a plain tab). */
 export function ringDemoClass(w: TabWidget, prefs: TabWidgetPrefs): string | null {
