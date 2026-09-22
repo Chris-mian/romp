@@ -51,13 +51,24 @@ class FakeEl {
   remove(): void { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); }
   tabs(): FakeEl[] { return this.children.filter((c) => c.has("tab") && !c.has("tab-add")); }
   heads(): FakeEl[] { return this.children.filter((c) => c.has("tab-group-head")); }
+  getElementsByClassName(cls: string): FakeEl[] { const out: FakeEl[] = []; const walk = (n: FakeEl) => { for (const c of n.children) { if (c.has(cls)) out.push(c); walk(c); } }; walk(this); return out; }
+  querySelector(sel: string): FakeEl | null { const cls = sel.startsWith(".") ? sel.slice(1) : sel; const walk = (n: FakeEl): FakeEl | null => { for (const c of n.children) { if (c.has(cls)) return c; const d = walk(c); if (d) return d; } return null; }; return walk(this); }
 }
+
+// item 8: the REAL applyTabBadgeMode, bound into the paint below so its `.tab-dot` re-ink runs for real (a mutant of
+// its lookup must red). tab-widgets' `el` uses document.createElement and it may read localStorage at load; the
+// eval'd renderTabs uses its OWN prelude document, so these globals only serve the required module.
+(globalThis as any).document ??= { createElement: (t: string) => new FakeEl(t) };
+(globalThis as any).localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+(globalThis as any).navigator ??= { platform: "Linux x86_64" };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const TW = require("./tab-widgets") as typeof import("./tab-widgets");   // bundled by esbuild (a runtime createRequire would not find it on disk)
 
 /** A recorded call of the group-header stub: what renderTabs handed makeGroupHead for one section. */
 type HeadCall = { name: string | null; color: string; ids: string[]; folded: boolean; active: boolean; hidden: string[] };
 
 type Hooks = {
-  FakeEl: typeof FakeEl; bar: FakeEl; mslot: FakeEl | null; only: string; hidden: Set<string>; down: Set<string>;
+  FakeEl: typeof FakeEl; applyTabBadgeMode: typeof import("./tab-widgets").applyTabBadgeMode; dotAfter: boolean; bar: FakeEl; mslot: FakeEl | null; only: string; hidden: Set<string>; down: Set<string>;
   notes: Record<string, string>; keyHint: string; lens: unknown; unions: TagUnion[]; tips: unknown[];
   aftermaths: [number, number][]; rowPaints: number; tagSyncs: number; placeholders: number;
   groupsRaw: string | null;   // the stored tab-groups blob the plan reads (localStorage's, in the page)
@@ -100,9 +111,11 @@ function lift(): (hooks: Hooks) => Api {
     // the tab-title widgets (T379): a faithful stand-in for the registry's composition over the real tab-state rules, so the
     // dot slot and the gauge land as the strip paints them; the hot-key store is empty here
     const composeTabWidgets = (tab, slot, sid, status, prefs) => {
-      if (slot === "before") { const cls = H.tabDotClass(status.state); if (cls) { const d = el("span", cls); const t = H.tabDotTitle(status.state); if (t) d.title = t; tab.appendChild(d); } }
-      else if (slot === "after") { const st = status.state; if (status.ctx && settings.tabCtx !== "never" && st !== "compacting" && st !== "closed") { const pct = parseInt(status.ctx, 10) || 0; if (settings.tabCtx === "always" || pct >= 50) tab.appendChild(el("span", "tab-ctx")); } }
+      const dot = () => { const cls = H.tabDotClass(status.state); if (cls) { const d = el("span", cls); const t = H.tabDotTitle(status.state); if (t) d.title = t; tab.appendChild(d); } };
+      if (slot === "before") { if (!H.dotAfter) dot(); }   // H.dotAfter: compose the status dot AFTER the name, the dragged-past case (item 8)
+      else if (slot === "after") { if (H.dotAfter) dot(); const st = status.state; if (status.ctx && settings.tabCtx !== "never" && st !== "compacting" && st !== "closed") { const pct = parseInt(status.ctx, 10) || 0; if (settings.tabCtx === "always" || pct >= 50) tab.appendChild(el("span", "tab-ctx")); } }
     };
+    const applyTabBadgeMode = H.applyTabBadgeMode;
     const tabHotkey = () => "";
     const window = { __rompShowStrip: false }; const openSettingsOn = () => {};   // the tab-widgets gear mounts only where a gear can be reached (VS Code's strip or the shell); neither here
     const el = (tag, cls) => new H.FakeEl(tag, cls);
@@ -184,7 +197,7 @@ const groups = (patch: Record<string, unknown>) => JSON.stringify({ on: true, co
 /** Two landed sessions and one placeholder, the first active; every knob at a quiet default (no tags: the
  *  flat strip). */
 function world(): { H: Hooks; api: Api; sessions: Map<string, any>; tabMeta: Map<string, any>; settings: any } {
-  const H: Hooks = { FakeEl, bar: new FakeEl("div"), mslot: null, only: "", hidden: new Set(), down: new Set(), notes: {},
+  const H: Hooks = { FakeEl, applyTabBadgeMode: TW.applyTabBadgeMode, dotAfter: false, bar: new FakeEl("div"), mslot: null, only: "", hidden: new Set(), down: new Set(), notes: {},
                      keyHint: "Open a session (K)", lens: { all: true }, unions: [], tips: [], aftermaths: [], rowPaints: 0, tagSyncs: 0, placeholders: 0,
                      groupsRaw: null, phone: false, heads: [],
                      planStrip, parseTabGroups, headWords, revealedTabs, tabStateClass, tabRingId, RING_ORDER, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
@@ -524,4 +537,20 @@ test("executed: the restore's fire-time membership is the paint's own rule: a ta
   assert.equal(H.timers.length, 1, "the placeholder-only tab is visible, so the restore is scheduled");
   H.timers[0]();
   assert.deepEqual(H.activated, ["a"], "…and fires: it paints, so it restores");
+});
+
+test("badge mode executed: the real applyTabBadgeMode re-inks an AFTER-side status dot to retrying, ring off (item 8)", () => {
+  const { H, api, sessions, settings } = world();
+  H.dotAfter = true;                                   // the status dot composed AFTER the name (dragged past it): the case the before-side stub never drove
+  settings.tabStateBadge = true;                       // badge mode: appendTabAfterWidgets runs applyTabBadgeMode after both sides
+  sessions.set("a", session("web", "retrying"));       // a soft-blocked, auto-retrying session
+  api.set({ sessions, settings });
+  api.renderTabs();
+  const tabA = H.bar.tabs().find((t) => t.dataset.id === "a");
+  assert.ok(tabA, "the retrying tab painted");
+  const dot = tabA!.querySelector(".tab-dot");
+  assert.ok(dot, "the status-dot slot exists, composed after the name");
+  assert.deepEqual(dot!.className.split(/\s+/).filter(Boolean).sort(), ["retrying", "tab-dot"],
+    "the real applyTabBadgeMode found the after-side slot and inked it amber; a lookup stopping at the label would miss it and leave tab-dot none");
+  assert.equal(tabA!.has("ring-retrying"), false, "and took the retrying ring off the tab");
 });

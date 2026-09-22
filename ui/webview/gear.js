@@ -241,7 +241,7 @@ var GEAR_HTML =
   '</span></label>' +
   "<label class='rs-row'><input type=checkbox id=rs-statebadge>" +
   '<span><b>State badge instead of the outline ring</b>' +
-  '<span class=rs-sub>A small dot at the tab top-right shows Needs you (magenta, with a count of what needs you), and retrying moves to the left status dot. Blocked keeps its red ring. The dashed rings stay when this is off.</span>' +
+  '<span class=rs-sub>A small dot at the tab top-right shows Needs you (magenta, with a count of what needs you), and retrying moves to the left status dot while the Status dot widget is on. Blocked keeps its red ring. The dashed rings stay when this is off.</span>' +
   '</span></label>' +
   // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own), following the strip's section
   "<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>" +

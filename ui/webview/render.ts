@@ -54,7 +54,7 @@ import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionR
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
 import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
-import { composeTabWidgets, composeTabRing, applyTabBadgeMode, ringSwitch, tabHotkey, miniChord } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry, and the rings too, one class at a time; miniChord is the chord the strip signature reads
+import { composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry, and the rings too, one class at a time; miniChord is the chord the strip signature reads
 import { titleWithKey, keyHint, chordOf, effectiveChord, loadOverrides, saveOverride, KEYS_EVENT } from "./keybindings";
 import { hotkeyCommandId, loadTabKeys, rememberTabKey, forgetTabKey, goneTabKeys, renamedTabKeys } from "./tab-keys";   // per-tab hot keys (2026-09-10): the set and its bookkeeping; the keycap on the tab is the T379 widget, read from the same store
 import { notePendingFlag, dropPendingFlag, applyFrameFlags, type PendingFlags, type SessionFlag } from "./flag-pending";   // the per-session view flags' pending guard (review 2026-09-14)
@@ -5998,10 +5998,13 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // the chat footer's chips wears the SAME colour here, from the one helper the footer calls (metaColor), so the
   // association learned on the footer is reproduced and the two cannot drift. Model and effort carry the colormap
   // rank; the permission mode is untinted on the footer too, and the backend carries no tone, so they stay plain.
-  const rows: Array<[string, string, string?]> = [];
+  const rows: Array<[string, string, string?, string?]> = [];   // [key, value, value colour?, value aria-label?]
   if (s.status.needsYou) {   // the Needs-you count's phrase, reachable on hover in BOTH modes: the badge dot's own title is inert (pointer-events none), and ring mode shows no number at all
     const nc = typeof s.status.needsYouCount === "number" ? s.status.needsYouCount : 0;
-    rows.push(["Needs you", nc > 0 ? (nc === 1 ? "1 thing needs you" : nc + " things need you") : "needs you", "var(--st-needs-bg)"]);
+    // the key already says the state, so the value drops the redundant "need you" and inherits the tip's foreground
+    // (the magenta token fell under the 4.5:1 floor on this raised surface); the full phrase rides the value's
+    // aria-label, from the one helper the badge dot reads (tab-widgets.ts needsYouPhrase).
+    rows.push(["Needs you", nc > 0 ? (nc === 1 ? "1 thing" : nc + " things") : "", undefined, needsYouPhrase(nc)]);
   }
   if (s.cwd) rows.push(["📁", s.cwd]);
   if (s.gitBranch) rows.push(["⎇", s.gitBranch]);
@@ -6053,11 +6056,12 @@ function showTabTip(tab: HTMLElement, s: Session): void {
           + `${s.status.authLive === "key" ? "the API key" : "the login"} — this session bills that`
         : s.status.auth === "key" ? "API key"
           : (loginName(s.status) ? `Login (${loginName(s.status)})` : "Login")]);
-  for (const [k, v, color] of rows) {
+  for (const [k, v, color, aria] of rows) {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
     const ve = el("span", "tab-tip-v"); ve.textContent = v;
     if (color) ve.style.color = color;   // the footer chip's colour, the label stays dim (T372); the Mail sub-line's dim
+    if (aria) ve.setAttribute("aria-label", aria);   // a value whose visible text is shortened (the Needs-you count) keeps its full phrase for a screen reader
     r.appendChild(ke); r.appendChild(ve); tip.appendChild(r);
   }
   // context BATTERY (the same widget as the bottom bar), not a text %
@@ -6480,7 +6484,10 @@ function makeSkeletonTab(id: string): HTMLElement {
   label.replaceChildren(...hostNameNodes(name, id));
   tab.appendChild(label);
   if (status) appendTabAfterWidgets(tab, { id, status });
-  tab.title = "Not loaded yet — click to load";
+  // a cold tab draws the badge (appendTabAfterWidgets) but registers no hover tip, so the Needs-you phrase would
+  // otherwise live in the badge's aria-label alone in badge mode and nowhere in ring mode; carry it in the native
+  // title too, when the status needs you, from the one helper the badge dot and the rich-tip row read.
+  tab.title = (status && status.needsYou ? needsYouPhrase(typeof status.needsYouCount === "number" ? status.needsYouCount : 0) + ". " : "") + "Not loaded yet, click to load";
   const closeBtn = el("span", "tab-close");
   closeBtn.textContent = "×";
   // a live session: its ✕ routes through the same End-session confirm as a loaded tab; a DEAD one (the kernel's

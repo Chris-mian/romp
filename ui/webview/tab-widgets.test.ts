@@ -175,7 +175,7 @@ test("source: the strip and the gear draw from this ONE module; the dot rule has
   assert.equal((SRC.match(/tabDotClass\(status\.state\)/g) || []).length, 1, "the dot slot's one site (tab-dot-slot.test.ts's rule)");
   assert.match(SRC, /^export function tabCtxGauge\(ctxStr: string, ctxColor\?: number\[\]\): HTMLElement \{/m, "the gauge builder lives here now (the ctx widget calls it)");
   const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
-  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the rings compose from here too (2026-09-14); badge mode via applyTabBadgeMode (the state badge)");
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the rings compose from here too (2026-09-14); badge mode via applyTabBadgeMode (the state badge)");
   assert.doesNotMatch(RENDER, /^function tabCtxGauge\(/m, "one builder, not two");
   assert.equal((RENDER.match(/const dotCls = tabDotClass\(st\);/g) || []).length, 0, "render.ts no longer appends the dot itself");
   const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
@@ -491,4 +491,11 @@ test("state badge: a no-op when nothing needs you and the tab is not retrying; i
   const badges = t.children.filter((c) => classes(c).includes("tab-badge"));
   assert.equal(badges.length, 1, "one dot after two paints");
   assert.equal(badges[0].textContent, "7", "the count refreshed on the reused tab");
+});
+
+test("needsYouPhrase: the ONE Needs-you phrase for the badge aria-label, the rich-tip row and a cold tab's title", () => {
+  assert.equal(W.needsYouPhrase(3), "3 things need you");
+  assert.equal(W.needsYouPhrase(1), "1 thing needs you", "the singular");
+  assert.equal(W.needsYouPhrase(0), "needs you", "no count (an older kernel with the needsYou bit): the bare phrase");
+  assert.equal(W.needsYouPhrase(150), "150 things need you", "never capped, so the phone leg and the tooltip agree with the desktop label above 99");
 });

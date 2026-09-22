@@ -57440,8 +57440,10 @@ def _needs_input_sids(feed):
 def _needs_input_counts(feed):
     """Per-session COUNT of needs-you cards, for the numbered badge (plans/tab-state-badge.md): the SAME _card_needs_you
     rule _needs_input_sids reads, tallied by sid, so the tab dot's number agrees with the membership set (needsYou) and the
-    Needs-you COLUMN, which read the one rule. The Needs-you BOX HEADER counts the actionable rows (it drops hard stops
-    and notices, _needs_you_rows) and so can read lower; it is not this tally. Placeholders count too, as in _needs_input_sids."""
+    Needs-you COLUMN, which read the one rule. The Needs-you BOX HEADER counts the rows it shows: the goal rows
+    (_needs_you_rows, which drops hard stops and provisional cards) plus the needs-you notice rows _chat_notices appends,
+    so it keeps notices and is smaller than the column only by hard stops and provisional cards; it is not this tally.
+    Placeholders count too, as in _needs_input_sids."""
     counts = {}
     for a in (feed.get("asks") or []):
         sid = a.get("sid")
@@ -62104,8 +62106,9 @@ _CHAT_MOBILE_CSS = (
     # #mcur.colored so it wins at equal specificity)
     "#mcur.ask{border-color:var(--st-needs-bg,#d946ef);border-style:dashed}"
     # the STATE BADGE on the phone (plans/tab-state-badge.md): under badge mode the desktop tab wears a magenta dot with
-    # a count instead of the ring, and the phone (which scrapes the tabs) follows: the dot sits at the chip's/row's own
-    # top-right corner, retrying moves to the leading dot in amber.
+    # a count instead of the ring, and the phone (which scrapes the tabs) follows. On the phone the dot is an in-flow flex
+    # item in the chip's/row's own line, before the chevron and the close (both order:1), not the desktop's absolute
+    # corner; retrying moves to the leading dot in amber.
     "#mcur .wd.retrying{background:var(--st-retrying-bg,#e67e22)}"
     ".m-badge{position:static;flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--st-needs-bg,#d946ef)}"   # RESERVE room, do not stack: an inline flex item so the pill never covers the chevron or the close glyph (the second contributor on PR 2017, 2026-09-22); the chevron and close get order:1 so they stay at the right edge
     ".m-badge:not(:empty){width:auto;min-width:14px;height:14px;border-radius:7px;padding:0 3px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;font-size:9px;line-height:1}"
@@ -62209,7 +62212,7 @@ if(!t.classList.contains('tab')||!t.hasAttribute('data-id'))return;
 var lab=t.querySelector('.tab-label'),id=t.getAttribute('data-id'),copy=t.getAttribute('data-copy');
 out.push({key:'t:'+id+'/'+(copy===null?'':copy),id:id,copy:copy,name:(lab?lab.textContent:id),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
-working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),retrying:!!t.querySelector('.tab-dot.retrying'),ask:t.classList.contains('ring-waiting-on-you'),badgeNeeds:!!t.querySelector('.tab-badge'),needsCount:(function(){var b=t.querySelector('.tab-badge');return b?b.textContent:'';})(),active:t.classList.contains('active'),
+working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),retrying:!!t.querySelector('.tab-dot.retrying'),ask:t.classList.contains('ring-waiting-on-you'),badgeNeeds:!!t.querySelector('.tab-badge'),needsCount:(function(){var b=t.querySelector('.tab-badge');return b?b.textContent:'';})(),needsLabel:(function(){var b=t.querySelector('.tab-badge');return b?(b.getAttribute('aria-label')||''):'';})(),active:t.classList.contains('active'),
 ph:t.classList.contains('tab-placeholder')});});return out;}
 // A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
 // federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
@@ -62230,8 +62233,8 @@ function rowUpdate(row,s){row.classList.toggle('active',!!s.active);
 row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
 row.classList.toggle('pending',pendingId===s.id);
 row.classList.toggle('ask',!!s.ask);   // RING mode: the desktop tab's magenta ring (ring-waiting-on-you, a widget with a switch; switched off it puts no class on the tab, so the phone follows): a card of this session's needs you
-var mb=row.querySelector('.m-badge');   // BADGE mode: the desktop tab wears a .tab-badge dot with a count instead of the ring; the phone shows the same dot at the row's corner (plans/tab-state-badge.md)
-if(s.badgeNeeds){if(!mb){mb=document.createElement('span');mb.className='m-badge';mb.setAttribute('role','img');row.appendChild(mb);}mb.textContent=s.needsCount||'';mb.setAttribute('aria-label',s.needsCount?(s.needsCount==='1'?'1 thing needs you':s.needsCount+' things need you'):'needs you');}
+var mb=row.querySelector('.m-badge');   // BADGE mode: the desktop tab wears a .tab-badge dot with a count instead of the ring; the phone shows the same dot in the row's flow, before the close (plans/tab-state-badge.md)
+if(s.badgeNeeds){if(!mb){mb=document.createElement('span');mb.className='m-badge';mb.setAttribute('role','img');row.appendChild(mb);}mb.textContent=s.needsCount||'';mb.setAttribute('aria-label',s.needsLabel||'needs you');}
 else if(mb)mb.remove();
 var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg||s.retrying){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
@@ -62266,8 +62269,8 @@ var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg
 wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working&&!act.retrying));
 wd.classList.toggle('retrying',!!(act&&act.retrying&&!act.working&&!act.awaitbg));
 cur.classList.toggle('ask',!!(act&&act.ask));   // RING mode: the current chip wears the magenta ring too
-var cb=cur.querySelector('.m-badge');   // BADGE mode: the Needs-you dot with its count at the chip's corner (plans/tab-state-badge.md)
-if(act&&act.badgeNeeds){if(!cb){cb=document.createElement('span');cb.className='m-badge';cb.setAttribute('role','img');cur.appendChild(cb);}cb.textContent=act.needsCount||'';cb.setAttribute('aria-label',act.needsCount?(act.needsCount==='1'?'1 thing needs you':act.needsCount+' things need you'):'needs you');}
+var cb=cur.querySelector('.m-badge');   // BADGE mode: the Needs-you dot with its count in the chip's flow, before the chevron and the close (plans/tab-state-badge.md)
+if(act&&act.badgeNeeds){if(!cb){cb=document.createElement('span');cb.className='m-badge';cb.setAttribute('role','img');cur.appendChild(cb);}cb.textContent=act.needsCount||'';cb.setAttribute('aria-label',act.needsLabel||'needs you');}
 else if(cb)cb.remove();
 if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
