@@ -600,7 +600,7 @@ test("remembered: a returning pane never wraps a FIXED band into its slot: with 
   let lay = parse(STORED_ROW_BAND)!;
   lay = reconcileShown(lay, shown([CHAT]));                                                      // the outline and the feed hidden: the memory keeps the band a plain row sibling, the tree fixes it
   assert.equal(shape(lay.tree), "row[chat-pane,tl-pane]");
-  assert.equal(shape(mem(lay)!), "row[chat-pane,fleet-pane,feed-pane,tl-pane]");
+  assert.equal(mem(lay) ? shape(mem(lay)!) : "none", "row[chat-pane,fleet-pane,feed-pane,tl-pane]", "the memory keeps the band a plain row sibling");
   lay = { ...lay, tree: move(lay.tree, CHAT, BAND, "top") };                                     // the chat dragged above the band: a column now
   lay = reconcileShown(lay, shown([CHAT, FILES]));                                               // a stranger on beside the chat, no park: the band fixed in the column
   assert.equal(shape(lay.tree), "col[row[chat-pane,files-pane],tl-pane]");
@@ -621,4 +621,37 @@ test("remembered: a returning pane spliced beside a FIXED band in a same-directi
   assert.equal(shape(lay.tree), "row[chat-pane,files-pane,feed-pane,tl-pane]");
   assert.deepEqual((lay.tree as Split).ratios.map((r) => Math.round(r * 1000) / 1000), [0.333, 0.333, 0.333, 0]);
   assert.deepEqual((lay.tree as Split).fixed, [null, null, null, 200]);
+});
+
+// ── the queue fold (the lows of PRs 1900 and 1920 still true at main, 2026-09-22) ──
+test("planTabDrop: a refusal reads as a sentence, the house style of the shell's notices", () => {
+  const sets = { "3": ["s-c"] };
+  assert.deepEqual(planTabDrop({ target: FEED, strip: true }, "s-a", sets), { kind: "refuse", why: "A session joins a chat pane's strip, not this pane." });
+  assert.deepEqual(planTabDrop({ target: "chat-pane-3", edge: "left" }, "s-c", sets), { kind: "refuse", why: "This session is already alone in this pane." });
+});
+
+test("seedLayout: a tiny EXPLICIT weight is a sliver too and takes the fair weight, like an absent one", () => {
+  // the 1920 read: grow {chat: 60, notes: 1} seeded a 25 px column, since the fair-weight guard covered an absent key only
+  const lay = seedLayout({ row: [CHAT, "notes-pane"], band: false, bandPx: 0, grow: { chat: 60, notes: 1 } });
+  const root = lay.tree as Split;
+  assert.deepEqual(leaves(root), [CHAT, "notes-pane"]);
+  assert.ok(Math.abs(root.ratios[0] - 0.5) < 1e-9 && Math.abs(root.ratios[1] - 0.5) < 1e-9, "the notes pane takes the fair weight (the chat's 60), an equal share: " + root.ratios.join(","));
+  const kept = seedLayout({ row: [CHAT, FLEET, FEED], band: false, bandPx: 0, grow: { chat: 60, fleet: 34, feed: 40 } });
+  assert.ok(Math.abs((kept.tree as Split).ratios[1] - 34 / 134) < 1e-9, "a real weight stands");
+});
+
+test("reconcileShown: a pane toggled on at runtime docks where the rail lists it, not at the right end", () => {
+  // the 1920 read: the Artifacts pane sat right of every data pane while the rail listed it before them, and the position persisted
+  let lay: Layout = seedLayout({ row: [CHAT, FLEET, FEED, "notes-pane"], band: true, bandPx: 200, grow: { chat: 60, fleet: 34, feed: 40 } });
+  lay = reconcileShown(lay, { row: [CHAT, FLEET, FEED, "artifacts-pane", "notes-pane"], band: true, bandPx: 200, grow: {} });
+  assert.deepEqual(leaves(lay.tree), [CHAT, FLEET, FEED, "artifacts-pane", "notes-pane", BAND], "the Artifacts pane between the feed and the notes pane, as the rail lists it");
+  // a pane the rail lists first among the generic ones, with none before it in the tree but the shipped columns: right of the feed
+  let lay2: Layout = seedLayout({ row: [CHAT, FEED], band: false, bandPx: 0, grow: {} });
+  lay2 = reconcileShown(lay2, { row: [CHAT, FEED, "docs-pane", "notes-pane"], band: false, bandPx: 0, grow: {} });
+  assert.deepEqual(leaves(lay2.tree), [CHAT, FEED, "docs-pane", "notes-pane"], "two panes toggled on land in rail order");
+  // the memory still wins for a pane that has a remembered place
+  let lay3: Layout = seedLayout({ row: [CHAT, "artifacts-pane", FEED], band: false, bandPx: 0, grow: {} });
+  lay3 = reconcileShown(lay3, { row: [CHAT, FEED], band: false, bandPx: 0, grow: {} });
+  lay3 = reconcileShown(lay3, { row: [CHAT, FEED, "artifacts-pane"], band: false, bandPx: 0, grow: {} });
+  assert.deepEqual(leaves(lay3.tree), [CHAT, "artifacts-pane", FEED], "its remembered place, between the chat and the feed, over the rail's order");
 });

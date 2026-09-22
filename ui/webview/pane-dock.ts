@@ -148,18 +148,29 @@ export function seedLayout(sh: Shown): Layout {
   // a pane the grow store never named (a data pane defined after the store was written, the Artifacts pane on an older
   // store) takes a FAIR weight, the mean of the named ones: the shipped OFF path gives a new pane 40 beside 34..60, and the
   // rail's re-show takes the average (__rompGrowFair); a weight of 1 beside those seeded an 8 px column (the phase-two read)
-  const known = row.map((id) => sh.grow[growKey(id)]).filter((g): g is number => typeof g === "number" && g > 0);
+  // a PARTIAL store (some of the row's panes named, the rest absent) is not a shape the shipped writers produce, since they persist
+  // the whole merged object (the 1920 read); the fair weight covers it all the same, over the named panes of the row.
+  // a TINY explicit weight is a sliver too (the 1920 read: grow {chat: 60, notes: 1} seeded a 25 px column): a weight under a tenth
+  // of the named weights' mean counts as unnamed and takes the fair weight, computed over the rest
+  const named = row.map((id) => sh.grow[growKey(id)]).filter((g): g is number => typeof g === "number" && g > 0);
+  const mean = named.length ? named.reduce((a, b) => a + b, 0) / named.length : 1;
+  const real = (g: unknown): g is number => typeof g === "number" && g >= mean / 10;
+  const known = named.filter(real);
   const fair = known.length ? known.reduce((a, b) => a + b, 0) / known.length : 1;
-  for (const id of row) { const g = sh.grow[growKey(id)]; grow[id] = typeof g === "number" && g > 0 ? g : fair; }
+  for (const id of row) { const g = sh.grow[growKey(id)]; grow[id] = real(g) ? g : fair; }
   const tree = seedRowOverFixedBand(row, grow, sh.band ? BAND : null, sh.bandPx > 0 ? sh.bandPx : DEFAULT_BAND_PX);
   return { v: 1, tree, parked: [] };
 }
 
 /** A newly shown pane's DEFAULT DOCK: where the rail's "open" puts it (section 5). A chat column goes right of
  *  the last chat leaf; the outline right of the chat side; the feed right of the outline (else the chat side);
- *  the files right of the rightmost non-band leaf; the chat itself left of everything; the band at the bottom
- *  of the whole tree as a fixed kid. Returns the target leaf and edge, or null to dock against the root. */
-export function defaultDock(tree: Node, pane: PaneId): { target: PaneId; edge: Edge } | null {
+ *  the chat itself left of everything; the band at the bottom of the whole tree as a fixed kid; every other pane
+ *  (the files pane, the Artifacts pane, a data pane) where the RAIL lists it when `row` (the shown panes in rail
+ *  order) is given: right of the nearest pane the rail lists before it that the tree holds, else left of the
+ *  nearest it lists after, else the right end (the 1920 read: a pane toggled on at runtime landed at the right
+ *  end, so the Artifacts pane sat right of every data pane while the rail listed it before them). Returns the
+ *  target leaf and edge, or null to dock against the root. */
+export function defaultDock(tree: Node, pane: PaneId, row?: ReadonlyArray<PaneId>): { target: PaneId; edge: Edge } | null {
   const ls = leaves(tree).filter((p) => !isBand(p));
   if (!ls.length) return isBand(pane) || !has(tree, BAND) ? null : { target: BAND, edge: "top" };   // only the band shown: a pane comes back ABOVE it, never beside it as a row (the 1985 read)
   const chats = ls.filter(isChatPane);
@@ -173,7 +184,14 @@ export function defaultDock(tree: Node, pane: PaneId): { target: PaneId; edge: E
     if (lastChat) return { target: lastChat, edge: "right" };
     return { target: ls[0], edge: "left" };
   }
-  return { target: ls[ls.length - 1], edge: "right" };   // files, the artifacts pane, a data pane: the right end (plans/panes-as-data.md section 4)
+  if (row) {
+    const i = row.indexOf(pane);
+    if (i >= 0) {
+      for (let j = i - 1; j >= 0; j--) if (!isBand(row[j]) && has(tree, row[j])) return { target: row[j], edge: "right" };
+      for (let j = i + 1; j < row.length; j++) if (!isBand(row[j]) && has(tree, row[j])) return { target: row[j], edge: "left" };
+    }
+  }
+  return { target: ls[ls.length - 1], edge: "right" };   // files, the artifacts pane, a data pane with no rail order given: the right end (plans/panes-as-data.md section 4)
 }
 
 // ── THE REMEMBERED ARRANGEMENT (plans/pane-buttons-with-many-chats.md section 6; the user 2026-09-21: a hide remembers the
@@ -341,7 +359,7 @@ export function reconcileShown(cur: Layout, sh: Shown): Layout {
       lay = { ...lay, tree: { pane: p }, parked: lay.parked.concat(dropped).filter((q) => q !== p) };
       continue;
     }
-    let d = defaultDock(lay.tree, p);
+    let d = defaultDock(lay.tree, p, sh.row);
     if (hint && isChatPane(p) && p !== CHAT && has(lay.tree, hint.target) && hint.target !== p) { d = hint; hint = null; }   // the dropped tab's pane lands where the outline said
     else if (lay.remembered && p !== BAND) {
       // the remembered place (section 6): beside the neighbour it had, with the share it had; the band keeps its own road below
@@ -396,13 +414,13 @@ export type TabDrop = { kind: "join"; col: number } | { kind: "moveColumn"; pane
 export function planTabDrop(zone: Zone, sid: string, sets: Record<string, string[]> | null | undefined): TabDrop {
   if (zone.strip) {
     const col = colNumberOf(zone.target);
-    return col === null ? { kind: "refuse", why: "a session joins a chat pane's strip, not this pane" } : { kind: "join", col };
+    return col === null ? { kind: "refuse", why: "A session joins a chat pane's strip, not this pane." } : { kind: "join", col };
   }
   const owner = ownerColumn(sets, sid);
   const alone = owner !== 1 && Array.isArray(sets && sets[String(owner)]) && sets![String(owner)].length === 1;
   if (alone) {
     const pane = "chat-pane-" + owner;
-    if (pane === zone.target) return { kind: "refuse", why: "this session is already alone in this pane" };
+    if (pane === zone.target) return { kind: "refuse", why: "This session is already alone in this pane." };
     return { kind: "moveColumn", pane };
   }
   return { kind: "newColumn" };
