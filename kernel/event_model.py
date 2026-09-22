@@ -719,7 +719,7 @@ def _cache_pop_locked(path):
     """Under _JSONL_CACHE_LOCK: drop `path`'s entry and its weight; returns the weight (0 when absent). Every pop
     that actually removed an entry counts under `released`, a /perf STATISTIC only (#1735): these entries are
     decoded json, acyclic, freed by reference counting whether frozen or not, so a pop is never a gc-freeze reclaim
-    trigger (the reclaim keys on a cyclic owner's note and the backstop, not on `released`)."""
+    trigger (the reclaim keys on the freeze controller's observed ended-session judgement and the backstop, not on `released`)."""
     ent = _JSONL_CACHE.pop(path, None)
     if ent is None:
         return 0

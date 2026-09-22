@@ -11,14 +11,11 @@ switch, a weakref oracle over the freeze, and the pusher glue. Every fixture is 
 tests unfreeze in tearDown so the freeze never leaks to another test.
 """
 import gc
-import importlib.machinery
 import json
 import os
 import sys
 import tempfile
-import threading
 import time
-import types
 import unittest
 import weakref
 from datetime import datetime, timezone
@@ -167,7 +164,7 @@ class EndedTruthTable(unittest.TestCase):
         fake.calls.clear()
         self.assertEqual(c.tick(inserts=1), "release", "the tick observes the cyclic ended session and reclaims")
         self.assertEqual(fake.calls, ["unfreeze", "collect", "freeze"], "a reclaim unfreezes, collects, re-freezes")
-        self.assertIsNotNone(w, "the weakref object outlives (the FakeGc does not actually collect)")
+        self.assertIsNotNone(w(), "the cyclic session stays alive under the FakeGc (its collect is a no-op): this pins the reconcile KIND, not the collection")
 
 
 class DoubleController:
@@ -348,6 +345,45 @@ class RecordCacheIsAStat(unittest.TestCase):
         self.assertNotIn("backstop", kinds, "and no backstop fired over six re-reads: %r" % kinds)
         self.assertEqual(c.reclaims, 0, "zero reclaims across the run of re-reads (the design's near-zero): %r" % c.reclaims)
 
+    def test_freezing_forces_no_whole_transcript_reread(self):
+        # a freeze must not make the reader re-read a file it already cached: re-parsing the UNCHANGED file after a
+        # freeze moves neither `inserts` nor `wholeReads` (restored from the shipped NoRereadChurn, ported to tick)
+        em = load_source("romp_event_model_reread", os.path.join(BIN, "romp-event-model"))
+        d = tempfile.mkdtemp()
+        sid = "11111111-2222-3333-4444-cccccccc0002"
+        rows = [_uline(sid, 1_700_000_000, "ask", "u1"), _aline(sid, 1_700_000_030, "answer", "a1", "u1"),
+                _uline(sid, 1_700_000_600, "again", "u2", "a1"), _aline(sid, 1_700_000_630, "ok", "a2", "u2")]
+        p = self._write(d, sid, rows)
+        em.parse_session(p, rompuuid=sid)
+        s1 = em.record_cache_stats()
+        c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
+        c.tick(int(s1["inserts"]))                   # freeze the loaded records
+        em.parse_session(p, rompuuid=sid)            # re-parse the unchanged file
+        s2 = em.record_cache_stats()
+        self.assertEqual(s2["inserts"], s1["inserts"], "no new insert: the freeze did not evict the cached records")
+        self.assertEqual(s2.get("wholeReads"), s1.get("wholeReads"), "no new whole read: the freeze forced no reread")
+
+    def test_the_load_fold_in_fires_off_the_real_insert_counter(self):
+        # ten real parses grow the record cache's insert counter past the threshold; the tick folds them in and the
+        # frozen count rises (restored from the shipped NoRereadChurn, ported to tick)
+        em = load_source("romp_event_model_loadctr", os.path.join(BIN, "romp-event-model"))
+        d = tempfile.mkdtemp()
+        c = gf.GcFreeze(enabled=True, load_trees=8, gc=gc)
+
+        def parse(i):
+            sid = "11111111-2222-3333-4444-bbbbbbbb%04d" % i
+            rows = [_uline(sid, 1_700_000_000, "ask", "u1"), _aline(sid, 1_700_000_030, "answer", "a1", "u1"),
+                    _uline(sid, 1_700_000_600, "again", "u2", "a1"), _aline(sid, 1_700_000_630, "ok", "a2", "u2")]
+            em.parse_session(self._write(d, sid, rows), rompuuid=sid)
+            return int(em.record_cache_stats()["inserts"])
+        parse(0)
+        self.assertEqual(c.tick(int(em.record_cache_stats()["inserts"])), "initial", "the first parse makes the initial freeze")
+        for i in range(1, 11):                       # ten more real parses grow the real insert counter past the threshold
+            inserts = parse(i)
+        frozen_before = gc.get_freeze_count()
+        self.assertEqual(c.tick(inserts), "load", "the tick reads the REAL insert counter grown past the threshold and folds the load in")
+        self.assertGreater(gc.get_freeze_count(), frozen_before, "the fold-in froze the newly loaded objects out of the collector's walk")
+
 
 class KernelKnob(unittest.TestCase):
     """The kernel-side knob fallback, executed at import: a bad ROMP_GC_FREEZE_LOAD_TREES falls back to the default,
@@ -378,33 +414,118 @@ class KernelKnob(unittest.TestCase):
         self.assertEqual(err0, "", "and nothing said for a valid, floored value")
 
 
-class SessionEndPopsRegister(unittest.TestCase):
-    """Every session-end pop registers the ended session with the controller (via _note_ended), so the controller
-    measures its cyclicity at the idle tick. Executed: _note_ended reaches the injected note with the session and
-    its worker thread. Pinned: exactly three call sites, so deleting a note at any pop (the mutant the verifier
-    named) reddens; the truth table above pins the judgement each registered session then gets."""
-    def test_the_helper_registers_and_the_three_pop_sites_call_it(self):
-        import inspect
-        import re as _re
-        sbmod = load_source("romp_sdk_backend_pops", os.path.join(ROOT, "kernel", "sdk_backend.py"))
-        seen = []
-        sbmod.set_ended_note(lambda session, thread: seen.append((session, thread)))
-        self.addCleanup(lambda: sbmod.set_ended_note(None))
+def _install_fake_sdk():
+    """The verifier's fake claude_agent_sdk: a client that stalls after the init frame, so a real SdkBackend
+    connects and runs a session thread without the real CLI. Installed in sys.modules before sdk_backend loads."""
+    import asyncio
+    import importlib.machinery as _mach
+    import types as _types
 
-        class StubBackend:
-            state_dir = tempfile.mkdtemp()
-            def _update_reg(self, *a, **k):
-                pass
-            def _log(self, *a, **k):
-                pass
-        s = sbmod.SdkSession(StubBackend(), {"sid": "11111111-2222-3333-4444-555555555555", "name": "web", "cwd": "/tmp"})
-        sbmod._note_ended(s)
-        self.assertEqual(len(seen), 1, "_note_ended registers the ended session with the injected note")
-        self.assertIs(seen[0][0], s, "the session is passed through")
-        self.assertIs(seen[0][1], s.thread, "and its worker thread, for the tick to read is_alive")
-        # every session-end pop calls _note_ended: exactly three sites (deleting a call at any pop reddens)
-        calls = len(_re.findall(r"\n[ \t]+_note_ended\(", inspect.getsource(sbmod)))
-        self.assertEqual(calls, 3, "the three session-end pops (stop, kill, run-to-exit) each call _note_ended: %d" % calls)
+    class _StandIn(_types.ModuleType):
+        def __getattr__(self, name):
+            if name.startswith("__"):
+                raise AttributeError(name)
+            cls = type(name, (), {"__init__": lambda self, *a, **k: self.__dict__.update(k)})
+            setattr(self, name, cls)
+            return cls
+
+    class SystemMessage:
+        def __init__(self, subtype, data=None):
+            self.subtype = subtype
+            self.data = data or {}
+
+    class FakeClient:
+        def __init__(self, options=None, transport=None):
+            self.options = options
+            self._q = asyncio.Queue()
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def query(self, prompt, session_id="default"):
+            async for turn in prompt:
+                await self._q.put(turn)
+        async def interrupt(self):
+            pass
+        async def get_context_usage(self):
+            return {"percentage": 2, "model": "claude-x"}
+        async def get_server_info(self):
+            return {}
+        async def receive_messages(self):
+            await self._q.get()
+            yield SystemMessage("init", {"session_id": getattr(self.options, "session_id", None) or "fsid",
+                                         "model": "claude-x", "permissionMode": "acceptEdits"})
+            while True:
+                await asyncio.sleep(3600)
+
+    m = _StandIn("claude_agent_sdk")
+    m.__spec__ = _mach.ModuleSpec("claude_agent_sdk", None)
+    m.__file__ = "<test stand-in>"
+    m.ClaudeAgentOptions = type("ClaudeAgentOptions", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+    m.ClaudeSDKClient = FakeClient
+    m.SystemMessage = SystemMessage
+    m.AssistantMessage = type("AssistantMessage", (), {"__init__": lambda self, content=None, model=None: self.__dict__.update(content=content or [], model=model)})
+    m.ResultMessage = type("ResultMessage", (), {"__init__": lambda self, **k: self.__dict__.update(k)})
+    m.TextBlock = type("TextBlock", (), {"__init__": lambda self, text="": self.__dict__.update(text=text)})
+    sys.modules["claude_agent_sdk"] = m
+
+
+class SessionEndPopsRegister(unittest.TestCase):
+    """Executed: a real SdkBackend driven to each of its three session-end pops (run-to-exit, kill, conserve-close)
+    through the fake SDK registers the ended session with the controller. A spy sees one registration per pop, with
+    the session and its worker thread; the run-to-exit registers though its `client` is already None, so re-adding
+    a `client is not None` guard at a pop (the round-one defect) would drop it and redden here."""
+    @classmethod
+    def setUpClass(cls):
+        _install_fake_sdk()
+        cls.sb = load_source("romp_sdk_backend_pops", os.path.join(ROOT, "kernel", "sdk_backend.py"))
+
+    def _backend(self, tag):
+        d = tempfile.mkdtemp(prefix="gcf-pops-" + tag + "-")
+        open(os.path.join(d, "session-hosts"), "w").write("off")
+        return self.sb.SdkBackend(d, "/bin/true", lambda *a, **k: None), d
+
+    def _wait(self, pred, timeout=15.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def _connected(self, tag, name):
+        be, d = self._backend(tag)
+        sid = be.spawn(name, d)
+        self.assertTrue(be.connect(sid), "connect refused")
+        self.assertTrue(self._wait(lambda: be.sessions.get(sid) and be.sessions[sid].client is not None), "never connected")
+        return be, d, sid
+
+    def test_each_of_the_three_session_end_pops_registers_the_ended_session(self):
+        seen = []
+        self.sb.set_ended_note(lambda session, thread: seen.append((session, thread)))
+        self.addCleanup(lambda: self.sb.set_ended_note(None))
+        # run to exit through _on_session_gone: shutdown ends the loop, its own thread pops with client cleared
+        be, d, sid = self._connected("exit", "web")
+        s = be.sessions[sid]; th = s.thread
+        n = len(seen)
+        s.shutdown()
+        self.assertTrue(self._wait(lambda: not th.is_alive()), "the session thread never finished")
+        self.assertTrue(self._wait(lambda: len(seen) > n), "_on_session_gone registered the ended session")
+        reg_s, reg_t = seen[-1]
+        self.assertIs(reg_s, s, "the session is registered")
+        self.assertIs(reg_t, th, "with its worker thread")
+        self.assertIsNone(s.client, "run-to-exit clears client, yet the pop still registered (a client guard here would drop it)")
+        # kill
+        be2, d2, sid2 = self._connected("kill", "api")
+        n = len(seen)
+        be2.kill(sid2)
+        self.assertTrue(self._wait(lambda: len(seen) > n), "kill registered the ended session")
+        # conserve-close (the stop pop)
+        be3, d3, sid3 = self._connected("close", "tests")
+        self.assertTrue(self._wait(lambda: be3.conserve_idle(sid3), 8.0), "never conserve-idle")
+        n = len(seen)
+        be3.conserve_close(sid3)
+        self.assertTrue(self._wait(lambda: len(seen) > n), "conserve_close registered the ended session")
 
 
 class KernelGlue(unittest.TestCase):

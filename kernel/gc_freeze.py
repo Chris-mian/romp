@@ -29,11 +29,19 @@ such, then drop them). Exact on every path, no per-path reasoning. A BOUNDED BAC
 `backstop_foldins` load fold-ins) covers any ended owner nobody registered. The record cache's
 `released` counter is a /perf statistic, never a trigger: its entries are acyclic.
 
+The thread test rests on CPython's own threading: a running session and its worker Thread reference each
+other (the Thread holds the session as its `_target`), and `Thread.run` deletes `_target` in a `finally`
+when it returns, so once the thread has finished it no longer holds the session. A live ref whose thread
+has finished is therefore held by a DIFFERENT surviving cycle (a traceback frame, a stray reference), the
+reclaim's target; and a session whose thread never started reads as finished (`is_alive()` False), which
+is correct, since an unstarted thread holds no cycle to wait on.
+
 A request that arrives during a reconcile waits that one collection; the idle boundary is the best
 moment for it, not a guarantee none arrives. Default on; `ROMP_GC_FREEZE=off` (or `0`/`false`) off.
 """
 import gc as _gc_mod
 import os
+import threading
 import time
 import weakref
 
@@ -67,7 +75,8 @@ def load_trees_from_env(env=None):
 
 class GcFreeze:
     """The freeze controller. `gc` and `clock` are injected so a test drives a fake collector or a real one; the
-    kernel passes the real `gc`. Never takes a lock: the caller runs it on the pusher thread at the idle boundary."""
+    kernel passes the real `gc`. The `tick`/`_run` path runs on the pusher thread; `note_ended` runs on every
+    thread that ends a session (the HTTP handler, housekeeping, a worker), so a small lock guards the ended list."""
 
     def __init__(self, enabled=True, load_trees=DEFAULT_LOAD_TREES, backstop_foldins=DEFAULT_BACKSTOP_FOLDINS,
                  gc=_gc_mod, clock=time.perf_counter):
@@ -80,6 +89,7 @@ class GcFreeze:
         self._ins_mark = 0           # cache inserts at the last freeze
         self._foldins = 0            # load fold-ins since the last reclaim (the backstop counts these)
         self._ended = []             # (weakref(session), weakref(thread)|None) registered at each session-end pop
+        self._ended_lock = threading.Lock()   # note_ended runs on other threads than the tick; guard the list
         self.freezes = 0             # initial freeze plus load fold-ins
         self.reclaims = 0            # unfreeze/collect/re-freeze passes (a cyclic ended ref, or the backstop)
         self.last_ms = 0.0           # the last reconcile's collection pause
@@ -88,30 +98,36 @@ class GcFreeze:
 
     def note_ended(self, session, thread=None):
         """Register an ended session for the idle tick to judge (a weakref, never a strong ref, so it can die by
-        reference counting). `thread` is the session's worker thread; the tick reads whether it still runs."""
+        reference counting). `thread` is the session's worker thread; the tick reads whether it still runs. Called
+        from whatever thread ended the session, so it takes the ended lock."""
         if not self.enabled:
             return
         try:
-            self._ended.append((weakref.ref(session), weakref.ref(thread) if thread is not None else None))
+            pair = (weakref.ref(session), weakref.ref(thread) if thread is not None else None)
         except TypeError:
-            pass                     # an object that cannot be weak-referenced: the backstop still covers it
+            return                   # an object that cannot be weak-referenced: the backstop still covers it
+        with self._ended_lock:
+            self._ended.append(pair)
 
     def resolve_ended(self):
         """Judge the registered ended sessions by OBSERVATION and return whether a reclaim is owed. A dead ref died
         by reference counting (acyclic, dropped, no reclaim); a live ref whose thread still runs is not garbage yet
         (kept); a live ref whose thread has finished is a cycle the collector must take (a reclaim, dropped). Never
-        reclaims for a dead ref: that is the whole point of measuring instead of guessing."""
+        reclaims for a dead ref: that is the whole point of measuring instead of guessing. Judges IN PLACE under the
+        ended lock, so a registration landing on another thread mid-judgement is never dropped."""
         keep, reclaim = [], False
-        for sref, tref in self._ended:
-            if sref() is None:                       # died by refcount: acyclic, gone, nothing to reclaim
-                continue
-            t = tref() if tref is not None else None
-            if t is not None and t.is_alive():
-                keep.append((sref, tref))            # the worker thread still runs: not garbage yet, judge again next tick
-            else:
-                reclaim = True                       # alive with its thread finished: a surviving cycle
-        self._ended = keep
-        return reclaim
+        with self._ended_lock:
+            ended = self._ended
+            self._ended = keep                       # new registrations land in `keep` while we judge the old list
+            for sref, tref in ended:
+                if sref() is None:                   # died by refcount: acyclic, gone, nothing to reclaim
+                    continue
+                t = tref() if tref is not None else None
+                if t is not None and t.is_alive():
+                    keep.append((sref, tref))        # the worker thread still runs: not garbage yet, judge again next tick
+                else:
+                    reclaim = True                   # alive with its thread finished: a surviving cycle
+        return reclaim                               # `keep` is already self._ended (set under the lock); no racy rebind here
 
     def tick(self, inserts):
         """One idle-boundary pass: judge the ended sessions, then run the owed operation. Returns the kind run, or
