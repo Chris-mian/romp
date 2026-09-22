@@ -269,6 +269,73 @@ class OneListingPerChange(_Listing):
                          "compacting read first: the end is read with the bit still up, a loud end to the wait")
         self.assertEqual(self._stats()[0]["built"], 2)
 
+    def _loud_end_landing_on_the_first_read(self):
+        """The two seams stubbed as the order case above stubs them: SID mid-compaction with no notice, and the Codex loud
+        end (the compacting bit down and the launch-error notice up, written together) landing on SID's first seam read
+        after the returned list is armed, once, since the seams call the hook after every read for SID and a second landing
+        would say nothing about the order (2026-09-22). Returns (landed, notice, memos): append "armed" to `landed` right
+        before the read under test, and it reads ["landed"] once the end has landed; `memos` records the thread's pair memo
+        as it stood at that read, where the memo-less branch is decided (a memo checked absent after the build alone says
+        only that none was LEFT open: a build that opened one around itself and closed it in a finally would pass that
+        check while the branch this pin is about is no longer the one taken, the review of this pin, 2026-09-22)."""
+        comp, errs, landed, memos = {SID: True, SID2: False}, {}, [], []
+        notice = {"text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was",
+                  "at": NOW + 1.5, "limit": False, "noRetry": True}
+
+        def land():
+            if landed == ["armed"]:
+                memo = getattr(km._live_scope, "listing_pairs", None)
+                memos.append(None if memo is None else dict(memo))    # as it stood at this read, not as it is filled later
+                landed[:] = ["landed"]; comp[SID] = False; errs[SID] = notice
+        self._compaction_seams(comp, errs, land=land)
+        return landed, notice, memos
+
+    def test_a_requests_own_row_build_with_no_refresh_open_reads_the_pair_compacting_then_notice(self):
+        """The request path: a request thread's own build (the serve before the first cycle, the fault build after a
+        cycle's build raised, GET /sessions/by-fsid) runs with no pair memo open on its thread, so the pair reader takes
+        its memo-less branch and reads the two seams fresh, compacting then notice. The order case above arms its hook
+        inside the listing's key, the refresh path, and pinned nothing here: with the memo-less branch rewritten to read
+        the launch error before the compacting bit, this module and every sibling that stubs the two seams stayed green
+        (the post-merge review of the listing pairing, 2026-09-22). Under that rewrite a loud end landing between the two
+        reads gives a request's row (False, None), the clean end's shape, and `romp compact --wait` polling the route
+        before the first cycle or while the kept listing is stale from a fault prints done over an uncompacted thread.
+        The pin: the memo asserted absent before one direct row build on this thread and at the read the end lands on,
+        the row's name and dir checked as the head's before its pair is read (the builder's catch-all fallback row, which
+        any other field's raise produces, carries (False, None) too, so a red on the pair alone could not tell the order
+        from a raise elsewhere), then (True, notice), and no memo left open after."""
+        landed, notice, memos = self._loud_end_landing_on_the_first_read()
+        self.assertIsNone(getattr(km._live_scope, "listing_pairs", None), "no refresh is open on this thread: the memo-less branch")
+        landed.append("armed")
+        row = km._session_listing_row(SID, self.row[SID], {}, None)
+        self.assertEqual(landed, ["landed"], "the end landed between the pair's two reads, inside the one row build")
+        self.assertEqual((row["name"], row["dir"]), ("web", str(self.cdir)),
+                         "the head's row, not the builder's catch-all fallback (the sid's first eight characters, no dir), whose "
+                         "pair is (False, None) as well: a red on the pair below is the read order, not a raise elsewhere")
+        self.assertEqual((row["compacting"], row["launchError"]), (True, notice),
+                         "compacting read first on the request path too: the end is read with the bit still up, a loud end to the wait")
+        self.assertEqual(memos, [None], "no pair memo at the read the end landed on: the memo-less branch, not one the build opened around itself")
+        self.assertIsNone(getattr(km._live_scope, "listing_pairs", None), "and none left open after the build")
+
+    def test_the_by_fsid_route_reaches_the_same_memo_less_branch_and_reads_the_pair_in_the_same_order(self):
+        """GET /sessions/by-fsid builds the one row it serves through the same row builder on the request thread, with no
+        refresh open: the same memo-less branch, pinned on its own route since the route's other reads (the live map, the
+        registry's lastSid, the transcript path) come before the row build and touch neither seam; the same guards as the
+        direct build's, the memo recorded at the landing read and the row checked as the head's before its pair
+        (2026-09-22)."""
+        landed, notice, memos = self._loud_end_landing_on_the_first_read()
+        self.assertIsNone(getattr(km._live_scope, "listing_pairs", None), "no refresh is open on this thread")
+        landed.append("armed")
+        code, row = km._session_by_fsid(SID)
+        self.assertEqual(code, 200, row)
+        self.assertEqual(row["id"], SID)
+        self.assertEqual(landed, ["landed"], "the end landed between the pair's two reads, inside the route's one row build")
+        self.assertEqual((row["name"], row["dir"]), ("web", str(self.cdir)),
+                         "the head's row, not the builder's catch-all fallback: a red on the pair below is the read order")
+        self.assertEqual((row["compacting"], row["launchError"]), (True, notice),
+                         "the by-fsid row reads the pair compacting then notice, as the listing's rows do")
+        self.assertEqual(memos, [None], "no pair memo at the read the end landed on: the route reached the memo-less branch")
+        self.assertIsNone(getattr(km._live_scope, "listing_pairs", None), "and none left open after the route's build")
+
     def test_the_compacting_bit_alone_moving_rebuilds_once_each_way_and_the_row_carries_it(self):
         """The compacting bit is a key input in its own right (the design's compacting edge): a compaction starting and
         clearing with nothing else moving rebuilds the listing once each way and the served row carries the bit, so the
