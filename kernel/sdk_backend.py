@@ -37,34 +37,28 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-# #1735: the gc-freeze release note. An exited session whose worker thread finished and whose client was cleared
-# dies by reference counting (measured acyclic; CPython breaks the finished-thread cycle), so the common session
-# end needs no reclaim. The cycle survives only when a live client outlasts the exit (the connect-raised path), so
-# the session-end pops call _note_release() ONLY when `client is not None`; the kernel injects gcf.note_release, and
-# the fold-in backstop covers any cyclic release this guard misses. A no-op until injected (a bare backend needs none).
-_RELEASE_NOTE = [None]
+# #1735: the gc-freeze ended-session note. Rather than GUESS at the pop whether an ended session is cyclic (three
+# review rounds each guessed from a state flag and each missed a path), every session-end pop REGISTERS the session
+# with the controller, which judges it by observation at the idle tick: a weakref that died means it was acyclic and
+# is gone; one still alive with its worker thread finished is a surviving cycle to reclaim. The kernel injects the
+# controller's note_ended here. A no-op until injected (a bare backend in a unit test needs no wiring).
+_ENDED_NOTE = [None]
 
 
-def set_release_note(fn):
-    _RELEASE_NOTE[0] = fn
+def set_ended_note(fn):
+    _ENDED_NOTE[0] = fn
 
 
-def _note_release():
-    fn = _RELEASE_NOTE[0]
+def _note_ended(session):
+    """Register an ended session (and its worker thread) with the gc-freeze controller, which decides at the idle
+    tick whether it was a surviving cycle. The three session-end pops call this; the controller measures, so no
+    per-path cyclicity guess is made here."""
+    fn = _ENDED_NOTE[0]
     if fn is not None:
         try:
-            fn()
+            fn(session, getattr(session, "thread", None))
         except Exception:
             pass
-
-
-def _note_session_release(session):
-    """#1735: note a gc-freeze release for an ended session ONLY when a cycle survives (a live `client`, the
-    connect-raised path). The common exit is acyclic (its worker thread finished, CPython broke that cycle, and
-    the client was cleared), so it dies by reference counting and needs no reclaim; the backstop covers any path
-    this guard misses. The three session-end pops call this."""
-    if getattr(session, "client", None) is not None:
-        _note_release()
 
 # ---------------------------------------------------------------------------
 # Pure translation logic (no SDK import — unit-tested in CI without the dep).
@@ -14833,7 +14827,7 @@ class SdkBackend:
                     write_reg(self.state_dir, sid, reg)
             s = self.sessions.pop(sid, None)
         if s:
-            _note_session_release(s)               # #1735: a gc-freeze reclaim only if a cycle survived (a live client)
+            _note_ended(s)                         # #1735: register the ended session; the controller measures cyclicity at the idle tick
             if s._host is not None:                # a kill is not graceful today: the host's `end` gets the short bound (T315)
                 s._host.end_grace = _ht().sh.END_GRACE_KILL_S
             s.shutdown()
@@ -14948,7 +14942,7 @@ class SdkBackend:
             s = self.sessions.pop(sid, None)
         if not s:
             return False
-        _note_session_release(s)                   # #1735: a gc-freeze reclaim only if a cycle survived (a live client)
+        _note_ended(s)                             # #1735: register the ended session; the controller measures cyclicity at the idle tick
         try:
             s.shutdown()
         except Exception as e:
@@ -17046,8 +17040,7 @@ class SdkBackend:
             if popped:
                 self.sessions.pop(sess.sid, None)
         if popped:
-            _note_session_release(sess)            # #1735: a gc-freeze reclaim only if a cycle survived (a live client); the
-            #                                         common run-to-exit here is acyclic (thread finished, client cleared)
+            _note_ended(sess)                      # #1735: register the ended session; the controller measures cyclicity at the idle tick
         if not sess.ended and not sess.detached:
             if sess.inflight > 0 and not sess._interrupted:
                 # ABNORMAL death mid-turn (killed / crashed — not a user interrupt, not a clean

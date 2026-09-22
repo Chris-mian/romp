@@ -2029,21 +2029,26 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   seconds. It reconciles at the pusher's idle boundary, never on a timer: a
   LOAD fold-in (`collect` then `freeze`, walking only the unfrozen) when the
   record cache's insert counter grows by a material number of trees, and a
-  RELEASE reclaim (`unfreeze`, a full collection, `freeze`) when a CYCLIC owner
-  is released or the backstop fires. The reclaim is keyed only on a cyclic
-  owner's release: a backend session and its backend hold each other, so a
-  session end notes a release; a record-cache pop does NOT, because its decoded
-  json is acyclic and dies by reference counting whether frozen or not (an
-  unfreeze reclaim there would collect nothing), so `recordCache.released` is a
-  statistic, not a trigger. A BACKSTOP reclaim runs after `backstopFoldins`
+  RELEASE reclaim (`unfreeze`, a full collection, `freeze`) when an ended
+  session is observed to be a surviving cycle, or the backstop fires. WHEN to
+  reclaim is MEASURED, not guessed from a state flag: every session-end pop
+  registers a weakref to the session (with its worker thread), and this tick
+  judges each by observation. A ref that died went by reference counting
+  (acyclic, no reclaim); a ref still alive whose worker thread has finished is a
+  cycle the collector must take (a reclaim); a ref alive whose thread still runs
+  is not garbage yet (judged again next tick). A record-cache pop is never a
+  trigger: its decoded json is acyclic and dies by reference counting, so
+  `recordCache.released` is a statistic. A BACKSTOP reclaim runs after `backstopFoldins`
   load fold-ins since the last reclaim (default 1000, about ten hours at the
-  measured ~97 fold-ins an hour), so a cycle released on a path no note reaches
-  is bounded by the next thousand loads, not the process lifetime. The
+  measured ~97 fold-ins an hour), so a cycle released by an owner nobody
+  registered is bounded by the next thousand loads, not the process lifetime. The
   sub-block carries `enabled`, `active` (whether a freeze is held now; named
   apart from the integer `frozen` above, which is `gc.get_freeze_count()`),
   `loadTrees` and `backstopFoldins` (the two thresholds), `freezes` and
   `reclaims` (each ran one collection, so the organic full collections are
-  `gen."2".collections` less their sum), `lastReconcileMs` and
+  `gen."2".collections` less their sum), `endedPending` (ended sessions
+  registered by weakref and not yet judged, awaiting their worker thread to
+  finish), `lastReconcileMs` and
   `lastReconcileKind` (`initial`, `load`, `release` or `backstop`),
   `totalReconcileMs` and `errors` (a reconcile that raised is counted here and
   said once on stderr, never ending the pusher). The reconcile's own collection

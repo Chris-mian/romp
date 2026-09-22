@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """Lifecycle validation for the Road B freeze (issue #1735, kernel/gc_freeze.py).
 
-The freeze keeps the loaded decoded heap out of the collector's walk, so the tests prove the
-collector still behaves: the trigger logic folds a load in cheaply and reclaims a release with
-an unfreeze; the env switch turns it off; an acyclic object frozen then dropped dies by
-reference counting while a frozen CYCLE survives until a reclaim; re-folding a transcript across
-a freeze forces no reread; the gc hook still counts the collections that do run; and a warm
-collection after the freeze walks far fewer objects than the cold one. Every fixture is
-synthetic. Real-collector tests unfreeze in tearDown so the freeze never leaks to another test.
+The freeze keeps the loaded decoded heap out of the collector's walk. WHEN to reclaim is MEASURED, not
+guessed: every session-end pop registers a weakref to the session with the controller, and the idle
+tick judges each by observation (dead ref died by refcount, no reclaim; a live ref whose worker thread
+still runs is kept; a live ref whose thread finished is a surviving cycle to reclaim). These tests pin
+that judgement's truth table on synthetic refs and a real SdkSession, that every session-end pop
+registers the ended session, plus the load fold-in, the backstop, the safe knob parse, the env
+switch, a weakref oracle over the freeze, and the pusher glue. Every fixture is synthetic. Real-collector
+tests unfreeze in tearDown so the freeze never leaks to another test.
 """
 import gc
+import importlib.machinery
 import json
 import os
 import sys
 import tempfile
+import threading
+import time
+import types
 import unittest
 import weakref
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -37,8 +43,7 @@ gf = load_source("romp_gc_freeze", GC_FREEZE)
 
 
 class FakeGc:
-    """Records the collector calls a reconcile makes, in order, so the trigger logic is pinned
-    without touching the real collector."""
+    """Records the collector calls a reconcile makes, in order, so the tick logic is pinned without the collector."""
     def __init__(self):
         self.calls = []
     def collect(self, *a):
@@ -50,43 +55,33 @@ class FakeGc:
 
 
 class TriggerLogic(unittest.TestCase):
-    def test_a_load_folds_in_a_cyclic_note_reclaims_and_the_backstop_bounds(self):
+    def test_the_load_fold_in_and_the_backstop(self):
         fake = FakeGc()
         c = gf.GcFreeze(enabled=True, load_trees=8, backstop_foldins=2, gc=fake, clock=lambda: 0.0)
-        # nothing loaded yet: not due; a first load makes the initial freeze due
-        self.assertFalse(c.due(inserts=0, notes=0))
-        self.assertTrue(c.due(inserts=3, notes=0), "the first freeze is due once something is loaded")
-        self.assertEqual(c.reconcile(inserts=3, notes=0), "initial")
+        self.assertIsNone(c.tick(inserts=0), "nothing loaded yet: no freeze")
+        self.assertEqual(c.tick(inserts=3), "initial", "the first load makes the initial freeze")
         self.assertEqual(fake.calls, ["collect", "freeze"], "the initial freeze collects then freezes, no unfreeze")
-        # a small load is NOT material; a load past the threshold is a cheap fold-in (no unfreeze)
-        self.assertFalse(c.due(inserts=3 + 7, notes=0), "under the threshold does not fire per parse")
-        self.assertTrue(c.due(inserts=3 + 8, notes=0))
+        self.assertIsNone(c.tick(inserts=3 + 7), "a load under the threshold does not fold in")
         fake.calls.clear()
-        self.assertEqual(c.reconcile(inserts=3 + 8, notes=0), "load")
+        self.assertEqual(c.tick(inserts=3 + 8), "load", "a load past the threshold folds in cheaply")
         self.assertEqual(fake.calls, ["collect", "freeze"], "a load fold-in walks only the unfrozen: no unfreeze")
-        # a CYCLIC release note since the last reclaim needs the unfreeze reclaim; a moved pop counter would NOT (no notes)
-        self.assertFalse(c.due(inserts=3 + 8, notes=0), "no new load and no note: not due (a record-cache pop moves no note)")
-        self.assertTrue(c.due(inserts=3 + 8, notes=1))
+        self.assertIsNone(c.tick(inserts=3 + 8), "no new load and nothing ended: nothing due (a record-cache pop is not a trigger)")
+        # the backstop: after backstop_foldins load fold-ins since the last reclaim, a reclaim runs anyway
+        self.assertEqual(c.tick(inserts=3 + 16), "load")   # fold-in 2 -> _foldins at the backstop
         fake.calls.clear()
-        self.assertEqual(c.reconcile(inserts=3 + 8, notes=1), "release")
-        self.assertEqual(fake.calls, ["unfreeze", "collect", "freeze"], "a cyclic note reclaims: unfreeze, collect, re-freeze")
-        # the backstop: after backstop_foldins load fold-ins since the last reclaim, a reclaim runs even with no new note
-        base = 3 + 8
-        self.assertEqual(c.reconcile(inserts=base + 8, notes=1), "load", "the intermediate reconciles are cheap load fold-ins")
-        self.assertEqual(c.reconcile(inserts=base + 16, notes=1), "load")   # load fold-in 2 -> _foldins now at the backstop
-        self.assertTrue(c.due(inserts=base + 16, notes=1), "the backstop makes a reconcile due even with no new load or note")
-        self.assertEqual(c.reconcile(inserts=base + 16, notes=1), "backstop", "and it reconciles as a reclaim")
-        self.assertGreaterEqual(c.reclaims, 2, "the cyclic note and the backstop each ran a reclaim")
-        self.assertFalse(c.due(inserts=base + 16, notes=1), "the backstop reset _foldins: not due again until the next load or note")
+        self.assertEqual(c.tick(inserts=3 + 16), "backstop", "the backstop reclaims: unfreeze, collect, re-freeze")
+        self.assertEqual(fake.calls, ["unfreeze", "collect", "freeze"])
+        self.assertIsNone(c.tick(inserts=3 + 16), "the backstop reset _foldins: not due again until the next load or ended cycle")
 
-    def test_the_initial_freeze_syncs_the_note_mark(self):
-        # a release noted BEFORE the first freeze is taken by the initial collect; it must not drive a wasted reclaim next
+    def test_a_pre_freeze_ended_ref_is_taken_by_the_initial_collect_not_a_wasted_reclaim(self):
+        # a session ended BEFORE the first freeze: the initial collect takes any garbage; no separate reclaim
         fake = FakeGc()
         c = gf.GcFreeze(enabled=True, load_trees=8, gc=fake, clock=lambda: 0.0)
-        self.assertEqual(c.reconcile(inserts=3, notes=5), "initial", "the first freeze, with 5 releases already noted")
-        self.assertEqual(fake.calls, ["collect", "freeze"], "the initial freeze collects and freezes, no unfreeze")
-        self.assertFalse(c.due(inserts=3, notes=5), "the pre-freeze notes are synced: not due with no NEW note (no wasted reclaim next tick)")
-        self.assertTrue(c.due(inserts=3, notes=6), "a genuinely new note after the freeze is due")
+        dead = _Owner()
+        c.note_ended(dead, thread=None)
+        del dead                                     # the ref is now dead: acyclic, gone
+        self.assertEqual(c.tick(inserts=3), "initial", "the first tick freezes; the pre-freeze ended ref is resolved, not reclaimed")
+        self.assertEqual(fake.calls, ["collect", "freeze"], "no unfreeze: the initial collect already took any pre-freeze garbage")
 
     def test_the_env_switch_turns_it_off(self):
         self.assertFalse(gf.enabled_from_env({"ROMP_GC_FREEZE": "off"}))
@@ -95,108 +90,148 @@ class TriggerLogic(unittest.TestCase):
         self.assertTrue(gf.enabled_from_env({"ROMP_GC_FREEZE": "on"}))
         fake = FakeGc()
         c = gf.GcFreeze(enabled=False, gc=fake)
-        self.assertFalse(c.due(inserts=100, notes=5))
-        self.assertIsNone(c.reconcile(inserts=100, notes=5))
+        self.assertIsNone(c.tick(inserts=100))
         self.assertEqual(fake.calls, [], "a disabled controller never touches the collector")
 
     def test_the_load_threshold_parses_safely_and_floors_at_one(self):
-        # the #1735 high: a bad ROMP_GC_FREEZE_LOAD_TREES must not kill the kernel at import; it falls back, named
         self.assertEqual(gf.load_trees_from_env({}), (gf.DEFAULT_LOAD_TREES, None), "absent: the default, no complaint")
         self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "  "}), (gf.DEFAULT_LOAD_TREES, None), "whitespace: the default")
         self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "abc"}), (gf.DEFAULT_LOAD_TREES, "abc"), "a bad value falls back and is named")
         self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "20"}), (20, None))
-        self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "0"})[0], 1, "floored at 1: a 0 would make due() fire every idle cycle")
+        self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "0"})[0], 1, "floored at 1")
         self.assertEqual(gf.load_trees_from_env({"ROMP_GC_FREEZE_LOAD_TREES": "-5"})[0], 1, "a negative is floored at 1 too")
         self.assertEqual(gf.GcFreeze(load_trees=0).load_trees, 1, "the controller floors its threshold too")
 
 
+class _FakeThread:
+    def __init__(self, alive):
+        self._alive = alive
+    def is_alive(self):
+        return self._alive
+
+
+class _Owner:
+    """A weakref-able stand-in for an ended session (SimpleNamespace is not weakref-able)."""
+
+
+class EndedTruthTable(unittest.TestCase):
+    """The measured judgement, the verifier's cases a to e (its probe drives real sessions; this pins the decision
+    on synthetic weakref-able owners with a controllable worker thread, deterministically). resolve_ended returns
+    whether a reclaim is owed, and a reclaim is NEVER owed for a dead ref."""
+    def _controller(self):
+        return gf.GcFreeze(enabled=True, gc=FakeGc(), clock=lambda: 0.0)
+
+    def test_a_dead_ref_is_acyclic_and_owes_no_reclaim(self):     # (a) run to exit: died by refcount
+        c = self._controller()
+        s = _Owner()
+        c.note_ended(s, thread=_FakeThread(alive=False))
+        del s
+        self.assertFalse(c.resolve_ended(), "a ref that died by refcount owes no reclaim (acyclic)")
+        self.assertEqual(c._ended, [], "and it is dropped")
+
+    def test_a_live_ref_with_a_finished_thread_is_cyclic_and_owes_a_reclaim(self):  # (b) client survives, (e) teardown raise
+        c = self._controller()
+        s = _Owner()
+        c.note_ended(s, thread=_FakeThread(alive=False))
+        self.assertTrue(c.resolve_ended(), "a ref still alive with its worker thread finished is a surviving cycle: reclaim")
+        self.assertEqual(c._ended, [], "and it is dropped after the reclaim it owes")
+
+    def test_a_live_ref_with_a_running_thread_is_kept_then_reclaimed_when_it_finishes(self):  # (c) kill mid-turn
+        c = self._controller()
+        s = _Owner()
+        th = _FakeThread(alive=True)
+        c.note_ended(s, thread=th)
+        self.assertFalse(c.resolve_ended(), "a live ref whose thread still runs is not garbage yet: no reclaim")
+        self.assertEqual(len(c._ended), 1, "it is kept for the next tick")
+        th._alive = False                             # the thread finishes
+        self.assertTrue(c.resolve_ended(), "now the thread is finished and the ref is alive: a surviving cycle, reclaim")
+        self.assertEqual(c._ended, [], "and dropped")
+
+    def test_the_tick_reclaims_a_real_cyclic_ended_session(self):
+        # an executed oracle on a real SdkSession: a live client that refers back is a cycle; ended with a finished
+        # thread, the tick reclaims it (unfreeze, collect, re-freeze)
+        sbmod = load_source("romp_sdk_backend_ended", os.path.join(ROOT, "kernel", "sdk_backend.py"))
+        class StubBackend:
+            state_dir = tempfile.mkdtemp()
+            def _update_reg(self, *a, **k): pass
+            def _log(self, *a, **k): pass
+        s = sbmod.SdkSession(StubBackend(), {"sid": "11111111-2222-3333-4444-555555555555", "name": "web", "cwd": "/tmp"})
+        class Client: pass
+        client = Client(); client.session = s; s.client = client   # the surviving-client cycle
+        w = weakref.ref(s)
+        fake = FakeGc()
+        c = gf.GcFreeze(enabled=True, load_trees=1, gc=fake, clock=lambda: 0.0)
+        c.tick(inserts=1)                             # an initial freeze so a reclaim is meaningful
+        c.note_ended(s, thread=_FakeThread(alive=False))   # the session ended, its worker thread finished
+        del s, client
+        fake.calls.clear()
+        self.assertEqual(c.tick(inserts=1), "release", "the tick observes the cyclic ended session and reclaims")
+        self.assertEqual(fake.calls, ["unfreeze", "collect", "freeze"], "a reclaim unfreezes, collects, re-freezes")
+        self.assertIsNotNone(w, "the weakref object outlives (the FakeGc does not actually collect)")
+
+
 class DoubleController:
-    """Records the reconcile calls, so the pusher tick's guard and error handling are pinned without the collector."""
-    def __init__(self, enabled=True, due=True, raise_reconcile=False):
+    """Records the tick calls, so the pusher tick's guard and error handling are pinned without the collector."""
+    def __init__(self, enabled=True, raise_tick=False):
         self.enabled = enabled
-        self._due = due
-        self._raise = raise_reconcile
-        self.reconciled = []
-    def due(self, inserts, notes):
-        return self._due
-    def reconcile(self, inserts, notes):
-        self.reconciled.append((inserts, notes))
+        self._raise = raise_tick
+        self.ticks = []
+    def tick(self, inserts):
+        self.ticks.append(inserts)
         if self._raise:
-            raise RuntimeError("reconcile blew up")
+            raise RuntimeError("tick blew up")
         return "load"
 
 
 class PusherTick(unittest.TestCase):
-    """MEDIUM 1: the pusher wiring had no teeth (removing the call or the guard left the suite green). pusher_tick
-    is the extracted seam the kernel calls; these pin its guard and its never-die error handling in-process."""
-    def setUp(self):
-        gf._NOTED_RELEASES[0] = 0
-        self.addCleanup(lambda: gf._NOTED_RELEASES.__setitem__(0, 0))
+    """The pusher's idle-boundary seam, pinned in-process (the kernel's call site alone had no teeth)."""
+    def _stats(self, inserts=10):
+        return lambda: {"inserts": inserts}
 
-    def _stats(self, inserts=10, released=0):
-        return lambda: {"inserts": inserts, "released": released}   # `released` is a /perf stat; pusher_tick must NOT key on it
-
-    def test_it_reconciles_only_on_an_idle_non_first_cycle(self):
+    def test_it_ticks_only_on_an_idle_non_first_cycle(self):
         errs = []
         c = DoubleController()
         gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(), on_error=errs.append)
-        self.assertEqual(len(c.reconciled), 1, "an idle, non-first cycle reconciles")
-        c = DoubleController()
-        gf.pusher_tick(c, idle=True, first=True, stats_fn=self._stats(), on_error=errs.append)
-        self.assertEqual(c.reconciled, [], "the boot's first cycle never reconciles")
-        c = DoubleController()
-        gf.pusher_tick(c, idle=False, first=False, stats_fn=self._stats(), on_error=errs.append)
-        self.assertEqual(c.reconciled, [], "a busy cycle (marks or writes) never reconciles")
+        self.assertEqual(len(c.ticks), 1, "an idle, non-first cycle ticks")
+        self.assertEqual(c.ticks, [10], "and reads the record cache's insert counter")
+        for idle, first in ((True, True), (False, False)):
+            c = DoubleController()
+            gf.pusher_tick(c, idle=idle, first=first, stats_fn=self._stats(), on_error=errs.append)
+            self.assertEqual(c.ticks, [], "the boot's first cycle and a busy cycle never tick: idle=%r first=%r" % (idle, first))
         c = DoubleController(enabled=False)
         gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(), on_error=errs.append)
-        self.assertEqual(c.reconciled, [], "a disabled controller never reconciles")
+        self.assertEqual(c.ticks, [], "a disabled controller never ticks")
         self.assertEqual(errs, [], "no errors on the happy paths")
 
-    def test_it_reads_inserts_and_the_noted_releases_never_the_pop_counter(self):
-        c = DoubleController()
-        gf.note_release(); gf.note_release()                      # two cyclic releases noted by their owners
-        # `released` (the record cache's pop counter) is high but must NOT reach the controller: the reclaim is keyed on notes
-        gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(inserts=4, released=999), on_error=lambda e: None)
-        self.assertEqual(c.reconciled, [(4, 2)], "the controller gets inserts and the NOTED releases, not the record cache's pop counter")
-
-    def test_a_not_due_controller_is_not_reconciled(self):
-        # teeth for the `if controller.due(...)` guard: a `if True:` mutant would reconcile a not-due controller
-        c = DoubleController(due=False)
-        gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(), on_error=lambda e: None)
-        self.assertEqual(c.reconciled, [], "an idle non-first cycle with a not-due controller runs no reconcile")
-
-    def test_a_raising_stats_read_or_reconcile_is_handed_to_on_error_and_never_propagates(self):
-        # a raising stats read
+    def test_a_raising_stats_read_or_tick_is_handed_to_on_error_and_never_propagates(self):
         errs = []
         def boom():
             raise RuntimeError("cache stats read failed")
-        c = DoubleController()
-        gf.pusher_tick(c, idle=True, first=False, stats_fn=boom, on_error=errs.append)   # must not raise
+        gf.pusher_tick(DoubleController(), idle=True, first=False, stats_fn=boom, on_error=errs.append)   # must not raise
         self.assertEqual(len(errs), 1, "the failing read is counted once")
-        self.assertEqual(c.reconciled, [], "and no reconcile ran")
-        # a raising RECONCILE (teeth for reconcile staying inside the try): on_error once, nothing propagated
         errs2 = []
-        c2 = DoubleController(raise_reconcile=True)
-        gf.pusher_tick(c2, idle=True, first=False, stats_fn=self._stats(), on_error=errs2.append)   # must not raise
-        self.assertEqual(len(errs2), 1, "the raising reconcile is caught and counted once")
-        self.assertEqual(len(c2.reconciled), 1, "the reconcile was attempted")
+        c = DoubleController(raise_tick=True)
+        gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(), on_error=errs2.append)   # must not raise
+        self.assertEqual(len(errs2), 1, "a raising tick is caught and counted once")
+        self.assertEqual(len(c.ticks), 1, "the tick was attempted")
 
-    def test_the_kernels_tick_guards_and_counts_a_not_due_and_a_raising_reconcile(self):
-        # the same guard and error handling mirrored through the kernel's own _gc_freeze_tick wrapper
+    def test_the_kernels_tick_wrapper_ticks_and_counts_a_raising_tick(self):
         km = load_source("romp_kernel_gcf_tick", os.path.join(BIN, "romp-kernel"))
         saved_gf, saved_stats = km._GC_FREEZE, km.em.record_cache_stats
         saved_errs, saved_said = km._GC_FREEZE_ERRORS[0], km._GC_FREEZE_SAID[0]
         try:
             km.em.record_cache_stats = lambda: {"inserts": 3}
-            nd = DoubleController(due=False)
-            km._GC_FREEZE = nd
+            d = DoubleController()
+            km._GC_FREEZE = d
             km._gc_freeze_tick(True, False)
-            self.assertEqual(nd.reconciled, [], "the kernel tick runs no reconcile when the controller is not due")
+            self.assertEqual(d.ticks, [3], "the kernel tick reads inserts and ticks on an idle non-first cycle")
+            d.ticks.clear()
+            km._gc_freeze_tick(True, True)
+            self.assertEqual(d.ticks, [], "the boot's first cycle does not tick")
             km._GC_FREEZE_ERRORS[0] = 0; km._GC_FREEZE_SAID[0] = False
-            rc = DoubleController(raise_reconcile=True)
-            km._GC_FREEZE = rc
+            km._GC_FREEZE = DoubleController(raise_tick=True)
             km._gc_freeze_tick(True, False)   # must not raise
-            self.assertEqual(km._GC_FREEZE_ERRORS[0], 1, "a raising reconcile is counted through the kernel wrapper")
+            self.assertEqual(km._GC_FREEZE_ERRORS[0], 1, "a raising tick is counted through the kernel wrapper")
             self.assertTrue(km._GC_FREEZE_SAID[0], "and said once")
         finally:
             km._GC_FREEZE = saved_gf
@@ -214,34 +249,30 @@ class RealCollector(unittest.TestCase):
         gc.unfreeze()                                # never leak a freeze to another test
         gc.collect()
 
-    def test_acyclic_dies_by_refcount_under_the_freeze_a_cycle_waits_for_the_reclaim(self):
+    def test_acyclic_dies_by_refcount_a_cycle_reclaims_only_when_the_ended_tick_runs(self):
         c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
-        # an acyclic object frozen and then dropped is reclaimed at once by reference counting
         acyclic = Cyclic(); acyclic.other = None
         wa = weakref.ref(acyclic)
-        c.reconcile(inserts=1, notes=0)              # initial freeze folds `acyclic` into the frozen set
+        c.tick(inserts=1)                            # initial freeze folds `acyclic` in
         del acyclic
         self.assertIsNone(wa(), "an acyclic frozen object dies by refcount when its owner drops it, freeze or no freeze")
-        # a reference cycle frozen and then dropped survives a LOAD fold-in and is reclaimed only by a NOTE-driven reclaim
         a = Cyclic(); b = Cyclic(); a.other = b; b.other = a
         wcyc = weakref.ref(a)
-        c.reconcile(inserts=2, notes=0)              # a load fold-in that freezes the cycle
+        c.tick(inserts=2)                            # a load fold-in that freezes the cycle
+        c.note_ended(a, thread=_FakeThread(alive=False))   # the cycle's owner ended, its thread finished
         del a, b
-        c.reconcile(inserts=3, notes=0)              # another load fold-in (no note): does NOT unfreeze
-        self.assertIsNotNone(wcyc(), "a frozen cycle survives a load fold-in: it is not walked")
-        c.reconcile(inserts=3, notes=1)              # a cyclic-owner note: unfreeze, collect, re-freeze
-        self.assertIsNone(wcyc(), "the frozen cycle is reclaimed once a note-driven reconcile unfreezes and collects")
+        c.tick(inserts=2)                            # the tick observes the cyclic ended ref and reclaims
+        self.assertIsNone(wcyc(), "the frozen cycle is reclaimed once the ended tick unfreezes and collects")
 
     def test_the_kernels_gc_hook_still_counts_the_collections_a_reconcile_runs(self):
         km = load_source("romp_kernel_gcf_hook", os.path.join(BIN, "romp-kernel"))
         st = km._PerfStats()
-        st.install_gc_hook()                          # the kernel's own gc.callbacks hook, on this test's collector
+        st.install_gc_hook()
         try:
-            before = st.gc[2][0]                      # generation-two collections counted so far
+            before = st.gc[2][0]
             c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
-            c.reconcile(inserts=1, notes=0)           # a freeze runs a collection
-            c.reconcile(inserts=2, notes=1)           # a note reclaim runs one too
-            self.assertGreater(st.gc[2][0], before, "the kernel's gc hook counted the full collections the reconciles ran")
+            c.tick(inserts=1)                        # a freeze runs a collection
+            self.assertGreater(st.gc[2][0], before, "the kernel's gc hook counted the full collection the freeze ran")
         finally:
             st.remove_gc_hook()
 
@@ -254,166 +285,68 @@ class RealCollector(unittest.TestCase):
         return out                                   # a function scope so no loop variable leaks a reference
 
     def test_a_warm_collection_after_the_freeze_leaves_the_frozen_cold_cycles_alone(self):
-        # cold: a heap of CYCLES, watched by a weakref oracle, frozen out of the walk
         heap = self._make_cycles(20000)
         watched = [weakref.ref(x) for x in heap[:50]]   # a comprehension: its `x` does not leak into this scope
         c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
-        c.reconcile(inserts=1, notes=0)              # freeze the cold cycles out of the walk
-        del heap                                     # drop every external ref: only the freeze keeps the cycles now
+        c.tick(inserts=1)                            # freeze the cold cycles out of the walk
+        del heap
         self._make_cycles(200)                       # a little new (unheld) garbage for the warm collection to walk
         gc.collect()
         self.assertTrue(all(w() is not None for w in watched),
                         "a warm full collection after the freeze does not walk the frozen cold cycles: they survive though nothing holds them")
         self.assertGreater(gc.get_freeze_count(), 20000, "the frozen count shows the cold cycles left the collector's walk")
-        # only a note-driven reclaim (unfreeze) reclaims them
-        c.reconcile(inserts=2, notes=1)
-        self.assertTrue(all(w() is None for w in watched), "the reclaim unfroze and collected the now-unreferenced cold cycles")
+
+
+def _iso(t):
+    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def _uline(sid, t, text, uid, parent=None):
-    from datetime import datetime, timezone
-    iso = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    return {"type": "user", "timestamp": iso, "uuid": uid, "parentUuid": parent, "sessionId": sid,
+    return {"type": "user", "timestamp": _iso(t), "uuid": uid, "parentUuid": parent, "sessionId": sid,
             "cwd": "/home/TESTHOST/proj", "message": {"role": "user", "content": text}}
 
 
 def _aline(sid, t, text, uid, parent):
-    from datetime import datetime, timezone
-    iso = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    return {"type": "assistant", "timestamp": iso, "uuid": uid, "parentUuid": parent, "sessionId": sid,
+    return {"type": "assistant", "timestamp": _iso(t), "uuid": uid, "parentUuid": parent, "sessionId": sid,
             "message": {"role": "assistant", "content": [{"type": "text", "text": text}], "stop_reason": "end_turn"}}
 
 
-class NoRereadChurn(unittest.TestCase):
+class RecordCacheIsAStat(unittest.TestCase):
+    """The record cache's `released` counter is a /perf STATISTIC, not a reclaim trigger: its pops release acyclic
+    json, freed by refcount. `released` moves on a re-read replacement and an OSError pop, but re-reads (which grow
+    inserts and released) drive only cheap load fold-ins, never a reclaim; and a freeze forces no reread."""
     def tearDown(self):
         gc.unfreeze()
         gc.collect()
 
-    def test_freezing_forces_no_whole_transcript_reread(self):
-        """A freeze must not make the reader re-read a transcript it already cached: the record
-        cache's whole-read and insert counters do not move when the same file is folded again
-        after a freeze."""
-        em = load_source("romp_event_model_gcf", os.path.join(BIN, "romp-event-model"))
-        sid = "11111111-2222-3333-4444-aaaaaaaaaa01"
-        recs = [_uline(sid, 1_700_000_000, "ask", "u1"), _aline(sid, 1_700_000_030, "answer", "a1", "u1"),
-                _uline(sid, 1_700_000_600, "again", "u2", "a1"), _aline(sid, 1_700_000_630, "ok", "a2", "u2")]
-        d = tempfile.mkdtemp()
+    def _write(self, d, sid, rows):
         p = os.path.join(d, sid + ".jsonl")
-        Path(p).write_text("".join(json.dumps(r) + "\n" for r in recs))
-        em.parse_session(p, rompuuid=sid)                 # first parse: a whole read fills the cache
-        s1 = em.record_cache_stats()
-        c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
-        c.reconcile(inserts=1, notes=0)                   # freeze the loaded records
-        em.parse_session(p, rompuuid=sid)                 # re-parse the unchanged file
-        s2 = em.record_cache_stats()
-        self.assertEqual(s2["inserts"], s1["inserts"], "no new insert: the freeze did not evict the cached records")
-        self.assertEqual(s2.get("wholeReads"), s1.get("wholeReads"), "no new whole read: the freeze forced no reread")
+        Path(p).write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return p
 
-    def test_the_load_trigger_fires_off_the_real_record_cache_counter(self):
-        """The kernel keys the reconcile on the record cache's real insert counter: parsing transcripts grows it,
-        and once it grows past the threshold the controller is due and a reconcile freezes the loaded objects."""
-        em = load_source("romp_event_model_gcf2", os.path.join(BIN, "romp-event-model"))
-        d = tempfile.mkdtemp()
-        base_ins = int(em.record_cache_stats().get("inserts") or 0)
-        for i in range(10):
-            sid = "11111111-2222-3333-4444-bbbbbbbb%04d" % i
-            recs = [_uline(sid, 1_700_000_000, "ask", "u1"), _aline(sid, 1_700_000_030, "answer", "a1", "u1"),
-                    _uline(sid, 1_700_000_600, "again", "u2", "a1"), _aline(sid, 1_700_000_630, "ok", "a2", "u2")]
-            p = os.path.join(d, sid + ".jsonl")
-            Path(p).write_text("".join(json.dumps(r) + "\n" for r in recs))
-            em.parse_session(p, rompuuid=sid)
-        st = em.record_cache_stats()
-        inserts = int(st.get("inserts") or 0)
-        self.assertGreaterEqual(inserts - base_ins, 8, "ten parses grew the cache's insert counter past the load threshold")
-        c = gf.GcFreeze(enabled=True, load_trees=8, gc=gc)
-        self.assertTrue(c.due(inserts, notes=0), "the load trigger reads the real insert counter and is due")
-        frozen_before = gc.get_freeze_count()
-        self.assertEqual(c.reconcile(inserts, notes=0), "initial")
-        self.assertGreater(gc.get_freeze_count(), frozen_before, "the reconcile froze the loaded objects out of the collector's walk")
-
-
-class RecordCacheReleaseIsAStat(unittest.TestCase):
-    """The 2026-09-21 review's correction: the record cache's `released` counter is a /perf STATISTIC, not a
-    reclaim trigger. Its pops release acyclic decoded json, freed by refcount, so a reclaim there would collect
-    nothing. `released` moves on a re-read replacement and an OSError pop, but a moving `released` under re-reads
-    drives NO reclaim: the reclaim is keyed on cyclic-owner notes and the backstop, never on the pop counter."""
-    def setUp(self):
-        gf._NOTED_RELEASES[0] = 0
-        self.addCleanup(lambda: gf._NOTED_RELEASES.__setitem__(0, 0))
-
-    def tearDown(self):
-        gc.unfreeze()                                # this test's reconcile froze the heap; never leak the freeze to another test
-        gc.collect()
-
-    def test_released_moves_on_a_pop_but_re_reads_drive_no_reclaim(self):
+    def test_released_moves_on_a_pop_and_no_reread_across_a_freeze(self):
         em = load_source("romp_event_model_rel", os.path.join(BIN, "romp-event-model"))
         d = tempfile.mkdtemp()
         sid = "11111111-2222-3333-4444-cccccccc0001"
         rows = [_uline(sid, 1_700_000_000, "ask", "u1"), _aline(sid, 1_700_000_030, "answer", "a1", "u1"),
                 _uline(sid, 1_700_000_600, "again", "u2", "a1"), _aline(sid, 1_700_000_630, "ok", "a2", "u2")]
-        p = os.path.join(d, sid + ".jsonl"); Path(p).write_text("".join(json.dumps(r) + "\n" for r in rows))
+        p = self._write(d, sid, rows)
         em.parse_session(p, rompuuid=sid)
-        rel0 = em.record_cache_stats()["released"]
+        s1 = em.record_cache_stats()
+        rel0 = s1["released"]
         c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
-        c.reconcile(int(em.record_cache_stats()["inserts"]), gf.noted_releases())   # an initial freeze
+        c.tick(int(s1["inserts"]))                   # an initial freeze
         kinds = []
-        for k in range(6):                                # six re-reads: append and re-parse, each REPLACES the cache entry
-            rows += [_uline(sid, 1_700_001_000 + k * 100, "more %d" % k, "u%d" % (10 + k), "a2")]
+        for k in range(6):                           # six re-reads: append and re-parse, each REPLACES the cache entry
+            rows.append(_uline(sid, 1_700_001_000 + k * 100, "more %d" % k, "u%d" % (10 + k), "a2"))
             Path(p).write_text("".join(json.dumps(r) + "\n" for r in rows))
             em.parse_session(p, rompuuid=sid)
-            st = em.record_cache_stats()
-            kinds.append(gf.pusher_tick(c, idle=True, first=False, stats_fn=lambda st=st: st, on_error=lambda e: None))
-        rel1 = em.record_cache_stats()["released"]
-        self.assertGreater(rel1, rel0, "each re-read replacement popped the old entry: `released` moved (a /perf stat)")
-        self.assertNotIn("release", kinds, "a moving `released` under re-reads drives NO release reclaim: %r" % kinds)
+            kinds.append(gf.pusher_tick(c, idle=True, first=False, stats_fn=em.record_cache_stats, on_error=lambda e: None))
+        s2 = em.record_cache_stats()
+        self.assertGreater(s2["released"], rel0, "each re-read replacement popped the old entry: `released` moved (a /perf stat)")
+        self.assertNotIn("release", kinds, "a moving `released` under re-reads drives NO reclaim: %r" % kinds)
         self.assertNotIn("backstop", kinds, "and no backstop fired over six re-reads: %r" % kinds)
-        self.assertEqual(c.reclaims, 0, "the whole run of re-reads ran zero reclaims (the design's near-zero): %r" % c.reclaims)
-
-
-class SdkSessionNote(unittest.TestCase):
-    """The note fires at the CYCLIC owner only. Executed on a REAL SdkSession over a stub backend: a session with a
-    surviving `client` back-reference is cyclic (needs a collect); the session-end helper notes a release for it and
-    not for one whose client was cleared. The plumbing reaches gcf.note_release; the kernel injects it at load."""
-    def setUp(self):
-        gf._NOTED_RELEASES[0] = 0
-        self.addCleanup(lambda: gf._NOTED_RELEASES.__setitem__(0, 0))
-
-    def _session(self, sbmod):
-        import tempfile as _tf
-        class StubBackend:
-            state_dir = _tf.mkdtemp()
-            def _update_reg(self, *a, **k): pass
-            def _log(self, *a, **k): pass
-        return sbmod.SdkSession(StubBackend(), {"sid": "11111111-2222-3333-4444-555555555555", "name": "web", "cwd": "/tmp"})
-
-    def test_a_surviving_client_session_is_cyclic_and_the_helper_notes_it(self):
-        sbmod = load_source("romp_sdk_backend_note", os.path.join(ROOT, "kernel", "sdk_backend.py"))
-        spy = []
-        sbmod.set_release_note(lambda: spy.append(1))
-        self.addCleanup(lambda: sbmod.set_release_note(None))
-        # the connect-raised cycle: a live client that refers back to the session (executed oracle on the real object)
-        s = self._session(sbmod)
-        class Client:
-            pass
-        client = Client(); client.session = s; s.client = client
-        w = weakref.ref(s)
-        gc.collect(); gc.disable()
-        del s, client
-        self.assertIsNotNone(w(), "a session with a live client that refers back is cyclic: it outlives the drop with the collector off")
-        gc.enable(); gc.collect()
-        self.assertIsNone(w(), "and only a collection reclaims it")
-        # the helper notes a release for a session that still holds a client, and NOT for one whose client was cleared
-        sbmod._note_session_release(self._session(sbmod))
-        self.assertEqual(spy, [], "no note for a session with client None (the common exit, acyclic)")
-        s2 = self._session(sbmod); s2.client = object()
-        sbmod._note_session_release(s2)
-        self.assertEqual(spy, [1], "a note for a session that ended with a live client (the cyclic path)")
-
-    def test_the_kernel_injects_the_note_when_the_backend_loads(self):
-        import inspect
-        ksrc = inspect.getsource(load_source("romp_kernel_gcf_inject", os.path.join(BIN, "romp-kernel")))
-        self.assertRegex(ksrc, r'sbmod = load_source\("romp_sdk_backend"[\s\S]{0,320}?sbmod\.set_release_note\(gcf\.note_release\)',
-                         "the kernel wires the release note right after it loads the SDK backend")
+        self.assertEqual(c.reclaims, 0, "zero reclaims across the run of re-reads (the design's near-zero): %r" % c.reclaims)
 
 
 class KernelKnob(unittest.TestCase):
@@ -445,51 +378,44 @@ class KernelKnob(unittest.TestCase):
         self.assertEqual(err0, "", "and nothing said for a valid, floored value")
 
 
-class KernelGlue(unittest.TestCase):
-    """The kernel's own glue: `_gc_freeze_tick(idle, first)` (the pusher calls it at the idle boundary) reconciles
-    through pusher_tick and counts a raising cache read once, and `_pusher_cycle` calls it. The tick is exercised
-    in-process on a controller double; the call site is a source pin so deleting it reddens."""
-    def _km(self):
-        return load_source("romp_kernel_gcf_glue", os.path.join(BIN, "romp-kernel"))
-
-    def test_the_tick_reconciles_and_counts_a_raising_read_once(self):
-        km = self._km()
-        saved_gf, saved_stats = km._GC_FREEZE, km.em.record_cache_stats
-        saved_errs, saved_said = km._GC_FREEZE_ERRORS[0], km._GC_FREEZE_SAID[0]
-
-        class Double:
-            enabled = True
-            def __init__(self): self.reconciled = []
-            def due(self, inserts, notes): return True
-            def reconcile(self, inserts, notes): self.reconciled.append((inserts, notes)); return "load"
-        d = Double()
-        try:
-            km._GC_FREEZE = d
-            km.em.record_cache_stats = lambda: {"inserts": 3}
-            km._gc_freeze_tick(True, False)
-            self.assertEqual(len(d.reconciled), 1, "an idle non-first cycle reconciles through the tick")
-            d.reconciled.clear()
-            km._gc_freeze_tick(True, True)
-            self.assertEqual(d.reconciled, [], "the boot's first cycle does not")
-            # a raising cache read is counted once and never propagates
-            km._GC_FREEZE_ERRORS[0] = 0; km._GC_FREEZE_SAID[0] = False
-            def boom(): raise RuntimeError("stats read failed")
-            km.em.record_cache_stats = boom
-            km._gc_freeze_tick(True, False)   # must not raise
-            km._gc_freeze_tick(True, False)
-            self.assertEqual(km._GC_FREEZE_ERRORS[0], 2, "each raising read is counted")
-            self.assertTrue(km._GC_FREEZE_SAID[0], "and it is said once")
-        finally:
-            km._GC_FREEZE = saved_gf
-            km.em.record_cache_stats = saved_stats
-            km._GC_FREEZE_ERRORS[0] = saved_errs; km._GC_FREEZE_SAID[0] = saved_said
-
-    def test_the_pusher_cycle_calls_the_tick_at_the_idle_boundary(self):
+class SessionEndPopsRegister(unittest.TestCase):
+    """Every session-end pop registers the ended session with the controller (via _note_ended), so the controller
+    measures its cyclicity at the idle tick. Executed: _note_ended reaches the injected note with the session and
+    its worker thread. Pinned: exactly three call sites, so deleting a note at any pop (the mutant the verifier
+    named) reddens; the truth table above pins the judgement each registered session then gets."""
+    def test_the_helper_registers_and_the_three_pop_sites_call_it(self):
         import inspect
-        km = self._km()
-        src = inspect.getsource(km._pusher_cycle)
-        self.assertRegex(src, r"_gc_freeze_tick\(_cycle_idle, first\)",
+        import re as _re
+        sbmod = load_source("romp_sdk_backend_pops", os.path.join(ROOT, "kernel", "sdk_backend.py"))
+        seen = []
+        sbmod.set_ended_note(lambda session, thread: seen.append((session, thread)))
+        self.addCleanup(lambda: sbmod.set_ended_note(None))
+
+        class StubBackend:
+            state_dir = tempfile.mkdtemp()
+            def _update_reg(self, *a, **k):
+                pass
+            def _log(self, *a, **k):
+                pass
+        s = sbmod.SdkSession(StubBackend(), {"sid": "11111111-2222-3333-4444-555555555555", "name": "web", "cwd": "/tmp"})
+        sbmod._note_ended(s)
+        self.assertEqual(len(seen), 1, "_note_ended registers the ended session with the injected note")
+        self.assertIs(seen[0][0], s, "the session is passed through")
+        self.assertIs(seen[0][1], s.thread, "and its worker thread, for the tick to read is_alive")
+        # every session-end pop calls _note_ended: exactly three sites (deleting a call at any pop reddens)
+        calls = len(_re.findall(r"\n[ \t]+_note_ended\(", inspect.getsource(sbmod)))
+        self.assertEqual(calls, 3, "the three session-end pops (stop, kill, run-to-exit) each call _note_ended: %d" % calls)
+
+
+class KernelGlue(unittest.TestCase):
+    """The kernel wires the ended note at backend load and calls the tick at the pusher's idle boundary."""
+    def test_the_pusher_cycle_calls_the_tick_and_the_kernel_wires_the_ended_note(self):
+        import inspect
+        km = load_source("romp_kernel_gcf_glue", os.path.join(BIN, "romp-kernel"))
+        self.assertRegex(inspect.getsource(km._pusher_cycle), r"_gc_freeze_tick\(_cycle_idle, first\)",
                          "the pusher cycle calls the freeze tick with the cycle's idle flag and first-cycle flag")
+        self.assertRegex(inspect.getsource(km), r'sbmod = load_source\("romp_sdk_backend"[\s\S]{0,320}?sbmod\.set_ended_note\(_GC_FREEZE\.note_ended\)',
+                         "the kernel wires the controller's ended note when it loads the SDK backend")
 
 
 if __name__ == "__main__":

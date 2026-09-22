@@ -6,7 +6,7 @@ cache fills and, at the pusher's idle boundary, the freeze fires: /perf's gc.fre
 at least one. Then a transcript is appended and re-read repeatedly (each re-read REPLACES its acyclic cache entry,
 a record-cache pop) and `reclaims` stays put: under the corrected trigger a pop is not a cyclic release and drives
 no unfreeze pause. The gen-2 arithmetic holds: the organic full collections are `gen."2".collections` less the
-reconciles the controller ran. The reclaim-on-a-cyclic-release path (a session end) is covered by the unit tests.
+reconciles the controller ran. The reclaim of a measured cyclic ended session (a weakref judged at the idle tick) is covered by the unit tests.
 The freeze is set ON in the kernel's own env here; the suite floors it OFF everywhere else. Synthetic only:
 invented text, placeholder uuids, TESTHOST.
 """
