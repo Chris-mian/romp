@@ -1,6 +1,6 @@
 # Judge prompt experiments: measuring a prompt change before it moves cards
 
-**Status:** the design read and merged 2026-09-20; the harness merged as scripts/judge_experiment.py (its first cut, its time-key fix after the pilot's stop, and the fold of two contributors' executed reviews, 2026-09-21); the pilot approved by the user at about 80 dollars, run after the fold; the full run waits for the user's second word. Written 2026-09-20 by the performance worker; the read is the manager's. The category this serves is the one plans/needs-you.md (the cards owner) is redesigning; this note links it and does not restate it.
+**Status:** road (b), decided after the pilot's labeller gate failed (2026-09-21): the labeller's class is a stratification frame, and the measures move onto the user's own recorded actions. The design read and merged 2026-09-20; the harness merged as scripts/judge_experiment.py (its first cut, its time-key fix after the pilot's stop, and the fold of two contributors' executed reviews, 2026-09-21); the pilot approved by the user at about 80 dollars, run after the fold; the full run waits for the user's second word. Written 2026-09-20 by the performance worker; the read is the manager's. The category this serves is the one plans/needs-you.md (the cards owner) is redesigning; this note links it and does not restate it.
 
 ## Why now
 
@@ -26,12 +26,12 @@ Built once by a script under the harness, from the live state root read only, in
 
 Target size: 300 endings, roughly 75 per class, drawn across sessions and weeks so no one session dominates; a pilot of 60 (15 per class) runs first. The heuristics are the selection, not the truth: every selected ending gets a label.
 
-## Labelling: the ground truth
+## Labelling: a stratification frame, not a truth about the ending
 
-Two tiers, each recorded per ending with its source.
+The pilot showed that the user's own action on a card is not a truth about the ending's SHAPE: every disagreement ran one way, the user cleared a card (a "finished" gesture) whose last turn the labeller read as an open question, an undone item or an offer (agreement 6 of 19, 31.6 percent). That is the habit the change serves, not a labeller fault. So the two are separated.
 
-1. **The user's own later actions**, where the journal has them, keyed on events, never a window: a top-level closer or planner `done` inside the ending's turn (its own span: the opening user record to the cut, since no done carries an evidence time past its own cut) names the cards the judges completed at that ending, cleared tops read from goals-archive included; a later `followup`, `unclear` or `restore` on such a card labels the ending "not finished"; a hand `clear` or a `resolve` with no later `followup`, `unclear` or `restore` on the node at build time labels it "finished"; the observation span (build time minus the cut) is recorded per ending, so labels can be read by span. About a third of the corpus will carry one of these; the pilot's first build showed the judges' dones fall where turns finish, so eligible endings cluster in the finished class, and the selection prefers eligible endings in every class.
-2. **A labeller pass** with a strong model for the rest, reading the ending's last turn (its final assistant text and the user's ask that opened it; the card titles are not sent), answering one of the four classes with a one-line reason, run twice with the order of the classes shuffled so the label is the agreement of the two; its agreement with tier one is measured on every ending that has both, and the harness reports that agreement before any prompt result is read (below 90 percent the labeller is redesigned, not trusted).
+- **The labeller** (a strong model over the ending's last turn: its final assistant text and the user's ask that opened it, the card titles not sent) answers one of the four classes with a one-line reason, run twice with the class order shuffled (never the same order twice). Its label is the agreement of the two runs, and its OWN gate is STABILITY, not agreement with anything: the fraction of endings that get the same class in both orders must reach 90 percent (54 of 60, 90.0 percent, on the pilot's corpus). The class is a stratification frame only: it groups endings so a leak or a false interrupt can be read per class, never a ground truth a measure is scored against.
+- **The user's own recorded actions** are the ground truth the measures use (below). They need no labeller: they are the events the journals hold.
 
 ## The harness
 
@@ -49,14 +49,16 @@ Rules the harness keeps: every run through `capped`; paid passes only inside a q
 
 ## The measures, per arm
 
-Reported as a cleanplots figure (the skill's rules: horizontal bars from zero, one panel per measure, the arms as bars, the exact numbers annotated) with the same numbers in a table in the results file, and only counts and dollars, never a title or a line of text from the corpus.
+The change is about the user's habit of clearing Completed without reading, so the measures are scored against the user's OWN later actions, not the labeller's class. For each ending the harness reads the live override journal for the gestures that POSTDATE the arm's placement time (the placement's own `ev_t`/`at` as the live judges filed it, never the arm's wall clock): a `clear` on a card with no later `followup`, `unclear` or `restore` is the user treating it as finished; a `followup`, `unclear` or `restore` is the user re-opening it. "The card the user acted on" is matched by node id (the full `<rompUuid>:g<N>` key) to the top the arm placed; when several cards move in the ending, each is scored on its own node's later gestures, independently.
 
-1. **Leaks into Completed**: endings in classes 1 to 3 with a SCORED card reading `completed` after the pass (a card completed before the ending is not the ending's). Must go to zero.
-2. **False interrupts**: endings in class 4 with a scored card reading `needs_input` after the pass. Must not rise above the current prompt's count.
-3. **Flaps**: scored cards whose column differs between the two builds of the same ending (the settled gate is the same for both builds, so only verdict differences count).
-4. **Cost per pass** in dollars, and the mean call time, from the ledger.
+1. **Leaks into Completed**: an ending with a later user gesture where the arm placed a top in `completed` that the user then re-opened (a `followup`, `unclear` or `restore` on that node after the placement). The card looked done to the arm and was not to the user. Must go to zero.
+2. **False interrupts**: an ending with a later user gesture where the arm left a top in `needs_input` that the user then cleared with no reply (a `clear` with no `followup`/`unclear`/`restore` after, and no turn of the user's own answering it between the placement and the clear). The card sat in Needs you and the user just crossed it off. Must not rise above the baseline.
+3. **Flaps**: scored cards whose column differs between the two builds of the same ending (the settled gate is the same for both builds, so only verdict differences count). Every ending contributes, with or without a later gesture.
+4. **Cost per pass** in dollars, and the mean call time, from the ledger. Every ending contributes.
 
-A candidate lands only when 1 is zero on the full corpus, 2 is at or below the baseline, and 3 is at or below the baseline; the result is a row in this note and the prompt change files as its own fix pull request with the figure attached.
+Endings with NO later user gesture (the journals record nothing after the placement) contribute to flaps and cost only; they cannot score a leak or a false interrupt, since there is no user action to compare. On the pilot's corpus that is 60 endings in all, 21 with a later gesture (15 read "finished" by the user, 4 "not finished", 2 with gestures on more than one node the per-node match resolves); the full corpus of 300 endings will carry proportionally more. A failed call or a reply the parser rejects still marks the arm's row not comparable, as before.
+
+A candidate lands only when, on the full corpus, its leaks are zero, its false interrupts are at or below the baseline, and its flaps are at or below the baseline; the result is a row in this note and the prompt change files as its own fix pull request with the figure (a cleanplots figure: horizontal bars from zero, one panel per measure, the arms as bars, the exact numbers annotated, counts and dollars only, never a line of the corpus).
 
 ## Roads not taken
 
@@ -65,6 +67,7 @@ A candidate lands only when 1 is zero on the full corpus, 2 is at or below the b
 - **A prompt tweak first, measurement after.** The tweak is what moves cards; the measurement is the gate.
 - **The labeller alone as the truth.** One model grading another shares its blind spots; the user's recorded actions come first and the labeller's agreement with them is reported before its labels count.
 - **Reusing `_ab_close` as it stands.** It sweeps the live root and prints titles to the terminal; the harness takes its sweep and drops both.
+- **Tier one as a truth about the ending's class.** The pilot showed a user clear is not "the ending had no loose end"; it is the habit the change serves. Tier one drives the measures directly (the user's actions ARE the ground truth) and the labeller's class is a frame only.
 - **Reading the harness's columns as the board's.** The board's column takes live inputs (an API block, a permission prompt, a stall, a recheck after a reply, the awaiting snapshot, a peer wait); the harness measures the judges' verdicts through the store-derivable rule and says so.
 
 ## Tests for the harness (red first at main)
