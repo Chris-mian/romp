@@ -2973,6 +2973,136 @@ class SkeletonReconnect(unittest.TestCase):
         self._the_cycle_repairs(a, b)                    # the next content cycle's full to every base holder
         self.assertNotIn(S1, km._chat_baseline_raced, "...and its write takes the mark off")
 
+    def test_55_an_empty_read_under_the_mark_with_a_cached_build_hands_a_skeleton_holder_the_cached_builds_status(self):
+        """A skeleton holder of the marked tab on the empty cycle (the post-merge review of the mark's cached arm,
+        2026-09-21). Under the mark with a cached build the guard appends that build to the cycle's list for the Outline
+        row and sends no session frame (tests 37 and 51); but the stand-in road it replaced had also handed every client
+        holding the tab as a skeleton its status frame, through the per-client loop, and the `continue` alone left that
+        holder's chip without a word for the empty cycle, a one-cycle lag the next content cycle closed. Now the arm
+        sends each chat client the cached build's status through the light-status helper, which re-checks skeleton
+        membership under the client's lock and sends only to a holder with no word yet (no status slot for the tab; a
+        holder that carries one is test 56's case): the skeleton holder, fresh, gets exactly one status frame and no
+        session frame for the marked tab, the base holders get no frame of any shape (unchanged), and the mark and the
+        absent baseline stand. The connect push runs the same loop, so a page dialing in with the tab as a skeleton gets
+        the same frame (test 46's shape, the second part). Red at the base at the skeleton holder's status assertion (no
+        frame)."""
+        a, b = self._race({"first": lambda b: km._push_session_now(S1),
+                           "second": lambda b: km._push([b], connect=True)}, "a")
+        hit = km._built_chat.get(S1)
+        self.assertIsNotNone(hit, "premise: the connect push cached its build")
+        self.assertIn(S1, km._chat_baseline_raced, "premise: the race marked the sid")
+        self.assertNotIn(S1, km._prev_chat_events, "premise: ...and popped the baseline")
+        k = self._client(active=S2, skeleton={S1}, skeletonOrder=[S1], proto=2)   # a page on another tab, holding the marked one as a skeleton
+        km._clients.append(k)
+        km._EMPTY_BUILD_NOTED.discard(S1)
+        a["_frames"].clear(); b["_frames"].clear()
+        content = self.SESS[S1]["events"]
+        with open(self.paths[S1], "a") as f:
+            f.write("x" * 10)                            # the transcript grew: the signature misses and the cycle builds
+        self.SESS[S1]["events"] = []                     # ...and the read comes back empty
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            km._push([a, b, k])                          # the cycle
+        self.assertEqual([st for sid, st in self._statuses(k) if sid == S1], [hit[1]["status"]],
+                         "the skeleton holder gets one status frame for the marked tab, carrying the cached build's status")
+        self.assertEqual([f for f in self._frames(k, "session") if f["id"] == S1], [], "...and no session frame for it")
+        self.assertEqual([f for f in self._frames(k, "chatTail") if f["id"] == S1], [], "...nor a tail")
+        self.assertEqual(k["skeleton"], {S1}, "the tab stays a skeleton: a status frame releases nothing")
+        for cl in (a, b):
+            self.assertEqual([f for f in cl["_frames"] if f.get("id") == S1 and f["type"] in ("session", "chatTail", "status")], [],
+                             "a base holder gets no frame of any shape for the sid (unchanged)")
+        self.assertIn("came back EMPTY", err.getvalue(), "the failed read is said on stderr")
+        self.assertIn(S1, km._chat_baseline_raced, "the mark stands")
+        self.assertNotIn(S1, km._prev_chat_events, "the baseline stays absent")
+        self.assertIs(km._built_chat.get(S1), hit, "the empty build is not cached: the cache keeps the build whose status went")
+        # the connect road: the same loop, so a page dialing in with the marked tab as a skeleton gets the same frame
+        k2 = self._client(active=S2, skeleton={S1}, skeletonOrder=[S1], proto=2)
+        km._clients.append(k2)
+        with contextlib.redirect_stderr(io.StringIO()):
+            km._push([k2], connect=True)
+        self.assertEqual([st for sid, st in self._statuses(k2) if sid == S1], [hit[1]["status"]],
+                         "the connect target holding the tab as a skeleton gets the cached build's status")
+        self.assertEqual([f for f in self._frames(k2, "session") if f["id"] == S1], [], "...and no session frame for it")
+        self.assertIn(S2, self._sessions(k2), "...while the push reached it with its watched tab")
+        self.assertIn(S1, km._chat_baseline_raced, "the mark stands: a connect push never clears one")
+        self.assertNotIn(S1, km._prev_chat_events, "the baseline stays absent")
+        self.SESS[S1]["events"] = content                # content returns
+        km._built_chat.clear()
+        km._push([a, b, k, k2])                          # the next content cycle
+        for cl in (a, b):
+            self.assertEqual(self._u3(cl)[-1], ("session", "m3 filled"), "the content cycle's full repairs every base holder")
+        for cl in (k, k2):
+            self.assertEqual([f for f in self._frames(cl, "session") if f["id"] == S1], [],
+                             "a skeleton holder is still handed no session frame: the tab is loaded on its click")
+        self.assertNotIn(S1, km._chat_baseline_raced, "...and the cycle's write takes the mark off")
+        self.assertEqual(km._prev_chat_events.get(S1), content, "and writes the baseline")
+
+    def test_56_the_empty_cycles_cached_status_never_rewinds_a_skeleton_holder_whose_chip_already_carries_a_word(self):
+        """The cached word can be OLDER than the one a skeleton holder carries (the review of test 55's send, 2026-09-21),
+        test 44's shape with a skeleton holder beside the base holders. After the race the cache holds the connect push's
+        build, its status working; a page on another tab holds the marked one as a skeleton; the status flips to waiting
+        and the transcript grows, and a targeted push under the standing mark hands every base holder the longer list
+        whole and the skeleton holder the freshly built status (waiting), caching nothing, so the cache still reads
+        working. The next cycle's read comes back empty. Sent to every skeleton holder, the cached arm's frame rewound
+        that holder's chip to working, and the following content cycle flipped it to waiting again: three words from one
+        failed read, where the kernel before the send moved nothing. Narrowed to a holder with no word yet (no status
+        slot for the tab, read under the client's lock), the empty cycle hands this holder no frame of any shape, its
+        chip never reads the older word, and the base holders and the mark are as test 44 has them (their frames are
+        kept whole here, since the frame counts are the pin, where test 45's repair half clears its frames first and reads
+        the cycle's own: the content cycle's full is the targeted push's list and word again, so it dedups on their
+        slots and the filled card they show is the push's, read off that push's frame). Red under the unnarrowed send
+        at the holder's word sequence (`['waiting', 'working'] != ['waiting']`), green here."""
+        a, b = self._race({"first": lambda b: km._push_session_now(S1),
+                           "second": lambda b: km._push([b], connect=True)}, "a")
+        hit = km._built_chat.get(S1)
+        self.assertIsNotNone(hit, "premise: the connect push cached its build")
+        self.assertEqual(hit[1]["status"]["state"], "working", "premise: ...with the pre-flip word")
+        self.assertIn(S1, km._chat_baseline_raced, "premise: the race marked the sid")
+        k = self._client(active=S2, skeleton={S1}, skeletonOrder=[S1], proto=2)   # a page on another tab, holding the marked one as a skeleton
+        km._clients.append(k)
+        self.SESS[S1]["status"]["state"] = "waiting"     # the status flips under the mark...
+        self.SESS[S1]["events"].append({"kind": "assistant", "uuid": "u5", "md": "m5"})   # ...and the transcript grows
+        self.SESS[S1]["events"].append({"kind": "assistant", "uuid": "u6", "md": "m6"})
+        km._push_session_now(S1)                         # a targeted push under the standing mark
+        for cl in (a, b):
+            self.assertEqual(len([f for f in self._frames(cl, "session") if f["id"] == S1][-1]["events"]), 7,
+                             "premise: every base holder was handed the longer list whole")
+        self.assertEqual([st["state"] for sid, st in self._statuses(k) if sid == S1], ["waiting"],
+                         "premise: the skeleton holder was handed the freshly built status, so its chip carries a word")
+        self.assertIn(("status", S1), k["sent"], "premise: ...on its status slot")
+        self.assertIs(km._built_chat.get(S1), hit, "premise: the targeted push cached nothing, so the cache still reads working")
+        self.assertIn(S1, km._chat_baseline_raced, "premise: the push's seed declined under the mark")
+        km._EMPTY_BUILD_NOTED.discard(S1)
+        n_s1 = {id(cl): len([f for f in cl["_frames"] if f.get("id") == S1]) for cl in (a, b, k)}   # every frame is kept: the counts and k's word sequence are the pin
+        content = self.SESS[S1]["events"]
+        with open(self.paths[S1], "a") as f:
+            f.write("x" * 10)                            # the transcript grew: the signature misses and the cycle builds
+        self.SESS[S1]["events"] = []                     # ...and the read comes back empty
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            km._push([a, b, k])                          # the cycle
+        self.assertEqual([st["state"] for sid, st in self._statuses(k) if sid == S1], ["waiting"],
+                         "the holder's chip never reads the older cached word: the empty cycle hands a holder with a word no status frame")
+        for cl in (a, b, k):
+            self.assertEqual(len([f for f in cl["_frames"] if f.get("id") == S1]), n_s1[id(cl)],
+                             "no frame of any shape for the sid reaches any client on the empty cycle (the base holders as test 44 has them)")
+        self.assertEqual(k["skeleton"], {S1}, "the tab stays a skeleton")
+        self.assertIn("came back EMPTY", err.getvalue(), "the failed read is said on stderr")
+        self.assertIn("its clients hold at least 7 events", err.getvalue(), "...with the count raised by the whole frame handed under the mark")
+        self.assertIn(S1, km._chat_baseline_raced, "the mark stands")
+        self.assertNotIn(S1, km._prev_chat_events, "the baseline stays absent")
+        self.SESS[S1]["events"] = content                # content returns
+        km._built_chat.clear()
+        km._push([a, b, k])                              # the next content cycle
+        self.assertEqual([st["state"] for sid, st in self._statuses(k) if sid == S1], ["waiting"],
+                         "the content cycle's status is the word the holder carries: it dedups on the slot, one word across the three cycles")
+        for cl in (a, b):
+            self.assertEqual(self._u3(cl)[-1], ("session", "m3 filled"),
+                             "every base holder shows the filled card: the targeted push's, since the content cycle's identical full dedups on the slot")
+        self.assertNotIn(S1, km._chat_baseline_raced, "...and the cycle's write takes the mark off")
+        self.assertEqual(km._prev_chat_events.get(S1), content, "and writes the baseline")
+
+
 class RestartDiet(unittest.TestCase):
     """The user's ruling (2026-09-14): after a reload the selected tab builds first, the strip's other tabs spread over later refreshes,
     hidden tabs not until shown; and restarts are invisible, so the one reload the reload core fires is the one the user accepts when a
