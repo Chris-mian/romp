@@ -85,7 +85,7 @@ const PAIRS: Array<[string, string, number]> = [
   ["--st-ready-fg", "--st-ready-bg", 3],
   ["--st-blocked-fg", "--st-blocked-bg", 3],
   ["--st-retrying-fg", "--st-retrying-bg", 3],       // 2026-09-08: the retrying amber tokenised (#e67e22/#2a1500 dark, #9C4A0C/#fff light)
-  ["--st-needs-fg", "--st-needs-bg", 3],             // 2026-09-20: the Needs you magenta (#d946ef/#2a0a2a dark, #a21caf/#fff light; plans/needs-you.md)
+  ["--st-needs-fg", "--st-needs-bg", 4.5],           // 2026-09-20: the Needs you magenta (#d946ef/#2a0a2a dark, #a21caf/#fff light; plans/needs-you.md). 4.5 (text) not 3: the fg IS the numbered badge's digit ink (5.17 dark, 6.32 light), so the token pair carries the floor the digit-ink parse pins (PR 2017 review)
   ["--st-needs-bg", "--bg", 3],                      // …and the Needs you RING is a line on the page (the tab's dashed outline, the folded header's pip)
   // (--st-compacting-fg on --st-compacting-bg is deliberately NOT paired: the dark teal + white pairing predates
   // this file and sits at 2.49:1, and decision 3 of the 2026-09-08 notice audit keeps dark byte-identical; the
