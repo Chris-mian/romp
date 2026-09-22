@@ -124,18 +124,19 @@ try {
     await tf.locator('#tabs .tab[data-id="' + cfg.sid + '"]').first().click();
   }
   // the shown session's turns in the target column: the frame's own load first, then the page's strip post listing the session (its
-  // own event), then the rendered turns (the kernel's build of a long session is what this waits for, so the bound is wide); a
+  // own event), then a rendered turn in the shown session's own thread (the kernel's build of a long session is what this waits for,
+  // so the bound is wide); a
   // timeout records the frame's state so a recurrence names its source (the 2026-09-21 CI red at 30 s left only the pane's rect)
   const shownSid = cfg.sid;
   try {
     await tf.waitForLoadState("load", { timeout: 30000 });
     await page.waitForFunction(({ fid, sid }) => ((window.__labStrip || {})[fid] || []).includes(sid), { fid: targetFid, sid: shownSid }, { timeout: 30000 });
-    await tf.waitForFunction(() => document.querySelectorAll("#content .turn[data-uuid]").length >= 1, null, { timeout: 60000 });
+    await tf.waitForFunction((sid) => document.querySelectorAll('#content .thread[data-session="' + sid + '"] .turn[data-uuid]').length >= 1, shownSid, { timeout: 60000 });   // the SHOWN session's thread: #content holds one .thread per cached session (render.ts ensureView, shown by display), so a count over every thread could be another session's turns
   } catch (e) {
     out.atTimeout = await tf.evaluate((sid) => ({ url: location.href, readyState: document.readyState, tabs: Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.getAttribute("data-id")),
       active: (document.querySelector("#tabs .tab.active[data-id]") || { getAttribute: () => null }).getAttribute("data-id"), turns: document.querySelectorAll("#content .turn[data-uuid]").length,
       regions: typeof window.__rompRegions === "function" ? !!window.__rompRegions(sid) : null })).catch((e2) => ({ readError: String(e2) }));
-    out.atTimeout.strip = await page.evaluate(() => window.__labStrip || null);
+    out.atTimeout.strip = await page.evaluate(() => window.__labStrip || null).catch((e2) => ({ readError: String(e2) }));   // guarded like the frame read: a crashing top page must not replace the rethrow
     throw e;
   }
   await tf.waitForFunction(() => { const g = document.querySelector("#content .tx-gap"); return !!(g && g.offsetHeight > 4); }, null, { timeout: 10000 }).catch(() => {});   // the gap above the first turn with a real height: what boot reads, on the page's own render
