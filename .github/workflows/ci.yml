@@ -327,4 +327,6 @@ jobs:
           ROMP_SERVED_TESTS_ENGINES: chromium
         run: |
           python -m pip install --upgrade pip pytest pytest-timeout cryptography
-          python -m pytest tests/test_*_browser.py tests/test_*_served.py -q -rs -p no:cacheprovider --durations=20 --timeout=600 --timeout-method=thread
+          # -rP: a PASSING lab's captured output reaches the job log too (its cost line: frames per second, the longest gap, the
+          # layout counts), so a lab's figures can be read off a green run without re-running it locally (PR 1927, round two)
+          python -m pytest tests/test_*_browser.py tests/test_*_served.py -q -rsP -p no:cacheprovider --durations=20 --timeout=600 --timeout-method=thread
