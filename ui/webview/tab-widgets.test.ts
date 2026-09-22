@@ -412,11 +412,13 @@ test("state badge: the close glyph outranks the count pill (z 4 > z 3) so a wide
   assert.match(STRIP_CSS, /\.tab:hover \.tab-close, \.tab\.active \.tab-close \{ position: relative; z-index: 4; \}/, "the close glyph rises above the badge on hover and active, so its click target stays clickable over the pill");
 });
 
-test("state badge: a dense-chrome tab shrinks the count pill and tucks it into the corner, so the hover-lifted close overpaints less of the digits (low, the second contributor PR 2017)", () => {
-  // a served-lab pixel ink measure is the ideal proof; this source pin holds the dense rule so a re-cut cannot silently
-  // drop it, and dense-chrome-layout.test.ts covers the dense tab's box the pill sits in.
+test("state badge: a dense-chrome tab shrinks the count pill and tucks it into the corner, its INTENDED smaller footprint pinned by rule text (low, the second contributor PR 2017)", () => {
+  // no served-lab pixel ink measure (RULED, the lean lane stands, the PR 2023 post-merge review): the smaller, corner-tucked
+  // dense pill is the INTENDED effect, pinned by the rule's text so a re-cut cannot silently drop it; whether that
+  // reduces the hover-lifted close's overpaint is not asserted as a measured fact here. dense-chrome-layout.test.ts
+  // covers the dense tab box the pill sits in.
   assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge \{ top: 1px; right: 1px; \}/, "the dense badge sits higher and tighter into the corner");
-  assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge:not\(:empty\) \{ min-width: 12px; height: 12px; border-radius: 6px; \}/, "the dense pill is smaller (its box, not its digit: the dense block carries no sub-10px font-size), so the lifted close glyph overpaints less of the digits");
+  assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge:not\(:empty\) \{ min-width: 12px; height: 12px; border-radius: 6px; \}/, "the dense pill is a smaller box (not a smaller digit: the dense block carries no sub-10px font-size), tucked into the corner");
 });
 
 test("state badge: with the Status dot widget off there is no slot, so retrying KEEPS its amber ring rather than vanishing; the re-ink toggles the slot's class, never overwriting it", () => {

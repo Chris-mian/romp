@@ -165,3 +165,27 @@ test("the Mail row is a glance: an accent check mark when mail is on, the bare w
   const thread = rowsOf({ postalServiceOff: true, mailOffWhy: "thread" });
   assert.equal(mailOf(thread).textContent, "off"); assert.equal(subOf(thread), null);
 });
+
+// The Needs-you row (PR 2017 / lcz's PR 2023 review, MEDIUM): showTabTip's only pointer route to the count phrase, the
+// dot's own title being inert under pointer-events:none. Red-first: with the `if (s.status.needsYou)` block deleted from
+// showTabTip, rowFor returns null and every assertion below fails.
+test("the Needs-you row: showTabTip carries the count phrase and the Needs-you tone, and is absent when the session does not need you", () => {
+  bodyClasses.clear();
+  const rowFor = (st: any): El | null => {
+    mod.showTabTip(new El("div"), { id: "s", name: "web", cwd: "/tmp/notes-api", status: st } as any);
+    const tip = body.children[body.children.length - 1];
+    for (const r of tip.children) if (r.className === "tab-tip-row" && r.children[0].textContent === "Needs you") return r.children[1];
+    return null;
+  };
+  assert.equal(rowFor({ state: "ready", sinceEpoch: null }), null, "no Needs-you row when the session does not need you");
+  for (const [n, phrase] of [[1, "1 thing needs you"], [3, "3 things need you"]] as const) {
+    const v = rowFor({ state: "working", sinceEpoch: null, needsYou: true, needsYouCount: n });
+    assert.ok(v, n + ": the Needs-you row is present");
+    assert.equal(v!.textContent, phrase, n + ": the row carries the count phrase");
+    assert.equal(v!.style.color, "var(--st-needs-bg)", n + ": the value wears the Needs-you tone");
+  }
+  const v0 = rowFor({ state: "working", sinceEpoch: null, needsYou: true });
+  assert.ok(v0, "needsYou with no count: still a row");
+  assert.equal(v0!.textContent, "needs you", "no count: the plain phrase");
+  assert.equal(v0!.style.color, "var(--st-needs-bg)", "…still the tone");
+});
