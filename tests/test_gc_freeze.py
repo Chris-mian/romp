@@ -208,14 +208,16 @@ class EndedLockConcurrency(unittest.TestCase):
         as still running (so the paused owner is KEPT, never itself a reclaim)."""
         def __init__(self, entered, release):
             self._entered, self._release = entered, release
+            self.released = None                          # set True when the gate was released, False on a pathological timeout (PR 1999 round-four low)
         def is_alive(self):
             self._entered.set()
-            self._release.wait(10)
+            self.released = self._release.wait(30)        # a generous bound; the test asserts it was RELEASED, not a vacuous timeout
             return True
 
     def test_resolve_ended_holds_the_lock_so_a_concurrent_registration_is_never_dropped(self):
         c = gf.GcFreeze(enabled=True, gc=FakeGc(), clock=lambda: 0.0)
         entered, release, at_lock = threading.Event(), threading.Event(), threading.Event()
+        self.addCleanup(release.set)                              # PR 1999 round-four low: a failed pre-release assertion must still free R, not park it to the bound
         o1, o2 = _Owner(), _Owner()
         gate = self._Gate(entered, release)                       # a strong ref: the controller keeps only a weakref to the thread
         fin = _FakeThread(alive=False)                            # P2's finished worker thread (a strong ref, likewise)
@@ -252,6 +254,7 @@ class EndedLockConcurrency(unittest.TestCase):
         # judged at the NEXT tick: P2 is alive with a finished thread, so it owes a reclaim then and is dropped
         self.assertTrue(c.resolve_ended(), "the next tick judges the kept registration: a surviving cycle owes its reclaim")
         self.assertFalse(any(sref() is o2 for sref, _ in c._ended), "and P2 is dropped after the reclaim it owes")
+        self.assertTrue(gate.released, "the gate was RELEASED mid-flight, not a vacuous 30 s timeout (PR 1999 round-four low)")
 
 
 class DoubleController:
@@ -637,6 +640,28 @@ def _install_fake_sdk():
     return restore
 
 
+class FakeSdkRestore(unittest.TestCase):
+    """PR 1999 round-four low: _install_fake_sdk's restore must put back whatever `claude_agent_sdk` was in sys.modules (a
+    real package on a box with the sdkvenv on the path), or leave it absent when there was none. Seed a marker and check it
+    comes back; then check the absent case pops the stand-in."""
+    def test_the_restore_puts_back_the_prior_module_or_leaves_it_absent(self):
+        import types as _types
+        saved = sys.modules.get("claude_agent_sdk")
+        self.addCleanup(lambda: sys.modules.__setitem__("claude_agent_sdk", saved) if saved is not None else sys.modules.pop("claude_agent_sdk", None))
+        marker = _types.ModuleType("claude_agent_sdk"); marker.MARKER = object()
+        sys.modules["claude_agent_sdk"] = marker
+        restore = _install_fake_sdk()
+        self.assertIsNot(sys.modules.get("claude_agent_sdk"), marker, "the stand-in replaced the prior module while installed")
+        restore()
+        self.assertIs(sys.modules.get("claude_agent_sdk"), marker, "the restore put the prior module back")
+        # the absent case: no prior module, so the restore pops the stand-in
+        sys.modules.pop("claude_agent_sdk", None)
+        restore2 = _install_fake_sdk()
+        self.assertIn("claude_agent_sdk", sys.modules, "the stand-in is installed")
+        restore2()
+        self.assertNotIn("claude_agent_sdk", sys.modules, "the restore pops the stand-in when there was no prior module")
+
+
 class SessionEndPopsRegister(unittest.TestCase):
     """Executed: a real SdkBackend driven to each of its three session-end pops (run-to-exit, kill, conserve-close)
     through the fake SDK registers the ended session with the controller. A spy sees one registration per pop, with
@@ -741,7 +766,10 @@ class KernelGlue(unittest.TestCase):
         `kill`, `conserve_close` and the `_on_session_gone` hook) is followed within a few lines by a `_note_ended(` CALL,
         so a FUTURE fourth pop that forgets the note reds here. The driven test (SessionEndPopsRegister) proves the three
         that exist fire; this guards the ones not yet written. Comments are stripped and the `def _note_ended` line skipped,
-        so a comment naming the call or the definition itself never pairs a pop (review PR 1999 tests)."""
+        so a comment naming the call or the definition itself never pairs a pop (review PR 1999 tests). LIMIT (PR 1999
+        round-four low): the census matches the single-line literal `self.sessions.pop(`; a pop split across physical lines
+        (an argument on the next line) would not be found. The three pops today are each one line, and a new pop kept to one
+        line is caught; a future multi-line pop would need this literal widened."""
         raw = Path(ROOT, "kernel", "sdk_backend.py").read_text().splitlines()
         code = [ln.split("#", 1)[0] for ln in raw]      # strip line comments so a comment naming the call does not pair a pop
         code = ["" if ln.lstrip().startswith("def _note_ended") else ln for ln in code]   # the def line is not a call
