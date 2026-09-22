@@ -68823,11 +68823,14 @@ class Handler(BaseHTTPRequestHandler):
                 # The push worker's word on one push (the ledger block above _push_ledger): {pid, stage: 'shown' |
                 # 'clicked', v}. AUTHENTICATED BY THE PID ALONE, ahead of _authorize on purpose: a worker's fetch
                 # carries no token header, and the pid is 128 unguessable bits the kernel itself issued, handed only
-                # to the device the push went to, good for two timestamps on that one row and nothing else. An
-                # unknown pid is a 404 and a line, a bad body buys no state, and the body is capped far below
-                # _POST_MAX_BYTES before a byte is read, since no token gates the read here. A 'shown' ack also
-                # SUPERSEDES the older unsettled, untapped rows for the same session on the same device
-                # (_push_ledger_supersede: the per-session tag replaced their notifications), one line each.
+                # to the device the push went to. What a valid pid buys (the contributor's read of PR 1953): the row's
+                # shown or tapped time, the FIRST stamp standing, and the worker's build recorded on the row on every
+                # report; on a 'shown' report the older unsettled, untapped rows for the same session on the same device
+                # marked superseded (_push_ledger_supersede: the per-session tag replaced their notifications), one line
+                # each; and the request's origin recorded on the device's subscription when none is on file yet
+                # (_push_backfill_origin: the next declarative push's navigate URL). An unknown pid is a 404 and a
+                # line, a bad body buys no state, and the body is capped far below _POST_MAX_BYTES before a byte is
+                # read, since no token gates the read here.
                 _cl = str(self.headers.get("Content-Length") or "0").strip()
                 if not re.fullmatch(r"[0-9]{1,20}", _cl) or int(_cl) > _PUSH_ACK_MAX_BYTES:
                     self.close_connection = True
@@ -69340,6 +69343,7 @@ class Handler(BaseHTTPRequestHandler):
                     # its answer verbatim — a refusal, a plain ok, or an ok with `deferred` — never rewritten
                     return self._send(200, json.dumps(res), "application/json")
                 be = Sessions.backend_for(sid)
+                ans = {"ok": True}
                 if u.path == "/interrupt":
                     # the WS op's gate: a stop the backend refused (nothing in flight) paints nothing
                     if be.interrupt(sid) is not False:          # Esc/stop AND settle idle (in the backend)
@@ -69367,13 +69371,20 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True, "deferred": True}), "application/json")
                 else:
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
-                    _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one pane that renders it, a chat pane first (2026-09-21)
+                    # The hand-back's count rides the answer (review find, 2026-09-21): this route answered ok whatever
+                    # the hand-back did, so a shell caller of `romp end` or POST /end, often a peer session with no chat
+                    # pane open, read a plain ok while a message the user had typed went to a not-delivered frame that
+                    # with no pane connected reaches nobody. `undelivered` is present only when nonzero, the
+                    # `deferred` and `queued` idiom, so an end with nothing parked keeps its plain ok.
+                    undelivered = _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one pane that renders it, a chat pane first (2026-09-21)
+                    if undelivered:
+                        ans["undelivered"] = undelivered
                     _kill_at_end_door(be, sid, "/kill route")   # a kill that raises lifts that latch, then raises on (2026-09-21)
                     _record_death(sid, int(time.time()), "kill")
                     _comment_kill_all(sid, be)   # its comment threads must not outlive it (the WS endSession twin)
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_soon()   # ack-fast (the 2026-08-30 wedge: inline fleet builds piled 53 POST handlers; the pusher coalesces)
-                return self._send(200, json.dumps({"ok": True}), "application/json")
+                return self._send(200, json.dumps(ans), "application/json")
             if u.path.startswith("/remote/"):
                 # an attached host's own /new or /send, relayed: an action that LANDS on that machine (a session
                 # spawned THERE, its briefing sent before this kernel's poll has learned its sid). The local auth

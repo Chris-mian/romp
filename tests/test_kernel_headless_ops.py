@@ -184,6 +184,42 @@ class HeadlessRoutes(unittest.TestCase):
         fake.kill.assert_called_once()
         self.assertIn(("chat", {"type": "closed", "id": fake.kill.call_args[0][0]}), sent)
 
+    def test_end_route_counts_the_typed_messages_it_handed_back(self):
+        # The route answered ok whatever the hand-back did (review find, 2026-09-21): a shell caller, often a peer
+        # session with no chat pane open, read a plain ok while the message it had typed went to a not-delivered
+        # frame that reached nobody. The answer carries the count of typed texts handed back, present only when
+        # nonzero, so the nothing-parked answer above stays the plain ok; a machine's send parked beside the typed
+        # one is dropped with a log line and not counted.
+        import contextlib, io
+        sid = "33333333-4444-5555-6666-777777777777"
+        path = km.jd.STATE / "undelivered.jsonl"
+        before = path.read_bytes() if path.exists() else None
+        fake = mock.Mock()
+        sent = []
+        km._pending_ops.clear()
+        try:
+            km._park_op(sid, ("send", "typed while it was busy", "human", None, True))
+            km._park_op(sid, ("send", "a notice the kernel composed", "human"))
+            log = io.StringIO()
+            with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: fake)), \
+                 mock.patch.object(km, "_send_to_app", side_effect=lambda app, m: sent.append((app, m))), \
+                 contextlib.redirect_stderr(log):
+                code, resp = self._post("/end", {"id": sid})
+            self.assertEqual((code, resp), (200, {"ok": True, "undelivered": 1}),
+                             "the answer counts the typed text handed back, and only that")
+            fake.kill.assert_called_once()
+            self.assertEqual([m.get("copy") for app, m in sent if app == "chat" and m.get("type") == "err"],
+                             ["typed while it was busy"], "the typed text took the not-delivered path once")
+            self.assertIn("parked send op dropped with the ending session %s" % sid, log.getvalue())
+            self.assertIn(("chat", {"type": "closed", "id": sid}), sent, "the tab closes as before")
+            self.assertNotIn(sid, km._pending_ops, "the ending session's queue is gone with it")
+        finally:
+            km._pending_ops.clear()
+            if before is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(before)
+
     def test_a_tagged_send_parks_as_a_machines_and_lifts_nothing(self):
         # T315 (the commit-14 review's sixth item, driven through the route): `romp send --tag` is a machine's
         # message: the parked op carries no fifth slot, and a delivered one hands the backend no user flag

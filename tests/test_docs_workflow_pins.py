@@ -33,8 +33,9 @@ class DocsBuildOnPullRequests(unittest.TestCase):
 
     @staticmethod
     def _expr(capture):
-        """The condition alone: a trailing comment on the `if:` line is not the condition (a guard moved into the comment
-        kept these pins green, the contributor's post-merge find of 2026-09-21)."""
+        """The setting alone: a trailing comment on an `if:` or a concurrency line is not the setting (a guard moved into the
+        comment kept these pins green, the contributor's post-merge find of 2026-09-21; a benign comment on the setting's own
+        line must not turn them red either, the note after PR 1948)."""
         return re.sub(r"\s+#.*$", "", capture).strip()
 
     def test_a_pull_request_run_stops_after_the_build(self):
@@ -46,9 +47,16 @@ class DocsBuildOnPullRequests(unittest.TestCase):
         self.assertIn("github.event_name != 'pull_request'", self._expr(dep.group(1)), "a pull request never publishes (the condition, not a comment)")
 
     def test_a_pull_requests_run_keys_on_its_own_ref_and_a_push_keeps_the_pages_group(self):
-        # anchored at the line's start and end: the expression in a comment above a shared group is not the setting
-        self.assertRegex(self.src, r"(?m)^  group: " + re.escape("${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.ref) || 'pages' }}") + r"$")
-        self.assertRegex(self.src, r"(?m)^  cancel-in-progress: " + re.escape("${{ github.event_name == 'pull_request' }}") + r"$")
+        # the setting's own line, its value read alone (a trailing comment is not the setting, and neither is the expression in
+        # a comment above a shared group); a red names the value found (the contributor's post-merge note on PR 1948, 2026-09-21)
+        grp = re.search(r"^  group: (.*)$", self.src, re.M)
+        self.assertTrue(grp, "no concurrency group line: a pull request's run would share the publish's group, or the block moved")
+        self.assertEqual(self._expr(grp.group(1)), "${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.ref) || 'pages' }}",
+                         "the group line reads %r: a pull request keys on its own ref, a push keeps the pages group" % grp.group(1))
+        cip = re.search(r"^  cancel-in-progress: (.*)$", self.src, re.M)
+        self.assertTrue(cip, "no cancel-in-progress line under the concurrency block")
+        self.assertEqual(self._expr(cip.group(1)), "${{ github.event_name == 'pull_request' }}",
+                         "the cancel-in-progress line reads %r: a newer pull-request push cancels the older run, a publish is never cancelled" % cip.group(1))
 
 
 class OrphanPagesFailTheStrictBuild(unittest.TestCase):

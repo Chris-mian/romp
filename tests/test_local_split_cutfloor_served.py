@@ -79,9 +79,11 @@ catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1400, height: 720 } });
 page.on("pageerror", () => {});
 const asks = [];
+const askWaiters = [];   // resolvers for the next ask (nextAsk below): the page's own event, never a sleep
+const nextAsk = (ms) => new Promise((res) => { const t = setTimeout(() => res(false), ms); askWaiters.push(() => { clearTimeout(t); res(true); }); });   // true: an ask came within the bound; false: none did (a bounded negative)
 await page.routeWebSocket((u) => /\/ws(\?|$)/.test(u.pathname + (u.search || "")), (ws) => {
   const server = ws.connectToServer();
-  ws.onMessage((m) => { try { const f = JSON.parse(m); if (f && f.type === "loadTurns" && f.id === cfg.sid) asks.push([f.lo, f.hi]); } catch (e) {} server.send(m); });
+  ws.onMessage((m) => { try { const f = JSON.parse(m); if (f && f.type === "loadTurns" && f.id === cfg.sid) { asks.push([f.lo, f.hi]); askWaiters.splice(0).forEach((w) => w()); } } catch (e) {} server.send(m); });
   server.onMessage((m) => ws.send(m));
   server.onClose(() => ws.close()); ws.onClose(() => server.close());
 });
@@ -136,7 +138,7 @@ try {
     out.atTimeout.strip = await page.evaluate(() => window.__labStrip || null);
     throw e;
   }
-  await page.waitForTimeout(1000);
+  await tf.waitForFunction(() => { const g = document.querySelector("#content .tx-gap"); return !!(g && g.offsetHeight > 4); }, null, { timeout: 10000 }).catch(() => {});   // the gap above the first turn with a real height: what boot reads, on the page's own render
   out.tabs = { col1: await tabsIn("f-chat"), col2: await tabsIn("f-chat-2") };
   out.boot = await tf.evaluate((sid) => {
     const c = document.getElementById("content");
@@ -149,12 +151,14 @@ try {
              regions: (typeof window.__rompRegions === "function") ? window.__rompRegions(sid) : null };
   }, cfg.sid);
   const bootTurns = out.boot.turns;
+  const asksBefore = asks.length;
+  const firstAsk = nextAsk(3000);   // armed before the nudge, so an ask on the nudge's own turn is not missed
   await tf.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; c.dispatchEvent(new Event("scroll")); });
-  await page.waitForTimeout(300);
-  await tf.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; c.dispatchEvent(new Event("scroll")); });
+  out.askedOnFirstNudge = await firstAsk;
+  if (!out.askedOnFirstNudge) await tf.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; c.dispatchEvent(new Event("scroll")); });   // a second nudge only when the first asked nothing within the bound
   try { await tf.waitForFunction((n) => document.querySelectorAll("#content .turn[data-uuid]").length > n, bootTurns, { timeout: 10000 }); } catch (e) {}
-  await page.waitForTimeout(1800);
-  out.asks = asks.slice(); out.asked = asks.length > 0;
+  out.quietAfterFill = !(await nextAsk(1000));   // the bounded negative: no further ask within a second of the head page's fill
+  out.asks = asks.slice(); out.asked = asks.length > asksBefore;
   out.after = await tf.evaluate((sid) => {
     const c = document.getElementById("content");
     return { canScroll: c.scrollHeight - c.clientHeight > 4, turns: document.querySelectorAll("#content .turn[data-uuid]").length,
@@ -287,6 +291,7 @@ class LocalSplitCutFloor(unittest.TestCase):
         self.assertTrue(b.get("regions"), "%s: the column holds regions: %r" % (scenario, b))
         self.assertTrue(b.get("gaps") and (b["gaps"][0].get("h") or 0) > 4, "%s: a .tx-gap element with real height exists above the first turn: %r" % (scenario, b))
         self.assertTrue(r.get("asked"), "%s: scrolling the column to the top asked loadTurns: asks=%r" % (scenario, r.get("asks")))
+        self.assertTrue(r.get("quietAfterFill"), "%s: no further ask within a second of the head page filling (a bounded negative): asks=%r" % (scenario, r.get("asks")))
         after = (r.get("after") or {}).get("regions") or []
         self.assertTrue(any(x["kind"] == "run" and x["lo"] == 0 for x in after),
                         "%s: the head page filled (a run at lo 0): after=%r asks=%r" % (scenario, r.get("after"), r.get("asks")))

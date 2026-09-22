@@ -161,10 +161,18 @@ class OneListingPerChange(_Listing):
         self.assertEqual(self._stats()[0]["built"], 2, "the notice is a key input: one rebuild")
         self._cycle()
         self.assertEqual(self._stats()[0]["built"], 2, "and a quiet cycle builds nothing")
+        # a second compaction failing the same way leaves the same words at a new stamp, and `romp compact --wait`
+        # tells that end from the standing notice by the stamp; so the stamp is half of the key, or the kept listing
+        # would serve the old record over the fresh loud end and the wait would print done (the post-merge review of
+        # the exit clause, 2026-09-21: a text-only key was pinned by nothing)
+        errs[SID] = dict(errs[SID], at=NOW + 7.5)
+        self._cycle()
+        self.assertEqual(next(r for r in self._body() if r["id"] == SID)["launchError"], errs[SID], "the new stamp is served")
+        self.assertEqual(self._stats()[0]["built"], 3, "the same words at a new stamp are a key input: one rebuild")
         errs.pop(SID)                                                                  # the next accepted turn clears it
         self._cycle()
         self.assertIsNone(next(r for r in self._body() if r["id"] == SID)["launchError"])
-        self.assertEqual(self._stats()[0]["built"], 3)
+        self.assertEqual(self._stats()[0]["built"], 4)
 
     def _compaction_seams(self, comp, errs, reads=None, land=None):
         """The listing's two per-row backend reads stubbed as the world's compacting bit (`comp`, sid to bool) and launch

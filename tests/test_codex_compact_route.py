@@ -1464,7 +1464,9 @@ class RealBackendCompact(unittest.TestCase):
                                      headers={"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
         with mock.patch.object(km, "_send_to_app", lambda app, m: broadcast.append((app, m))):
             with urllib.request.urlopen(req, timeout=10) as r:
-                self.assertEqual((r.status, json.loads(r.read().decode())), (200, {"ok": True}))
+                # the answer counts the typed text handed back (2026-09-21): the shell caller, with no pane to show
+                # the frame, learns from the answer alone that a message did not go through
+                self.assertEqual((r.status, json.loads(r.read().decode())), (200, {"ok": True, "undelivered": 1}))
         self.assertIn(("chat", {"type": "closed", "id": sid}), broadcast, "the tab closes as before")
         self._after_end(sid, text, n0, "/TESTDIR-compact-end-route",
                         [m for app, m in broadcast if app == "chat" and m.get("type") == "err" and m.get("copy") == text])
