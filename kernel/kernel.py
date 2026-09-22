@@ -60272,10 +60272,11 @@ JOBS_PASS_S = 0.5                                  # the jobs thread's pace betw
 
 def _jobs_cycle():
     """ONE pass of the jobs thread: the pass's liveness snapshot and scopes opened as _pusher_cycle opens the pusher's
-    (thread-confined, so the two loops never share a snapshot), less the launch-error memo: only the listing's key reaches
-    it, once per session through the pair reader (_listing_pair_scoped), the rows hit the pair memo and never reach it,
-    and the listing is the pusher's job, so a memo opened here was filled by nothing (2026-09-21; the key alone since the
-    post-merge review of the listing pairing, 2026-09-22); _jobs_pass inside them, the scopes closed in the finally, the
+    (thread-confined, so the two loops never share a snapshot), less the launch-error memo and the compaction-end-record
+    memo (_compact_end_scoped) beside it: only the listing reads them, the launch error once per session at its key through
+    the pair reader (_listing_pair_scoped; the rows hit the pair memo and never reach it) and the end record at its key and
+    its rows, and the listing is the pusher's job, so a memo opened here was filled by nothing (2026-09-21; the key alone
+    for the launch error since the post-merge review of the listing pairing, 2026-09-22); _jobs_pass inside them, the scopes closed in the finally, the
     pass counted under /perf `jobs`, and the boot's first pass sampled and reported to the boot row like the pusher's
     first cycle."""
     _t = time.monotonic()
