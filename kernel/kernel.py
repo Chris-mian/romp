@@ -3151,6 +3151,7 @@ _router_probe_said = [None]                  # the settings-read fault last said
 ROUTER_NOTE_NOTHING_DECLARED = "Nothing declared: set ROMP_ROUTER_MODELS in service.env and restart the service"
 ROUTER_NOTE_NO_GATEWAY = "No gateway configured: ANTHROPIC_BASE_URL is unset or points at Anthropic, so a pick would be refused"
 ROUTER_NOTE_LISTING_FAILED = "The gateway's model list could not be fetched; the declared models are offered"
+ROUTER_NOTE_LISTING_FAILED_NONE = "The gateway's model list could not be fetched and nothing is declared; no gateway model is offered"
 ROUTER_NOTE_COUNT_UNKNOWN = "The live sessions could not be counted; one may still run a removed model"
 
 
@@ -3478,6 +3479,10 @@ def _set_router_models(enabled, gt=None):
         gone = _remove_router_families(gen=gen)
         if gone is None:
             return stamp     # stale: the on flip that followed keeps its advisory and its rows; no frame
+        if not gone:
+            return stamp     # nothing was installed (a repeated off at a newer stamp, an off with nothing declared): the
+            #                  standing advisory of the flip that removed something stands, and no frame goes out
+            #                  (review round three, 2026-09-22: the second off nulled the note over live sessions)
         live = _router_live_on(set(gone)) if gone else 0
         tiers = _router_tiers_on(set(gone)) if gone else []
         judges = [t for t in tiers if t != "comment"]
@@ -3513,15 +3518,20 @@ def _router_status():
     gw, gerr = _router_gateway_configured() if on else (None, None)   # not probed while off: null, and no fault line for a
     #                                                                   feature never turned on (review find, 2026-09-21)
     declared = _router_declared_effective()
-    error = _router_status_note[0]           # the event-sourced note whatever the switch (the off flip writes it while off)
-    if on and not error:
+    live = None
+    if on:
         # the probe-shaped advisories, LIVE from this call's probe and declaration, never a note frozen at flip time: an
-        # operator who fixes the gateway or the declaration sees the line clear on the next read (verify find, 2026-09-22)
+        # operator who fixes the gateway or the declaration sees the line clear on the next read (verify find, 2026-09-22).
+        # Composed AHEAD of the event note: a failed listing must not hide that no gateway is configured (review round
+        # three, 2026-09-22); the gear prints one line, and the one the operator must act on comes first.
         if not declared and not (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip():
-            error = ROUTER_NOTE_NOTHING_DECLARED
+            live = ROUTER_NOTE_NOTHING_DECLARED
         elif not gw:
-            error = gerr or ROUTER_NOTE_NO_GATEWAY
-    return {"enabled": on, "declared": declared, "gateway": gw, "error": error}
+            live = gerr or ROUTER_NOTE_NO_GATEWAY
+    note = _router_status_note[0]            # the event-sourced note whatever the switch (the off flip writes it while off)
+    if note == ROUTER_NOTE_LISTING_FAILED and not declared:
+        note = ROUTER_NOTE_LISTING_FAILED_NONE   # worded by the declared count: URL-only, nothing is offered
+    return {"enabled": on, "declared": declared, "gateway": gw, "error": live or note}
 
 
 def _router_models_boot():
@@ -17402,10 +17412,13 @@ def _reset_unvouched_seed():
         sys.stderr.write("sdk-defaults model %r is not offered yet; the gateway's model list is still being fetched, so "
                          "the seed is left as it is for this session\n" % seed)
         return
-    sys.stderr.write("sdk-defaults model %r is not a model this kernel offers (an extra gateway model whose "
-                     "switch is off, or one no longer declared); reset to the account default for the new "
-                     "session\n" % seed)
-    sbmod.write_sdk_default(jd.STATE, model="default")
+    # a compare-and-swap on the value judged: a dormant pick landing between the read and the write (a vouched alias,
+    # its own fresh modelTok) must not be overwritten by a reset aimed at the seed that preceded it (review round
+    # three, 2026-09-22)
+    if sbmod.reset_sdk_default_model_if(jd.STATE, seed):
+        sys.stderr.write("sdk-defaults model %r is not a model this kernel offers (an extra gateway model whose "
+                         "switch is off, or one no longer declared); reset to the account default for the new "
+                         "session\n" % seed)
 
 
 def _create_sdk_session_inner(nm, cwd, auth="", prefs=None, client=None, env=None, parent="", tags=()):
@@ -18740,7 +18753,9 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
     # (_pick_vouched): a removed extra gateway model picked in the dialog (a stale picker) launched a new session on
     # it here, the one create door around the vouch (verify find, 2026-09-22). The stored default is vouched by
     # _comment_launch_prefs itself and falls to inheriting the parent, so this bites the dialog's explicit pick.
-    m_launch = _comment_launch_prefs(model, "", "")[0]
+    launch = _comment_launch_prefs(model, effort, fast)   # resolved ONCE: the fork below reuses it (the stored default's
+    #                                                        refusal line was said twice, review round three, 2026-09-22)
+    m_launch = launch[0]
     if m_launch and not _pick_vouched(m_launch, be):
         sys.stderr.write("model %r for a new thread of %s refused (comment create): not a model this kernel offers\n"
                          % (m_launch, str(parent_sid)[:8]))
@@ -18798,7 +18813,7 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
                 row["color"] = col                 # the comment's identity color (the dialog's name tint)
             data.setdefault("threads", []).append(row)
             _save_comments(parent_sid, data)
-        model, effort, fast = _comment_launch_prefs(model, effort, fast)
+        model, effort, fast = launch          # resolved once, above the name claim (see the vouch)
         try:
             be.fork(nm, parent_sid, cut, bg=col, fg=(pal.fg_for(col) if col else ""), sid=tsid, thread_of=parent_sid,
                     model=model, effort=effort, fast=fast)

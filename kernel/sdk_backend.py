@@ -4931,6 +4931,21 @@ def write_sdk_default(state_dir: Path, **fields) -> None:
         _write_sdk_defaults(state_dir, d)
 
 
+def reset_sdk_default_model_if(state_dir: Path, expected: str) -> bool:
+    """Reset the remembered `model` to the account default ONLY IF it still reads `expected`, under _defaults_lock:
+    the kernel's create door judges the seed it read and must not overwrite a pick that landed since (a dormant
+    pick's write, with its own fresh modelTok, between the read and the reset). A fresh modelTok goes with the
+    reset, as write_sdk_default mints. Returns whether the reset landed."""
+    with _defaults_lock:
+        d = read_sdk_defaults(state_dir)
+        if str(d.get("model") or "") != str(expected or ""):
+            return False
+        d["model"] = "default"
+        d["modelTok"] = _mint_write_tok()
+        _write_sdk_defaults(state_dir, d)
+        return True
+
+
 def _swap_sdk_default_locked(state_dir: Path, key: str, value):
     """swap_sdk_default's body, for a caller that already holds _defaults_lock and has more to do under
     the same hold (SdkBackend._seed_write_pending inserts the write's node before letting go: with the

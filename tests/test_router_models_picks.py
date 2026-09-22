@@ -22,6 +22,7 @@ off, a stub backend that records what it was asked, no network.
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -150,6 +151,11 @@ class _OnThenOff(unittest.TestCase):
         sb._ROUTER_IDS = self._sb_ids
         self.store.unlink(missing_ok=True)
         self._clear_latches()
+        # the kernel tells the module registered as romp_sdk_backend: register this harness's private copy for the test,
+        # so the ids never land on a copy an earlier module registered (review round three, 2026-09-22)
+        self._modpatch = mock.patch.dict(sys.modules, {"romp_sdk_backend": sb})
+        self._modpatch.start()
+        self.addCleanup(self._modpatch.stop)
 
     def _clear_latches(self):
         km._model_switch_pending.clear()
@@ -310,6 +316,13 @@ class NewThreadRoad(_OnThenOff):
         self.assertEqual((err, tid), ("claimed-in-test", None), "the vouch passed and the create went on to the name claim")
         self.assertEqual(claimed, ["t1"])
 
+    def test_the_stored_default_refusal_is_said_once_per_create(self):
+        # review round three: the create resolved the prefs twice (the vouch, then the fork), two identical lines
+        (km.jd.STATE / "comment-model").write_text(REMOVED + "\n")
+        self.addCleanup(lambda: (km.jd.STATE / "comment-model").unlink(missing_ok=True))
+        self._create("")
+        self.assertEqual(self.err.getvalue().count("comment-model %r is not a model" % REMOVED), 1)
+
     def test_a_stored_comment_default_the_kernel_cannot_vouch_for_falls_to_the_parent(self):
         (km.jd.STATE / "comment-model").write_text(REMOVED + "\n")
         self.addCleanup(lambda: (km.jd.STATE / "comment-model").unlink(missing_ok=True))
@@ -339,6 +352,22 @@ class SeedInflight(_OnThenOff):
             km._reset_unvouched_seed()
         self.assertEqual(self._read(), "default", "reset once no listing is pending")
 
+    def test_the_reset_is_a_compare_and_swap_on_the_seed_it_judged(self):
+        # review round three: a dormant pick landing between the read and the write was overwritten; the reset lands
+        # only if the store still holds the value judged
+        self._seed(REMOVED)
+        real = km._vouched_model
+
+        def vouch_then_race(value):
+            ok = real(value)
+            if value == REMOVED:
+                km._sdk_defaults_module().write_sdk_default(km.jd.STATE, model="sonnet")   # the pick lands mid-check
+            return ok
+        with mock.patch.object(km, "_vouched_model", vouch_then_race):
+            km._reset_unvouched_seed()
+        self.assertEqual(self._read(), "sonnet", "the pick that landed since stands; the stale reset stood down")
+        self.assertNotIn("reset to the account default", self.err.getvalue())
+
     def test_a_gpt_shaped_seed_is_reset_too(self):
         # the seed feeds SDK sessions: the Codex exception does not apply (a mutant that applied it passed the suite)
         self._seed("gpt-5-codex")
@@ -365,6 +394,19 @@ class Seed(_OnThenOff):
         self.seed = km.jd.STATE / "sdk-defaults.json"
         self.seed.unlink(missing_ok=True)
         self.addCleanup(lambda: self.seed.unlink(missing_ok=True))
+        # the real spawn writes a registry row, a names row and a state file under this root: every path new since
+        # setUp is removed again, so no live-looking row outlasts the test (review round three, 2026-09-22)
+        self._before = {str(q) for q in km.jd.STATE.rglob("*")}
+        self.addCleanup(self._remove_new_paths)
+
+    def _remove_new_paths(self):
+        import shutil
+        new = sorted((q for q in km.jd.STATE.rglob("*") if str(q) not in self._before), key=lambda q: -len(str(q)))
+        for q in new:
+            try:
+                q.unlink() if not q.is_dir() else shutil.rmtree(q, ignore_errors=True)
+            except OSError:
+                pass
 
     def tearDown(self):
         (km._sdk, km._pick_identity_color, km._commands_for_cwd, km._mark_views_dirty,

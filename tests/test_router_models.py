@@ -424,7 +424,8 @@ class Switch(_Catalog):
         real_remove, real_apply = km._remove_router_families, km._apply_router_families
         with mock.patch.object(km, "_fetch_router_models", lambda url, timeout=4: calls.append(url) or []):
             km._set_router_models(True, gt=10)
-            time.sleep(0.05)
+            self._wait(lambda: calls, "the on flip's listing fetch")      # the event, not a sleep (review round three)
+            self._wait(lambda: not km._router_listing_inflight(), "the fetch thread to end")
             note_on, n_on, n_calls = km._router_status_note[0], len(self.frames), len(calls)
             self.assertIsNone(note_on, "the on flip's note is clear (the no-gateway advisory is derived live)")
             self.assertEqual(km._router_status()["error"], km.ROUTER_NOTE_NO_GATEWAY)
@@ -510,6 +511,46 @@ class Switch(_Catalog):
         self.assertIsNone(km._router_status_note[0], "a failure at an old generation files nothing")
         self.assertIsNone(km._router_status()["error"])
         self.assertEqual(self.frames, [False, False], "the on and the off frames alone")
+
+    def test_a_failed_listing_does_not_hide_the_live_advisories(self):
+        # review round three: the failed-listing note stood as an event note and the no-gateway advisory, derived only
+        # when no note stood, vanished behind it. The live advisories are composed ahead of the event note.
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+        km._router_gateway_configured = lambda: (False, None)
+
+        def boom(url, timeout=4):
+            raise OSError("connection refused")
+        with mock.patch.object(km, "_fetch_router_models", boom):
+            km._set_router_models(True, gt=10)
+            self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the failed-listing note")
+        self.assertEqual(km._router_status()["error"], km.ROUTER_NOTE_NO_GATEWAY, "the gateway advisory comes first")
+        km._router_gateway_configured = lambda: (True, None)
+        self.assertEqual(km._router_status()["error"], km.ROUTER_NOTE_LISTING_FAILED, "then the event note, with declared models offered")
+
+    def test_a_failed_listing_under_a_url_only_configuration_says_nothing_is_offered(self):
+        _env(self, "ROMP_ROUTER_MODELS_URL", "http://127.0.0.1:1/v1/models")
+
+        def boom(url, timeout=4):
+            raise OSError("connection refused")
+        with mock.patch.object(km, "_fetch_router_models", boom):
+            km._set_router_models(True, gt=10)
+            self._wait(lambda: km._router_status_note[0] == km.ROUTER_NOTE_LISTING_FAILED, "the failed-listing note")
+        self.assertEqual(km._router_status()["error"], km.ROUTER_NOTE_LISTING_FAILED_NONE, "worded by the declared count")
+
+    def test_a_repeated_off_gesture_keeps_the_standing_advisory(self):
+        # review round three: a same-value off at a newer stamp passed the echo check, removed nothing, and cleared the
+        # advisory over live sessions still on the removed model
+        _env(self, "ROMP_ROUTER_MODELS", DECLARED)
+        km._set_router_models(True, gt=10)
+        with mock.patch.object(km, "_live_map", lambda: {"11111111-2222-4333-8444-555555555555": {"model": "gw-6-astra"}}):
+            km._set_router_models(False, gt=11)
+        note = km._router_status_note[0]
+        self.assertIn("1 live session", note)
+        n = len(self.frames)
+        self.assertEqual(km._set_router_models(False, gt=12), 12, "the store takes the newer stamp")
+        self.assertEqual(km._router_status_note[0], note, "nothing removed: the advisory stands")
+        self.assertEqual(len(self.frames), n, "and no frame goes out")
 
     def test_a_gateway_id_that_cleans_to_a_first_party_alias_is_first_party(self):
         for mid in ("Opus", "OPUS", "claude-opus-4-8[1m]", "Claude-Fable-5-1"):

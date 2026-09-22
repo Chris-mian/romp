@@ -72,6 +72,10 @@ class ModelsRouteRouterSection(unittest.TestCase):
 
     def setUp(self):
         self._choices = [dict(c) for c in km.MODEL_CHOICES]
+        self._modpatch = mock.patch.dict(sys.modules, {"romp_sdk_backend": sb})   # the kernel tells THIS copy (review round three)
+        self._modpatch.start(); self.addCleanup(self._modpatch.stop)
+        self._sb_ids = sb._ROUTER_IDS
+        self.addCleanup(lambda: setattr(sb, "_ROUTER_IDS", self._sb_ids))
         self._values = set(km._MODEL_VALUES)
         self._judge = set(km._JUDGE_MODEL_VALUES)
         self._rank = list(km._MODEL_RANK)
@@ -176,10 +180,14 @@ class ModelsRouteRouterSection(unittest.TestCase):
 # new vendor word cannot ride in: the first-party marker in both its shapes, Anthropic's own host (the gateway probe's
 # endswith), the CLI's default-model alias (model_label / _alias_label compare the chosen alias to it whole) and the
 # ROMP_MODEL_CATALOG knob's value (_router_models_boot compares the variable to it whole).
-VENDOR_ALLOW = frozenset({"claude-", "claude", "anthropic.com", ".anthropic.com", "default", "off",
-                          "triage", "session",
-                          "utf-8", "router-models",
-                          "comment", "index", "distill"})   # the tier names (_set_router_models words the comment default apart)   # the wider token rule (verify round) reaches these two whole-value
+# Whole-value constants the honest code compares against, none a vendor: Anthropic's host (the boundary match in
+# _router_gateway_configured; the token rule reads it as a token, so it passes ONLY through this list), the store
+# sentinels ("default", "off", "triage", "session"), a codec name, the setting's own store name, and the comment tier's
+# name (_set_router_models words that default apart). Every entry is load-bearing: dropping one flags honest code.
+VENDOR_ALLOW = frozenset({"claude-", "claude", "anthropic.com", "default", "off",
+                          "triage", "session", "utf-8", "router-models", "comment"})
+# (".anthropic.com", the suffix match's constant, starts with a dot: the token rule never reads it as a vendor, so it
+#  needs no entry; a test below pins that the bare host DOES need one.)   # the wider token rule (verify round) reaches these two whole-value
 #                                                       compares: a codec name and the setting's own store name; not vendors   # triage/session: the judge tier stores' sentinels (_router_tiers_on reads
 #                                                   them whole-value: distill "triage" follows the triage pick, comment
 #                                                   "session"/"default" is no model id); not vendors
@@ -287,6 +295,8 @@ class NothingKeysOnAVendor(unittest.TestCase):
         self.assertIn("startswith('claude-')", hits)
         self.assertIn("Eq 'default'", hits)
         self.assertIn("NotEq 'off'", hits)      # _router_fetch_allowed: the catalog knob's whole-value compare
+        self.assertIn("Eq 'anthropic.com'", hits)             # the host's boundary match: on the list, not passed by the rule
+        self.assertNotIn("endswith('.anthropic.com')", hits, "a dotted suffix is no vendor token; it needs no entry")
         self.assertTrue(any(h.startswith("re.match('claude-") for h in hits), hits)
 
     def test_a_planted_startswith_in_a_copy_of_a_real_function_fails_the_check(self):
