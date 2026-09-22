@@ -70,6 +70,8 @@ const PAIRS: Array<[string, string, number]> = [
   ["--cmt-hl-outline", "--bg", 3],   // the comment notch (the rail tick's fill): a LINE, so it must read against the page (T310)
   ["--st-awaiting-bg", "--bg", 3],   // the unread passage's dashed box and ring, and the tick's halo (2026-09-12): a line in the needs-you red
   ["--accent-fg", "--accent", 3],
+  ["--accent-ink", "--box-bg", 4.5],   // accent-coloured LABELS on the Needs you box's wash (the second contributor's post-merge note on PR 2014: the accent read 4.07:1 there)
+  ["--deny", "--box-bg", 4.5],         // the deny button's label on the wash (the same note: #e5484d read 3.08:1 on the light wash)
   ["--warn", "--bg", 3],
   ["--err", "--bg", 3],
   ["--green", "--bg", 3],
@@ -252,6 +254,14 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     const share = Number(shareM![1]) / 100;   // the share the sheet carries, mixed as the sheet mixes it (the first contributor's note on PR 2014: a fixed 0.9 beside a literal pin let a lockstep re-ink pass)
     const okBorder = [0, 1, 2].map((i) => Math.round(accent[i] * share + box[i] * (1 - share))) as [number, number, number];
     assert.ok(contrast(okBorder, box) >= 3, `${name}: the ok button's resting border (the accent at ${shareM![1]}%) on the box wash = ${contrast(okBorder, box).toFixed(2)} < 3`);
+    // the deny button's resting border: the per-theme deny token at the share the sheet carries, mixed as the sheet mixes it, 3:1 on the wash in
+    // both themes (the second contributor's post-merge note on PR 2014: rgba(229, 72, 77, 0.6) read 2.20:1 dark and 2.03:1 light)
+    const deny = rgbOf(theme.get("--deny")!, page)!;
+    const denyM = css.match(/\.ntc-btn\.ntc-deny \{[^}]*color-mix\(in srgb, var\(--deny\) (\d+)%, transparent\)/);
+    assert.ok(denyM, "the deny button's border is the deny token's color-mix over its ground");
+    const denyShare = Number(denyM![1]) / 100;
+    const denyBorder = [0, 1, 2].map((i) => Math.round(deny[i] * denyShare + box[i] * (1 - denyShare))) as [number, number, number];
+    assert.ok(contrast(denyBorder, box) >= 3, `${name}: the deny button's resting border (the deny token at ${denyM![1]}%) on the box wash = ${contrast(denyBorder, box).toFixed(2)} < 3`);
     // the state badge's digit is 9px bold TEXT (plans/tab-state-badge.md), so the 4.5:1 text floor, NOT the 3:1 chrome
     // floor. Black on the dark magenta reads ~6.07:1 and clears; on the lighter light-theme magenta (#a21caf) black is
     // only 3.32:1, short of 4.5, so the light theme inks the digit in the state's own foreground token (--st-needs-fg,
