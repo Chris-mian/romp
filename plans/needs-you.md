@@ -215,11 +215,18 @@ two-card world under every fault (tests/fixtures/undo-stack-transitions.json). T
 reload, another browser) takes the round trip, while the page that made them keeps their entries below the window and restores
 them optimistically, which is what the kernel pops.
 The optimistic Undo and that stack hold on a single-kernel pane, where the proof holds. On a federated pane (more than one
-kernel attached; a configured host that is pending or down counts as attached, so a single live kernel beside one is a
-federated pane for the pane's life) Undo is the round trip: no entry is cached and none is popped, the button shows the working cue, federation
+kernel attached, read from the attachment and never from the cards: a configured host that is pending or down counts as
+attached, and so does a remote kernel whose sessions the merged payload lists, cards or none, so a card's coming and going
+cannot flip the reading) Undo is
+the round trip: no entry is cached and none is popped, the button shows the working cue, federation
 routes the request to the kernels of the most recent clear (the send consumes that routing, so a second Undo goes to the local
 kernel alone; a remote kernel's refusal re-arms it for every kernel that refused, until the next send, unless a clear was routed
-in between), and the payload restores what those kernels restored; a remote kernel's account re-shows
+in between) and hands the panes the kernels it went to (the routing is read from its owner rather than shadowed on the page, since
+the send consumes it and the board's Clear all fans out to every kernel, two things a page-side record could not track); the
+click releases no suppression, and a suppression ends on the evidence that the card was restored: a payload from the card's
+own kernel, built after the undo was sent to it, that lists the card (a stale held frame cannot release it; a kernel the undo
+never reached never lists a restored card with a newer build; a kernel that restored an older batch shows exactly what it
+restored), so the payload restores what those kernels restored; a remote kernel's account re-shows
 the cards of a refused clear by their ids and touches no stack. The reason: stamps across kernels do not order, so a merged
 stack cannot say which kernel's batch the next Undo reaches, and an optimistic pop would restore one kernel's card while
 another restored its own. A live remote kernel with no session and no card on the board reads as a single-kernel pane; it has

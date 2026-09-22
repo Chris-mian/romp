@@ -1512,6 +1512,9 @@ export class FederationManager {
       const hosts = this.lastClearHosts.length ? this.lastClearHosts : [LOCAL];
       this.lastClearHosts = [LOCAL];   // a second Undo has no clear to follow to a remote kernel (T286); a REFUSED remote undo puts its host back (inbound, round ten of PR 1967)
       this.undoRefusers = []; this.clearRoutedSinceUndo = false;
+      // the panes' word on where the undo went (round twelve of PR 1967): the feed releases the suppressions of the cards on these kernels, so their
+      // payloads can show the restored cards; read from the routing's owner here, since the send consumes it and the board's Clear all fans out
+      window.dispatchEvent(new MessageEvent("message", { data: { type: "undoRouted", hosts: hosts.slice() } }));
       for (const h of hosts) this.sendTo(h, m);
       return;
     }

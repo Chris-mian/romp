@@ -84,6 +84,20 @@ test("two remote kernels refusing the same fanned-out undo both get the retry; a
   });
 });
 
+test("the send hands the panes the kernels the undo went to (undoRouted): every attached kernel after a Clear all, the local kernel alone on the press after (round twelve of PR 1967)", () => {
+  withManager((fm) => {
+    const routed: any[] = [];
+    (globalThis as any).window.dispatchEvent = (ev: any) => { if (ev && ev.data && ev.data.type === "undoRouted") routed.push(ev.data.hosts); };
+    fm.outbound({ type: "clearAll" });
+    fm.outbound({ type: "undoClear" });
+    fm.outbound({ type: "undoClear" });
+    assert.deepEqual(routed, [["", "box2", "box3"], [""]], "the routing federation used, handed to the panes at each send");
+    fm.outbound({ type: "askClear", itemId: "box2:" + SID + ":g1", sid: "box2:" + SID });
+    fm.outbound({ type: "undoClear" });
+    assert.deepEqual(routed[2], ["box2"], "a remote card's clear: its kernel alone");
+  });
+});
+
 test("the session header's Clear all still goes to that session's kernel alone, and Undo follows it there alone", () => {
   withManager((fm, localSent, remoteSent) => {
     fm.outbound({ type: "askClearMany", sid: "box2:" + SID, itemIds: ["box2:" + SID + ":g1", "box2:" + SID + ":g2"] });
