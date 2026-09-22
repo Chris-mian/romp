@@ -84,19 +84,37 @@ out.hardStop = await feed.waitForSelector(g4Sel, { state: "attached", timeout: 6
 await feed.close();
 // 1b. a brief lands on the first question's card (the judge's blockSummary, written to the store): the row's body follows within the
 // next frames with no gesture (the second review of PR 1967: the box repainted only when a row came or went)
-const store = JSON.parse(fs.readFileSync(cfg.store, "utf8")); store.nodes[cfg.g1].blockSummary = cfg.brief; store.seq = (store.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store));
-fs.utimesSync(cfg.order, new Date(), new Date());   // the judge's own write ends a pass that bumps the view signature's generation; this stand-in moves a file the signature stats
-out.brief = { landed: await page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g1), brief: cfg.brief }, { timeout: 60000 }).then(() => true).catch(() => false) };
+// the kernel's own build event for a store write (the disclosure scene's second CI red, 2026-09-22: sixty seconds with no frame and no word
+// from the kernel): GET /feed.json serves the pusher's warmed feed while a pane is attached, so its buildId advancing past the one read
+// before the write, with the card's brief as written, is the kernel's word that its feed rebuilt over the new store; the box row follows by
+// one chat build (_feed_needs_rows, the chat signature's `notices`). The order touch moves a file the view signature stats, since a store
+// write alone moves no signature until a judge pass. A miss records the kernel's pusher and build counters (GET /perf) beside the brief the
+// kernel's last feed carries, so the failure names the link that did not fire: the write unseen, the feed not rebuilt, or the frame not shipped
+const kernelFeed = () => page.evaluate(async (u) => { try { const r = await fetch(u); return r.ok ? await r.json() : null; } catch (e) { return null; } }, cfg.feedJson);
+const kernelPerf = () => page.evaluate(async (u) => { try { const r = await fetch(u); const p = await r.json(); return { pusher: p.pusher, builds: p.builds, stages_ms: p.stages_ms }; } catch (e) { return String(e); } }, cfg.perf);
+const briefOf = (f, id) => (((f || {}).asks || []).find((a) => a.itemId === id) || {}).blockSummary;
+const feedBuiltPast = (b0, id, brief, ms) => page.waitForFunction(async (a) => { try { const r = await fetch(a.url); if (!r.ok) return false; const f = await r.json(); const c = (f.asks || []).find((x) => x.itemId === a.id) || {};
+  return typeof f.buildId === "number" && f.buildId > a.b0 && c.blockSummary === a.brief ? f.buildId : false; } catch (e) { return false; } }, { url: cfg.feedJson, b0, id, brief }, { timeout: ms, polling: 500 }).then((h) => h.jsonValue()).catch(() => null);
+const writeStore = async (mutate) => {   // the feed build id before the write, the write (seq bumped), the order touch: the id the kernel's build must pass
+  const b0 = ((await kernelFeed()) || {}).buildId; const st = JSON.parse(fs.readFileSync(cfg.store, "utf8")); mutate(st); st.seq = (st.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(st));
+  fs.utimesSync(cfg.order, new Date(), new Date()); return typeof b0 === "number" ? b0 : -1;
+};
+const onMiss = async (o) => { o.perf = await kernelPerf(); o.kernelBrief = briefOf(await kernelFeed(), o.id); return o; };
+const b1 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.brief; });
+out.brief = { id: cfg.g1, built: await feedBuiltPast(b1, cfg.g1, cfg.brief, 90000) };
+out.brief.landed = await page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g1), brief: cfg.brief }, { timeout: 60000 }).then(() => true).catch(() => false);
+if (!out.brief.landed) await onMiss(out.brief);
 out.brief.box = await readBox();
 // 1c. a brief past the four-line clamp gets a disclosure on its row (the second contributor's review of PR 1967): the More button shows
 // only once the body overflows, opens the row (the clamp lifted, the whole brief on screen), reads Less, and folds the row back
-const store2 = JSON.parse(fs.readFileSync(cfg.store, "utf8")); store2.nodes[cfg.g1].blockSummary = cfg.longBrief; store2.seq = (store2.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store2));
-fs.utimesSync(cfg.order, new Date(), new Date());
+const b2 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.longBrief; });
 const moreSel = rowSel(cfg.g1) + " .ntc-more";
-// held on the page's own events (the round-fifteen CI red read too early): the body carries the long brief, then its layout clips it, then the button
+// held on the kernel's build event, then the page's own events (the round-fifteen CI red read too early; the second red saw no frame for sixty
+// seconds with no word from the kernel): the feed rebuilt past the write with the brief, the body carries it, its layout clips it, then the button
 const landedAt = (sel, brief) => page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel, brief }, { timeout: 60000 }).then(() => true).catch(() => false);
 const clippedAt = (sel) => page.waitForFunction((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); return !!b && b.scrollHeight > b.clientHeight + 1; }, sel, { timeout: 15000 }).then(() => true).catch(() => false);
-out.more = { landed: await landedAt(rowSel(cfg.g1), cfg.longBrief) };
+out.more = { id: cfg.g1, built: await feedBuiltPast(b2, cfg.g1, cfg.longBrief, 90000) };
+out.more.landed = await landedAt(rowSel(cfg.g1), cfg.longBrief); if (!out.more.landed) await onMiss(out.more);
 out.more.clipped = await clippedAt(rowSel(cfg.g1));
 out.more.shown = await page.waitForSelector(moreSel, { timeout: 15000 }).then(() => true).catch(() => false);
 out.more.before = await page.evaluate((s) => { const r = document.querySelector(s); const b = r && r.querySelector(".ntc-body"); const m = r && r.querySelector(".ntc-more");
@@ -138,13 +156,13 @@ out.afterReply = { left: await page.waitForFunction((s) => !document.querySelect
 out.afterReply.box = await readBox();
 // 4b. a BRAND-NEW card with a long brief (the round-thirteen verifier): its row is built detached and joined after, so the disclosure must be
 // measured once the row stands in the box; the button shows with no gesture
-const store3 = JSON.parse(fs.readFileSync(cfg.store, "utf8"));
-store3.nodes[cfg.g5] = { id: cfg.g5, text: cfg.g5q, parentId: null, nodeComplete: false, blocked: true, blockWhy: cfg.g5q, blockSummary: cfg.longBrief, cleared: false, trail: [],
-  t: Math.floor(Date.now() / 1000), log: [{ ev_t: Math.floor(Date.now() / 1000), src: "planner", kind: "block", why: "asked: " + cfg.g5q, at: Math.floor(Date.now() / 1000) }] };
-store3.status[cfg.g5] = "blocked"; store3.seq = (store3.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store3));
-fs.utimesSync(cfg.order, new Date(), new Date());
-out.fresh = { row: await page.waitForSelector(rowSel(cfg.g5), { timeout: 60000 }).then(() => true).catch(() => false) };
-out.fresh.landed = await landedAt(rowSel(cfg.g5), cfg.longBrief); out.fresh.clipped = await clippedAt(rowSel(cfg.g5));   // the same holds: the brief on the row, its layout clipping it
+const b3 = await writeStore((st) => {
+  st.nodes[cfg.g5] = { id: cfg.g5, text: cfg.g5q, parentId: null, nodeComplete: false, blocked: true, blockWhy: cfg.g5q, blockSummary: cfg.longBrief, cleared: false, trail: [],
+    t: Math.floor(Date.now() / 1000), log: [{ ev_t: Math.floor(Date.now() / 1000), src: "planner", kind: "block", why: "asked: " + cfg.g5q, at: Math.floor(Date.now() / 1000) }] };
+  st.status[cfg.g5] = "blocked"; });
+out.fresh = { id: cfg.g5, built: await feedBuiltPast(b3, cfg.g5, cfg.longBrief, 90000) };
+out.fresh.row = await page.waitForSelector(rowSel(cfg.g5), { timeout: 60000 }).then(() => true).catch(() => false);
+out.fresh.landed = await landedAt(rowSel(cfg.g5), cfg.longBrief); if (!out.fresh.landed) await onMiss(out.fresh); out.fresh.clipped = await clippedAt(rowSel(cfg.g5));   // the same holds: the brief on the row, its layout clipping it
 out.fresh.more = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);
 out.fresh.box = await readBox();
 // 5. the switch: a romp:settings save with the box off hides it and leaves the ring; back on, the box returns
@@ -167,13 +185,14 @@ if (fr) {
   out.hiddenPane.g5MoreBefore = await fr.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);   // the long-brief row's button stands before the hide
   await shell.evaluate(() => { window.__rompPaneToggle("chat", false); });                                                    // the rail hides the pane (display:none on its wrapper): the observer's word
   out.hiddenPane.hidden = await shell.waitForFunction(() => !document.body.classList.contains("po-chat"), null, { timeout: 10000 }).then(() => true).catch(() => false);
-  const store4 = JSON.parse(fs.readFileSync(cfg.store, "utf8"));
-  store4.nodes[cfg.g6] = { id: cfg.g6, text: cfg.g6q, parentId: null, nodeComplete: false, blocked: true, blockWhy: cfg.g6q, blockSummary: cfg.longBrief, cleared: false, trail: [],
-    t: Math.floor(Date.now() / 1000), log: [{ ev_t: Math.floor(Date.now() / 1000), src: "planner", kind: "block", why: "asked: " + cfg.g6q, at: Math.floor(Date.now() / 1000) }] };
-  store4.status[cfg.g6] = "blocked"; store4.seq = (store4.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(store4));
-  fs.utimesSync(cfg.order, new Date(), new Date());
+  const b4 = await writeStore((st) => {
+    st.nodes[cfg.g6] = { id: cfg.g6, text: cfg.g6q, parentId: null, nodeComplete: false, blocked: true, blockWhy: cfg.g6q, blockSummary: cfg.longBrief, cleared: false, trail: [],
+      t: Math.floor(Date.now() / 1000), log: [{ ev_t: Math.floor(Date.now() / 1000), src: "planner", kind: "block", why: "asked: " + cfg.g6q, at: Math.floor(Date.now() / 1000) }] };
+    st.status[cfg.g6] = "blocked"; });
+  out.hiddenPane.id = cfg.g6; out.hiddenPane.built = await feedBuiltPast(b4, cfg.g6, cfg.longBrief, 90000);   // the kernel's build event, read from the chat page's own fetch
   out.hiddenPane.row = await fr.waitForSelector(rowSel(cfg.g6), { state: "attached", timeout: 60000 }).then(() => true).catch(() => false);
   out.hiddenPane.landed = await fr.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g6), brief: cfg.longBrief }, { timeout: 60000 }).then(() => true).catch(() => false);
+  if (!out.hiddenPane.landed) await onMiss(out.hiddenPane);
   out.hiddenPane.whileHidden = await fr.evaluate((a) => { const r = document.querySelector(a.g6); const b = r && r.querySelector(".ntc-body"); const g5 = document.querySelector(a.g5);
     return b ? { h: b.clientHeight, sh: b.scrollHeight, more: !!r.querySelector(".ntc-more"), g5More: !!(g5 && g5.querySelector(".ntc-more")) } : null; }, { g6: rowSel(cfg.g6), g5: rowSel(cfg.g5) });   // g5's button must stand: a zero measure removes nothing (the second contributor's post-merge note on PR 2018)
   await shell.evaluate(() => { window.__rompPaneToggle("chat", true); });                                                     // shown again
@@ -218,6 +237,10 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         proj = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cwd)))
         os.makedirs(proj, exist_ok=True)
         Path(state, "names", SID).write_text("web\t%s\t#9cd2ff\t#0c1a2e\n" % cwd)
+        # alive: the box's Continue button needs a LIVE session (_needs_you_rows: `cont` is the card's live bit), so the Continue and Reply legs
+        # reach the SDK backend for web, which on a box without the SDK logs "sdk session web crashed: ModuleNotFoundError" once per send and the
+        # leg still passes (the reply is filed as the card's follow-up). The briefs' landing never depends on the backend: the box rows come from
+        # the feed build of the store and ride the chat signature by value. Session hosts stay off (below), so no romp-session-host starts.
         Path(state, "sdk", SID + ".json").write_text(json.dumps(
             {"sid": SID, "name": "web", "cwd": cwd, "mode": "auto", "effort": "high", "lastSid": SID, "alive": True,
              "model": "claude-opus-5", "liveModel": "Opus 5"}))
@@ -312,7 +335,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
             cfg = os.path.join(self.lab, "needsbox.json")
             base = "http://127.0.0.1:%d" % self.port
             with open(cfg, "w") as f:
-                json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
+                json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "feedJson": base + "/feed.json?token=" + self.token, "perf": base + "/perf?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
                            "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "g6": SID + ":g6", "g6q": "which of the two fixture loaders should the CI job run first?", "landing": base + "/?token=" + self.token, "ledger": self.ledger, "order": self.order}, f)
             driver = os.path.join(self.lab, "needsbox.mjs")
             Path(driver).write_text(DRIVER)
@@ -359,7 +382,8 @@ class NeedsYouBoxChatServed(unittest.TestCase):
 
     def test_a_brief_landing_on_a_card_reaches_its_row_with_no_gesture(self):
         r = self._result()
-        self.assertTrue(r["brief"]["landed"], "the row's body follows the brief written to the store within the next frames: %r (kernel: %s)" % (r["brief"]["box"], self._kernel_tail()))
+        self.assertIsNotNone(r["brief"]["built"], "the kernel's feed rebuilt past the write with the brief on the card (GET /feed.json): %r (kernel: %s)" % ({k: v for k, v in r["brief"].items() if k != "box"}, self._kernel_tail()))
+        self.assertTrue(r["brief"]["landed"], "the row's body follows the brief written to the store within the next frames: %r (kernel: %s)" % (r["brief"], self._kernel_tail()))
         row = next((x for x in r["brief"]["box"]["rows"] if x["id"] == self.g[0]), None)
         self.assertEqual(row and row["body"].strip(), BRIEF, "the brief is the row's body (the face renders it as markdown, with its trailing newline)")
         self.assertEqual(r["brief"]["box"]["head"], "Needs you · 4", "and nothing else moved")
@@ -369,7 +393,8 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         shows once the body overflows, opens the row (the clamp lifted, the whole brief on screen), reads Less, and folds the row back."""
         r = self._result()
         m = r["more"]
-        self.assertTrue(m["landed"], "the long brief reaches the row (the read waits for it): %r (kernel: %s)" % (m, self._kernel_tail()))
+        self.assertIsNotNone(m["built"], "the kernel's feed rebuilt past the write with the long brief on the card (GET /feed.json; a miss carries the pusher's counters): %r (kernel: %s)" % ({k: v for k, v in m.items() if k != "box"}, self._kernel_tail()))
+        self.assertTrue(m["landed"], "the long brief reaches the row after the kernel's build (the read waits for it): %r (kernel: %s)" % ({k: v for k, v in m.items() if k != "box"}, self._kernel_tail()))
         self.assertTrue(m["clipped"], "and the layout clips it at four lines (the brief is long enough for any width): %r" % m["before"])
         self.assertTrue(m["shown"], "the More button shows on a brief past the clamp: %r" % m)
         self.assertEqual((m["before"] or {}).get("label"), "More"); self.assertEqual((m["before"] or {}).get("open"), False)
@@ -387,7 +412,8 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         fresh row with a long brief never got its button, nor did the rows the switch's off-then-on rebuilt; the first scene passed because it
         mutated a row already in the document. The measure runs over the rows once they stand in the box."""
         r = self._result()
-        self.assertTrue(r["fresh"]["row"], "the new card's row arrives: %r (kernel: %s)" % (r["fresh"], self._kernel_tail()))
+        self.assertIsNotNone(r["fresh"]["built"], "the kernel's feed rebuilt past the write with the new card: %r (kernel: %s)" % ({k: v for k, v in r["fresh"].items() if k != "box"}, self._kernel_tail()))
+        self.assertTrue(r["fresh"]["row"], "the new card's row arrives: %r (kernel: %s)" % ({k: v for k, v in r["fresh"].items() if k != "box"}, self._kernel_tail()))
         self.assertTrue(r["fresh"]["landed"] and r["fresh"]["clipped"], "with its long brief, clipped: %r" % r["fresh"])
         self.assertTrue(r["fresh"]["more"], "and wears the More button with no gesture (before: measured detached, 0 by 0, no button): %r" % r["fresh"]["box"])
         self.assertTrue(r["on"]["shown"]); self.assertTrue(r["on"]["moreAfterRebuild"], "the rebuilt row wears it too (before: none after the switch's off-then-on)")
