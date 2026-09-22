@@ -153,7 +153,10 @@ class OneListingPerChange(_Listing):
         self.addCleanup(setattr, km, "_launch_error", saved)
         self._cycle()
         self.assertIsNone(next(r for r in self._body() if r["id"] == SID)["launchError"], "no failure: the field is there and empty")
-        self.assertEqual(reads.count(SID), 1, "one backend read per session per cycle: the key and the row share the cycle's memo (%r)" % reads)
+        # The shared read is the refresh's pair memo (listing_pairs), which bounds the listing to one read per session:
+        # the cycle's launch-error memo is filled by the key's read and hit by no reader after it, kept as a backstop for a
+        # second cycle reader outside the pair (the post-merge review of the listing pairing, 2026-09-22).
+        self.assertEqual(reads.count(SID), 1, "one backend read per session per cycle: the key and the row share the refresh's pair memo, listing_pairs (%r)" % reads)
         errs[SID] = {"text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was",
                      "at": NOW + 1.5, "limit": False, "noRetry": True}
         self._cycle()
