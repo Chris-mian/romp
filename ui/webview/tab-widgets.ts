@@ -158,6 +158,13 @@ export function composeTabRing(tab: HTMLElement, sid: string, status: WidgetStat
   tab.classList.add(win.ring);
   return win.ring;
 }
+/** The Needs-you PHRASE, one source for the badge dot's aria-label and a cold tab's title
+ *  (plans/tab-state-badge.md): a count carries the number, an absent or zero count (an older kernel with the
+ *  needsYou bit but no number) reads the bare phrase. Never capped, so the phone leg agrees with the desktop
+ *  label above 99, where the visible dot reads "99+". */
+export function needsYouPhrase(count: number): string {
+  return count > 1 ? count + " things need you" : count === 1 ? "1 thing needs you" : "needs you";
+}
 /** Badge mode (the tabStateBadge setting, plans/tab-state-badge.md): adjust a tab already composed for ring mode. The
  *  magenta (Needs you) and amber (retrying) rings give way, the Needs-you state becomes a top-right magenta dot and the
  *  retrying state moves to the left status dot in amber; the red ring (Blocked) stays, since Blocked outranks the run
@@ -195,7 +202,7 @@ export function applyTabBadgeMode(tab: HTMLElement, sid: string, status: WidgetS
     // the dot is pointer-events:none (the close glyph sits under it), so its native title never shows; a screen reader
     // reads the aria-label as an image (not the bare digit), and render.ts adds the phrase to the tab's rich tooltip.
     dot.setAttribute("role", "img");
-    dot.setAttribute("aria-label", n > 0 ? (n === 1 ? "1 thing needs you" : n + " things need you") : "needs you");
+    dot.setAttribute("aria-label", needsYouPhrase(n));
     tab.appendChild(dot);
     return dot;
   }

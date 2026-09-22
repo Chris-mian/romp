@@ -54,7 +54,7 @@ import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionR
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
 import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
-import { composeTabWidgets, composeTabRing, applyTabBadgeMode, ringSwitch, tabHotkey, miniChord } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry, and the rings too, one class at a time; miniChord is the chord the strip signature reads
+import { composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry, and the rings too, one class at a time; miniChord is the chord the strip signature reads
 import { titleWithKey, keyHint, chordOf, effectiveChord, loadOverrides, saveOverride, KEYS_EVENT } from "./keybindings";
 import { hotkeyCommandId, loadTabKeys, rememberTabKey, forgetTabKey, goneTabKeys, renamedTabKeys } from "./tab-keys";   // per-tab hot keys (2026-09-10): the set and its bookkeeping; the keycap on the tab is the T379 widget, read from the same store
 import { notePendingFlag, dropPendingFlag, applyFrameFlags, type PendingFlags, type SessionFlag } from "./flag-pending";   // the per-session view flags' pending guard (review 2026-09-14)
@@ -6001,7 +6001,11 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   const rows: Array<[string, string, string?]> = [];
   if (s.status.needsYou) {   // the Needs-you count's phrase, reachable on hover in BOTH modes: the badge dot's own title is inert (pointer-events none), and ring mode shows no number at all
     const nc = typeof s.status.needsYouCount === "number" ? s.status.needsYouCount : 0;
-    rows.push(["Needs you", nc > 0 ? (nc === 1 ? "1 thing needs you" : nc + " things need you") : "needs you", "var(--st-needs-bg)"]);
+    // the key already says the state, so the value drops the redundant "need you" and inherits the tip's foreground
+    // (the magenta token fell under the 4.5:1 floor on this raised surface). The phrase is not repeated on the value: a
+    // pointer reads "Needs you" beside "3 things", and a screen reader gets the full phrase from the badge dot's
+    // aria-label and the cold tab's title (a value span has no role, so an aria-label on it would be inert).
+    rows.push(["Needs you", nc > 0 ? (nc === 1 ? "1 thing" : nc + " things") : ""]);
   }
   if (s.cwd) rows.push(["📁", s.cwd]);
   if (s.gitBranch) rows.push(["⎇", s.gitBranch]);
@@ -6480,7 +6484,10 @@ function makeSkeletonTab(id: string): HTMLElement {
   label.replaceChildren(...hostNameNodes(name, id));
   tab.appendChild(label);
   if (status) appendTabAfterWidgets(tab, { id, status });
-  tab.title = "Not loaded yet — click to load";
+  // a cold tab draws the badge (appendTabAfterWidgets) but registers no hover tip, so the Needs-you phrase would
+  // otherwise live in the badge's aria-label alone in badge mode and nowhere in ring mode; carry it in the native
+  // title too, when the status needs you, from the one helper the badge dot and the rich-tip row read.
+  tab.title = (status && status.needsYou ? needsYouPhrase(typeof status.needsYouCount === "number" ? status.needsYouCount : 0) + ". " : "") + "Not loaded yet, click to load";
   const closeBtn = el("span", "tab-close");
   closeBtn.textContent = "×";
   // a live session: its ✕ routes through the same End-session confirm as a loaded tab; a DEAD one (the kernel's
@@ -6778,7 +6785,7 @@ function renderTabs() {
       if (renderKind(skeletonTabs, id, !!s) === "skeleton") {                                              // makeSkeletonTab's reads:
         const m = tabMeta.get(id), kst = skeletonTabs.status.get(id) as Status | undefined;               // the kernel's list + its
         return ["k", m?.name || s?.name, (m?.color || s?.color)?.bg, (m?.color || s?.color)?.fg, id === peekId,   // status frames, never the
-                kst?.state, kst && tabStateClass(kst), kst?.needsYou === true, settings.tabStateBadge ? kst?.needsYouCount : null, !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379); + the feed's needs-you verdict, the magenta ring's input (2026-09-13); the count keys the sig only in BADGE mode (only applyTabBadgeMode draws it), so a count move with the badge off never repaints a ring-mode tab byte-for-byte
+                kst?.state, kst && tabStateClass(kst), kst?.needsYou === true, kst?.needsYou === true ? kst?.needsYouCount : null, !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379); + the feed's needs-you verdict, the magenta ring's input (2026-09-13); a cold tab's TITLE carries the count in BOTH modes (makeSkeletonTab), so the count keys the sig whenever the status needs you, either mode, and a count move repaints the cold tab so its title never goes stale
       }
       if (!s) { const m = tabMeta.get(id); return ["p", m?.name, m?.color?.bg, m?.color?.fg, down, note]; }   // makePlaceholderTab's reads
       const st = s.status;

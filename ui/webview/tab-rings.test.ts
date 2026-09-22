@@ -33,7 +33,7 @@ test("the tab wears its ring through the registry's composition, right after the
   for (const c of [...RINGS, "tab-ask"]) assert.equal(RENDER.split('"' + c + '"').length - 1, 0, "no hand-rolled ring class in render.ts (" + c + "): the classes live in the registry");
   assert.doesNotMatch(RENDER, /tabAskClass/, "the branch's one-off ask class is gone: the magenta ring is a widget like the others");
   assert.match(RENDER, /^import \{ tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle \} from "\.\/tab-state";/m);
-  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m);   // miniChord joined the import with the per-tab hot keys (merged 2026-09-14)
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m);   // miniChord joined the import with the per-tab hot keys (merged 2026-09-14)
   // the folded header's pip and its tooltip read the same switches, so a fold never shows a colour no unfolded tab would
   const head = RENDER.slice(RENDER.indexOf("function makeGroupHead("), RENDER.indexOf("function applyTabStatus("));
   assert.match(head, /const kind = sectionPip\(hidden\.map\(\(id\) => sessions\.get\(id\)\?\.status\), ringSwitch\(settings\.tabWidgets\)\);/);
@@ -44,7 +44,7 @@ test("the strip's signature reads the magenta ring's input for a loaded tab AND 
   const fn = RENDER.slice(RENDER.indexOf("function renderTabs() {"), RENDER.indexOf("function stripAftermath("));
   const sig = fn.slice(fn.indexOf("const stripSig = JSON.stringify(["), fn.indexOf("const mslotEl = "));
   assert.match(sig, /st\.state, tabStateClass\(st\), st\.needsYou === true, settings\.tabStateBadge \? st\.needsYouCount : null, !!st\.faded,/, "the loaded tab's row (needsYou and, in badge mode only, its count: the badge's number keys the sig only when it is drawn)");
-  assert.match(sig, /kst\?\.state, kst && tabStateClass\(kst\), kst\?\.needsYou === true, settings\.tabStateBadge \? kst\?\.needsYouCount : null, !!kst\?\.faded,/, "the skeleton's row, from the stored status frame (the count keyed only in badge mode)");
+  assert.match(sig, /kst\?\.state, kst && tabStateClass\(kst\), kst\?\.needsYou === true, kst\?\.needsYou === true \? kst\?\.needsYouCount : null, !!kst\?\.faded,/, "the skeleton's row: the count keys the sig whenever the status needs you, both modes, since the cold title carries it (PR 2033 review)");
   assert.ok(sig.includes("settings.tabWidgets"), "a switch flipped in the settings repaints the strip");
 });
 

@@ -56,11 +56,13 @@ test("every input the strip renders is in the signature", () => {
     // the badge/ring TOGGLE (the settings row's bare read) AND the numbered count on the loaded and skeleton rows. The
     // bare read is its OWN input, not covered by the conditionals: with no count both conditionals serialise to null, so
     // only the bare `settings.tabStateBadge` repaints a toggle flip. It is pinned by a neighbour-carrying needle (as
-    // tab-lock's is), and the two conditionals key the count, drawn ONLY in badge mode by applyTabBadgeMode, so a count
-    // move with the badge off never repaints a ring-mode tab. (The first contributor's round-two item on PR 2017 dropped
+    // tab-lock's is). The count keys the LOADED row only in badge mode (only applyTabBadgeMode draws it there; the
+    // tooltip reads the status on hover), and the SKELETON row whenever the status needs you, either mode, since a cold
+    // tab's title carries the count in both modes (makeSkeletonTab), so a count move repaints the cold tab and its title
+    // never goes stale (the PR 2033 review caught a stale cold-title count with the badge off). (The first contributor's round-two item on PR 2017 dropped
     // the bare needle as redundant; the PR 2023 post-merge review restored it: the bare read is load-bearing.)
     "settings.tabsLocked, settings.tabStateBadge, settings.theme",
-    "settings.tabStateBadge ? st.needsYouCount : null", "settings.tabStateBadge ? kst?.needsYouCount : null",
+    "settings.tabStateBadge ? st.needsYouCount : null", "kst?.needsYou === true ? kst?.needsYouCount : null",
   ]) assert.ok(sig.includes(needle), "the signature reads " + needle);
   assert.match(fn, /const unions = viewTagUnion\(effViews\(\)\);\s*\n\s*const plan = planStrip\(visibleIds, unions, readTabGroups\(unions\), activeId, phoneLayout\(\),/,
     "the plan reads the unions the signature carries");
@@ -72,7 +74,7 @@ test("every input the strip renders is in the signature", () => {
   assert.match(fn, /const st = applyTabStatus\(tab, s\);/);
   assert.match(chip, /const stateCls = tabStateClass\(s\.status\);\s*\n\s*if \(stateCls\) tab\.classList\.add\(stateCls\);/);
   assert.match(RENDER, /^import \{ tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle \} from "\.\/tab-state";/m);   // the dot rule moved into the dot widget (T379)
-  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the widgets the strip composes (the rings too, one class at a time), the ring switches the folded pip reads, and the hot-key chord the signature reads");   // + tabDotClass: the dot slot every tab carries derives from st.state, already in the signature (the tab-strip fix, 2026-09-08); + tabDotTitle: the slot's hover title, from the same state
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the widgets the strip composes (the rings too, one class at a time), the ring switches the folded pip reads, and the hot-key chord the signature reads");   // + tabDotClass: the dot slot every tab carries derives from st.state, already in the signature (the tab-strip fix, 2026-09-08); + tabDotTitle: the slot's hover title, from the same state
 });
 
 test("a tab drag resets the signature (its live reorder changes the strip's DOM outside renderTabs), and the tooltip reads the session fresh", () => {

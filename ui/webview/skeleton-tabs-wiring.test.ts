@@ -92,7 +92,10 @@ test("makeSkeletonTab: the loaded-tab chrome minus what it does not know — no 
   assert.match(sk, /if \(status\) appendTabAfterWidgets\(tab, \{ id, status \}\);/, "the gauge (and the keycap) only from a kernel-sent status");
   assert.match(sk, /const dead = status\?\.state === "closed";\s*\n\s*closeBtn\.title = dead \? "Close tab" : "End session";\s*\n\s*if \(dead\) closeBtn\.dataset\.dead = "1";/,
     "a dead session drawn as a skeleton drops like a dead loaded tab (the delegate's dead branch), no End confirm (review find 2026-09-08)");
-  assert.match(sk, /tab\.title = "Not loaded yet — click to load";/);
+  // a cold tab has no rich tip (pinned below), so the Needs-you phrase rides the native title, prefixed when the
+  // status needs you, in BOTH modes, from the one exported helper (needsYouPhrase, executed in tab-widgets.test.ts)
+  assert.match(sk, /tab\.title = \(status && status\.needsYou \? needsYouPhrase\(/, "the cold tab prefixes the Needs-you phrase from the one helper when the status needs you");
+  assert.match(sk, /\+ "Not loaded yet, click to load";/, "…before the loaded-yet copy (the em-dash gone)");
   assert.match(sk, /closeBtn\.dataset\.act = "close";\s*\n\s*closeBtn\.dataset\.id = id;/, "the ✕ is delegated too");
   assert.doesNotMatch(sk, /tab-ph-swirl/, "NO swirl: that means 'romp is generating this', a transient");
   assert.doesNotMatch(sk, /stale\.(events|status)/, "the stale session's events/status are never read");
