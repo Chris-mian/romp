@@ -349,7 +349,7 @@ class ProvisionalLegsMatchBuilt(unittest.TestCase):
     skeleton chip painter reads (tab-widgets.ts and render.ts: the state, the five on-you flags, faded, ctx, ctxColor and
     ctxTone), plus the tints. A real session on disk (the snapshot test's fixture shape), the real build_session."""
     PAINTER_KEYS = ("state", "apiTooLong", "apiSpendLimit", "apiModelLimit", "apiAuthErr", "apiRefusal", "faded", "ctx", "ctxColor",
-                    "ctxTone", "ctxOver", "needsYou", "modelColor", "effortColor", "modelTone", "effortTone")
+                    "ctxTone", "ctxOver", "needsYou", "needsYouCount", "modelColor", "effortColor", "modelTone", "effortTone")
 
     @staticmethod
     def _painter_keys_from_source():

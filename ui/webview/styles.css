@@ -602,6 +602,15 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
 .tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the await-green chip (the user 2026-07-13) */
+.tab-dot.retrying { background: var(--st-retrying-bg); visibility: visible; }   /* badge mode (tabStateBadge): retrying leaves the amber ring for the left dot (plans/tab-state-badge.md) */
+/* the STATE BADGE: a contained top-right dot for the Needs-you state under badge mode, drawn on top and moving nothing
+   (.tab is position:relative already), in the magenta token the Needs-you ring reads. It carries a count later. */
+.tab-badge { position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); pointer-events: none; z-index: 3; }
+/* the numbered form: a black count on the magenta, the dot sized for the digits, widening into a short pill for two or
+   more (plans/tab-state-badge.md, the user's pick). Empty (an older kernel with no count) stays the bare dot above. */
+.tab-badge:not(:empty) { width: auto; min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #000; font-weight: 700; font-size: 9px; line-height: 1; }
+/* the digit is 9px bold TEXT, so the 4.5:1 floor: black clears on the dark magenta (~6.07:1); on the lighter light-theme magenta (#a21caf) black is 3.32:1, short, so the state's own light-theme foreground (white) rides there (~6.32:1). The user chose black in dark; theme-parity.test.ts pins 4.5:1 in BOTH themes (plans/tab-state-badge.md). */
+body.theme-light .tab-badge:not(:empty) { color: var(--st-needs-fg); }
 /* the slot with no dot to show (idle, blocked, closed…): laid out, invisible — a tab's width must not change with its
    state, or the strip's row count flaps at a wrap boundary and the transcript slides under the reader (T262g, 2026-09-08) */
 .tab-dot.none { visibility: hidden; }
@@ -867,6 +876,8 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 
 .tab-close { opacity: 0; font-size: 1.1em; line-height: 1; padding: 0 2px; border-radius: 3px; color: var(--dim); }
 .tab:hover .tab-close { opacity: 0.7; }
+/* the close glyph is the click target: raise it above the Needs-you count pill (z 3), which a wide "99+" can cover, wherever the x shows (on hover, and on the active tab). The count is glanceable; the x must stay clickable (plans/tab-state-badge.md, the manager's low 2026-09-22). */
+.tab:hover .tab-close, .tab.active .tab-close { position: relative; z-index: 4; }
 /* Rich tab hover tooltip (the user 2026-06-23): the backend a plain labelled field row (no per-backend colour),
    the full directory path, then mode / model / effort / context, each on its own line. Custom DOM (a native
    title can't colour/bold). */

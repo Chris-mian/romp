@@ -98,6 +98,7 @@ CENSUS = {
     "_effort_color": ("pure", "over the effort string and the colormap name"),
     "_effort_tone": ("pure", "over the effort string"),
     "_feed_needs_input_of": ("sig", "needs", "the last feed build's needs-you set, as the boolean for this session (None and False share a value)"),
+    "_feed_needs_input_count_of": ("sig", "needs", "the last feed build's needs-you card COUNT for this session, the numbered badge's value; keyed beside the boolean under the needs component (None and 0 share the no-dot value)"),
     "_chat_notices": ("sig", "notices", "the Needs you box's rows by id and face: this session's goal rows from the last feed build (plans/needs-you.md, phase three: title, brief, Continue, the credential fix; the row's time is _NEEDS_ROW_UNKEYED) and its needs-you notices with actions, the notice store's projection with the cleared ledger applied (2026-09-19)"),
     "_fold_tasks": ("memo", "pure over the parse's turns (transcript, live); the per-turn memo is keyed on each turn's atoms and fingerprint"),
     "_genuine_queued": ("pure", "over a queued text"),
@@ -1030,6 +1031,27 @@ class Differential(_World):
             self.assertEqual(self.moved(a, self.sig()), ("needs",), "a card of this session under needs-you is the verdict that rebuilds")
         finally:
             km._feed_needs_input[0] = saved
+
+    def test_the_needs_you_count_keys_the_signature_so_a_stale_badge_never_survives_a_judge_pass(self):
+        # the numbered badge (plans/tab-state-badge.md) reads needsYouCount; a session already under needs-you whose card
+        # count moves (a judge pass files or clears one) stays in the SET, so the boolean is unchanged and only the count
+        # keys the rebuild. None (before the first feed build) and 0 (no card) share the no-dot value: neither rebuilds.
+        saved_in, saved_ct = km._feed_needs_input[0], km._feed_needs_input_count[0]
+        try:
+            km._feed_needs_input[0] = frozenset([SID])
+            km._feed_needs_input_count[0] = None
+            a = self.sig()
+            km._feed_needs_input_count[0] = {SID: 0}
+            self.assertEqual(self.sig(), a, "None and 0 share the no-dot value: no rebuild before the first feed build")
+            km._feed_needs_input_count[0] = {SID: 1}
+            b = self.sig()
+            self.assertEqual(self.moved(a, b), ("needs",), "the first card gives the dot its count: the badge rebuilds")
+            km._feed_needs_input_count[0] = {SID: 3}
+            self.assertEqual(self.moved(b, self.sig()), ("needs",), "the count moving 1 to 3 rebuilds, so the number never goes stale under an unchanged membership")
+            km._feed_needs_input_count[0] = {PEER: 9}
+            self.assertEqual(self.sig(), a, "another session's count is not this tab's")
+        finally:
+            km._feed_needs_input[0], km._feed_needs_input_count[0] = saved_in, saved_ct
 
     def test_a_goal_rows_face_moves_notices_and_its_time_does_not(self):
         # the Needs you box's goal rows (plans/needs-you.md, phase three) ride the `notices` label by id AND face: a brief landing, a

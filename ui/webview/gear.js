@@ -239,6 +239,10 @@ var GEAR_HTML =
   '<span><b>Lock the tabs in place</b>' +
   '<span class=rs-sub>No drag or move of the tabs, and no lane drag in the Sessions pane, until unlocked. The order stays as it is.</span>' +
   '</span></label>' +
+  "<label class='rs-row'><input type=checkbox id=rs-statebadge>" +
+  '<span><b>State badge instead of the outline ring</b>' +
+  '<span class=rs-sub>A small dot at the tab top-right shows Needs you (magenta, with a count of what needs you), and retrying moves to the left status dot. Blocked keeps its red ring. The dashed rings stay when this is off.</span>' +
+  '</span></label>' +
   // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own), following the strip's section
   "<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>" +
   // the widget rows are built by initGear from the registry (tab-widgets.ts): a live demo, the name and what it does, the
@@ -402,7 +406,7 @@ function initGear(post, opts) {
   setTimeout(function () { ensurePinGlyphs(); wireScope(); }, 0);   // phase two: the rows' pin glyphs and the selector, once the closure below is built
 
   var g = document.getElementById('rgear'), p = document.getElementById('rsettings'),
-    b = document.getElementById('rsver'), cc = document.getElementById('rs-compact'), tl = document.getElementById('rs-tablock'),
+    b = document.getElementById('rsver'), cc = document.getElementById('rs-compact'), tl = document.getElementById('rs-tablock'), tsb = document.getElementById('rs-statebadge'),
     jix = document.getElementById('rs-judges-index'), jtr = document.getElementById('rs-judges-triage'),
     an = document.getElementById('rs-autonudge'), bk = document.getElementById('rs-backend'),
     cvm = document.getElementById('rs-conserve'),
@@ -459,6 +463,7 @@ function initGear(post, opts) {
   }
   cc.addEventListener('change', function () { var s = load(); s.compact = cc.checked; save(s); });
   tl.addEventListener('change', function () { var s = load(); s.tabsLocked = tl.checked; save(s); });   // the tab lock (T415): the strip hears the save (tabsLocked is in its signature)
+  tsb.addEventListener('change', function () { var s = load(); s.tabStateBadge = tsb.checked; save(s); });   // the state badge: the strip repaints on the save (tabStateBadge is in the strip signature)
   // one tag group per row in the tab strip (on by default); render.ts repaints the strip on the save
   if (sr) sr.addEventListener('change', function () { var s = load(); s.stripGroupRows = sr.checked; save(s); });
   // compact tabs and agents (off by default): render.ts applies a body class on the save, and the strip and the panel repaint through the cascade
@@ -2187,7 +2192,7 @@ function initGear(post, opts) {
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (nb) nb.checked = s.needsBox !== false; if (fsc) fsc.checked = (s.showFilesControl === true); if (pdk) pdk.checked = (s.paneDocking === true); renderRegistryRows(s); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; if (tsb) tsb.checked = (s.tabStateBadge === true); jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (nb) nb.checked = s.needsBox !== false; if (fsc) fsc.checked = (s.showFilesControl === true); if (pdk) pdk.checked = (s.paneDocking === true); renderRegistryRows(s); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin

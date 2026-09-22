@@ -358,7 +358,16 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertNotIn("'tab-ask'", js)
         self.assertIn("row.classList.toggle('ask',!!s.ask);", js)
         self.assertIn("cur.classList.toggle('ask',!!(act&&act.ask));", js)
-        self.assertIn("wd.classList.toggle('await',!s.working&&!!s.awaitbg);", js)  # green dot when awaiting (in-place toggle form, 2026-08-19)
+        self.assertIn("wd.classList.toggle('await',!s.working&&!!s.awaitbg&&!s.retrying);", js)  # green dot when awaiting (in-place toggle form, 2026-08-19; the retrying guard is the state badge, 2026-09-21)
+        # THE STATE BADGE on the phone (plans/tab-state-badge.md): under badge mode the desktop tab wears a .tab-badge dot
+        # with a count instead of the magenta ring, and retrying moves to the leading dot (amber); the phone scrapes both
+        self.assertIn("badgeNeeds:!!t.querySelector('.tab-badge'),", js)   # the phone reads the desktop tab's badge dot
+        self.assertIn("retrying:!!t.querySelector('.tab-dot.retrying'),", js)   # …and the retrying left dot
+        self.assertIn("wd.classList.toggle('retrying',!!s.retrying&&!s.working&&!s.awaitbg);", js)   # the row's amber retrying dot
+        self.assertIn("if(s.badgeNeeds){if(!mb){mb=document.createElement('span');mb.className='m-badge';row.appendChild(mb);}mb.textContent=s.needsCount||'';}", js)   # the row's Needs-you dot with its count
+        self.assertIn(".m-badge:not(:empty){width:auto;min-width:14px;height:14px;border-radius:7px", css)   # the numbered pill
+        self.assertIn("color:#000", css.split(".m-badge:not(:empty){", 1)[1].split("}", 1)[0])   # the digit is black by default (the dark theme, ~6.07:1 on the magenta)
+        self.assertIn("body.theme-light .m-badge:not(:empty){color:var(--st-needs-fg", css)   # ...and the state's light-theme fg (white) where black falls short of the 4.5:1 text floor (plans/tab-state-badge.md)
         self.assertNotIn(".mrow .dot{", css)              # the old identity/grey dot is gone
         self.assertNotIn("dot.style.background=s.bg", js)  # ...and nothing paints identity onto a dot
         # the dots are the SAME status colors desktop uses (styles.css --st-working-bg gold, --st-awaitbg-bg green)
@@ -371,9 +380,14 @@ class ChatSessionPicker(unittest.TestCase):
         # the current-session header uses the same gold/green status dot, not the text bullet either
         self.assertIn("#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}", css)
         self.assertIn("#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}", css)
-        self.assertIn("wd.style.display=(act&&(act.working||act.awaitbg))?'':'none'", js)
-        self.assertIn("wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working))", js)
+        self.assertIn("wd.style.display=(act&&(act.working||act.awaitbg||act.retrying))?'':'none'", js)
+        self.assertIn("wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working&&!act.retrying))", js)
         self.assertNotIn("(act.working?'• ':'')", js)
+        # the state badge on the chip (plans/tab-state-badge.md): retrying on the leading dot (amber), the Needs-you dot with its count at the corner
+        self.assertIn("wd.classList.toggle('retrying',!!(act&&act.retrying&&!act.working&&!act.awaitbg))", js)
+        self.assertIn("if(act&&act.badgeNeeds){if(!cb){cb=document.createElement('span');cb.className='m-badge';cur.appendChild(cb);}cb.textContent=act.needsCount||'';}", js)
+        self.assertIn("#mcur .wd.retrying{background:var(--st-retrying-bg,#e67e22)}", css)
+        self.assertIn(".m-badge{position:absolute;top:5px;right:7px", css)
 
     def test_current_session_title_is_bold_color_on_the_grey_chip(self):
         # the user 2026-07-22: the mobile current-session title reads as the identity color in BOLD on the

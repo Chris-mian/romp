@@ -1010,12 +1010,13 @@ class ViewBuilder(unittest.TestCase):
         so the verdict ships on the next cycle, and the wake makes that cycle now; a rebuild that moves no verdict
         wakes nothing, so cycles cannot chain."""
         live_map = km._live_map()
-        saved = (list(km._built_feed), km._feed_needs_input[0], km._views_dirty[0], km._feed_needs_rows[0])
-        km._built_feed[:] = [None, None, 0.0, 0.0]; km._feed_needs_input[0] = None; km._views_dirty[0] = 0.0; km._feed_needs_rows[0] = None
+        saved = (list(km._built_feed), km._feed_needs_input[0], km._feed_needs_input_count[0], km._views_dirty[0], km._feed_needs_rows[0])
+        km._built_feed[:] = [None, None, 0.0, 0.0]; km._feed_needs_input[0] = None; km._feed_needs_input_count[0] = None; km._views_dirty[0] = 0.0; km._feed_needs_rows[0] = None
         try:
             m = km.build_session(SID, NOW)
             self.assertIsNone(m["ledger"]["needsInput"], "no feed build yet: None, not a verdict")
             self.assertIsNone(m["status"]["needsYou"], "…and the status says the same nothing")
+            self.assertIsNone(m["status"]["needsYouCount"], "…and no count before the first build (needsYouCount is additive, tri-state like needsYou)")
             km._pusher_wake.clear()
             feed = km._cached_feed(NOW, live_map, km._fleet_view_sig(NOW, live_map))
             self.assertTrue(any(a["sid"] == SID and a["column"] == "needs_input" for a in feed["asks"]),
@@ -1028,6 +1029,7 @@ class ViewBuilder(unittest.TestCase):
             m = km.build_session(SID, NOW)
             self.assertIs(m["ledger"]["needsInput"], True, "the row's needs-you = the feed's column")
             self.assertIs(m["status"]["needsYou"], True, "the tab's Needs you ring = the same column, on the status")
+            self.assertEqual(m["status"]["needsYouCount"], 1, "one needs-you card: needsYouCount is 1, the numbered badge's value (the same feed rule as needsYou, tallied)")
             self.assertEqual(m["status"]["state"], "ready", "the chip is still the live state (an idle main thread reads ready): the ring composes with it, never replaces it")
             # the judges rule the block answered: the store now holds the goal working; a dirty mark bypasses
             # the rebuild throttle the way the reply handler does
@@ -1042,6 +1044,7 @@ class ViewBuilder(unittest.TestCase):
             m = km.build_session(SID, NOW)
             self.assertIs(m["ledger"]["needsInput"], False, "no card under needs-you: False")
             self.assertIs(m["status"]["needsYou"], False, "the ring goes with the card")
+            self.assertEqual(m["status"]["needsYouCount"], 0, "the card left: the count is 0, in step with needsYou")
             # muted: out of the feed altogether, so no cards, so False, whatever the store says
             store["nodes"][g2]["blocked"] = True; store["status"][g2] = "blocked"
             (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
@@ -1053,7 +1056,56 @@ class ViewBuilder(unittest.TestCase):
             self.assertIs(m["status"]["needsYou"], False, "…so no ring either")
         finally:
             km._set_session_flag(SID, "hideFromFeed", False); km._flags_cache.clear()
-            km._built_feed[:], km._feed_needs_input[0], km._views_dirty[0], km._feed_needs_rows[0] = saved
+            km._built_feed[:], km._feed_needs_input[0], km._feed_needs_input_count[0], km._views_dirty[0], km._feed_needs_rows[0] = saved
+
+    def test_the_status_reconciles_the_count_with_needs_you_so_no_reader_ships_a_bare_dot(self):
+        """The set and the count are published in two steps in the feed build (plans/tab-state-badge.md); a status read that
+        straddles them could pair needsYou TRUE (new set) with count 0 (old count) and draw a bare dot, or needsYou FALSE
+        with a stale count. build_session (and _light_status) reconcile the count with the SAME needsYou they ship: true
+        carries at least 1, false carries 0 whatever the count global holds. Pinned by forcing each raced pair directly."""
+        saved = (km._feed_needs_input[0], km._feed_needs_input_count[0])
+        try:
+            km._feed_needs_input[0] = frozenset([SID]); km._feed_needs_input_count[0] = {}          # entering window: in the set, count not yet updated
+            m = km.build_session(SID, NOW)
+            self.assertIs(m["status"]["needsYou"], True, "in the set: needs you")
+            self.assertEqual(m["status"]["needsYouCount"], 1, "needsYou true with a raced 0 count ships at least 1, never a bare dot")
+            km._feed_needs_input[0] = frozenset(); km._feed_needs_input_count[0] = {SID: 2}         # leaving window: out of the set, count not yet cleared
+            m = km.build_session(SID, NOW)
+            self.assertIs(m["status"]["needsYou"], False, "out of the set: no ring")
+            self.assertEqual(m["status"]["needsYouCount"], 0, "needsYou false ships 0 whatever the count global still holds: no dot, no stale number")
+            km._feed_needs_input[0] = frozenset([SID]); km._feed_needs_input_count[0] = {SID: 5}    # the consistent case: the real number rides
+            m = km.build_session(SID, NOW)
+            self.assertEqual(m["status"]["needsYouCount"], 5, "a consistent pair ships the real count")
+        finally:
+            km._feed_needs_input[0], km._feed_needs_input_count[0] = saved
+
+    def test_the_needs_you_count_wakes_the_pusher_on_a_count_only_change(self):
+        """The numbered badge's count keys its OWN compare-and-wake in _cached_feed (plans/tab-state-badge.md), beside the
+        boolean's and the box rows'. When a session's card count moves with the membership SET and the box ROWS unchanged
+        (a board rule re-tagging a card, a hard-stop card that counts but takes no row, a card's expiry), the boolean's and
+        the rows' compares wake nothing, so the count's own compare is what brings the number forward without a reload.
+        Isolated by holding the set and rows to their cached values (the real feed) and moving the per-sid count alone."""
+        live_map = km._live_map()
+        saved = (list(km._built_feed), km._feed_needs_input[0], km._feed_needs_input_count[0], km._feed_needs_rows[0],
+                 km._views_dirty[0], km._needs_input_counts)
+        try:
+            km._built_feed[:] = [None, None, 0.0, 0.0]; km._views_dirty[0] = 0.0
+            km._cached_feed(NOW, live_map, km._fleet_view_sig(NOW, live_map))   # seed the set, rows and count caches from the real feed
+            set_before, rows_before = km._feed_needs_input[0], km._feed_needs_rows[0]
+            base = dict(km._feed_needs_input_count[0] or {})
+            km._needs_input_counts = lambda feed: {**base, SID: base.get(SID, 0) + 1}   # SID's count moves alone; the set and rows recompute unchanged
+            km._built_feed[:] = [None, None, 0.0, 0.0]; km._pusher_wake.clear()
+            km._cached_feed(NOW, live_map, km._fleet_view_sig(NOW, live_map))
+            self.assertEqual(km._feed_needs_input[0], set_before, "the membership set did not move")
+            self.assertEqual(km._needs_rows_face(km._feed_needs_rows[0]), km._needs_rows_face(rows_before), "the box rows did not move")
+            self.assertTrue(km._pusher_wake.is_set(), "the count moved for SID with the set and rows unchanged: the count's own compare-and-wake fires, so the number ships now, not a tick late")
+            self.assertEqual((km._feed_needs_input_count[0] or {}).get(SID), base.get(SID, 0) + 1, "the moved count is stored")
+            km._built_feed[:] = [None, None, 0.0, 0.0]; km._pusher_wake.clear()   # a rebuild that moves no count wakes nothing
+            km._cached_feed(NOW, live_map, km._fleet_view_sig(NOW, live_map))
+            self.assertFalse(km._pusher_wake.is_set(), "no count move, no wake: a count that holds cannot chain cycles")
+        finally:
+            (km._built_feed[:], km._feed_needs_input[0], km._feed_needs_input_count[0], km._feed_needs_rows[0],
+             km._views_dirty[0], km._needs_input_counts) = saved
 
     def test_host_sleep_closes_a_turn_left_open(self):
         # A turn still open when the laptop slept must NOT keep reading as "working": the kernel records the

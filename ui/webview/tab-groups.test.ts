@@ -494,7 +494,7 @@ test("executed + pinned: the one-group-per-row setting is on by default; off, th
   assert.match(drop, /const edge = \(n: Element\) => n\.classList\.contains\("tab-group-head"\) \|\| n\.classList\.contains\("tab-group-break"\) \|\| n\.classList\.contains\("tab-group-sep"\);/,
     "the divider bounds the trail for the drop's in-group neighbour walk, as the break does under the setting");
   // a gear flip repaints at once: the setting rides the strip's rebuild signature, and the settings listener calls renderTabs
-  assert.match(RENDER, /settings\.tabCtx, settings\.stripGroupRows, settings\.tabsLocked, settings\.theme, settings\.colormap,/, "in the strip's signature");
+  assert.match(RENDER, /settings\.tabCtx, settings\.stripGroupRows, settings\.tabsLocked, settings\.tabStateBadge, settings\.theme, settings\.colormap,/, "in the strip's signature");
   assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\);/);
   // the gear's row: a checkbox like Show git branch's, checked by default, saved through the same save() and filled at open
   assert.match(GEAR, /<label class=rs-row><input type=checkbox id=rs-striprows checked>' \+\s*\n\s*'<span><b>One tag group per row in the tab strip<\/b>/);

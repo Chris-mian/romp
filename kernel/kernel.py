@@ -35008,8 +35008,11 @@ def _chat_build_sig(sess, tm=None, now=None, live_map=None, deps=None):
         # card of THIS session is filed under needs-you". The set behind it is None until the first feed build
         # since start, and a push builds the chat sessions BEFORE the feed, so the raw tri-state would give
         # every tab a None on the first push and a False on the next: one whole-strip rebuild for a value the
-        # row reads the same (needsInput === true). Only True is a verdict.
-        sig.append(_feed_needs_input_of(sid) is True)
+        # row reads the same (needsInput === true). Only True is a verdict. The count rides beside the boolean
+        # (needsYouCount, the numbered badge, plans/tab-state-badge.md): a card filed or cleared within a session
+        # already needing you moves the count while the boolean holds, so keying the count keeps the number fresh
+        # (None before the first build and 0 for no card share the no-dot value, as the boolean's None and False do).
+        sig.append((_feed_needs_input_of(sid) is True, _feed_needs_input_count_of(sid) or 0))
         # notices: the approval box's rows by id (a hold posted, a decision taken), so the box and the ring move in one frame
         sig.append(tuple((n["itemId"], n.get("kind") or "notice", n.get("title") or "", n.get("body") or "", bool(n.get("cont")), n.get("fix") or "") for n in (_chat_notices(sid) or ())))   # the box's rows by id AND face (phase three): a brief landing, a Continue moving or a retitle (the judge retitles a top under its id; the second review of PR 1967, 2026-09-21) repaints the box; `t` is _NEEDS_ROW_UNKEYED; one value per label
         # floor: the render floor decision (T323 stage 4b): True while a proto-1 client is connected (the pusher's
@@ -41289,6 +41292,8 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # feed build that moves the set wakes the pusher (_cached_feed), so the ring trails the
                   # card by one build, not a backstop tick.
                   "needsYou": needs_you,
+                  "needsYouCount": (None if needs_you is None else 0 if not needs_you else max(1, _feed_needs_input_count_of(sid) or 0)),   # the numbered badge's value (plans/tab-state-badge.md): reconciled with the SAME needsYou above so the pair never disagrees for a reader that straddles the feed build's set-then-count publish (needsYou true means at least 1, so never a bare dot; a raced stale NUMBER is harmless). The count is the same feed rule as needsYou, tallied, so the dot, the box and the column agree
+
                   # the APPROVAL BOX's rows (2026-09-19): this session's needs-you notices with actions (a held peer message's
                   # Approve and Deny), on the status so a status-only delta carries a decision's disappearance like the ring's
                   "notices": _chat_notices(sid),
@@ -51495,9 +51500,11 @@ def _light_status(sid, path, tm, now):
     tries, next_at = _retry_gate_state(sid)
     ctx = tm.get("context")
     stops = cm.stops_for(_colormap())
+    _ny = _feed_needs_input_of(sid)   # read once for the pair below, so the cold tab's needsYou and its count agree (plans/tab-state-badge.md)
     return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "provisional": True,
             "faded": _idle_faded(chip, since, now),      # the built status's own fact (T155), so the chip reads it the same
-            "needsYou": _feed_needs_input_of(sid),       # the magenta Needs you ring's one input (round four): the feed's verdict, a membership read
+            "needsYou": _ny,       # the magenta Needs you ring's one input (round four): the feed's verdict, a membership read
+            "needsYouCount": (None if _ny is None else 0 if not _ny else max(1, _feed_needs_input_count_of(sid) or 0)),   # reconciled with needsYou above, as build_session does: the pair never disagrees for a straddling reader (plans/tab-state-badge.md)
             # the painter's context gauge and tints (round three): the row carries the context, the colours are the built
             # status's own derivations over it (cm.ramp on the global colormap, cm.context_rgb), so a cold tab's gauge and
             # its model and effort tints paint as built for as long as the tab stays unbuilt
@@ -57319,6 +57326,7 @@ _built_timeline = [None, None, 0.0, 0.0]          # [fleet_sig, payload, built_a
 # the feed, so that is one push cycle). Set by _cached_feed on every rebuild, from the same payload the badge
 # and the bells read (_needs_you_count), never re-derived.
 _feed_needs_input = [None]
+_feed_needs_input_count = [None]   # per-sid count of needs-you cards, for the numbered badge (plans/tab-state-badge.md); set beside _feed_needs_input from the same feed rule
 _feed_needs_rows = [None]        # sid -> the Needs you box's GOAL rows from the last feed build (plans/needs-you.md, phase three); None before it
 _NEEDS_ROW_UNKEYED = frozenset(("t",))   # a goal row's fields the box does not draw: outside the chat key (_chat_build_sig) AND the wake compare
 #                                          below, as _CHAT_ROW_UNKEYED is for the liveness row; every other field (itemId, kind, title, body,
@@ -57375,10 +57383,29 @@ def _needs_input_sids(feed):
                      if _card_needs_you(a) and a.get("sid"))
 
 
+def _needs_input_counts(feed):
+    """Per-session COUNT of needs-you cards, for the numbered badge (plans/tab-state-badge.md): the SAME _card_needs_you
+    rule _needs_input_sids reads, tallied by sid, so the tab dot's number agrees with the membership set (needsYou), the
+    box header and the Needs-you column. Placeholders count too, as in _needs_input_sids."""
+    counts = {}
+    for a in (feed.get("asks") or []):
+        sid = a.get("sid")
+        if sid and _card_needs_you(a):
+            counts[str(sid)] = counts.get(str(sid), 0) + 1
+    return counts
+
+
 def _feed_needs_input_of(sid):
     """build_session's read: True/False from the last feed build, None before the first one."""
     sids = _feed_needs_input[0]
     return None if sids is None else (str(sid) in sids)
+
+
+def _feed_needs_input_count_of(sid):
+    """build_session's read: this session's needs-you card COUNT from the last feed build, 0 if none, None before the
+    first (as _feed_needs_input_of). needsYou is true iff this is positive, by construction (one feed rule)."""
+    counts = _feed_needs_input_count[0]
+    return None if counts is None else counts.get(str(sid), 0)
 # Wire-form caches for the two heavy shared payloads (the 2026-08-10 CPU fix, round three): the last
 # (source-identity key, lazy serialization, dedup sig, per-entry split) for the feed and the timeline bars,
 # so an unchanged build is never re-serialized cycle after cycle (~357KB + ~1.65MB per cycle measured with
@@ -57607,6 +57634,14 @@ def _build_feed_locked(now, live_map, sig):
         _pusher_wake.set()                               # a row's line, its Continue or its presence moved with the set unchanged: the box
         #                                                  follows the card by one build, as the ring does above
     _feed_needs_rows[0] = _rows_now
+    _counts_now = _needs_input_counts(feed)                  # the per-sid needs-you card counts, for the numbered badge (plans/tab-state-badge.md)
+    if _counts_now != _feed_needs_input_count[0]:
+        _pusher_wake.set()                               # a session's needs-you COUNT moved with the membership set unchanged (a card filed or
+        #                                                  cleared within a session already needing you, a board re-tag, a card's expiry): the
+        #                                                  numbered badge follows the card by one build, as the ring and the box do above. The count
+        #                                                  is a per-session component of the chat signature (the `needs` tuple), so the woken cycle
+        #                                                  rebuilds the tab whose number moved; without this wake a count-only change waits a tick.
+    _feed_needs_input_count[0] = _counts_now
     _badge = _needs_you_count(feed)
     _fired = _feed_notifications(feed) if not feed.get("off") else []   # armed bells: fresh builds are the transition event; a
     #                                                       stand-in frame (off, empty) never feeds a writer that prunes by absence: the
@@ -62013,6 +62048,13 @@ _CHAT_MOBILE_CSS = (
     # the chip's border takes the ring, dashed, in the Needs you magenta, over the identity color (declared after
     # #mcur.colored so it wins at equal specificity)
     "#mcur.ask{border-color:var(--st-needs-bg,#d946ef);border-style:dashed}"
+    # the STATE BADGE on the phone (plans/tab-state-badge.md): under badge mode the desktop tab wears a magenta dot with
+    # a count instead of the ring, and the phone (which scrapes the tabs) follows: the dot sits at the chip's/row's own
+    # top-right corner, retrying moves to the leading dot in amber. The chip needs position for the absolute dot.
+    "#mcur{position:relative}"
+    "#mcur .wd.retrying{background:var(--st-retrying-bg,#e67e22)}"
+    ".m-badge{position:absolute;top:5px;right:7px;width:8px;height:8px;border-radius:50%;background:var(--st-needs-bg,#d946ef);box-shadow:0 1px 2px rgba(0,0,0,.5);pointer-events:none}"
+    ".m-badge:not(:empty){width:auto;min-width:14px;height:14px;border-radius:7px;padding:0 3px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;font-size:9px;line-height:1}"
     "#mtag-slot{flex:0 0 auto;display:flex;align-items:center;gap:5px}"   # T161: the tag control's slot, sized by the shared button's own inline metrics
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
     "background:var(--btn-bg,#2a2a2a);color:#bbbbbb;border:1px solid var(--hairline,#3a3a3a);border-radius:6px;font-size:16px;line-height:1}"
@@ -62029,6 +62071,7 @@ _CHAT_MOBILE_CSS = (
     "body.theme-light .mrow .nm{color:var(--menu-fg)}"
     "body.theme-light .mrow .mclose{color:var(--text-muted)}"
     "body.theme-light .mrow.active{background:var(--accent-wash)}"
+    "body.theme-light .m-badge:not(:empty){color:var(--st-needs-fg,#ffffff)}"   # the numbered dot's digit: black on the dark magenta, the state's light-theme fg (white) on the lighter light magenta, the 4.5:1 text floor in both (plans/tab-state-badge.md)
     # the trigger chip's text tiers (its surfaces already re-skin through --btn-bg/--hairline above);
     # the .colored restatement outweighs the plain override so the identity color keeps the name
     "body.theme-light #mcur{color:var(--menu-fg)}"
@@ -62049,6 +62092,8 @@ _CHAT_MOBILE_CSS = (
     # a row whose session has a card that needs you: a magenta bar at its left edge, the desktop tab's
     # dashed ring (ring-waiting-on-you), in the one Needs you token, on a list row where a ring would fight the hairlines
     ".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}"
+    ".mrow{position:relative}"   # for the state badge's absolute dot (plans/tab-state-badge.md)
+    ".mrow .workdot.retrying{background:var(--st-retrying-bg,#e67e22)}"   # badge mode: retrying on the leading dot
     # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
     # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
     # (cloned) and the count; no caret and no pointer, since the phone folds nothing
@@ -62111,7 +62156,7 @@ if(!t.classList.contains('tab')||!t.hasAttribute('data-id'))return;
 var lab=t.querySelector('.tab-label'),id=t.getAttribute('data-id'),copy=t.getAttribute('data-copy');
 out.push({key:'t:'+id+'/'+(copy===null?'':copy),id:id,copy:copy,name:(lab?lab.textContent:id),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
-working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),ask:t.classList.contains('ring-waiting-on-you'),active:t.classList.contains('active'),
+working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),retrying:!!t.querySelector('.tab-dot.retrying'),ask:t.classList.contains('ring-waiting-on-you'),badgeNeeds:!!t.querySelector('.tab-badge'),needsCount:(function(){var b=t.querySelector('.tab-badge');return b?b.textContent:'';})(),active:t.classList.contains('active'),
 ph:t.classList.contains('tab-placeholder')});});return out;}
 // A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
 // federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
@@ -62131,10 +62176,13 @@ function rowUpdate(row,s){row.classList.toggle('active',!!s.active);
 // who tapped a remote session on the phone and nothing happened)
 row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
 row.classList.toggle('pending',pendingId===s.id);
-row.classList.toggle('ask',!!s.ask);   // the desktop tab's magenta ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): a card of this session's needs you
+row.classList.toggle('ask',!!s.ask);   // RING mode: the desktop tab's magenta ring (ring-waiting-on-you, a widget with a switch; switched off it puts no class on the tab, so the phone follows): a card of this session's needs you
+var mb=row.querySelector('.m-badge');   // BADGE mode: the desktop tab wears a .tab-badge dot with a count instead of the ring; the phone shows the same dot at the row's corner (plans/tab-state-badge.md)
+if(s.badgeNeeds){if(!mb){mb=document.createElement('span');mb.className='m-badge';row.appendChild(mb);}mb.textContent=s.needsCount||'';}
+else if(mb)mb.remove();
 var wd=row.querySelector('.workdot');
-if(s.working||s.awaitbg){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
-wd.classList.toggle('await',!s.working&&!!s.awaitbg);}
+if(s.working||s.awaitbg||s.retrying){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
+wd.classList.toggle('await',!s.working&&!!s.awaitbg&&!s.retrying);wd.classList.toggle('retrying',!!s.retrying&&!s.working&&!s.awaitbg);}
 else if(wd)wd.remove();
 var lbl=row.querySelector('.nm');fillName(lbl,s);lbl.style.color=s.bg||'';}
 function rowMake(s){var row=document.createElement('div');row.className='mrow';row.setAttribute('data-id',s.id);row.setAttribute('data-key',s.key);
@@ -62161,9 +62209,13 @@ var ts=read(),act=null,first=null;
 for(var i=0;i<ts.length;i++){if(!ts[i].id)continue;if(!first)first=ts[i];if(ts[i].active){act=ts[i];break;}}
 if(!act)act=first;   // the first SESSION row, never a heading
 var nm=cur.querySelector('.nm');
-var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg))?'':'none';   // gold working / green awaiting dot, matching desktop
-wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working));
-cur.classList.toggle('ask',!!(act&&act.ask));   // the current chip wears the magenta ring too
+var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg||act.retrying))?'':'none';   // gold working / green awaiting / amber retrying dot, matching desktop
+wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working&&!act.retrying));
+wd.classList.toggle('retrying',!!(act&&act.retrying&&!act.working&&!act.awaitbg));
+cur.classList.toggle('ask',!!(act&&act.ask));   // RING mode: the current chip wears the magenta ring too
+var cb=cur.querySelector('.m-badge');   // BADGE mode: the Needs-you dot with its count at the chip's corner (plans/tab-state-badge.md)
+if(act&&act.badgeNeeds){if(!cb){cb=document.createElement('span');cb.className='m-badge';cur.appendChild(cb);}cb.textContent=act.needsCount||'';}
+else if(cb)cb.remove();
 if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}
