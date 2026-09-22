@@ -2036,8 +2036,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   json is acyclic and dies by reference counting whether frozen or not (an
   unfreeze reclaim there would collect nothing), so `recordCache.released` is a
   statistic, not a trigger. A BACKSTOP reclaim runs after `backstopFoldins`
-  load fold-ins since the last reclaim, so a cycle released on a path no note
-  reaches lives at most that many fold-ins, never the process lifetime. The
+  load fold-ins since the last reclaim (default 1000, about ten hours at the
+  measured ~97 fold-ins an hour), so a cycle released on a path no note reaches
+  is bounded by the next thousand loads, not the process lifetime. The
   sub-block carries `enabled`, `active` (whether a freeze is held now; named
   apart from the integer `frozen` above, which is `gc.get_freeze_count()`),
   `loadTrees` and `backstopFoldins` (the two thresholds), `freezes` and
@@ -2390,7 +2391,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `recordCache`: the reader's record cache (the JSONL records held in memory):
   `entries`, `bytes`, `budgetBytes`, `countCap`, `inserts`, `evictions`,
   `evictedBytes`, `budgetEvictions`, `dropped` and `droppedBytes` (the
-  quiescence drop), and `wholeReads`: every read that pulled a file whole,
+  quiescence drop), `released` (every pop that removed an entry, whatever the
+  cause: an eviction, a re-read replacement, an OSError pop, a drop; a #1735
+  statistic only, since these entries are acyclic and it never triggers a
+  gc-freeze reclaim), and `wholeReads`: every read that pulled a file whole,
   keyed `kind<-caller` (the reader's kind, one of `zero`, `rewrite`, `guard`,
   `shrunk` and `upgrade`, and the first calling function outside the event
   model and the parse family), with `count` and `bytes`; a tail read, an

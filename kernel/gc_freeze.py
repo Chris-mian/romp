@@ -43,8 +43,8 @@ import time
 DEFAULT_LOAD_TREES = 8            # record-cache inserts since the last freeze that count as a material load
 MIN_LOAD_TREES = 1               # floored here: a threshold of 0 or below would make due() fire every idle cycle
 DEFAULT_BACKSTOP_FOLDINS = 1000  # a reclaim after this many load fold-ins since the last reclaim, bounding an unnoted cyclic
-#                                  release; high enough that steady re-reads (many fold-ins an hour) trigger it at most about
-#                                  once an hour, near-zero beside the ~70 organic full collections it replaces
+#                                  release; at the measured ~97 fold-ins an hour it fires about once in ten hours, near-zero
+#                                  beside the ~70 organic full collections an hour it replaces
 _OFF = ("off", "0", "false")
 
 
@@ -147,6 +147,10 @@ class GcFreeze:
             self.freezes += 1
             if was_frozen:
                 self._foldins += 1                   # a load fold-in; the initial freeze is not one
+            else:
+                self._note_mark = notes              # the initial freeze syncs the note mark too: a release noted BEFORE the
+                #                                      first freeze is already taken by the initial collect, so it must not
+                #                                      drive a wasted full reclaim at the next tick (2026-09-22 review)
         return kind
 
     def perf(self):

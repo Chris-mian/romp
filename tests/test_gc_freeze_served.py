@@ -137,6 +137,7 @@ class ServedGcFreeze(unittest.TestCase):
         self.assertIn(fr["lastReconcileKind"], ("initial", "load"), "no reclaim yet, only loads: %r" % fr)
         self.assertGreater(pf["gc"]["frozen"], 0, "objects left the collector's walk (gc.get_freeze_count): %r" % pf["gc"]["frozen"])
         reclaims_before = fr["reclaims"]
+        inserts_before = int(pf["recordCache"]["inserts"])
         # steady re-reads: append to a transcript repeatedly (each re-read replaces its acyclic cache entry). Under the
         # corrected trigger this is a record-cache pop, NOT a cyclic release, so it must drive NO reclaim (the 2026-09-21
         # design finding: a pop-keyed reclaim would pay the full pause on a schedule).
@@ -145,6 +146,8 @@ class ServedGcFreeze(unittest.TestCase):
                 f.write("".join(json.dumps(r) + "\n" for r in _turns(int(time.time()) + k * 1000, 2)))
             time.sleep(2)
         pf = self._perf(); fr = pf["gc"]["freeze"]
+        self.assertGreater(int(pf["recordCache"]["inserts"]), inserts_before,
+                           "the re-reads are real: the record cache re-inserted the appended transcript (else the no-reclaim proves nothing)")
         self.assertEqual(fr["reclaims"], reclaims_before,
                          "steady re-reads drove NO reclaim: a record-cache pop is acyclic and never triggers the unfreeze pause: %r" % fr)
         self.assertNotEqual(fr["lastReconcileKind"], "release", "and the last reconcile was not a release: %r" % fr)

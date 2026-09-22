@@ -72,11 +72,21 @@ class TriggerLogic(unittest.TestCase):
         self.assertEqual(fake.calls, ["unfreeze", "collect", "freeze"], "a cyclic note reclaims: unfreeze, collect, re-freeze")
         # the backstop: after backstop_foldins load fold-ins since the last reclaim, a reclaim runs even with no new note
         base = 3 + 8
-        c.reconcile(inserts=base + 8, notes=1)          # load fold-in 1 (notes unchanged)
-        c.reconcile(inserts=base + 16, notes=1)         # load fold-in 2 -> _foldins now at the backstop
+        self.assertEqual(c.reconcile(inserts=base + 8, notes=1), "load", "the intermediate reconciles are cheap load fold-ins")
+        self.assertEqual(c.reconcile(inserts=base + 16, notes=1), "load")   # load fold-in 2 -> _foldins now at the backstop
         self.assertTrue(c.due(inserts=base + 16, notes=1), "the backstop makes a reconcile due even with no new load or note")
         self.assertEqual(c.reconcile(inserts=base + 16, notes=1), "backstop", "and it reconciles as a reclaim")
         self.assertGreaterEqual(c.reclaims, 2, "the cyclic note and the backstop each ran a reclaim")
+        self.assertFalse(c.due(inserts=base + 16, notes=1), "the backstop reset _foldins: not due again until the next load or note")
+
+    def test_the_initial_freeze_syncs_the_note_mark(self):
+        # a release noted BEFORE the first freeze is taken by the initial collect; it must not drive a wasted reclaim next
+        fake = FakeGc()
+        c = gf.GcFreeze(enabled=True, load_trees=8, gc=fake, clock=lambda: 0.0)
+        self.assertEqual(c.reconcile(inserts=3, notes=5), "initial", "the first freeze, with 5 releases already noted")
+        self.assertEqual(fake.calls, ["collect", "freeze"], "the initial freeze collects and freezes, no unfreeze")
+        self.assertFalse(c.due(inserts=3, notes=5), "the pre-freeze notes are synced: not due with no NEW note (no wasted reclaim next tick)")
+        self.assertTrue(c.due(inserts=3, notes=6), "a genuinely new note after the freeze is due")
 
     def test_the_env_switch_turns_it_off(self):
         self.assertFalse(gf.enabled_from_env({"ROMP_GC_FREEZE": "off"}))
@@ -102,14 +112,17 @@ class TriggerLogic(unittest.TestCase):
 
 class DoubleController:
     """Records the reconcile calls, so the pusher tick's guard and error handling are pinned without the collector."""
-    def __init__(self, enabled=True, due=True):
+    def __init__(self, enabled=True, due=True, raise_reconcile=False):
         self.enabled = enabled
         self._due = due
+        self._raise = raise_reconcile
         self.reconciled = []
     def due(self, inserts, notes):
         return self._due
     def reconcile(self, inserts, notes):
         self.reconciled.append((inserts, notes))
+        if self._raise:
+            raise RuntimeError("reconcile blew up")
         return "load"
 
 
@@ -146,14 +159,49 @@ class PusherTick(unittest.TestCase):
         gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(inserts=4, released=999), on_error=lambda e: None)
         self.assertEqual(c.reconciled, [(4, 2)], "the controller gets inserts and the NOTED releases, not the record cache's pop counter")
 
-    def test_a_raising_stats_read_is_handed_to_on_error_and_never_propagates(self):
+    def test_a_not_due_controller_is_not_reconciled(self):
+        # teeth for the `if controller.due(...)` guard: a `if True:` mutant would reconcile a not-due controller
+        c = DoubleController(due=False)
+        gf.pusher_tick(c, idle=True, first=False, stats_fn=self._stats(), on_error=lambda e: None)
+        self.assertEqual(c.reconciled, [], "an idle non-first cycle with a not-due controller runs no reconcile")
+
+    def test_a_raising_stats_read_or_reconcile_is_handed_to_on_error_and_never_propagates(self):
+        # a raising stats read
         errs = []
         def boom():
             raise RuntimeError("cache stats read failed")
         c = DoubleController()
         gf.pusher_tick(c, idle=True, first=False, stats_fn=boom, on_error=errs.append)   # must not raise
-        self.assertEqual(len(errs), 1, "the failure is counted once")
+        self.assertEqual(len(errs), 1, "the failing read is counted once")
         self.assertEqual(c.reconciled, [], "and no reconcile ran")
+        # a raising RECONCILE (teeth for reconcile staying inside the try): on_error once, nothing propagated
+        errs2 = []
+        c2 = DoubleController(raise_reconcile=True)
+        gf.pusher_tick(c2, idle=True, first=False, stats_fn=self._stats(), on_error=errs2.append)   # must not raise
+        self.assertEqual(len(errs2), 1, "the raising reconcile is caught and counted once")
+        self.assertEqual(len(c2.reconciled), 1, "the reconcile was attempted")
+
+    def test_the_kernels_tick_guards_and_counts_a_not_due_and_a_raising_reconcile(self):
+        # the same guard and error handling mirrored through the kernel's own _gc_freeze_tick wrapper
+        km = load_source("romp_kernel_gcf_tick", os.path.join(BIN, "romp-kernel"))
+        saved_gf, saved_stats = km._GC_FREEZE, km.em.record_cache_stats
+        saved_errs, saved_said = km._GC_FREEZE_ERRORS[0], km._GC_FREEZE_SAID[0]
+        try:
+            km.em.record_cache_stats = lambda: {"inserts": 3}
+            nd = DoubleController(due=False)
+            km._GC_FREEZE = nd
+            km._gc_freeze_tick(True, False)
+            self.assertEqual(nd.reconciled, [], "the kernel tick runs no reconcile when the controller is not due")
+            km._GC_FREEZE_ERRORS[0] = 0; km._GC_FREEZE_SAID[0] = False
+            rc = DoubleController(raise_reconcile=True)
+            km._GC_FREEZE = rc
+            km._gc_freeze_tick(True, False)   # must not raise
+            self.assertEqual(km._GC_FREEZE_ERRORS[0], 1, "a raising reconcile is counted through the kernel wrapper")
+            self.assertTrue(km._GC_FREEZE_SAID[0], "and said once")
+        finally:
+            km._GC_FREEZE = saved_gf
+            km.em.record_cache_stats = saved_stats
+            km._GC_FREEZE_ERRORS[0] = saved_errs; km._GC_FREEZE_SAID[0] = saved_said
 
 
 class Cyclic:
@@ -293,6 +341,10 @@ class RecordCacheReleaseIsAStat(unittest.TestCase):
         gf._NOTED_RELEASES[0] = 0
         self.addCleanup(lambda: gf._NOTED_RELEASES.__setitem__(0, 0))
 
+    def tearDown(self):
+        gc.unfreeze()                                # this test's reconcile froze the heap; never leak the freeze to another test
+        gc.collect()
+
     def test_released_moves_on_a_pop_but_re_reads_drive_no_reclaim(self):
         em = load_source("romp_event_model_rel", os.path.join(BIN, "romp-event-model"))
         d = tempfile.mkdtemp()
@@ -319,31 +371,78 @@ class RecordCacheReleaseIsAStat(unittest.TestCase):
 
 
 class SdkSessionNote(unittest.TestCase):
-    """The note wiring has teeth at the CYCLIC owner: the injected note plumbing in sdk_backend, and that the
-    session-end pops call it. The kernel injects gcf.note_release; a bare backend in a test injects a spy."""
+    """The note fires at the CYCLIC owner only. Executed on a REAL SdkSession over a stub backend: a session with a
+    surviving `client` back-reference is cyclic (needs a collect); the session-end helper notes a release for it and
+    not for one whose client was cleared. The plumbing reaches gcf.note_release; the kernel injects it at load."""
     def setUp(self):
         gf._NOTED_RELEASES[0] = 0
         self.addCleanup(lambda: gf._NOTED_RELEASES.__setitem__(0, 0))
 
-    def test_the_note_plumbing_the_session_end_pops_and_the_kernel_injection(self):
-        import inspect
-        import re as _re
+    def _session(self, sbmod):
+        import tempfile as _tf
+        class StubBackend:
+            state_dir = _tf.mkdtemp()
+            def _update_reg(self, *a, **k): pass
+            def _log(self, *a, **k): pass
+        return sbmod.SdkSession(StubBackend(), {"sid": "11111111-2222-3333-4444-555555555555", "name": "web", "cwd": "/tmp"})
+
+    def test_a_surviving_client_session_is_cyclic_and_the_helper_notes_it(self):
         sbmod = load_source("romp_sdk_backend_note", os.path.join(ROOT, "kernel", "sdk_backend.py"))
-        # plumbing, executed: an injected note reaches gcf.note_release
-        sbmod.set_release_note(gf.note_release)
+        spy = []
+        sbmod.set_release_note(lambda: spy.append(1))
         self.addCleanup(lambda: sbmod.set_release_note(None))
-        sbmod._note_release()
-        self.assertEqual(gf.noted_releases(), 1, "a session-end pop's _note_release() increments the shared release count")
-        # teeth: every pop of self.sessions is paired with a _note_release() call (source pin; deleting a call reddens)
-        src = inspect.getsource(sbmod)
-        pops = len(_re.findall(r"self\.sessions\.pop\(", src))
-        calls = len(_re.findall(r"\n[ \t]+_note_release\(\)", src))   # call lines only, not the comment mentions or the def
-        self.assertEqual(pops, 3, "the three session-end pop sites (a regression in the count is a new unpaired release)")
-        self.assertEqual(calls, pops, "each session-end pop calls _note_release(): %d pops, %d note calls" % (pops, calls))
-        # the kernel injects gcf.note_release when the SDK backend loads (source pin at the load site)
+        # the connect-raised cycle: a live client that refers back to the session (executed oracle on the real object)
+        s = self._session(sbmod)
+        class Client:
+            pass
+        client = Client(); client.session = s; s.client = client
+        w = weakref.ref(s)
+        gc.collect(); gc.disable()
+        del s, client
+        self.assertIsNotNone(w(), "a session with a live client that refers back is cyclic: it outlives the drop with the collector off")
+        gc.enable(); gc.collect()
+        self.assertIsNone(w(), "and only a collection reclaims it")
+        # the helper notes a release for a session that still holds a client, and NOT for one whose client was cleared
+        sbmod._note_session_release(self._session(sbmod))
+        self.assertEqual(spy, [], "no note for a session with client None (the common exit, acyclic)")
+        s2 = self._session(sbmod); s2.client = object()
+        sbmod._note_session_release(s2)
+        self.assertEqual(spy, [1], "a note for a session that ended with a live client (the cyclic path)")
+
+    def test_the_kernel_injects_the_note_when_the_backend_loads(self):
+        import inspect
         ksrc = inspect.getsource(load_source("romp_kernel_gcf_inject", os.path.join(BIN, "romp-kernel")))
         self.assertRegex(ksrc, r'sbmod = load_source\("romp_sdk_backend"[\s\S]{0,320}?sbmod\.set_release_note\(gcf\.note_release\)',
                          "the kernel wires the release note right after it loads the SDK backend")
+
+
+class KernelKnob(unittest.TestCase):
+    """The kernel-side knob fallback, executed at import: a bad ROMP_GC_FREEZE_LOAD_TREES falls back to the default,
+    counts an error and says one line; a 0 is floored to 1 with no error."""
+    def _load_with(self, value, name):
+        import contextlib, io
+        saved = os.environ.get("ROMP_GC_FREEZE_LOAD_TREES")
+        os.environ["ROMP_GC_FREEZE_LOAD_TREES"] = value
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                km = load_source(name, os.path.join(BIN, "romp-kernel"))
+        finally:
+            if saved is None:
+                os.environ.pop("ROMP_GC_FREEZE_LOAD_TREES", None)
+            else:
+                os.environ["ROMP_GC_FREEZE_LOAD_TREES"] = saved
+        return km, err.getvalue()
+
+    def test_a_bad_knob_falls_back_and_is_said_a_zero_is_floored(self):
+        km, err = self._load_with("abc", "romp_kernel_knob_abc")
+        self.assertEqual(km._GC_FREEZE_LOAD_TREES, km.gcf.DEFAULT_LOAD_TREES, "abc falls back to the default")
+        self.assertGreaterEqual(km._GC_FREEZE_ERRORS[0], 1, "the bad knob is counted under errors")
+        self.assertIn("ROMP_GC_FREEZE_LOAD_TREES", err, "and said once on stderr: %r" % err)
+        km0, err0 = self._load_with("0", "romp_kernel_knob_zero")
+        self.assertEqual(km0._GC_FREEZE_LOAD_TREES, 1, "0 is floored to 1")
+        self.assertEqual(km0._GC_FREEZE_ERRORS[0], 0, "a floored 0 is a valid int, no error")
+        self.assertEqual(err0, "", "and nothing said for a valid, floored value")
 
 
 class KernelGlue(unittest.TestCase):
