@@ -242,9 +242,11 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     // the box's ok button rests in a border of the accent at 90% over the wash (color-mix in srgb): a non-text edge, so the 3:1 floor on its ground
     // in both themes (the round-fourteen verifier of PR 1967 measured 60% at 2.33:1 on the light theme)
     const accent = rgbOf(theme.get("--accent")!, page)!;
-    const okBorder = [0, 1, 2].map((i) => Math.round(accent[i] * 0.9 + box[i] * 0.1)) as [number, number, number];
-    assert.ok(contrast(okBorder, box) >= 3, `${name}: the ok button's resting border on the box wash = ${contrast(okBorder, box).toFixed(2)} < 3`);
-    assert.match(css, /\.ntc-btn\.ntc-ok \{[^}]*color-mix\(in srgb, var\(--accent\) 90%, transparent\)/, "the share the measure reads is the sheet's");
+    const shareM = css.match(/\.ntc-btn\.ntc-ok \{[^}]*color-mix\(in srgb, var\(--accent\) (\d+)%, transparent\)/);
+    assert.ok(shareM, "the ok button's border is the accent's color-mix over its ground");
+    const share = Number(shareM![1]) / 100;   // the share the sheet carries, mixed as the sheet mixes it (the first contributor's note on PR 2014: a fixed 0.9 beside a literal pin let a lockstep re-ink pass)
+    const okBorder = [0, 1, 2].map((i) => Math.round(accent[i] * share + box[i] * (1 - share))) as [number, number, number];
+    assert.ok(contrast(okBorder, box) >= 3, `${name}: the ok button's resting border (the accent at ${shareM![1]}%) on the box wash = ${contrast(okBorder, box).toFixed(2)} < 3`);
     // the state badge's digit is 9px bold TEXT (plans/tab-state-badge.md), so the 4.5:1 text floor, NOT the 3:1 chrome
     // floor. Black on the dark magenta reads ~6.07:1 and clears; on the lighter light-theme magenta (#a21caf) black is
     // only 3.32:1, short of 4.5, so the light theme inks the digit in the state's own foreground token (--st-needs-fg,

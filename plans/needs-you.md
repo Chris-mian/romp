@@ -230,14 +230,19 @@ kernels the undo went to, each with the build of its kernel the page had seen at
 the send: a single-kernel pane released at the click and writes none, though the frame reaches it too), and a suppression ends on
 the evidence that the card was restored: a payload from the card's own kernel that lists the card, built after that kernel
 processed the undo. The kernel names that point on every undo account as a build floor, its feed build counter as the undo was
-processed, on the refusal and reorder frames and on an ack for an undo that landed with nothing else to say. A build past the floor
+processed, on the refusal and reorder frames and on an ack for an undo that landed with nothing else to say; each undo the page
+sends carries a sequence of its own, which the kernel echoes on that account, so the floor lands on the checks written for that
+undo alone (two undos to one kernel with a clear between them keep their floors apart). A build past the floor
 read the store after every clear that socket sent before the undo had applied and after the undo's batch was restored, so a card
 it lists is restored; a build claimed before it, however it is stamped, is no evidence, and until the account lands the check
-releases nothing (the card stays off, and the absence rule stands). An older kernel sends no account, which its payloads say
+releases nothing (the card stays off, and the absence rule stands). The account rides the pressing client's own socket, which a
+redial can abandon, so a kernel's socket coming back (the local shim's reopen, a remote link's recovery) drops that kernel's
+waiting checks and their suppressions: a listed card is never covered by the absence rule, and a lost account must not hold a
+restored card off the board until a reload. An older kernel sends no account, which its payloads say
 (`undoAck` on a kernel's frame, `ackHosts` on the merge), and its checks take the build seen at the send as their floor, as
 before. A stale held frame cannot release a suppression; a kernel the undo never reached never lists a restored card past its
 floor; a kernel that restored an older batch shows exactly what it restored; a card cleared after the send has no check, so no
-payload releases it by evidence. A build below the one last seen from a kernel is its restart, since the counter is per process: the check re-bases to
+payload releases it by evidence. A build below the one last seen from a kernel is its restart, since the counter is per process: the check and its floor re-base to
 the new life and that payload judges the card. A kernel with no build on record can give no evidence, so its suppressions take
 the click-time release instead, never a baseline of zero. A remote kernel's account re-shows the cards of a refused clear by
 their ids and touches no stack. The working cue clears once every kernel the undo went to has built past the send, on an account

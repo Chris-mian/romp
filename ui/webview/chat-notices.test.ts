@@ -102,7 +102,7 @@ test("a refused act re-arms the row the kernel's reply names, with the reason in
   assert.match(h, /e\.textContent = title; e\.style\.display = "";/, "and the row says why: the frame's title, a sentence, alone (no doubled refusal)");
   // the kernel's clears-log refusal names the request: op, the first id and the batch
   const KERNEL = fs.readFileSync(path.join(UI, "..", "..", "kernel", "kernel.py"), "utf8");
-  assert.match(KERNEL, /def _gesture_store_refusal\(client, gesture, skipped, ids=None, op=""\):/);
+  assert.match(KERNEL, /def _gesture_store_refusal\(client, gesture, skipped, ids=None, op="", seq=None\):/);
   assert.match(KERNEL, /"itemId": acct_ids\[0\] if acct_ids else "", "itemIds": list\(acct_ids\)\}/, "every account's frame names the request and the account's own ids (the third review: not the whole batch)");
   assert.match(RENDER, /if \(m\.ok !== true\) notifyShell\("undelivered", copy \? title \+ ": " \+ copy : title, typeof m\.sid === "string" \? m\.sid : ""\);/, "the chat page's err handler files no bell entry for an information frame, as the feed's does not (the round-six verifier)");
   assert.match(KERNEL, /_send\(title, text, "", _ids\)\s+continue\s+notices = key\.startswith\("notice:"\)/, "the ledger's refusal names the whole batch");
@@ -147,6 +147,8 @@ test("the box's chrome: the background box's frame, its one thin edge in the Nee
   assert.match(RENDER, /"ntc-more": \(el\) => \{[^\n]*const key = "notice:" \+ \(row\.dataset\.item \|\| ""\) \+ ":brief"; if \(openFolds\.has\(key\)\) openFolds\.delete\(key\); else openFolds\.add\(key\); row\.classList\.toggle\("ntc-open", openFolds\.has\(key\)\);/, "the disclosure toggles on the delegate, keyed by the item id in the one fold store, both ways, no latch");
   assert.match(RENDER, /row\.classList\.toggle\("ntc-open", openFolds\.has\("notice:" \+ n\.itemId \+ ":brief"\)\);[^\n]*\n  noticeMoreButton\(row, body\);/, "re-applied on every row update, both ways");
   assert.match(RENDER, /const overflows = !!body && body\.style\.display !== "none" && body\.scrollHeight > body\.clientHeight \+ 1;/, "the button shows only when the body overflows");
+  assert.match(RENDER, /if \(body && body\.style\.display !== "none" && body\.clientHeight === 0 && body\.scrollHeight === 0\) return;/, "a zero measure (a display:none pane) is no information: the row stands as it is (the post-merge review of PR 1967)");
+  assert.match(RENDER, /watchChatVisibility\(document\.body, \{ \.\.\.browserChatVisibilityDeps\(\), onShown: renderNoticeDisclosures \}\);/, "the pane's return re-runs the disclosure pass");
   assert.match(CSS, /\.ntc-head \{[^}]*position: sticky; top: 0; z-index: 1;\n  background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "an opaque ground under the box's wash, above the rows (the second contributor's review)");
   assert.match(CSS, /body\.dense-chrome \.ntc-head \{ padding: 5px 11px; \}/, "the header compacts with the background box's");
   assert.match(CSS, /\.ntc-btn\.ntc-ok \{ color: var\(--accent\); border-color: color-mix\(in srgb, var\(--accent\) 90%, transparent\); \}/, "the ok border is the accent's own, on both themes, at the share that clears the 3:1 non-text floor on the light theme");

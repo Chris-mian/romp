@@ -48,7 +48,7 @@ test("Undo clear is OPTIMISTIC + acknowledges instantly (the user 2026-06-27)", 
   assert.match(FEED, /pendingRestored\.set\(it\.itemId, it\);/);
   assert.match(FEED, /if \(!asks\.some\(\(a\) => a\.itemId === it\.itemId\)\) asks\.push\(it\);/);
   // still posts undoClear so the kernel reconciles
-  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "undoClear" \}\)/);
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "undoClear", seq: \+\+undoSeq \}\)/);   // with the per-undo sequence the kernel echoes on its account (the post-merge review of PR 1967)
 });
 
 test("an optimistically-restored card stays sticky until the kernel push carries it (no flicker)", () => {
