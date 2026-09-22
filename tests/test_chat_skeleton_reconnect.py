@@ -2512,7 +2512,8 @@ class SkeletonReconnect(unittest.TestCase):
         went to both as a change-0 full and became the baseline, so a showed the unfilled card again until the next
         tail. Now no frame for the sid reaches a or b, a keeps the filled card, the mark and the absent baseline stand,
         and the next content cycle's full repairs b (a's identical full dedups on its slot). Red before the change where
-        a's last u3 card is asserted still filled."""
+        a's last u3 card is asserted still filled. The repair half is asserted on that cycle's own frames, cleared first
+        (2026-09-21): red with the session-full dedup disabled, where a read of the card a last held stays green."""
         km._PERF_STATS.reset()
         a, b = self._race({"first": lambda b: km._push([b], connect=True),
                            "second": lambda b: km._push_session_now(S1)}, "b")
@@ -2542,7 +2543,22 @@ class SkeletonReconnect(unittest.TestCase):
         self.assertIn(S1, km._chat_baseline_raced, "the mark stands")
         self.assertNotIn(S1, km._prev_chat_events, "the baseline stays absent")
         self.SESS[S1]["events"] = content                # content returns
-        self._the_cycle_repairs(a, b)                    # the next content cycle's full: b repaired, a's identical full dedups
+        # The repair half reads the content cycle's own frames, not the u3 card each client last holds (the post-merge
+        # review of the marked guard, 2026-09-21): _the_cycle_repairs leaves the frames in place and reads a's LAST u3 card,
+        # and that card is the filled full T handed a in the race whether this cycle re-sent a or deduped it, a proxy that
+        # stayed green with the session-full dedup disabled while the module's dedup pins went red. The helper's read is
+        # the cycle's own frame where the frames were cleared before the empty cycle (tests 44 and 50); here they hold the
+        # race's fulls, so the frames and the cache are cleared first and the cycle's delivery is read whole: nothing for
+        # the sid at a, whose slot already holds the filled list, and one 5-event full at b, the client showing the older card.
+        a["_frames"].clear(); b["_frames"].clear()
+        km._built_chat.clear()
+        km._push([a, b])                                 # the next content cycle builds the filled list
+        self.assertEqual([len(f["events"]) for f in self._frames(a, "session") if f["id"] == S1], [],
+                         "no session frame for the sid reaches a: the cycle's full is the list its slot already holds, and dedups")
+        self.assertEqual([len(f["events"]) for f in self._frames(b, "session") if f["id"] == S1], [5],
+                         "one 5-event full reaches b, the client showing the older card")
+        self.assertEqual(self._u3(b)[-1], ("session", "m3 filled"), "...and it fills b's u3 card")
+        self.assertEqual(km._prev_chat_events[S1], self.SESS[S1]["events"], "and the cycle's write establishes the baseline")
         self.assertNotIn(S1, km._chat_baseline_raced, "...and its write takes the mark off")
 
     def test_46_a_connect_push_under_the_mark_whose_read_came_back_empty_hands_its_target_no_frame_cached_or_not(self):
