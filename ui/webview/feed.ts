@@ -6991,7 +6991,17 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       // a reorder whose owed cards did not come back (`owedIds`; the sixth executed review of PR 1967): their re-journal is the kernel's newest
       // batch, so the NEXT Undo is theirs; an empty entry above the last clear's stands for them (that pop restores nothing optimistically and
       // takes the round-trip cue, the payload bringing them), and the pop after matches the kernel's: the last clear
-      if (Array.isArray(m.owedIds) && m.owedIds.length) clearedStack.push([]);
+      // unless the top entry already stands for those cards (the first contributor's round-four comment on PR 2025, 2026-09-22): under a STANDING
+      // read fault the kernel's reorder frame ships no stack, so this branch runs after the marked read-fault account took the click's restore
+      // back, and when the click had popped the owed entry itself (this page held the owed card's copy, so it restored it optimistically) that
+      // entry is back on top already; a second stand-in above it left the pane's stack one entry longer than the kernel's, and its last lit
+      // Undo restored nothing and drew a bare ack
+      if (Array.isArray(m.owedIds) && m.owedIds.length) {
+        const owedNow = m.owedIds.map(String);
+        const top = clearedStack[clearedStack.length - 1];
+        const topIds: string[] = top ? (((top as any)._ids as string[] | undefined) ?? top.map((it) => it.itemId)) : [];
+        if (!(topIds.length && topIds.every((id) => owedNow.includes(id)))) clearedStack.push([]);
+      }
       if (op === "undoClear" && typeof m.seq === "number") undoPopped.delete(m.seq);   // the refusal named the click's batch: its record is spent
       render();
     } else if (op === "undoClear" && m.readFault === true && !fromHost && !federatedPane() && !Array.isArray(m.batches) && typeof m.seq === "number" && undoPopped.has(m.seq)) {

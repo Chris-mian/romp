@@ -1806,8 +1806,11 @@ class ActsUnderAFailedWrite(_World):
     def test_a_read_fault_after_the_owed_rows_landed_files_the_account_and_the_reorder_and_leaves_the_owed_row_for_the_next_press(self):
         """The round-three verifier of PR 2025 (round six): the unconditional re-read's fault arm had no behavioural pin (a mutant dropping the
         reorder, or the arm, left the module green). B owed, a further clear so the click's batch is non-empty, the read after the lock block
-        refused: the read-fault account (no stack, the marker), the reorder frame saying the owed cards did not come back and naming the popped
-        batch, the owed row appended once, nothing restored; the next press, the log readable, restores B."""
+        refused and the fault STANDING from then on (the first contributor's round-four comment: a fault that passed after one read let the
+        reorder frame's own stack read land and ship a stack, the shape a standing fault never has): the read-fault account (no stack, the
+        marker), the reorder frame with no stack either, saying the owed cards did not come back, naming the popped batch and the clears log
+        as what must read again (not the session's goals file, the account beside it naming the record), the owed row appended once, nothing
+        restored; the next press, the log readable, restores B."""
         self._two_fault_undo_leaves_b_owed()                                 # B owed, in memory and in the note
         self._dispatch({"type": "askClear", "itemId": A + ":g1"})            # a further clear: the batch the click pops is A's
         log = jd.STATE / "cleared.jsonl"
@@ -1821,13 +1824,13 @@ class ActsUnderAFailedWrite(_World):
                 armed[0] = True
             return out
 
-        def faulting_once(*a, **kw):
+        def standing_fault(*a, **kw):                                        # every read from the arming on refuses: a fault that stands through the press
             if armed[0]:
-                armed[0] = False
                 return {}, "the read refused after the rows landed (stand-in)"
             return real_read(*a, **kw)
-        with mock.patch.object(km, "_owed_rewrite", rewrite_then_arm), mock.patch.object(km, "_cleared_ids_read", faulting_once):
+        with mock.patch.object(km, "_owed_rewrite", rewrite_then_arm), mock.patch.object(km, "_cleared_ids_read", standing_fault):
             sent = self._dispatch({"type": "undoClear", "seq": 15})
+        armed[0] = False                                                     # the fault lifts after the press
         errs = [m for m in sent if m.get("type") == "err"]
         fault = [m for m in errs if m.get("title") == "romp could not read its record of cleared cards"]
         self.assertEqual(len(fault), 1, "the read-fault account (with the arm gone the press went on over an empty read): %r" % sent)
@@ -1835,6 +1838,8 @@ class ActsUnderAFailedWrite(_World):
         reorder = [m for m in errs if m.get("ok") is True]
         self.assertEqual(len(reorder), 1, "the reorder frame (with its call gone the click's batch stood restored on the page): %r" % errs)
         self.assertEqual((reorder[0]["owedIds"], reorder[0]["itemIds"]), ([B + ":g1"], [A + ":g1"]), "saying the owed cards did not come back and naming the batch the click popped: %r" % reorder[0])
+        self.assertEqual({"batches", "owedBatch", "batchesTotal"} & set(reorder[0]), set(), "the reorder frame ships no stack under a standing fault (its own stack read refuses too): %r" % sorted(reorder[0]))
+        self.assertIn("the clears log", reorder[0]["text"], "and names the clears log as what must read again, as the account beside it does (before: the session's goals file): %r" % reorder[0]["text"])
         self.assertEqual(rows_b() - nb0, 1, "the owed row was appended once")
         self.assertTrue(self._flag(A, A + ":g1") and self._flag(B, B + ":g1"), "nothing restored this press")
         self.assertEqual([m for m in sent if m.get("type") == "undoAck"], [], "no ack")

@@ -42225,8 +42225,10 @@ def _gesture_store_refusal(client, gesture, skipped, ids=None, op="", seq=None):
                 # store" misnamed two sessions at one stamp, and a clears-log refusal, whose subject is the log)
                 _owed_now = [str(i) for i in (value.get("owed") or [])] if isinstance(value, dict) else []
                 _stores = {("notice:" + i.split(":", 2)[1]) if i.startswith("notice:") else i.rsplit(":", 1)[0] for i in _owed_now}   # the STORE keys: a notice archive against a goals file (the thirteenth executed review)
-                if skipped.get(LEDGER_KEY) or skipped.get(LEDGER_REJOURNAL_AGAIN_KEY):
-                    _subject = "the clears log"
+                if skipped.get(LEDGER_KEY) or skipped.get(LEDGER_REJOURNAL_AGAIN_KEY) or skipped.get(LEDGER_READ_KEY):
+                    _subject = "the clears log"       # the read-fault account beside this frame too (the first contributor's round-four comment on PR 2025,
+                    #                                  2026-09-22): filed from the post-lock arm, the frame promised the owed cards once the session's goals file
+                    #                                  could be read while the account beside it said the record of cleared cards could not be read
                 elif len(_stores) > 1:
                     _subject = "those stores"
                 elif any(k.startswith("notice:") for k in _stores):
