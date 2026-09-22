@@ -283,18 +283,26 @@ class GenerationBumpsUnderTheLock(unittest.TestCase):
 class NoteWriters(unittest.TestCase):
     """The standing advisory has exactly two writers, _router_set_note and _router_swap_note, each writing inside a
     `with _catalog_lock:` body (review round six: a guarded third in-line write that set the same value left every
-    behavioural test green, since they read the note's value, never its writer). Pinned on the kernel's whole AST:
-    every WRITE to the list — a subscript assignment (plain, augmented or annotated), a slice assignment, a `del` of
-    a subscript, or a mutating method call on the name (append, clear, extend, insert, pop, remove, __setitem__,
-    __delitem__) — anywhere in the module, module level included (review round seven widened it from assignment
-    statements inside functions). The name's own binding (`_router_status_note = [None]`) is the one Name assignment
-    and is not a write to the list."""
+    behavioural test green, since they read the note's value, never its writer). Pinned on the kernel's whole AST.
+
+    SCOPE, stated (review round eight): the walk sees writes THROUGH THE BARE NAME `_router_status_note`, anywhere in
+    the module, module level and class bodies included:
+      - a Subscript over the name in Store or Del context, whatever statement carries it (assignment plain, augmented,
+        annotated or slice; `del`; a `for`, `with … as` or comprehension target);
+      - a call of one of the list's mutating methods on the name (MUTATORS);
+      - a rebinding of the name itself (a Name in Store context) anywhere but its one module-level definition.
+    Outside it, by choice: an alias (`n = _router_status_note; n[0] = …`), a helper's parameter, operator.setitem,
+    list.__setitem__(_router_status_note, …), globals()[…]. Those are the shapes of code written to evade a pin, not of
+    a third writer added in good faith; the behavioural tests read the note's value and the reviewers execute the head.
+    A read of the note as another target's index (`other[_router_status_note[0]] = …`) is a Load and is NOT a write."""
 
     MUTATORS = ("append", "clear", "extend", "insert", "pop", "remove", "__setitem__", "__delitem__", "reverse", "sort")
+    NAME = "_router_status_note"
 
-    @staticmethod
-    def _writes(tree):
-        """(node, enclosing function name or None) for every write to _router_status_note's contents."""
+    @classmethod
+    def _writes(cls, tree):
+        """(node, enclosing function name or "<module>") for every write to the note's contents, keyed on the
+        Store/Del context of the Subscript, never on the statement's shape; plus every rebinding of the name."""
         parents = {}
         for node in ast.walk(tree):
             for child in ast.iter_child_nodes(node):
@@ -304,56 +312,80 @@ class NoteWriters(unittest.TestCase):
             while n in parents:
                 n = parents[n]
                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    return n
-            return None
+                    return n.name
+            return "<module>"
 
         def is_note(n):
-            return isinstance(n, ast.Name) and n.id == "_router_status_note"
+            return isinstance(n, ast.Name) and n.id == cls.NAME
         out = []
         for node in ast.walk(tree):
-            if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                for t in targets:
-                    for leaf in ast.walk(t):
-                        if isinstance(leaf, ast.Subscript) and is_note(leaf.value):
-                            out.append((node, enclosing(node)))
-            elif isinstance(node, ast.Delete):
-                for t in node.targets:
-                    if isinstance(t, ast.Subscript) and is_note(t.value):
-                        out.append((node, enclosing(node)))
-            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and is_note(node.func.value) \
-                    and node.func.attr in NoteWriters.MUTATORS:
+            if isinstance(node, ast.Subscript) and is_note(node.value) and isinstance(node.ctx, (ast.Store, ast.Del)):
                 out.append((node, enclosing(node)))
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and is_note(node.func.value) \
+                    and node.func.attr in cls.MUTATORS:
+                out.append((node, enclosing(node)))
+            elif isinstance(node, ast.Name) and node.id == cls.NAME and isinstance(node.ctx, ast.Store):
+                out.append((node, enclosing(node)))          # a rebinding; the module-level definition is one of these
         return out
 
     def test_every_write_to_the_note_sits_in_one_of_the_two_helpers_under_the_lock(self):
         src = open(os.path.join(os.path.dirname(HERE), "kernel", "kernel.py"), encoding="utf-8").read()
         tree = ast.parse(src)
         writes = self._writes(tree)
-        self.assertTrue(writes, "no write found: the walk is broken")
-        names = sorted({fn.name if fn is not None else "<module>" for _, fn in writes})
-        self.assertEqual(names, ["_router_set_note", "_router_swap_note"], names)
-        for node, fn in writes:
+        binds = [(n, f) for n, f in writes if isinstance(n, ast.Name)]
+        self.assertEqual([f for _, f in binds], ["<module>"], "the name is bound once, at module level, and never rebound")
+        content = [(n, f) for n, f in writes if not isinstance(n, ast.Name)]
+        self.assertTrue(content, "no write found: the walk is broken")
+        self.assertEqual(sorted({f for _, f in content}), ["_router_set_note", "_router_swap_note"])
+        fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+        for node, fname in content:
+            fn = fns[fname]
             locked = [w for w in ast.walk(fn) if isinstance(w, ast.With)
                       and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_catalog_lock" for i in w.items)]
-            self.assertTrue(any(node in ast.walk(w) for w in locked), "%s writes the note outside _catalog_lock" % fn.name)
+            self.assertTrue(any(node in ast.walk(w) for w in locked), "%s writes the note outside _catalog_lock" % fname)
 
-    def test_the_walk_sees_every_write_shape(self):
-        # the shapes round seven named as passing the narrower walk: each is found, module level and call form included
+    def test_the_walk_sees_every_shape_in_its_scope_and_no_read(self):
+        # every shape the scope names is planted, one per function, and found exactly there; the read-as-index is not
         planted = textwrap.dedent('''
             _router_status_note = [None]
-            _router_status_note[0] = "a"
-            def f():
-                _router_status_note.__setitem__(0, "b")
-            def g():
-                _router_status_note.clear(); _router_status_note.append("c")
-            def h():
-                del _router_status_note[0]
-            def k():
-                _router_status_note[:] = ["d"]
+            _router_status_note[0] = "module level"
+            def a_plain():   _router_status_note[0] = "x"
+            def a_aug():     _router_status_note[0] += "x"
+            def a_ann():     _router_status_note[0]: str = "x"
+            def a_slice():   _router_status_note[:] = ["x"]
+            def a_del():     del _router_status_note[0]
+            def a_for():
+                for _router_status_note[0] in ("x",): pass
+            def a_with(cm):
+                with cm as _router_status_note[0]: pass
+            def a_comp():    return [1 for _router_status_note[0] in ("x",)]
+            def m_append():  _router_status_note.append("x")
+            def m_clear():   _router_status_note.clear()
+            def m_extend():  _router_status_note.extend(["x"])
+            def m_insert():  _router_status_note.insert(0, "x")
+            def m_pop():     _router_status_note.pop()
+            def m_remove():  _router_status_note.remove("x")
+            def m_setitem(): _router_status_note.__setitem__(0, "x")
+            def m_delitem(): _router_status_note.__delitem__(0)
+            def m_reverse(): _router_status_note.reverse()
+            def m_sort():    _router_status_note.sort()
+            def r_global():
+                global _router_status_note
+                _router_status_note = ["x"]
+            def r_aug_global():
+                global _router_status_note
+                _router_status_note += ["x"]
+            def not_a_write(other):
+                other[_router_status_note[0]] = "read as an index"
+                return _router_status_note[0], len(_router_status_note), _router_status_note.index("x")
         ''')
-        found = sorted((fn.name if fn is not None else "<module>") for _, fn in self._writes(ast.parse(planted)))
-        self.assertEqual(found, ["<module>", "f", "g", "g", "h", "k"])
+        found = sorted(f for _, f in self._writes(ast.parse(planted)))
+        expected = sorted(["<module>", "<module>",   # the definition (a Name Store) and the module-level subscript write
+                           "a_plain", "a_aug", "a_ann", "a_slice", "a_del", "a_for", "a_with", "a_comp",
+                           "m_append", "m_clear", "m_extend", "m_insert", "m_pop", "m_remove", "m_setitem", "m_delitem",
+                           "m_reverse", "m_sort", "r_global", "r_aug_global"])
+        self.assertEqual(found, expected)
+        self.assertNotIn("not_a_write", found, "a Load of the note, as an index or an argument, is no write")
 
 
 class NothingKeysOnAVendor(unittest.TestCase):
@@ -438,8 +470,8 @@ class NothingKeysOnAVendor(unittest.TestCase):
 
     def test_the_token_rule_is_narrow(self):
         for s in ("gemini-", "gpt-", "gpt", "grok", "o3", "gpt5-", "llama.", "qwen3",
-                  "utf-8", "router-models", "claude"):   # tokens under the rule, unlisted: the first two are call arguments
-            self.assertTrue(_vendor_token(s), s)          # in the checked code, a bare "claude" appears in no checked function
+                  "utf-8", "router-models", "claude"):   # tokens under the rule, unlisted: "utf-8" and "router-models" are
+            self.assertTrue(_vendor_token(s), s)          # call arguments in the checked code, a bare "claude" is in none
         for s in ("", "_MODEL_VALUES", "<synthetic>", "Gemini-", "gpt 5", " (%s)", "romp_sdk_backend", "gemini--",
                   "5-astra", ".anthropic.com"):
             self.assertFalse(_vendor_token(s), s)
