@@ -72,6 +72,27 @@ PY
     grep -q "^/end$" <(head -1 "$TEST_DIR/req")
 }
 
+@test "romp end names how many waiting messages did not go through, and the file that keeps them" {
+    # the kernel's answer counts the messages the user typed that were still waiting when the session ended and
+    # came back as not delivered (`undelivered`, present only when nonzero, 2026-09-21): a caller with no chat pane
+    # open, often a peer session, read a plain ok while the message went nowhere. The line names the count and
+    # the file, never the text (the decoy key stands for any text a kernel's answer might carry), which would land
+    # in that session's transcript, and no path: a remote session's kernel answers verbatim and its file is on that
+    # machine, so a local path would name a file holding no such row. Exit 0, since the session did end.
+    start_fake_kernel '{"ok": true, "undelivered": 1, "text": "decoy typed words"}'
+    run "$ROMP_SCRIPT" end web
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"romp end: ok (web); 1 message still waiting for it did not go through"* ]]
+    [[ "$output" == *"kept in undelivered.jsonl under the state directory of the kernel that ran the session"* ]]
+    [[ "$output" != *"decoy typed words"* ]]
+    [[ "$output" != *" /"* && "$output" != *"(/"* ]]   # no absolute path anywhere in the line
+    kill "$SERVER_PID"; rm -f "$TEST_DIR/port"
+    start_fake_kernel '{"ok": true, "undelivered": 2}'
+    run "$ROMP_SCRIPT" end web
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"romp end: ok (web); 2 messages still waiting for it did not go through"* ]]
+}
+
 @test "romp end self resolves through ROMP_SID and defers to idle by default" {
     # a session closing ITSELF after its work (the user 2026-08-15): self = the spawn-frozen sid,
     # and the kernel kills at the turn's settle so the goodbye lands first
@@ -232,15 +253,18 @@ PY
 # --timeout was octal to (( )) and the timeout never fired; a remote response refuses --wait
 # honestly (the local /sessions never lists remote rows).
 
-start_wait_kernel() {   # $1 = POST response body; $2 = the poll script; $3 = the baseline read's notice; $4 = baseline reads to fail
+start_wait_kernel() {   # $1 = POST response body; $2 = the poll script; $3 = the baseline read's suffix; $4 = baseline reads to fail
     # The CLI reads /sessions once BEFORE its POST (the baseline, 2026-09-21) and polls it after. $2 scripts the polls
     # after the POST: comma-separated samples, each "q" (quiet) or "c" (compacting), with "A", "B", "R" or "T" appended
     # for the row's launch error (four notices: A the systemError end and B the notLoaded end, both marked a
     # compaction's end by noRetry as the kernel marks them; R the systemError end once more, A's words at a later
     # stamp, as a second compaction failing the same way leaves them (2026-09-21); T a turn's rejection, which carries
-    # no mark), the last sample repeating;
-    # the default "q,c,c,q" is the armed-only-after-quiet walk. $3 puts notice A on the baseline read ("A" = a notice
-    # from before this wait). $4 makes that many baseline reads answer 500 first (a kernel blip the CLI must retry).
+    # no mark), then optionally "/<n>" for the row's compactEnd, the backend's bracket-end record (the post-merge
+    # review, 2026-09-21): a count of n whose last end is clean, or "/<n>L" whose last end is loud with notice A's
+    # words (a sample without "/" is a row with no record: a Claude session, or a kernel from before the record); the
+    # last sample repeating; the default "q,c,c,q" is the armed-only-after-quiet walk. $3 is the baseline read's
+    # suffix in the same syntax ("A" = notice A from before this wait, "/0" = a record with no end yet). $4 makes that
+    # many baseline reads answer 500 first (a kernel blip the CLI must retry).
     python3 - "$1" "$TEST_DIR" "${2:-q,c,c,q}" "${3:-}" "${4:-0}" <<'PY' &
 import http.server, json, sys
 body, tdir, script, base, basefail = sys.argv[1].encode(), sys.argv[2], sys.argv[3].split(","), sys.argv[4], int(sys.argv[5])
@@ -267,9 +291,15 @@ class H(http.server.BaseHTTPRequestHandler):
             sample = script[min(state["polls"], len(script)) - 1]
         else:
             sample = "q" + base
-        rows = [{"id": "11111111-2222-3333-4444-555555555555", "name": "busy1",
-                 "compacting": sample[0] == "c", "launchError": NOTICES.get(sample[1:2])}]
-        b = json.dumps(rows).encode()
+        st, _, rec = sample.partition("/")
+        row = {"id": "11111111-2222-3333-4444-555555555555", "name": "busy1",
+               "compacting": st[0] == "c", "launchError": NOTICES.get(st[1:2])}
+        if rec:   # the end record: "<n>" a count whose last end is clean, "<n>L" one whose last end is loud with A's words
+            n, loud = int(rec.rstrip("L")), rec.endswith("L")
+            row["compactEnd"] = {"ends": n, "kind": ("loud" if loud else "clean") if n else "",
+                                 "text": NOTICES["A"]["text"] if loud else "",
+                                 "at": (NOTICES["A"]["at"] if loud else 1781100005.5) if n else None}
+        b = json.dumps([row]).encode()
         self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers()
         self.wfile.write(b)
     def log_message(self, *a):
@@ -441,6 +471,76 @@ NOTICE_T="codex turn/start rejected"
     [[ "$output" == *"queued for busy1"* ]]
     [[ "$output" == *"done — busy1 compacted"* ]]
     [[ "$output" != *"can't judge this compaction from here"* ]]
+    [[ "$output" != *"did not compact"* ]]
+}
+
+# The row's end record (the post-merge review of the wait, 2026-09-21). Every accepted turn on the Codex backend clears the
+# row's launchError, and a message parked behind the compaction is delivered at the loud end's poke, so the notice the cases
+# above judge was erased within milliseconds of a failed compaction, before the CLI's next poll, which read quiet with no
+# notice and printed done over an uncompacted thread. The backend now records every end of its compaction bracket (a
+# counter, the last end's kind, words and stamp: compactEnd on the row), which no turn erases, and the wait judges that
+# record when the row carries it: done when the count advanced past its baseline with a clean last end, exit 1 with the
+# end's words when the last end is loud. The bit and the notice still judge a row without the record (the cases above).
+@test "romp compact --wait exits 1 with the end's words when the loud end's notice was erased before the poll: the record is judged" {
+    # compacting, then quiet with NO notice (the parked message's accepted turn cleared it) and the record advanced, loud:
+    # the notice judgment reads nothing here, and the bit judgment read done
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/0,c/0,q/1L' '/0'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"compacting busy1 now"* ]]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_A"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
+@test "romp compact --wait reports done on the record's clean end, whether or not it caught the compacting sample" {
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/0,q/1' '/0'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 10
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"done — busy1 compacted"* ]]
+    [[ "$output" != *"did not compact"* ]]
+    [[ "$output" != *"didn't see the compaction start"* ]]
+}
+
+@test "romp compact --wait does not read the bit falling as done when the row carries a record whose count did not move" {
+    # every end advances the count: a bit that fell with the count unmoved is an end the kernel has not recorded, never
+    # a compaction. A kernel restarted mid-compaction from a baseline of zero has exactly this shape (the restarted kernel
+    # serves zero again, the same as the baseline, so the wait cannot tell it from the baseline); the timeout names it
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/0,c/0,q/0' '/0'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 6
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"the compaction's end was never recorded (a kernel restart mid-compaction can do this)"* ]]
+    [[ "$output" != *"still compacting"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
+@test "romp compact --wait on a QUEUED compaction baselines the record's count from the arming sample: the prior compaction's loud end is not ours" {
+    # the prior compaction ends loudly (count 4, loud, notice A) before the arming sample; ours then runs and completes
+    # (count 5, clean, the notice cleared by a turn). Judged against the read before the request (count 3), the prior
+    # compaction's loud end would be new and exit 1
+    start_wait_kernel '{"ok": true, "queued": true}' 'c/3,qA/4L,cA/4,q/5' '/3'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"queued for busy1"* ]]
+    [[ "$output" == *"done — busy1 compacted"* ]]
+    [[ "$output" != *"did not compact"* ]]
+}
+
+@test "romp compact --wait on a QUEUED compaction exits 1 with the end's words when the record's last end since the arming sample is loud" {
+    start_wait_kernel '{"ok": true, "queued": true}' 'q/3,c/3,q/4L' '/3'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"busy1 did not compact: $NOTICE_A"* ]]
+    [[ "$output" != *"busy1 compacted"* ]]
+}
+
+@test "romp compact --wait reads a count below its baseline as a kernel restart and judges the rest of the wait without the record" {
+    # the kernel restarted after the compacting sample (its in-memory count back to 1, below the baseline of 3); ours
+    # was seen compacting and the bit then fell: the wait tolerates the blip as it always has, on the bit alone, rather
+    # than holding out for a count the restarted kernel can no longer reach
+    start_wait_kernel '{"ok": true, "queued": false}' 'q/3,c/3,q/1' '/3'
+    run "$ROMP_SCRIPT" compact busy1 --wait --timeout 30
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"done — busy1 compacted"* ]]
     [[ "$output" != *"did not compact"* ]]
 }
 

@@ -1230,9 +1230,10 @@ _PERF_STATS = _PerfStats()
 
 # Road B for #1735: the freeze controller and the pusher's idle-boundary tick. The controller keeps the loaded
 # decoded heap out of the cycle collector's walk (a warm full collection over 5.6M loaded objects fell from
-# 2.83 s to 0.1 ms once frozen; plans/gc-full-collection-pause.md); it reconciles at the idle boundary, keyed on
-# the record cache's load and release counters, so the reconcile's own collection pause is paid with no browser
-# waiting. Default on; ROMP_GC_FREEZE=off turns it off for a measurement.
+# 2.83 s to 0.1 ms once frozen; plans/gc-full-collection-pause.md); it reconciles at the idle boundary. A LOAD
+# fold-in keys on the record cache's insert counter; a RELEASE reclaim is owed when an ended session, registered
+# by weakref at its pop, is observed still alive with its worker thread finished (a surviving cycle), or by a
+# bounded fold-in backstop. The reconcile's pause is paid with no browser waiting. Default on; ROMP_GC_FREEZE=off.
 _GC_FREEZE_ERRORS = [0]
 _GC_FREEZE_SAID = [False]
 _GC_FREEZE_LOAD_TREES, _gc_freeze_bad_knob = gcf.load_trees_from_env()   # parsed with a fallback, never a bare int() at import (#1735 high)
@@ -1247,10 +1248,9 @@ if _gc_freeze_bad_knob is not None:     # a bad ROMP_GC_FREEZE_LOAD_TREES fell b
 
 
 def _gc_freeze_tick(idle, first):
-    """The pusher's idle-boundary call (the reconcile logic is gcf.pusher_tick, pinned in-process): reconcile the
-    frozen set with the loaded set when the record cache's counters say a material load or a release happened since
-    the last freeze. Cheap when nothing is due. A failure never ends the pusher: it is counted for /perf and said
-    once on stderr."""
+    """The pusher's idle-boundary call (the reconcile logic is gcf.pusher_tick, pinned in-process): fold in a
+    material load (the record cache's insert counter), reclaim when an ended session is observed cyclic or the
+    backstop fires. Cheap when nothing is due. A failure never ends the pusher: counted for /perf, said once."""
     def on_error(e):
         _GC_FREEZE_ERRORS[0] += 1
         if not _GC_FREEZE_SAID[0]:
@@ -14771,6 +14771,21 @@ def _launch_error(sid):
         return None
 
 
+def _compact_end(sid):
+    """The backend's record of the session's compaction ends, or None: {ends, kind, text, at}
+    (SessionBackend.compact_end, 2026-09-21; the Codex bracket's end counter with the last end's kind, words
+    and stamp), which the next accepted turn does not erase, where it clears the launch error. None from a
+    backend that keeps none (the SDK's compaction path), for a record that is not a dict, and, as _launch_error,
+    on a backend hiccup."""
+    try:
+        be = Sessions.backend_for(str(sid))
+        fn = getattr(be, "compact_end", None) if be else None
+        rec = fn(str(sid)) if callable(fn) else None
+        return rec if isinstance(rec, dict) else None
+    except Exception:
+        return None
+
+
 def _backend_queued(sid):
     """True if the session's backend holds queued-but-unstarted USER turns (the SDK keeps them in _pending;
     the Codex backend in its own list). Composer sends now go straight to that queue
@@ -18818,8 +18833,9 @@ def _sdk_locked():
             # silently eating every message (the user 2026-07-28).
             _sdk_import_notice()
             sbmod = load_source("romp_sdk_backend", HERE / "sdk_backend.py")
-            if hasattr(sbmod, "set_release_note"):     # #1735: a backend session end (a cyclic owner) notes a release; wired
-                sbmod.set_release_note(gcf.note_release)   #  when the backend loads (a test stub of the module carries no note plumbing)
+            if hasattr(sbmod, "set_ended_note"):       # #1735: each session-end pop registers the ended session with the freeze
+                sbmod.set_ended_note(_GC_FREEZE.note_ended)   #  controller, which measures cyclicity at the idle tick; wired when the
+                #                                                backend loads (a test stub of the module carries no note plumbing)
             # The backend claims the login tokens out of os.environ once (startup_auth_env), and the judges
             # read that same stash through this wire for their login-billed children. No key rides here:
             # romp holds none (credentials.py, 2026-09-08), and every child resolves Claude Code's own
@@ -28219,14 +28235,18 @@ def _sessions_listing_key(live_map, names):
     on the listing's pair memo and served to the row (_listing_pair_scoped): the row read the bit fresh while its notice
     came from the key's read, so a loud end landing between the two built a row reading not compacting with no notice, a
     clean end's shape, whenever another input moved in the same cycle or on the first cycle, and `romp compact --wait`
-    printed done over an uncompacted thread (the post-merge review of the native compaction, 2026-09-21). A field whose
-    input is not here cannot be added without adding the input."""
+    printed done over an uncompacted thread (the post-merge review of the native compaction, 2026-09-21). And each row's
+    compaction end record (_compact_end_key, read after the pair through the cycle's memo, the row takes the same read:
+    the backend's bracket-end counter with the last end's kind, words and stamp, which the next accepted turn does not
+    erase; in the race `romp compact --wait` judges it for, every other input stands still, so outside the key the
+    pre-failure row would be served until something else moved, 2026-09-21). A field whose input is not here cannot be
+    added without adding the input."""
     try:
         paths = {s["sid"]: s["path"] for s in _sessions(time.time())}   # the cycle's own sweep (memoized on the scope): the
     except Exception:                                                   #  transcript the compacting read is disproved against
         paths = {}
     rows = tuple(sorted((str(sid), (m or {}).get("state"), (m or {}).get("since"), (m or {}).get("backend"))
-                        + _listing_pair_key(sid, m, paths.get(sid))
+                        + _listing_pair_key(sid, m, paths.get(sid)) + (_compact_end_key(sid),)
                         for sid, m in (live_map or {}).items()))
     try:
         with os.scandir(WORKING_DIR) as it:
@@ -28296,6 +28316,33 @@ def _listing_pair_key(sid, tm, path):
     """The pair's two key components: the compacting bit, and the launch error's identity (_launch_error_key)."""
     compacting, le = _listing_pair_scoped(sid, tm, path)
     return compacting, _launch_error_key(le)
+
+
+def _compact_end_scoped(sid):
+    """_compact_end through the cycle's memo (_live_scope.compact_end_records, the _launch_error_scoped idiom,
+    2026-09-21): one backend read per session per cycle, shared by the listing's key and its rows; fresh outside a
+    cycle."""
+    sid = str(sid)
+    memo = getattr(_live_scope, "compact_end_records", None)
+    if memo is None:
+        return _compact_end(sid)
+    if sid not in memo:
+        memo[sid] = _compact_end(sid)
+    return memo[sid]
+
+
+def _compact_end_key(sid):
+    """The hashable identity of a row's compaction end record for the listing's key (2026-09-21): the count with the
+    last end's kind, words and stamp, None when the backend keeps none. A key input on its own, because in the race the
+    record exists for (a loud end whose notice the next accepted turn erased) the row's other inputs stand still, so
+    outside the key the row built before the end would be served until something else moved, and a wait reading it
+    would never see the end. Read after the row's pair (_listing_pair_key) in the key's tuple: an end landing between
+    the pair's reads and this one leaves the record advanced beside a pair from before it, and the wait judges the
+    record first."""
+    rec = _compact_end_scoped(sid)
+    if not isinstance(rec, dict):
+        return None
+    return (int(rec.get("ends") or 0), str(rec.get("kind") or ""), str(rec.get("text") or ""), str(rec.get("at") or ""))
 
 
 def _sessions_listing_miss(prev, cur):
@@ -28436,12 +28483,20 @@ def _session_listing_row(sid, meta, notes, path):
                 # read, compacting then notice, taken at the listing's key and served here (_listing_pair_scoped): read
                 # apart, a loud end between them gave this row a clean end's shape (2026-09-21)
                 "launchError": launch_error,
+                # compactEnd: the backend's record of its compaction bracket's ends ({ends, kind, text, at},
+                # SessionBackend.compact_end; None from a backend that keeps none), the field `romp compact --wait`
+                # judges: the launch error above is cleared by the next accepted turn, and a message parked behind the
+                # compaction drains at a loud end's poke, so that notice was gone within milliseconds, before the
+                # wait's next poll, which read quiet with no notice and printed done over an uncompacted thread
+                # (the post-merge review of the wait, 2026-09-21). Through the cycle's memo (_compact_end_scoped): the
+                # listing's key read it already, after the pair
+                "compactEnd": _compact_end_scoped(sid),
                 "working": notes.get(sid, ""), "backend": meta.get("backend", "")}
     except Exception:
         sys.stderr.write("session row for %s failed (kept minimal): %s\n"
                          % (sid, traceback.format_exc()))
         return {"id": sid, "name": sid[:8], "state": meta.get("state", ""), "dir": "",
-                "bg": "", "fg": "", "lastSid": sid, "compacting": False, "launchError": None,
+                "bg": "", "fg": "", "lastSid": sid, "compacting": False, "launchError": None, "compactEnd": None,
                 "working": "", "backend": meta.get("backend", "")}
 
 
@@ -59971,6 +60026,8 @@ def _pusher_cycle():
         #                                       one per session; kept as a backstop for a second cycle reader outside
         #                                       the pair, which does not exist yet (the post-merge review of the listing
         #                                       pairing, 2026-09-22)
+        _live_scope.compact_end_records = {}    # …and the cycle's compaction-end-record memo (_compact_end_scoped), read
+        #                                       by the listing's key and its rows (2026-09-21)
         _live_scope.subagent_trees = {}         # …and the cycle's subagents-tree samples (_subagent_tree): one sample per
         #                                       root per cycle for every tree that exists, validated or walked by the
         #                                       first reader and served to every reader after it: the chat builds'
@@ -59997,6 +60054,7 @@ def _pusher_cycle():
         _live_scope.sessions = None
         _live_scope.auth = None
         _live_scope.launch_errors = None
+        _live_scope.compact_end_records = None
         _live_scope.subagent_trees = None
         _live_scope.msgsum = None
         _cycle_idle = (_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle
@@ -68521,11 +68579,14 @@ class Handler(BaseHTTPRequestHandler):
                 # The push worker's word on one push (the ledger block above _push_ledger): {pid, stage: 'shown' |
                 # 'clicked', v}. AUTHENTICATED BY THE PID ALONE, ahead of _authorize on purpose: a worker's fetch
                 # carries no token header, and the pid is 128 unguessable bits the kernel itself issued, handed only
-                # to the device the push went to, good for two timestamps on that one row and nothing else. An
-                # unknown pid is a 404 and a line, a bad body buys no state, and the body is capped far below
-                # _POST_MAX_BYTES before a byte is read, since no token gates the read here. A 'shown' ack also
-                # SUPERSEDES the older unsettled, untapped rows for the same session on the same device
-                # (_push_ledger_supersede: the per-session tag replaced their notifications), one line each.
+                # to the device the push went to. What a valid pid buys (the contributor's read of PR 1953): the row's
+                # shown or tapped time, the FIRST stamp standing, and the worker's build recorded on the row on every
+                # report; on a 'shown' report the older unsettled, untapped rows for the same session on the same device
+                # marked superseded (_push_ledger_supersede: the per-session tag replaced their notifications), one line
+                # each; and the request's origin recorded on the device's subscription when none is on file yet
+                # (_push_backfill_origin: the next declarative push's navigate URL). An unknown pid is a 404 and a
+                # line, a bad body buys no state, and the body is capped far below _POST_MAX_BYTES before a byte is
+                # read, since no token gates the read here.
                 _cl = str(self.headers.get("Content-Length") or "0").strip()
                 if not re.fullmatch(r"[0-9]{1,20}", _cl) or int(_cl) > _PUSH_ACK_MAX_BYTES:
                     self.close_connection = True
@@ -69038,6 +69099,7 @@ class Handler(BaseHTTPRequestHandler):
                     # its answer verbatim — a refusal, a plain ok, or an ok with `deferred` — never rewritten
                     return self._send(200, json.dumps(res), "application/json")
                 be = Sessions.backend_for(sid)
+                ans = {"ok": True}
                 if u.path == "/interrupt":
                     # the WS op's gate: a stop the backend refused (nothing in flight) paints nothing
                     if be.interrupt(sid) is not False:          # Esc/stop AND settle idle (in the backend)
@@ -69065,13 +69127,20 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True, "deferred": True}), "application/json")
                 else:
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
-                    _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one pane that renders it, a chat pane first (2026-09-21)
+                    # The hand-back's count rides the answer (review find, 2026-09-21): this route answered ok whatever
+                    # the hand-back did, so a shell caller of `romp end` or POST /end, often a peer session with no chat
+                    # pane open, read a plain ok while a message the user had typed went to a not-delivered frame that
+                    # with no pane connected reaches nobody. `undelivered` is present only when nonzero, the
+                    # `deferred` and `queued` idiom, so an end with nothing parked keeps its plain ok.
+                    undelivered = _drop_parked_on_end(sid)     # the WS arm's cancel of the parked queue; no socket here, so the hand-back goes to one pane that renders it, a chat pane first (2026-09-21)
+                    if undelivered:
+                        ans["undelivered"] = undelivered
                     be.kill(sid)
                     _record_death(sid, int(time.time()), "kill")
                     _comment_kill_all(sid, be)   # its comment threads must not outlive it (the WS endSession twin)
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_soon()   # ack-fast (the 2026-08-30 wedge: inline fleet builds piled 53 POST handlers; the pusher coalesces)
-                return self._send(200, json.dumps({"ok": True}), "application/json")
+                return self._send(200, json.dumps(ans), "application/json")
             if u.path.startswith("/remote/"):
                 # an attached host's own /new or /send, relayed: an action that LANDS on that machine (a session
                 # spawned THERE, its briefing sent before this kernel's poll has learned its sid). The local auth

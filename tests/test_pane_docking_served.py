@@ -344,6 +344,19 @@ async function drag(page, x0, y0, waypoints, { release = true, escape = false } 
     await frame(page);
     return { tab: pt, started, zones, outline, feedNow, landed, moved, rects: await rectsOf(page), leaves: await leavesOf(page), store: await store(page), zonesAfter: await page.evaluate(() => document.querySelectorAll(".pd-tabzone").length) };
   })();
+  o.tabOverOwnPane = await (async () => {
+    // the api session alone in column 2, its tab dragged over its OWN pane's bottom half: planTabDrop refuses (a lone column on its
+    // own edge), and the outline previews that refusal (the 1900 read: the tab outline never previewed one); the release changes nothing
+    const pt = await tabCentre("f-chat-2", cfg.api); if (!pt) return { tab: null };
+    const started = await startNativeDrag(pt);
+    const own = (await rectsOf(page))["chat-pane-2"]; if (!own) return { tab: pt, started, own: null };
+    const before = await leavesOf(page);
+    await page.mouse.move(own.x + own.w / 2, own.y + own.h * 0.85, { steps: 10 }); await frame(page);
+    const outline = await outlineRect(page);
+    await page.mouse.up(); await frame(page); await frame(page);
+    await page.waitForFunction(() => document.querySelectorAll(".pd-tabzone").length === 0, null, { timeout: 10000 }).catch(() => {});
+    return { tab: pt, started, own, before, outline, after: await leavesOf(page), tabStill: await tabIn("f-chat-2", cfg.api) };
+  })();
   o.tabToStrip = await (async () => {
     const pt = await tabCentre("f-chat-2", cfg.api); if (!pt) return { tab: null };
     const started = await startNativeDrag(pt);
@@ -764,6 +777,16 @@ class ServedPaneDocking(unittest.TestCase):
         lv = t["leaves"]; self.assertEqual(lv.index("chat-pane-2"), lv.index("feed-pane") + 1, "right after the feed in the tree: %r" % lv)
         self._frames_fill(t["rects"], "after the tab drop")
         self.assertEqual(t["zonesAfter"], 0, "the hit areas go with the gesture")
+
+    def test_12b_a_tab_dragged_over_its_own_lone_pane_previews_the_refusal_and_a_release_changes_nothing(self):
+        o = self._on()
+        t = o["tabOverOwnPane"]
+        self.assertTrue(t.get("tab") and t.get("started") and t.get("own"), "the lone column's tab was found and the real drag started over its own pane: %r" % {k: t.get(k) for k in ("tab", "started", "own")})
+        ol = t["outline"]
+        self.assertTrue(ol and ol["on"], "the outline shows over the pane: %r" % ol)
+        self.assertTrue(ol["refused"], "and previews the refusal (a lone column on its own edge), as the pane drag's outline does over a strip: %r" % ol)
+        self.assertEqual(t["after"], t["before"], "the release changes nothing: %r" % t["after"])
+        self.assertTrue(t["tabStill"], "the tab stays in its column")
 
     def test_13_a_tab_dragged_onto_a_chat_strip_joins_it_and_the_emptied_pane_closes(self):
         o = self._on()

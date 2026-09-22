@@ -272,6 +272,73 @@ class OneListingPerChange(_Listing):
                          "compacting read first: the end is read with the bit still up, a loud end to the wait")
         self.assertEqual(self._stats()[0]["built"], 2)
 
+    def _loud_end_landing_on_the_first_read(self):
+        """The two seams stubbed as the order case above stubs them: SID mid-compaction with no notice, and the Codex loud
+        end (the compacting bit down and the launch-error notice up, written together) landing on SID's first seam read
+        after the returned list is armed, once, since the seams call the hook after every read for SID and a second landing
+        would say nothing about the order (2026-09-22). Returns (landed, notice, memos): append "armed" to `landed` right
+        before the read under test, and it reads ["landed"] once the end has landed; `memos` records the thread's pair memo
+        as it stood at that read, where the memo-less branch is decided (a memo checked absent after the build alone says
+        only that none was LEFT open: a build that opened one around itself and closed it in a finally would pass that
+        check while the branch this pin is about is no longer the one taken, the review of this pin, 2026-09-22)."""
+        comp, errs, landed, memos = {SID: True, SID2: False}, {}, [], []
+        notice = {"text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was",
+                  "at": NOW + 1.5, "limit": False, "noRetry": True}
+
+        def land():
+            if landed == ["armed"]:
+                memo = getattr(km._live_scope, "listing_pairs", None)
+                memos.append(None if memo is None else dict(memo))    # as it stood at this read, not as it is filled later
+                landed[:] = ["landed"]; comp[SID] = False; errs[SID] = notice
+        self._compaction_seams(comp, errs, land=land)
+        return landed, notice, memos
+
+    def test_a_requests_own_row_build_with_no_refresh_open_reads_the_pair_compacting_then_notice(self):
+        """The request path: a request thread's own build (the serve before the first cycle, the fault build after a
+        cycle's build raised, GET /sessions/by-fsid) runs with no pair memo open on its thread, so the pair reader takes
+        its memo-less branch and reads the two seams fresh, compacting then notice. The order case above arms its hook
+        inside the listing's key, the refresh path, and pinned nothing here: with the memo-less branch rewritten to read
+        the launch error before the compacting bit, this module and every sibling that stubs the two seams stayed green
+        (the post-merge review of the listing pairing, 2026-09-22). Under that rewrite a loud end landing between the two
+        reads gives a request's row (False, None), the clean end's shape, and `romp compact --wait` polling the route
+        before the first cycle or while the kept listing is stale from a fault prints done over an uncompacted thread.
+        The pin: the memo asserted absent before one direct row build on this thread and at the read the end lands on,
+        the row's name and dir checked as the head's before its pair is read (the builder's catch-all fallback row, which
+        any other field's raise produces, carries (False, None) too, so a red on the pair alone could not tell the order
+        from a raise elsewhere), then (True, notice), and no memo left open after."""
+        landed, notice, memos = self._loud_end_landing_on_the_first_read()
+        self.assertIsNone(getattr(km._live_scope, "listing_pairs", None), "no refresh is open on this thread: the memo-less branch")
+        landed.append("armed")
+        row = km._session_listing_row(SID, self.row[SID], {}, None)
+        self.assertEqual(landed, ["landed"], "the end landed between the pair's two reads, inside the one row build")
+        self.assertEqual((row["name"], row["dir"]), ("web", str(self.cdir)),
+                         "the head's row, not the builder's catch-all fallback (the sid's first eight characters, no dir), whose "
+                         "pair is (False, None) as well: a red on the pair below is the read order, not a raise elsewhere")
+        self.assertEqual((row["compacting"], row["launchError"]), (True, notice),
+                         "compacting read first on the request path too: the end is read with the bit still up, a loud end to the wait")
+        self.assertEqual(memos, [None], "no pair memo at the read the end landed on: the memo-less branch, not one the build opened around itself")
+        self.assertIsNone(getattr(km._live_scope, "listing_pairs", None), "and none left open after the build")
+
+    def test_the_by_fsid_route_reaches_the_same_memo_less_branch_and_reads_the_pair_in_the_same_order(self):
+        """GET /sessions/by-fsid builds the one row it serves through the same row builder on the request thread, with no
+        refresh open: the same memo-less branch, pinned on its own route since the route's other reads (the live map, the
+        registry's lastSid, the transcript path) come before the row build and touch neither seam; the same guards as the
+        direct build's, the memo recorded at the landing read and the row checked as the head's before its pair
+        (2026-09-22)."""
+        landed, notice, memos = self._loud_end_landing_on_the_first_read()
+        self.assertIsNone(getattr(km._live_scope, "listing_pairs", None), "no refresh is open on this thread")
+        landed.append("armed")
+        code, row = km._session_by_fsid(SID)
+        self.assertEqual(code, 200, row)
+        self.assertEqual(row["id"], SID)
+        self.assertEqual(landed, ["landed"], "the end landed between the pair's two reads, inside the route's one row build")
+        self.assertEqual((row["name"], row["dir"]), ("web", str(self.cdir)),
+                         "the head's row, not the builder's catch-all fallback: a red on the pair below is the read order")
+        self.assertEqual((row["compacting"], row["launchError"]), (True, notice),
+                         "the by-fsid row reads the pair compacting then notice, as the listing's rows do")
+        self.assertEqual(memos, [None], "no pair memo at the read the end landed on: the route reached the memo-less branch")
+        self.assertIsNone(getattr(km._live_scope, "listing_pairs", None), "and none left open after the route's build")
+
     def test_the_compacting_bit_alone_moving_rebuilds_once_each_way_and_the_row_carries_it(self):
         """The compacting bit is a key input in its own right (the design's compacting edge): a compaction starting and
         clearing with nothing else moving rebuilds the listing once each way and the served row carries the bit, so the
@@ -290,6 +357,66 @@ class OneListingPerChange(_Listing):
         self.assertFalse(next(r for r in self._body() if r["id"] == SID)["compacting"], "and the served row reads not compacting")
         self._cycle()
         self.assertEqual(self._stats()[0]["built"], n0 + 2, "a quiet cycle builds nothing")
+
+    def test_a_rows_compaction_end_record_rides_the_listing_and_moves_the_key_on_its_own(self):
+        # The record `romp compact --wait` judges (the post-merge review of the wait, 2026-09-21): the backend's
+        # bracket-end counter with the last end's kind, words and stamp, which the next accepted turn does not erase (it
+        # clears launchError, within milliseconds when a message parked behind the compaction drains at a loud end's
+        # poke). The row carries it whole, and it is a key input ON ITS OWN: in that race every other input stands still
+        # (the state back to waiting, compacting False, launchError None again), so a record outside the key would leave
+        # the row built before the end served until something else moved, and a wait reading it would never see the end.
+        recs, reads = {}, []
+        saved = km._compact_end
+        km._compact_end = lambda sid: (reads.append(str(sid)), recs.get(str(sid)))[1]
+        self.addCleanup(setattr, km, "_compact_end", saved)
+        self._cycle()
+        row = next(r for r in self._body() if r["id"] == SID)
+        self.assertIn("compactEnd", row, "the field is there")
+        self.assertIsNone(row["compactEnd"], "a backend that keeps no record: empty, never absent")
+        self.assertEqual(reads.count(SID), 1, "one backend read per session per cycle: the key and the row share the memo (%r)" % reads)
+        recs[SID] = {"ends": 0, "kind": "", "text": "", "at": None}                       # a Codex row before any end
+        self._cycle()
+        self.assertEqual(next(r for r in self._body() if r["id"] == SID)["compactEnd"], recs[SID], "the record, whole")
+        self.assertEqual(self._stats()[0]["built"], 2, "the record is a key input: one rebuild")
+        loud = {"ends": 1, "kind": "loud", "at": NOW + 1.5,
+                "text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was"}
+        recs[SID] = loud                     # the loud end with its notice already erased: launchError None, compacting False, state waiting
+        self._cycle()
+        self.assertEqual(next(r for r in self._body() if r["id"] == SID)["compactEnd"], loud)
+        self.assertEqual(self._stats()[0]["built"], 3, "the end alone moved the key, nothing else did")
+        self._cycle()
+        self.assertEqual(self._stats()[0]["built"], 3, "and a quiet cycle builds nothing")
+        recs[SID] = {"ends": 2, "kind": "clean", "text": "", "at": NOW + 9.0}
+        self._cycle()
+        self.assertEqual(next(r for r in self._body() if r["id"] == SID)["compactEnd"]["kind"], "clean")
+        self.assertEqual(self._stats()[0]["built"], 4)
+        self.assertEqual(reads.count(SID), 5, "still one read per cycle (%r)" % reads)
+
+    def test_the_rows_compaction_end_record_is_read_from_the_owning_backend(self):
+        # The live path (the post-merge review, 2026-09-21): the kernel's own read of the backend's compact_end, not a
+        # stub of it. SID's backend exposes the method; SID2's has none (the SDK backend's shape, which inherits the
+        # contract's None default; a backend from before the method reads the same way); and a record that is not a
+        # dict reads as None, never as a row that raises.
+        rec = {"ends": 1, "kind": "loud", "at": NOW,
+               "text": "Codex could not compact this conversation (it reported systemError); the conversation continues as it was"}
+        holder = {"rec": rec}
+
+        class WithRecord:
+            def compact_end(self, sid):
+                return holder["rec"] if str(sid) == SID else None
+        saved = km.Sessions.backend_for
+        km.Sessions.backend_for = staticmethod(lambda sid: WithRecord() if str(sid) == SID else object())
+        self.addCleanup(setattr, km.Sessions, "backend_for", saved)
+        self._cycle()
+        rows = {r["id"]: r for r in self._body()}
+        self.assertEqual(rows[SID]["compactEnd"], rec, "the backend's record, read live and served whole")
+        self.assertIsNone(rows[SID2]["compactEnd"], "a backend without the method: None, and the row is still built")
+        self.assertEqual(rows[SID2]["name"], "api", "the row is the full row, not the minimal one a raise leaves")
+        holder["rec"] = ["not", "a", "record"]
+        self._cycle()
+        rows = {r["id"]: r for r in self._body()}
+        self.assertIsNone(rows[SID]["compactEnd"], "a record that is not a dict reads as none")
+        self.assertEqual(rows[SID]["name"], "web")
 
     def test_a_start_a_rename_and_a_death_reach_the_roster_within_one_cycle(self):
         """The postal bus's roster (list_agents, the send's liveness check) reads this route: a session that started is

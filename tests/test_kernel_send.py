@@ -91,10 +91,11 @@ class SessionList(unittest.TestCase):
                                          "bg": "#112233", "fg": "#ffffff", "lastSid": "sid-c",
                                          "compacting": False,          # romp compact --wait polls this
                                          "launchError": None,          # ...beside the backend's notice: a loud end drops the bit (2026-09-21)
+                                         "compactEnd": None,           # ...and the bracket's end record, which a turn does not erase (2026-09-21)
                                          "working": "owns feed.ts", "backend": "codex"})
         self.assertEqual(rows["sid-s"], {"id": "sid-s", "name": "beta", "state": "waiting", "dir": "/work/b",
                                          "bg": "blue", "fg": "white", "lastSid": "sid-s",
-                                         "compacting": False, "launchError": None,
+                                         "compacting": False, "launchError": None, "compactEnd": None,
                                          "working": "", "backend": "sdk"})
 
     def test_one_rows_helper_exception_never_hides_the_session(self):

@@ -1636,7 +1636,10 @@ class RevealRoute(unittest.TestCase):
 class PushLedgerRoutes(unittest.TestCase):
     """The ledger's routes over the real handler. POST /push/ack is authenticated by the PID ALONE — no token, no
     cookie: a worker's fetch carries no token header (the ledger block above _push_ledger in the kernel). The pid is
-    128 unguessable bits the kernel issued, good for two timestamps on one row and nothing else. The page's routes
+    128 unguessable bits the kernel issued; a valid one stamps the row's shown or tapped time (the first stamp stands)
+    and records the worker's build, a shown report marks the older unsettled, untapped pushes for the same session on
+    that device superseded, and the request's origin is recorded on the device's subscription when none is on file;
+    an unknown pid is a 404. The page's routes
     — GET /push/pending, POST /push/landed | /push/superseded | /push/dropped — ride the token like every page fetch."""
     EP = "https://push.example.net/send/phone-a"
 
