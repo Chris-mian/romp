@@ -35,7 +35,9 @@ SIDS = ["11111111-2222-3333-4444-eeeeeeeeee%02d" % i for i in (1, 2)]
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 """A fake `claude -p` for the harness tests: answers by the judge named in the system prompt and by the candidate marker; with
-JE_TEST_PROSE set, a candidate-marked prompt gets a sentence of prose no parser accepts. Invented text only; a fixed cost."""
+JE_TEST_PROSE set, a candidate-marked prompt gets a sentence of prose no parser accepts. Invented text only; a fixed cost.
+It does NOT exercise authentication (it never resolves a key): the arm's real-auth gate is preflight_auth, pinned separately;
+this fake always answers as logged in, so it stands in for the judges' shapes, never for the credential path."""
 import json, os, re, sys
 args = sys.argv[1:]
 if args and args[0] in ("-v", "--version"):
@@ -146,6 +148,7 @@ class Harness(unittest.TestCase):
         (self.state / "session-hosts").write_text("off")
         self.cwd = os.path.join(self.td, "proj"); os.makedirs(self.cwd)
         self.pdir = self.claude / "projects" / self.je.munge(self.cwd); self.pdir.mkdir(parents=True)
+        (self.claude / "settings.json").write_text(json.dumps({"apiKeyHelper": "echo synthetic-key"}))   # so corpora carry the helper the arm preflight requires (the fake does not exercise auth)
         self.texts = []
         for k, sid in enumerate(SIDS):
             recs, t, parent = [], T0 + k * 10000, None
@@ -213,6 +216,10 @@ class Harness(unittest.TestCase):
         # of every repository by refuse_inside_repo, and the shared REPORT carries counts only (pinned in the report test)
         written = [str(p.relative_to(dest)) for p in Path(dest).rglob("*") if p.is_file()]
         self.assertTrue(all(w.startswith(("claude/", "state/")) or w == "manifest.json" for w in written), written)
+        # the corpus carries ONLY the apiKeyHelper into its claude root (so the arm can authenticate), never the rest of the
+        # live settings.json (personal settings and paths)
+        self.assertEqual(json.loads(Path(dest, "claude", "settings.json").read_text()), {"apiKeyHelper": "echo synthetic-key"},
+                         "only the apiKeyHelper entry is copied, nothing else")
         eid = m["endings"][0]["id"]
         self.assertTrue(list(Path(dest, "claude", "projects").glob("*/%s.jsonl" % eid)), "each ending is its own truncated transcript")
         self.assertTrue(Path(dest, "state", "romp", "names", eid).exists(), "each ending has its names entry")
@@ -446,38 +453,50 @@ class Harness(unittest.TestCase):
         self.assertEqual((mm["falseInterrupts"], mm["answeredThenCleared"]), (0, 1),
                          "the unblocker ruled the reply answered the block: answered-then-cleared, not a false interrupt: %r" % mm)
 
-    def test_only_a_reply_ruling_suppresses_never_the_other_unblock_kinds_or_one_after_the_clear(self):
-        """M1 + L1: an `unblock` event lifts a block from several sources; only the unblocker judge's ruling (src unblocker)
-        and the user's reply through the card's box (src user, REPLY_UNBLOCK_WHY) mean a reply ANSWERED it. A topic-blind
-        'you re-engaged' user unblock or a mechanical romp unblock does not suppress; nor does a ruling AFTER the clear."""
+    def test_only_the_unblocker_judge_lift_suppresses_never_the_other_unblock_kinds_or_one_at_or_after_the_clear(self):
+        """M1 + L1 + item 6: an `unblock` event lifts a block from several sources; ONLY the unblocker judge's lift (src
+        unblocker), which it stamps having ruled the block ANSWERED or MOOT, suppresses a false interrupt. The topic-blind
+        'you re-engaged' user unblock, a reopen-ancestor lift (optimistic), the planner's new-work unblock and a mechanical
+        romp unblock do not; nor does a judge lift at or after the clear (a same-second or later lift is not the reply this
+        clear crossed off)."""
         sid = SIDS[1]
         e = self._ending(self._corpus()[1], sid, 0)
         s, c = float(e["startT"]), float(e["cutT"])
         manifest = {"endings": [e]}
         results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
 
-        def score(unblock_ev):
-            self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        def score(unblock_ev, clear_t=None):
+            self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed",
+                                                    "t": c + 600 if clear_t is None else clear_t}])
             if unblock_ev:
                 self._add_node_log(sid, "g1", unblock_ev)
             mm = self.je.measure(manifest, results, self.state)
             return mm["falseInterrupts"], mm["answeredThenCleared"]
 
+        # non-suppressors, each a false interrupt (all four tabled kinds)
         self.assertEqual(score({"ev_t": c + 300, "src": "user", "kind": "unblock", "why": "you re-engaged"}), (1, 0),
-                         "a topic-blind 'you re-engaged' user unblock does not suppress: a false interrupt")
+                         "a topic-blind 'you re-engaged' user unblock does not suppress")
+        self.assertEqual(score({"ev_t": c + 300, "src": "user", "kind": "unblock", "why": "unblocked by reopen (optimistic)"}), (1, 0),
+                         "a reopen-ancestor (optimistic) lift does not suppress")
+        self.assertEqual(score({"ev_t": c + 300, "src": "planner", "kind": "unblock", "why": "new work filed on this branch"}), (1, 0),
+                         "the planner's new-work unblock does not suppress")
         self.assertEqual(score({"ev_t": c + 300, "src": "romp", "kind": "unblock", "why": "moot"}), (1, 0),
-                         "a mechanical romp unblock does not suppress: a false interrupt")
-        self.assertEqual(score({"ev_t": c + 300, "src": "user", "kind": "unblock", "why": self.je.REPLY_UNBLOCK_WHY}), (0, 1),
-                         "the user's reply through the card's box IS a reply ruling: answered-then-cleared")
+                         "a mechanical romp unblock does not suppress")
+        # the unblocker judge's lift suppresses, whether it ruled ANSWERED or MOOT (item 6: one src, both meanings)
+        self.assertEqual(score({"ev_t": c + 300, "src": "unblocker", "kind": "unblock", "why": "answered in passing: the reply landed"}), (0, 1),
+                         "the unblocker judge's answered lift is answered-then-cleared, not a false interrupt")
+        self.assertEqual(score({"ev_t": c + 300, "src": "unblocker", "kind": "unblock", "why": "answered in passing: made moot by a later completion"}), (0, 1),
+                         "item 6: a MOOT lift by the unblocker also suppresses (a top nobody answered, lifted moot then cleared): answered-then-cleared")
+        # L1 + the same-second bound: a lift after the clear, and one AT the placement's own second, are not this clear's reply
         self.assertEqual(score({"ev_t": c + 900, "src": "unblocker", "kind": "unblock", "why": "answered in passing"}), (1, 0),
-                         "L1: an unblocker ruling AFTER the clear is not the reply this clear crossed off: a false interrupt")
+                         "L1: a judge lift AFTER the clear is not the reply this clear crossed off: a false interrupt")
+        self.assertEqual(score({"ev_t": s, "src": "unblocker", "kind": "unblock", "why": "answered in passing"}), (1, 0),
+                         "a judge lift at the placement's own second is not strictly after it: conservatively a false interrupt")
 
-    def test_the_harness_whys_match_the_kernel(self):
-        """The harness's mute-clear and reply-unblock whys must equal the kernel's own literals, or the guard drifts silent."""
+    def test_the_harness_mute_why_matches_the_kernel(self):
+        """The harness's mute-clear why must equal the kernel's own literal, or the mute exclusion drifts silent."""
         km = load_source("romp_kernel_whys", os.path.join(BIN, "romp-kernel"))
-        jd = load_source("romp_judge_whys", os.path.join(BIN, "romp-judge"))
         self.assertEqual(self.je.MUTE_CLEAR_WHY, km._HIDDEN_FROM_FEED_WHY, "the harness excludes exactly the kernel's mute why")
-        self.assertEqual(self.je.REPLY_UNBLOCK_WHY, jd.REPLY_UNBLOCK_WHY, "the harness counts exactly the kernel's reply-unblock why")
 
     def test_a_plainly_cleared_completed_top_is_no_leak_and_a_reopened_needs_input_is_no_false_interrupt(self):
         """The plan's negatives (round three): a completed top the user plainly cleared (no re-open) is NOT a leak; a
@@ -606,6 +625,65 @@ class Harness(unittest.TestCase):
         mm = self.je.measure(m, results, self.state)   # must not raise (an unreadable journal escaped as PermissionError before)
         self.assertEqual(mm["falseInterrupts"], 0)
         self.assertTrue(mm["liveReadErrors"], "the unreadable journal is recorded, not raised: %r" % mm["liveReadErrors"])
+
+    def test_an_invalid_utf8_byte_in_the_journal_is_a_fault_not_a_raise(self):
+        """M (post-merge): an invalid UTF-8 byte in an override journal decoded as a UnicodeDecodeError (a ValueError), which
+        the OSError-only guard let escape, taking down every arm's table. It is now a recorded fault; the ending is unresolved."""
+        m, results = self._false_interrupt_case(SIDS[0], "fi-badbyte")
+        ov = self.state / "overrides" / (SIDS[0] + ".jsonl")
+        ov.write_bytes(b'{"node": "%s:g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": 1}\n\xff\n' % SIDS[0].encode())
+        mm = self.je.measure(m, results, self.state)   # must not raise
+        h = hashlib.sha256(SIDS[0].encode()).hexdigest()[:12]
+        self.assertEqual((mm["falseInterrupts"], mm["unresolvedEndings"]), (0, 1), "an unreadable journal is unscorable: %r" % mm)
+        self.assertIn({"session": h, "error": "UnicodeDecodeError"}, mm["liveReadErrors"], "the bad byte is a recorded fault: %r" % mm["liveReadErrors"])
+
+    def test_a_torn_journal_row_is_a_fault_and_the_other_rows_still_read(self):
+        """A torn (rejected JSON) journal row is recorded as a fault and skipped, and the rows after it still read (a torn
+        tail must not swallow the next row silently)."""
+        sid = SIDS[1]
+        e = self._ending(self._corpus()[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [])
+        ov = self.state / "overrides" / (sid + ".jsonl")
+        ov.write_text("{ torn not json\n" + json.dumps({"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}) + "\n")
+        manifest = {"endings": [e]}
+        results = {"arm": "x", "failures": 0, "endings": {e["id"]: {"builds": [{e["id"] + ":g1": {"column": "needs_input", "scored": True}}] * 2}}}
+        mm = self.je.measure(manifest, results, self.state)
+        h = hashlib.sha256(sid.encode()).hexdigest()[:12]
+        self.assertEqual(mm["falseInterrupts"], 1, "the good clear row after the torn one still read: a false interrupt: %r" % mm)
+        self.assertIn({"session": h, "error": "torn-journal-row"}, mm["liveReadErrors"], "the torn row is a recorded fault: %r" % mm["liveReadErrors"])
+
+    def test_tier_one_label_does_not_read_a_mute_clear_as_the_users_finish(self):
+        """Item 3: tier_one_label shares the cross-off predicate, so a mute-only journal (a src-user clear with the mute's
+        why on a done-in-window top) does not label the ending 'finished'; it is None (nothing the user did applies)."""
+        sid = SIDS[0]
+        e = self._ending(self._corpus()[1], sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": self.je.MUTE_CLEAR_WHY, "t": c + 600}])
+        self.assertIsNone(self.je.tier_one_label(self.state, sid, c, s), "a mute's clear is not the user's finish: tier one is None")
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        self.assertEqual(self.je.tier_one_label(self.state, sid, c, s), "finished", "an ordinary cross-off is the user's finish")
+
+    def test_the_auth_preflight_refuses_without_the_helper_and_passes_with_it(self):
+        """The pilot's fault storm: the arm ran the CLI with CLAUDE_CONFIG_DIR at a corpus claude root that carried no
+        apiKeyHelper, so every call read 'Not logged in' and the table was a silent zero. preflight_auth refuses, naming the
+        helper, when it is missing, and passes when it is present (the fake probe answers logged-in)."""
+        d = os.path.join(self.td, "cfg"); os.makedirs(d)
+        with self.assertRaises(SystemExit) as cm:
+            self.je.preflight_auth(self.fake, d)                # no settings.json: no helper
+        self.assertIn("apiKeyHelper", str(cm.exception), "the refusal names the missing helper: %r" % cm.exception)
+        Path(d, "settings.json").write_text(json.dumps({"apiKeyHelper": "echo k"}))
+        self.je.preflight_auth(self.fake, d)                    # helper present and the probe answers logged-in: no raise
+
+    def test_a_paid_arm_refuses_before_walking_endings_without_the_helper(self):
+        """An arm over a corpus root lacking the helper refuses before its first ending (a short storm, not one per ending):
+        no results.json is written."""
+        dest, m = self._corpus(name="noauth")
+        (Path(dest) / "claude" / "settings.json").unlink()      # strip the helper the builder copied
+        run_root = os.path.join(self.td, "runs-noauth")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.je.run_arm(dest, "baseline", None, run_root, None, self.fake)
+        self.assertFalse(os.path.exists(os.path.join(run_root, "baseline", "results.json")), "refused before writing any ending")
 
     def test_a_failed_call_or_a_rejected_reply_marks_the_row_not_comparable(self):
         """Executed by the reviewer: a prompt whose replies the parser rejected scored the perfect row. The failures count and mark it."""
@@ -1056,7 +1134,7 @@ class Harness(unittest.TestCase):
         arch = {"rompUuid": sid, "nodes": {node["id"]: node}, "status": {node["id"]: "cleared"}}
         (self.state / "goals-archive" / (sid + ".json")).write_text(json.dumps(arch))
         with (self.state / "overrides" / (sid + ".jsonl")).open("a") as f:
-            f.write(json.dumps({"node": sid + ":gA", "op": "clear", "src": "user", "why": "seen", "t": cleared_at}) + "\n")
+            f.write(json.dumps({"node": sid + ":gA", "op": "clear", "src": "user", "why": "cleared from the feed", "t": cleared_at}) + "\n")
         return node
 
     def test_a_cleared_top_in_the_archive_is_visible_to_all_four_readers(self):
@@ -1098,7 +1176,7 @@ class Harness(unittest.TestCase):
         e = self._ending(m, sid, 0)
         start, cut = float(e["startT"]), float(e["cutT"])
         self._live_store_with_done(sid, start, cut, [{"node": other + ":g1", "op": "followup", "t": cut + 100},
-                                                     {"node": sid + ":g1", "op": "clear", "src": "user", "why": "seen", "t": cut + 120}])
+                                                     {"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": cut + 120}])
         self.assertEqual(self.je.tier_one_label(self.state, sid, cut, start), "finished",
                          "only this session's clear matches the full key; the other session's followup does not (the base's tail compare read not finished)")
 
@@ -1107,7 +1185,7 @@ class Harness(unittest.TestCase):
         m = self._corpus()[1]
         e = self._ending(m, sid, 0)
         start, cut = float(e["startT"]), float(e["cutT"])
-        self._live_store_with_done(sid, start, cut, [{"op": "clear", "src": "user", "node": sid + ":g1", "t": cut + 100},
+        self._live_store_with_done(sid, start, cut, [{"op": "clear", "src": "user", "node": sid + ":g1", "why": "cleared from the feed", "t": cut + 100},
                                                      {"op": "restore", "nodes": {sid + ":g1": {"text": "back"}}, "t": cut + 200}])
         self.assertEqual(self.je.tier_one_label(self.state, sid, cut, start), "not finished",
                          "a restore keyed by its `nodes` dict, not a `node` field, still reads as not finished")
