@@ -2074,6 +2074,26 @@ print(json.dumps(d))' "$_who" "$_when")"
             echo "romp send: queued ($_who) — delivers when the session is quiet"
             exit 0
         fi
+        if [[ "$_verb" == "end" ]]; then
+            # The kernel hands a message the user typed that was still waiting for the session (parked behind
+            # a turn, a compaction or an account hold) back as not delivered when the session ends, and its
+            # answer counts the texts it handed back (`undelivered`, present only when nonzero, 2026-09-21).
+            # Said here with the count and where the text is kept, never the text itself: the caller is often
+            # a peer session, and the words would land in its transcript. With no pane open that renders the
+            # kernel's dialog (a chat pane, else the feed) it reaches nobody, so this line and the file are
+            # the record. No path: a session on a remote kernel is ended by that kernel, whose answer comes
+            # back verbatim, and its file is on that machine, so the local state directory would name a file
+            # holding no such row. The file's write is best effort in the kernel; the kernel log carries the
+            # text when the write failed. Exit 0 still: the session did end.
+            _n_und="$(python3 -c 'import json,sys
+n=json.loads(sys.argv[1]).get("undelivered")
+print(n if isinstance(n, int) and n > 0 else "")' "$_resp" 2>/dev/null || true)"
+            if [[ -n "$_n_und" ]]; then
+                if [[ "$_n_und" == 1 ]]; then _n_word="message"; else _n_word="messages"; fi
+                echo "romp end: ok ($_who); $_n_und $_n_word still waiting for it did not go through: the text is kept in undelivered.jsonl under the state directory of the kernel that ran the session (the kernel log records it when that file could not be written)"
+                exit 0
+            fi
+        fi
         echo "romp $_verb: ok ($_who)"
         exit 0
     fi
