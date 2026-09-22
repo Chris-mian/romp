@@ -208,6 +208,19 @@ function cfgPort(key: "kernelPort" | "managerPort", env: string | undefined, dfl
 // from a shell that exported only the documented ROMP_KERNEL_PORT attaches to that kernel instead
 // of silently trying the default one.
 function kernelPort(): number { return cfgPort("kernelPort", process.env.ROMP_SERVE_PORT || process.env.ROMP_KERNEL_PORT, 29855); }
+// The kernel port, mapped to itself, for every webview's options. A webview's script runs on the
+// CLIENT: when VS Code is connected to a remote machine, its fetch of http://127.0.0.1:<kernel port>
+// goes to the client's own loopback — no kernel there — unless VS Code redirects it, and VS Code
+// redirects a localhost/127.0.0.1 request only for a port the webview's `portMapping` names
+// (WebviewPortMappingManager.getRedirect: a matching entry opens a tunnel to the remote; none → the
+// request is left alone). So every bundle's direct kernel fetch — the model pickers' /models, the
+// gear's /palette + /version, the strip's /usage — failed silently under Remote-SSH, and the pickers
+// opened with no rows while the browser listed every family (the user 2026-09-22). Both ports are the
+// kernel's own: the mapping buys the remote hop, not a port change; the API docs recommend declaring
+// it even when the two are equal. Read at each options build so a kernelPort setting change lands.
+function kernelPortMapping(): vscode.WebviewPortMapping[] {
+  return [{ webviewPort: kernelPort(), extensionHostPort: kernelPort() }];
+}
 function managerPort(): number { return cfgPort("managerPort", process.env.ROMP_MANAGER_PORT, 7432); }
 
 let ctx: vscode.ExtensionContext;
@@ -594,6 +607,7 @@ function openPanel(preserveFocus = false) {
       enableFindWidget: true,   // Cmd/Ctrl+F opens VS Code's find bar over the rendered pane (the user 2026-09-21): a webview gets no editor find, and the bundle has none of its own
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+      portMapping: kernelPortMapping(),
     },
   );
   wirePanel(p);
@@ -605,6 +619,7 @@ function wirePanel(p: vscode.WebviewPanel) {
   p.webview.options = {
     enableScripts: true,
     localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+    portMapping: kernelPortMapping(),
   };
   p.iconPath = vscode.Uri.joinPath(extUri, "media", "romp-swirl.svg");
   p.webview.html = buildHtml(p.webview);
@@ -677,6 +692,7 @@ function openFeedPanel(preserveFocus = false, column?: vscode.ViewColumn) {
       enableFindWidget: true,   // Cmd/Ctrl+F opens VS Code's find bar over the rendered pane (the user 2026-09-21): a webview gets no editor find, and the bundle has none of its own
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+      portMapping: kernelPortMapping(),
     },
   );
   wireFeedPanel(p);
@@ -687,6 +703,7 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
   p.webview.options = {
     enableScripts: true,
     localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+    portMapping: kernelPortMapping(),
   };
   p.iconPath = vscode.Uri.joinPath(extUri, "media", "romp-swirl.svg");
   p.webview.html = buildFeedHtml(p.webview);
@@ -859,6 +876,7 @@ function openFleetPanel(preserveFocus = false, column?: vscode.ViewColumn) {
       enableFindWidget: true,   // Cmd/Ctrl+F opens VS Code's find bar over the rendered pane (the user 2026-09-21): a webview gets no editor find, and the bundle has none of its own
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+      portMapping: kernelPortMapping(),
     },
   );
   wireFleetPanel(p);
@@ -869,6 +887,7 @@ function wireFleetPanel(p: vscode.WebviewPanel) {
   p.webview.options = {
     enableScripts: true,
     localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+    portMapping: kernelPortMapping(),
   };
   p.iconPath = vscode.Uri.joinPath(extUri, "media", "romp-swirl.svg");
   p.webview.html = buildFleetHtml(p.webview);
@@ -908,6 +927,7 @@ function wireView(
   v.webview.options = {
     enableScripts: true,
     localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+    portMapping: kernelPortMapping(),
   };
   v.webview.html = build(v.webview);
   const pipe = new KernelPipe(
