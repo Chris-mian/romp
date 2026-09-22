@@ -17325,6 +17325,34 @@ def _create_sdk_session(nm, cwd, auth="", prefs=None, client=None, env=None, par
         _release_name(nm)
 
 
+def _sdk_defaults_module():
+    """sdk_backend's read_sdk_defaults / write_sdk_default: the seed file's ONE contract (atomic write, the
+    modelTok every writer of `model` stamps). The module the SDK backend was built from when one is loaded
+    (sys.modules, as _router_tell_backend reads it); loaded by path otherwise, so a caller ahead of the first
+    _sdk() still reads the real thing and never the raw file."""
+    m = sys.modules.get("romp_sdk_backend")
+    return m if m is not None else load_source("romp_sdk_backend", HERE / "sdk_backend.py")
+
+
+def _reset_unvouched_seed():
+    """A remembered sdk-defaults `model` the kernel can no longer vouch for is reset to the account default,
+    LOUDLY, before a spawn copies it into a new row. A dormant pick writes the seed (SdkBackend.set_model's
+    dormant arm), and spawn seeds every new registry row from it unchecked, so a pick of an extra gateway model
+    outlived the switch being turned off — every new session launched on the removed id, with nothing said
+    (review find, 2026-09-21). Read at the create rather than reset at the off flip alone: a kernel restarted
+    under a shorter declaration never saw a flip. Through write_sdk_default, never a raw write: the fresh
+    modelTok tells a live pick's pending write it is no longer the store's head, so its later refusal stands
+    down (_seed_write_refused). _vouched_model alone, not the Codex exception: the seed feeds SDK sessions."""
+    sbmod = _sdk_defaults_module()
+    seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
+    if not seed or seed == "default" or _vouched_model(seed):
+        return
+    sys.stderr.write("sdk-defaults model %r is not a model this kernel offers (an extra gateway model whose "
+                     "switch is off, or one no longer declared); reset to the account default for the new "
+                     "session\n" % seed)
+    sbmod.write_sdk_default(jd.STATE, model="default")
+
+
 def _create_sdk_session_inner(nm, cwd, auth="", prefs=None, client=None, env=None, parent="", tags=()):
     """Create + open a new SDK-backed session, ACK-FAST (the user 2026-07-14, who asked why it took so long
     to open a new SDK session). spawn() is file writes and connect() is threaded (~0.4s to a booting
@@ -17354,6 +17382,7 @@ def _create_sdk_session_inner(nm, cwd, auth="", prefs=None, client=None, env=Non
     push."""
     bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
     _commands_for_cwd(cwd)   # pre-warm the slash-command list — a new session predicts a composer (the user 2026-08-13)
+    _reset_unvouched_seed()   # BEFORE the spawn, which copies the seed into the new row unchecked
     # env rides the SPAWN (the reg is born with it), not the prefs pass behind it: the prefs pass
     # runs pre-connect (pure reg writes), so its env leg sees the reg already carrying this env and
     # skips the set — the echo still comes back through `extra`.
