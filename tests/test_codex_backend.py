@@ -4531,6 +4531,82 @@ class NativeCompact(unittest.TestCase):
         # an unknown sid: the contract's None
         self.assertIsNone(be.compact_end("11111111-2222-4333-8444-000000000000"))
 
+    def test_the_accepted_turn_waits_on_the_divider_write_and_the_end_is_recorded_clean_once(self):
+        """The crossing of the pump's clean end with the worker's accepted-turn end (review find, 2026-09-22). The
+        worker attempts turn/start under a bracket with no active seen (_work), and the compaction's active and idle
+        statuses are read while that request is out, so the pump reaches the divider write as the worker's ACK is
+        about to land. Before the fix the write ran under norm_lock alone and the end in a later s.lock block: an ACK
+        landing between them found the bracket standing with the active seen and ended it LOUD, worded as no divider
+        having been written, over a divider already on disk, and the pump then found no bracket and recorded nothing,
+        so compact_end() read loud and `romp compact --wait` exited saying the session did not compact. The fix makes
+        the write and the end one section under norm_lock and then s.lock, so the ACK can no longer land inside the
+        write, and this test drives the ordering the fix makes safe: the pump is held INSIDE the divider write (a
+        wrapped _append parks on an Event) while the scripted turn_start answers and the worker's ACK is attempted,
+        and the ACK is asserted to wait (no turn id, no end) until the pump is released; after that the one end on
+        record is clean, the divider is on disk once, and the turn runs. Red at the base: the ACK lands inside the
+        write, and the record reads loud over a compacted thread. Every wait is bounded; the fake and the wrapper
+        record a wait that ran out as a flag the test asserts on, since the pump and the worker swallow raises."""
+        class CompactionEndsDuringStart(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.arm = None                       # (s, reached, returned, stalled): armed after the first turn
+            def turn_start(self, tid, input_items, params=None):
+                if self.arm:
+                    s, reached, returned, stalled = self.arm
+                    _status(self, tid, "active")      # the compaction runs and ends while the request is out
+                    if not until(lambda: s.compact_active_seen):
+                        stalled.append("active")
+                    _status(self, tid, "idle")
+                    if not reached.wait(5):           # answered only once the pump is inside the divider write
+                        stalled.append("reached")
+                    res = super().turn_start(tid, input_items, params)
+                    returned.set()                    # the worker holds an accepted turn and goes for its ACK
+                    return res
+                return super().turn_start(tid, input_items, params)
+        fake = CompactionEndsDuringStart()
+        be, _, tmp = build(factory=lambda: fake)
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "first synthetic turn"))
+        self.assertTrue(_lock_free(be, sid))
+        s = be._session(sid)
+        reached, release, returned = threading.Event(), threading.Event(), threading.Event()
+        stalled = []                                  # bounded waits that ran out, by name
+        ends = []                                     # every end of the bracket, with its kind and words
+        real_append, real_end = be._append, be._end_compact_locked
+
+        def append(sess, recs):
+            if any(r.get("subtype") == "compact_boundary" for r in recs):
+                reached.set()
+                if not release.wait(5):
+                    stalled.append("append")
+            return real_append(sess, recs)
+
+        def end(sess, kind, text=""):
+            ends.append((kind, text))
+            return real_end(sess, kind, text)
+        be._append, be._end_compact_locked = append, end
+        self.assertEqual(be.compact(sid), "")
+        fake.arm = (s, reached, returned, stalled)
+        self.assertTrue(be.send(sid, "into the request window"))   # no active seen yet: the worker attempts (_work)
+        self.assertTrue(returned.wait(5), "turn_start answered: the worker holds an accepted turn to ACK")
+        self.assertEqual(stalled, [])
+        # The ACK waits on the pump's section: no turn id and no end while the divider write stands. The fields are
+        # read without s.lock, which the pump holds; the window is the bounded one the stale-idle test gives its
+        # ignored idle, and the deciding assertions are the record and the divider count below.
+        self.assertFalse(until(lambda: s.turn_id is not None or s.compact_ends, timeout=0.3),
+                         "the accepted turn's ACK landed inside the divider write: the crossing the fix closes")
+        self.assertEqual(ends, [], "no end yet: the pump ends the bracket after the write, before releasing s.lock")
+        release.set()
+        self.assertTrue(until(lambda: not be.busy(sid) and not be.pending_queued(sid)), "the parked message's turn ran")
+        self.assertEqual(stalled, [])
+        self.assertEqual(ends, [("clean", "")], "one end, the pump's, clean: the ACK found the bracket gone")
+        rec = be.compact_end(sid)
+        self.assertEqual((rec["ends"], rec["kind"], rec["text"]), (1, "clean", ""),
+                         "the record the wait judges says the compaction completed")
+        self.assertEqual(len(_boundaries(_records(tmp))), 1, "the divider is on disk once")
+        self.assertIsNone(be.launch_error(sid), "no notice: the accepted turn ended no bracket")
+        self.assertEqual(be.live_sessions()[sid]["state"], "waiting")
+
     def test_the_divider_lands_before_the_end_is_published(self):
         # The order the docstrings promise, pinned (review find, 2026-09-21): a reader that sees the session no longer
         # compacting also finds the divider, so the boundary record is appended while the bracket still stands and the
