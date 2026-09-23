@@ -4205,7 +4205,21 @@ def lease_census(ps_lines: list[str], lastsids: list[str], own_pid: int, leases:
 # before the walk is out of reach there — the scope is what closes that gap, which is why it is tried
 # first. Nothing outside the CLI's own scope or tree is ever signaled: the walk is by ppid from the CLI,
 # and the scope list is filtered to OUR sessions' units whose pid is not a live child of this kernel.
-SESSION_SCOPE_PREFIX = "romp-session-"
+# One process inside the tree is spared (the review of the bus-scope lane, 2026-09-23): the machine's postal
+# bus, which a session's postal MCP server starts in a scope of its own (`romp-postal-bus-<pid>-<ns>.scope`,
+# postal_service._bus_scope_unit). systemd-run execs in place, so that bus stays the MCP server's child and
+# the walk reaches it; stopping the CLI's scope no longer ends it, and the walk must not either, since every
+# session on the machine shares it. Both signs must hold, read as exactly as the session scope's name is:
+# the process's cgroup is a unit of the producer's whole shape (the path's last component), and its command
+# in the `ps` listing is the bus's serve. A look-alike name is no bus scope, and any other process in the
+# bus's scope is signaled with the rest, with a log line. A bus that fell back to the session's own scope is
+# not spared: its `fallback:` line in the bus's server.log says it shares that scope's fate.
+SESSION_SCOPE_PREFIX = "romp-session-"   # KEEP IN SYNC with postal_service.ROMP_SCOPE_PREFIXES (2026-09-22)
+POSTAL_BUS_SCOPE_PREFIX = "romp-postal-bus-"   # KEEP IN SYNC with postal_service.BUS_SCOPE_PREFIX (2026-09-23)
+_POSTAL_BUS_SCOPE_RE = re.compile(re.escape(POSTAL_BUS_SCOPE_PREFIX) + r"\d+-\d+\.scope\Z")   # _bus_scope_unit's shape
+# The names the bus's script runs under: postal/postal_service.py and bin/'s links to it. KEEP IN SYNC with bin/
+# (tests/test_postal_bus_scope.py derives the links from it) and with postal_service.ensure's serve argv.
+POSTAL_BUS_SERVE_NAMES = ("romp-postal-service", "romp-postal", "postal_service.py")
 _SESSION_SCOPE_RE = re.compile(r"romp-session-([0-9a-fA-F]{1,8})-(\d+)-\d+\.scope\Z")
 SCOPE_LIST_ARGV = ["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager",
                    SESSION_SCOPE_PREFIX + "*.scope"]
@@ -4225,6 +4239,28 @@ def scope_unit_of(cgroup_text: str) -> str | None:
             if comp.startswith(SESSION_SCOPE_PREFIX) and comp.endswith(".scope"):
                 return comp
     return None
+
+
+def bus_scope_unit_of(cgroup_text: str) -> str | None:
+    """The postal bus's own scope a /proc/<pid>/cgroup listing places the process in, or None: the last component
+    of a line's path, and only a name of the producer's whole shape, `romp-postal-bus-<pid>-<ns>.scope`
+    (_POSTAL_BUS_SCOPE_RE, matched as _SESSION_SCOPE_RE matches a session's; 2026-09-23, the review of the
+    bus-scope lane, after a bare prefix test let `romp-postal-bus-anything.scope` and a cgroup nested under the
+    bus's through)."""
+    for ln in cgroup_text.splitlines():
+        comp = ln.rsplit(":", 1)[-1].rstrip("/").rsplit("/", 1)[-1]
+        if _POSTAL_BUS_SCOPE_RE.match(comp):
+            return comp
+    return None
+
+
+def _is_postal_bus_serve(cmd: str) -> bool:
+    """Does this `ps` command text name the postal bus's serve? ensure spawns `<python> <script> serve`, and the
+    sh its scope runs first ends the same way, so the last two argv tokens are the script, under one of
+    POSTAL_BUS_SERVE_NAMES, and `serve` (2026-09-23, the review of the bus-scope lane: the scope's name alone
+    spared whatever ran in it). Tokens, never a substring, as _is_kernel_cmd reads a kernel's."""
+    words = cmd.split()
+    return len(words) >= 2 and words[-1] == "serve" and words[-2].rsplit("/", 1)[-1] in POSTAL_BUS_SERVE_NAMES
 
 
 def scope_pid(unit: str) -> int | None:
@@ -11496,9 +11532,11 @@ class SdkBackend:
         under it — each descendant's own process group where it leads one (a setsid child), else the
         process; children before the CLI, SIGTERM first, SIGKILL after TREE_KILL_GRACE for whatever
         stayed. Nothing outside the tree is signaled: this kernel's own group is never a target, and a
-        group is signaled only when a descendant of THIS CLI leads it. `kill`, `run` and `cgroup` are
-        the test seams, resolved at call time so a patched os.kill / subprocess.run is honoured. Returns
-        what happened, for the reconcile's log line."""
+        group is signaled only when a descendant of THIS CLI leads it. Inside it, the postal bus's serve
+        in the bus's own scope is spared and logged (2026-09-23, the comment above
+        SESSION_SCOPE_PREFIX). `kill`, `run` and `cgroup` are the test seams, resolved at call time so
+        a patched os.kill / subprocess.run is honored. Returns what happened, for the reconcile's log
+        line."""
         kill = kill or os.kill
         run = run or subprocess.run
         cgroup = cgroup or _read_cgroup
@@ -11533,7 +11571,25 @@ class SdkBackend:
             own_pg = os.getpgid(0)
         except OSError:
             pass
-        targets = [p for p in descendants(ps_lines, pid) if p != os.getpid()] + [pid]
+        tree = [p for p in descendants(ps_lines, pid) if p != os.getpid()]
+        # the machine's postal bus, in its own scope and running its serve, is spared (the comment above
+        # SESSION_SCOPE_PREFIX); its cgroup is read now, after the CLI's scope stop, through the same seam
+        commands = {}
+        for ln in ps_lines:
+            parts = ln.strip().split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit():
+                commands[int(parts[0])] = parts[2]
+        spared = []
+        for p in tree:
+            bus = bus_scope_unit_of(cgroup(p) or "")
+            if bus and _is_postal_bus_serve(commands.get(p, "")):
+                spared.append(p)
+                self._log("cut-turn reap: pid %d under the orphaned CLI %d runs in %s, the postal bus's own scope; "
+                          "spared, since every session shares the bus" % (p, pid, bus))
+            elif bus:
+                self._log("cut-turn reap: pid %d under the orphaned CLI %d runs in %s, the postal bus's scope, but is "
+                          "not the bus's serve (%s); signaled with the rest" % (p, pid, bus, commands.get(p, "?")[:120]))
+        targets = [p for p in tree if p not in spared] + [pid]
         # a pid reused by an unrelated process between the ps snapshot and a signal must not be hit: remember
         # each target's start time (procfs) and skip any whose identity changed; no procfs → no such check
         born = {p: _read_starttime(p) for p in targets}
@@ -11565,7 +11621,8 @@ class SdkBackend:
         while now() < deadline and any(alive(p) for p in targets):
             sleep(0.05)
         forced = signal_all(signal.SIGKILL, True) if any(alive(p) for p in targets) else 0
-        return {"scope": unit if stopped else None, "signaled": signaled, "forced": forced, "tree": len(targets) - 1}
+        return {"scope": unit if stopped else None, "signaled": signaled, "forced": forced, "tree": len(targets) - 1,
+                "spared": len(spared)}
 
     def _stop_leftover_scopes(self, lastsids: list[str], run=None, owned=()) -> int:
         """Stop the session scopes of OUR sessions whose CLI is not OWNED — `owned` is lease_census's

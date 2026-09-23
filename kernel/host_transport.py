@@ -48,7 +48,7 @@ SESSION_HOSTS_SETTING = "session-hosts"            # the toggle: "off" (or 0 / f
                                                    # machine; "on", or no file at all, leaves them on (on by default
                                                    # since T348, the user 2026-09-11; off by default before)
 SESSION_HOST_GRACE_SETTING = "session-host-grace"  # seconds an unattached idle CLI lives (default 900)
-HOST_SCOPE_PREFIX = "romp-host-"
+HOST_SCOPE_PREFIX = "romp-host-"                 # KEEP IN SYNC with postal_service.ROMP_SCOPE_PREFIXES (2026-09-22)
 _HOST_SCOPE_RE = re.compile(r"romp-host-([0-9a-fA-F]{1,8})-(\d+)\.scope\Z")
 ACK_BATCH = 64            # acknowledge at least every this many records…
 ACK_INTERVAL_S = 0.1      # …or this often
