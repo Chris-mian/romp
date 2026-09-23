@@ -47,6 +47,7 @@ import { isClearCmd, isNewCmd, openTopTitles, clearConfirmDetail, endConfirmDeta
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glow-history";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
+import { onHostSocketUp } from "./skeleton-tabs";   // the relay's reopen forgets what loaded on the dead relay socket (2026-09-23)
 import { reconcileTabOrder, adoptArrival } from "./tab-order";
 import { applyViewOrder, readViewOrder, writeViewOrder } from "./view-order";   // the read: a page with no federation manager arranges its own strip (applyTabOrder, frame-listener.ts paneArranges)
 import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionRef, isPinned, setPinned, prunePinned, reachableFrom, headWords,
@@ -64,6 +65,7 @@ import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./stag
 import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody, refusedRestoreText } from "./send-pending";
 import { type FrameWm, frameOlder, droppedLandedHuman, dropsLandedRow, forgetHeldWm } from "./frame-guard";   // the frame watermark guard (2026-09-22): an older build's frame is ignored, a vanished landed turn is filed; a reconnect forgets the held watermarks
 import { type LandEvent, LandingWatch } from "./send-landing";   // the send-landing invariant (2026-09-23): observation only, around the frame dispatch (landingBefore / landingAfter)
+import { readBaseFp, checkBase, newResyncState, onMismatch, onAgree, forgetResync, staleAnswer } from "./chat-resync";   // the delta's base check (2026-09-23): a delta cut against a base the page does not hold is refused and the full asked for, bounded by event
 import { reconcileHeld, heldAsQueued, type HeldCopy, type HeldQueued, type HeldMemory } from "./queued-held";
 import { rescindedComposerState } from "./queued-rescind";   // a queued message's edit pulls it back into the composer (T373)
 import { reloadHoldReason } from "./reload-hold";
@@ -16609,6 +16611,8 @@ window.addEventListener("romp:hostRelayUp", (e) => {
   reaskWaitingSubagents(h);   // …and that host's subagent viewers still waiting ask again (T355: a remote kernel's restart; an empty host is the local one)
   reaskOutstandingGaps(Array.from(gapLoading), h);   // …and re-send every loadTurns still outstanding for that host: a relay drop fires no romp:wsdown, so gapLoading kept its keys and, with the guard now correct, the gap would stay suppressed until a reload (2026-09-15)
   if (h) forgetHeldWm(sessions, (sid) => hostOf(sid) === h);   // …and that host's held watermarks (frame-guard.ts, 2026-09-23): the remote kernel behind the reopened relay may be a fresh process whose live-tail revision restarted at 0, and a held revision would refuse its every frame for a session whose files have not moved (the local socket's twin rides the shim's wsup FRAME)
+  if (h) onHostSocketUp(skeletonTabs, (sid) => hostOf(sid) === h);   // …and what loaded for that host on the dead relay socket (2026-09-23): a restarted remote kernel withholds those tabs as skeletons, and a page that still counted them as loaded refused its list, took status frames alone and froze their transcripts until clicked
+  if (h) for (const sid of [...staleAnswerReasked, ...resync.strikes.keys(), ...resync.disarmed]) if (hostOf(sid) === h) { staleAnswerReasked.delete(sid); forgetResync(resync, sid); }   // …and that host's delta base-check history (2026-09-23): the reopened relay is a fresh client on that kernel
   clearAsksForHost(h);   // …and that host's parked full asks (2026-09-19): an ask sent on the relay socket that died, or one the kernel answered with a status frame where a full was owed, is never answered on this road, and latched it would refuse every later delta for its tab until a reload (clearAsksForHost says why a flushed ask is cleared too)
   // …and the tab this pane is LOOKING AT, when that host owns it (T246, the user 2026-09-07): the relay's
   // open is the moment the remote kernel holds a FRESH client for this pane — after that kernel restarted,
@@ -17585,6 +17589,16 @@ function chatDiagRow(what: string, data: Record<string, unknown>): void {
   vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what, data });
 }
 
+/** upsert's stale-frame branch (2026-09-23): whether an answer OLDER than what the page holds applies. Never when the page
+ *  did not ask (ignored and filed, frame-guard.ts); when it did, the first such answer re-sends the ask for a fresh build and
+ *  applies nothing, and the second applies (chat-resync.ts staleAnswer: a full always wins). */
+function applyStaleAnswer(id: string): boolean {
+  if (!awaitingFull.has(id)) return false;
+  if (staleAnswer(staleAnswerReasked, id) === "reask") { awaitingFull.delete(id); requestFullSession(id, "stale-full"); return false; }
+  return true;
+}
+function endStaleAnswer(id: string): void { staleAnswerReasked.delete(id); }
+
 // The send-landing invariant's two ends (send-landing.ts, 2026-09-23), around the ONE dispatch chain every frame takes, so every
 // path that applies server events to a session's resident events is watched, a path added later included: `landingBefore` copies
 // the resident events before the frame's handler runs (chatTail truncates the array in place) and notes whether the page itself
@@ -17644,9 +17658,13 @@ function upsert(msg: any) {
   // Nothing below runs: the ask latch stands, and the kernel's next frame, newer by construction, lands as usual.
   if (prev && prev.wm && msg.wm && typeof msg.wm === "object" && frameOlder(prev.wm, msg.wm as FrameWm)) {
     chatDiagRow("frame-stale", { id: msg.id, type: "session", held: prev.wm, frame: msg.wm });
-    return;
+    // …unless this is the full the page ASKED for (2026-09-23): ignored, it left the one ask latched and the repair never
+    // landed. Asked once more, for a fresh build (the kernel keeps the page's watermark as its floor through the ask and
+    // rebuilds when it refuses an older copy); a second older answer to the same ask is applied, since a full always wins
+    // and the kernel now believes the page holds it (chat-resync.ts staleAnswer).
+    if (!applyStaleAnswer(msg.id)) return;
   }
-  awaitingFull.delete(msg.id);   // a full session landed → this session is re-based; a later gap may ask again
+  awaitingFull.delete(msg.id); endStaleAnswer(msg.id);   // a full session landed → this session is re-based; a later gap may ask again (and its ask's one re-send for an older answer is spent, 2026-09-23)
   const wasSkeleton = onFull(skeletonTabs, msg.id);   // …and the tab is loaded: it leaves the skeleton set (the kernel released it when it sent this frame)
   // A frame that would take a HELD transcript from content to nothing is status-shaped, never a wipe (T249b,
   // the user 2026-09-07): the kernel sent `events: []` for a session with content when its read of the transcript
@@ -17988,6 +18006,11 @@ function notifyShell(kind: string, text: string, sid?: string): void {
 // every 0.5-3s and would otherwise re-ask on every rejected delta until the reply lands. Cleared in upsert(),
 // so the next gap can ask again; by dismissSession for a tab that left the strip (no answer is coming for it); and
 // by the relay's reopen for that host's sids (clearAsksForHost, below) (2026-09-19).
+// The delta base check's bookkeeping (chat-resync.ts, 2026-09-23): asks in a row per session with no agreeing delta between,
+// and the sessions whose check is disarmed; and the sessions whose current ask was already re-sent once because its answer
+// was older than what the page holds (a second such answer applies: a full always wins)
+const resync = newResyncState();
+const staleAnswerReasked = new Set<string>();
 const awaitingFull = new Set<string>();
 const pendingFullWhy = new Map<string, NeedFullWhy>();   // sid → why this client asked (kept for the reconnect's diagnostics; every full frame merges into the held runs, T386 stage 2)
 const emptyFrameDiagSent = new Set<string>();   // sids whose empty session frame was filed once (see upsert / frame-merge.ts)
@@ -18007,7 +18030,9 @@ function clearRefusedLatch(id: string): void {
 // delta for a session we hold nothing of; skeleton-click = the active tab is a skeleton; prefetch = the idle
 // chain; skeleton-delta = a delta for a tab held as skeleton (a contract violation). The return-to-tab harness
 // counts asks by it — a nobase on a reconnect row means the skeleton branch missed a frame type.
-type NeedFullWhy = "gap" | "nobase" | "skeleton-click" | "prefetch" | "skeleton-delta";   // (reattach retired with the detached client, T386 stage 2)
+// resync = a delta whose base fingerprint disagreed with the page's tail run (chat-resync.ts); stale-full = the full this page
+// asked for was older than what it holds, asked once more (2026-09-23)
+type NeedFullWhy = "gap" | "nobase" | "skeleton-click" | "prefetch" | "skeleton-delta" | "resync" | "stale-full";   // (reattach retired with the detached client, T386 stage 2)
 /** The page's resident TAIL run's first event key for `id`, sent with a needFull so the kernel serves the repair full
  *  from the held base (a superset, nothing dropped) or, when those turns are gone from the transcript, sets them aside
  *  via `rebased` (CONTENT THAT EXISTS NEVER GETS DROPPED, the user 2026-09-19). undefined when the page holds no tail run. */
@@ -18025,7 +18050,7 @@ function requestFullSession(id: string, why: NeedFullWhy): void {
     // answer never comes (a status frame where a full was owed, a tab that left the strip, a relay that dropped) held the tab
     // at its last applied content until a reload, and the journal had no row to show it. One row per refused DELTA names the
     // sid and the reason; a repeated click's or the idle chain's dedup is by design and files nothing. Observability only.
-    if (why === "gap" || why === "nobase" || why === "skeleton-delta") vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "delta-refused", data: { sid: id, why } });
+    if (why === "gap" || why === "nobase" || why === "skeleton-delta" || why === "resync") vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "delta-refused", data: { sid: id, why } });
     return;
   }
   awaitingFull.add(id);
@@ -18054,6 +18079,7 @@ function clearAsksForHost(h: string): void {
 // guaranteed) — but an ask parked against the dead socket would gag the new socket's repair path
 // forever (awaitingFull only clears when the reply lands, and the dead socket's never will).
 window.addEventListener("romp:wsup", () => awaitingFull.clear());
+window.addEventListener("romp:wsup", () => { forgetResync(resync); staleAnswerReasked.clear(); });   // …and the base check's history: a fresh kernel-side client (2026-09-23)
 window.addEventListener("romp:wsup", () => pendingFullWhy.clear());   // …and the reasons parked with them
 // …and the same socket-open resets what this page learned on the dead one: the fulls it received there (so the
 // new socket's skeleton list may re-list them — they are stale after the outage; skeleton-tabs.ts) and the
@@ -18132,6 +18158,27 @@ function chatTail(msg: any) {
       // no client is ever detached, T386 stage 2)
       requestFullSession(msg.id, "gap");
       return;
+    }
+    // THE BASE CHECK (2026-09-23, chat-resync.ts): the anchor is resident, but are the events up to it the ones the kernel cut
+    // this delta against? The kernel stamps the n events ending at the anchor (baseFp); a page that holds anything else there
+    // (a turn it never received, a list the kernel's shared baseline says it holds and it does not) applies nothing and asks for
+    // the full, which upsert merges into the held runs. Bounded by event: one ask outstanding per session (requestFullSession's
+    // latch), and a session whose asks do not converge stops asking and applies as before. A delta without the stamp (an older
+    // kernel) skips the check.
+    const fp = msg.baseFp !== undefined ? readBaseFp(msg.baseFp) : null;
+    if (fp && !resync.disarmed.has(msg.id)) {
+      const v = checkBase(kernelEvents.slice(tailStart) as { uuid?: string; key?: string }[], inTail, fp);
+      if (!v.ok) {
+        if (awaitingFull.has(msg.id)) { requestFullSession(msg.id, "resync"); return; }   // an ask is already out: this delta waits on its answer (the latched ask files the row)
+        const d = onMismatch(resync, msg.id);
+        chatDiagRow(d.act === "ask" ? "resync" : "resync-disarmed", { sid: msg.id, reason: v.reason, n: v.n, held: v.held, kernel: v.kernel, page: v.page,
+                                                                        anchor: String(msg.afterUuid).slice(-12), strikes: resync.strikes.get(msg.id) ?? 0 });
+        if (d.act === "ask") { requestFullSession(msg.id, "resync"); return; }
+        // disarmed: two asks in a row did not converge; the delta applies as it did before the check (the row above said so once)
+      } else onAgree(resync, msg.id);
+    } else if (fp) {
+      // disarmed: still read, so the first delta that agrees re-arms the check (the disagreement a full could not change is gone)
+      if (checkBase(kernelEvents.slice(tailStart) as { uuid?: string; key?: string }[], inTail, fp).ok) onAgree(resync, msg.id);
     }
     from = at + 1;
     const inc = (msg.events || []) as ChatEvent[];
@@ -18986,6 +19033,7 @@ function dismissSession(id: string, why: DismissWhy, doomed?: ReadonlySet<string
   sessions.delete(id);
   onDismiss(skeletonTabs, id);   // a tab that left the strip (✕, the kernel's omission, a host drop) has nothing left to load (2026-09-07)
   awaitingFull.delete(id); pendingFullWhy.delete(id);   // …and its parked full ask goes with it (2026-09-19): a tab that left the strip gets no answer, and a latch outliving the tab is an ask nothing will answer
+  staleAnswerReasked.delete(id); forgetResync(resync, id);   // …and its base-check history (2026-09-23)
   liveAsks.delete(id);
   ledgers.delete(id);
   if (why === "close" || why === "end") {

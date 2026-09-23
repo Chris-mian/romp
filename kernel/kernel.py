@@ -19056,9 +19056,11 @@ def _codex():
                 _codex_backend = cxmod.CodexBackend(
                     jd.STATE, notify=_send_to_app,
                     poke=_wake_kernel, push=_pusher_wake.set,
-                    push_session=_stage_default("push.session")(_push_session_now),   # the thread's default mark, as the SDK's
-                    #   above: this backend calls it synchronously under a request's route at set_mode and kill (the route
-                    #   stands) and from its own event loop elsewhere (unmarked: takes push.session)
+                    push_session=_push_session_soon,   # ONE builder of chat frames (2026-09-23): each of this backend's per-event
+                    #   pushes (a turn start, a stream item, a mode flip, a clear) NAMES its sid to the pusher cycle, which builds it
+                    #   at the front of its next build slot. It used to run _push_session_now, a whole-session build beside the
+                    #   cycle's, on every Codex stream event, synchronously under a request's route or on this backend's own event
+                    #   loop; two builds of one session raced to the page. Now a set add and an Event set: nothing builds here.
                     # Let the backend choose ROMP's managed runtime and helpers.
                     # A separately installed CLI on PATH may use a different protocol.
                     # …but honour the one EXPLICIT knob romp already has — ROMP_CODEX_BIN, which the judges read
@@ -38390,6 +38392,21 @@ def _apply_pending_ops(now=None):
                             with _pending_ops_lock:
                                 _inflight_ops.pop(sid, None)
                             break
+                        if clear_why == "":
+                            # The clear happened: the verb swapped the registry row onto a fresh transcript, and this walk runs inside
+                            # a pusher cycle whose memos (_live_scope.sessions, the discover rows; _live_scope.paths, this sid's path)
+                            # the gates above filled with the OLD row before the verb ran, while the cycle's build loop reads them
+                            # after this walk. The reset lived in the Codex backend's push hook while that hook built inside the verb
+                            # (_push_session_now); the hook is _push_session_soon now and only names the sid to the cycle, so it
+                            # resets nothing, and the cleared session's first frame was built from the OLD file (2026-09-23, the
+                            # review of this change). Reset here, before the build loop reads the row: the row memo to a fresh dict
+                            # (jd.discover's own cache follows the registry's mtime, which the swap rewrote) and this sid's path
+                            # dropped; outside a cycle both memos are absent and every read is fresh already.
+                            if getattr(_live_scope, "sessions", None) is not None:
+                                _live_scope.sessions = {}
+                            _p = getattr(_live_scope, "paths", None)
+                            if _p is not None:
+                                _p.pop(sid, None)
                     elif is_compact:
                         # SessionBackend.compact: "" the bracket is up (the backend's compacting() is the cue: no stamp), "busy"
                         # a turn or a compaction already in flight, else the reason. On "busy" the head STAYS with nothing
@@ -39306,7 +39323,7 @@ def _merge_tx_sets(session, sid, t_floor=None):
     return sets
 
 
-def _merge_live_atoms(session, sid, shown_texts=()):
+def _merge_live_atoms(session, sid, shown_texts=(), live=None):
     """Merge in-memory LIVE-TAIL atoms into the parsed session, AHEAD of the transcript on disk, so messages
     appear instantly (the stream / a composer send leads the disk write). NON-MUTATING — `session` is the
     _parse cache, so this returns a shallow copy: the last turn's atoms extended by the fresh tail, and a
@@ -39322,9 +39339,17 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     the event-based queued indicator owns that case. The echo is only HIDDEN, not pruned — once the message
     leaves the queue and its real user atom lands, the normal text-prune retires the echo. So the echo only
     ever shows a NON-queued send: the brief gap before an idle send's real atom lands, and a DROPPED send
-    that never reached the queue or the transcript (the visibility win — the user 2026-06-25)."""
+    that never reached the queue or the transcript (the visibility win — the user 2026-06-25).
+
+    `live`: the tail as the caller snapshotted it BEFORE reading `session` (build_session, 2026-09-23: a tail read after
+    the parse could miss an atom whose record the parse had not read yet); None reads it here, after the parse, the
+    order the other surfaces keep (they send no chat frame).
+
+    The returned copy carries `_streamed`: the uuids of the stream atoms it merged (no echo, no command line), whose
+    events build_session marks `streamed` so the chat wire never anchors a client's base on one (_last_anchor)."""
     be = Sessions.backend_for(sid)             # the owning backend — its live store + prune
-    live = be.live_atoms(sid)
+    if live is None:
+        live = be.live_atoms(sid)
     if not live:
         return session
     # The transcript-side sets come from the per-sid memo (_merge_tx_sets): a function of the parsed
@@ -39443,7 +39468,8 @@ def _merge_live_atoms(session, sid, shown_texts=()):
         turns[-1]["end"] = max(turns[-1].get("end") or 0, max(a.get("t", 0) for a in fresh))
         if live_work:
             turns[-1]["ended"] = False
-    return {**session, "turns": turns, "_placed": placed}
+    streamed = frozenset(a.get("uuid") for a in fresh if a.get("uuid") and not a.get("_echo_text") and not a.get("command"))
+    return {**session, "turns": turns, "_placed": placed, "_streamed": streamed}
 
 
 def _turn_activity_end(turn):
@@ -40086,13 +40112,26 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     _chat_dep_scope.deps = None if path_override else {"task_outs": [], "postal_any": False}
     be = Sessions.backend_for(sid)
     queued = [] if path_override else be.pending_queued(sid)   # override = a closed episode; nothing is live
+    _wm_live = None if path_override else Sessions.live_rev(sid, be)   # read BEFORE the tail is read (the watermark, _chat_wm): _touch_live
+    #                                                                   writes the atoms first and bumps after, so this is a lower bound on the tail the merge folds
+    # THE LIVE TAIL IS READ BEFORE THE TRANSCRIPT (2026-09-23). An atom leaves the shared live tail on exactly two roads: a
+    # prune justified by a parse that holds its record (prune_live, every live merge), and the turn-boundary retire
+    # (SdkBackend.retire_live_work), which runs once the CLI has written what the turn keeps. Either way its record is on
+    # disk BEFORE it leaves the tail. Read in the other order (the parse first, the tail after, as this build did until
+    # today), a build could parse the transcript just before the CLI wrote the turn's last records and read the tail just
+    # after the settle retired their live atoms: the agent's message was then in neither store, and the frame built from
+    # them omitted it. At a turn boundary that frame went out as a full (its base's last edge had gone with the atom), the
+    # page rebuilt its window without the message, and the next delta put it back 120-200 ms later: the blink the live
+    # reproduction caught on both the regression build and the one before it. In this order every atom the snapshot
+    # misses left the tail before the snapshot, so its record was on disk before the parse below read the file (the
+    # parse's key is taken at its read, and the file only grows): the build holds each event in one store or the other.
+    # Another builder's prune can no longer starve this one, whatever parse that builder read.
+    _live_snap = None if path_override else be.live_atoms(sid)
     parsed = _parse(sess["path"], sid, now)
     tm0 = live_map.get(sid)
     compacting_now = (False if path_override else
                       _compacting(sid, (tm0 or {}).get("state", ""), parsed, now, (tm0 or {}).get("since")))
-    _wm_live = None if path_override else Sessions.live_rev(sid, be)   # read BEFORE the tail is read (the watermark, _chat_wm): _touch_live
-    #                                                                   writes the atoms first and bumps after, so this is a lower bound on the tail the merge folds
-    session = parsed if path_override else _merge_live_atoms(parsed, sid, shown_texts=queued)
+    session = parsed if path_override else _merge_live_atoms(parsed, sid, shown_texts=queued, live=_live_snap)
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     uuid2seg, seg_anchors = {}, {}            # atom uuid → seg id; seg id → (promptId, workId) for the dot/bar split
     seg_trig, seg_work = {}, {}               # goal-node DEEP-LINK anchors: prompt = the segment's trigger
@@ -40822,6 +40861,17 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
             _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")
     events = _prefix + events                           # the sealed prefix (same dicts) + this build's tail
     _pref_ids = {id(_e) for _e in _prefix}              # the sealed dicts: read by the uuid pass below, never written
+    # STREAMED events (2026-09-23): an event built from a stream atom the transcript has not recorded yet (the live tail's
+    # merge names them, _merge_live_atoms `_streamed`) wears `streamed`, so the chat wire never ends a client's base on one
+    # (_last_anchor): such an event can leave the kernel's next list before its record joins it (a retry discards a try,
+    # a turn boundary retires the atom), and a base ending on it made the next send a full frame, or a delta anchored past
+    # what the page held. Only this build's own part is walked and written (stream atoms merge into the last turn, which
+    # the fold never seals, and the sealed prefix's dicts are never written in place).
+    _streamed_uuids = session.get("_streamed") if isinstance(session, dict) else None
+    if _streamed_uuids:
+        for _e in events[len(_prefix):]:
+            if _e.get("uuid") in _streamed_uuids:
+                _e["streamed"] = True
     if not path_override and page is None and _n_pref > 0:
         # ── COMMIT the prefix: whole ENDED turns, sealed at a turn boundary the tail cannot reach back
         # across. Recorded from the events as built (a scan of the NEW part only), so the loop body above
@@ -51736,8 +51786,10 @@ def _client_reset_chat_sid(client, sid):
     skeleton before the full that answers the ask goes out (the mark below)."""
     with _client_lock(client):
         client.get("echat", {}).pop(sid, None)
-        client.get("echatWm", {}).pop(sid, None)         # the watermark floor goes with the base: a client holding nothing takes any build (2026-09-22)
         client.get("sent", {}).pop(("chat", sid), None)
+        # the watermark floor (echatWm) STAYS (2026-09-23): the page still holds its frames and refuses an older one, so the
+        # ask's answer must not be older (_send_chat_locked refuses one once, and the cycle builds afresh); `ready` drops it
+        client.get("fullRefused", set()).discard(sid)
         client.get("heldTailFirst", {}).pop(sid, None)   # a stale held-tail key for this sid goes with the base (M3, 2026-09-19)
         _release_skeleton_locked(client, sid)   # a needFull for a skeleton tab (a click, the idle prefetch) loads it
         # The client asked for this sid WHOLE (2026-09-19). A set that does not exist yet cannot be released from: on a
@@ -51776,7 +51828,7 @@ def _client_reset_chat_base(client):
         # …and the reconnect skeleton set (2026-09-07): a renderer that just evaluated holds NOTHING, so there
         # is nothing it could lazily reload — every tab must arrive whole, and the status slots go with the set;
         # and the asked-whole marks (2026-09-19): it asked nothing either, and the connect push below serves the set
-        client.pop("skeleton", None); client.pop("skeletonOrder", None); client.pop("reconnect", None); client.pop("askedFull", None); client.pop("heldTailFirst", None)
+        client.pop("skeleton", None); client.pop("skeletonOrder", None); client.pop("reconnect", None); client.pop("askedFull", None); client.pop("heldTailFirst", None); client.pop("fullRefused", None)
         # A SKELETON client (a later chat column, ?skeleton=1 at its handshake, 2026-09-11): the pop above took the
         # `reconnect` the handshake armed, with the set a pre-ready pusher cycle may have built into a document that
         # could not hear it. Re-armed HERE, from the survivor, so the ready arm's connect push serves the page the same
@@ -53303,20 +53355,65 @@ def _snap_turn_end(tix, q):
 
 
 def _last_anchor(evs):
-    """The uuid a proto-2 client's base ends on: the last event that is neither a trailing overlay card (a todo, a queued
-    or api-error notice comes and goes between builds) nor one of the kernel's transient live-tail keys (an input echo, the
-    command chip: _transient_key, 2026-09-19). Anchoring on either left the next push unable to map the base and sent a
-    full frame; both ride every later delta's suffix instead, so the landing that replaces an echo with the CLI's record is
-    a chatTail after the record before the echo, the road proto-1 clients take. Known, accepted residue: a list of nothing
-    but such events (a transcript-less session whose only event is its first echo) still anchors on its last event and
-    sends one full at that first landing, once per session creation; and the base's FIRST edge can still sit on a transient
-    key when the tail-run cut lands on a placed dropped echo, which takes the existing road for a first edge the list no
-    longer holds (the list's first event is inside what the client holds)."""
+    """The uuid a proto-2 client's base ends on: the last DURABLE event, one that is neither a trailing overlay card (a todo,
+    a queued or api-error notice comes and goes between builds), nor one of the kernel's transient live-tail keys (an input
+    echo, the command chip: _transient_key, 2026-09-19), nor a STREAMED event (a stream atom the transcript has not recorded
+    yet, marked by build_session, 2026-09-23). Anchoring on an overlay or a transient key left the next push unable to map
+    the base and sent a full frame; all three ride every later delta's suffix instead, so the landing that replaces an echo
+    with the CLI's record is a chatTail after the record before the echo, the road proto-1 clients take.
+
+    The streamed exclusion is what makes every delta re-send the page's whole undurable tail. A stream atom's key is its
+    future record's uuid, so fa92e8a4's rule took it for a record and a base could end on it; the atom then left the next
+    list before its record joined it (a retried try's atoms never land, and a settle could retire them before the build's
+    parse had read the record), and the send that followed was a full frame for a base the list no longer held, or, with
+    the shared baseline describing a list this client never took, a delta anchored past a turn it never received. Ending
+    on the last recorded event, the next delta starts at or before the first event the transcript has not recorded, so
+    whatever the page holds past that point is replaced by the kernel's current view every time. The cost is the live
+    suffix riding each delta while the stream leads the disk, a few events.
+
+    Known, accepted residue: a list of nothing but such events (a transcript-less session whose only events are its first
+    echo and the stream answering it) anchors on its last non-overlay, non-transient event, else its last event, and sends
+    one full at that first landing, once per session creation; and the base's FIRST edge can still sit on a transient key
+    when the tail-run cut lands on a placed dropped echo, which takes the existing road for a first edge the list no longer
+    holds (the list's first event is inside what the client holds)."""
+    fallback = None
     for e in reversed(evs):
         if e.get("kind") in _OVERLAY_KINDS or _transient_key(_event_key(e)):
             continue
+        if e.get("streamed"):
+            if fallback is None:
+                fallback = _event_key(e)
+            continue
         return _event_key(e)
+    if fallback is not None:
+        return fallback
     return _event_key(evs[-1]) if evs else None
+
+
+# THE DELTA'S BASE FINGERPRINT (2026-09-23). A proto-2 chatTail says "truncate after afterUuid and append", which is right
+# only if the page's events up to that anchor are the ones the kernel computed the delta against. The kernel cannot know
+# that: a client's base advances when a frame is SENT, not when the page applies it, and the change point is diffed
+# against the SHARED baseline, a lower bound on every base holder that may describe a list this client never took (a
+# frame its own watermark guard refused, a racing builder's list). When the two disagreed before the anchor, the delta
+# applied cleanly onto a page missing a turn, every later delta anchored past the hole, and only a reload repaired it.
+# So every proto-2 delta carries `baseFp`: [n, crc32] over the keys of the n events ending at the anchor, in the list
+# the delta was cut from; the page recomputes it over its own resident tail run and, on any difference (or when it holds
+# fewer than n events there), applies nothing and asks for the full (render.ts chatTail, chat-resync.ts). One integer
+# pair, a few bytes on every delta, and agreeing deltas (the steady state) cost the page one crc and no frame.
+# n is min(K, the events from the client's own first edge to the anchor): the window never reaches above the tail run the
+# client holds, so a page that is in sync can always check it. K = 64: a disagreement sits where two builds of different
+# ages differ, the newest turn (the human message that opened it and the records streamed since), and 64 events cover a
+# reply of some thirty tool round trips behind the anchor. The key list is hashed, not sent, so K costs the wire nothing
+# and each side a join and a crc over at most 64 short keys.
+CHAT_BASE_FP_K = 64
+
+
+def _chat_base_fp(evs, lo, start):
+    """[n, crc32] over the wire keys of evs[lo:start] joined by newlines (UTF-8): the fingerprint of the base a proto-2 delta
+    that appends after evs[start - 1] assumes (CHAT_BASE_FP_K's comment; the page's twin is chat-resync.ts baseFingerprint)."""
+    lo = max(0, min(lo, start))
+    keys = [str(_event_key(e) or "") for e in evs[lo:start]]
+    return [len(keys), zlib.crc32("\n".join(keys).encode("utf-8")) & 0xFFFFFFFF]
 
 
 def _gone_key_label(key):
@@ -53459,6 +53556,9 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                         # on a key): the empty-suffix tail a flag-only change sends is how another window learns the flip
                         "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
                 tail["wm"] = m.get("wm")              # what the build read (_chat_wm), for the page's own stale-build rule (2026-09-22)
+                # …and the base it assumes (2026-09-23): the keys of the events ending at the anchor, from the client's own first
+                # edge at most, so a page that holds anything else before the anchor refuses the delta and asks for the full
+                tail["baseFp"] = _chat_base_fp(evs, max(pf, start - CHAT_BASE_FP_K), start)
                 if led_changed:
                     tail["ledger"] = m.get("ledger")
                 _send_client(c, ("chat", sid), tail, kind="delta")
@@ -53507,6 +53607,7 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     # the echat entry that keeps the sid out of any later set is written; not inside the release, which a click reaches
     # too (an activeTab must not settle an ask no full has answered)
     (c.get("askedFull") or set()).discard(sid)
+    (c.get("fullRefused") or set()).discard(sid)      # …and ends its one refusal of an older build (_send_chat_locked, 2026-09-23)
     m_send = dict(m)
     m_send["events"] = evs[head_from:]
     m_send["proto"] = 2
@@ -53623,11 +53724,27 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
     #                                                    without it is a test's dict modelling a socket past its handshake, and keeps the index wire.
     # A build OLDER than the one this client holds is not sent (2026-09-22, _chat_wm): two builders (the pusher cycle and the
     # targeted push) can hand a client their lists in either order, and the older list, sent as a full or a delta, took a landed
-    # message off the page until a reload (the user 2026-09-22). Only a client that HOLDS a base is protected: one holding
-    # nothing takes any build. The watermark of the build handed is recorded beside every echat write below (_chat_wm_note).
-    if pc is not None and _chat_wm_older(m.get("wm"), (c.get("echatWm") or {}).get(sid)):
-        _note_chat_stale(c, sid, m.get("wm"), (c.get("echatWm") or {}).get(sid))
-        return ms
+    # message off the page until a reload (the user 2026-09-22). A client that HOLDS a base is refused every older build; one
+    # holding none takes any build, except the answer to its own needFull (below). The watermark of the build handed is
+    # recorded beside every echat write below (_chat_wm_note).
+    _floor = (c.get("echatWm") or {}).get(sid)
+    if _floor is not None and _chat_wm_older(m.get("wm"), _floor):
+        if pc is not None:
+            _note_chat_stale(c, sid, m.get("wm"), _floor)
+            return ms
+        # A client holding NO base but a floor asked for this session whole (a needFull keeps the floor, 2026-09-23): the page
+        # still holds what it was sent and refuses a frame older than that, so this build would answer its ask with a frame
+        # it drops, and its one ask would stay latched. Refused ONCE per ask, and the cycle is told to build the sid afresh
+        # (its cached copy dropped, the sid named to the next build slot): a fresh build reads a world at least as new as the
+        # floor, since the transcript only grows and the live revision only rises. A second older build for the same ask is
+        # sent all the same: a full always wins over a floor that no build can meet, so the ask is answered either way.
+        _refused = c.setdefault("fullRefused", set())
+        if sid not in _refused:
+            _refused.add(sid)
+            _note_chat_stale(c, sid, m.get("wm"), _floor)
+            _built_chat.pop(sid, None)
+            _push_session_soon(sid)
+            return ms
     if c.get("proto") == 2:
         return _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc)
     if isinstance(pc, dict):
@@ -53653,6 +53770,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
     head_from = max(0, total - WIRE_TAIL)
     _release_skeleton_locked(c, sid)                  # a full send loads a skeleton tab, whoever sent it (2026-09-07)
     (c.get("askedFull") or set()).discard(sid)        # …and answers a needFull (2026-09-19): the mark goes with the echat write, as in _send_chat_proto2
+    (c.get("fullRefused") or set()).discard(sid)      # …and ends its one refusal of an older build (2026-09-23)
     if head_from == 0:
         if ms is None:
             ms = json.dumps(m)                        # materialize the lazy serialization, once
@@ -57534,8 +57652,12 @@ def _push_session_now(sid):
     # memo to a fresh dict (the fingerprinted cache under it, jd.discover, follows the registry's mtime, which the
     # swap rewrote, so no reset there) and this sid's path dropped, so this build and every build after it in the
     # cycle resolve the row as it is now. The sessions reset carries the weight (_path_of resolves through
-    # _sessions); a reset in the drain's arm alone would come too late for this frame. Outside a cycle both memos
-    # are absent and every read is fresh already.
+    # _sessions). A reset in the drain's arm alone came too late for this frame while the Codex backend's hook was
+    # this function, building inside the verb; that hook is _push_session_soon since 2026-09-23, which only names the
+    # sid to the cycle and builds nothing, so the drain's clear arm (_apply_pending_ops) now resets the same two memos
+    # itself once the verb answers that the clear happened, in time for the cycle's build of the cleared session. The
+    # reset here stays for the callers that still build through this function (the creates, a fork, a comment's
+    # promotion) and for the SDK backend's hook. Outside a cycle both memos are absent and every read is fresh already.
     if getattr(_live_scope, "sessions", None) is not None:
         _live_scope.sessions = {}
     _paths = getattr(_live_scope, "paths", None)
