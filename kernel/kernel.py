@@ -55,6 +55,7 @@ cm = load_source("romp_colormap", HERE / "colormap.py")  # age → recency tint
 pal = load_source("romp_palette", HERE / "palette.py")  # session-identity palettes (selectable)
 sb = load_source("romp_session_backend", HERE / "session_backend.py")  # the SessionBackend ABC
 lg = load_source("romp_logins", HERE / "logins.py")  # stored Claude logins (T346): the registry beside the machine's own login
+gp = load_source("romp_gitpr", HERE / "gitpr.py")  # git/gh reads behind the per-goal PR chip
 gcf = load_source("romp_gc_freeze", HERE / "gc_freeze.py")  # Road B for #1735: freeze the loaded decoded heap out of the collector's walk
 CHAT_VIEW = ROOT / "vscode-extension"               # the tuned UI, current in this worktree via `git merge main`
 # ROMP_DIST_DIR: test seam (romp-lab serves a COPY of the built bundles, so its rebuild simulations —
@@ -3688,6 +3689,102 @@ def _session_cwd(sid, path=None, meta=None):
     if meta is None and path:
         meta = _session_meta(path)
     return (meta or {}).get("cwd") or ""
+
+
+def _node_pr_nums(nd, repo):
+    """The PR numbers this goal opened IN THIS SESSION'S REPO (from the judge's stored prRefs). The judge
+    records every ref it saw, because it has the atoms but not the checkout; the filter belongs here, where
+    the remote is known. A ref for another repo is a PR mentioned in passing, not this goal's artifact —
+    and with no GitHub remote nothing qualifies at all (the user 2026-08-17)."""
+    if not repo:
+        return []
+    out = []
+    for ref in (nd.get("prRefs") or []):
+        try:
+            # An EMPTY owner means the judge read the number out of a `gh pr …` command, which acts on the
+            # checkout it ran in — this session's repo. Any other owner is a PR somewhere else.
+            if (ref[0] == repo or ref[0] == "") and int(ref[1]) not in out:
+                out.append(int(ref[1]))
+        except Exception:
+            continue        # a malformed stored ref is skipped, never allowed to break a build pass
+    return out
+
+
+def _pr_work_dir(sid, tpath):
+    """The directory whose git state describes what a session is actually doing.
+
+    NOT the registered cwd. This repo's own convention puts real work on a per-session WORKTREE beside the
+    registered clone — and that clone is typically detached at a release tag, so reading the registered dir
+    reports no branch at all and every PR chip would go dark on exactly the setup the pane exists for. The
+    newest write-tool file_path names the real tree (the same edit-as-evidence the session's workTree row
+    already uses, `_tree_of` + `lastEditPath`); the registered dir is the fallback when nothing has been
+    edited yet (the user 2026-08-18, found by probing the live sessions: all 17 read as detached)."""
+    top, _br = _tree_of(os.path.dirname((_session_meta(tpath) or {}).get("lastEditPath") or "") or "")
+    return top or _cwd_of(sid)
+
+
+_pr_push_seen = {}   # sid → the push-command count last seen in its transcript
+
+
+def _pr_note_push(sid, repo, count):
+    """Invalidate this repo's PR cache when a session's transcript gained a push / gh-pr call since the
+    last pass. A push moves REMOTE state only — HEAD and branch are unchanged — so without this event the
+    cache keeps serving the checks as they stood BEFORE the push. True when it fired."""
+    prev = _pr_push_seen.get(sid)
+    _pr_push_seen[sid] = count
+    if not repo or prev is None or count <= prev:
+        return False        # first sight is not an event: the count is history, not something that moved
+    gp.note_push_turn(repo)
+    return True
+
+
+def _session_pr_slice(repo, branch, ahead, prs, err, node_nums):
+    """The session-level PR payload the Outline pane reads: its branch, that branch's PR, and only the PRs
+    this session actually references (a repo can hold a hundred; the pane needs this session's).
+
+    `live` is stamped HERE, off the AHEAD COUNT — an event (a commit, a completed push), never the
+    open-turn bit, which toggles at every turn boundary and would flap the chip between builds with no new
+    information.
+
+    A non-empty `err` means we could not look: `prs` goes None so the pane renders the reason rather than
+    an authoritative-looking blank that would read as "no PR"."""
+    if not repo:
+        return {"branch": "", "prNum": None, "prs": None, "prError": None}
+    if err:
+        return {"branch": branch, "prNum": None, "prs": None, "prError": err}
+    cur = next((n for n, pr in sorted(prs.items()) if branch and pr.get("branch") == branch), None)
+    out = {}
+    for n in set(node_nums) | ({cur} if cur else set()):
+        pr = prs.get(n)
+        if pr:
+            out[str(n)] = {**pr, "live": bool(branch and pr.get("branch") == branch and ahead > 0)}
+    return {"branch": branch, "prNum": cur, "prs": out or None, "prError": None}
+
+
+def _session_pr_payload(sid, ledger, work_tree=None):
+    """The session's PR slice, assembled from its own checkout: one local git probe trio (~3ms) plus a
+    per-REPO gh read that is cached and invalidated by event, never by age (see gitpr).
+
+    `work_tree` is the session payload's own detected worktree (None when it matches the registered dir),
+    reused here rather than re-derived so the chips describe the SAME tree the session's worktree row
+    names. Without it a session working in a per-session worktree beside a detached clone would report no
+    branch at all — the live case on this machine (the user 2026-08-18)."""
+    wt = (work_tree or {}).get("dir") or ""
+    cwd = os.path.expanduser(wt) if wt else _cwd_of(sid)
+    repo = gp.repo_of(cwd)
+    if not repo:
+        return {"branch": "", "prNum": None, "prs": None, "prError": None}
+    gp.note_local_state(cwd, repo)              # a new HEAD sha or a branch change → re-read this repo
+    gp.poll_due(repo, time.monotonic())         # checks still running → paced re-read; stops when terminal
+    nums = set()
+    for n in ((ledger or {}).get("tree") or []):
+        nums.update(n.get("prNums") or [])
+    # Non-blocking by contract: serves the cache and refreshes behind. Anything gh-shaped — the list, the
+    # per-PR checks, a mined PR older than the list window — happens on that background pass, because this
+    # function runs inside the per-push build and a 5s network call here stalls every pane.
+    prs, err = gp.repo_prs(repo, nums)
+    return _session_pr_slice(repo=repo, branch=gp.branch_of(cwd), ahead=gp.ahead_of(cwd),
+                             prs=prs, err=err, node_nums=nums)
 
 
 def _identity_of(sid):
@@ -39053,7 +39150,11 @@ def _session_meta(path):
 
 
 def _session_meta_fresh():
-    return {"cwd": "", "gitBranch": "", "version": "", "permissionMode": "", "lastEditPath": ""}
+    # pushCount = how many Bash calls in this transcript pushed or acted on a PR. A push moves REMOTE state
+    # while HEAD and branch stay put, so nothing else in a build pass would notice that a PR's checks just
+    # restarted; a RISE in this count is that event.
+    return {"cwd": "", "gitBranch": "", "version": "", "permissionMode": "", "lastEditPath": "",
+            "pushCount": 0}
 
 
 def _session_meta_step(meta, o):
@@ -39070,12 +39171,16 @@ def _session_meta_step(meta, o):
             meta["permissionMode"] = o["permissionMode"]
         if o.get("type") == "assistant":
             for blk in (o.get("message") or {}).get("content") or []:
-                if (isinstance(blk, dict) and blk.get("type") == "tool_use"
-                        and blk.get("name") in _EDIT_TOOLS):
+                if not (isinstance(blk, dict) and blk.get("type") == "tool_use"):
+                    continue
+                if blk.get("name") in _EDIT_TOOLS:
                     fp = (blk.get("input") or {}).get("file_path") or \
                          (blk.get("input") or {}).get("notebook_path")
                     if isinstance(fp, str) and fp.startswith("/"):
                         meta["lastEditPath"] = fp
+                elif blk.get("name") == "Bash" and \
+                        gp.is_push_command((blk.get("input") or {}).get("command") or ""):
+                    meta["pushCount"] += 1
     except Exception:
         pass
     return meta
@@ -39866,8 +39971,11 @@ def _stamp_interrupt_causes(events):
 # same rows from the store alone: every node with its child ids and the done / derived / cleared / blocked / current / onpath flags,
 # the two deep-link anchors from the parsed transcript's segments when `anchors` (the build), None when not (the store holds the
 # position; a cold tab has no landing). Pure over the store, the segment maps and the cleared set; the callers memoize.
-def _goal_tree_walk(sid, gstore, seg_trig=None, seg_work=None, anchors=True):
-    """(tree, live_roots) for `sid`'s goal store: the ledger's rows in recency order and the live top-level goals."""
+def _goal_tree_walk(sid, gstore, seg_trig=None, seg_work=None, anchors=True, pr_repo=""):
+    """(tree, live_roots) for `sid`'s goal store: the ledger's rows in recency order and the live top-level goals.
+
+    `pr_repo` filters each row's prNums to the session's own GitHub repo; "" leaves the rows' PR chips empty,
+    which is what a caller with no checkout to probe (the Outline's provisional row) wants."""
     gnodes = gstore.get("nodes", {}) if gstore is not None else {}
     gstatus = gstore.get("status", {}) if gstore is not None else {}
     gcleared = _cleared_ids_display()                    # the Outline's per-node cleared flag: a display derivation, the last landed set while the log cannot be read (round three of PR 2032)
@@ -39979,6 +40087,9 @@ def _goal_tree_walk(sid, gstore, seg_trig=None, seg_work=None, anchors=True):
                      # the distiller's takeaway (done) / the block-distiller's decision brief (blocked),
                      # null until produced — the ledger row's ⊕ expander reveals it inline (the user 2026-06-21)
                      "summary": nd.get("summary"), "blockSummary": nd.get("blockSummary"),
+                     # the PRs this goal's work opened, filtered to THIS session's repo (judge prRefs) —
+                     # the join key into the session's `prs` map, which carries the live state (2026-08-17)
+                     "prNums": _node_pr_nums(nd, pr_repo) or None,
                      "children": [c for c in kids if c in gnodes]})
         for c in kids:
             _twalk(c, depth + 1, ancestor_done=explicit or derived, ancestor_cleared=clr)
@@ -41309,6 +41420,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # rebuilt for an input the walk never reads (a states row, the task store, the judge generation) used to
     # walk its whole goal tree again; counters ride /perf under memos.chatLedger.
     _ck = _stat_key(jd.STATE / "cleared.jsonl")
+    # this session's own GitHub repo — the filter for its goals' PR refs, read from the tree it EDITS in
+    # rather than its registered dir (_pr_work_dir). In the memo key: a session that moves trees changes
+    # which refs its rows may show.
+    _pr_repo = gp.repo_of(_pr_work_dir(sid, sess["path"]))
     _lkey, _lhit = None, None
     if session is not parsed:
         _chat_memo_bump(_ledger_memo_stats, "bypass_live")
@@ -41317,7 +41432,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     elif not (gstore and gstore.get("nodes")):
         _chat_memo_bump(_ledger_memo_stats, "bypass_empty")
     else:
-        _lkey = (_seams_sig, _ck, _node_anchor_rev.get(sid, 0))
+        _lkey = (_seams_sig, _ck, _node_anchor_rev.get(sid, 0), _pr_repo)
         _lent = _ledger_memo.get(sid)
         if _lent is not None and _lent[0] == _lkey and _lent[1] is parsed and _lent[2] is gstore:
             _lhit = _lent
@@ -41325,7 +41440,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
         _chat_memo_bump(_ledger_memo_stats, "hit")
         tree, _live_roots = _lhit[3], _lhit[4]       # the memo's own lists: the ledger slices them, nothing writes a row
     else:
-        tree, _live_roots = _goal_tree_walk(sid, gstore, seg_trig, seg_work, anchors=True)   # the shared walk (plans/outline-pane-provisional-row.md): the Outline's provisional row takes the same over the store alone
+        tree, _live_roots = _goal_tree_walk(sid, gstore, seg_trig, seg_work, anchors=True, pr_repo=_pr_repo)   # the shared walk (plans/outline-pane-provisional-row.md): the Outline's provisional row takes the same over the store alone
         if _lkey is not None:
             _chat_memo_bump(_ledger_memo_stats, "miss")
             _ledger_memo[sid] = (_lkey, parsed, gstore, tree, _live_roots)
@@ -41542,6 +41657,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # effect + this session's model / cwd / branch / permission-mode / version (NOT the harness prompt —
     # see _claudemd_docs). Only when there's a real transcript to describe AND something to show.
     meta = _session_meta(sess["path"])
+    _pr_note_push(sid, _pr_repo, meta.get("pushCount") or 0)   # a push since last pass → re-read this repo's PRs
     # The registry's dir FIRST (known before the first turn; a move rewrites it at once), the transcript's
     # stamp only as a fallback — _session_cwd says why, and the feed's session rows take the same derivation.
     scwd = _session_cwd(sid, meta=meta)
@@ -57412,6 +57528,9 @@ def _push(targets, connect=False, live_map=None):
             if (chat_sessions or want_fleet) and not feed.get("off"):   # off (T404 round two, low 4): the outline shows its notice; no ledgers, no archived tops
                 feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
                                     "status": m.get("status"),
+                                    # this session's branch, that branch's PR and the live state of every
+                                    # PR its goals opened — the Outline pane's chips (the user 2026-08-17)
+                                    **_session_pr_payload(m["id"], m.get("ledger"), m.get("workTree")),
                                     **_mail_off_fields(m["id"]),   # the Sessions pane shows a mail-off session and why (T356), from one derivation
                                     # attach the archived-completed TOP tasks so the Fleet's "Show completed"
                                     # can surface a finished+archived session (the user 2026-06-27); cached, so

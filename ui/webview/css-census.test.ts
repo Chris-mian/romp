@@ -41,7 +41,11 @@ const EXACT: Record<string, number> = {
   // as a token (the light override resolves through var(--st-needs-fg)), so it stays a literal like styles.css keeps it.
   "gear.css": 13,
   "strip.css": 8,
-  "fleet-pane.css": 8,   // 9 until 2026-09-21: the hover card's Needs you mark resolved its red through --st-needs-bg (plans/needs-you.md), the literal now its var() fallback
+  // 8 until the per-goal PR chip: +11 for the PR-state palette (open / merged / closed, checks pass / fail / running),
+  // which no sheet defines as tokens; the chip's own accent and its live wash resolve through var(--accent) and
+  // var(--accent-wash). 9 until 2026-09-21: the hover card's Needs you mark resolved its red through --st-needs-bg
+  // (plans/needs-you.md), the literal now its var() fallback
+  "fleet-pane.css": 19,
   "timeline-pane.css": 10,
 };
 
