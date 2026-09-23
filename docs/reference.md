@@ -5182,7 +5182,10 @@ One thing that used to sit there does travel now: the order you drag your tabs
 into. Your kernel keeps it — one arrangement for the tab strip, the timeline's
 lanes and the feed's groups at once — and serves it to every browser, phone and
 editor panel looking at that kernel, so they all read the same. Dragging
-anywhere moves it everywhere, as it happens; the last drag wins. Sessions
+anywhere moves it everywhere, as it happens; the last drag wins. A browser
+opening for the first time, or after its storage was cleared, takes the
+arrangement rather than replacing it, and a drag made while a page is
+disconnected lands over whatever another device arranged meanwhile. Sessions
 running on attached machines are arranged in with the rest, and the kernel keeps
 the list without reading it: it can neither order nor prune sessions belonging to
 a machine it has never heard of, which is why the arranging itself stays in the

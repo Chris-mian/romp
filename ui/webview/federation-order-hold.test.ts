@@ -34,6 +34,7 @@ const orders = (emitted: any[]) => emitted.filter((m) => m && m.type === "tabOrd
 
 test("a synthetic re-emission before the local kernel's strip emits no order; a remote host's fresh push emits; the local arrival emits, and re-emissions flow after it", () => {
   withManager((fm, emitted) => {
+    fm.inbound("", { type: "viewOrder", order: [], stored: false });   // heard on this connection: the page may fold host reports into the arrangement (view-order.ts ViewOrderPublisher)
     fm.emitMergedOrder();                                            // a view-order storage event, a caps adoption, a closed fold, a host drop
     assert.deepEqual(orders(emitted), [], "an empty store is not the board: nothing is emitted");
     fm.inbound("TESTHOST", { type: "tabOrder", order: [U], tabs: tabs(U) });
@@ -87,6 +88,7 @@ test("through start(): a view-order storage event on a fresh page (the window th
 
 test("the arrangement prune respects live: a strip omitting a live id (T258) keeps its slot instead of dropping it and re-adopting it at the end", () => {
   withManager((fm, emitted, store) => {
+    fm.inbound("", { type: "viewOrder", order: [], stored: false });   // heard on this connection: the page may fold host reports into the arrangement (view-order.ts ViewOrderPublisher)
     fm.inbound("", { type: "tabOrder", order: [A, B, C], tabs: tabs(A, B, C), live: [A, B, C] });
     assert.deepEqual(JSON.parse(store.get(VIEW_ORDER_SHARED_KEY)!), [A, B, C], "the first report adopts every arrival");
     fm.inbound("", { type: "tabOrder", order: [A, C], tabs: tabs(A, C), live: [A, B, C] });   // B's transcript briefly unreadable: omitted, still live

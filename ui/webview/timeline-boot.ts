@@ -12,7 +12,7 @@
 // headlessly; timeline-main.ts is the thin entry that wires it to the real
 // window.
 
-import { setViewOrderPublisher, writeViewOrder } from "./view-order";
+import { hearSharedOrder, setViewOrderPublisher, writeViewOrder, type ViewOrderPublisher } from "./view-order";
 import { hearSharedFolds, parseTabGroups, setFoldsPublisher, writeTabGroups, type TabFolds } from "./tab-groups";
 
 export type Post = (m: Record<string, unknown>) => void;
@@ -57,16 +57,31 @@ export function dispatchFrame(panel: any, m: any): boolean {
   // kernel's answer to an op it does not know — a refusal of that write, and the cap is withdrawn
   if (m.type === "caps" && panel.setCaps) { panel.setCaps(m); return true; }
   if (m.type === "unknownOp" && panel.unknownOp) { panel.unknownOp(m); return true; }
-  // the viewer's FOLDS the kernel keeps (2026-09-23), the viewOrder frame's `folds` half: adopted into this webview's
-  // store (the view repaints on the store's event), or this webview's own published when the kernel keeps none, and
-  // from then on a fold here is published through the host pipe (tab-groups.ts hearSharedFolds). A browser page never
-  // gets here: its federation manager consumes the frame. The arrangement half is not the timeline's to adopt here.
+  // the viewer's ARRANGEMENT and FOLDS the kernel keeps (2026-09-23), the two halves of the viewOrder frame, each read
+  // only when the frame carries it. The arrangement: heard here, which is what lets a lane drag in this webview be
+  // published at all (view-order.ts hearSharedOrder: a drag made before it lands over the kernel's list, and the
+  // publisher is installed only now); this view does not re-sort its own lanes by it, and the cache it adopts is what
+  // the next drag is measured from. The folds: adopted into this webview's store (the view repaints on the store's
+  // event), or this webview's own published when the kernel keeps none, and from then on a fold here is published
+  // through the host pipe (tab-groups.ts hearSharedFolds). A browser page never gets here: its federation manager
+  // consumes the frame.
   if (m.type === "viewOrder") {
+    if (Array.isArray(m.order) && orderPost) {
+      const served = m.order.filter((x: any) => typeof x === "string");
+      hearSharedOrder(served, m.stored === true, orderPost, setViewOrderPublisher);
+    }
     if ("folds" in m && foldsPost) hearSharedFolds(m.folds, foldsPost, setFoldsPublisher);
     return true;
   }
+  // (No drop edge to withdraw the arrangement's publisher on: the extension gives this view no pipe-state frame, and
+  // its reconnect reloads the webview — a fresh page, which hears afresh. A lane drag made while the pipe is down
+  // still rides its queue.)
   return false;
 }
+
+// the host pipe an arrangement is published through, set by bridgeFunctions (which holds `post`); installed as the
+// publisher only once the kernel's arrangement has reached this page (dispatchFrame's viewOrder arm)
+let orderPost: ViewOrderPublisher | null = null;
 
 // the host pipe a fold is published through, set by bridgeFunctions (which holds `post`); null before the bridge exists
 let foldsPost: ((f: TabFolds) => void) | null = null;
@@ -108,8 +123,9 @@ export function bridgeFunctions(post: Post): Record<string, (...a: any[]) => voi
   // This page has no federation manager, so nothing publishes the window slot a browser pane's arrangement
   // rides (view-order.ts viewOrderPublisher); the host pipes every message to the kernel verbatim, so the
   // bridge's own `post` is the channel (2026-09-23). Without it a lane drag here would move this webview's
-  // lanes and nobody else's.
-  setViewOrderPublisher((order) => post({ type: "setViewOrder", order: order.slice() }));
+  // lanes and nobody else's. Installed as the publisher only once the kernel's arrangement has been heard
+  // (dispatchFrame's viewOrder arm; view-order.ts ViewOrderPublisher says why).
+  orderPost = (order) => post({ type: "setViewOrder", order: order.slice() });
   // …and the folds' channel, installed as their publisher only once the kernel's folds have reached this page
   // (dispatchFrame's viewOrder arm; tab-groups.ts FoldsPublisher says why)
   foldsPost = (f) => post({ type: "setViewFolds", folds: f });

@@ -133,11 +133,12 @@ test("a fold goes to the LOCAL kernel whole, and every page hears the folds thro
   assert.deepEqual(routeOutbound({ type: "setViewFolds", folds: { collapsed: ["api"], expanded: [], pinned: [{ sid: "TESTHOST:web", name: "api" }] } }, new Set(["TESTHOST"])),
     [{ host: "", msg: { type: "setViewFolds", folds: { collapsed: ["api"], expanded: [], pinned: [{ sid: "TESTHOST:web", name: "api" }] } } }]);
   // a page with a manager: the frame's folds half, only from the local kernel, and the window slot installed there
-  assert.match(FED, /if \("folds" in m\) \{\s*\n\s*const w = window as any;\s*\n\s*hearSharedFolds\(m\.folds, \(f\) => this\.outbound\(\{ type: "setViewFolds", folds: f \}\), \(fn\) => \{ w\.__rompPublishViewFolds = fn; \}\);/);
+  assert.match(FED, /if \("folds" in m\) \{\s*\n\s*hearSharedFolds\(m\.folds, \(f\) => this\.outbound\(\{ type: "setViewFolds", folds: f \}\), \(fn\) => \{ w\.__rompPublishViewFolds = fn; \}\);/);
+  assert.match(FED, /if \(m && m\.type === "viewOrder"\) \{\s*\n\s*if \(host !== LOCAL\) return;\s*\n\s*const w = window as any;/, "…`w` the frame's window, shared with the arrangement half");
   assert.ok(FED.indexOf('if (m && m.type === "viewOrder") {') < FED.indexOf('if ("folds" in m) {') && /if \(m && m\.type === "viewOrder"\) \{\s*\n\s*if \(host !== LOCAL\) return;/.test(FED),
     "a remote kernel's folds are never adopted: they belong to whoever sits in front of that machine");
-  assert.doesNotMatch(FED.slice(FED.indexOf("w.__rompPublishViewOrder ="), FED.indexOf("this.poll();", FED.indexOf("w.__rompPublishViewOrder ="))), /__rompPublishViewFolds =/,
-    "start() installs no fold publisher: a page speaks for the folds only once it has heard them");
+  assert.doesNotMatch(FED.slice(FED.indexOf("  start(): void {"), FED.indexOf("this.poll();", FED.indexOf("  start(): void {"))), /__rompPublishViewFolds =|__rompPublishViewOrder =/,
+    "start() installs no publisher of either half: a page speaks for the folds and the order only once it has heard them");
   assert.match(FED, /w\.__rompWriteTabGroups = \(blob: unknown\) => writeTabGroups\(parseTabGroups\(JSON\.stringify\(blob \?\? \{\}\)\)\);/, "the raw timeline view's one write");
   // a VS Code chat webview: its own frame branch, publishing through its host pipe
   assert.match(RENDER, /if \("folds" in m\) hearSharedFolds\(m\.folds, \(f\) => vscodeApi\?\.postMessage\(\{ type: "setViewFolds", folds: f \}\), setFoldsPublisher\);/);

@@ -49,7 +49,7 @@ import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glo
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
 import { onHostSocketUp } from "./skeleton-tabs";   // the relay's reopen forgets what loaded on the dead relay socket (2026-09-23)
 import { reconcileTabOrder, adoptArrival } from "./tab-order";
-import { adoptSharedOrder, applyViewOrder, readViewOrder, setViewOrderPublisher, viewOrderToPublish, writeViewOrder } from "./view-order";   // the read: a page with no federation manager arranges its own strip (applyTabOrder, frame-listener.ts paneArranges)
+import { applyViewOrder, hearSharedOrder, readViewOrder, setViewOrderPublisher, writeViewOrder } from "./view-order";   // the read: a page with no federation manager arranges its own strip (applyTabOrder, frame-listener.ts paneArranges)
 import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionRef, isPinned, setPinned, prunePinned, reachableFrom, headWords,
          followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, revealedTabs, phoneStandIns, hearSharedFolds,
          setFoldsPublisher, TABGROUPS_KEY, TABGROUPS_SHARED_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
@@ -5743,14 +5743,6 @@ function fadedColor(hex: string, amount = 1): string {
 // NOTHING re-sorts on a status/activity push. The whole reconciliation is the pure `reconcileTabOrder`
 // (./tab-order). This replaced a parallel client sort (effIdx + a firstSeen tiebreaker) that diverged from
 // the kernel and made tabs jump on ordinary activity — invisible to the kernel's own (passing) order tests.
-
-// A page that never has a federation manager (a VS Code webview — frame-listener.ts paneArranges) is a
-// viewer of this kernel like any other, so it publishes its arrangement the same way (2026-09-23). Its
-// host pipes every message to the kernel verbatim, so this slot is all the wiring it needs; the browser
-// page leaves it alone and uses the window slot federation.js publishes instead (view-order.ts
-// viewOrderPublisher). A page whose manager is MISSING installs nothing: it shows the seed and refuses
-// drags, and an order that never passed through the arrangement must never be published.
-if (paneArranges(window as any)) setViewOrderPublisher((o) => vscodeApi?.postMessage({ type: "setViewOrder", order: o.slice() }));
 
 // Persist the current full tab order. Called only after a drag — the one client action that changes it.
 //
@@ -19280,6 +19272,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // the pipe's down edge is the VS Code twin of the shim's romp:wsdown: unconfirmed sends say so (markPendingLost)
   if (m.type === "pipeState" && m.up) reaskWaitingSubagents();   // the extension's reconnect-class event (it never sees romp:wsup), T355
   if (m.type === "pipeState" && m.up) forgetHeldWm(sessions, null);   // …and the held watermarks go (frame-guard.ts, 2026-09-23): the kernel behind the pane's pipe may be a fresh process whose live-tail revision restarted at 0
+  if (m.type === "pipeState" && !m.up && paneArranges(window as any)) setViewOrderPublisher(null);   // the pipe that heard the kernel's arrangement is gone: stop speaking for it until the next connection's viewOrder frame (view-order.ts ViewOrderPublisher, 2026-09-23)
   if (m.type === "pipeState") { if (!m.up) { markPendingLost("connection"); onWireDown(); } pipeBanner(!!m.up, Number(m.queued) || 0); return; }   // the pane's down edge clears the in-flight asks as the socket's does (round nine, medium 2)
   // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
   // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's
@@ -19683,13 +19676,17 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // never sees this frame: the manager consumes it and re-emits the three merged surfaces arranged. The
   // pane's current `order` stands in for the seed: it is the kernel's list already arranged by the order
   // this frame replaces, so ids the new arrangement does not name keep the places they are showing in.
-  // Each half only when the frame carries it: the kernel leaves out a half whose store it could not read.
+  // Such a page is a viewer of this kernel like any other (2026-09-23): its host pipes every message through
+  // verbatim, so HEARING this frame is also what installs its publisher (view-order.ts hearSharedOrder; a drag
+  // made before it lands over the kernel's list), and the pipe's down edge (pipeState, below) withdraws it. A page
+  // whose manager is MISSING never gets here (paneArranges is false): it shows the seed and refuses drags, and an
+  // order that never passed through the arrangement must never be published.
+  // Each half only when the frame carries it: the kernel leaves out a half whose store it could not read (and a page
+  // not told the arrangement stays unheard, so it does not speak for it).
   else if (m.type === "viewOrder" && paneArranges(window as any)) {
     if (Array.isArray(m.order)) {
       const served = m.order.filter((x: any) => typeof x === "string");
-      const mine = viewOrderToPublish(m.stored === true, readViewOrder());
-      if (mine) writeViewOrder(mine);
-      else if (adoptSharedOrder(served)) {
+      if (hearSharedOrder(served, m.stored === true, (o) => vscodeApi?.postMessage({ type: "setViewOrder", order: o.slice() }), setViewOrderPublisher)) {
         const arranged = applyViewOrder(order, readViewOrder());
         order.length = 0;
         for (const id of arranged) order.push(id);

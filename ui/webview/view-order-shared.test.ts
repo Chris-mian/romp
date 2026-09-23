@@ -11,9 +11,9 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
-  adoptSharedOrder, applyViewOrder, readViewOrder, setViewOrderPublisher, viewOrderPublisher,
+  adoptSharedOrder, applyViewOrder, hearSharedOrder, mergeOrder, readViewOrder, setViewOrderPublisher, viewOrderPublisher,
   viewOrderToPublish, writeViewOrder,
-  VIEW_ORDER_EVENT, VIEW_ORDER_KEY, VIEW_ORDER_SHARED_KEY,
+  VIEW_ORDER_EVENT, VIEW_ORDER_KEY, VIEW_ORDER_PENDING_KEY, VIEW_ORDER_SHARED_KEY,
 } from "./view-order";
 
 const A = "11111111-2222-4333-8444-000000000001";
@@ -174,4 +174,79 @@ test("the list handed to the kernel interleaves hosts — the thing no kernel co
     assert.deepEqual(b.published, [[A, FAR, B]],
       "a local session sits between two of the server's, and that whole list is what the kernel keeps");
   });
+});
+
+// ── the hearing gate (review find on #2062, 2026-09-23) ────────────────────────────────────────────────
+// A page that has not heard the kernel's arrangement does not speak for it: a new device used to answer the
+// connect push's strip by publishing the kernel's seed order over the arrangement on every other device.
+const C = "11111111-2222-4333-8444-000000000004";
+const D = "11111111-2222-4333-8444-000000000005";
+
+test("mergeOrder: with nothing moved since the base, the kernel's arrangement stands exactly", () => {
+  assert.deepEqual(mergeOrder([A, B, C], [A, B, C], [C, B, A]), [C, B, A]);
+  assert.deepEqual(mergeOrder([], [], [C, A]), [C, A], "no drag at all");
+});
+
+test("mergeOrder: a moved id is put back beside the neighbour it was dropped next to, in the kernel's order", () => {
+  // shown [A,B,C,D]; the user dropped B after C; meanwhile another device brought D to the front
+  assert.deepEqual(mergeOrder([A, B, C, D], [A, C, B, D], [D, A, B, C]), [D, A, C, B]);
+  // a move to the very front goes before its nearest unmoved follower
+  assert.deepEqual(mergeOrder([A, B, C], [C, A, B], [B, A, C]), [B, C, A]);
+});
+
+test("mergeOrder: an id the base never showed is not attributed to the drag", () => {
+  // a newcomer the page showed at the end AFTER the base was taken keeps the kernel's place (first), not the end
+  assert.deepEqual(mergeOrder([A, B], [B, A, FAR], [FAR, A, B]), [FAR, B, A]);
+});
+
+test("mergeOrder: a dragged id the kernel's arrangement does not hold is still placed where it was dropped", () => {
+  assert.deepEqual(mergeOrder([A, B, C], [B, A, C], [C, A]), [C, B, A]);
+});
+
+test("before the kernel's arrangement is heard, a drag is shown and kept pending — never published", () => {
+  inBrowser((b) => {
+    setViewOrderPublisher(null);                                    // not heard: no publisher on this page
+    (globalThis as any).window.__rompShownOrder = () => [A, B, C];  // what the strip shows (federation.ts)
+    writeViewOrder([B, A, C]);
+    assert.deepEqual(b.published, []);
+    assert.deepEqual(read(b, VIEW_ORDER_SHARED_KEY), [B, A, C], "the page shows the drag at once");
+    assert.deepEqual(read(b, VIEW_ORDER_PENDING_KEY), [A, B, C], "measured from what the user was looking at");
+    writeViewOrder([C, B, A]);
+    assert.deepEqual(read(b, VIEW_ORDER_PENDING_KEY), [A, B, C], "a second drag keeps the first base: the pending change is every drag since");
+  });
+});
+
+test("hearing a kernel that holds an arrangement: a cold page adopts it and publishes nothing", () => {
+  inBrowser((b) => {
+    setViewOrderPublisher(null);
+    const sent: string[][] = [];
+    let installed: unknown = null;
+    const changed = hearSharedOrder([B, A], true, (o) => sent.push(o.slice()), (fn) => { installed = fn; });
+    assert.equal(changed, true);
+    assert.deepEqual(sent, [], "nothing published: the kernel's arrangement wins over an empty page");
+    assert.deepEqual(readViewOrder(), [B, A]);
+    assert.equal(typeof installed, "function", "…and only now does the page get its publisher");
+  });
+});
+
+test("hearing lands a pending drag over the kernel's arrangement and publishes the merge once", () => {
+  inBrowser((b) => {
+    setViewOrderPublisher(null);
+    (globalThis as any).window.__rompShownOrder = () => [A, B, C, D];
+    writeViewOrder([A, C, B, D]);                                   // B dropped after C, unheard
+    const sent: string[][] = [];
+    hearSharedOrder([D, A, B, C], true, (o) => sent.push(o.slice()), () => {});
+    assert.deepEqual(sent, [[D, A, C, B]], "the drag and the other device's move, together");
+    assert.equal(read(b, VIEW_ORDER_PENDING_KEY), undefined, "consumed");
+    assert.deepEqual(readViewOrder(), [D, A, C, B]);
+  });
+});
+
+test("hearing a kernel that holds NONE still receives this browser's arrangement — the migration is unchanged", () => {
+  inBrowser(() => {
+    setViewOrderPublisher(null);
+    const sent: string[][] = [];
+    hearSharedOrder([], false, (o) => sent.push(o.slice()), () => {});
+    assert.deepEqual(sent, [[B, A]], "the pre-move arrangement goes up");
+  }, { [VIEW_ORDER_KEY]: [B, A] });
 });
