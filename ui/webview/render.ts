@@ -104,6 +104,7 @@ import { retainLiveOmitted } from "./tab-order";
 import { localStrip, stripHost, readCloseAckMs } from "./tab-order";
 import { userTurnShows } from "./user-turn-content";
 import { ScrollDiagBudget, classifyScroll, scrollWriteRow, tailChangeRow, tailLabel, spacerRow, readScrollDiagCap, summarizeTailMutations, tailMutRow, unitChangeRow, unitChanges, boxChanges, boxLabel, BOX_FROM_TAIL } from "./scroll-write";
+import { TailBackWatch, priorChildren, spotAt, tailGoneInfo, type TailFound, type TailGone } from "./tail-back";   // the tailback watch (2026-09-23): a tail removal followed to its return, observation only
 import { reloadScrollRecord, takeReloadScroll, type ReloadScroll } from "./reload-restore";
 import { keepResidentEvents } from "./frame-merge";
 import { activeTabToReannounce } from "./relay-active";
@@ -11432,10 +11433,58 @@ function tailMutations(records: MutationRecord[]): ReturnType<typeof summarizeTa
     atEnd: r.nextSibling === null,
   })));
 }
+// TAILBACK (2026-09-23, tail-back.ts): a `tailmut` row said a landed user turn's element left the active view and did not
+// come back within that batch, and could not say whether it came back in a LATER one (a move, a blink in place) or stayed
+// off the screen while the events held it (a gap). Every uuid that leaves the active view's tail is now followed until it
+// is in that view's DOM again, or the view stops being the one on screen, and one row per uuid says how that ended. The
+// view's observer feeds EVERY batch (a return comes in a batch that removed nothing); showActive and the two teardown sites
+// end a view's watch. Reads only: no node, event or view is written here, and an error is swallowed into ONE
+// `tailback-failed` row, so the instrument can cost a row and never a render (tail-back.test.ts runs this over a frozen DOM).
+const tailBack = new TailBackWatch();
+let tailBackFailed = false;
+function tailBackUuid(n: unknown): string { const d = (n as HTMLElement | null)?.dataset; return d && typeof d.uuid === "string" ? d.uuid : ""; }
+function tailBackFile(rows: ReturnType<TailBackWatch["batch"]>): void { for (const r of rows) scrollDiagRow("tailback", r); }
+function tailBackFail(err: unknown): void {
+  if (tailBackFailed) return;
+  tailBackFailed = true;
+  chatDiagRow("tailback-failed", { error: String((err as any)?.message || err).slice(0, 200) });
+}
+/** One mutation batch of the ACTIVE view `id`: the gone uuids' painted spots before the batch (its records undone over the
+ *  settled children), their kind and whether the resident events hold them, fed to the watch with a locate over the settled
+ *  children (read once, and only when the batch removed a uuid or the view is waiting on one). Returns the kinds and inEv
+ *  for the tailmut row, aligned with `gone`. */
+function tailBackBatch(id: string, v: View, records: ArrayLike<MutationRecord>, m: ReturnType<typeof summarizeTailMutations>): { kind: string; inEv: boolean }[] | undefined {
+  try {
+    const now = Date.now();
+    const el = v.el;
+    let kids: { nodes: Node[]; uuids: string[]; at: Map<string, number> } | null = null;
+    const settled = () => {
+      if (kids) return kids;
+      const nodes = Array.from(el.childNodes), uuids = nodes.map(tailBackUuid), at = new Map<string, number>();
+      uuids.forEach((u, i) => { if (u) at.set(u, i); });
+      return (kids = { nodes, uuids, at });
+    };
+    const locate = (u: string): TailFound | null => { const k = settled(), i = k.at.get(u); return i === undefined ? null : spotAt(k.uuids, i); };
+    const info = m ? tailGoneInfo(m.gone, sessions.get(id)?.events || [], (u) => m.removedTail[m.removedUuids.indexOf(u)] || "") : undefined;
+    const gone: TailGone[] = [];
+    if (m && info && m.gone.length) {
+      const prior = priorChildren<Node>(settled().nodes, Array.from(records, (r) => ({ removed: Array.from(r.removedNodes), added: Array.from(r.addedNodes),
+                                                                                       prev: r.previousSibling, next: r.nextSibling }))).map(tailBackUuid);
+      m.gone.forEach((u, k) => {
+        const i = prior.lastIndexOf(u);
+        gone.push({ uuid: u, kind: info[k].kind, inEv: info[k].inEv, ...(i >= 0 ? spotAt(prior, i) : { fromEnd: -1, above: "" }) });
+      });
+    }
+    tailBackFile(tailBack.batch(id, now, gone, locate));
+    return info;
+  } catch (err) { tailBackFail(err); return undefined; }
+}
+function tailBackShow(id: string | null): void { try { tailBackFile(tailBack.show(id, Date.now())); } catch (err) { tailBackFail(err); } }
+function tailBackEnd(id: string, why: "switch" | "teardown"): void { try { tailBackFile(tailBack.end(id, why, Date.now())); } catch (err) { tailBackFail(err); } }
 // the cap is the default unless the page's localStorage says otherwise (a laptop capturing raises it; T262j)
 const scrollDiagCap = readScrollDiagCap((k) => { try { return localStorage.getItem(k); } catch { return null; } });
 const scrollDiag = new ScrollDiagBudget(scrollDiagCap);
-function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "spacer" | "tailmut" | "unitchange" | "regionask" | "landmiss", data: any): void {
+function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "spacer" | "tailmut" | "tailback" | "unitchange" | "regionask" | "landmiss", data: any): void {
   const v = scrollDiag.take(activeId || "", kind, Date.now());
   if (v === "drop") return;
   vscodeApi?.postMessage(v === "cap"
@@ -12125,12 +12174,13 @@ function ensureView(id: string): View {
           rec.addedNodes.forEach((n) => { if (n instanceof Element) view2.uo?.observe(n); });
           rec.removedNodes.forEach((n) => { if (n instanceof Element) { view2.uo?.unobserve(n); unitHeights.delete(n); } });
         }
-        if (activeId !== id || !view2.shown) return;
+        if (activeId !== id || !view2.shown) { tailBackEnd(id, "switch"); return; }   // a batch of a view not on screen: its watch ended (tail-back.ts)
         const m = tailMutations(records);
+        const gi = tailBackBatch(id, view2, records, m);   // EVERY batch of the active view: a uuid that left comes back in a later one
         if (!m) return;
         const content = document.getElementById("content");
         if (!content) return;
-        scrollDiagRow("tailmut", tailMutRow(id, m, lastKnownSh, content.scrollHeight, content.scrollTop, content.clientHeight, "view"));
+        scrollDiagRow("tailmut", tailMutRow(id, m, lastKnownSh, content.scrollHeight, content.scrollTop, content.clientHeight, "view", gi));
       });
       v.mo.observe(elv, { childList: true });
     }
@@ -13286,6 +13336,7 @@ function showActive(keep?: { uuid: string; y: number } | null) {
   if (snapView && renderSnapshot()) {
     setSnapMode(true);   // the overview is a mode: the message box goes, no tab is selected (styles.css, T322)
     for (const v of views.values()) v.el.style.display = "none";
+    tailBackShow(null);   // no view on screen: a uuid a view was waiting on ends as a switch (tail-back.ts)
     // the reader's place (snapKeep; once per visit): the hide above only queues the clamp's scroll event, so the
     // view's fields still hold what the reader's last scroll recorded
     const av = activeId ? views.get(activeId) : null;
@@ -13316,6 +13367,7 @@ function showActive(keep?: { uuid: string; y: number } | null) {
   const s = activeId ? liveSession(activeId) : null;
   if (!s) {
     for (const v of views.values()) v.el.style.display = "none";
+    tailBackShow(null);
     renderSubHead();   // no active viewer → the header goes
     // A KNOWN-LOADING tab (its meta arrived, its payload hasn't — the clicked placeholder): the
     // thread area holds the pane-local romp loader, and the first session frame renders in place —
@@ -13444,6 +13496,7 @@ function showActive(keep?: { uuid: string; y: number } | null) {
   }
   for (const [vid, vv] of views) vv.el.style.display = vid === activeId ? "" : "none";
   if (!reshow) refreshRelativeMarkers(v.el);   // a tab shown after minutes hidden: its today labels catch up before the eye lands (T406; the minute tick skips hidden tabs)
+  tailBackShow(activeId);   // the view on screen now: any other view's wait ends as a switch, never read as a loss (tail-back.ts)
   renderSubHead();   // the viewer's header above its transcript (hidden for every real session)
   updateStatusline();
   // The transcript BUILD is the only expensive part of a switch. A view already built for the current
@@ -17900,7 +17953,7 @@ function upsert(msg: any) {
   }
   if (forked) {
     const v = views.get(msg.id);
-    if (v) { v.uo?.disconnect(); v.ro?.disconnect(); v.mo?.disconnect(); v.el.remove(); views.delete(msg.id); }
+    if (v) { v.uo?.disconnect(); v.ro?.disconnect(); v.mo?.disconnect(); v.el.remove(); views.delete(msg.id); tailBackEnd(msg.id, "teardown"); }
   } else if (existed && !keepResident) {
     // A full frame replaces every event object and can differ from what this view rendered ANYWHERE (it is
     // what the kernel sends a client it believes is behind): the tail path trusts v.rendered as the exact
@@ -19047,7 +19100,7 @@ function dismissSession(id: string, why: DismissWhy, doomed?: ReadonlySet<string
     persistDrafts();   // a host drop / omission KEEPS it all (see DismissWhy) — the stash above may have updated the copy
   }
   const v = views.get(id);
-  if (v) { v.uo?.disconnect(); v.ro?.disconnect(); v.mo?.disconnect(); v.el.remove(); views.delete(id); }
+  if (v) { v.uo?.disconnect(); v.ro?.disconnect(); v.mo?.disconnect(); v.el.remove(); views.delete(id); tailBackEnd(id, "teardown"); }
   const oi = order.indexOf(id); if (oi >= 0) order.splice(oi, 1);
   const mi = mru.indexOf(id); if (mi >= 0) mru.splice(mi, 1);   // before the fallback read below — never the dead id
   renderTabs();                          // tab removed from `order` above → repaint without it
