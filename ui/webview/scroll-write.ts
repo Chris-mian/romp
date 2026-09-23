@@ -80,16 +80,27 @@ export function summarizeTailMutations(records: TailMutation[]): TailSummary | n
            removedUuids: removedTail.map((n) => n.uuid || ""), addedUuids: addedTail.map((n) => n.uuid || ""), gone, slide };
 }
 
+/** How many uuids a tailmut row carries per list (removed, added, gone), the full lengths beside them (2026-09-23). */
+export const TAILMUT_UUIDS_MAX = 40;
+
 /** The breadcrumb for a tail element leaving the DOM (T262j, the user 2026-09-08): the remaining snap is a clamp
  *  against a transcript momentarily shorter WITHIN a frame — a tail node removed, a layout forced, the node back
  *  before the frame ends — which no ResizeObserver can see. `shBefore` = the last scroll height the pane recorded,
- *  `shAfter` = the height once the mutations settled; `reAdded` = the same node came back in the same task. The lists
- *  are clipped to four (classes and, beside them, the units' uuids), `nRemoved`/`nAdded` the full lengths; `gone` and
- *  `slide` are summarizeTailMutations's (2026-09-23: without them a window re-render read as a turn that vanished). */
-export function tailMutRow(sid: string, m: TailSummary, shBefore: number, shAfter: number, st: number, ch: number, where: "view" | "live-ask") {
+ *  `shAfter` = the height once the mutations settled; `reAdded` = the same node came back in the same task. The class
+ *  lists are clipped to four; the uuid lists carry every uuid up to TAILMUT_UUIDS_MAX (2026-09-23: four could not say
+ *  which turn left, nor link a later re-insertion to it, tail-back.ts), `nRemoved`/`nAdded`/`nGone` the full lengths;
+ *  `gone` and `slide` are summarizeTailMutations's (2026-09-23: without them a window re-render read as a turn that
+ *  vanished). `info`, when the caller could read it (the view's observer; the live-ask host has none), is each gone
+ *  uuid's kind and whether the page's resident events still held it at that moment: `goneKind`/`goneInEv`, aligned
+ *  with `gone`, null when not read. */
+export function tailMutRow(sid: string, m: TailSummary, shBefore: number, shAfter: number, st: number, ch: number, where: "view" | "live-ask",
+                           info?: ReadonlyArray<{ kind: string; inEv: boolean }>) {
   const clip = (a: string[]) => a.slice(0, 4).map((c) => String(c).slice(0, 40));
-  return { sid, where, removed: clip(m.removedTail), added: clip(m.addedTail), removedUuids: m.removedUuids.slice(0, 4), addedUuids: m.addedUuids.slice(0, 4),
-           nRemoved: m.removedTail.length, nAdded: m.addedTail.length, reAdded: m.reAdded, gone: m.gone.slice(0, 8), slide: m.slide, shBefore, shAfter, st, ch };
+  const ids = (a: readonly string[]) => a.slice(0, TAILMUT_UUIDS_MAX);
+  const gi = info ? info.slice(0, TAILMUT_UUIDS_MAX) : null;
+  return { sid, where, removed: clip(m.removedTail), added: clip(m.addedTail), removedUuids: ids(m.removedUuids), addedUuids: ids(m.addedUuids),
+           nRemoved: m.removedTail.length, nAdded: m.addedTail.length, reAdded: m.reAdded, gone: ids(m.gone), nGone: m.gone.length,
+           goneKind: gi ? gi.map((g) => g.kind) : null, goneInEv: gi ? gi.map((g) => g.inEv) : null, slide: m.slide, shBefore, shAfter, st, ch };
 }
 
 /** The breadcrumb for one re-size of a view's virtualization spacers (T262j): a top spacer re-estimate paired with

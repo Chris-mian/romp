@@ -342,6 +342,7 @@ function chipWorld(opts: { clientHeight: number; innerHeight: number; transcript
     let snapView = null, snapKeep = null;
     const renderSnapshot = () => false, hideSnapshot = () => {}, composerRestingPlaceholder = () => "";
     const setSnapMode = () => {}, growComposer = () => {};   // the overview mode's switch and the box re-measure on leaving it (T322)
+    const tailBackShow = () => {};   // the tailback watch's switch end (tail-back.ts, 2026-09-23): observation only, inert here
     const requestFullSession = (id, why) => { HOOKS.fulls.push(why + ":" + id); };
   `;
   const epilogue = `

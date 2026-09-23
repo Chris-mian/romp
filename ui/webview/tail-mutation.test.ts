@@ -15,7 +15,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { summarizeTailMutations, tailMutRow } from "./scroll-write";
+import { summarizeTailMutations, tailMutRow, TAILMUT_UUIDS_MAX } from "./scroll-write";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const SID = "11111111-2222-4333-8444-000000000201";
@@ -96,19 +96,37 @@ test("the row carries what left, whether it came back, the uuids beside the clas
   const m = { removedTail: ["turn turn-queued"], addedTail: ["turn turn-queued"], reAdded: true, removedUuids: [""], addedUuids: [""], gone: [], slide: false };
   assert.deepEqual(tailMutRow(SID, m, 9114, 9114, 8148.3, 902, "view"),
                    { sid: SID, where: "view", removed: ["turn turn-queued"], added: ["turn turn-queued"], removedUuids: [""], addedUuids: [""], nRemoved: 1, nAdded: 1,
-                     reAdded: true, gone: [], slide: false, shBefore: 9114, shAfter: 9114, st: 8148.3, ch: 902 });
+                     reAdded: true, gone: [], nGone: 0, goneKind: null, goneInEv: null, slide: false, shBefore: 9114, shAfter: 9114, st: 8148.3, ch: 902 });
   assert.equal(tailMutRow(SID, { ...m, removedTail: ["x".repeat(80)], addedTail: [], reAdded: false }, 1, 2, 3, 4, "live-ask").removed[0].length, 40, "classes bounded");
-  // clipped to four, the lengths full: a window re-render of eighty units reads as one
+  // the classes clipped to four, the uuids NOT (2026-09-23, tailback: four uuids per batch could not say which turn left,
+  // nor link a later re-insertion to it): every uuid up to TAILMUT_UUIDS_MAX, the lengths full
   const many = Array.from({ length: 80 }, (_, i) => "turn u" + i), ids = Array.from({ length: 80 }, (_, i) => "id" + i);
   const row = tailMutRow(SID, { removedTail: ["turn last"], addedTail: many, reAdded: false, removedUuids: ["id79"], addedUuids: ids, gone: [], slide: true }, 1, 1, 0, 1, "view");
-  assert.equal(row.added.length, 4); assert.equal(row.addedUuids.length, 4);
+  assert.equal(TAILMUT_UUIDS_MAX, 40);
+  assert.equal(row.added.length, 4); assert.equal(row.addedUuids.length, 40); assert.deepEqual(row.addedUuids, ids.slice(0, 40));
   assert.equal(row.nAdded, 80); assert.equal(row.nRemoved, 1);
   assert.equal(row.slide, true);
 });
 
+test("the uuid lists are not clipped at four: ten removed and ten gone all ride the row, each gone uuid with its kind and inEv", () => {
+  const ids = Array.from({ length: 10 }, (_, i) => "11111111-2222-4333-8444-0000000002" + String(i).padStart(2, "0"));
+  const cls = ids.map((_, i) => (i % 2 ? "turn turn-user" : "turn turn-queued"));
+  const info = ids.map((_, i) => ({ kind: i % 2 ? "user" : "queued", inEv: i % 2 === 1 }));
+  const row = tailMutRow(SID, { removedTail: cls, addedTail: [], reAdded: false, removedUuids: ids, addedUuids: [], gone: ids, slide: false }, 1, 1, 0, 1, "view", info);
+  assert.equal(row.removed.length, 4, "the classes stay clipped");
+  assert.deepEqual(row.removedUuids, ids); assert.deepEqual(row.gone, ids);
+  assert.equal(row.nGone, 10);
+  assert.deepEqual(row.goneKind, info.map((g) => g.kind)); assert.deepEqual(row.goneInEv, info.map((g) => g.inEv));
+  // bounded at TAILMUT_UUIDS_MAX with the full length beside it, the kind and inEv lists aligned with the clipped gone
+  const lots = Array.from({ length: 50 }, (_, i) => "g" + i), lotsInfo = lots.map(() => ({ kind: "user", inEv: true }));
+  const big = tailMutRow(SID, { removedTail: lots, addedTail: [], reAdded: false, removedUuids: lots, addedUuids: [], gone: lots, slide: false }, 1, 1, 0, 1, "view", lotsInfo);
+  assert.equal(big.gone.length, 40); assert.equal(big.nGone, 50); assert.equal(big.removedUuids.length, 40); assert.equal(big.nRemoved, 50);
+  assert.equal(big.goneKind!.length, 40); assert.equal(big.goneInEv!.length, 40);
+});
+
 test("render.ts observes the active view's children and the live-ask host's, and files the row through the capped diag path", () => {
   assert.match(RENDER, /import \{[^}]*\bsummarizeTailMutations\b[^}]*\btailMutRow\b[^}]*\} from "\.\/scroll-write";/);
-  assert.match(RENDER, /function scrollDiagRow\(kind: "scrollwrite" \| "scrollgesture" \| "tailchange" \| "spacer" \| "tailmut" \| "unitchange" \| "regionask" \| "landmiss", data: any\): void \{/);
+  assert.match(RENDER, /function scrollDiagRow\(kind: "scrollwrite" \| "scrollgesture" \| "tailchange" \| "spacer" \| "tailmut" \| "tailback" \| "unitchange" \| "regionask" \| "landmiss", data: any\): void \{/);
   assert.match(RENDER, /mo\?: MutationObserver; \}/, "the View carries its mutation observer");
   assert.match(RENDER, /v\.mo = new MutationObserver\(\(records\) => \{/);
   assert.match(RENDER, /v\.mo\.observe\(elv, \{ childList: true \}\);/);
