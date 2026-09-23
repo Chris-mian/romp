@@ -4877,8 +4877,9 @@ button's menu, turns the sections off for this browser. On a phone the session p
 for the strip, lists the sessions the same way: each under its tag's heading, in the same order, and
 nothing folded (its tag menu has the same switch). One thing the two do not share: the order you have
 DRAGGED your tabs into belongs to the browser you dragged them in, so a desktop whose loose tabs you have
-rearranged reads in that order while a phone, which has no drag, reads them in the order the sessions were
-started. The groups, their order, and which sessions sit in each of them are the same everywhere. The Sessions pane has the same
+rearranged reads in that order while a phone, which has no drag, reads them in the order romp has kept for
+them, the same order every browser starts from before it drags. The groups, their order, and which sessions
+sit in each of them are the same everywhere the tabs are grouped. The Sessions pane has the same
 sections: **Group by tag** in its Filter menu (off until you turn it on, per browser) lays the
 lanes out one section per tag in the same order, each session under every tag it carries and
 the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row

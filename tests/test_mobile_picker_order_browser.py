@@ -255,7 +255,9 @@ for (const s of cfg.late) {
   for (const f of s.files) fs.writeFileSync(f[0], f[1]);
   grown += 1;
   await dpage.waitForFunction((n) => document.querySelectorAll("#tabs .tab[data-id]").length === n, grown, { timeout: 30000 });
-  await dpage.waitForTimeout(400);   // the adoption writes romp:vieworder on the frame it renders
+  // the adoption writes romp:vieworder synchronously on the frame it renders, so the entry is the event (a local id
+  // sits in that store bare: federation prefixes remote ids only)
+  await dpage.waitForFunction((sid) => JSON.parse(localStorage.getItem("romp:vieworder") || "[]").includes(sid), s.sid, { timeout: 10000 });
 }
 await settle(dpage, grown, HEADS);
 // a phone that opens only NOW, having never seen these sessions: its own fresh profile, never dragged
@@ -389,6 +391,9 @@ class ServedMobilePickerOrder(unittest.TestCase):
                      "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn",
                                  "content": [{"type": "text", "text": "It keeps the %s side of the notes-api tidy." % name}]}}]
             Path(proj, sid + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+            # mtime rises with the arrival index: discovery lists transcripts newest first and mtime TIES fall to lexical
+            # sid order (arrival order here), so TRAIL_RENDERED pins the code's newest-first order, not the runner's clock
+            os.utime(Path(proj, sid + ".jsonl"), (t0 + i, t0 + i))
         cls.state, cls.cwd = state, cwd   # the late arrivals' files are written mid-run, by the driver
         Path(state, "timeline-views.json").write_text(json.dumps({"active": "all", "tags": TAGS, "tagOrder": TAG_ORDER}))
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
@@ -583,8 +588,7 @@ class ServedMobilePickerOrder(unittest.TestCase):
         for c in self._matrix():
             for surface in ("desktop", "picker"):
                 secs = dict((n, m) for n, m in sections(c[surface]))
-                if not secs or "solo" not in secs:
-                    continue
+                self.assertIn("solo", secs, "%s / %s: no solo section: %s" % (c["label"], surface, self._rows_table(c)))
                 self.assertEqual(secs["solo"], {"mailer"}, "%s / %s: %s" % (c["label"], surface, self._rows_table(c)))
                 self.assertNotIn("mailer", set(trail(c[surface]) or []), "%s / %s" % (c["label"], surface))
 
