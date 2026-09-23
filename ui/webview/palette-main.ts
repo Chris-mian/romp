@@ -236,6 +236,13 @@ installMenuEcho();
   }
   registerCommand({ id: "chat.nextSplit", title: "Focus the next chat column", run: () => cycleSplit(1) });
   registerCommand({ id: "chat.prevSplit", title: "Focus the previous chat column", run: () => cycleSplit(-1) });
+  // Cycle the SESSIONS of the column you are in (the user 2026-09-23): the chord form of the strip's bare ←/→, which
+  // the pane takes only while nothing is being typed — this one fires from the composer too (a Ctrl/Alt chord
+  // dispatches whatever holds the focus). The pane's own cycleTab does the stepping, through the same nextTab /
+  // prevTab messages the VS Code view's rompChat.nextTab / prevTab commands post, so folded and view-hidden tabs
+  // follow the strip's one rule; chatPost aims it at the column last worked in and shows a hidden chat pane first.
+  registerCommand({ id: "chat.nextTab", title: "Switch to the next session", run: () => chatPost({ type: "nextTab" }) });
+  registerCommand({ id: "chat.prevTab", title: "Switch to the previous session", run: () => chatPost({ type: "prevTab" }) });
   // Per-tab hot keys (the user 2026-09-10): a session with a hot key is a command "Switch to <name>" whose chord
   // lives in the bindings store like any other, so the dispatcher below, the conflict check and the shortcuts
   // dialog cover it. The set of such sessions (romp:tabkeys) is read at boot, before any pane has loaded, and
