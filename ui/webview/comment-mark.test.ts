@@ -36,6 +36,19 @@ test("read marks wear no box, and the fill tiers are byte-untouched — the colo
   assert.match(RENDER, /v\.el\.querySelectorAll\("mark\.cmt-hl\.unread"\)/);
 });
 
+test("a turn rendered after a held comments frame wears its mark ON that render (PR 2065 review, the load gap): every view render re-applies the marks", () => {
+  // render.ts has no jsdom harness (this file's note), so the invariant is pinned at the source. The mark lands only
+  // when a comments frame is processed with the anchor turn in the DOM. When the comments frame arrives FIRST (its
+  // marks apply to a page without the turn and skip), the turn's LATER render must re-apply them on that same render,
+  // not wait for the next comments frame. syncView is THE view-render path and re-applies the comment marks in the same
+  // pass, and every append routes through it, so it does. (The kernel now also rides the comments frame on the targeted
+  // per-session push so it lands with the turn; this pin guards the client half.)
+  assert.match(RENDER, /function syncView\(id: string, atBottom\?: boolean\): View \{\s*\n\s*const v = syncViewInner\(id, atBottom\);\s*\n\s*applyCommentMarks\(id\);/, "syncView re-applies the comment marks right after rendering the view's turns");
+  assert.match(RENDER, /function appendActive\(\)[\s\S]*?syncView\(activeId, stick\);/, "appendActive renders through syncView, so an appended turn re-applies its mark on that paint");
+  assert.match(RENDER, /appendRaf = requestAnimationFrame\(\(\) => \{ appendRaf = null; appendActive\(\); renderLedger\(\); \}\);/, "the rAF-deferred append (a chatTail delta's new turn) runs appendActive, so it re-applies on its own paint, not a frame later");
+  assert.match(RENDER, /if \(m && m\.id && \(m\.type === "session" \|\| m\.type === "chatTail"[\s\S]*?applyCommentMarks\(String\(m\.id\)\);/, "and the frame handler re-applies on every transcript-bearing frame (the comments frame's twin hook)");
+});
+
 test("the yellow corner dot stays gone root and branch", () => {
   assert.doesNotMatch(CSS, /mark\.cmt-hl\.unread\.hl-last::after/);
   assert.doesNotMatch(CSS, /mark\.cmt-hl \{[^}]*position: relative;/s, "nothing left for the mark to anchor");

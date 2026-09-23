@@ -1580,6 +1580,27 @@ restart monitors read. Two CLIs on one conversation is the boot sweep's own row
 there. The CLI takes no lock on a transcript it resumes, so the one writer per
 conversation is entirely the lease's to keep.
 
+A boot reaps only what the booting kernel can prove it started. The unit list
+and the process table are machine-wide, and a session id is not a kernel's: two
+kernels with state directories of their own can hold the same session (a lab
+copy of a live one), and until 2026-09-23 every boot of the second stopped the
+first one's host and ended its CLI. Each kernel now tags what it starts with its
+state tag, the first 16 hex digits of the SHA-256 of its resolved state
+directory: a session CLI carries it as `ROMP_STATE_TAG` in its environment, and
+a session scope or host scope carries `romp-state=<tag>` in its description.
+The orphan reap, the leftover session-scope sweep and the host-scope sweep act
+only on what carries the kernel's own tag. Anything with another kernel's tag,
+or with none (a unit or CLI started by a build from before the tag, or a process
+whose environment cannot be read), is left alone along with its CLI's scope,
+and the kernel log names all of it on one `boot reconcile: left alone` line. A
+kernel's own leftovers from before the upgrade carry no tag either, so every
+boot on the new build leaves them in place and names them, until they exit or
+are stopped by hand (`systemctl --user stop <unit>` for a scope, `kill` for an
+orphaned CLI). A session whose conversation one of those spared processes still
+holds is not resumed by that boot either, since a second CLI on the transcript
+would be two writers on one conversation; the log says the session stays down,
+and once the process is gone the next boot resumes it as usual.
+
 A session can outlive the kernel that started it. By default, on every machine
 on this version, a new session's CLI runs under a small per-session host
 process, `bin/romp-session-host`, instead of as the kernel's child. The
@@ -1627,7 +1648,8 @@ session from the transcript, so a conversation never has two writers. On
 Linux the host runs in a transient scope of its own (`romp-host-<sid8>-<t>`)
 outside the service cgroup and starts the CLI through `bin/romp-cli-scope` as
 before, so the CLI's own scope and its memory limits are unchanged; the boot
-sweep stops a dead host's scope by its lease. On macOS the host is a plain
+sweep stops a dead host's scope by its lease and the kernel's state tag in the
+scope's description. On macOS the host is a plain
 detached process and everything else is the same.
 
 A host upgrades itself in place when the kernel that attaches runs newer code.
@@ -1781,7 +1803,8 @@ same drain. A scoped CLI outlives a service restart only when the drain does not
 reach it: a kernel killed before its drain finishes (SIGKILL at the service's
 stop timeout), or a CLI the drain could not find. The reaper handles that case:
 at the next kernel boot, an SDK-driven CLI holding one of the kernel's sessions
-whose parent is not a live romp kernel is treated as orphaned and terminated.
+whose parent is not a live romp kernel, and whose environment carries the
+kernel's state tag, is treated as orphaned and terminated.
 Under `systemd --user` an orphan re-parents to the user manager, not to pid 1,
 so a ppid check alone would miss it and did, before 2026-09-05.
 

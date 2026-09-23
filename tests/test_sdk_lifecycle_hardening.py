@@ -836,8 +836,12 @@ class BootReconcile(unittest.TestCase):
               "  557 90210 /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
               ) % (sid, sid, sid)
         killed = []
+        # the orphan's environment carries this kernel's state tag (the proof a reap asks for, state_tag_of); the live
+        # CLI's would too, and is spared by its parent before the tag is read
+        tag = lambda p, **k: sb.state_tag_of(d) if p in (9999555, 557) else None
         with mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(stdout=ps)) as run, \
              mock.patch.object(sb.os, "kill", side_effect=lambda p, s: killed.append((p, s))), \
+             mock.patch.object(sb, "proc_state_tag", tag), \
              mock.patch.object(sb.SdkBackend, "_pid_alive", lambda self, p: False):   # the fake pid reads as gone on every platform:
             #   with no /proc (macOS) _pid_alive falls to os.kill(pid, 0), which is the recorder above and never raises, so the
             #   orphan read alive, the liveness polls landed as (pid, 0) and the grace expired into a SIGKILL (11 entries for 1)
@@ -867,9 +871,11 @@ class BootReconcile(unittest.TestCase):
               "  %d %d /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
               ) % (MANAGER, me, MANAGER, OURS, me, sid, ORPHAN, MANAGER, sid)
         killed = []
+        tag = lambda p, **k: sb.state_tag_of(d) if p in (OURS, ORPHAN) else None   # both this kernel's (state_tag_of)
         with mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(stdout=ps)), \
              mock.patch.object(sb.os, "kill", side_effect=lambda p, s: killed.append((p, s))), \
              mock.patch.object(sb.os, "killpg", side_effect=lambda g, s: killed.append(("pg", g, s))), \
+             mock.patch.object(sb, "proc_state_tag", tag), \
              mock.patch.object(sb.SdkBackend, "_pid_alive", lambda self, p: False):   # nothing is alive after its SIGTERM: no grace, no SIGKILL
             be._boot_reconcile([sb.read_reg(Path(d), sid)])
         self.assertEqual(killed, [(ORPHAN, sb.signal.SIGTERM)],

@@ -513,10 +513,15 @@ class HostProcess(unittest.TestCase):
         return k.recv_until(lambda f: f.get("t") == "reexec", timeout=15)
 
     def _lease_version_becomes(self, version, timeout=20):
+        # the re-executed host's lease naming `version`, its socket up, AND its adoption logged. The lease is written one line
+        # before the `reexeced` row (session_host.py: _write_lease then log("reexeced")), so waiting on the lease alone returns
+        # before that row and a caller reading the log kinds right after would race it; every caller is a re-exec handover, so
+        # the exit also waits for the `reexeced` row (PR 2081 follow-up)
         deadline = time.time() + timeout
-        while time.time() < deadline:                                   # loop-ok: the event is the re-executed host's lease
+        while time.time() < deadline:                                   # loop-ok: the event is the re-executed host's lease and adoption row
             l = self._lease()
-            if l and str(l.get("version") or "") == version and (Path(self.state) / "hosts" / (SID[:8] + ".sock")).exists():
+            if l and str(l.get("version") or "") == version and (Path(self.state) / "hosts" / (SID[:8] + ".sock")).exists() \
+                    and any(r["kind"] == "reexeced" for r in self._hostlog()):
                 return l
             time.sleep(0.05)
         return self._lease()
@@ -637,6 +642,7 @@ class HostProcess(unittest.TestCase):
         self.assertEqual([o for o, _ in journal], list(range(len(emitted))))
         by_offset = {o: (r["type"], r.get("uuid")) for o, r in journal}
         self.assertEqual({o: by_offset.get(o) for o in seen}, seen, "every frame the kernel saw sits at its own offset")
+        # _lease_version_becomes above waits for the `reexeced` row, so the kinds read no longer races it (PR 2081 follow-up)
         log = self._hostlog()
         self.assertEqual([r["kind"] for r in log if r["kind"] in ("reexec-deferred", "reexec", "reexeced")], ["reexec-deferred", "reexec", "reexeced"])
         self.assertTrue(any(r["kind"] == "turn-reopened" for r in log), "the bookkeeping rows re-opened a turn, which the after turn's result closed")

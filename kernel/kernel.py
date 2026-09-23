@@ -51845,7 +51845,13 @@ def _client_reset_chat_base(client):
         # slot remembers that frame, so the ready arm's re-send would be deduped for _DEDUP_REPOST_S and the
         # section would read "no session is focused" until the next tab click. A renderer that just
         # evaluated holds nothing: the slot goes with the others.
-        for k in [k for k in snt if isinstance(k, tuple) and k and k[0] in ("chat", "status", "taborder", "activeChat")]:
+        # …and the ("comments", sid) and ("glossary", sid) slots (2026-09-23, the PR 2074 post-merge measurement):
+        # the pusher fires from ACCEPT, so under a CPU quota it delivered the comments frame (1.9-2.1s after navigation)
+        # BEFORE the bundle registered its message listeners (2.6-2.8s); the page never acted on it, and with the slot
+        # kept the ready arm's connect push re-sent an IDENTICAL comments frame that deduped for _DEDUP_REPOST_S, so a
+        # comment's mark attached only at the 60s repost. The glossary frame rides its own per-sid slot the same way.
+        # A renderer that just evaluated holds neither, so both go with the others (one duplicate frame per ready).
+        for k in [k for k in snt if isinstance(k, tuple) and k and k[0] in ("chat", "status", "taborder", "activeChat", "comments", "glossary")]:
             snt.pop(k, None)
 
 
@@ -57764,6 +57770,20 @@ def _push_session_now(sid):
             _seed_chat_baseline(sid, m, _seen)       # loop's own writes, not the bases after it, where a racing sender's write
         #                                              on a target read as this loop's (test 38); established when absent, never
         #                                              advanced, declined while the detector's mark stands (the docstring)
+        # THE COMMENTS FRAME rides this targeted push too (2026-09-23): before, it rode ONLY the full pusher cycle, so a
+        # page that connected before the session was alive got the chat frame here but the comments frame a full cycle
+        # later (tens of seconds under a CPU quota), and a comment's highlight trailed its turn by that much. Emit it now
+        # on the SAME per-sid dedup slot the cycle uses, so a mark lands WITH its turn. `_comments_frame` is None for a
+        # session that never had a thread (a bare stat, the common case) and an unchanged frame dedups on the slot and
+        # costs nothing on the wire: the "changed since its last frame" guard, the cycle's own.
+        try:
+            _cfr = _comments_frame(sid, live_map)
+        except Exception:
+            _cfr = None
+            sys.stderr.write("comments frame failed for %s (targeted): %s\n" % (sid, traceback.format_exc()))
+        if _cfr:
+            for c in targets:
+                _send_client(c, ("comments", sid), _cfr)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
     finally:
@@ -62875,9 +62895,12 @@ var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg||s.retrying){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
 wd.classList.toggle('await',!s.working&&!!s.awaitbg&&!s.retrying);wd.classList.toggle('retrying',!!s.retrying&&!s.working&&!s.awaitbg);}
 else if(wd)wd.remove();
-var lbl=row.querySelector('.nm');fillName(lbl,s);lbl.style.color=s.bg||'';}
+var lbl=row.querySelector('.nm');fillName(lbl,s);lbl.style.color=s.bg||'';
+// the group this copy sits in ('' for the trail), as the tab carries it NOW: the key collapses a missing copy and the trail's empty one
+// (a flat strip and a sectioned one give the same key), so a row made while the strip was flat is REUSED once the strip sections, and
+// it kept the missing attribute (CI, 2026-09-23: the phone picker's first trail row read as a flat-strip row against its strip's tab)
+if(s.copy!==null)row.setAttribute('data-copy',s.copy);else row.removeAttribute('data-copy');}
 function rowMake(s){var row=document.createElement('div');row.className='mrow';row.setAttribute('data-id',s.id);row.setAttribute('data-key',s.key);
-if(s.copy!==null)row.setAttribute('data-copy',s.copy);   // the group this copy sits in ('' for the trail), as the tab carries it
 var lbl=document.createElement('span');lbl.className='nm';row.appendChild(lbl);
 var x=document.createElement('span');x.className='mclose';x.textContent='\u00d7';x.title='End session';
 row.appendChild(x);rowUpdate(row,s);return row;}

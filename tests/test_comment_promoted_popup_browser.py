@@ -109,17 +109,18 @@ await page.locator(`#tabs .tab[data-id="${cfg.sid}"]`).first().click();   // the
 // the parent's transcript renders and the kernel's comments frame lands: the highlights wrap both passages (attached,
 // not visible: every session's view stays in the DOM, hidden when not active; the click below auto-waits for the
 // visible one). The marks wrap only when a comments frame is processed WITH the anchor turn in the DOM; handle BOTH
-// orders (a comments frame before the turn applies nothing, and the turn's later render does not always re-apply the
-// held marks under load, a client gap flagged for its own fix): after the turn, if the marks are not there, wait for the
+// orders (a comments frame that reached the page before its listeners registered and whose re-send the dedup then
+// suppressed, the measured mechanism, NOT a client re-apply gap since syncView re-applies on every render): after the turn, if the marks are not there, wait for the
 // NEXT comments frame past the turn (n0 read now), then the short mark ceiling. Ceilings are failure bounds; a miss names the order.
 await page.waitForSelector(`#content .turn[data-uuid="${cfg.anchor}"]`, { state: "attached", timeout: 60000 });
 const n0 = await page.evaluate(() => window.__cmtFrames);
 const marksHere = async () => (await page.$(`mark.cmt-hl[data-tid="${cfg.promoted}"]`)) && (await page.$(`mark.cmt-hl[data-tid="${cfg.open}"]`));
 if (!(await marksHere())) {
-  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+  let missErr = "";
+  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 30000 }).then(() => true).catch((e) => { if (!e || e.name !== "TimeoutError") throw e; missErr = e.name; return false; });
   if (!got) {
     const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
-    console.error("comments-frame-after-turn-miss: no comments frame carrying the seeded threads for " + cfg.sid + " ran with the turn present (n0=" + n0 + "): " + JSON.stringify(seen));
+    console.error("comments-frame-after-turn-miss (" + missErr + "): no comments frame carrying the seeded threads for " + cfg.sid + " ran with the turn present (n0=" + n0 + "): " + JSON.stringify(seen));
     process.exit(4);
   }
 }
@@ -285,8 +286,23 @@ class ServedPromotedPopup(unittest.TestCase):
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
-        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
-                           env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        t0 = time.time()
+        try:
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        except subprocess.TimeoutExpired as e:
+            # the 420 s cap (under CI's 600 s per-test timer) is a HANG net, not the wait: the per-load event ceilings
+            # finish a legit slow run under it. If it trips, build the SAME diagnostics the driver's own miss would
+            # (decoding the exception's bytes with a None guard), not an opaque TimeoutExpired.
+            def _dec(b):
+                return "" if b is None else (b.decode("utf-8", "replace") if isinstance(b, (bytes, bytearray)) else b)
+            try:
+                import urllib.request
+                _perf = urllib.request.urlopen("http://127.0.0.1:%d/perf?token=%s" % (self.port, self.token), timeout=3).read().decode("utf-8", "replace")[-1500:]
+            except Exception as _pe:
+                _perf = "(/perf unreadable: %r)" % _pe
+            self.fail("driver ran past its 420 s cap (%.0f s elapsed):\n%s%s\nkernel:\n%s\n/perf:\n%s"
+                      % (time.time() - t0, _dec(e.stdout)[-3000:], _dec(e.stderr)[-3000:], open(self.klog).read()[-2000:], _perf))
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served popup needs one (CI installs none)")
         perf = ""

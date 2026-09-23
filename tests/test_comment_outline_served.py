@@ -138,17 +138,18 @@ await page.addInitScript(({ sid, minThreads }) => {
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
 // the unread marks wrap only when a comments frame is processed WITH the transcript turns in the DOM; handle BOTH orders
-// (a comments frame before the turns applies nothing, and the turns' later render does not always re-apply the held
-// marks under load, a client gap flagged for its own fix): after the transcript renders, if the marks are short, wait
+// (a comments frame that reached the page before its listeners registered and whose re-send the dedup then suppressed,
+// the measured mechanism, NOT a client re-apply gap since syncView re-applies on every render): after the transcript renders, if the marks are short, wait
 // for the NEXT comments frame past that (n0 read now), then the short unread ceiling. Ceilings are failure bounds; a miss names the order.
 await page.waitForSelector("#content .turn", { timeout: 60000 });
 const n0 = await page.evaluate(() => window.__cmtFrames);
 const marksHere = () => page.evaluate((n) => document.querySelectorAll("mark.cmt-hl.unread").length >= n, cfg.minMarks);
 if (!(await marksHere())) {
-  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+  let missErr = "";
+  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 30000 }).then(() => true).catch((e) => { if (!e || e.name !== "TimeoutError") throw e; missErr = e.name; return false; });
   if (!got) {
     const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
-    console.error("comments-frame-after-turn-miss: no comments frame carrying the seeded threads for " + cfg.sid + " ran with the transcript present (n0=" + n0 + "): " + JSON.stringify(seen));
+    console.error("comments-frame-after-turn-miss (" + missErr + "): no comments frame carrying the seeded threads for " + cfg.sid + " ran with the transcript present (n0=" + n0 + "): " + JSON.stringify(seen));
     process.exit(4);
   }
 }
@@ -325,8 +326,23 @@ class ServedCommentOutline(unittest.TestCase):
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
-        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
-                           env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        t0 = time.time()
+        try:
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        except subprocess.TimeoutExpired as e:
+            # the 420 s cap (under CI's 600 s per-test timer) is a HANG net, not the wait: the per-load event ceilings
+            # finish a legit slow run under it. If it trips, build the SAME diagnostics the driver's own miss would
+            # (decoding the exception's bytes with a None guard), not an opaque TimeoutExpired.
+            def _dec(b):
+                return "" if b is None else (b.decode("utf-8", "replace") if isinstance(b, (bytes, bytearray)) else b)
+            try:
+                import urllib.request
+                _perf = urllib.request.urlopen("http://127.0.0.1:%d/perf?token=%s" % (self.port, self.token), timeout=3).read().decode("utf-8", "replace")[-1500:]
+            except Exception as _pe:
+                _perf = "(/perf unreadable: %r)" % _pe
+            self.fail("driver ran past its 420 s cap (%.0f s elapsed):\n%s%s\nkernel:\n%s\n/perf:\n%s"
+                      % (time.time() - t0, _dec(e.stdout)[-3000:], _dec(e.stderr)[-3000:], open(self.klog).read()[-2000:], _perf))
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served guard needs one (CI installs none)")
         perf = ""

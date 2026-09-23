@@ -220,6 +220,41 @@ class ColdTabGate(unittest.TestCase):
         km._push([c])
         return c, {f["id"]: f["status"] for f in self._frames(c, "status")}
 
+    def test_08_the_targeted_push_carries_the_comments_frame_so_a_mark_lands_with_its_turn(self):
+        # THE KERNEL-ASYMMETRY FIX (2026-09-23, plans/tab-state-badge.md): the {type:"comments"} frame rode ONLY the full
+        # pusher cycle, so a page that connected before the session was alive got the chat frame from this targeted push
+        # but the comments frame a whole cycle later (tens of seconds under load), and a comment's mark trailed its turn.
+        # _push_session_now now rides the comments frame too, on the same per-sid dedup slot. Stub _comments_frame to
+        # answer for ONE session; the targeted push for it must deliver that frame to the chat client.
+        fr = {"type": "comments", "id": S2, "threads": [{"tid": "t1", "anchorUuid": "a1", "exact": "x"}]}
+        km._comments_frame = lambda sid, live_map: fr if sid == S2 else None
+        c = self._client()
+        km._clients[:] = [c]
+        km._push_session_now(S2)
+        got = self._frames(c, "comments")
+        self.assertEqual([f["id"] for f in got], [S2], "the targeted push delivered the comments frame for this session")
+        self.assertEqual(got[0]["threads"][0]["anchorUuid"], "a1", "the frame is the one _comments_frame built")
+        # a session that never had a thread (_comments_frame None) rides no comments frame on the targeted push
+        c2 = self._client()
+        km._clients[:] = [c2]
+        km._push_session_now(S1)
+        self.assertEqual(self._frames(c2, "comments"), [], "a storeless session's targeted push carries no comments frame")
+
+    def test_08b_the_ready_reset_clears_the_comments_and_glossary_slots_so_the_connect_push_re_sends(self):
+        # PR 2074 post-merge measurement: the pusher fires from ACCEPT, so under a quota the comments frame reached the
+        # page (1.9-2.1s) BEFORE the bundle registered its listeners (2.6-2.8s); the page never acted on it. The ready
+        # reset (_client_reset_chat_base) must clear the ("comments", sid) slot (and the glossary's), else the ready
+        # arm's connect push re-sends an IDENTICAL frame that dedups for _DEDUP_REPOST_S and a comment's mark waits for
+        # the 60s repost. Send a frame, confirm the identical re-send dedups, reset, then it goes again.
+        for slot, fr in [("comments", {"type": "comments", "id": S2, "threads": []}),
+                         ("glossary", {"type": "glossary", "id": S2, "terms": []})]:
+            c = self._client()
+            km._clients[:] = [c]
+            self.assertTrue(km._send_client(c, (slot, S2), fr), slot + ": the first send goes")
+            self.assertFalse(km._send_client(c, (slot, S2), fr), slot + ": an identical frame dedups on its slot")
+            km._client_reset_chat_base(c)                    # the ready arm's reset
+            self.assertTrue(km._send_client(c, (slot, S2), fr), slot + ": the ready reset cleared the slot, so the connect push re-sends")
+
     def test_09a_an_api_error_tail_reads_blocked_provisionally_as_it_would_built(self):
         _api_error_tail(self.paths[S3])                      # S3's transcript ends in an api error; its row is idle
         c, statuses = self._skeleton_push()

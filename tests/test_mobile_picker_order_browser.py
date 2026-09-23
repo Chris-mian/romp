@@ -271,6 +271,26 @@ cases.push({ label: "two untagged sessions arrive while only the desktop is open
              order: { desk: await dpage.evaluate(() => localStorage.getItem("romp:vieworder")),
                       phone: await freshPhone.evaluate(() => localStorage.getItem("romp:vieworder")) } });
 await freshCtx.close();
+// 8. A PICKER ROW REUSED ACROSS A STRIP RE-RENDER (CI, 2026-09-23): the row key collapses a missing copy attribute and the
+//    trail's empty one, so a row made while the strip was flat is reused once the strip sections; its copy attribute must follow
+//    the tab's. Driven on the DOM the picker scrapes: a trail tab leaves (its row goes), returns without its copy (its row is
+//    MADE without one), then gains the trail's copy under a child-list poke (the observer's filter ignores attribute changes;
+//    the strip's own re-render moves children too): the REUSED row must carry it. Each step waits on the row's state, never a clock.
+out.copyRefresh = await page.evaluate(async () => {
+  const tabs = document.getElementById("tabs"), list = document.getElementById("mlist");
+  const tab = tabs.querySelector('.tab[data-id][data-copy=""]');
+  if (!tab) return { tab: false };
+  const id = tab.dataset.id, next = tab.nextSibling;
+  const rowCopy = () => { const r = list.querySelector('.mrow[data-id="' + id + '"]'); return r ? (r.hasAttribute("data-copy") ? r.getAttribute("data-copy") : null) : "no-row"; };
+  const until = async (f) => { for (let i = 0; i < 200; i++) { if (f()) return true; await new Promise((r) => setTimeout(r, 25)); } return false; };   // loop-ok: bounded, on the DOM's state
+  tab.remove();
+  const gone = await until(() => rowCopy() === "no-row");
+  tab.removeAttribute("data-copy"); tabs.insertBefore(tab, next);
+  const made = await until(() => rowCopy() === null);
+  tab.setAttribute("data-copy", ""); const poke = document.createElement("i"); tabs.appendChild(poke); poke.remove();
+  const refreshed = await until(() => rowCopy() === "");
+  return { tab: true, id, gone, made, refreshed, rowCopy: rowCopy(), stripCopy: tab.getAttribute("data-copy") };
+});
 out.matrix = cases;
 fs.writeFileSync(cfg.out, JSON.stringify(out));
 fs.writeSync(1, "RESULT:" + cfg.out + "\n");
@@ -581,6 +601,18 @@ class ServedMobilePickerOrder(unittest.TestCase):
         cases = self._matrix()
         bad = [c for c in cases if c["picker"] != c["phoneStrip"]]
         self.assertEqual(bad, [], "".join(self._rows_table(c) for c in bad))
+
+    def test_a_picker_row_reused_across_a_strip_re_render_follows_the_tabs_copy(self):
+        """CI, 2026-09-23 (main, the served-labs step): the mirror case 'qa folded in both stores' read the phone's first trail row as a
+        flat-strip row (no copy attribute) against its own strip's tab, which carried the trail's empty copy. The picker keys rows so that a
+        missing copy and the empty one collide, and its in-place update never refreshed the attribute, so a row made while the strip was flat
+        kept the stale attribute once the strip sectioned. Driven on the DOM: the row goes with its tab, is made without a copy when the tab
+        returns flat, and follows the tab's copy once it is back (before: the reused row kept the missing attribute)."""
+        r = self._run()["copyRefresh"]
+        self.assertTrue(r.get("tab"), "premise: a trail tab with the empty copy on the phone's strip: %r" % r)
+        self.assertTrue(r["gone"], "premise: the row leaves with its tab: %r" % r)
+        self.assertTrue(r["made"], "premise: the tab back on a flat strip makes a row without a copy attribute: %r" % r)
+        self.assertEqual((r["refreshed"], r["rowCopy"], r["stripCopy"]), (True, "", ""), "the reused row follows the tab's copy (before: it kept the missing attribute and read as a flat-strip row): %r" % r)
 
     def test_a_single_member_tag_sections_on_both_surfaces_and_stays_out_of_the_trail(self):
         """`solo` holds exactly one session: no minimum-size rule may leave it grouped on one surface and

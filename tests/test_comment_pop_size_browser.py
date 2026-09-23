@@ -74,12 +74,15 @@ const page = await browser.newPage({ viewport: { width: cfg.W, height: cfg.H } }
 
 // The seeded highlight (mark.cmt-hl[data-tid]) is a CLIENT-side join of TWO kernel frames for this session: the
 // {type:"session"} chat frame that renders the anchored reply turn (data-uuid == the anchor), and the {type:"comments"}
-// frame that carries the thread's anchorUuid straight from the store. The comments frame rides only the full pusher
-// cycle (never the targeted per-session push), so under the runner's CPU quota it trails the chat frame by tens of
-// seconds; a blind wall-clock ceiling on the mark flaked (2026-09-11 and again 2026-09-23, both at the mark wait, the
-// mark LATE not absent). Both the kernel socket's frames and the shim's reposts reach the page as a window `message`
-// event (the bg-kinds lab's note), so capture the comments frame HERE, before any navigation, and gate the load on the
-// kernel's OWN delivery of it rather than on wall-clock. addInitScript re-runs on every navigation, so the counter is
+// frame that carries the thread's anchorUuid straight from the store. The flake's MEASURED mechanism (the PR 2074
+// post-merge review, under a 20% quota): the pusher fires from ACCEPT, so it delivered the comments frame (1.9-2.1s
+// after navigation) BEFORE the bundle registered its message listeners (2.6-2.8s), and the page never acted on it; the
+// ready arm's connect push then re-sent an IDENTICAL comments frame that was DEDUPED for _DEDUP_REPOST_S (the ready
+// reset cleared the chat/status/taborder/activeChat slots but not the comments slot), so the mark attached only at the
+// 60s repost. The kernel fix rides the frame on the targeted push AND clears the comments slot on ready; this lab still
+// gates the load on the kernel's OWN delivery of the frame, not a wall clock, so it is robust either way. Both the
+// socket's frames and the shim's reposts reach the page as a window `message` event (the bg-kinds lab's note), so
+// capture the comments frame HERE, before any navigation; addInitScript re-runs on every navigation, so the counter is
 // fresh per load().
 await page.addInitScript(({ sid, anchor }) => {
   window.__cmtFrames = 0; window.__frameTypes = [];
@@ -90,22 +93,27 @@ await page.addInitScript(({ sid, anchor }) => {
   }, true);
 }, { sid: cfg.sid, anchor: cfg.anchor });
 
+let __loadN = 0;
 async function load() {
+  console.error("cmt-load#" + (++__loadN));   // the load in flight, for the Python cap's diagnostics if the driver is killed
   await page.goto(cfg.chat);
   // (1) the chat frame read SID.jsonl and rendered the anchored reply turn (the DOM half of the highlight's join)
   await page.waitForSelector('#content .turn[data-uuid="' + cfg.anchor + '"] p', { timeout: 60000 });
-  // (2) the mark wraps only when a comments frame is processed WITH the anchor turn already in the DOM. Handle BOTH
-  // orders: a comments frame that arrived BEFORE the turn applied to a page without it, and the turn's later render does
-  // not always re-apply the held marks under load (a client gap, flagged for its own fix). So after the turn, if the
-  // mark is not there yet, wait for the NEXT comments frame past the turn's render (n0 read now), which re-applies with
-  // the turn present. The ceiling is a failure bound, not a wall-clock guess; a miss names the order (n0 and the frames seen).
+  // (2) the mark wraps only when a comments frame is processed WITH the anchor turn in the DOM. A mark absent after the
+  // turn is the comments frame having reached the page BEFORE its listeners registered and the dedup suppressing the
+  // re-send (the measured mechanism above), NOT a client re-apply gap: syncView re-applies the marks on every view
+  // render. So after the turn, if the mark is not there yet, wait for the NEXT comments frame past the turn's render (n0
+  // read now); the ceiling is a failure bound, not a wall-clock guess, and a miss names the order (n0 and the frames seen).
   const n0 = await page.evaluate(() => window.__cmtFrames);
   const markHere = async () => !!(await page.$("mark.cmt-hl[data-tid]"));
   if (!(await markHere())) {
-    const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+    // catch ONLY the timeout (the legitimate "the event never fired" miss); a crash, a navigation, a closed context or
+    // an evaluation error is a different failure that must NOT read as this miss, so rethrow it, and record the name
+    let missErr = "";
+    const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 30000 }).then(() => true).catch((e) => { if (!e || e.name !== "TimeoutError") throw e; missErr = e.name; return false; });
     if (!got) {
       const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
-      console.error("comments-frame-after-turn-miss: no comments frame carrying anchor " + cfg.anchor + " for " + cfg.sid + " ran with the turn present (n0=" + n0 + "): " + JSON.stringify(seen));
+      console.error("comments-frame-after-turn-miss (" + missErr + "): no comments frame carrying anchor " + cfg.anchor + " for " + cfg.sid + " ran with the turn present (n0=" + n0 + "): " + JSON.stringify(seen));
       process.exit(4);
     }
   }
@@ -302,6 +310,13 @@ class ServedCommentPopSize(unittest.TestCase):
             cls.klog.close()
         shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
 
+    def _perf_tail(self):
+        try:
+            import urllib.request
+            return urllib.request.urlopen("http://127.0.0.1:%d/perf?token=%s" % (self.port, self.token), timeout=3).read().decode("utf-8", "replace")[-1500:]
+        except Exception as e:
+            return "(/perf unreadable: %r)" % e
+
     def _drive(self):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
@@ -310,21 +325,26 @@ class ServedCommentPopSize(unittest.TestCase):
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
-        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
-                           env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        t0 = time.time()
+        try:
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        except subprocess.TimeoutExpired as e:
+            # the 420 s cap (under CI's 600 s per-test timer) is a HANG net, not the wait: the per-load event ceilings
+            # (60 s the turn, 30 s the comments frame, 15 s the mark) are what a legit slow load spends, well under the
+            # cap on the common path where only the first load is cold. If it trips, build the SAME diagnostics the
+            # driver's own miss would, so the red names the link and the load in flight, not an opaque TimeoutExpired.
+            def _dec(b):
+                return "" if b is None else (b.decode("utf-8", "replace") if isinstance(b, (bytes, bytearray)) else b)
+            out, err = _dec(e.stdout), _dec(e.stderr)
+            last = next((ln for ln in reversed(err.splitlines()) if ln.startswith("cmt-load#")), "(no load marker)")
+            klog = open(os.path.join(self.lab, "kernel.log")).read()[-2000:]
+            self.fail("driver ran past its 420 s cap (%.0f s elapsed, load in flight: %s):\n%s%s\nkernel:\n%s\n/perf:\n%s"
+                      % (time.time() - t0, last, out[-3000:], err[-3000:], klog, self._perf_tail()))
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served dialog needs one (CI installs none)")
         klog = open(os.path.join(self.lab, "kernel.log")).read()[-2000:]
-        perf = ""
-        if p.returncode != 0:
-            # a miss records the kernel's COUNTERS and TAIL so the red names the link (the comments frame): the kernel.log
-            # tail shows whether the comments projection was even built ("[comments] thread ..."), and /perf's build
-            # counters say whether a full pusher cycle ran at all.
-            try:
-                import urllib.request
-                perf = urllib.request.urlopen("http://127.0.0.1:%d/perf?token=%s" % (self.port, self.token), timeout=3).read().decode("utf-8", "replace")[-1500:]
-            except Exception as e:
-                perf = "(/perf unreadable: %r)" % e
+        perf = self._perf_tail() if p.returncode != 0 else ""   # the /perf build counters name whether a cycle ran (a miss's link)
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + klog + (("\n/perf:\n" + perf) if perf else ""))
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
