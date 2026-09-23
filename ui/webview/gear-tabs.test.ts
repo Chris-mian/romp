@@ -1,7 +1,7 @@
 // The settings panel in TABS (T379, the user 2026-09-12; re-cut T400: General, Chat, Feed, Sessions, Task tracking, Appearance, Debug):
 // the settings grouped by the surface they belong to, seven pills
-// under the title, one pane each, every existing key kept; the tab-widgets gear on the chat strip opens the Chat tab
-// scrolled to its Tab widgets section (the user's amendment: no tab of their own), whose rows are the registered widgets (a live demo, a sliding switch, the widget's options); the last tab used is
+// under the title, one pane each, every existing key kept; the strip's gear opens the Chat tab
+// scrolled to its Tab strip section (T415; Tab widgets until then); the Tab widgets section below it holds the registered widgets (a live demo, a sliding switch, the widget's options); the last tab used is
 // remembered per browser. gear.js builds its DOM from a markup string, so the inventory is read off that string (each
 // control's id inside exactly one pane) and the behaviour pinned at the source; tests/test_tab_widgets_browser.py drives
 // the served page.

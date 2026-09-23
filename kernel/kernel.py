@@ -65140,7 +65140,7 @@ function feedHere(){return !(window.__rompPaneEnabled&&!window.__rompPaneEnabled
 // one waits is not queued: the page's opener toggles, so two would open and close it.
 var sPend=false;
 window.__rompOpenSettings=function(tab,section){var f=document.getElementById('f-settings');if(!f)return;
-// tab and section (T379): the chat strip's tab-widgets gear asks for the Chat tab at its Tab widgets section; the rail's gear names none (the remembered tab)
+// tab and section (T379): the chat strip's tab-widgets gear asks for the Chat tab at its Tab strip section (T415; Tab widgets until then); the rail's gear names none (the remembered tab)
 var msg={romp:'openSettings'};if(typeof tab==='string'&&tab)msg.tab=tab;if(typeof section==='string'&&section)msg.section=section;
 var open=function(){try{f.contentWindow&&f.contentWindow.postMessage(msg,'*');}catch(e){}};
 if(!f.getAttribute('src')){var u=f.getAttribute('data-src');if(!u)return;sPend=true;f.setAttribute('src',u);

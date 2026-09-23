@@ -63,6 +63,29 @@ test("stripGroupRows defaults ON: every tag group on its own row; an explicit fa
   delete store["romp:settings"];
 });
 
+// The state badge became the DEFAULT 2026-09-23 (the user 2026-09-21's follow-up). The EXISTING key is kept, read
+// `!== false`: no writer ever merged the old default into stored profiles (the gear's load() defaults exclude the key,
+// no webview saveSettings caller, broadcastSettings/installSettingsSync write the stored object as-is), so a stored
+// false is always a chosen off, and a fresh key would only discard it.
+test("tabStateBadge defaults ON (the badge is the default): absent reads on, a chosen false stays off through a save and a settings-sync write, a literal true stays on", () => {
+  assert.equal(DEFAULT_SETTINGS.tabStateBadge, true);
+  delete store["romp:settings"];
+  assert.equal(loadSettings().tabStateBadge, true, "absent (never chosen): the badge is on");
+  store["romp:settings"] = JSON.stringify({ tabStateBadge: false });
+  assert.equal(loadSettings().tabStateBadge, false, "a literal false is a CHOSEN off and stays off");
+  store["romp:settings"] = JSON.stringify({ tabStateBadge: true });
+  assert.equal(loadSettings().tabStateBadge, true, "a literal true stays on");
+  // a chosen off survives a whole-object save (saveSettings merges every default, yet keeps the chosen false, not the new on)
+  delete store["romp:settings"];
+  saveSettings({ tabStateBadge: false });
+  assert.equal(loadSettings().tabStateBadge, false, "the chosen off survives a save");
+  assert.equal(JSON.parse(store["romp:settings"]).tabStateBadge, false, "…stored as the literal false, never flipped to the new default");
+  // a settings-sync write (installSettingsSync writes the peer pane's object verbatim) carrying the chosen off keeps it
+  store["romp:settings"] = JSON.stringify({ tabStateBadge: false, compact: true, colormap: "aurora" });
+  assert.equal(loadSettings().tabStateBadge, false, "the chosen off survives a settings-sync write");
+  delete store["romp:settings"];
+});
+
 // The settings change signal must cover every way a change can happen: another
 // same-origin tab (storage event), THIS document (the gear now lives in the same
 // page — same-document writes never fire storage), and another VS Code webview

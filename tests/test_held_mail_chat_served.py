@@ -10,7 +10,9 @@ success (unit-tested with the act stubbed), so the lab takes it the way the runn
 store: the row leaves the box and the ring leaves the tab within a frame. Every read of the reader's bottom holds at the box's
 observer pass (the page's romp:box-below event, the load flake of 2026-09-19), and one scenario pins the follow-mode race that
 flake uncovered: a write to the bottom whose scroll echo is dispatched after the box grew. Synthetic only: placeholder ids,
-invented text, hostname TESTHOST."""
+invented text, hostname TESTHOST.
+
+After the 2026-09-23 default flip the badge is the default; this lab opts into RING mode (it seeds tabStateBadge:false) because its subject is the ring, and the dot's default is covered by the badge lab (test_tab_badge_browser) and the gear-preview test (test 5)."""
 import json
 import os
 import re
@@ -50,6 +52,7 @@ let browser;
 try { browser = await chromium.launch(cfg.launch || {}); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
 const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
 // the payload explains a failure (2026-09-20: test one went red once in a whole-suite run and the assertion was lost with the log):
 // the browser's console errors, and every wait of the first leg timed and marked, so a timeout names itself rather than surfacing
@@ -208,6 +211,7 @@ try { browser = await chromium.launch(cfg.launch || {}); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const out = { errors: [] };
 const ctx = await browser.newContext({ viewport: { width: 1100, height: 720 } });
+await ctx.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
 const page = await ctx.newPage();
 page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 200)));
 page.on("console", (m) => { if (m.type() === "error") out.errors.push("console: " + m.text().slice(0, 200)); });

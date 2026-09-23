@@ -412,7 +412,7 @@ initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
   (m) => vscodeApi?.postMessage(m));
 installSettingsSync();   // a gear save in ANOTHER VS Code pane lands here via the host
 // Open the settings gear on a NAMED tab, at a named SECTION of it when one is given (T379: the tab-widgets glyph opens
-// the Chat tab scrolled to its Tab widgets section): the same openSettings message every opener posts, with the tab and
+// the Chat tab scrolled to its Tab strip section (T415; Tab widgets until then)): the same openSettings message every opener posts, with the tab and
 // the section named. Through the shell when this pane sits in one (the kernel's __rompOpenSettings relays it into the
 // settings iframe, tab and section and all); else to this window, whose own gear (the VS Code chat's, mounted above)
 // listens for it.
