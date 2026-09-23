@@ -54,9 +54,13 @@ test("the tab hover and the Sessions pane show a session's mail state", () => {
 test("the kernel and the bus derive the same default from the thread's reg and the fresh key", () => {
   assert.match(KERNEL, /def _thread_mail_off\(sid\):[\s\S]*?if not sid or not _thread_reg\(sid\)\.get\("threadOf"\):\s*\n\s*return False\s*\n\s*f = _session_flags\(\)\.get\(sid\)\s*\n\s*return not \(isinstance\(f, dict\) and f\.get\("threadMail"\) is True\)/,
                "literal True only (the flip-a-default rule)");
-  assert.match(KERNEL, /def _mail_off_why_k\(sid\):[\s\S]*?if _reg_unreadable\(sid\):\s*\n\s*return "unreadable"\s*\n\s*if _thread_mail_off\(sid\):\s*\n\s*return "thread"\s*\n\s*iso = _session_flag\(sid, "postalServiceOff"\) or _session_flag\(sid, "postalOff"\)[^\n]*\n\s*if _flags_unknown_cold\(\):\s*\n\s*return "flags"[^\n]*\n\s*return "isolation" if iso else ""/,
+  assert.match(KERNEL, /def _mail_off_why_k\(sid\):[\s\S]*?if _reg_unreadable\(sid\):\s*\n\s*return "unreadable"\s*\n\s*if _thread_mail_off\(sid\):\s*\n\s*return "thread"\s*\n\s*iso = _postal_isolation_flag\(sid\)[^\n]*\n\s*if _flags_unknown_cold\(\):\s*\n\s*return "flags"[^\n]*\n\s*return "isolation" if iso else ""/,
                "the kernel's reasons: unreadable first (the bus holds everything for it), then the thread default, then the mailbox flag, read before the flags-unknown door closes (2026-09-14)");
   assert.match(KERNEL, /def _postal_isolated\(sid\):[\s\S]*?return bool\(_mail_off_why_k\(sid\)\)/);
+  // the session's own key decides either way; absent one, the master default under POSTAL_ALL_KEY does —
+  // the same order the bus reads over the same file, which is what keeps the two answers equal
+  assert.match(KERNEL, /def _postal_isolation_flag\(sid\):[\s\S]*?for flag in \("postalServiceOff", "postalOff"\):\s*\n\s*own = _session_flag_raw\(sid, flag\)\s*\n\s*if own is not None:\s*\n\s*return own\s*\n\s*return _session_flag\(POSTAL_ALL_KEY, "postalServiceOff"\)/);
+  assert.match(POSTAL, /for key in \("postalServiceOff", "postalOff"\)/, "the bus honours the master default too");
   assert.match(KERNEL, /"mailOff": bool\(mail_why\),/, "the comments frame carries it (one derivation with the reason)");
   assert.match(KERNEL, /\*\*_mail_off_fields\(m\["id"\]\),/, "the Sessions pane rows carry it, with the reason, from one derivation (T356 fifth follow-up)");
   assert.match(KERNEL, /def _mail_off_fields\(sid\):[\s\S]*?why = _mail_off_why_k\(sid\)\s*\n\s*return \{"postalServiceOff": bool\(why\), "mailOffWhy": why\}/, "the one derivation behind both fields");

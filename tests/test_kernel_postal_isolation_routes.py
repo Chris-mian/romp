@@ -62,6 +62,59 @@ class PostalIsolated(unittest.TestCase):
         self._flags({})
         self.assertFalse(km._postal_isolated(SID))
 
+    def _raw_flags(self, flags):
+        (km.jd.STATE / "session-flags.json").write_text(json.dumps(flags))
+
+    def test_the_master_key_isolates_a_session_with_no_override(self):
+        # The master default (the user 2026-08-27): sessions a person opened separately are separate work,
+        # so cross-session mail is off unless a session opts in. "*" can never collide with a sid.
+        self._raw_flags({km.POSTAL_ALL_KEY: {"postalServiceOff": True}})
+        self.assertTrue(km._postal_isolated(SID))
+        self.assertTrue(km._postal_isolated("99999999-8888-7777-6666-555555555555"))
+
+    def test_a_session_opt_IN_beats_the_master(self):
+        # most-specific-wins, the notify bell's rule — an explicit False is a real answer, not an absence
+        self._raw_flags({km.POSTAL_ALL_KEY: {"postalServiceOff": True}, SID: {"postalServiceOff": False}})
+        self.assertFalse(km._postal_isolated(SID))
+
+    def test_a_session_override_isolates_with_the_master_absent(self):
+        self._raw_flags({SID: {"postalServiceOff": True}})
+        self.assertTrue(km._postal_isolated(SID))
+
+    def test_no_flags_at_all_leaves_the_postal_service_on(self):
+        self._raw_flags({})
+        self.assertFalse(km._postal_isolated(SID), "romp's shipped default is unchanged — mail works")
+
+    def _stored(self):
+        return json.loads((km.jd.STATE / "session-flags.json").read_text())
+
+    def test_the_setter_opts_a_session_out_of_a_master_isolation(self):
+        # the lane toggle's own write path: False under a master True must STICK as an explicit False
+        self._raw_flags({km.POSTAL_ALL_KEY: {"postalServiceOff": True}})
+        km._set_session_flag(SID, "postalServiceOff", False)
+        self.assertEqual(self._stored()[SID], {"postalServiceOff": False})
+        self.assertFalse(km._postal_isolated(SID))
+        self.assertFalse(km._painted_flag_value(SID, "postalServiceOff"), "the toggle repaints as mail on")
+
+    def test_a_choice_equal_to_the_master_is_dropped_not_pinned(self):
+        self._raw_flags({km.POSTAL_ALL_KEY: {"postalServiceOff": True}, SID: {"postalServiceOff": False}})
+        km._set_session_flag(SID, "postalServiceOff", True)
+        self.assertNotIn(SID, self._stored(), "back on the default: the override goes")
+        self.assertTrue(km._postal_isolated(SID))
+
+    def test_the_setter_clears_a_legacy_key_so_it_cannot_outvote_the_choice(self):
+        self._raw_flags({SID: {"postalOff": True}})
+        km._set_session_flag(SID, "postalServiceOff", False)
+        self.assertNotIn(SID, self._stored())
+        self.assertFalse(km._postal_isolated(SID))
+
+    def test_the_master_itself_is_set_through_the_same_setter(self):
+        km._set_session_flag(km.POSTAL_ALL_KEY, "postalServiceOff", True)
+        self.assertTrue(km._postal_isolated(SID))
+        km._set_session_flag(km.POSTAL_ALL_KEY, "postalServiceOff", False)
+        self.assertNotIn(km.POSTAL_ALL_KEY, self._stored(), "off is the absent master")
+        self.assertFalse(km._postal_isolated(SID))
+
 
 class RouteGates(unittest.TestCase):
     """Source pins: both routes gate on isolation, with the intended semantics."""

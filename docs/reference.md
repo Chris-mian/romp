@@ -5323,6 +5323,19 @@ box yourself, and plain text the kernel's own send route carries, is yours and
 still goes through; that is the human channel, by design, not a hole in the
 gate.
 
+## Mail off for every session by default
+
+`session-flags.json` can carry a master isolation default under the reserved
+key `*`: with `{"*": {"postalServiceOff": true}}` every session's mail is off
+unless the session opts back in. The kernel, the postal bus and the SessionStart
+pointer resolve it the same way: a comment thread's own default first, then the
+session's own mailbox toggle (either value), then the master. The toggle writes
+an override only where it differs from the master, so turning a session's mail
+on under an isolating master stores an explicit `false`, and turning it back
+off removes the override. The master itself is set through the same flag route
+with `*` as the id (`POST /flag` with `{"id": "*", "flag": "postalServiceOff",
+"value": true}`); off removes the key.
+
 ## The tags a new session inherits
 
 A session started from another one joins its tags. Forking a session, breaking

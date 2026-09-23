@@ -8149,12 +8149,26 @@ def _session_flag_raw(sid, flag):
     return None if v is None else bool(v)
 
 
+def _write_postal_override(flags, value, master):
+    """Store a session's isolation choice as an override on the POSTAL_ALL_KEY master, in place: an
+    explicit False survives a master True, and a value equal to the master is dropped rather than
+    pinned. The legacy postalOff key goes either way, so it can never outvote the new choice."""
+    flags.pop("postalOff", None)
+    master_isolates = isinstance(master, dict) and bool(master.get("postalServiceOff"))
+    if bool(value) == master_isolates:
+        flags.pop("postalServiceOff", None)
+    else:
+        flags["postalServiceOff"] = bool(value)
+
+
 def _set_session_flag(sid, flag, value):
     with _flags_lock:                                # read and publish as ONE step (the store's rule, above)
         cur = dict(_session_flags_proved())          # PROVED: a read fault refuses (raises) rather than
         #                                              overwriting every session's flags with a fabricated {}
         f = dict(cur.get(sid)) if isinstance(cur.get(sid), dict) else {}
-        if value:
+        if flag == "postalServiceOff" and sid != POSTAL_ALL_KEY:
+            _write_postal_override(f, value, cur.get(POSTAL_ALL_KEY))
+        elif value:
             f[flag] = True
         else:
             f.pop(flag, None)
@@ -8215,6 +8229,10 @@ def _set_session_flag(sid, flag, value):
 # whose card left the feed are pruned on write (the card is gone; a fresh card is a fresh id), so
 # the file tracks the live feed instead of growing forever.
 NOTIFY_ALL_KEY = "*"
+# The same reserved-key trick in session-flags.json: "*" is not a session id (sids are uuids), so it
+# carries MASTER defaults that per-session entries override. Postal isolation reads it — see
+# _mail_off_why_k. Only ever accessed by an explicit .get, never by iterating the file as sessions.
+POSTAL_ALL_KEY = "*"
 # "*turns" is the SECOND reserved key (2026-09-05): the kernel-wide "also when a turn finishes" switch
 # behind the bell popover. It lives in this file rather than a sibling on purpose — it is read on the
 # same fire path as the master (both gate one push), so one cached read answers both; it rides the
@@ -29420,16 +29438,28 @@ def _reg_unreadable(sid):
     return _thread_reg_read(str(sid))[0] == "unreadable"
 
 
+def _postal_isolation_flag(sid):
+    """Postal isolation for `sid`, most-specific-wins: its own key decides either way, else the MASTER default
+    under POSTAL_ALL_KEY. Isolation is the sane default for many setups, so the master carries it and a session
+    opts back IN with an explicit False. The bus's _mail_off_why resolves it identically over the same file."""
+    for flag in ("postalServiceOff", "postalOff"):
+        own = _session_flag_raw(sid, flag)
+        if own is not None:
+            return own
+    return _session_flag(POSTAL_ALL_KEY, "postalServiceOff")
+
+
 def _mail_off_why_k(sid):
     """Why the session can neither send nor receive mail, the kernel's twin of the bus's _mail_off_why over the same
     two files: "unreadable" (its record cannot be read: the bus holds everything), "thread" (a comment thread not yet
-    broken out, _thread_mail_off), "isolation" (the mailbox flag the timeline lane's icon writes, legacy key included),
-    or "" (mail on). Rides the rows as mailOffWhy so the tab hover and the Sessions pane can say which."""
+    broken out, _thread_mail_off), "isolation" (the mailbox flag the timeline lane's icon writes, legacy key included,
+    or the master default), or "" (mail on). Rides the rows as mailOffWhy so the tab hover and the Sessions pane can
+    say which."""
     if _reg_unreadable(sid):
         return "unreadable"
     if _thread_mail_off(sid):
         return "thread"
-    iso = _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")   # reads the flags (noting a fault)
+    iso = _postal_isolation_flag(sid)                      # reads the flags (noting a fault)
     if _flags_unknown_cold():
         return "flags"                     # the flags cannot be read and none are known: closed under the door's own word
     return "isolation" if iso else ""

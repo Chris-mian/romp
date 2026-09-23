@@ -87,6 +87,9 @@ NAMES_DIR = Path(os.environ.get("ROMP_STATE_DIR")
                  or Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "romp") / "names"
 TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (messages.jsonl)
 SESSION_FLAGS = STATE.parent / "session-flags.json"   # the kernel's per-session view flags {sid:{flag:true}}; we honour postalServiceOff (legacy: postalOff)
+# The reserved key in that file carrying MASTER defaults per-session entries override — a uuid can never
+# collide with it. Must stay identical to kernel.POSTAL_ALL_KEY: both files read the one store.
+POSTAL_ALL_KEY = "*"
 CODEX_REGISTRY = STATE.parent / "codex" / "registry.json"   # the kernel's Codex backend's store: rows keyed by the stable sid, each carrying the native thread id ("tid"); read by _codex_self_id only
 
 
@@ -1586,7 +1589,15 @@ def _mail_off_why(sid):
         return "thread"
     if not known:
         return "flags"                                   # the flags cannot be read and none are known: closed, never open
-    return "isolation" if (isinstance(f, dict) and (f.get("postalServiceOff") or f.get("postalOff"))) else ""
+    # Most-specific-wins: the session's own key decides either way, else the MASTER default under
+    # POSTAL_ALL_KEY. The kernel's reader honours the master too, and the two MUST agree — were only the
+    # kernel to, this service would go on advertising peers and taking sends the kernel treats as isolated.
+    if isinstance(f, dict):
+        for key in ("postalServiceOff", "postalOff"):
+            if key in f:
+                return "isolation" if f[key] else ""
+    master = flags.get(POSTAL_ALL_KEY) if isinstance(flags, dict) else None
+    return "isolation" if (isinstance(master, dict) and master.get("postalServiceOff")) else ""
 
 
 _FLAGS_LAST = [None]          # the last session-flags dict read cleanly (a missing file reads {}); None: none yet
