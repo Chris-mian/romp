@@ -260,7 +260,9 @@ def _records(sid, writes, prose):
 
 class ArtifactsRemoteServed(unittest.TestCase):
     _r = None
-    _fail = None
+    _fail = None       # the main run's fault: read by every test, since a main-run fault after stage one leaves the remote kernel down
+    _fail_rf = None    # the remote-first run's own fault (the second contributor's post-merge review of PR 2100 at 17:50Z): read by its one test alone,
+    #                    so a fault in that short run no longer fails the four main-run tests sorted after it with a message about a run they never read
 
     @classmethod
     def _skip(cls, why):
@@ -373,8 +375,10 @@ class ArtifactsRemoteServed(unittest.TestCase):
     def _result_remote_first(self):
         """The picker leg on an emulated REMOTE-FIRST boot (the second contributor's post-merge review of PR 2097 at 16:50Z): a second,
         short driver run on the same two kernels, the remote tab made active before the pane exists, ending after the card."""
-        if type(self)._fail:
+        if type(self)._fail:               # the main run's fault first: after stage one it leaves the remote kernel down, and its message names that cause
             self.fail(type(self)._fail)
+        if type(self)._fail_rf:
+            self.fail(type(self)._fail_rf)
         if getattr(type(self), "_r2", None) is None:
             cfg = os.path.join(self.lab, "cfg-remote-first.json")
             with open(cfg, "w") as f:
@@ -388,8 +392,8 @@ class ArtifactsRemoteServed(unittest.TestCase):
                 self._skip("no playwright browser on this box")
             line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
             if line is None:
-                type(self)._fail = "the remote-first driver produced no RESULT (stderr: %s)" % p.stderr[-2000:]
-                self.fail(type(self)._fail)
+                type(self)._fail_rf = "the remote-first driver produced no RESULT (stderr: %s)" % p.stderr[-2000:]
+                self.fail(type(self)._fail_rf)
             type(self)._r2 = json.loads(line[len("RESULT:"):])
         print("ARTREMOTE-FIRST:", json.dumps(type(self)._r2), file=sys.stderr)
         return type(self)._r2
