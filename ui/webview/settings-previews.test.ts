@@ -55,10 +55,11 @@ test("(3) the demo tab reads the demo record's name in its identity colour, the 
 // composes the left status-dot slot and runs applyTabBadgeMode over the ring row's demo status, so the Needs-you ring becomes
 // the top-right dot and retrying the amber left dot while the red Blocked ring stays; off, the ring alone. applyTabBadgeMode's
 // own dot/ring behaviour executes in tab-widgets.test.ts; here the demo is pinned to call it, gated on the setting.
-test("(5) the ring rows' preview reflects the state badge: the demo runs applyTabBadgeMode over the ring row's demo status when on, the ring alone when off", () => {
+test("plan test 5: the ring rows' preview reflects the state badge: the demo runs applyTabBadgeMode over the ring row's demo status when on, the ring alone when off (the ORDER it depends on is executed in tab-widgets.test.ts)", () => {
   const RING_SECTION = GEAR.slice(GEAR.indexOf("var ringSection = widgetSection({"), GEAR.indexOf("function statusPrefs(s)"));
   assert.match(RING_SECTION, /var badge = load\(\)\.tabStateBadge !== false, st = w\.demo \|\| TW\.DEMO_STATUS, sid = w\.demoSid \|\| TW\.DEMO_SID;/, "the demo reads the badge setting (default on) and the ring row's demo status");
   assert.match(RING_SECTION, /if \(badge\) TW\.composeTabWidgets\(tab, 'before', sid, st, prefs\);/, "badge on: the left status-dot slot, so retrying can re-ink it");
+  assert.match(RING_SECTION, /if \(badge\) TW\.composeTabWidgets\(tab, 'after', sid, st, prefs\);/, "badge on: the after-side widgets too (both sides, as the strip composes them), so a dot dragged past the name is re-inked");
   assert.match(RING_SECTION, /var cls = TW\.ringDemoClass\(w, prefs\); if \(cls\) tab\.classList\.add\(cls\);/, "the ring its predicate lights (kept for the off case and for Blocked)");
   assert.match(RING_SECTION, /if \(badge\) TW\.applyTabBadgeMode\(tab, sid, st, prefs\);/, "badge on: Needs you becomes the top-right dot, retrying the amber left dot, the red Blocked ring stays");
 });

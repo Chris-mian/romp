@@ -125,12 +125,13 @@ export function loadSettings(): RompSettings {
 }
 
 export function saveSettings(patch: Partial<RompSettings>): RompSettings {
-  // WHOLE-OBJECT SAVE (no production caller today: the gear posts settingsSync, no webview code calls this). `next`
-  // merges every default from loadSettings under the patch and writes the lot, so a save stamps
-  // DEFAULT_SETTINGS.tabStateBadge into the store as a literal boolean. A future flip of the badge back to OFF cannot
-  // then ride this key: the save would write the new default `false` as a literal, which loadSettings reads as a CHOSEN
-  // off, defeating the flip. Such a flip needs a fresh key (see the tabStateBadge note in loadSettings), and this
-  // function must not gain a caller before that.
+  // WHOLE-OBJECT SAVE (no production caller today: the gear posts settingsSync, no webview code calls this; pinned in
+  // settings.test.ts). `next` merges every default from loadSettings under the patch and writes the lot, so any save
+  // STAMPS DEFAULT_SETTINGS.tabStateBadge (today a literal `true`) into a store that never chose, converting "never
+  // chose" (reads on via the default) into "chose on" (a literal true). Harmless today (both read on), but it would
+  // DEFEAT a future flip of the badge to OFF: the stamped-true stores would ignore the new off default and stay on. So
+  // a flip to off needs a fresh key (see the tabStateBadge note in loadSettings), and this function must not gain a
+  // production caller before that.
   const next = { ...loadSettings(), ...patch };
   if ("tabCtx" in patch && !("tabWidgets" in patch)) {
     // an older writer setting the gauge mode alone: the context bar's prefs follow it (the mirror runs both ways

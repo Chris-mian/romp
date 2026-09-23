@@ -107,17 +107,19 @@ test("THE GEAR'S SHEET: the ring rows' demos wear the same classes through gear.
   assert.equal(feedLight, styLight, "the two sheets agree on the light value");
 });
 
-test("the reference says what the Needs you ring means, when it shows (idle, waiting or still working), what outranks it, and that the notification is the same event", () => {
+test("the reference says what the Needs you cue means, when it shows (idle, waiting or still working), what outranks it, and that the notification is the same event", () => {
   const prose = (t: string) => new RegExp(t.replace(/[.()*]/g, "\\$&").split(" ").join("\\s+"));   // the reference wraps its lines; the bold markers are literal
   assert.match(REF, prose("A tab wears a dashed red ring, **Blocked**, while its session is stopped: on a permission or picker prompt, or on an API error only you can clear."));
-  assert.match(REF, prose("the tab wears a dashed magenta ring instead, **Needs you**, whether the session is idle, waiting on background work or still working, so the sessions that need you stand out in the strip without a click"));
-  assert.match(REF, prose("A red ring outranks the magenta one; the amber ring of a session retrying an API error on its own gives way to it."));
+  assert.match(REF, prose("a small **magenta dot** sits at the tab's top-right corner, **Needs you**, carrying a count of what needs you in the session"));
+  assert.match(REF, prose("whether the session is idle, waiting on background work or still working, so the sessions that need you stand out in the strip without a click"));
+  assert.match(REF, prose("A session **retrying** an API error on its own shows a hollow **amber left dot**"));
+  assert.match(REF, prose("Blocked outranks Needs you, and Needs you outranks retrying."));
   assert.match(REF, prose("With notifications on, the card entering Needs you is also what notifies you"));
-  assert.match(REF, prose("the session picker marks the same sessions with a magenta bar at the row's left edge"), "the phone's picker carries the mark too");
+  assert.match(REF, prose("the session picker marks the same sessions with the magenta count dot, on each picker row and on the button that names the current session"), "the phone's picker carries the mark too");
   // the rings as widgets (2026-09-14): the three rows, their switches, the one-at-a-time rule and what a switched-off ring leaves
-  assert.match(REF, prose("each with its own switch, listed in that order because a tab wears one ring at a time and the first that applies wins: red over magenta over amber."));
+  assert.match(REF, prose("each with its own switch, listed in that order because a tab wears one cue at a time and the first that applies wins: Blocked over Needs you over retrying."));
   assert.match(REF, /\*\*Tab widgets\*\*\s+\(\*\*Blocked\*\*, \*\*Needs\s+you\*\*, \*\*Retrying\*\*\)/, "the rows by their labels, in precedence order");
-  assert.match(REF, prose("A ring switched off leaves the tab with its dot; the small dot on a folded group's header and the phone's picker follow the same switches."));
+  assert.match(REF, prose("A cue switched off leaves the tab with its dot; the small dot on a folded group's header and the phone's picker follow the same switches."));
   assert.match(REF, prose("the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name"), "the strip paragraph's Tab widgets sentence");
   assert.match(REF, prose("One colour, the Needs you colour, marks the category everywhere"), "the one-colour sentence");
 });

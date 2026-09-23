@@ -252,7 +252,7 @@ var GEAR_HTML =
   // THE RINGS (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear are widgets too, each with
   // its own switch, listed as their own group under the title's rows and their preview (the preview box lands between
   // the two hosts at build). No grip: their order is the precedence, red over magenta over amber, and is the registry's
-  '<div class=rs-hint>Rings around the tab. One at a time: the first that applies wins, in this order.</div>' +
+  '<div class=rs-hint>One cue at a time on the tab: the first state that applies wins, in this order.</div>' +
   '<div id=rs-rings class=rs-widgets></div>' +
   // STATUS LINE (T409, the user 2026-09-13): the items the line above the composer carries besides its fixed parts, one
   // row per registered widget (status-widgets.ts); the rows are the whole entry point (the user: no gear on the line,
@@ -1015,12 +1015,16 @@ function initGear(post, opts) {
     on: TW.widgetOn, opts: TW.widgetOpts,
     demo: function (w, prefs) {
       var tab = demoTab();
-      // BADGE mode (the tabStateBadge setting): compose the left status-dot slot first (so the retrying row can re-ink it,
-      // as the strip does), then the ring, then applyTabBadgeMode, which turns the Needs-you ring into the top-right dot and
-      // retrying into the amber left dot while the red Blocked ring stays. Off: a plain tab wearing just its ring.
+      // BADGE mode (the tabStateBadge setting): compose BOTH widget sides around the name (the before-slot and the
+      // after-slot, exactly as the strip does in render.ts), THEN the ring, then applyTabBadgeMode, which turns the
+      // Needs-you ring into the top-right dot and retrying into the amber left dot while the red Blocked ring stays.
+      // Composing both sides is why a status dot DRAGGED PAST THE NAME (the after slot) is present for the badge pass to
+      // re-ink, matching the strip; composing only the before slot left the demo wearing the ring while the strip showed
+      // the dot (the second contributor's review of PR 2065). Off: a plain tab wearing just its ring.
       var badge = load().tabStateBadge !== false, st = w.demo || TW.DEMO_STATUS, sid = w.demoSid || TW.DEMO_SID;
       if (badge) TW.composeTabWidgets(tab, 'before', sid, st, prefs);
       tab.appendChild(demoLabel());   // the demo record's name in its identity colour (T415 part two), the ring or dot on top
+      if (badge) TW.composeTabWidgets(tab, 'after', sid, st, prefs);
       var cls = TW.ringDemoClass(w, prefs); if (cls) tab.classList.add(cls);
       if (badge) TW.applyTabBadgeMode(tab, sid, st, prefs);
       return tab;

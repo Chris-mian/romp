@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 // Minimal localStorage shim BEFORE importing the module (load/save read it at call time).
 const store: Record<string, string> = {};
@@ -262,4 +264,24 @@ test("a stored showArtifactsControl is dropped at load and gone after a save", (
   saveSettings({ compact: false });
   assert.equal("showArtifactsControl" in JSON.parse(store["romp:settings"]), false, "gone on the next save");
   delete store["romp:settings"];
+});
+
+test("saveSettings has no production caller (a whole-object save would stamp the current default into a store that never chose)", () => {
+  // scan the webview AND the extension-host TS (either could call it); the kernel is Python and cannot call a TS symbol,
+  // so grep it too to say so. No PRODUCTION module calls saveSettings; the gear posts settingsSync, render.ts only imports it.
+  const roots = [path.resolve(process.cwd(), "..", "ui", "webview"), path.resolve(process.cwd(), "..", "vscode-extension", "src")];
+  const SETTINGS_TS = path.join(roots[0], "settings.ts");   // the ONE module that DEFINES saveSettings; exempt it by EXACT path, not any *settings.ts (low c)
+  const callers = [];
+  for (const dir of roots) {
+    for (const f of fs.readdirSync(dir, { recursive: true })) {
+      const rel = String(f);
+      if (!rel.endsWith(".ts") || rel.endsWith(".test.ts")) continue;
+      const p = path.join(dir, rel);
+      if (p === SETTINGS_TS) continue;   // ui/webview/settings.ts alone, by exact path (a vscode-extension/src/settings.ts would NOT be exempt)
+      try { if (/\bsaveSettings\s*\(/.test(fs.readFileSync(p, "utf8"))) callers.push(path.join(path.basename(dir), rel)); } catch { /* a dir entry */ }
+    }
+  }
+  assert.deepEqual(callers, [], "no webview or extension-host module CALLS saveSettings (the gear posts settingsSync; render.ts only imports it): a caller must not be added without the fresh-key rule, since a save stamps DEFAULT_SETTINGS.tabStateBadge (true today) into a never-chose store and would defeat a future flip to off");
+  const kernel = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.doesNotMatch(kernel, /\bsaveSettings\s*\(/, "the kernel is Python: it does not call the webview's saveSettings either");
 });

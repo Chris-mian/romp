@@ -6896,7 +6896,7 @@ function renderTabs() {
       tab.classList.add("colored");
     }
     if (id === peekId) tab.classList.add("tab-peek");   // ephemeral peek — ghost/dashed dress (styles.css)
-    const st = applyTabStatus(tab, s);   // the chip (status → class/dot/bar), shared with the skeleton tab (2026-09-07)
+    const st = applyTabStatus(tab, s);   // the chip (status → class/dot/bar); one of applyTabStatus's THREE sites (renderTabs here, the skeleton tab, the loading tab), shared since 2026-09-07
     const label = el("span", "tab-label");
     label.replaceChildren(...hostNameNodes(s.name, id));   // remote "host:" prefix renders as quiet metadata
     // ...and the whole tab dims when that host is unreachable, so a disconnected session reads as one at
