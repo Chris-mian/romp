@@ -212,6 +212,115 @@ class StoreCas(unittest.TestCase):
         self.assertIn(self._nid(2), nodes, "the other writer's minted node survives the stale save")
         self.assertIn(self._nid(1), nodes)
 
+    def test_an_in_place_rewrite_that_leaves_rev_alone_is_a_publication_the_holders_save_rebases_onto(self):
+        """The CI red of 2026-09-23 on the box lab: its driver edits the store IN PLACE (a node added, `seq` bumped, `rev` untouched, the
+        shape of a hand edit too), and a judge pass whose store predates the edit saved after it. The CAS compared revisions alone, saw the
+        file's revision where it loaded it, and published the pass's store over the edit: the new node gone, the driver's seq reverted, the
+        card never built. The CAS now compares the identity of the file the base was read from as well, so the rewrite reads as a
+        publication and the save rebases onto it: the minted node survives, the holder's own event lands beside it."""
+        self._seed()
+        holder = jd.load_goals(SID)                  # the pass's private copy, loaded before the edit
+        path = jd.GOALDIR / (SID + ".json")
+        st = json.loads(path.read_text())           # the editor: read, mutate, seq bumped, rev untouched, written in place
+        g9 = self._nid(9)
+        st["nodes"][g9] = {"id": g9, "text": "Their in-place goal", "parentId": None, "nodeComplete": False, "blocked": True, "blockWhy": "q",
+                           "cleared": False, "trail": [], "t": T0 + 30, "log": [{"ev_t": T0 + 30, "src": "planner", "kind": "block", "why": "asked: q", "at": T0 + 30}]}
+        st["status"][g9] = "blocked"; st["seq"] = (st.get("seq") or 0) + 1
+        path.write_text(json.dumps(st))
+        jd.record_verdict(holder, holder["nodes"][self._nid(1)], "unblocker", "note", T0 + 40, why="the pass ends with a save")
+        jd.save_goals(SID, holder)
+        after = json.loads(path.read_text())
+        self.assertIn(g9, after["nodes"], "the in-place edit's node survives the holder's save (before: published over, the revision unmoved)")
+        self.assertEqual(after["nodes"][g9].get("blockSummary"), None); self.assertEqual(after["status"].get(g9), "blocked")
+        self.assertTrue(any(e.get("why") == "the pass ends with a save" for e in after["nodes"][self._nid(1)]["log"]), "and the holder's own event landed beside it")
+        self.assertNotIn("_baseIdent", after, "the identity base is transient, never serialized")
+        self.assertNotIn("_baseIdent", json.loads(path.read_text()).keys())
+        # the holder's next save is uncontended: the identity re-stamped after the publish is the file's, so no second rebase
+        jd.record_verdict(holder, holder["nodes"][self._nid(1)], "unblocker", "note", T0 + 50, why="a second event")
+        with mock.patch.object(jd, "_rebase_onto_disk", side_effect=AssertionError("no rebase owed")) as rb:
+            jd.save_goals(SID, holder)
+        self.assertEqual(rb.call_count, 0, "an uncontended second save rebases nothing (the identity written is the identity read back)")
+
+    def test_a_store_whose_identity_base_came_through_a_json_round_trip_saves_without_a_rebase(self):
+        """The round-one lane red of PR 2064: the identity base is a tuple, and a store that went through json.loads(json.dumps(...)) holds it
+        as a list; a list never equals a tuple, so compared as loaded every save from such a store would rebase forever. The compare is in
+        tuples on both sides."""
+        self._seed()
+        s = jd.load_goals(SID)
+        s2 = json.loads(json.dumps(s))               # the round trip: _baseRev stays an int, _baseIdent becomes a list
+        self.assertIsInstance(s2["_baseIdent"], list, "premise: the round trip turned the tuple into a list")
+        jd.record_verdict(s2, s2["nodes"][self._nid(1)], "unblocker", "note", T0 + 40, why="an event to publish")
+        with mock.patch.object(jd, "_rebase_onto_disk", side_effect=AssertionError("no rebase owed")) as rb:
+            jd.save_goals(SID, s2)
+        self.assertEqual(rb.call_count, 0, "an uncontended save from the round-tripped store rebases nothing (before: the list never equalled the tuple)")
+        self.assertTrue(any(e.get("why") == "an event to publish" for e in json.loads((jd.GOALDIR / (SID + ".json")).read_text())["nodes"][self._nid(1)]["log"]), "and it published")
+
+    def test_the_shared_view_carries_the_identity_base_the_writer_loader_carries(self):
+        """The round-one lane red of PR 2064: load_goals carried _baseIdent and load_goals_shared did not, so the two views disagreed. The
+        shared view stamps the identity of the bytes it read, so the views agree by construction, and a fresh store names its absent file."""
+        self._seed()
+        shared, writer = jd.load_goals_shared(SID), jd.load_goals(SID)
+        self.assertEqual(shared["_baseIdent"], writer["_baseIdent"], "one identity for one file: %r %r" % (shared["_baseIdent"], writer["_baseIdent"]))
+        self.assertIsNotNone(writer["_baseIdent"]); self.assertEqual(len(writer["_baseIdent"]), 3, "inode, mtime_ns, size")
+        fresh = jd.load_goals("99999999-8888-7777-6666-555555555555")
+        self.assertIn("_baseIdent", fresh); self.assertIsNone(fresh["_baseIdent"], "no file at the load: None, set explicitly")
+
+    def test_an_uncontended_first_save_after_a_load_rebases_zero_times(self):
+        """The round-one verifier of PR 2064: nothing held the load's recorded identity to the file's. A load whose identity base were None
+        (or the wrong file's, as the quarantine-decline retry's was) would rebase on every first save, correctly but for nothing, and every
+        CAS test stayed green. The identity the load records IS the file's: an uncontended first save compares equal and rebases zero times."""
+        self._seed()
+        s = jd.load_goals(SID)
+        self.assertIsNotNone(s["_baseIdent"], "premise: a file was read")
+        jd.record_verdict(s, s["nodes"][self._nid(1)], "unblocker", "note", T0 + 40, why="the first event after the load")
+        real = jd._rebase_onto_disk
+        calls = []
+
+        def counting(fsid, store):
+            calls.append(fsid); return real(fsid, store)
+        with mock.patch.object(jd, "_rebase_onto_disk", counting):
+            jd.save_goals(SID, s)
+        self.assertEqual(calls, [], "the identity recorded at the load is the file's own: no rebase on an uncontended first save (a None or a stale identity would rebase here)")
+        after = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
+        self.assertTrue(any(e.get("why") == "the first event after the load" for e in after["nodes"][self._nid(1)]["log"]), "and it published")
+
+    def test_the_identity_recorded_after_a_quarantine_decline_is_the_file_that_was_read(self):
+        """The round-one verifier of PR 2064: the reader's quarantine-decline retry recursed without the identity list, so the outer list kept
+        the unparseable file's identity and the load stamped it as the base while the bytes came from the new file; the next save rebased
+        spuriously. The retry hands the list on, and the base is the identity of the file whose bytes the load returned."""
+        self._seed()
+        path = jd.GOALDIR / (SID + ".json")
+        good = path.read_bytes()
+        path.write_bytes(b"{ torn")                  # unparseable bytes at the load's first read
+        real_q = jd._quarantine_store
+
+        def declining(p, reason, st):                # the quarantine declines: the file changed under the reader (a peer published)
+            path.write_bytes(good)
+            return None
+        with mock.patch.object(jd, "_quarantine_store", declining):
+            s = jd.load_goals(SID)
+        st = path.stat()
+        self.assertEqual(tuple(s["_baseIdent"]), (st.st_ino, st.st_mtime_ns, st.st_size), "the base is the good file's identity, not the torn file's (before: the torn file's, a size of 6)")
+        jd.record_verdict(s, s["nodes"][self._nid(1)], "unblocker", "note", T0 + 40, why="after the decline")
+        with mock.patch.object(jd, "_rebase_onto_disk", side_effect=AssertionError("no rebase owed")) as rb:
+            jd.save_goals(SID, s)
+        self.assertEqual(rb.call_count, 0, "and the save after it rebases nothing")
+
+    def test_a_file_created_after_a_fresh_load_is_a_publication_too(self):
+        """No file at the load (a fresh store, base 0, no identity); an editor creates one without a revision before the first save. On the
+        revision alone (0 against 0) the save published the fresh store over it; the file's presence is the moved identity."""
+        holder = jd.load_goals(SID)                  # absent: the fresh store
+        path = jd.GOALDIR / (SID + ".json"); path.parent.mkdir(parents=True, exist_ok=True)
+        g7 = self._nid(7)                            # an id the pass's mint (g1) cannot collide with
+        path.write_text(json.dumps({"rompUuid": SID, "seq": 1, "nodes": {g7: {"id": g7, "text": "Created outside", "parentId": None, "nodeComplete": False,
+                                                                                 "blocked": False, "cleared": False, "trail": [], "t": T0, "log": []}},
+                                    "placements": {}, "status": {g7: "working"}}))
+        jd.apply_plan(holder, "s1", T0 + 10, [{"do": "mint", "why": "x", "text": "The pass's goal"}], [])
+        jd.save_goals(SID, holder)
+        after = json.loads(path.read_text())
+        self.assertIn(g7, after["nodes"], "the node the editor created survives the fresh store's first save (before: 0 against 0 passed the CAS)")
+        self.assertEqual(sorted(after["nodes"]), sorted([self._nid(1), g7]), "both writers' nodes: %r" % sorted(after["nodes"]))
+
     def test_rebase_folds_a_duplicate_verdict_instead_of_doubling_it(self):
         # verdict identity is (ev_t, src, kind) - the same triple _replay_overrides dedups on
         self._seed()
@@ -370,16 +479,16 @@ class ReadFaultCas(unittest.TestCase):
         s = jd.load_goals(self.FSID)
         base = s["_baseRev"]
         jd.record_verdict(s, s["nodes"][self._gid()], "planner", "done", T0 + 30, why="shipped")
-        real = jd._disk_rev
+        real = jd._disk_rev_ident                    # the loop's revision read (the revision and the file's identity since 2026-09-23)
 
         def faulting(fsid):
             raise OSError(errno.EIO, "Input/output error", fsid)
-        jd._disk_rev = faulting
+        jd._disk_rev_ident = faulting
         try:
             with self.assertRaises(OSError):
                 jd.save_goals(self.FSID, s)
         finally:
-            jd._disk_rev = real
+            jd._disk_rev_ident = real
         self.assertEqual(s.get("_baseRev"), base, "a raise inside the loop: the object keeps the base it was loaded at")
         self.assertEqual(self._file().read_bytes(), before, "nothing was published")
 

@@ -414,7 +414,7 @@ class DiskMemo(unittest.TestCase):
         orig = jd._disk_seed
         calls = []
 
-        def spy(path, tmp, canon_hash):
+        def spy(path, tmp, canon_hash, st=None):     # `st`: the save's own stat of the temp, handed through since PR 2064 (one stat per publish)
             calls.append(str(tmp))
             self.assertEqual(str(path), str(dest))
             self.assertNotEqual(str(tmp), str(dest), "seeded from the temp, not the destination")
