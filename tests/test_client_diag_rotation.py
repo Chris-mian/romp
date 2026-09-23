@@ -48,7 +48,7 @@ class ClientDiagRotationTest(unittest.TestCase):
             if f.exists():
                 f.unlink()
         self.cap = km.CLIENT_DIAG_MAX_BYTES
-        km.CLIENT_DIAG_MAX_BYTES = 600           # a handful of rows; the production value is asserted below
+        km.CLIENT_DIAG_MAX_BYTES = 800           # a handful of rows (800 since every row carries the page's build and boot, 2026-09-23); the production value is asserted below
         km._client_diag_rotate_failed = False    # the once-per-kernel stderr latch: each test is its own kernel
 
     def tearDown(self):
@@ -76,7 +76,7 @@ class ClientDiagRotationTest(unittest.TestCase):
         self.assertEqual(err.getvalue(), "", "a fresh state directory has no file yet: that is not a refused rotation")
         rows = self.rows(self.fp)
         self.assertEqual(len(rows), 1)
-        self.assertEqual(sorted(rows[0]), ["data", "reconnect", "surface", "t", "what", "wid"])
+        self.assertEqual(sorted(rows[0]), ["boot", "build", "data", "reconnect", "surface", "t", "what", "wid"])   # + the page's build and boot (tests/test_client_diag_build_boot.py)
         self.assertEqual(rows[0]["wid"], WID)
         self.assertEqual(rows[0]["surface"], "perf")
         self.assertEqual(rows[0]["what"], "minute")

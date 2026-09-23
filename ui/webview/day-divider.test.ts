@@ -38,7 +38,7 @@ test("a collapsed run is placed and timed by its ANCHOR member, the latest, on b
   assert.doesNotMatch(ng, /adv\(it\.indices\[0\]\)/, "never the first member of a notice run");
   assert.match(ng, /\}\);\s*\n\s*adv\(anchor\);/, "…nor the last child of an open one: the anchor");
   // a tool run is untouched: its members are in transcript order, its head is timed by its first, its walk exits as before
-  assert.match(ai, /const head = tag\(renderToolGroup\(tools, prevEpoch, key, open\)\);\s*\n\s*v\.el\.appendChild\(head\);\s*\n\s*adv\(it\.indices\[0\]\);/);
+  assert.match(ai, /const head = tag\(renderToolGroup\(tools, prevEpoch, key, open\)\);\s*\n\s*host\.appendChild\(head\);\s*\n\s*adv\(it\.indices\[0\]\);/);
   const pop = RENDER.slice(RENDER.indexOf("const dayOpen = eventEpoch(evs[anchor]);") - 200, RENDER.indexOf("if (!relayNoted) list.appendChild(cmtRelayedNote"));
   assert.match(pop, /const anchor = itemAnchor\(it, \(i\) => eventEpoch\(evs\[i\]\)\);/);
   assert.match(pop, /renderNoticeGroup\(run, evs\[anchor\], prev, key, open\)/);
@@ -57,21 +57,23 @@ test("the divider is a sibling of the turn, never a child (the dot anchors to th
   // a turn.insertBefore/appendChild of the divider would displace the absolutely-positioned dot
   assert.doesNotMatch(RENDER, /turn\.(insertBefore|appendChild)\(\s*(dv|dayDivider)/);
   // it is appended to the thread/fold container instead
-  assert.match(RENDER, /v\.el\.appendChild\(tag\(dv\)\)/, "windowed path appends to the thread");
+  assert.match(RENDER, /host\.appendChild\(tag\(dv\)\)/, "the unit path appends to the thread (or the fragment the keyed paint puts in the unit's place)");
   assert.match(RENDER, /wrap\.appendChild\(dv\)/, "cleared-episode fold appends to the fold body");
 });
 
 test("every append path emits the divider, so scrolling back can't disagree with the live tail", () => {
-  // four call sites: windowed rebuild, incremental tail append, cleared-episode fold, and the
-  // comment popover's chat-parity loop (the parity bundle, 2026-08-26)
+  // three call sites: the unit path (appendItem: the window build and the keyed paint alike, 2026-09-23; the tail had its own
+  // loop until then), the cleared-episode fold, and the comment popover's chat-parity loop (the parity bundle, 2026-08-26)
   // (the `function dayDividerFor(` definition is excluded, hence the negative lookbehind)
   const calls = RENDER.match(/(?<!function )dayDividerFor\(/g) ?? [];
-  assert.equal(calls.length, 4, `expected 4 dayDividerFor() call sites, found ${calls.length}`);
+  assert.equal(calls.length, 3, `expected 3 dayDividerFor() call sites, found ${calls.length}`);
 });
 
 test("the windowed divider carries data-unit so the scroll-to-unit map still resolves it", () => {
-  // appendItem tags via tag(); the tail path sets it explicitly
-  assert.match(RENDER, /dv\.dataset\.unit = String\(i\)/);
+  // appendItem tags via tag(), on every path that paints a unit (the tail's own explicit tag by EVENT index is gone: a gap unit
+  // made it name the wrong unit, 2026-09-23)
+  assert.match(RENDER, /if \(dv\) host\.appendChild\(tag\(dv\)\);/);
+  assert.doesNotMatch(RENDER, /dv\.dataset\.unit = String\(i\)/);
 });
 
 test("the incremental tail trim goes by data-unit, not by child count", () => {
@@ -80,9 +82,12 @@ test("the incremental tail trim goes by data-unit, not by child count", () => {
   // nodes, so that count trimmed one real turn off the tail per divider in the kept range —
   // and the re-render started at `from`, so those turns were gone until a full rebuild.
   assert.doesNotMatch(RENDER, /while \(v\.el\.childNodes\.length > keep\)/, "count-based trim is gone");
-  assert.match(RENDER, /while \(v\.el\.lastChild && unitOf\(v\.el\.lastChild\) >= from\)/);
-  // the spacer has no data-unit, so it must map to a sentinel BELOW any real unit and end the walk
-  assert.match(RENDER, /n\.dataset\.unit != null \? Number\(n\.dataset\.unit\) : -1/);
+  // the keyed paint (2026-09-23) groups the painted nodes by their data-unit (a divider rides with its turn) and replaces a unit's
+  // nodes in place; the spacers carry no data-unit and are never among them. Its predecessor trimmed by data-unit too, but
+  // compared the tag against an EVENT index while the window build tags UNIT indices, which a history gap shifts by one
+  const diff = RENDER.slice(RENDER.indexOf("function tailDiff("), RENDER.indexOf("function unitSig("));
+  assert.match(diff, /const d = c\.dataset\.unit;\s*\n\s*if \(d == null \|\| d === ""\) continue;/);
+  assert.match(diff, /for \(const n of old\) if \(n\.parentNode === v\.el\) v\.el\.removeChild\(n\);/);
 });
 
 test("the divider label is never constrained to a fixed width; two hairlines share the leftover room so it centers (T339)", () => {
@@ -126,13 +131,16 @@ test("the divider label matches the rail marker's type size", () => {
 // as a walk from the top would have (unitExit, the one rule for both).
 test("every day walk decides against a DayWalk mark and never a raw epoch; windows and tails seed the mark from the top", () => {
   const calls = RENDER.match(/(?<!function )dayDividerFor\([^)]*\)/g) || [];
-  assert.equal(calls.length, 4, "four call sites: " + calls.join(" | "));
+  assert.equal(calls.length, 3, "three call sites: " + calls.join(" | "));
   for (const c of calls) assert.match(c, /^dayDividerFor\(\w+, walk\)$/, "each hands the walk, not a number: " + c);
   const ai = RENDER.slice(RENDER.indexOf("function appendItem("), RENDER.indexOf("function renderWindowItems("));
-  assert.match(ai, /^function appendItem\(v: View, s: Session, items: DisplayItem\[\], u: number, prevEpoch: number \| null, walk: DayWalk, working: boolean, turns: number\[\] \| null = null\): number \| null \{/m);
+  assert.match(ai, /^function appendItem\(v: View, s: Session, items: DisplayItem\[\], u: number, prevEpoch: number \| null, walk: DayWalk, working: boolean, turns: number\[\] \| null = null, into: Node \| null = null\): number \| null \{/m);
   assert.match(ai, /walk\.pass\(unitExit\(s, it\)\);[^\n]*\n\s*for \(const n of nodes\) if \(!stamped\.has\(n\)\) stampWalkDay\(n, walk\);\s*\n\s*return prevEpoch;\s*\n\}/, "the unit's exit passes the mark on the way out, and every node the unit appended is stamped with the walk's day unless a row was stamped in its own day mid-unit (T342)");
   const rw = RENDER.slice(RENDER.indexOf("function renderWindowItems("), RENDER.indexOf("function sizeSpacers("));
-  assert.match(rw, /const walk = dayWalkBefore\(s, items, unitStart\);[^\n]*\n\s*const turns = s\.regions \? turnOfEvents\(s\) : null;[^\n]*\n\s*for \(let u = unitStart; u < unitEnd; u\+\+\) prevEpoch = appendItem\(v, s, items, u, prevEpoch, walk, working, turns\);/, "a window seeds the mark by walking the units before it");
+  assert.match(rw, /const walk = dayWalkBefore\(s, items, unitStart\);[^\n]*\n\s*const turns = s\.regions \? turnOfEvents\(s\) : null;[^\n]*\n[^\n]*\n\s*for \(let u = unitStart; u < unitEnd; u\+\+\) \{[\s\S]{0,200}?prevEpoch = appendItem\(v, s, items, u, prevEpoch, walk, working, turns\);/, "a window seeds the mark by walking the units before it");
+  const diff = RENDER.slice(RENDER.indexOf("function tailDiff("), RENDER.indexOf("function unitSig("));
+  assert.match(diff, /let mark = dayWalkBefore\(s, items, ws\)\.mark;/, "the keyed paint seeds the same mark at the same unit");
+  assert.match(diff, /const walk = new DayWalk\(\); walk\.mark = mark;/, "…and hands a repainted unit the mark it enters with");
   assert.match(RENDER, /function dayWalkBefore\(s: Session, items: DisplayItem\[\], unitStart: number\): DayWalk \{\s*\n\s*const w = new DayWalk\(\);\s*\n\s*for \(let u = 0; u < unitStart && u < items\.length; u\+\+\) w\.pass\(unitExit\(s, items\[u\]\)\);/);
   // unitExit: the one rule — a lone event its own epoch, a notice run its anchor, a tool run its first (collapsed) or last (expanded)
   const ue = RENDER.slice(RENDER.indexOf("function unitExit("), RENDER.indexOf("function dayWalkBefore("));
@@ -141,9 +149,11 @@ test("every day walk decides against a DayWalk mark and never a raw epoch; windo
   assert.match(ue, /const open = openFolds\.has\(toolGroupKey\(s\.events\[it\.indices\[0\]\]\)\);\s*\n\s*if \(!open\) return eventEpoch\(s\.events\[it\.indices\[0\]\]\);/, "a collapsed tool run: its first member");
   // an expanded run: its HIGH-WATER member (the walk passes every row and never rewinds), so the seed matches the walk for any row order
   assert.match(ue, /for \(const i of it\.indices\) \{ const ep = eventEpoch\(s\.events\[i\]\); if \(ep != null && \(mx == null \|\| ep > mx\)\) mx = ep; \}\s*\n\s*return mx;/);
-  // the normal-mode tail: the mark seeded over the events before `from`, passed per row; the rail keeps its raw chain
-  assert.match(RENDER, /const walk = dayWalkBeforeEvent\(s\.events, from\);[^\n]*\n\s*for \(let i = from; i < len; i\+\+\) \{\s*\n\s*const prev = prevTimedEpoch\(s\.events, i\);/);
-  assert.match(RENDER, /v\.el\.appendChild\(node\);\s*\n\s*walk\.pass\(ep\);\s*\n\s*stampWalkDay\(node, walk\);\s*\n\s*\}/, "…and passes each row, stamping it with the walk's day (T342)");
+  // the tail has no walk of its own any more (2026-09-23): the keyed paint seeds the mark at the window's start like the window
+  // build (pinned above) and carries each kept unit's recorded exit forward, so a repainted unit enters with the walk's mark
+  assert.doesNotMatch(RENDER, /dayWalkBeforeEvent/, "the per-event tail walk is gone with the event-index tail");
+  const diff2 = RENDER.slice(RENDER.indexOf("function tailDiff("), RENDER.indexOf("function unitSig("));
+  assert.match(diff2, /const o = out\[u\]!; pe = o\.pe; mark = o\.mark;/, "a kept unit hands on the chain it recorded");
   // the cleared-episode fold and the comment popover carry their own walk
   assert.match(RENDER, /const walk = new DayWalk\(\);   \/\/ the fold divides days/);
   assert.match(RENDER, /prevEp = ep; walk\.pass\(ep\);/);

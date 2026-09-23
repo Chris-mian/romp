@@ -183,7 +183,7 @@ class Shell(unittest.TestCase):
 
     def test_one_opener_and_every_caller_uses_it(self):
         js = km._LANDING_SETTINGS_JS
-        _has(self, "window.__rompOpenSettings=function(tab,section){var f=document.getElementById('f-settings');", js)   # tab and section (T379): the strip's tab-widgets gear names the Chat tab at its Tab widgets section
+        _has(self, "window.__rompOpenSettings=function(tab,section){var f=document.getElementById('f-settings');", js)   # tab and section (T379): the strip's tab-widgets gear names the Chat tab at its Tab strip section (T415; Tab widgets until then)
         # the first open gives the iframe its src and holds the ask for the page's load (a message into a document
         # still loading is dropped); a second ask while one waits is not queued (the page's opener toggles)
         _has(self, "if(!f.getAttribute('src')){var u=f.getAttribute('data-src');if(!u)return;sPend=true;f.setAttribute('src',u);", js)

@@ -252,7 +252,7 @@ var GEAR_HTML =
   // THE RINGS (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear are widgets too, each with
   // its own switch, listed as their own group under the title's rows and their preview (the preview box lands between
   // the two hosts at build). No grip: their order is the precedence, red over magenta over amber, and is the registry's
-  '<div class=rs-hint>Rings around the tab. One at a time: the first that applies wins, in this order.</div>' +
+  '<div class=rs-hint>One cue at a time on the tab: the first state that applies wins, in this order.</div>' +
   '<div id=rs-rings class=rs-widgets></div>' +
   // STATUS LINE (T409, the user 2026-09-13): the items the line above the composer carries besides its fixed parts, one
   // row per registered widget (status-widgets.ts); the rows are the whole entry point (the user: no gear on the line,
@@ -1014,8 +1014,19 @@ function initGear(post, opts) {
     save: tabSection.save,
     on: TW.widgetOn, opts: TW.widgetOpts,
     demo: function (w, prefs) {
-      var tab = demoTab(); tab.appendChild(demoLabel());   // the demo record's name in its identity colour (T415 part two), the ring on top
+      var tab = demoTab();
+      // BADGE mode (the tabStateBadge setting): compose BOTH widget sides around the name (the before-slot and the
+      // after-slot, exactly as the strip does in render.ts), THEN the ring, then applyTabBadgeMode, which turns the
+      // Needs-you ring into the top-right dot and retrying into the amber left dot while the red Blocked ring stays.
+      // Composing both sides is why a status dot DRAGGED PAST THE NAME (the after slot) is present for the badge pass to
+      // re-ink, matching the strip; composing only the before slot left the demo wearing the ring while the strip showed
+      // the dot (the second contributor's review of PR 2065). Off: a plain tab wearing just its ring.
+      var badge = load().tabStateBadge !== false, st = w.demo || TW.DEMO_STATUS, sid = w.demoSid || TW.DEMO_SID;
+      if (badge) TW.composeTabWidgets(tab, 'before', sid, st, prefs);
+      tab.appendChild(demoLabel());   // the demo record's name in its identity colour (T415 part two), the ring or dot on top
+      if (badge) TW.composeTabWidgets(tab, 'after', sid, st, prefs);
       var cls = TW.ringDemoClass(w, prefs); if (cls) tab.classList.add(cls);
+      if (badge) TW.applyTabBadgeMode(tab, sid, st, prefs);
       return tab;
     },
   });
@@ -2192,7 +2203,7 @@ function initGear(post, opts) {
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; if (tsb) tsb.checked = (s.tabStateBadge === true); jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (nb) nb.checked = s.needsBox !== false; if (fsc) fsc.checked = (s.showFilesControl === true); if (pdk) pdk.checked = (s.paneDocking === true); renderRegistryRows(s); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; if (tsb) tsb.checked = (s.tabStateBadge !== false); jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (nb) nb.checked = s.needsBox !== false; if (fsc) fsc.checked = (s.showFilesControl === true); if (pdk) pdk.checked = (s.paneDocking === true); renderRegistryRows(s); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab strip (T415; Tab widgets until then))
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin

@@ -893,9 +893,12 @@ class Capability(_Wire):
                          {"type": "viewOrder", "order": [], "stored": False},
                          "no arrangement stored here yet, which is what a browser carrying one publishes against")
         caps = next(m for m in self.sent if m["type"] == "caps")
-        self.assertEqual(caps, {"type": "caps", "caps": ["tagEdit", "chatProto2", "viewOrder"], "viewsSeq": None},
+        # the frame lists the tuple itself, so a PR adding a capability edits one line, not this test too
+        self.assertEqual(caps, {"type": "caps", "caps": list(km.KERNEL_WS_CAPS), "viewsSeq": None},
                          "no store exists yet: the stubbed push carried no seq and the store has none; viewsSeq is null, "
                          "the key always present")
+        self.assertEqual(caps["caps"][:2], ["tagEdit", "chatProto2"])
+        self.assertIn("viewOrder", caps["caps"])
         # a RE-SENT ready (the shim, on a reconnected socket) gets the caps again — the event a page
         # with writes in flight across the drop keys on
         n = len(self.sent)

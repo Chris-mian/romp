@@ -22,6 +22,7 @@ import os
 import socket
 import threading
 import time
+import types
 import unittest
 from http.client import HTTPMessage
 from http.server import ThreadingHTTPServer
@@ -41,6 +42,7 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
 km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 sb = load_source("romp_sdk_backend_authhard", os.path.join(BIN, "romp_sdk_backend.py"))
+cxb = load_source("romp_codex_backend_authhard", os.path.join(os.path.dirname(HERE), "kernel", "codex_backend.py"))
 
 TOK = km.TOKEN
 
@@ -344,13 +346,15 @@ class _DrainSpy:
     def busy_count(self):
         return 3
 
-    def refresh_drain_hold(self, park=None):
+    def refresh_drain_hold(self, park=None, counts=None):
         self.refreshed += 1
         self.park = park
+        self.hold_counts = counts
         self.holding = True
 
-    def note_parked_poll(self, park):
+    def note_parked_poll(self, park, counts=None):
         self.parks = getattr(self, "parks", []) + [park]
+        self.park_counts = counts
 
     def drain_holding(self):
         return self.holding
@@ -426,6 +430,9 @@ class BusyDrainWriteGate(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.spy.refreshed, 1)
         self.assertEqual(self.spy.park, "1700000000", "…and the arm carries it too")
+        # 2026-09-23, the review of this lane: the park lines report what this answer said, never a recount
+        self.assertEqual((self.spy.park_counts, self.spy.hold_counts), ((3, 0, 0), (3, 0, 0)),
+                         "both calls carry the route's own (in flight, background, Codex)")
 
     # ── T224: a REFUSED drain is the one event the gate exists for — it must read LOUDLY ──
     def _refusals(self):
@@ -491,6 +498,114 @@ class BusyDrainWriteGate(unittest.TestCase):
         self.assertEqual(status, 200, "the count is a healthz-style probe — no token needed")
         self.assertEqual(json.loads(body).get("busy"), 3)
         self.assertEqual(self.spy.refreshed, 0, "a plain /busy never holds")
+
+
+def _hosts_off_root():
+    """A fresh state root that runs no session host (a test minting its own root pins them off, T348)."""
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "session-hosts"), "w") as f:
+        f.write("off")
+    return d
+
+
+class BusyCountsCodexTurns(unittest.TestCase):
+    """The /busy count is what a restart would cut (2026-09-22, the review that found it blind to Codex). It read the
+    SDK backend alone, so an open Codex turn answered busy 0 and the manager's quiet window applied a refresh over
+    it; the restart ended the app-server, the kernel's child, and the turn with it, its prompt already off the
+    durable queue. Driven through the REAL do_GET over a real CodexBackend holding the turn (no app-server runs);
+    the Codex backend is read only once it is built, never built by a poll. Synthetic sid and text.
+
+    The answer is (busy, inflight, background, codex) since 2026-09-23 (the review of this lane): a Codex turn is in
+    `busy`, which the manager defers on, and in its own `codex` field, never in `inflight`, which is what the manager
+    asks the drain hold for. The hold pauses Claude sessions only (the Codex worker never reads it), so asking for it
+    over a Codex turn would pause every Claude session and shorten nothing."""
+
+    CX_SID = "11111111-2222-3333-4444-5555555555c1"
+
+    def setUp(self):
+        self._saved = (km._sdk, km._codex, km._codex_backend)
+        self.logs = []
+        self.sdk = sb.SdkBackend(_hosts_off_root(), "/bin/true", lambda *a, **k: None,
+                                 log=self.logs.append)   # no Claude session: (0, 0)
+        self.addCleanup(lambda: self.sdk._drain_wake_timer and self.sdk._drain_wake_timer.cancel())
+        km._sdk = lambda: self.sdk
+        self.cx = cxb.CodexBackend(_hosts_off_root(), client_factory=lambda: None, log=lambda m: None)
+        self.s = cxb._Session(self.CX_SID, "T-1", "api", "/TESTDIR")
+        self.cx._put_session(self.s)                     # no worker: the test moves the session's state itself
+
+    def tearDown(self):
+        km._sdk, km._codex, km._codex_backend = self._saved
+
+    def _busy(self, path="/busy", headers=None):
+        status, body = _serve_get(path, headers=headers)
+        self.assertEqual(status, 200)
+        j = json.loads(body)
+        return j["busy"], j["inflight"], j["background"], j.get("codex")
+
+    def _open_turn(self):
+        with self.s.lock:
+            self.s.turn_id, self.s.state = "t-1", "working"   # a turn the app-server ACKed
+
+    def test_an_open_codex_turn_holds_the_quiet_window(self):
+        km._codex_backend = self.cx
+        self.assertEqual(self._busy(), (0, 0, 0, 0), "an idle Codex session is nothing to wait on")
+        self._open_turn()
+        self.assertEqual(self._busy(), (1, 0, 0, 1),
+                         "an open Codex turn: the manager waits on busy, and inflight asks no hold for it")
+        with self.s.lock:
+            self.s.turn_id, self.s.compacting, self.s.state = None, True, "compacting"
+            self.s.compact_active_seen = True                 # the server said the compaction turn is active
+        self.assertEqual(self._busy(), (1, 0, 0, 1), "a running compaction is its own turn and a restart ends it too")
+        with self.s.lock:
+            self.s.compact_active_seen = False                # latched at the ACK, never seen running
+        self.assertEqual(self._busy(), (0, 0, 0, 0),
+                         "a bracket with no active status may never run (docs/codex.md): nothing to wait on")
+        with self.s.lock:
+            self.s.compacting, self.s.state = False, "waiting"
+            self.s.queue, self.s.queue_ids = ["synthetic queued send"], ["q-1"]
+        self.assertEqual(self._busy(), (0, 0, 0, 0), "a queued send stays on disk across a restart: nothing to wait on")
+
+    def test_both_backends_add_up(self):
+        # the review of this lane: with the SDK side empty in every other test, an overwrite of its count by the
+        # Codex one read the same as the sum; here both contribute at once
+        self.sdk.sessions = {"a": types.SimpleNamespace(inflight=1, ended=False, _bg_tasks={}, _subagents={})}
+        km._codex_backend = self.cx
+        self.assertEqual(self._busy(), (1, 1, 0, 0), "one Claude turn in flight")
+        self._open_turn()
+        self.assertEqual(self._busy(), (2, 1, 0, 1), "and a Codex turn beside it: both in busy, each in its own field")
+        with self.s.lock:
+            self.s.turn_id, self.s.state = None, "waiting"
+        self.assertEqual(self._busy(), (1, 1, 0, 0), "the Codex turn's end leaves the Claude one")
+
+    def test_a_codex_only_park_names_the_codex_turn_in_its_lines(self):
+        # the review of this lane: recounted on the SDK side, the park lines of a park held by a Codex turn alone
+        # would read "0 in-flight turn(s), 0 session(s)" and ring that at 5 minutes as a problem naming nothing
+        km._codex_backend = self.cx
+        self._open_turn()
+        tok = {"X-Romp-Token": TOK}
+        # the manager's first, uninformed poll asks for the hold and carries the park identity
+        self.assertEqual(self._busy("/busy?drain=1&park=1700000000", tok), (1, 0, 0, 1))
+        parked = [str(l) for l in self.logs if "deploy restart parked" in str(l)]
+        self.assertEqual(len(parked), 1, self.logs)
+        self.assertIn("1 in-flight turn(s) (0 Claude, 1 Codex)", parked[0])
+        self.assertNotIn("0 in-flight turn(s), 0 session(s)", parked[0])
+        self.sdk._drain_hold_since = time.time() - self.sdk.DRAIN_LOUD_S - 1
+        # inflight read 0, so every later poll is plain; the ring rides it (T240c)
+        self.assertEqual(self._busy("/busy?park=1700000000", tok), (1, 0, 0, 1))
+        rung = [p["text"] for p in self.sdk.problems() if "still parked" in p["text"]]
+        self.assertEqual(len(rung), 1, self.sdk.problems())
+        self.assertIn("1 in-flight turn(s) (0 Claude, 1 Codex)", rung[0])
+        self.assertNotIn("0 in-flight turn(s), 0 session(s)", rung[0])
+
+    def test_a_poll_never_builds_the_codex_backend(self):
+        builds = []
+        km._codex = lambda: builds.append(1)             # the lazy builder: a poll must never reach it
+        for unbuilt in (None, False):                    # never built / its module unavailable
+            with self.subTest(unbuilt=unbuilt):
+                km._codex_backend = unbuilt
+                self.assertEqual(self._busy(), (0, 0, 0, 0), "no Codex backend: the SDK's count alone")
+                self.assertIs(km._codex_backend, unbuilt)
+        self.assertEqual(builds, [])
 
 
 class _RfileSpy:

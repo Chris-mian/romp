@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """THE TAB STATE BADGE (plans/tab-state-badge.md; the user 2026-09-21, the numbered dot chosen 2026-09-21 evening) on the
 served chat page and the phone picker, in BOTH themes, driven by Playwright over a hermetic kernel. Badge mode is the
-per-browser `tabStateBadge` setting, seeded into localStorage before the page loads. Three synthetic notes-api sessions
+per-browser `tabStateBadge` setting. It is the DEFAULT since 2026-09-23, so the desktop strip context runs UNSEEDED (the served default, pinned here); the ring context seeds false and the phone context seeds true, before the page loads. Three synthetic notes-api sessions
 sit in the Needs-you state with 1, 3 and 12 needs-you cards (that many blocked root goals), and one idle control with none.
 
 What it reads, computed by the real page, never inferred from source:
@@ -10,7 +10,7 @@ What it reads, computed by the real page, never inferred from source:
     idle control wears no dot; the dot's background is the Needs-you token in each theme.
   * NOTHING MOVED: a needs-you tab's width and its label's left edge are the same with the badge off and on (the absolute
     dot joins no flow).
-  * RING MODE (badge off, the byte-identical default): the same needs-you tab wears the dashed magenta ring in the token
+  * RING MODE (badge off, a chosen-off browser, byte-identical to the pre-badge strip): the same needs-you tab wears the dashed magenta ring in the token
     and NO dot.
   * THE PHONE (a coarse-pointer context): under badge mode the current-session chip (#mcur) and a needs-you row (.mrow)
     each wear the .m-badge dot with the count, and the row does NOT wear the .ask dashed treatment (the ring gave way).
@@ -87,16 +87,16 @@ const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));
 let browser;
 try { browser = await chromium.launch(); } catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const errors = [];
-const out = { badge: {}, ring: {}, moved: {}, phone: {} };
+const out = { badge: {}, ring: {}, moved: {}, phone: {}, gearDemo: {} };
 const BADGE = () => localStorage.setItem("romp:settings", JSON.stringify({ tabStateBadge: true }));
 const RING = () => localStorage.setItem("romp:settings", JSON.stringify({ tabStateBadge: false }));
 const setTheme = (p, t) => p.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), t);
 const themes = ["dark", "light"];
 const rect = (r) => ({ top: r.top, right: r.right, bottom: r.bottom, left: r.left, width: r.width, height: r.height });
 
-// ── the desktop strip under BADGE mode ──
+// ── the desktop strip at the DEFAULT (no seed): the badge is ON by default since 2026-09-23, so the served strip's
+//    default path is pinned here (before the flip this context showed the ring and the .tab-badge wait below would red) ──
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
-await ctx.addInitScript(BADGE);   // the setting is read from localStorage on load; seed it before any page script
 const page = await ctx.newPage(); page.on("pageerror", (e) => errors.push("desktop: " + String(e).slice(0, 200)));
 await page.goto(cfg.chat);
 await page.waitForSelector('#tabs .tab[data-id="' + cfg.one + '"] .tab-badge', { timeout: 60000 }).catch(async () => {
@@ -117,17 +117,26 @@ const readBadge = (p) => p.evaluate((ids) => {
   const o = {}; for (const [k, id] of Object.entries(ids)) o[k] = one(id); return o;
 }, cfg.ids);
 for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(150); out.badge[t] = await readBadge(page); }
-// (item 10, the second contributor on PR 2017) a probe: a bare `.tab-dot retrying` span's COMPUTED background is the
-// retrying amber token, so the left-dot amber is exercised without seeding a hard-to-mint retrying session.
+// (item 10, the second contributor on PR 2017; the shape cue, 2026-09-23) a probe: a bare `.tab-dot retrying` span is a
+// HOLLOW amber ring, so its computed FILL is transparent and the amber rides the inset box-shadow (the outline): the
+// left-dot amber and its distinct shape are exercised without seeding a hard-to-mint retrying session.
 out.retryProbe = {};
 for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(100);
-  out.retryProbe[t] = await page.evaluate(() => { const p = document.createElement("span"); p.className = "tab-dot retrying"; document.body.appendChild(p); const bg = getComputedStyle(p).backgroundColor; p.remove(); return bg; }); }
+  out.retryProbe[t] = await page.evaluate(() => { const p = document.createElement("span"); p.className = "tab-dot retrying"; document.body.appendChild(p); const cs = getComputedStyle(p); const r = { bg: cs.backgroundColor, shadow: cs.boxShadow }; p.remove(); return r; }); }
+
+// ── (the user 2026-09-23, who wanted the badge a pixel lower and further from the edge) the count badge's inset from the
+//    tab's TOP and RIGHT edges, read in DENSE chrome too (a body class, dense-chrome.ts applyDenseChrome), so the dense
+//    2px inset is pinned beside the normal 3px. The desktop context carries no keycap, so this is the clean corner
+//    geometry; the class is pure CSS, toggled on the open page, then restored before the geometry reads below. ──
+out.badgeDense = {};
+for (const t of themes) { await setTheme(page, t); await page.evaluate(() => document.body.classList.add("dense-chrome")); await page.waitForTimeout(150); out.badgeDense[t] = await readBadge(page); }
+await page.evaluate(() => document.body.classList.remove("dense-chrome"));
 
 const geomEval = (id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const lbl = t.querySelector(".tab-label, .tab-name, .tab-title"); return { w: t.getBoundingClientRect().width, labelLeft: lbl ? lbl.getBoundingClientRect().left : null }; };
 await setTheme(page, "dark"); await page.waitForTimeout(120);
 const geomOn = await page.evaluate(geomEval, cfg.one);
 
-// ── RING mode (badge off), the byte-identical default: a SEPARATE context with its own localStorage, so no reload can
+// ── RING mode (badge off), a chosen-off browser (byte-identical to the pre-badge strip): a SEPARATE context with its own localStorage, so no reload can
 //    fight the init script. Same viewport and sessions, so the tab layout is comparable for "nothing moved". ──
 const ctxOff = await browser.newContext({ viewport: { width: 1400, height: 900 } });
 await ctxOff.addInitScript(RING);   // explicit false: pins ring mode even after the default flips to badge later
@@ -143,6 +152,46 @@ out.moved = { on: geomOn, off: geomOff };
 for (const t of themes) { await setTheme(off, t); await off.waitForTimeout(150);
   out.ring[t] = await off.evaluate((id) => { const tab = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const cs = getComputedStyle(tab);
     return { cls: tab.className, badge: !!tab.querySelector(".tab-badge"), outlineColor: cs.outlineColor, outlineStyle: cs.outlineStyle }; }, cfg.one); }
+
+// ── (the user 2026-09-23) THE KEYCAP + BADGE OVERLAP: a tab showing BOTH the hot-key keycap (.tab-key, a right-end
+//    in-flow flex item) AND a non-empty count badge (.tab-badge, absolute at the top-right corner) must not let the
+//    badge overpaint the keycap. Its own context seeds a hot key on the 1-, 12- and 120-card needs-you sessions
+//    (romp:tabkeys names the sid so tabHotkey looks it up; romp:keys carries the chord override effectiveChord reads)
+//    plus badge mode, and reads the keycap and badge rects in both themes and both chromes (normal + dense-chrome). ──
+out.hotkey = { normal: {}, dense: {} };
+const HKIDS = [cfg.one, cfg.many, cfg.over];
+const hkCtx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+await hkCtx.addInitScript((ids) => {
+  try {
+    localStorage.setItem("romp:settings", JSON.stringify({ tabStateBadge: true }));
+    localStorage.setItem("romp:tabkeys", JSON.stringify(Object.fromEntries(ids.map((id) => [id, true]))));
+    localStorage.setItem("romp:keys", JSON.stringify(Object.fromEntries(ids.map((id, i) => ["session.hotkey." + id, "Ctrl+Shift+" + (i + 1)]))));
+  } catch (e) {}
+}, HKIDS);
+const hk = await hkCtx.newPage(); hk.on("pageerror", (e) => errors.push("hotkey: " + String(e).slice(0, 200)));
+await hk.goto(cfg.chat);
+await hk.waitForSelector('#tabs .tab[data-id="' + cfg.one + '"] .tab-badge:not(:empty)', { timeout: 60000 }).catch(() => errors.push("hotkey: the needs-you tab never took a count badge"));
+await hk.waitForSelector('#tabs .tab[data-id="' + cfg.one + '"] .tab-key', { timeout: 60000 }).catch(async () => {
+  errors.push("hotkey: no keycap on the needs-you tab (romp:tabkeys/romp:keys seeded): " + (await hk.evaluate((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); return t ? (t.className + " kids=" + Array.from(t.children).map((c) => c.className).join(",")) : "no tab"; }, cfg.one)));
+});
+const readHK = (ids) => hk.evaluate((ids) => {
+  const R = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { top: r.top, right: r.right, bottom: r.bottom, left: r.left, width: r.width, height: r.height }; };
+  const one = (id) => {
+    const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); if (!t) return null;
+    const key = t.querySelector(".tab-key"); const badge = t.querySelector(".tab-badge"); const close = t.querySelector(".tab-close");
+    return { tab: R(t), key: R(key), keyText: key ? key.textContent : null, badge: R(badge), badgeText: badge ? badge.textContent : null,
+             close: R(close), padRight: getComputedStyle(t).paddingRight };
+  };
+  const o = {}; for (const id of ids) o[id] = one(id); return o;
+}, ids);
+for (const t of themes) {
+  await setTheme(hk, t);
+  await hk.evaluate(() => document.body.classList.remove("dense-chrome")); await hk.waitForTimeout(150);
+  out.hotkey.normal[t] = await readHK(HKIDS);
+  await hk.evaluate(() => document.body.classList.add("dense-chrome")); await hk.waitForTimeout(150);
+  out.hotkey.dense[t] = await readHK(HKIDS);
+}
+await hkCtx.close();
 
 // ── the phone (a coarse-pointer context, its own localStorage seeded to badge mode) ──
 const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 3 });
@@ -176,7 +225,64 @@ for (const t of themes) {
              overRowBadge: rbOver ? rbOver.textContent : null, overRowLabel: rbOver ? rbOver.getAttribute("aria-label") : null,
              curPill: R(cb), curChevron: R(cv), rowPill: R(rb), rowClose: R(mclose) };
   }, cfg.ids);
+  // (PR 2080 review HIGH) the phone's retrying leading dot is the same HOLLOW amber ring as the desktop: a bare
+  // `.wd retrying` injected into #mcur (where the mobile picker CSS scopes it) computes a transparent fill and the amber
+  // on the inset box-shadow, so form not colour tells it from the filled working/awaiting dots on the phone too.
+  out.phoneRetryProbe = out.phoneRetryProbe || {};
+  out.phoneRetryProbe[t] = await phone.evaluate(() => {
+    const cur = document.getElementById("mcur"); if (!cur) return null;
+    const w = document.createElement("span"); w.className = "wd retrying"; cur.appendChild(w);
+    const cs = getComputedStyle(w); const r = { bg: cs.backgroundColor, shadow: cs.boxShadow }; w.remove(); return r;
+  });
 }
+// ── (round-one MEDIUM + LOW 2) the GEAR PREVIEW and its own switch on the dashboard's settings page. openGear opens
+//    the gear from the strip's glyph at the Tab strip section over a seeded store and reads, in both themes: the three
+//    ring demos' computed styles (the demos, run through applyTabBadgeMode when the badge is on, must render the badge
+//    vocabulary the strip does; the gear's hosts load feed.css + gear.css, never styles.css, so a rule missing there
+//    leaves the demo unstyled) and the state-badge switch (#rs-statebadge). Two opens: a store that NEVER chose (empty:
+//    the badge is the DEFAULT, so the demos paint the badge and the switch reads ON) and a stored false (the switch
+//    reads OFF). The switch reflects `!== false`, the same guard the strip reads.
+async function openGear(seed) {
+  const gctx = await browser.newContext({ viewport: { width: 1200, height: 900 } });
+  await gctx.addInitScript((v) => { try { localStorage.setItem("romp:settings", JSON.stringify(v)); } catch (e) {} }, seed);
+  const d = await gctx.newPage(); d.on("pageerror", (e) => errors.push("gear: " + String(e).slice(0, 200)));
+  await d.goto(cfg.url);
+  await d.waitForSelector("#rail-gear", { timeout: 20000 }).catch(() => errors.push("gear: the dashboard never painted its rail"));
+  let gchat = d.frames().find((f) => f.url().includes("/chat"));
+  for (let i = 0; i < 100 && !gchat; i++) { await d.waitForTimeout(100); gchat = d.frames().find((f) => f.url().includes("/chat")); }
+  if (!gchat) { errors.push("gear: no chat frame on the dashboard"); await gctx.close(); return {}; }
+  await gchat.waitForSelector("#tabs .tab-strip-end .tab-widgets-gear", { timeout: 30000 }).catch(() => errors.push("gear: the strip never grew its gear glyph"));
+  await gchat.click("#tabs .tab-strip-end .tab-widgets-gear");
+  await d.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => errors.push("gear: the settings never opened from the glyph"));
+  let gset = d.frames().find((f) => f.url().includes("/settings"));
+  for (let i = 0; i < 50 && !gset; i++) { await d.waitForTimeout(100); gset = d.frames().find((f) => f.url().includes("/settings")); }
+  if (!gset) { errors.push("gear: no settings frame opened from the glyph"); await gctx.close(); return {}; }
+  await gset.waitForSelector("#rsettings:not([hidden])", { timeout: 15000 }).catch(() => {});
+  await gset.waitForSelector('#rs-rings .rs-widget[data-widget="ring-waiting-on-you"] .rs-widget-demo .tab', { timeout: 15000 }).catch(() => errors.push("gear: the ring demos never rendered"));
+  const readGear = () => gset.evaluate(() => {
+    const probe = document.createElement("span"); document.body.appendChild(probe);
+    const tokens = {};
+    for (const [k, expr] of [["needs", "var(--st-needs-bg, #d946ef)"], ["retrying", "var(--st-retrying-bg, #e67e22)"], ["awaiting", "var(--st-awaiting-bg, #c0392b)"]]) { probe.style.color = expr; tokens[k] = getComputedStyle(probe).color; }
+    probe.remove();
+    const R = (e) => { const r = e.getBoundingClientRect(); return { top: r.top, right: r.right, bottom: r.bottom, left: r.left, width: r.width, height: r.height }; };
+    const rows = {};
+    for (const r of document.querySelectorAll("#rs-rings .rs-widget[data-widget]")) {
+      const demo = r.querySelector(".rs-widget-demo .tab"); if (!demo) continue;
+      const cs = getComputedStyle(demo); const badge = demo.querySelector(".tab-badge"); const dot = demo.querySelector(".tab-dot.retrying");
+      rows[r.dataset.widget] = { cls: demo.className, tab: R(demo), outlineStyle: cs.outlineStyle, outlineColor: cs.outlineColor,
+        badge: badge ? { bg: getComputedStyle(badge).backgroundColor, position: getComputedStyle(badge).position, rect: R(badge), text: badge.textContent } : null,
+        dot: dot ? { bg: getComputedStyle(dot).backgroundColor, shadow: getComputedStyle(dot).boxShadow, visibility: getComputedStyle(dot).visibility } : null };
+    }
+    const tsb = document.getElementById("rs-statebadge");   // the badge's OWN switch (a checkbox styled as a slider): its checked state must track the setting the strip reads
+    return { tokens, rows, sw: tsb ? { checked: !!tsb.checked } : null };
+  });
+  const byTheme = {};
+  for (const t of themes) { await setTheme(gset, t); await setTheme(d, t); await d.waitForTimeout(200); byTheme[t] = await readGear(); }
+  await gctx.close();
+  return byTheme;
+}
+out.gearDemo = await openGear({});                            // never chose: the badge is the default (demos + switch ON)
+out.gearSwitchOff = await openGear({ tabStateBadge: false }); // a chosen off: the switch reads OFF
 // ── (M) the count moves LIVE without a reload (plans/tab-state-badge.md, test 7): a needs-you card added climbs the
 //    number, a card cleared drops it, on the OPEN badge-mode page, no reload. The count keys its own chat-signature
 //    component and its own compare-and-wake, so a store change reaches the tab even when the membership set is unchanged.
@@ -279,7 +385,7 @@ class TabBadgeServed(unittest.TestCase):
             base = "http://127.0.0.1:%d" % self.port
             ids = {name: SIDS[name] for name, _ in SESS}
             with open(cfg, "w") as f:
-                json.dump({"chat": base + "/chat?token=" + self.token, "token": self.token,
+                json.dump({"chat": base + "/chat?token=" + self.token, "url": base + "/?token=" + self.token, "token": self.token,
                            "one": SIDS["one"], "few": SIDS["few"], "many": SIDS["many"], "calm": SIDS["calm"], "over": SIDS["over"], "ids": ids,
                            "oneGoalPath": os.path.join(self.lab, "xdg", "romp", "goals", SIDS["one"] + ".json"),
                            "oneStore1": json.dumps(blocked_store(SIDS["one"], 1, self.t0)),
@@ -335,13 +441,13 @@ class TabBadgeServed(unittest.TestCase):
         if on["labelLeft"] is not None and off["labelLeft"] is not None:
             self.assertAlmostEqual(on["labelLeft"], off["labelLeft"], delta=0.5, msg="the label's left edge did not move: %r vs %r" % (off, on))
 
-    def test_ring_mode_the_default_wears_the_dashed_magenta_ring_and_no_dot_byte_identical_to_today(self):
+    def test_ring_mode_badge_off_wears_the_dashed_magenta_ring_and_no_dot_byte_identical_to_the_pre_badge_strip(self):
         r = self._result()
         for t in ("dark", "light"):
             s = r["ring"][t]
             self.assertIn("ring-waiting-on-you", s["cls"].split(), "%s: with the badge off the needs-you tab wears the magenta ring: %r" % (t, s))
             self.assertEqual((s["outlineStyle"], s["outlineColor"]), ("dashed", TOKEN[t]), "%s: the ring is dashed in the token: %r" % (t, s))
-            self.assertFalse(s["badge"], "%s: and there is NO dot in ring mode (the byte-identical default)" % t)
+            self.assertFalse(s["badge"], "%s: and there is NO dot in ring mode (badge off, byte-identical to the pre-badge strip)" % t)
 
     def test_the_phone_chip_and_a_needs_you_row_wear_the_count_dot_and_the_dashed_ask_treatment_gives_way(self):
         r = self._result()
@@ -396,7 +502,117 @@ class TabBadgeServed(unittest.TestCase):
     def test_the_retrying_left_dot_paints_the_amber_token(self):
         r = self._result()
         for t in ("dark", "light"):
-            self.assertEqual(r["retryProbe"][t], AMBER[t], "%s: a .tab-dot.retrying span (the retrying left dot under badge mode) computes to the amber token" % t)
+            probe = r["retryProbe"][t]
+            self.assertIn(probe["bg"], ("rgba(0, 0, 0, 0)", "transparent"), "%s: the retrying left dot is HOLLOW (a transparent fill), not a filled disc: %r" % (t, probe))
+            self.assertIn(AMBER[t], probe["shadow"], "%s: the amber rides the inset outline (the ring shape): %r" % (t, probe))
+            self.assertIn("inset", probe["shadow"], "%s: the outline is inset (a hollow ring, a distinct shape from the filled working/awaiting dots): %r" % (t, probe))
+
+    def test_the_gear_preview_renders_the_badge_vocabulary_in_badge_mode_in_both_themes(self):
+        # ROUND ONE MEDIUM (PR 2065): the gear's ring-section demos, run through applyTabBadgeMode when the badge is on,
+        # must PAINT the badge vocabulary the strip paints, on the dashboard's own settings page. The gear's hosts load
+        # feed.css + gear.css, never the chat's styles.css, so this reds at the first commit's head (the .tab-badge span
+        # was an unstyled static span sitting in the flow, the retrying dot the working gold from the base .tab-dot rule)
+        # until gear.css carries the .tab-badge and .tab-dot.retrying fallbacks. The gear.js source pin
+        # (settings-previews.test.ts test 5) proves the demo BRANCH runs; it cannot see a missing CSS rule. This can.
+        r = self._result()
+        self.assertEqual(r["errors"], [], "the gear opened at the Tab strip section and every ring demo rendered")
+        gd = r["gearDemo"]
+        for t in ("dark", "light"):
+            rows = gd[t]["rows"]; tok = gd[t]["tokens"]
+            # Needs you (ring-waiting-on-you): the magenta ring gives way to the top-right dot in the needs token
+            nu = rows.get("ring-waiting-on-you")
+            self.assertIsNotNone(nu, "%s: the Needs-you demo row rendered a tab" % t)
+            self.assertIsNotNone(nu["badge"], "%s: the Needs-you demo wears a .tab-badge (the ring dropped for the dot)" % t)
+            self.assertEqual(nu["badge"]["position"], "absolute", "%s: the demo badge is positioned, not an unstyled static span: %r" % (t, nu["badge"]))
+            self.assertEqual(nu["badge"]["bg"], tok["needs"], "%s: the demo badge's background is the needs token: %r" % (t, nu["badge"]))
+            self.assertEqual(nu["badge"]["text"], "2", "%s: the Needs-you demo carries the count 2, so the preview draws the NUMBERED dot (the :not(:empty) rules live, not the bare older-kernel dot): %r" % (t, nu["badge"]))
+            self.assertGreaterEqual(nu["badge"]["rect"]["width"], 14, "%s: the numbered dot is at least the 14px the :not(:empty) rule sizes it: %r" % (t, nu["badge"]))
+            self.assertEqual(nu["outlineStyle"], "none", "%s: the Needs-you demo dropped its ring for the dot: %r" % (t, nu))
+            self.assertLessEqual(abs(nu["badge"]["rect"]["top"] - nu["tab"]["top"]), 8, "%s: the demo badge sits at the tab's TOP, not below in the flow: %r" % (t, nu))
+            self.assertLessEqual(abs(nu["tab"]["right"] - nu["badge"]["rect"]["right"]), 8, "%s: the demo badge sits at the tab's RIGHT corner: %r" % (t, nu))
+            # Retrying (ring-retrying): the amber ring gives way to the amber LEFT status dot
+            rt = rows.get("ring-retrying")
+            self.assertIsNotNone(rt, "%s: the Retrying demo row rendered a tab" % t)
+            self.assertIsNotNone(rt["dot"], "%s: the Retrying demo re-inks a .tab-dot.retrying slot" % t)
+            self.assertIn(rt["dot"]["bg"], ("rgba(0, 0, 0, 0)", "transparent"), "%s: the retrying demo dot is HOLLOW (a transparent fill), the strip's shape cue mirrored: %r" % (t, rt["dot"]))
+            self.assertIn(tok["retrying"], rt["dot"]["shadow"], "%s: the amber rides the demo dot's inset outline, not the working gold: %r" % (t, rt["dot"]))
+            self.assertIn("inset", rt["dot"]["shadow"], "%s: the demo retrying dot is a hollow ring (a distinct shape): %r" % (t, rt["dot"]))
+            self.assertEqual(rt["dot"]["visibility"], "visible", "%s: the retrying demo dot is visible: %r" % (t, rt["dot"]))
+            # Blocked (ring-needs-you): the badge does not touch this ring, so it STAYS dashed in the awaiting token
+            bl = rows.get("ring-needs-you")
+            self.assertIsNotNone(bl, "%s: the Blocked demo row rendered a tab" % t)
+            self.assertEqual(bl["outlineStyle"], "dashed", "%s: Blocked keeps its dashed ring under the badge: %r" % (t, bl))
+            self.assertEqual(bl["outlineColor"], tok["awaiting"], "%s: the Blocked demo ring is the awaiting token: %r" % (t, bl))
+
+    def test_the_gear_state_badge_switch_reflects_the_setting_the_strip_reads(self):
+        # ROUND ONE LOW 2 (PR 2065): the gear's state-badge switch (#rs-statebadge) reflects the setting `!== false`, the
+        # same guard the strip reads, so a store that NEVER chose shows the switch ON (the badge is the default) and a
+        # stored false shows it OFF. A revert to `=== true` would leave the switch OFF while the strip paints the badge,
+        # and nothing else in the suite catches that. Both themes.
+        r = self._result()
+        self.assertEqual(r["errors"], [], "the gear opened for both the never-chose and the chosen-off stores")
+        for t in ("dark", "light"):
+            on = r["gearDemo"][t]["sw"]; off = r["gearSwitchOff"][t]["sw"]
+            self.assertIsNotNone(on, "%s: the state-badge switch is present in the gear" % t)
+            self.assertTrue(on["checked"], "%s: a store that never chose shows the switch ON (the badge is the default): %r" % (t, on))
+            self.assertIsNotNone(off, "%s: the state-badge switch is present in the gear (chosen off)" % t)
+            self.assertFalse(off["checked"], "%s: a stored false shows the switch OFF: %r" % (t, off))
+
+    def test_the_phone_retrying_dot_is_the_hollow_amber_ring_too(self):
+        # PR 2080 review HIGH: the phone's retrying leading dot (#mcur .wd.retrying / .mrow .workdot.retrying in the
+        # kernel's mobile CSS) was a FILLED amber disc, told from the filled working gold and awaiting green by colour
+        # alone on the default path. It is now the same HOLLOW amber ring as the desktop: a transparent fill and the
+        # amber on the inset outline, a distinct shape.
+        r = self._result()
+        for t in ("dark", "light"):
+            p = r["phoneRetryProbe"][t]
+            self.assertIsNotNone(p, "%s: the phone retry probe rendered in #mcur" % t)
+            self.assertIn(p["bg"], ("rgba(0, 0, 0, 0)", "transparent"), "%s: the phone retrying dot is HOLLOW (a transparent fill): %r" % (t, p))
+            self.assertIn(AMBER[t], p["shadow"], "%s: the amber rides the inset outline on the phone: %r" % (t, p))
+            self.assertIn("inset", p["shadow"], "%s: the phone retrying dot is a hollow ring (a distinct shape): %r" % (t, p))
+
+    def test_the_count_badge_sits_a_3px_inset_from_the_tab_top_and_right_2px_in_dense_chrome(self):
+        # (the user 2026-09-23, who wanted the badge a pixel lower and further from the edge) the dot sits a 3px inset from
+        # the tab's TOP and RIGHT edges in normal chrome, 2px in dense-chrome. Measured as the gap from the tab's
+        # border-box edge to the badge's, which the tab's own 1px border adds one to (4px normal, 3px dense). RED at the
+        # base's old offsets (2px, dense 1px), where these gaps read 3px and 2px. Both themes.
+        r = self._result()
+        self.assertEqual(r["errors"], [], "the badge geometry was read in normal and dense chrome")
+        for t in ("dark", "light"):
+            for name in ("one", "few", "many"):
+                b = r["badge"][t][name]; d, tab = b["badge"]["rect"], b["tab"]
+                self.assertAlmostEqual(tab["right"] - d["right"], 4.0, delta=0.6, msg="%s/%s: the badge sits a 3px inset from the tab's right (1px border + 3px): %r" % (t, name, b["badge"]["rect"]))
+                self.assertAlmostEqual(d["top"] - tab["top"], 4.0, delta=0.6, msg="%s/%s: the badge sits a 3px inset from the tab's top (1px border + 3px): %r" % (t, name, b["badge"]["rect"]))
+            for name in ("one", "many"):
+                b = r["badgeDense"][t][name]; d, tab = b["badge"]["rect"], b["tab"]
+                self.assertAlmostEqual(tab["right"] - d["right"], 3.0, delta=0.6, msg="%s/%s dense: the badge sits a 2px inset from the tab's right (1px border + 2px): %r" % (t, name, b["badge"]["rect"]))
+                self.assertAlmostEqual(d["top"] - tab["top"], 3.0, delta=0.6, msg="%s/%s dense: the badge sits a 2px inset from the tab's top (1px border + 2px): %r" % (t, name, b["badge"]["rect"]))
+
+    def test_a_bound_hotkey_keycap_stays_left_of_the_badge_box_and_the_content_run_clears_it(self):
+        # (the user 2026-09-23, who wanted the tab widened when the keycap shows) a tab carrying BOTH the hot-key keycap
+        # (.tab-key) and a non-empty count badge reserves the badge's box at the right, so the whole in-flow run (the
+        # keycap and the rightmost ✕) sits LEFT of the badge instead of under it, in both themes AND both chromes.
+        # RED at the base (no widen rule): the 99+ badge overpaints the keycap (by 6px, 9px dense) and the min-width badge
+        # overpaints the ✕ (by 10px). The keycap and badge overlap vertically, so the left-of check IS the no-intersection
+        # test. Sizing the room off the badge's min-width box, a wider count's ✕ may still ride under the wide badge (the
+        # accepted close-over-badge overlap), but the keycap clears every count.
+        r = self._result()
+        self.assertEqual(r["errors"], [], "no page error and the keycap rendered on the needs-you tab")
+        ids = {name: SIDS[name] for name in ("one", "many", "over")}
+        for chrome in ("normal", "dense"):
+            for t in ("dark", "light"):
+                leg = r["hotkey"][chrome][t]
+                for name in ("one", "many", "over"):
+                    e = leg[ids[name]]
+                    self.assertIsNotNone(e, "%s/%s/%s: the tab is present" % (chrome, t, name))
+                    self.assertIsNotNone(e["key"], "%s/%s/%s: the hot-key keycap rendered (romp:tabkeys + romp:keys seeded): %r" % (chrome, t, name, e))
+                    self.assertTrue(e["keyText"], "%s/%s/%s: the keycap carries the chord glyphs: %r" % (chrome, t, name, e))
+                    self.assertLessEqual(e["key"]["right"], e["badge"]["left"] + 0.5,
+                                         "%s/%s/%s: the keycap sits left of the badge box, not under it: key.right=%.1f badge.left=%.1f (badge=%r)" % (chrome, t, name, e["key"]["right"], e["badge"]["left"], e["badgeText"]))
+                one = leg[ids["one"]]
+                self.assertIsNotNone(one["close"], "%s/%s: the tab has a ✕ close glyph" % (chrome, t))
+                self.assertLessEqual(one["close"]["right"], one["badge"]["left"] + 0.5,
+                                     "%s/%s: the ✕ (rightmost in flow) clears the min-width badge box, so the tab widened to reserve it: close.right=%.1f badge.left=%.1f padRight=%s" % (chrome, t, one["close"]["right"], one["badge"]["left"], one["padRight"]))
 
 
 if __name__ == "__main__":

@@ -47,27 +47,60 @@ export function classifyScroll(scrollTop: number, lastWriteAfter: number | null)
   return lastWriteAfter != null && Math.abs(scrollTop - lastWriteAfter) <= 1 ? "write-echo" : "gesture";
 }
 
-/** One childList mutation of a tail container, reduced to what the row needs: the classes of the nodes removed at
- *  the END, the classes of the nodes added at the end, and whether a removed node came back in the same task. */
-export interface TailMutation { removed: Array<{ cls: string }>; added: Array<{ cls: string }>; atEnd: boolean; }
-export function summarizeTailMutations(records: TailMutation[]): { removedTail: string[]; addedTail: string[]; reAdded: boolean } | null {
-  const removedTail: Array<{ cls: string }> = [], addedTail: Array<{ cls: string }> = [];
+/** One childList mutation of a tail container, reduced to what the row needs: the nodes removed at the END and the
+ *  nodes added at the end, each as its class list, its unit's uuid (data-uuid; "" for a node that has none: a day
+ *  divider, a spacer) and the DOM node itself (`node`, the identity a re-add is judged by). */
+export interface TailNode { cls: string; uuid?: string; node?: unknown; }
+export interface TailMutation { removed: TailNode[]; added: TailNode[]; atEnd: boolean; }
+export type TailSummary = { removedTail: string[]; addedTail: string[]; reAdded: boolean; removedUuids: string[]; addedUuids: string[]; gone: string[]; slide: boolean };
+/** The batch's reading (2026-09-23, the honest row): `reAdded` = the same DOM node came back (by the node: the pane hands a
+ *  fresh wrapper per record, so comparing wrappers read false for every batch); `gone` = the uuids that left the tail and came
+ *  back NOWHERE in the batch, by uuid, so a window slide or a re-render that re-creates a turn as a new element is not a turn
+ *  that vanished; `slide` = the top spacer (.tx-spacer-top) was added or removed in the same batch, the mark of a window
+ *  re-render (renderWindowItems replaces every child, the spacer first). */
+export function summarizeTailMutations(records: TailMutation[]): TailSummary | null {
+  const removedTail: TailNode[] = [], addedTail: TailNode[] = [], addedAll: TailNode[] = [];
+  let slide = false;
+  const topSpacer = (n: TailNode) => String(n.cls || "").indexOf("tx-spacer-top") >= 0;
   for (const r of records) {
+    for (const n of r.removed) if (topSpacer(n)) slide = true;
+    for (const n of r.added) { if (topSpacer(n)) slide = true; addedAll.push(n); }
     if (!r.atEnd) continue;
     removedTail.push(...r.removed); addedTail.push(...r.added);
   }
   if (!removedTail.length) return null;
-  const reAdded = removedTail.some((n) => addedTail.indexOf(n) >= 0);
-  return { removedTail: removedTail.map((n) => String(n.cls || "").slice(0, 40)), addedTail: addedTail.map((n) => String(n.cls || "").slice(0, 40)), reAdded };
+  const same = (n: TailNode) => n.node ?? n;
+  const addedNodes = addedTail.map(same);
+  const reAdded = removedTail.some((n) => addedNodes.indexOf(same(n)) >= 0);
+  const back = new Set<string>();
+  for (const n of addedAll) if (n.uuid) back.add(n.uuid);
+  const gone: string[] = [];
+  for (const n of removedTail) if (n.uuid && !back.has(n.uuid) && gone.indexOf(n.uuid) < 0) gone.push(n.uuid);
+  return { removedTail: removedTail.map((n) => String(n.cls || "").slice(0, 40)), addedTail: addedTail.map((n) => String(n.cls || "").slice(0, 40)), reAdded,
+           removedUuids: removedTail.map((n) => n.uuid || ""), addedUuids: addedTail.map((n) => n.uuid || ""), gone, slide };
 }
+
+/** How many uuids a tailmut row carries per list (removed, added, gone), the full lengths beside them (2026-09-23). */
+export const TAILMUT_UUIDS_MAX = 40;
 
 /** The breadcrumb for a tail element leaving the DOM (T262j, the user 2026-09-08): the remaining snap is a clamp
  *  against a transcript momentarily shorter WITHIN a frame — a tail node removed, a layout forced, the node back
  *  before the frame ends — which no ResizeObserver can see. `shBefore` = the last scroll height the pane recorded,
- *  `shAfter` = the height once the mutations settled; `reAdded` = the same node came back in the same task. */
-export function tailMutRow(sid: string, m: { removedTail: string[]; addedTail: string[]; reAdded: boolean }, shBefore: number, shAfter: number, st: number, ch: number, where: "view" | "live-ask") {
+ *  `shAfter` = the height once the mutations settled; `reAdded` = the same node came back in the same task. The class
+ *  lists are clipped to four; the uuid lists carry every uuid up to TAILMUT_UUIDS_MAX (2026-09-23: four could not say
+ *  which turn left, nor link a later re-insertion to it, tail-back.ts), `nRemoved`/`nAdded`/`nGone` the full lengths;
+ *  `gone` and `slide` are summarizeTailMutations's (2026-09-23: without them a window re-render read as a turn that
+ *  vanished). `info`, when the caller could read it (the view's observer; the live-ask host has none), is each gone
+ *  uuid's kind and whether the page's resident events still held it at that moment: `goneKind`/`goneInEv`, aligned
+ *  with `gone`, null when not read. */
+export function tailMutRow(sid: string, m: TailSummary, shBefore: number, shAfter: number, st: number, ch: number, where: "view" | "live-ask",
+                           info?: ReadonlyArray<{ kind: string; inEv: boolean }>) {
   const clip = (a: string[]) => a.slice(0, 4).map((c) => String(c).slice(0, 40));
-  return { sid, where, removed: clip(m.removedTail), added: clip(m.addedTail), reAdded: m.reAdded, shBefore, shAfter, st, ch };
+  const ids = (a: readonly string[]) => a.slice(0, TAILMUT_UUIDS_MAX);
+  const gi = info ? info.slice(0, TAILMUT_UUIDS_MAX) : null;
+  return { sid, where, removed: clip(m.removedTail), added: clip(m.addedTail), removedUuids: ids(m.removedUuids), addedUuids: ids(m.addedUuids),
+           nRemoved: m.removedTail.length, nAdded: m.addedTail.length, reAdded: m.reAdded, gone: ids(m.gone), nGone: m.gone.length,
+           goneKind: gi ? gi.map((g) => g.kind) : null, goneInEv: gi ? gi.map((g) => g.inEv) : null, slide: m.slide, shBefore, shAfter, st, ch };
 }
 
 /** The breadcrumb for one re-size of a view's virtualization spacers (T262j): a top spacer re-estimate paired with

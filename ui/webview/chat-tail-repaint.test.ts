@@ -13,7 +13,7 @@ const tail = RENDER.slice(RENDER.indexOf("function chatTail(msg: any) {"), RENDE
 
 test("a tail for the active tab schedules ONE repaint per frame instead of painting inline", () => {
   assert.match(tail, /v\.rendered = Math\.min\(v\.rendered, from\);/, "the state still lowers the repaint point at once");
-  assert.match(tail, /if \(shrank\) v\.stale = true;/);
+  assert.doesNotMatch(tail.slice(0, tail.indexOf("// Older history streaming in from a loadOlder request")), /v\.stale = true/, "a tail never rebuilds the window: the keyed paint repaints the changed units (2026-09-23)");
   const active = tail.slice(tail.indexOf("if (msg.id === activeId) {"), tail.indexOf("} else {"));
   assert.match(active, /scheduleAppendActive\(\);/);
   assert.doesNotMatch(active, /\bappendActive\(\);/, "no inline appendActive on the tail path any more");

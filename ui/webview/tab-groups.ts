@@ -646,7 +646,26 @@ export interface StripPlan {
  *    does the trail; a lone folded group between open ones has nothing to pack with and keeps its row.
  *    The item right before, not the section: a folded section with a member pinned through its fold
  *    ends in that member's tab, so the next folded header opens a row as it would after an open group.
- *    Never on the phone, where nothing folds. */
+ *    Never on the phone, where nothing folds.
+ *
+ *  WHAT TWO VIEWERS SHARE, AND THE ONE THING THEY DO NOT (measured 2026-09-23, after the user asked twice
+ *  why their phone and their desktop disagree; tests/test_mobile_picker_order_browser.py prints the table).
+ *  This function is the ONE ordered source both surfaces render: the desktop strip paints its items, and
+ *  the phone's picker is built by walking that strip's children, so within a page they cannot disagree.
+ *  Across two VIEWERS of one kernel, every input is the same but one, this browser's own:
+ *    - the SECTIONS and their order come from `unions` — the kernel's tags and tagOrder;
+ *    - which section a session sits in comes from tag membership, also the kernel's, so the trail's
+ *      MEMBERSHIP never diverges;
+ *    - `visibleIds` is arranged by the viewer's arrangement, which the kernel keeps and pushes since
+ *      2026-09-23 (view-order.ts; until then each browser kept its own, and the trail read differently
+ *      wherever one of them had dragged). It governs the order INSIDE each section and the order of the
+ *      trail alike;
+ *    - `st` is the viewer's OWN tab-groups store (romp:tabgroups, per browser; the head of this file). It
+ *      governs whether and how the strip sections at all: the group switch (`st.on`) on both surfaces, since
+ *      the phone's picker menu carries the same switch (render.ts builds one groupToggle for both mounts),
+ *      and the folds and pins on the desktop alone, since nothing folds on the phone. Switched off, a viewer
+ *      reads one flat run in the arrangement's order, with no headings and no trail.
+ *  So two viewers that are both grouped read alike: same sessions, same headings, same sequence. */
 export function planStrip(visibleIds: readonly string[], unions: readonly TagUnion[], st: TabGroupsState,
                           activeId: string | null, phone: boolean,
                           pending?: { id: string; tags: readonly string[] } | null): StripPlan {

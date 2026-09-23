@@ -8,7 +8,9 @@ labels, in precedence order) and the Needs you ring's demo tab; the outline page
 picker's current-session border and its row's bar. Not read here: the bar under the transcript, whose chip says Needs you only
 for a live prompt (the kernel's _session_chip; status-chip.test.ts and tab-snapshot.test.ts pin the word), and the sessions
 pane's lane chip (drawn on a canvas, pinned by timeline-awaiting.test.ts). Synthetic only: placeholder ids, invented text,
-hostname TESTHOST."""
+hostname TESTHOST.
+
+After the 2026-09-23 default flip the badge is the default; this lab opts into RING mode (it seeds tabStateBadge:false) because its subject is the ring, and the dot's default is covered by the badge lab (test_tab_badge_browser) and the gear-preview test (test 5)."""
 import json
 import os
 import re
@@ -64,6 +66,7 @@ const themes = ["dark", "light"];
 const setTheme = (frameOrPage, t) => frameOrPage.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), t);
 // ── the feed page: the column header chip, the card's modal (the question label and mark) ──
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+await ctx.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
 const feed = await ctx.newPage(); feed.on("pageerror", (e) => errors.push("feed: " + String(e).slice(0, 200)));
 await feed.goto(cfg.feed);
 const cardSel = '[data-key="a:' + cfg.web + ':gw"]';
@@ -94,7 +97,7 @@ await page.goto(cfg.landing);
 await page.waitForSelector("#rail-gear", { timeout: 20000 });
 const frameBy = async (part) => { let f = page.frames().find((x) => x.url().includes(part)); for (let i = 0; i < 100 && !f; i++) { await page.waitForTimeout(100); f = page.frames().find((x) => x.url().includes(part)); } return f; };
 const chatF = await frameBy("/chat");
-// the settings frame opens through the strip's gear glyph (T415: one click, the Chat tab at its Tab widgets section)
+// the settings frame opens through the strip's gear glyph (T415: one click, the Chat tab at its Tab strip section; Tab widgets until then)
 await chatF.waitForSelector("#tabs .tab-strip-end .tab-widgets-gear", { timeout: 20000 });
 await chatF.click("#tabs .tab-strip-end .tab-widgets-gear");
 await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
@@ -136,6 +139,7 @@ for (const t of themes) {
 await setTheme(chatF, "dark"); if (setF) await setTheme(setF, "dark"); await setTheme(page, "dark");
 // ── the phone: the picker's current-session border and the row's bar ──
 const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 3 });
+await phoneCtx.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
 const phone = await phoneCtx.newPage(); phone.on("pageerror", (e) => errors.push("phone: " + String(e).slice(0, 200)));
 await phone.goto(cfg.chat);
 await phone.waitForFunction((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); return !!t && t.classList.contains("ring-waiting-on-you"); }, cfg.web, { timeout: 30000 }).catch(() => { errors.push("phone: no ring on the tab"); });

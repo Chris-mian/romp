@@ -96,12 +96,13 @@ const isOptimistic = (u: string | undefined): boolean => !!u && (u.startsWith("o
  *  never-delivered verdict. Keyed by its uuid. */
 export function landedHumanKeys(events: readonly GuardEvent[] | null | undefined): string[] {
   const out: string[] = [];
-  for (const e of events || []) {
-    if (!e || e.kind !== "user" || typeof e.uuid !== "string" || !e.uuid) continue;
-    if (isTransient(e.uuid) || isOptimistic(e.uuid) || e.undelivered || e.romp || e.rompAuto || e.rompSystem || e.source) continue;
-    out.push(e.uuid);
-  }
+  for (const e of events || []) if (isLandedHuman(e)) out.push(e.uuid);
   return out;
+}
+/** One event's reading of the rule above (send-landing.ts walks the tail with it, and stops early). */
+export function isLandedHuman(e: GuardEvent | null | undefined): e is GuardEvent & { uuid: string } {
+  if (!e || e.kind !== "user" || typeof e.uuid !== "string" || !e.uuid) return false;
+  return !(isTransient(e.uuid) || isOptimistic(e.uuid) || e.undelivered || e.romp || e.rompAuto || e.rompSystem || e.source);
 }
 
 /** The landed human turns `before` held that `after` no longer holds (by uuid), in `before`'s order. */

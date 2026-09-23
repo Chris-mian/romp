@@ -114,7 +114,13 @@ CALLBACK_ALLOW = {
     ("SdkBackend", "notify", "_send_to_app"): "a frame to the app over its socket",
     ("SdkBackend", "poke", "_wake_kernel"): "sets the kernel's wake event",
     ("SdkBackend", "push", "_pusher_wake.set"): "sets the pusher's wake event",
+    ("SdkBackend", "push_soon", "_push_session_soon"): "names a sid for the next cycle to build FIRST and sets the pusher's "
+                                                       "wake event: a set add and an Event set, so nothing builds here (the "
+                                                       "one that builds is push_session, marked at the hand-off)",
     ("SdkBackend", "log", "_backend_log"): "a stderr line through the exit log",
+    ("CodexBackend", "push_session", "_push_session_soon"): "every Codex per-event push names its sid for the next cycle to build "
+                                                            "FIRST (2026-09-23, one builder of chat frames): a set add and an "
+                                                            "Event set, so nothing builds here",
     ("SdkBackend", "boot_phase", "_mark_boot"): "a boot-row stamp (censusDone, attachDone)",
     ("CodexBackend", "notify", "_send_to_app"): "a frame to the app over its socket",
     ("CodexBackend", "poke", "_wake_kernel"): "sets the kernel's wake event",
@@ -417,9 +423,9 @@ class StageMarksCensus(unittest.TestCase):
         bad = [r for r in rows if r[4] not in ("marked", "allowed")]
         self.assertEqual(bad, [], "callables handed to a backend that can build or hydrate under no mark")
         marked = sorted((ctor, param, src) for _, ctor, param, src, v in rows if v == "marked")
-        self.assertEqual(marked, [("CodexBackend", "push_session", '_stage_default("push.session")(_push_session_now)'),
-                                  ("SdkBackend", "push_session", '_stage_default("push.session")(_push_session_now)')],
-                         "the one-session push is the callable that builds: the thread's default mark at both hand-offs")
+        self.assertEqual(marked, [("SdkBackend", "push_session", '_stage_default("push.session")(_push_session_now)')],
+                         "the one-session push is the callable that builds: the thread's default mark at its hand-off (the Codex "
+                         "backend's per-event pushes name the cycle instead since 2026-09-23, a CALLBACK_ALLOW row)")
         by_attr = sorted(param for _, ctor, param, src, v in rows if ctor == "SdkBackend" and v == "allowed"
                          and param in ("login_ok", "postal_restore", "rewind_resolved_cb"))
         self.assertEqual(by_attr, ["login_ok", "postal_restore", "rewind_resolved_cb"], "the attribute hand-offs are rows: %s" % rows)

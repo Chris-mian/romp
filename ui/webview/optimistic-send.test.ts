@@ -20,6 +20,7 @@
 // render.ts has import-time DOM side effects → source pins for the DOM half.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import { firstReplaced } from "./unit-diff";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { newPending, reconcilePending, bareGroupLabel, type TailEvent } from "./send-pending";
@@ -33,8 +34,9 @@ test("the plain send registers an optimistic bubble; follow-up/quote sends keep 
   assert.match(RENDER, /else \{ vscodeApi\.postMessage\(\{ type: "sendMessage", id: sid, text, qid, \.\.\.att \}\); registerOptimistic\(sid, text, imgPaths, qid, paths\); \}/);
   // registerOptimistic shows it NOW (before any push) via reconcile + appendActive
   assert.match(RENDER, /function registerOptimistic\(id: string, text: string, imgPaths\?: string\[\], qid\?: string, paths\?: string\[\]\): void/);   // + the dragged-image paths → echo thumbnails (2026-08-25); + the copy's id the caller minted and posted
-  // the active-tab arm still paints via appendActive (the snap gate moved ahead of it, 2026-08-30)
-  assert.match(RENDER, /if \(v\) v\.stale = true;\s*\n\s*if \(id === activeId\) \{/);
+  // the active-tab arm still paints via appendActive (the snap gate moved ahead of it, 2026-08-30); the reconcile names what it
+  // changed (repaintFromChange), no stale mark: a send touches the tail units it changes and nothing above (2026-09-23)
+  assert.match(RENDER, /reconcileOptimistic\(s\);\s*\n\s*if \(id === activeId\) \{/);
   assert.match(RENDER, /const wasAtBottom = !!content && nearBottomForSend\(content\);[^\n]*\s*\n\s*appendActive\(\);/);
 });
 
@@ -57,16 +59,19 @@ test("your OWN send reveals itself from the TAIL only — scrolled up, the viewp
 // Only the length-growing case (first send, bare tail) painted on the keystroke. registerOptimistic now
 // marks the view stale before appendActive, so every send takes the stale window re-render immediately.
 test("a send paints on ITS OWN keystroke even when the tail mutates in place (no length change)", () => {
-  // the stale mark sits between the reconcile and the repaint, so appendActive can't hit the fast path
-  assert.match(RENDER, /reconcileOptimistic\(s\);[\s\S]{0,700}const v = views\.get\(id\);\s*\n\s*if \(v\) v\.stale = true;/);
-  // the fast path it defeats keys on length + staleness — stale must veto the skip
-  assert.match(RENDER, /if \(v\.rendered === len && !v\.stale && v\.el\.childNodes\.length > 0\) return v;/);
-  // executed replica: the fast-path predicate must not skip once the view is marked stale, even though
-  // the in-place merge keeps the length equal to what was last rendered
-  const skips = (rendered: number, len: number, stale: boolean, children: number) =>
-    rendered === len && !stale && children > 0;
-  assert.equal(skips(50, 50, false, 50), true, "length-neutral mutation without the mark: skipped (the bug)");
-  assert.equal(skips(50, 50, true, 50), false, "the stale mark forces the repaint on the same keystroke");
+  // the reconcile wrapper names the first event object the pass swapped (repaintFromChange) and lowers v.rendered to it, so
+  // appendActive can't hit the fast path; a stale mark did this until 2026-09-23 and rebuilt the whole window on every send
+  const wrap = RENDER.slice(RENDER.indexOf("function reconcileOptimistic(s: Session): void {"), RENDER.indexOf("function reconcileOptimisticInner("));
+  assert.match(wrap, /const before = s\.events\.slice\(\);[\s\S]*?reconcileOptimisticInner\(s\);[\s\S]*?repaintFromChange\(s, before\);/);
+  assert.match(wrap, /if \(at === 0\) v\.rediff = true; else v\.rendered = Math\.min\(v\.rendered, at\);/);
+  // the fast path it defeats keys on length, the rediff mark and the painted unit count
+  assert.match(RENDER, /const current = v\.rendered === len && !v\.stale && !v\.rediff && v\.el\.childNodes\.length > 0 && !!v\.painted && v\.painted\.items\.length === total;/);
+  // executed replica: an in-place merge swaps the group's object at its index, so the first replaced index is below the
+  // length and the fast path cannot skip, though the length equals what was last rendered
+  const before = [{ k: 1 }, { k: 2 }, { k: 3 }];
+  const after = [before[0], before[1], { k: 3, merged: true }];
+  assert.equal(firstReplaced(before, after), 2, "the merged group's slot");
+  assert.equal(firstReplaced(before, before.slice()), -1, "a pass that swapped nothing names nothing");
 });
 
 test("every push entry point re-asserts (or retires) the optimistic tail", () => {
@@ -168,7 +173,6 @@ test("EVERY ✕ stops our re-injection first; the optimistic one cancels by body
   assert.match(RENDER, /if \(t\.optimistic && t\.qts !== undefined\) x\.dataset\.qts = String\(t\.qts\);/);
   assert.match(RENDER, /if \(t\.qid\) x\.dataset\.qid = t\.qid;/);
   assert.doesNotMatch(RENDER, /list\.findIndex\(\(p\) => p\.text === qmd\)/, "never 'the first entry with this text' for a bubble that names its entry");
-  assert.match(RENDER, /echoShownSig\.delete\(sidQ\);/);
   assert.match(RENDER, /const msg: Record<string, unknown> = \{ type: "cancelQueued", id: sidQ, md: qmd \};/);
 });
 
@@ -242,15 +246,12 @@ test("the echo renders dragged-image THUMBNAILS — composer → provisional →
 });
 
 test("the landing SWAP repaints even when it replaces the echo 1:1 — no lingering dashed bubble", () => {
-  // upsert hands reconcileOptimistic a FRESH events array, and a landing frame that nets zero count
-  // change (its user atom in, our bubble out) left syncView's rendered===len fast path skipping the
-  // swap — the dashed echo lingered past its own landing until some later push (the 2026-08-25
-  // continuity harness caught it). The per-sid signature survives the frame and marks the view stale
-  // exactly when the visible echo set changes; the pop-and-reinject-same pass stays a no-op.
-  assert.match(RENDER, /const echoShownSig = new Map<string, string>\(\);/);
-  assert.match(RENDER, /if \(\(echoShownSig\.get\(s\.id\) \|\| ""\) !== sig\) \{/);
-  assert.match(RENDER, /if \(sig\) echoShownSig\.set\(s\.id, sig\); else echoShownSig\.delete\(s\.id\);/);
-  const fn = RENDER.split("function reconcileOptimisticInner(")[1].split("\nfunction ")[0];   // the guarded body (T262h)
-  const settles = (fn.match(/settle\(/g) || []).length;
-  assert.ok(settles >= 3, "every exit settles the signature (early returns included), got " + settles);
+  // a landing frame that nets zero count change (its user atom in, our bubble out) left syncView's rendered===len fast path
+  // skipping the swap — the dashed echo lingered past its own landing until some later push (the 2026-08-25 continuity
+  // harness caught it). chatTail compares the events it held before the frame with the ones every pass left (the strip's
+  // un-hide included) and upsert compares every unit, so the swap repaints; a per-session signature of the shown texts
+  // marked the whole view stale for it until 2026-09-23, a window rebuild on every landing.
+  assert.doesNotMatch(RENDER, /echoShownSig/, "the signature is gone");
+  const tail = RENDER.slice(RENDER.indexOf("function chatTail(msg: any) {"), RENDER.indexOf("// Older history streaming in from a loadOlder request"));
+  assert.match(tail, /const heldBefore = s\.events\.slice\(\);[\s\S]*?reconcileOptimistic\(s\);[^\n]*\n\s*repaintFromChange\(s, heldBefore\);/);
 });

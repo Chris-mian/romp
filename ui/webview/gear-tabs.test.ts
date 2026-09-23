@@ -1,7 +1,7 @@
 // The settings panel in TABS (T379, the user 2026-09-12; re-cut T400: General, Chat, Feed, Sessions, Task tracking, Appearance, Debug):
 // the settings grouped by the surface they belong to, seven pills
-// under the title, one pane each, every existing key kept; the tab-widgets gear on the chat strip opens the Chat tab
-// scrolled to its Tab widgets section (the user's amendment: no tab of their own), whose rows are the registered widgets (a live demo, a sliding switch, the widget's options); the last tab used is
+// under the title, one pane each, every existing key kept; the strip's gear opens the Chat tab
+// scrolled to its Tab strip section (T415; Tab widgets until then); the Tab widgets section below it holds the registered widgets (a live demo, a sliding switch, the widget's options); the last tab used is
 // remembered per browser. gear.js builds its DOM from a markup string, so the inventory is read off that string (each
 // control's id inside exactly one pane) and the behaviour pinned at the source; tests/test_tab_widgets_browser.py drives
 // the served page.
@@ -241,7 +241,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   // no grip and no drag (reorder: false: the order is the precedence, red over magenta over amber, the registry's); the
   // demo is a miniature tab wearing the ring its predicate lights on its demo status, a plain tab once switched off
   const chatPane = panes().chat;
-  assert.ok(chatPane.indexOf("id=rs-widgets") < chatPane.indexOf("Rings around the tab. One at a time: the first that applies wins, in this order.") && chatPane.indexOf("Rings around the tab.") < chatPane.indexOf("id=rs-rings") && chatPane.indexOf("id=rs-rings") < chatPane.indexOf("data-section=statusline"), "the hint and the rings' host follow the title rows, before the Status line section");
+  assert.ok(chatPane.indexOf("id=rs-widgets") < chatPane.indexOf("One cue at a time on the tab: the first state that applies wins, in this order.") && chatPane.indexOf("One cue at a time on the tab: the first state that applies wins, in this order.") < chatPane.indexOf("id=rs-rings") && chatPane.indexOf("id=rs-rings") < chatPane.indexOf("data-section=statusline"), "the hint and the rings' host follow the title rows, before the Status line section");
   assert.match(GEAR, /host: document\.getElementById\('rs-rings'\), list: TW\.ringWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',/);
   assert.match(GEAR, /order: function \(\) \{ return TW\.ringWidgets\(\)\.map\(function \(w\) \{ return w\.id; \}\); \}, divider: null, group: null, groupLabel: null, reorder: false,/, "the rows' order is the registry's; nothing to drag");
   assert.match(GEAR, /var ringSection = widgetSection\(\{[\s\S]*?save: tabSection\.save,/, "the same store through the tab section's own save (no third writer of settings.tabWidgets)");

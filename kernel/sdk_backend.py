@@ -40,7 +40,7 @@ from pathlib import Path
 # #1735: the gc-freeze ended-session note. Rather than GUESS at the pop whether an ended session is cyclic (three
 # review rounds each guessed from a state flag and each missed a path), every session-end pop REGISTERS the session
 # with the controller, which judges it by observation at the idle tick: a weakref that died means it was acyclic and
-# is gone; one still alive with its worker thread finished is a surviving cycle to reclaim. The kernel injects the
+# is gone; one still alive with its worker thread finished is a surviving cycle to reclaim (or a ref a live root keeps, which reads the same, costs one reclaim and is counted a survivor). The kernel injects the
 # controller's note_ended here. A no-op until injected (a bare backend in a unit test needs no wiring).
 _ENDED_NOTE = [None]
 
@@ -51,7 +51,7 @@ def set_ended_note(fn):
 
 def _note_ended(session):
     """Register an ended session (and its worker thread) with the gc-freeze controller, which decides at the idle
-    tick whether it was a surviving cycle. The three session-end pops call this; the controller measures, so no
+    tick whether it was a surviving cycle (or a ref a live root keeps, which reads the same, costs one reclaim and is counted a survivor). The three session-end pops call this; the controller measures, so no
     per-path cyclicity guess is made here."""
     fn = _ENDED_NOTE[0]
     if fn is not None:
@@ -4205,12 +4205,27 @@ def lease_census(ps_lines: list[str], lastsids: list[str], own_pid: int, leases:
 # before the walk is out of reach there — the scope is what closes that gap, which is why it is tried
 # first. Nothing outside the CLI's own scope or tree is ever signaled: the walk is by ppid from the CLI,
 # and the scope list is filtered to OUR sessions' units whose pid is not a live child of this kernel.
-SESSION_SCOPE_PREFIX = "romp-session-"
+# One process inside the tree is spared (the review of the bus-scope lane, 2026-09-23): the machine's postal
+# bus, which a session's postal MCP server starts in a scope of its own (`romp-postal-bus-<pid>-<ns>.scope`,
+# postal_service._bus_scope_unit). systemd-run execs in place, so that bus stays the MCP server's child and
+# the walk reaches it; stopping the CLI's scope no longer ends it, and the walk must not either, since every
+# session on the machine shares it. Both signs must hold, read as exactly as the session scope's name is:
+# the process's cgroup is a unit of the producer's whole shape (the path's last component), and its command
+# in the `ps` listing is the bus's serve. A look-alike name is no bus scope, and any other process in the
+# bus's scope is signaled with the rest, with a log line. A bus that fell back to the session's own scope is
+# not spared: its `fallback:` line in the bus's server.log says it shares that scope's fate.
+SESSION_SCOPE_PREFIX = "romp-session-"   # KEEP IN SYNC with postal_service.ROMP_SCOPE_PREFIXES (2026-09-22)
+POSTAL_BUS_SCOPE_PREFIX = "romp-postal-bus-"   # KEEP IN SYNC with postal_service.BUS_SCOPE_PREFIX (2026-09-23)
+_POSTAL_BUS_SCOPE_RE = re.compile(re.escape(POSTAL_BUS_SCOPE_PREFIX) + r"\d+-\d+\.scope\Z")   # _bus_scope_unit's shape
+# The names the bus's script runs under: postal/postal_service.py and bin/'s links to it. KEEP IN SYNC with bin/
+# (tests/test_postal_bus_scope.py derives the links from it) and with postal_service.ensure's serve argv.
+POSTAL_BUS_SERVE_NAMES = ("romp-postal-service", "romp-postal", "postal_service.py")
 _SESSION_SCOPE_RE = re.compile(r"romp-session-([0-9a-fA-F]{1,8})-(\d+)-\d+\.scope\Z")
-SCOPE_LIST_ARGV = ["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager",
+# --full: the line's description carries the state tag (state_tag_of), which a truncated column would cut
+SCOPE_LIST_ARGV = ["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager", "--full",
                    SESSION_SCOPE_PREFIX + "*.scope"]
 SCOPE_STOP_TIMEOUT = 15.0     # systemd's own stop: SIGTERM to the cgroup, SIGKILL at its TimeoutStopSec
-HOST_SCOPE_LIST_ARGV = ["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager",
+HOST_SCOPE_LIST_ARGV = ["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager", "--full",
                         "romp-host-*.scope"]   # the per-session hosts' own scopes (T315)
 TREE_KILL_GRACE = 1.0         # seconds for SIGTERM to land on the tree before SIGKILL
 
@@ -4225,6 +4240,28 @@ def scope_unit_of(cgroup_text: str) -> str | None:
             if comp.startswith(SESSION_SCOPE_PREFIX) and comp.endswith(".scope"):
                 return comp
     return None
+
+
+def bus_scope_unit_of(cgroup_text: str) -> str | None:
+    """The postal bus's own scope a /proc/<pid>/cgroup listing places the process in, or None: the last component
+    of a line's path, and only a name of the producer's whole shape, `romp-postal-bus-<pid>-<ns>.scope`
+    (_POSTAL_BUS_SCOPE_RE, matched as _SESSION_SCOPE_RE matches a session's; 2026-09-23, the review of the
+    bus-scope lane, after a bare prefix test let `romp-postal-bus-anything.scope` and a cgroup nested under the
+    bus's through)."""
+    for ln in cgroup_text.splitlines():
+        comp = ln.rsplit(":", 1)[-1].rstrip("/").rsplit("/", 1)[-1]
+        if _POSTAL_BUS_SCOPE_RE.match(comp):
+            return comp
+    return None
+
+
+def _is_postal_bus_serve(cmd: str) -> bool:
+    """Does this `ps` command text name the postal bus's serve? ensure spawns `<python> <script> serve`, and the
+    sh its scope runs first ends the same way, so the last two argv tokens are the script, under one of
+    POSTAL_BUS_SERVE_NAMES, and `serve` (2026-09-23, the review of the bus-scope lane: the scope's name alone
+    spared whatever ran in it). Tokens, never a substring, as _is_kernel_cmd reads a kernel's."""
+    words = cmd.split()
+    return len(words) >= 2 and words[-1] == "serve" and words[-2].rsplit("/", 1)[-1] in POSTAL_BUS_SERVE_NAMES
 
 
 def scope_pid(unit: str) -> int | None:
@@ -4301,6 +4338,78 @@ def _read_ppid(pid: int) -> int | None:
         return int(tail[1])
     except (OSError, IndexError, ValueError):
         return None
+
+
+# WHICH KERNEL STARTED IT: the state tag (2026-09-23). systemd user units and processes are machine-wide, and a session
+# id is not a kernel's. A lab kernel with a state directory of its own held a session under the same id as a live session
+# of the machine's real kernel, and each of its boots stopped that session's host, because all three boot reapers decided
+# ownership from the session id plus the booting kernel's own state directory: the orphan CLI reap (lease_census, then
+# _end_cli_tree) took any stream-json `claude` on the machine resuming one of its ids with no lease in its directory and
+# no kernel for a parent, which a host-held CLI of another kernel always is; the leftover session-scope sweep took every
+# `romp-session-<sid8>-*` unit whose CLI it did not own; the host-scope sweep took every `romp-host-<sid8>-*` unit with no
+# valid lease in its directory. So a kernel now reaps only what it can PROVE it started: every session CLI carries
+# STATE_TAG_ENV in its environment (options.env, which a hosted CLI's spawn spec carries too), and every session scope and
+# host scope carries `romp-state=<tag>` in its Description (bin/romp-cli-scope, _spawn_host), which the list-units line the
+# sweeps already read shows. The tag is a hash of the resolved state directory, so a copied state directory at another
+# path is another kernel, and a copied lease proves nothing. At a reap, this kernel's tag is judged by the rules as they
+# were; another kernel's tag is left alone; no readable tag (an older build's unit or CLI, an environment this process
+# cannot read) is left alone too, and the boot names everything it left on one log line. The tag's formula is a contract
+# across kernel versions (a kernel must know its previous build's units): tests/test_reap_owned_only.py pins it by hand.
+STATE_TAG_ENV = "ROMP_STATE_TAG"     # KEEP IN SYNC with bin/romp-cli-scope, which writes it into the scope's Description
+STATE_TAG_WORD = "romp-state="
+_STATE_TAG_SHAPE = re.compile(r"[0-9a-f]{16}\Z")
+_STATE_TAG_IN_DESC = re.compile(r"(?:^|\s)" + re.escape(STATE_TAG_WORD) + r"([0-9a-f]{16})(?=\s|$)")
+
+
+def state_tag_of(state_dir) -> str:
+    """The state tag of the kernel over `state_dir`: the first 16 hex digits of the SHA-256 of the resolved path."""
+    return hashlib.sha256(os.path.realpath(os.fspath(state_dir)).encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
+def unit_state_tag(list_line: str) -> str | None:
+    """The state tag a `systemctl --user list-units --plain` line's description carries, or None when it carries none
+    (an older build's unit) or one of another shape. The unit name is the line's first word and never read here."""
+    head = list_line.strip().split(None, 1)
+    if len(head) < 2:
+        return None
+    m = _STATE_TAG_IN_DESC.search(head[1])
+    return m.group(1) if m else None
+
+
+def unit_state_tags(list_lines) -> dict:
+    """{unit: its state tag or None} for every line of a list-units listing."""
+    out = {}
+    for ln in list_lines:
+        head = ln.strip().split(None, 1)
+        if head:
+            out[head[0]] = unit_state_tag(ln)
+    return out
+
+
+def proc_state_tag(pid: int, run=None, procfs=None) -> str | None:
+    """The state tag in a process's environment as it was exec'd: /proc/<pid>/environ where there is a procfs (readable for
+    this user's own processes), else `ps -E` (macOS prints the environment after the command). None when the process is
+    gone, its environment cannot be read, or it carries no tag of the tag's shape. `run` and `procfs` are the test seams."""
+    procfs = os.path.isdir("/proc") if procfs is None else procfs
+    key = STATE_TAG_ENV + "="
+    if procfs:
+        try:
+            with open("/proc/%d/environ" % int(pid), "rb") as f:
+                data = f.read()
+        except (OSError, ValueError):
+            return None
+        for kv in data.split(b"\0"):
+            if kv.startswith(key.encode()):
+                v = kv[len(key):].decode("ascii", "replace")
+                return v if _STATE_TAG_SHAPE.match(v) else None
+        return None
+    run = run or subprocess.run
+    try:
+        out = run(["ps", "-E", "-ww", "-o", "command=", "-p", str(int(pid))], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return None
+    vals = [tok[len(key):] for tok in (out or "").split() if tok.startswith(key)]
+    return vals[-1] if vals and _STATE_TAG_SHAPE.match(vals[-1]) else None   # the environment follows the argv
 
 
 def find_session_cli(ps_lines: list[str], sids: list[str], parent_pid: int, lease: dict | None = None,
@@ -7213,11 +7322,16 @@ class SdkSession:
                     self._ping_feeding = True       # hold feeds until this turn's first streamed message
                 self._mark_producing()              # the one gate: a text fed under a standing prompt leaves the prompt's state
                 self.backend._poke()
-                # …and THIS session's frame now (2026-09-19): the copy just left _pending, so the chat's queued bubble for
-                # it goes and its echo shows, which the pane reads as "taken by the session" and drops the ✎ whose recall
-                # could no longer win (render.ts, send-pending.ts `handed`). The poke wakes the fleet cycle, seconds
-                # behind on a busy kernel; the targeted push lands the flip at once, as the connect handshake's does.
-                self.backend._push_session(self.sid)
+                # …and THIS session at the FRONT of the next cycle (2026-09-19, rebuilt 2026-09-23): the copy just left
+                # _pending, so the chat's queued bubble for it goes and its echo shows, which the pane reads as "taken by
+                # the session" and drops the ✎ whose recall could no longer win (render.ts, send-pending.ts `handed`).
+                # 66486701 landed that flip by running the targeted whole-session push here — a SECOND builder of chat
+                # frames, with its own transcript read, firing at the instant the CLI takes the message and writes its
+                # record. The two builds reached a client in either order and the older list took the just-landed row off
+                # the page (the user 2026-09-22). The flip is a small state change, not a transcript: this names the sid
+                # to the ONE cycle (which the poke above has already woken) so it is built and flushed first, and no
+                # second list of this session exists to be ordered.
+                self.backend._push_soon(self.sid)
                 yield {"type": "user",
                        "message": {"role": "user", "content": [{"type": "text", "text": item}]}}
 
@@ -7318,8 +7432,12 @@ class SdkSession:
                     # the kernel's opening chip stands down on) — push THIS session now. Left to the
                     # periodic cycle, a fresh session wore the opening dots seconds after its CLI was
                     # ready to take a message (measured live 2026-08-10: connect done ~1.5s after
-                    # create, the ready chip landing at 5-12s with the cycle).
-                    self.backend._push_session(self.sid)
+                    # create, the ready chip landing at 5-12s with the cycle). Named to the FRONT of the
+                    # one cycle since 2026-09-23 (_push_soon, the queue pop's road), not built beside it:
+                    # a resumed session's handshake lands while its transcript is live, and the targeted
+                    # push's own read of it raced the cycle's to the page. The cycle's build loop re-reads
+                    # the names before every tab, so the flip waits at most the one tab in flight.
+                    self.backend._push_soon(self.sid)
                     self._connected.set()   # the control channel exists from here (move() waits on this)
                     if self._host is None:
                         self.backend._lease_open(self, client)   # ownership by lease (T305): pid + start time, heartbeat
@@ -10570,7 +10688,7 @@ class SdkBackend:
     pushing to clients and a few launch parameters that mirror the tmux launch."""
 
     def __init__(self, state_dir, claude_bin: str, notify, poke=None, push=None,
-                 push_session=None,
+                 push_session=None, push_soon=None,
                  mcp_config: str | None = None, append_prompt_path: str | None = None,
                  log=None, reconcile: bool = False, boot_at=None, code_version=None, boot_phase=None):
         self.state_dir = Path(state_dir)
@@ -10600,6 +10718,9 @@ class SdkBackend:
         self._push_session_cb = push_session   # targeted ONE-session push (kernel _push_session_now) for
         #   per-session chip events (the connect handshake): a wake alone leaves the flip riding the next
         #   full push cycle, which runs seconds on a busy fleet (the user 2026-08-10)
+        self._push_soon_cb = push_soon     # name this sid to the ONE pusher cycle (kernel _push_session_soon,
+        #   2026-09-23): built at the front of the cycle's next build slot, no second builder of chat frames, for the
+        #   per-session events that fire WHILE that session's transcript is being written — the queue pop above all
         self.mcp_config = mcp_config
         self.append_prompt_path = append_prompt_path
         self._log_cb = log
@@ -11026,6 +11147,30 @@ class SdkBackend:
         now = time.time()
         lease = read_lease(self.state_dir, sess.sid)
         state = ht.host_lease_state(lease, now)
+        if state == "attach":
+            # a live host on other code re-execs first, and its wait can outlast the host it waits for (a re-executed host
+            # that dies in its start), so the lease is read again after it: a dead holder takes the orphan road below,
+            # never an attach into nobody that the connect loop files as a launch error (2026-09-23, the review of this
+            # lane, which saw the attach branch act on the lease read before a 20 s wait)
+            await self._host_reexec_on_skew(sess, lease)
+            wait, sess._host_reexec_wait = getattr(sess, "_host_reexec_wait", ""), ""
+            if wait:
+                # only after a wait: a same-version attach, a deferral or a refusal waited for nothing, and a second read
+                # costs two more process-start reads, each a `ps` run on macOS (2026-09-23, the review of this lane). The
+                # file, not the lease the wait returned: whatever was written last is what the attach meets. The clock is
+                # read again too: past the whole bound, a lease that has not beaten within LEASE_TTL_S reads as it does at
+                # any connect's first read, the orphan it would be on the next pass (2026-09-23, the review of this lane)
+                now = time.time()
+                lease = read_lease(self.state_dir, sess.sid)
+                state = ht.host_lease_state(lease, now)
+                if wait == "ended" and state == "attach":
+                    state = "orphan"    # the host's own log recorded its end, which it writes before the process is gone
+        if state != "attach":
+            # no attach, no handover: a handover this kernel asked for was the host's that is now gone, so the next host's
+            # hello files no host.reexeced row for it and the next attach waits for nothing (2026-09-23, the review of this
+            # lane: a host already dead at the connect's first read left both, and the fresh host's hello filed the row)
+            sess._host_reexec_from = None
+            sess._host_reexec_closed = False
         hdir = ht.host_dir(self.state_dir, sess.sid)
         if state == "orphan" and self._host_recently_ended.get(sess.sid) == self._holder_ident(lease):
             # the host this kernel just asked to end (an effort change's reconnect, a kill): its lease removal
@@ -11057,7 +11202,6 @@ class SdkBackend:
             return None
         if state == "attach":
             sess._host_is_attach = True
-            lease = await self._host_reexec_on_skew(sess, lease) or lease
             reg = read_reg(self.state_dir, sess.sid) or {}
             ack = reg.get("hostAck") if isinstance(reg.get("hostAck"), dict) else {}
             holder = lease.get("holder") or {}
@@ -11115,6 +11259,7 @@ class SdkBackend:
                                 on_stderr=sess._on_cli_stderr,
                                 on_exit=lambda ex, s=sess: self._host_ended(s, ex),
                                 on_reexec=lambda f, s=sess: self._on_host_reexec_now(s),
+                                on_lost=lambda t, s=sess: self._on_host_socket_lost(s, t),
                                 on_fault=lambda f, s=sess: self._on_host_fault(s, f))
 
     def _on_host_fault(self, sess, f: dict) -> None:
@@ -11127,6 +11272,9 @@ class SdkBackend:
                         "(%s); it serves on as it was" % (sess.name, was or "unknown", self.code_version, f.get("text") or "no reason"),
                         "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
             sess._host_reexec_from = None
+            # the host serves on under its old code: the next attach asks again rather than waiting out the bound for a
+            # re-executed host that is not coming, with a second row (2026-09-22)
+            sess._host_reexec_closed = False
             return
         self._log("host (%s): fault %s: %s" % (sess.name, f.get("kind"), f.get("text")), problem=True)
 
@@ -11137,12 +11285,24 @@ class SdkBackend:
         bounded, for the lease to carry the new version and returns the fresh lease, the same holder pid and start since
         an exec keeps both), `at-turn-end` (the attach proceeds against the old host; its `reexec-now` frame at the
         turn's end makes the reconnect a planned one), or a refusal (a `host.reexec-refused` row; the attach proceeds
-        as before). Nothing here raises out of the connect: a fault is a log line and the plain attach."""
+        as before). The planned reconnect after that turn-end handover asks nothing: it waits for the re-executed host as
+        the `now` road does (`_host_reexec_closed`, set by _on_host_reexec_now). A host that dies during either wait ends
+        it with None, and _host_transport_for, told by `_host_reexec_wait` that a wait ran, reads the lease again and
+        takes the orphan road (2026-09-23). Nothing here raises out of the connect: a fault is a log line and the plain
+        attach."""
         try:
             ht = _ht()
+            closed, sess._host_reexec_closed = getattr(sess, "_host_reexec_closed", False), False
             was = str((lease or {}).get("version") or "")
             if not self.code_version or was == self.code_version:
                 return None
+            if closed:
+                # the host closed this kernel's socket for its turn-end handover and the lease still reads the old version
+                # until the re-executed host serves and rewrites it (a few hundred milliseconds): wait for that host. Asking
+                # again went to a closed listener, a false host.reexec-refused row, and an attach into nobody that the
+                # connect loop filed as a launch error (2026-09-22, the refresh review); it also rewrote the spec in place
+                # while the new host could be reading it
+                return await self._await_reexeced_host(sess, lease, was)
             spec_path = ht.host_dir(self.state_dir, sess.sid) / "spawn.json"
             try:
                 spec = json.loads(spec_path.read_text())
@@ -11162,29 +11322,96 @@ class SdkBackend:
             if ans.get("when") == "at-turn-end":
                 self._log("host (%s): re-exec into %s deferred to the turn's end; attaching to the running host meanwhile" % (sess.name, self.code_version))
                 return None
-            holder = (lease or {}).get("holder") or {}
-            deadline = time.time() + ht.SOCKET_WAIT_S
-            fresh = None
-            while time.time() < deadline:                 # loop-ok: a bounded wait on the re-executed host's lease and its listener
-                fresh = read_lease(self.state_dir, sess.sid)
-                fh = (fresh or {}).get("holder") or {}
-                # the new version under the same holder pid AND a listener that accepts: the host serves its socket before it
-                # writes the lease, and the path alone proves nothing (the old process's path can outlive its listener and
-                # refuse every connect; round two of the review: the attach then went into nobody and read as a launch failure)
-                if fresh and str(fresh.get("version") or "") == self.code_version and fh.get("pid") == holder.get("pid") \
-                        and await self._host_socket_accepts(ht.host_sock(self.state_dir, sess.sid)):
-                    self._log("host (%s): re-executed into this kernel's code (%s from %s), the same host pid %s and CLI"
-                              % (sess.name, self.code_version, was or "unknown", fh.get("pid")))
-                    return fresh
-                await asyncio.sleep(0.05)
-            problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s but no re-executed host "
-                        "served within %.0f s; attached as is" % (sess.name, was or "unknown", self.code_version, ht.SOCKET_WAIT_S),
-                        "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
-            sess._host_reexec_from = None
-            return None
+            return await self._await_reexeced_host(sess, lease, was)
         except Exception as e:
             self._log("host (%s): the re-exec request failed (%s); attaching as is" % (sess.name, type(e).__name__))
             return None
+
+    async def _await_reexeced_host(self, sess, lease, was):
+        """The bounded wait for a re-executed host, shared by the `now` answer and the planned reconnect after a turn-end
+        handover (2026-09-22): the fresh lease once it carries this kernel's version under the same holder pid and a listener
+        accepts, else a `host.reexec-failed` row and None (the plain attach). A host that dies before it serves ends the
+        wait at once with no row (2026-09-23, the review of this lane): None, and the connect reads the lease again and
+        takes the orphan road, whose host.died row is the true one. `_host_reexec_wait` tells the connect a wait ran, and
+        `ended` that the host's own log recorded the end while the lease still reads live."""
+        ht = _ht()
+        holder = (lease or {}).get("holder") or {}
+        ident = self._holder_ident(lease)
+        sess._host_reexec_wait = "ran"
+        deadline = time.time() + ht.SOCKET_WAIT_S
+        fresh = None
+        while time.time() < deadline:                 # loop-ok: a bounded wait on the re-executed host's lease and its listener
+            fresh = read_lease(self.state_dir, sess.sid)
+            fh = (fresh or {}).get("holder") or {}
+            # the new version under the same holder pid AND a listener that accepts: the host serves its socket before it
+            # writes the lease, and the path alone proves nothing (the old process's path can outlive its listener and
+            # refuse every connect; round two of the review: the attach then went into nobody and read as a launch failure)
+            if fresh and str(fresh.get("version") or "") == self.code_version and fh.get("pid") == holder.get("pid") \
+                    and await self._host_socket_accepts(ht.host_sock(self.state_dir, sess.sid)):
+                self._log("host (%s): re-executed into this kernel's code (%s from %s), the same host pid %s and CLI"
+                          % (sess.name, self.code_version, was or "unknown", fh.get("pid")))
+                return fresh
+            # the host dying in its start is an event, read as it happens, not a bound waited out: its lease names a holder
+            # other than the one the handover began with (an exec keeps the pid and its start time; a lease gone names no
+            # holder, and one another process took, host or kernel, names that process), or names a CLI or a holder that is
+            # gone, or its own log records the end a moment before the process is gone (2026-09-23, the review of this lane:
+            # the wait ran its whole bound against a dead holder, then filed a false host.reexec-failed row, and the attach
+            # went into nobody). A beat older than LEASE_TTL_S is none of these: no process beats between the old code's
+            # exec and the new code's first lease write, which follows its socket, so a slow start reads stale and is still
+            # starting; it waits toward the bound (2026-09-23, the review of this lane, which saw a live host eleven seconds
+            # into its start sent down the orphan road). Each pass's liveness check reads two process start times, a `ps`
+            # run each on macOS, where there is no /proc.
+            if self._holder_ident(fresh) != ident or lease_state(fresh, time.time()) in ("no-live-process", "holder-gone"):
+                why = "its lease no longer names that live host"
+            else:
+                end = self._reexeced_host_end(sess)
+                why = ("its log records %s" % end) if end else ""
+                if end:
+                    sess._host_reexec_wait = "ended"
+            if why:
+                self._log("host (%s): the re-executed host is gone before it served (%s); the connect takes the lost host's road"
+                          % (sess.name, why))
+                sess._host_reexec_from = None
+                return None
+            await asyncio.sleep(0.05)
+        # the connect decides the road after this row: it reads the lease again and attaches to a live host or recovers a
+        # dead one, so the row says that, not "attached as is" (2026-09-23, the second verify pass of this lane)
+        problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s but no re-executed host "
+                    "served within %.0f s; the connect reads its lease again" % (sess.name, was or "unknown", self.code_version,
+                                                                                ht.SOCKET_WAIT_S),
+                    "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+        sess._host_reexec_from = None
+        return None
+
+    # `host-exited` is not one: the host removes its lease before it writes that row, so the wait's lease check reads the end
+    # first (2026-09-23, the review of this lane, which found listing it changed no road)
+    _HOST_END_LOG_KINDS = frozenset(("cli-adopt-failed", "host-crashed"))
+
+    def _reexeced_host_end(self, sess) -> str:
+        """The end the host's own log records for the process now serving it, or "": the log's newest line, when it is an end
+        row. A re-executed host whose adopt fails writes `cli-adopt-failed` and exits at once; one whose run raises (its
+        socket not served, say) writes `host-crashed` from its main and exits. A process writes nothing after its end row,
+        and the kernel clears a host's directory before it starts another there (the orphan and leftover roads), so an end
+        row is the log's newest line unless a clearing failed and another process wrote there since, whose rows then come
+        after it: either way the newest line decides alone. That replaced a scan back to the latest `reexec` or
+        `host-started` row, whose two stops, whose choice among ends, whose partial first line and whose handling of a tail
+        with no start row changed no answer (2026-09-23, the review of this lane: a mutant of each passed every test). A
+        line still being written does not parse and reads as no end, as does an unreadable log: the next pass reads again,
+        and the lease check beside this one stands on its own (2026-09-23, the review of this lane)."""
+        p = _ht().host_dir(self.state_dir, sess.sid) / "host.log"
+        try:
+            with open(p, "rb") as f:
+                size = f.seek(0, os.SEEK_END)
+                f.seek(max(0, size - 8192))             # an end row is short: the kind, an exception's name, a place
+                lines = f.read().decode("utf-8", "replace").splitlines()
+        except OSError:
+            return ""
+        try:
+            row = json.loads(lines[-1]) if lines else None
+        except ValueError:
+            return ""
+        kind = row.get("kind") if isinstance(row, dict) else None
+        return kind if kind in self._HOST_END_LOG_KINDS else ""
 
     @staticmethod
     async def _host_socket_accepts(sock) -> bool:
@@ -11203,20 +11430,78 @@ class SdkBackend:
     def _on_host_reexec_now(self, sess) -> None:
         """The host says it is about to exec into this kernel's code and close the socket: the stream's end that follows is
         the planned handover, so the session reconnects (the same lease, the new version) instead of reading a lost host.
-        `_reconnect` is the whole of the guard: the connect loop's next pass finds the lease valid under the same holder and
-        attaches (round two of the review dropped a flag that was written here and read nowhere)."""
+        The connect loop's next pass finds the lease valid under the same holder, and `_host_reexec_closed` makes its
+        _host_reexec_on_skew wait for the re-executed host before the attach: that host takes a few hundred milliseconds
+        to serve and rewrite the lease, and a pass that ran at once found the old version and a closed listener
+        (2026-09-22, the refresh review)."""
         sess._reconnect = True
+        sess._host_reexec_closed = True
         self._log("host (%s): re-exec at the turn's end; reconnecting to the re-executed host" % sess.name)
+
+    def _on_host_socket_lost(self, sess, t) -> None:
+        """The host's socket ended without this kernel asking (the transport's `on_lost`). With a handover the host accepted
+        still standing (`_host_reexec_from`), the host's process alive under its lease (an exec keeps the pid and its start
+        time) and the host's own log recording the exec since this kernel's attach, this is that handover with its
+        `reexec-now` frame never read: the kernel's own write at the same result (the context refresh, an ack) hit the
+        closed socket first, and asyncio's failed write closes the whole connection with the frame still unread. So the
+        planned reconnect, as the frame would have made it. Anything else is the lost host it reads as (2026-09-22, the
+        refresh review, which saw every such handover on a real kernel refresh end as a lost host)."""
+        try:
+            if getattr(sess, "_host_reexec_closed", False) or getattr(sess, "_host_reexec_from", None) is None:
+                return                  # the frame arrived (its reconnect is armed), or no handover stands
+            h = ((getattr(t, "hello", None) or {}).get("host") or {})
+            lease = read_lease(self.state_dir, sess.sid)
+            if _ht().host_lease_state(lease, time.time()) != "attach" or self._holder_ident(lease) != "%s:%s" % (h.get("pid"), h.get("start")):
+                return                  # the host is gone, or the lease names another: a lost host
+            if not self._host_logged_exec(sess, t):
+                # the host lives on its old code (a deferral, a failure, a fault on this connection): a lost host
+                self._log("host (%s): the socket closed under an accepted handover that the host's log does not show run; "
+                          "read as a lost host" % sess.name)
+                return
+            self._log("host (%s): the socket closed under the accepted handover, its reexec-now frame unread; the host's log "
+                      "records the exec" % sess.name)
+            self._on_host_reexec_now(sess)
+        except Exception as e:
+            self._log("host (%s): the lost socket's handover check failed (%s); read as a lost host" % (sess.name, type(e).__name__))
+
+    _REEXEC_LOG_KINDS = frozenset(("reexec", "reexeced", "reexec-deferred", "reexec-failed", "cli-adopt-failed"))
+
+    def _host_logged_exec(self, sess, t) -> bool:
+        """Whether the host's own log records its exec since `t`'s attach: after the last `attached` line naming this
+        kernel, the latest re-exec line is `reexec` (written just before the exec) or `reexeced` (the new code serving).
+        A deferral (`reexec-deferred`: the exec waits for the next result), a failure, or no line at all is not the exec.
+        The log, not a result having arrived, because the host defers past a result when output arrives or this kernel
+        is behind on its socket, and a socket lost in that window is no handover (2026-09-22, the refresh review)."""
+        p = _ht().host_dir(self.state_dir, sess.sid) / "host.log"
+        try:
+            lines = p.read_text().splitlines()
+        except OSError as e:
+            self._log("host (%s): the host's log could not be read (%s); no exec to go on" % (sess.name, type(e).__name__), problem=True)
+            return False
+        me = (getattr(t, "kernel", None) or {}).get("pid")
+        latest = None
+        for ln in reversed(lines):
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                continue
+            kind = row.get("kind") if isinstance(row, dict) else None
+            if kind == "attached":
+                return row.get("kernelPid") == me and latest in ("reexec", "reexeced")
+            if latest is None and kind in self._REEXEC_LOG_KINDS:
+                latest = kind
+        return False
 
     def _spawn_host(self, sess, spec_path):
         """Start bin/romp-session-host detached: in a transient scope of its own on Linux when scopes are on
-        (outside the service cgroup, like the CLI's), a plain new-session child elsewhere."""
+        (outside the service cgroup, like the CLI's), a plain new-session child elsewhere. The scope's Description carries
+        this kernel's state tag, the proof the boot's host-scope sweep asks for before it stops the unit (state_tag_of)."""
         ht = _ht()
         launcher = str(Path(__file__).resolve().parent.parent / "bin" / "romp-session-host")
         argv = [sys.executable, launcher, str(spec_path)]
         if self.cli_scope and shutil.which("systemd-run"):
             argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit=" + ht.host_scope_unit(sess.sid),
-                    "--description=romp session host %s" % sess.sid] + argv
+                    "--description=romp session host %s %s%s" % (sess.sid, STATE_TAG_WORD, state_tag_of(self.state_dir))] + argv
         errlog = open(str(Path(spec_path).parent / "host.stderr"), "ab")
         return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errlog,
                                 start_new_session=True, close_fds=True)
@@ -11496,9 +11781,11 @@ class SdkBackend:
         under it — each descendant's own process group where it leads one (a setsid child), else the
         process; children before the CLI, SIGTERM first, SIGKILL after TREE_KILL_GRACE for whatever
         stayed. Nothing outside the tree is signaled: this kernel's own group is never a target, and a
-        group is signaled only when a descendant of THIS CLI leads it. `kill`, `run` and `cgroup` are
-        the test seams, resolved at call time so a patched os.kill / subprocess.run is honoured. Returns
-        what happened, for the reconcile's log line."""
+        group is signaled only when a descendant of THIS CLI leads it. Inside it, the postal bus's serve
+        in the bus's own scope is spared and logged (2026-09-23, the comment above
+        SESSION_SCOPE_PREFIX). `kill`, `run` and `cgroup` are the test seams, resolved at call time so
+        a patched os.kill / subprocess.run is honored. Returns what happened, for the reconcile's log
+        line."""
         kill = kill or os.kill
         run = run or subprocess.run
         cgroup = cgroup or _read_cgroup
@@ -11533,7 +11820,25 @@ class SdkBackend:
             own_pg = os.getpgid(0)
         except OSError:
             pass
-        targets = [p for p in descendants(ps_lines, pid) if p != os.getpid()] + [pid]
+        tree = [p for p in descendants(ps_lines, pid) if p != os.getpid()]
+        # the machine's postal bus, in its own scope and running its serve, is spared (the comment above
+        # SESSION_SCOPE_PREFIX); its cgroup is read now, after the CLI's scope stop, through the same seam
+        commands = {}
+        for ln in ps_lines:
+            parts = ln.strip().split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit():
+                commands[int(parts[0])] = parts[2]
+        spared = []
+        for p in tree:
+            bus = bus_scope_unit_of(cgroup(p) or "")
+            if bus and _is_postal_bus_serve(commands.get(p, "")):
+                spared.append(p)
+                self._log("cut-turn reap: pid %d under the orphaned CLI %d runs in %s, the postal bus's own scope; "
+                          "spared, since every session shares the bus" % (p, pid, bus))
+            elif bus:
+                self._log("cut-turn reap: pid %d under the orphaned CLI %d runs in %s, the postal bus's scope, but is "
+                          "not the bus's serve (%s); signaled with the rest" % (p, pid, bus, commands.get(p, "?")[:120]))
+        targets = [p for p in tree if p not in spared] + [pid]
         # a pid reused by an unrelated process between the ps snapshot and a signal must not be hit: remember
         # each target's start time (procfs) and skip any whose identity changed; no procfs → no such check
         born = {p: _read_starttime(p) for p in targets}
@@ -11565,9 +11870,22 @@ class SdkBackend:
         while now() < deadline and any(alive(p) for p in targets):
             sleep(0.05)
         forced = signal_all(signal.SIGKILL, True) if any(alive(p) for p in targets) else 0
-        return {"scope": unit if stopped else None, "signaled": signaled, "forced": forced, "tree": len(targets) - 1}
+        return {"scope": unit if stopped else None, "signaled": signaled, "forced": forced, "tree": len(targets) - 1,
+                "spared": len(spared)}
 
-    def _stop_leftover_scopes(self, lastsids: list[str], run=None, owned=()) -> int:
+    def _log_left_alone(self, items) -> None:
+        """ONE log line naming everything a boot reap left alone because this kernel cannot prove it started it
+        (state_tag_of): `items` are (name, tag) pairs, tag None for no tag at all. Nothing to name, no line."""
+        if not items:
+            return
+        said = ", ".join("%s (%s)" % (name, ("state tag %s, another kernel's" % tag) if tag else "no state tag")
+                         for name, tag in items)
+        self._log("boot reconcile: left alone %d process(es) and unit(s) on this kernel's session ids that it cannot "
+                  "prove it started (its own state tag is %s): %s; each stays until it exits or is stopped by hand "
+                  "(systemctl --user stop <unit> for a scope, kill <pid> for a claude process)"
+                  % (len(items), state_tag_of(self.state_dir), said))
+
+    def _stop_leftover_scopes(self, lastsids: list[str], run=None, owned=(), left=None) -> int:
         """Stop the session scopes of OUR sessions whose CLI is not OWNED — `owned` is lease_census's
         set of owned pids (a valid lease, or a live kernel's child; T305) — and not a live child of this
         kernel (T276):
@@ -11575,7 +11893,11 @@ class SdkBackend:
         pid-only reap left behind once their shells had died and re-parented. Every process in the
         scope belongs to that session by construction. A unit whose pid is this kernel's own child
         (a session already started before this sweep) is left alone. No systemctl (macOS, a box without
-        the user manager) → nothing to sweep. `run` is the test seam, resolved at call time."""
+        the user manager) → nothing to sweep. `run` is the test seam, resolved at call time.
+        A unit is stopped only when its Description carries THIS kernel's state tag (state_tag_of, 2026-09-23): the
+        listing is machine-wide and a session id is not a kernel's, so a unit with another kernel's tag, or none, is
+        left alone and named, on the caller's line when `left` is a list (the boot's, which names spared CLIs on the
+        same line), else on one line of this sweep's own."""
         run = run or subprocess.run
         try:
             listing = run(SCOPE_LIST_ARGV, capture_output=True, text=True, timeout=10).stdout or ""
@@ -11584,12 +11906,18 @@ class SdkBackend:
         except Exception as e:
             self._log("cut-turn reap: listing session scopes failed: %s" % e)
             return 0
+        own = state_tag_of(self.state_dir)
+        spared = [] if left is None else left
+        tags = unit_state_tags(listing.splitlines())
         stopped = 0
         for unit in session_scope_units(listing.splitlines(), lastsids):
             sp = scope_pid(unit)
             if sp is not None and (sp in owned or sp == os.getpid()
                                    or (self._pid_alive(sp) and _read_ppid(sp) == os.getpid())):
                 continue            # an owned CLI's scope, or this kernel's live session
+            if tags.get(unit) != own:
+                spared.append((unit, tags.get(unit)))   # not provably this kernel's: another kernel's, or an older build's
+                continue
             try:
                 run(["systemctl", "--user", "stop", unit], capture_output=True, text=True, timeout=SCOPE_STOP_TIMEOUT)
                 stopped += 1
@@ -11602,7 +11930,8 @@ class SdkBackend:
             except Exception as e:
                 self._log("cut-turn reap: stopping leftover %s failed: %s" % (unit, e))
         # T315: a host's own scope (romp-host-<sid8>-<t>) outlives its host when the host died; stop those
-        # whose session has no VALID lease (a live host's lease is valid, so its scope stays)
+        # whose session has no VALID lease (a live host's lease is valid, so its scope stays) and that carry this
+        # kernel's state tag (a lease in this directory says nothing about another kernel's host of the same id)
         try:
             hl = run(HOST_SCOPE_LIST_ARGV, capture_output=True, text=True, timeout=10).stdout
         except Exception:
@@ -11610,15 +11939,21 @@ class SdkBackend:
         if isinstance(hl, str) and hl.strip():
             now = time.time()
             leases = {str(l.get("sid")): l for l in list_leases(self.state_dir)}
+            htags = unit_state_tags(hl.splitlines())
             for unit, sid8 in _ht().host_scope_units(hl.splitlines(), list(lastsids) + list(leases)).items():
                 lease = next((l for s, l in leases.items() if s[:8].lower() == sid8), None)
                 if lease is not None and lease_state(lease, now) == "valid":
+                    continue
+                if htags.get(unit) != own:
+                    spared.append((unit, htags.get(unit)))
                     continue
                 try:
                     run(["systemctl", "--user", "stop", unit], capture_output=True, text=True, timeout=SCOPE_STOP_TIMEOUT)
                     stopped += 1
                 except Exception as e:
                     self._log("cut-turn reap: stopping leftover host scope %s failed: %s" % (unit, e))
+        if left is None:
+            self._log_left_alone(spared)
         return stopped
 
     def _boot_reconcile(self, regs: list[dict]) -> None:
@@ -11626,7 +11961,9 @@ class SdkBackend:
         on the boot itself plus each session's state tail, never on ages or timers:
           * REAP orphaned SDK CLIs still resuming our sessions: a dead kernel's children re-parent
             (to launchd on macOS, to the `systemd --user` subreaper on Linux) and keep writing the
-            transcript, so a resume would give the conversation two writers.
+            transcript, so a resume would give the conversation two writers. Only an orphan carrying
+            this kernel's state tag is ended; one the tag check spares keeps its conversation, and
+            that session is not resumed by this boot (the guard in the per-session loop below).
           * A session whose state tail is 'working' had its turn CUT by the kernel death — a user
             interrupt writes 'idle', a finished turn 'waiting'; only a kill leaves 'working' — so resume
             it with a visible continuation nudge (BOOT_RESUME_NUDGE) ahead of its restored queue. The
@@ -11651,6 +11988,10 @@ class SdkBackend:
             scopes_stopped = 0
             lastsids = [str(r.get("lastSid") or "") for r in alive if r.get("lastSid")]
             by_fsid = {str(r.get("lastSid")): r for r in alive if r.get("lastSid")}   # conversation id -> its reg
+            # conversation ids a SPARED orphan still holds (the tag check below): their sessions are not resumed by
+            # this boot, whatever their state tail says, or the resume would put a second CLI on a transcript a process
+            # of another kernel's is still writing, two writers on one conversation. Empty when nothing is spared
+            spared_fsids: set[str] = set()
             if lastsids:
                 try:
                     ps = subprocess.run(PS_ARGV, capture_output=True, text=True, timeout=10).stdout
@@ -11666,16 +12007,35 @@ class SdkBackend:
                         r0 = by_fsid.get(fsid) or {}
                         problem_row(self.state_dir,
                                     "boot: %d claude processes were holding session %s's conversation at once "
-                                    "(pids %s); the orphans are being ended" % (len(pids), r0.get("name") or fsid[:8],
-                                                                                 ", ".join(str(p) for p in pids)),
+                                    "(pids %s); the orphans this kernel started are being ended, any other kernel's "
+                                    "stays and is named below" % (len(pids), r0.get("name") or fsid[:8],
+                                                                       ", ".join(str(p) for p in pids)),
                                     "reconcile.duplicate-cli", log=self._log, sid=r0.get("sid"), name=r0.get("name"),
                                     fsid=fsid, pids=",".join(str(p) for p in pids), n=len(pids))
                     # Ownership by lease (T305): a CLI with a valid lease is owned whatever its parent; every
                     # anomaly is a problem row (lease_census documents the rules and the kinds)
                     leases = list_leases(self.state_dir)
                     census = lease_census(ps_lines, lastsids, os.getpid(), leases, version=self.code_version)
+                    # Only what this kernel can PROVE it started is reaped (state_tag_of, 2026-09-23): the listing is
+                    # machine-wide and a session id is not a kernel's, so an orphan by the census's rules whose
+                    # environment carries another kernel's tag, or none, is left alone, its scope with it, and named on
+                    # the boot's one left-alone line; the census's rows saying it was reaped are not filed, since it was not
+                    own_tag = state_tag_of(self.state_dir)
+                    left: list = []
+                    orphans = []
+                    for pid in census["orphans"]:
+                        if pid == os.getpid():
+                            continue
+                        tag = proc_state_tag(pid)
+                        if tag == own_tag:
+                            orphans.append(pid)
+                        else:
+                            left.append(("claude pid %d" % pid, tag))
+                    spared = {pid for pid in census["orphans"] if pid not in orphans and pid != os.getpid()}
+                    spared_fsids.update(s for s in (cli_sid_of(cmd_of.get(pid, ""), lastsids) for pid in spared) if s)
+                    problems = [p for p in census["problems"] if p.get("cliPid") not in spared]
                     sid_of = {str(r.get("lastSid")): str(r.get("sid")) for r in alive if r.get("lastSid")}
-                    for prob in census["problems"]:
+                    for prob in problems:
                         self._lease_problem(prob, sid_of)
                     lease_by_pid = {}
                     for lease in leases:
@@ -11683,9 +12043,7 @@ class SdkBackend:
                             lease_by_pid.setdefault(int(lease.get("pid")), lease)
                         except (TypeError, ValueError):
                             pass
-                    for pid in census["orphans"]:
-                        if pid == os.getpid():
-                            continue
+                    for pid in orphans:
                         # the CLI AND its tree (T276): its scope unit, then every process still under it
                         try:
                             res = self._end_cli_tree(pid, ps_lines)
@@ -11707,12 +12065,14 @@ class SdkBackend:
                             remove_lease(self.state_dir, lease_by_pid[pid]["sid"])
                     for sid in census["dead_leases"]:      # a lease naming no live CLI is nobody's claim
                         remove_lease(self.state_dir, sid)
-                    # …and the scopes whose CLI already died but whose children live on (an owned CLI's stays)
-                    scopes_stopped = self._stop_leftover_scopes(lastsids, owned=set(census["owned"]))
-                    if census["owned"] or census["problems"]:
+                    # …and the scopes whose CLI already died but whose children live on (an owned CLI's stays, and so
+                    # does a spared one's: left alone means its whole cgroup)
+                    scopes_stopped = self._stop_leftover_scopes(lastsids, owned=set(census["owned"]) | spared, left=left)
+                    self._log_left_alone(left)
+                    if census["owned"] or problems:
                         by_lease = sum(1 for why in census["owned"].values() if why == "lease")
                         self._log("boot reconcile: %d CLI(s) owned (%d by lease), %d lease anomaly(ies) filed"
-                                  % (len(census["owned"]), by_lease, len(census["problems"])))
+                                  % (len(census["owned"]), by_lease, len(problems)))
                 except Exception:
                     self._log("boot reconcile: orphan reap failed: %s" % traceback.format_exc())
             resumed, restored, notified = 0, 0, 0
@@ -11746,6 +12106,17 @@ class SdkBackend:
                     # heals the same way for ones that respawn.
                     if r.get("effortPending") or r.get("modelPending"):
                         self._update_reg(sid, effortPending=False, modelPending=False)
+                    if str(r.get("lastSid") or "") in spared_fsids:
+                        # A claude process this kernel did not start (another kernel's state tag, or none) still holds
+                        # this session's conversation: the reap above spared it and named it on its left-alone line.
+                        # Before the state tag the orphan was ended first, so the resume below was safe; now a resume
+                        # would spawn a second CLI with --resume on the same transcript, two writers on one
+                        # conversation, the hazard the reap exists to prevent. So the session stays down: no resume
+                        # nudge, no machine-cut stamp, no spawn. Its cut tail, queue, dead tasks and pending ask stay on
+                        # disk for the boot that finds the conversation free.
+                        self._log("boot reconcile: %s stays down: a claude process this kernel did not start still holds "
+                                  "its conversation (the process is named above)" % (r.get("name") or sid[:8]))
+                        continue
                     queued = [t for t in (r.get("queue") or []) if isinstance(t, str) and t]
                     if _ht().host_lease_state(read_lease(self.state_dir, sid), time.time()) == "attach":
                         if self._attach_stand_down_holds(sid, r):
@@ -12308,7 +12679,7 @@ class SdkBackend:
     DRAIN_HOLD_TTL = 12.0     # seconds; ~4 manager polls — the lease outlives a missed poll, not a dead manager
     DRAIN_LOUD_S = 300.0      # a drain still holding after 5 min rings — visible, never mysterious
 
-    def note_parked_poll(self, park: str) -> None:
+    def note_parked_poll(self, park: str, counts=None) -> None:
         """A parked quiet poll carrying the manager's park identity (T240c). The EPISODE — the one
         "deploy restart parked" line and the 5-minute "still parked" ring — keys on that identity, never
         on a time window: the manager drops the hold for minutes at a time during background-only
@@ -12317,8 +12688,9 @@ class SdkBackend:
         after its first line. A plain parked poll now starts, continues and rings the episode too.
         An empty identity is a no-op (nothing to key on), and one BELOW the current identity is a
         stale probe from a park the manager has since replaced — ignored rather than flipping the
-        episode back and forth (review find: handler threads take the lock in no fixed order)."""
-        self._park_seen(str(park or ""), time.time())
+        episode back and forth (review find: handler threads take the lock in no fixed order).
+        `counts` is what the kernel's /busy answered for this poll (see _park_counts)."""
+        self._park_seen(str(park or ""), time.time(), counts)
 
     @staticmethod
     def _park_ord(park):
@@ -12327,7 +12699,20 @@ class SdkBackend:
         except (TypeError, ValueError):
             return None
 
-    def _park_seen(self, park: str, now: float) -> None:
+    def _park_counts(self, counts) -> str:
+        """The counts a park line reports, in words (2026-09-23, the review of this lane): `counts` is
+        (in flight, background, Codex) as the kernel's /busy answered them, and this backend's own
+        breakdown, with no Codex count, when a caller passes none (a direct caller, a test). Recounted
+        here always, a park held by a Codex turn alone would read "0 in-flight turn(s), 0 session(s)
+        with background work" and ring those zeros at 5 minutes as a problem naming nothing to wait on.
+        Codex turns are named apart because the drain hold pauses Claude sessions only."""
+        inflight, background, codex = counts if counts is not None else self.busy_breakdown() + (0,)
+        if codex:
+            return ("%d in-flight turn(s) (%d Claude, %d Codex), %d session(s) with background work"
+                    % (inflight + codex, inflight, codex, background))
+        return "%d in-flight turn(s), %d session(s) with background work" % (inflight, background)
+
+    def _park_seen(self, park: str, now: float, counts=None) -> None:
         if not park:
             return
         with self._lock:
@@ -12344,22 +12729,26 @@ class SdkBackend:
             if ring:
                 self._drain_hold_rang = True
         if new_episode:
-            self._log("deploy restart parked: draining — %d in-flight turn(s), %d session(s) with background "
-                      "work; new turn starts hold while a turn is in flight (queued prompts persist and "
-                      "start after the bounce)" % self.busy_breakdown())
+            self._log("deploy restart parked: draining — %s; new Claude turn starts hold while a Claude "
+                      "turn is in flight (queued prompts persist and start after the bounce)"
+                      % self._park_counts(counts))
         elif ring:
-            self._log("deploy restart still parked after %d min — %d in-flight turn(s), %d session(s) with "
-                      "background work have not finished (the manager's backstop will apply the restart "
-                      "regardless)" % ((int((now - self._drain_hold_since) / 60),) + self.busy_breakdown()),
-                      problem=True)
+            self._log("deploy restart still parked after %d min — %s have not finished (the manager's "
+                      "backstop will apply the restart regardless)"
+                      % (int((now - self._drain_hold_since) / 60), self._park_counts(counts)), problem=True)
 
-    def refresh_drain_hold(self, park: str | None = None) -> None:
+    def refresh_drain_hold(self, park: str | None = None, counts=None) -> None:
         """Arm/extend the drain lease (the manager's parked quiet poll calls this each tick). With a
         park identity the episode bookkeeping is _park_seen's (no time window); without one — an
-        older manager — the 2×TTL flap window below stands in for it."""
+        older manager — the 2×TTL flap window below stands in for it. `counts` is what the kernel's
+        /busy answered for this poll (see _park_counts)."""
         now = time.time()
         if park:
-            self._park_seen(str(park), now)
+            # the counts ride this path too (2026-09-23, the review of this lane): through the route
+            # note_parked_poll has already seen this park with the same counts, but the 5-minute ring
+            # lands here when the bound passes between the two calls, and a direct caller starts the
+            # episode here; recounted, either line would read a Codex-only park as nothing in flight
+            self._park_seen(str(park), now, counts)
         with self._lock:
             first = self._drain_hold_until <= now
             # a NEW episode, not a flap (the legacy, no-park path): the manager drops the hold during
@@ -12385,16 +12774,14 @@ class SdkBackend:
             t.cancel()
         nt.start()
         if new_episode:
-            self._log("deploy restart parked: draining — %d in-flight turn(s), %d session(s) with background "
-                      "work; new turn starts held until this box quiets (queued prompts persist and "
-                      "start after the bounce)" % self.busy_breakdown())
+            self._log("deploy restart parked: draining — %s; new Claude turn starts held until this box "
+                      "quiets (queued prompts persist and start after the bounce)" % self._park_counts(counts))
         elif not park and now - self._drain_hold_since > self.DRAIN_LOUD_S and not self._drain_hold_rang:
             with self._lock:
                 self._drain_hold_rang = True
-            self._log("deploy restart still parked after %d min — %d in-flight turn(s), %d session(s) with "
-                      "background work have not finished; new turn starts remain held (the manager's "
-                      "backstop will apply the restart regardless)"
-                      % ((int((now - self._drain_hold_since) / 60),) + self.busy_breakdown()), problem=True)
+            self._log("deploy restart still parked after %d min — %s have not finished; new Claude turn "
+                      "starts remain held (the manager's backstop will apply the restart regardless)"
+                      % (int((now - self._drain_hold_since) / 60), self._park_counts(counts)), problem=True)
 
     def drain_holding(self) -> bool:
         """Whether new turn starts are currently held for a parked deploy restart."""
@@ -13170,8 +13557,11 @@ class SdkBackend:
             # a generic identity surface, deliberately coupled to no consumer. Env is spawn-frozen, so
             # a rename after spawn is NOT reflected here — the sid stays the stable identity; the name
             # is a spawn-time label, right for attribution and logging, wrong for addressing.
+            # STATE_TAG_ENV names the kernel that started the CLI, so a boot reaps only its own (state_tag_of); set
+            # here, over whatever the kernel inherited, since a kernel started from a session's shell carries that
+            # session's kernel's tag in its own environment.
             env={**_bin_on_path_env(os.environ), "ROMP_SID": str(sess.sid),
-                 "ROMP_SESSION_NAME": str(sess.name)},
+                 "ROMP_SESSION_NAME": str(sess.name), STATE_TAG_ENV: state_tag_of(self.state_dir)},
             # Registering this is what makes the CLI's stderr EXIST for romp at all: the SDK transport
             # pipes the child's stderr only when options.stderr is set (otherwise it hands the child
             # our own stderr and reports SDK_STDERR_PLACEHOLDER on failure). Without it, a CLI that
@@ -16598,7 +16988,9 @@ class SdkBackend:
 
     def _push_session(self, sid: str) -> None:
         """Targeted one-session push (kernel _push_session_now), for per-session events the chat chip
-        keys on — today the connect handshake, the exact flip the opening chip stands down on. THREADED:
+        keys on. NO CALLER in this backend since 2026-09-23: the connect handshake, its last one, names its
+        sid to the one pusher cycle (_push_soon) like the queue pop, because a whole-session build beside the
+        cycle's raced it to the page; tests/test_chat_resync_kernel.py refuses a new caller. THREADED:
         the callback builds and serializes that session's payload, which must never run on the session's
         asyncio loop thread (it would stall the stream it is reporting on). Falls back to the plain
         pusher wake when the kernel didn't wire the callback (older kernel / tests)."""
@@ -16611,6 +17003,29 @@ class SdkBackend:
             except Exception as e:
                 self._log("session push (%s) failed: %s" % (sid, e))
         threading.Thread(target=run, name="sdk-push-session", daemon=True).start()
+
+    def _push_soon(self, sid: str) -> None:
+        """Name `sid` to the kernel's ONE pusher cycle (kernel _push_session_soon, 2026-09-23).
+
+        For a per-session event that fires WHILE that session's transcript is being written — the queue pop, where
+        the CLI takes the message and writes its record in the same breath. _push_session above would build a whole
+        chat frame here on a thread of its own, from its own transcript read, racing the cycle's: the two lists
+        reached a client in either order and the older one took the just-landed row off the page (the user
+        2026-09-22; the builder was added by 66486701 for the `handed` flip alone). This names the sid and wakes the
+        one cycle instead. The named session builds at the front of that cycle's next build slot, an in-flight cycle
+        included (its build loop re-reads the names before every tab), so the flip waits at most one tab's build; in
+        the worst case, a name landing after the loop's last read, it waits out the feed and timeline sections and the
+        next cycle's prelude. Either way no second list of the same session exists to be ordered. NOT threaded: the
+        callback is a set add and an Event set, so it cannot stall the session's asyncio loop. Falls back to the plain
+        pusher wake when the kernel didn't wire it (an older kernel, a test), so the frame still goes."""
+        if not self._push_soon_cb:
+            self._wake_push()
+            return
+        try:
+            self._push_soon_cb(sid)
+        except Exception as e:
+            self._log("session push-soon (%s) failed: %s" % (sid, e))
+            self._wake_push()   # the ask never reached the cycle: the plain wake still gets the frame out
 
     def _touch_live(self, sid: str) -> None:
         """Record that `sid`'s live tail changed: advance its revision (`_live_rev[sid]`), the integer the
@@ -16820,6 +17235,11 @@ class SdkBackend:
         killed process). Left in place it is merged forever, and its live_work forces the turn open —
         the chat chip read WORKING with a 3h20m timer on a session whose turn died in a usage-limit
         retry storm, while the timeline lane said READY (the user 2026-07-03).
+
+        Dropping an atom whose record the CLI has written is safe for every chat build (2026-09-23): build_session
+        snapshots this tail BEFORE it parses the transcript, so a build that misses the atom parses the file after this
+        retire, and the record with it. The settle runs once the CLI has written what the turn keeps (the orphan
+        salvage below reads those records at this moment), which is what the drop relies on.
 
         Three phases around the live-tail lock: the work atoms are snapshotted under it, the orphan
         salvage's I/O (a transcript tail read, the marker append) runs outside it, and the pops go

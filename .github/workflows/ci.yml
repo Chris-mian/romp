@@ -239,8 +239,14 @@ jobs:
     # names its slowest labs (--durations=20) so the next growth is visible in the log. The labs kept
     # growing: PR 1790's run 35138058863 was cancelled at 25 min 04 s mid served-lab on a slow runner,
     # every step green up to the cut (2026-09-16). 40 min: the served step's 20-odd minutes on a slow
-    # runner plus the 600 s per-test timeout plus setup.
-    timeout-minutes: 40
+    # runner plus the 600 s per-test timeout plus setup. The labs kept growing again: measured from the
+    # Actions API on 2026-09-23, the job took 36.2 to 36.7 min on each of main's last five merge commits
+    # (d56e9380, 0534ac86, ad70c3f6, 9b8e03d0, c1dae566), and PR 2061's run 35821212036, which adds one
+    # served lab, was CANCELLED at 40 min 15 s inside the served step at 05:56 UTC with every earlier step
+    # green. 60 min: the served step's 30-odd minutes plus the 600 s per-test timeout plus setup, with
+    # margin; the served labs in a job of their own, so both halves run in parallel under the cap, is the
+    # next step and changes the required-checks list, so it is a separate decision.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: vscode-extension
