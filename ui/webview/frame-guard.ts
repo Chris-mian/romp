@@ -51,21 +51,54 @@ export function frameOlder(held: FrameWm | null | undefined, frame: FrameWm | nu
   return typeof la === "number" && typeof lb === "number" && Number.isInteger(la) && Number.isInteger(lb) && la < lb;
 }
 
+/** A RECONNECT forgets the watermarks the page holds (2026-09-23). The kernel's live-tail revision is a per-process counter
+ *  (sdk_backend.py _live_rev, read by live_rev as 0 for a sid it has not touched), so after a kernel restart with the dashboard
+ *  open every held session whose transcript and states file have not moved is served frames with the same leaf, the same tx
+ *  rows and live 0, which frameOlder reads as older than the held revision (say 57): the connect push's full and every frame
+ *  after it would be ignored and filed frame-stale until that session's files moved. The kernel's own rule resets a client's
+ *  base on reconnect (kernel.py _client_reset_chat_base: a client holding no floor takes any build); this is the page's twin,
+ *  called from the three reconnect-class events render.ts sees: the shim's {type:"wsup"} frame (the local socket, every host,
+ *  as the kernel-side reset at that socket's ready spans every base), the relay's reopen (romp:hostRelayUp, that host's sids
+ *  only) and the extension pane's pipeState up edge (the pane never sees wsup). `ofHost` narrows the reset to the sids it
+ *  admits; null forgets every held one. Forgetting is the safe error: a frame the guard would have refused rides in, and the
+ *  kernel's own senders still order the sends. Returns the sids forgotten, in the map's order. */
+export function forgetHeldWm<S extends { wm?: FrameWm }>(held: Iterable<[string, S]>, ofHost: ((sid: string) => boolean) | null): string[] {
+  const out: string[] = [];
+  for (const [sid, s] of held) {
+    if (!s || s.wm === undefined) continue;
+    if (ofHost && !ofHost(sid)) continue;
+    delete s.wm;
+    out.push(sid);
+  }
+  return out;
+}
+
 /** The slice of a chat event this module reads (render.ts's ChatEvent is a superset). */
 export type GuardEvent = { kind?: string; uuid?: string; key?: string; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean;
                            undelivered?: boolean; source?: unknown; hiddenByPending?: boolean };
 
-const isEcho = (u: string | undefined): boolean => !!u && u.startsWith("echo:");
+/** The kernel's TRANSIENT live-tail keys (kernel.py _TRANSIENT_KEY_PREFIXES; frame-guard.test.ts pins the two lists equal): the
+ *  SDK send's input echo `echo:<qid>`, the Codex send's echo `echo-<hex>` (codex_backend.py CodexBackend.send) and the /model,
+ *  /effort, /auth and Codex /clear acknowledgement chip `cmd:<t>:<name>` (sdk_backend.py _ack_cmd_chip). build_session emits all
+ *  three as human user events, and each retires routinely (an echo once its text is in the transcript, a chip when its gesture
+ *  lands), so none is a landed turn: a frame that no longer carries one drops nothing. Before 2026-09-23 only `echo:` was
+ *  excluded, and every retiring Codex echo and every chip filed a false frame-drops-landed row. */
+export const TRANSIENT_KEY_PREFIXES = ["echo:", "echo-", "cmd:"] as const;
+export function isTransient(u: string | undefined): boolean {
+  if (!u) return false;
+  for (const p of TRANSIENT_KEY_PREFIXES) if (u.startsWith(p)) return true;
+  return false;
+}
 const isOptimistic = (u: string | undefined): boolean => !!u && (u.startsWith("optimistic:") || u.startsWith("held:"));
 
-/** A LANDED HUMAN turn: a user event the transcript recorded (a uuid that is neither the kernel's echo nor the page's own
- *  injection), typed by the person (not romp's nudge, notice or system line, not a harness-injected record), not a
+/** A LANDED HUMAN turn: a user event the transcript recorded (a uuid that is neither one of the kernel's transient live-tail
+ *  keys nor the page's own injection), typed by the person (not romp's nudge, notice or system line, not a harness-injected record), not a
  *  never-delivered verdict. Keyed by its uuid. */
 export function landedHumanKeys(events: readonly GuardEvent[] | null | undefined): string[] {
   const out: string[] = [];
   for (const e of events || []) {
     if (!e || e.kind !== "user" || typeof e.uuid !== "string" || !e.uuid) continue;
-    if (isEcho(e.uuid) || isOptimistic(e.uuid) || e.undelivered || e.romp || e.rompAuto || e.rompSystem || e.source) continue;
+    if (isTransient(e.uuid) || isOptimistic(e.uuid) || e.undelivered || e.romp || e.rompAuto || e.rompSystem || e.source) continue;
     out.push(e.uuid);
   }
   return out;

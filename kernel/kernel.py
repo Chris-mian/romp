@@ -50749,8 +50749,13 @@ def _chat_wm(leaf, parsed, live_rev):
     a rewind mints a new file: two leaves never compare). `tx`: the parse's fileset key, the [mtime, size] row of every
     file the parse read, taken BEFORE the read (jd.parsed_session, stamped on the tree by _parse as `_txKey`), so the
     content is at least as new as the rows say; None when the parse could not be keyed. `live`: the live tail's revision
-    read before the merge (Sessions.live_rev), an int for the SDK backend; a backend without a counter answers a string,
-    which the compare treats as unordered. The user (2026-09-22) watched a landed message vanish from the chat and a
+    read before the merge (Sessions.live_rev), carried only when it is an int (the SDK backend's counter; a bool is not
+    one). A backend without a counter (the Codex backend) answers Sessions.live_rev with the tail's serialized atoms, the
+    typed message text among them, and that value carries no live component here: the frame's `live` is None and its
+    frames order on the tx rows alone (_chat_wm_older and the page's frameOlder treat a non-int live as unordered either
+    way, so nothing is lost), because the watermark rides every frame and delta and _note_chat_stale and the page's
+    frame-stale row write both watermarks verbatim to client-diag.jsonl and stderr, which carry numbers and identifiers
+    only, never event text (_note_chat_full's rule; 2026-09-23). The user (2026-09-22) watched a landed message vanish from the chat and a
     reload bring it back: a frame built from an older parse (its record not yet read) but a newer live tail (the echo
     still in it, the streamed reply after) reached the pane after the frame that had landed the record, and the pane took
     it as the kernel's newest word; the remote kernel filed a `lastGone:record` full at the moment (its own client-diag rows),
@@ -50758,7 +50763,8 @@ def _chat_wm(leaf, parsed, live_rev):
     in either order (the pusher cycle and the targeted push of sdk_backend inputs(), 66486701) and hand their lists to a
     client in either order; the watermark orders the SENDS, whatever order the builds ran in."""
     tx = parsed.get("_txKey") if isinstance(parsed, dict) else None
-    return {"leaf": str(leaf or ""), "tx": tx if isinstance(tx, (list, tuple)) and tx else None, "live": live_rev}
+    live = live_rev if isinstance(live_rev, int) and not isinstance(live_rev, bool) else None
+    return {"leaf": str(leaf or ""), "tx": tx if isinstance(tx, (list, tuple)) and tx else None, "live": live}
 
 
 def _chat_wm_older(new, last):

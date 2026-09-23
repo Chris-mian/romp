@@ -330,6 +330,32 @@ process.exit(0);
 """
 
 
+# the drivers' budgets, under the runner's per-test ceiling (CI's served-page step runs pytest with --timeout=600, thread method) LESS the
+# setup the same per-test timer wraps: pytest-timeout's thread method times the first test's setUpClass too, and a stall it catches ends the
+# whole pytest process with os._exit, so no driver output and no kernel tail is printed and every later lab in the process goes unreported
+# (the box lab's fix, tests/test_needs_you_box_chat_served.py DRIVER_TIMEOUT_S). The local class's setup is the esbuild run and a healthz boot
+# loop bounded at 60 s (LOCAL_SETUP_S), so 480 s leaves the rest for both; the remote class boots two kernels (two 60 s healthz loops, run in
+# turn) and waits up to 30 s for the hub's tunnel row (REMOTE_SETUP_S), so its budget sits lower. A driver that runs past its budget has hit
+# several frame waits in a row, and the TimeoutExpired reaches the test as its own failure with the kernel's tail in hand rather than the
+# runner's bare per-test timeout. DriverBudget below pins both figures under the cap ci.yml states, less the setup they name.
+LOCAL_SETUP_S = 60
+REMOTE_SETUP_S = 150
+DRIVER_TIMEOUT_S = 480
+DRIVER_TIMEOUT_REMOTE_S = 420
+
+
+def _kernel_tail(*logs):
+    """The last lines of each kernel log named, for a failure message (a log a kernel never wrote reads as empty)."""
+    out = []
+    for name, path in logs:
+        try:
+            text = open(path).read()
+        except OSError:
+            text = ""
+        out.append("%s:\n%s" % (name, text[-1500:]))
+    return "\n".join(out)
+
+
 class ServedSendBubbleVisible(unittest.TestCase):
     maxDiff = None
 
@@ -397,8 +423,13 @@ class ServedSendBubbleVisible(unittest.TestCase):
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
-        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=900,
-                           env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        try:
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=DRIVER_TIMEOUT_S,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        except subprocess.TimeoutExpired as e:
+            # the driver ran past its budget (several frame waits in a row): its output so far and the kernel's tail, not a bare traceback
+            out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            self.fail("the driver ran past its %d s budget; its output so far:\n%s\n%s" % (DRIVER_TIMEOUT_S, out[-3000:], _kernel_tail(("kernel", self.klog))))
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served guard needs one (CI installs none)")
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + open(self.klog).read()[-2500:])
@@ -517,8 +548,12 @@ class ServedSendBubbleVisibleRemote(ServedSendBubbleVisible):
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
-        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=900,
-                           env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        try:
+            p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=DRIVER_TIMEOUT_REMOTE_S,
+                               env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
+        except subprocess.TimeoutExpired as e:
+            out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            self.fail("the driver ran past its %d s budget; its output so far:\n%s\n%s" % (DRIVER_TIMEOUT_REMOTE_S, out[-3000:], _kernel_tail(("hub", self.klog), ("remote", self.rlog))))
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served guard needs one (CI installs none)")
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nhub:\n" + open(self.klog).read()[-2000:] + "\nremote:\n" + open(self.rlog).read()[-1200:])
@@ -533,6 +568,32 @@ class ServedSendBubbleVisibleRemote(ServedSendBubbleVisible):
         self.assertEqual(misses, [], "every checkpoint after a send into the remote session shows the sent text in a visible element; misses above")
         self._assert_injected(r["injected"])
         self._assert_landings(r)
+
+
+class DriverBudget(unittest.TestCase):
+    """Both drivers' budgets sit under the per-test ceiling CI's served-page step gives pytest, less the setup the same timer wraps
+    (the comment above DRIVER_TIMEOUT_S), and both subprocess.run calls read them: a literal that drifted past the cap would let a
+    stalled driver hit pytest-timeout first, which ends the process with no output and every later lab unreported. Needs no browser."""
+
+    def _ci_cap(self):
+        text = open(os.path.join(ROOT, ".github", "workflows", "ci.yml")).read()
+        at = text.find('ROMP_SERVED_TESTS_REQUIRE: "1"')
+        self.assertGreater(at, 0, "ci.yml names the served-page step by its ROMP_SERVED_TESTS_REQUIRE env")
+        m = re.search(r"--timeout=(\d+)", text[at:])
+        self.assertIsNotNone(m, "the served-page step runs pytest under --timeout")
+        return int(m.group(1))
+
+    def test_the_budgets_sit_under_the_ci_cap_less_the_setup(self):
+        cap = self._ci_cap()
+        self.assertLess(DRIVER_TIMEOUT_S + LOCAL_SETUP_S, cap, "the local driver's budget plus its class's setup bound stays under CI's per-test cap")
+        self.assertLess(DRIVER_TIMEOUT_REMOTE_S + REMOTE_SETUP_S, cap, "the remote driver's budget plus its class's setup bound (two boots, the tunnel wait) stays under CI's per-test cap")
+        self.assertLessEqual(DRIVER_TIMEOUT_REMOTE_S, DRIVER_TIMEOUT_S, "the remote class sets up more, so its budget is not the larger")
+
+    def test_both_driver_runs_read_the_budgets(self):
+        src = open(os.path.realpath(__file__)).read()
+        runs = re.findall(r'subprocess\.run\(\["node", driver\][^\n]*timeout=([A-Za-z_0-9]+)', src)
+        self.assertEqual(runs, ["DRIVER_TIMEOUT_S", "DRIVER_TIMEOUT_REMOTE_S"], "the local run reads DRIVER_TIMEOUT_S and the remote run DRIVER_TIMEOUT_REMOTE_S, no literal")
+        self.assertEqual(len(re.findall(r"except subprocess\.TimeoutExpired", src)), 2, "each run reports a budget overrun with the kernel's tail")
 
 
 if __name__ == "__main__":

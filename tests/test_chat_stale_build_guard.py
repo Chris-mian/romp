@@ -132,6 +132,24 @@ class StaleBuildGuard(unittest.TestCase):
         self.assertFalse(km._chat_wm_older({"leaf": LEAF1, "tx": None, "live": "abc"}, {"leaf": LEAF1, "tx": None, "live": "abd"}), "a backend without a counter is unordered")
         self.assertFalse(km._chat_wm_older(None, last)); self.assertFalse(km._chat_wm_older(new, None))
 
+    def test_00b_a_backend_without_a_counter_carries_no_live_component(self):
+        """Sessions.live_rev answers a backend with no live_rev method (the Codex backend) with its serialized live atoms, the typed
+        text among them; the frame's watermark rides every frame and delta and is written verbatim to client-diag and stderr on a
+        refusal, so it carries `live` only as an int (2026-09-23): a string, a bool or nothing yields None, and such frames order on
+        the tx rows alone."""
+        parsed = {"_txKey": [[1790000000.0, 2000], [1790000000.0, 40]]}
+        atoms = json.dumps([{"type": "user", "author": "human", "text": "tighten the notes-api search", "t": 1790000000}])
+        self.assertIsNone(km._chat_wm(LEAF1, parsed, atoms)["live"], "a serialized tail is never carried")
+        self.assertIsNone(km._chat_wm(LEAF1, parsed, True)["live"], "a bool is not a revision")
+        self.assertIsNone(km._chat_wm(LEAF1, parsed, None)["live"])
+        self.assertEqual(km._chat_wm(LEAF1, parsed, 57)["live"], 57, "the SDK backend's counter rides as is")
+        self.assertEqual(km._chat_wm(LEAF1, parsed, 0)["live"], 0)
+        self.assertNotIn("notes-api", json.dumps(km._chat_wm(LEAF1, parsed, atoms)), "no event text on the frame's watermark")
+        # such frames order on the parse rows alone: equal rows never compare, a row behind is older
+        a, b = km._chat_wm(LEAF1, parsed, atoms), km._chat_wm(LEAF1, parsed, atoms)
+        self.assertFalse(km._chat_wm_older(a, b)); self.assertFalse(km._chat_wm_older(b, a))
+        self.assertTrue(km._chat_wm_older(km._chat_wm(LEAF1, {"_txKey": [[1790000000.0, 1500], [1790000000.0, 40]]}, atoms), b))
+
     # ── the senders ──
     def test_01_an_older_build_after_a_newer_one_is_not_sent_to_a_proto2_base_holder_and_is_filed(self):
         a = self._client(active=S1, proto=2)
@@ -279,7 +297,7 @@ class TheStamp(unittest.TestCase):
         rows = wm["tx"]
         self.assertIsInstance(rows, list)
         self.assertIn([st.st_mtime, st.st_size], [list(r) for r in rows], "the transcript's own [mtime, size] row is among the key's rows: %r" % rows)
-        self.assertIn(type(wm["live"]), (int, str), "the live revision as the backend answers it")
+        self.assertIn(type(wm["live"]), (int, type(None)), "the live revision when the backend counts one, else nothing (never a backend's serialized tail)")
         # an append moves the key: the next build's rows are at or past the last's, and the older frame reads as older
         with open(self.path, "a") as f:
             f.write(json.dumps({"type": "assistant", "timestamp": "2026-09-22T10:00:05.000Z", "uuid": "a1", "parentUuid": "u1",

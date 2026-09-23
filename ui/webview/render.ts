@@ -62,7 +62,7 @@ import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
 import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody, refusedRestoreText } from "./send-pending";
-import { type FrameWm, frameOlder, droppedLandedHuman, dropsLandedRow } from "./frame-guard";   // the frame watermark guard (2026-09-22): an older build's frame is ignored, a vanished landed turn is filed
+import { type FrameWm, frameOlder, droppedLandedHuman, dropsLandedRow, forgetHeldWm } from "./frame-guard";   // the frame watermark guard (2026-09-22): an older build's frame is ignored, a vanished landed turn is filed; a reconnect forgets the held watermarks
 import { reconcileHeld, heldAsQueued, type HeldCopy, type HeldQueued, type HeldMemory } from "./queued-held";
 import { rescindedComposerState } from "./queued-rescind";   // a queued message's edit pulls it back into the composer (T373)
 import { reloadHoldReason } from "./reload-hold";
@@ -16590,6 +16590,7 @@ window.addEventListener("romp:hostRelayUp", (e) => {
   refreshSettledPreviews();
   reaskWaitingSubagents(h);   // …and that host's subagent viewers still waiting ask again (T355: a remote kernel's restart; an empty host is the local one)
   reaskOutstandingGaps(Array.from(gapLoading), h);   // …and re-send every loadTurns still outstanding for that host: a relay drop fires no romp:wsdown, so gapLoading kept its keys and, with the guard now correct, the gap would stay suppressed until a reload (2026-09-15)
+  if (h) forgetHeldWm(sessions, (sid) => hostOf(sid) === h);   // …and that host's held watermarks (frame-guard.ts, 2026-09-23): the remote kernel behind the reopened relay may be a fresh process whose live-tail revision restarted at 0, and a held revision would refuse its every frame for a session whose files have not moved (the local socket's twin rides the shim's wsup FRAME)
   clearAsksForHost(h);   // …and that host's parked full asks (2026-09-19): an ask sent on the relay socket that died, or one the kernel answered with a status frame where a full was owed, is never answered on this road, and latched it would refuse every later delta for its tab until a reload (clearAsksForHost says why a flushed ask is cleared too)
   // …and the tab this pane is LOOKING AT, when that host owns it (T246, the user 2026-09-07): the relay's
   // open is the moment the remote kernel holds a FRESH client for this pane — after that kernel restarted,
@@ -19090,7 +19091,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     return;
   }
   // the pipe's down edge is the VS Code twin of the shim's romp:wsdown: unconfirmed sends say so (markPendingLost)
-  if (m.type === "pipeState" && m.up) reaskWaitingSubagents();   // the extension's reconnect-class event (it never sees romp:wsup), T355
+  if (m.type === "pipeState" && m.up) { reaskWaitingSubagents(); forgetHeldWm(sessions, null); }   // the extension's reconnect-class event (it never sees romp:wsup), T355; and the held watermarks go with it as on the shim's wsup frame (frame-guard.ts, 2026-09-23): the kernel behind the healed pipe may have restarted its live-tail revision at 0
   if (m.type === "pipeState") { if (!m.up) { markPendingLost("connection"); onWireDown(); } pipeBanner(!!m.up, Number(m.queued) || 0); return; }   // the pane's down edge clears the in-flight asks as the socket's does (round nine, medium 2)
   // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
   // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's
@@ -19123,7 +19124,14 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "chatEpisode") chatEpisode(m);
   else if (m.type === "subagent") applySubagentFrame(m);
   else if (m.type === "update") update(m);
-  else if (m.type === "wsup") { onSocketUp(skeletonTabs); skeletonDiagArmed = true; }   // the shim's socket-flip marker, in FRAME order: the dead socket's frames may still be draining from the FIFO when onopen fires (review find 2026-09-07)
+  else if (m.type === "wsup") {   // the shim's socket-flip marker, in FRAME order: the dead socket's frames may still be draining from the FIFO when onopen fires (review find 2026-09-07)
+    onSocketUp(skeletonTabs); skeletonDiagArmed = true;
+    // …and the held watermarks go (frame-guard.ts forgetHeldWm, 2026-09-23): the kernel behind the new socket may be a fresh process whose
+    // live-tail revision restarted at 0, and a held revision would refuse its every frame for a session whose files have not moved. In
+    // FRAME order for the same reason as the skeleton flip: a reset at onopen could be re-latched by a dead-socket frame still draining.
+    // Every host's, as the kernel's own reset at this socket's ready (_client_reset_chat_base) drops every base and awaitingFull clears whole.
+    forgetHeldWm(sessions, null);
+  }
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "glossary" && typeof m.id === "string") {   // the session's glossary index (T351 stage 2): a new one re-links the view
     glossaries.set(m.id, m as GlossaryIndex);

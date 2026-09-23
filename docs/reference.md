@@ -3505,7 +3505,9 @@ frames it received is measured in the panes themselves, by
 - Every chat frame and delta carries `wm`, what its build READ: the transcript the
   build parsed (`leaf`), the parse's fileset key (`tx`, one `[mtime, size]` row per
   file the parse read, taken before the read) and the live tail's revision
-  (`live`). Two builders read the transcript in either order (the pusher cycle
+  (`live`, an integer; a backend without a counter, the Codex backend, carries no
+  `live` component, `null`, and its frames order on the `tx` rows alone, so no
+  event text rides the watermark). Two builders read the transcript in either order (the pusher cycle
   and the targeted push at the SDK queue pop), and a build from an older parse
   under a newer live tail once reached a page after the frame that had landed a
   just-sent message, taking the landed row off the page until a reload. The
