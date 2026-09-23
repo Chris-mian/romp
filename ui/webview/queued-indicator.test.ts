@@ -169,13 +169,12 @@ test("queuedCountText: the noun follows what's left after a cancel", () => {
 
 test("a chatTail that SHRINKS the transcript repaints (the no-op fast path can't be trusted there)", () => {
   // The kernel's diff lands on `from === new length` when the tail simply lost an event, so lowering
-  // v.rendered to `from` leaves rendered === len and syncView's fast path skips the repaint — the retired
-  // turn stays in the DOM for good. The shrink is measured BEFORE the reconciles so it reflects the splice.
-  assert.match(RENDER, /const wasLen = s\.events\.length;[\s\S]*?s\.events\.length = from;/);
-  assert.match(RENDER, /const shrank = s\.events\.length < wasLen;/);
-  assert.match(RENDER, /v\.rendered = Math\.min\(v\.rendered, from\);[\s\S]*?if \(shrank\) v\.stale = true;/);
-  // the fast path this defends against — pinned so a rewrite of it can't silently reopen the hole
-  assert.match(RENDER, /if \(v\.rendered === len && !v\.stale && v\.el\.childNodes\.length > 0\) return v;/);
+  // v.rendered to `from` leaves rendered === len and syncView's fast path skipped the repaint — the retired
+  // turn stayed in the DOM for good. The fast path reads the PAINTED unit count too (2026-09-23), so a shrink
+  // takes the keyed paint, which removes the retired units and touches nothing else; no stale mark, no rebuild.
+  assert.doesNotMatch(RENDER, /if \(shrank\) v\.stale = true;/, "the shrink no longer rebuilds the window");
+  assert.match(RENDER, /const current = v\.rendered === len && !v\.stale && !v\.rediff && v\.el\.childNodes\.length > 0 && !!v\.painted && v\.painted\.items\.length === total;/,
+    "the fast path this defends against — pinned so a rewrite of it can't silently reopen the hole");
 });
 
 test("a FAILED cancel puts the bubble back, so the screen agrees with the 'too late' toast", () => {
