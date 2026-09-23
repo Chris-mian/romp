@@ -1131,7 +1131,7 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
                 # so the full keys never coincide by construction, and a store's top-level suffixes are distinct (safe)
                 cls = e.get("class")                            # the ending's heuristic class, for the by-class strata (the 2026-09-22 PR 2016/2022 fold)
                 raw_lbl = labels.get(eid)                       # the labeller's class, None when unlabelled (torn/missing/unstable): the attribution keeps None
-                lbl = raw_lbl or "unlabeled"                    # the bucket key: an unlabeled bucket so the buckets sum to the totals (PR 2035 MED)
+                lbl = raw_lbl or "unlabeled"                    # the bucket key: an unlabeled bucket so the buckets sum to the totals (the 2026-09-22 PR 2035 review, MED)
                 ending_leak = any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in majority.items())
                 ending_fi = any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in majority.items())
                 if ending_leak:
@@ -1161,7 +1161,7 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
             "comparable": failures == 0, "buildsPerCard": builds_n,
             "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
             "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
-            "labellerKeying": labels_state, "attribution": attribution,   # the labeller-keying source: present / absent / unreadable (PR 2035 MED)
+            "labellerKeying": labels_state, "attribution": attribution,   # the labeller-keying source: present / absent / unreadable (the 2026-09-22 PR 2035 review, MED)
             "liveReadErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
 
 
@@ -1171,14 +1171,16 @@ def report(corpus, run_root, live_state, figure=None):
     user's later gestures and the kernel's rulings per placed card; it exists only while the live root still lists the session."""
     corpus, run_root = Path(corpus), Path(run_root)
     manifest = json.loads((corpus / "manifest.json").read_text())
-    labels, labels_state = {}, "absent"                         # {ending id: labeller class} from labels.json + the keying source stamp (PR 2035 MED)
+    labels, labels_state = {}, "absent"                         # {ending id: labeller class} from labels.json + the keying source stamp (the 2026-09-22 PR 2035 review, MED)
     labels_f = run_root / "labels.json"
     if labels_f.is_file():
         try:
             labels = {r["id"]: r.get("label") for r in json.loads(labels_f.read_text()) if r.get("id")}
             labels_state = "present"
-        except (OSError, ValueError):
-            labels_state = "unreadable"                         # a torn labels.json is RECORDED (labellerKeying), never a silent empty pass that reads as zero leaks per stratum
+        except (OSError, ValueError, AttributeError, TypeError, KeyError):
+            labels, labels_state = {}, "unreadable"             # a torn OR wrong-shape labels.json (a top-level object, a list of
+            #                                                     strings, a number) is RECORDED (labellerKeying), never a silent
+            #                                                     empty pass that reads as zero leaks per stratum (the 2026-09-22 PR 2035 review)
     rows = []
     for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
         rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, labels=labels, labels_state=labels_state))

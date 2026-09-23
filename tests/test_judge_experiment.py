@@ -55,7 +55,7 @@ cand = "CANDIDATE-MARK" in sysp
 judge = ("labeller" if "You classify the final assistant message" in sysp else "closer" if "turn-end auditor" in sysp
          else "grouper" if "You are a grouper" in sysp else "planner" if "planner" in sysp[:120]
          else "unblocker" if "marked blocked" in sysp else "other")
-import hashlib as _hl                                        # review PR 2022: input identity across builds up to the per-call security mark
+import hashlib as _hl                                        # the 2026-09-22 PR 2022 review: input identity across builds up to the per-call security mark
 _blob = sysp + "\n" + user
 _mk = re.search(r"<[a-zA-Z_-]+ ([0-9a-f]{8})>", _blob)       # the section mark (_mark: 8 CSPRNG hex, fresh per call)
 _norm = _blob.replace(_mk.group(1), "MARK") if _mk else _blob
@@ -440,18 +440,22 @@ class Harness(unittest.TestCase):
         self.assertIsNone(base["stopped"])
         closer = self._calls("closer")
         self.assertTrue(closer and all(r["goalHistory"] for r in closer), "every closer call carried the goal-history section production sends: %r" % closer[:2])
-        # review PR 2022 (item 10): the pre-flight probe's cost note in the results record equals the fake's envelope
+        # the 2026-09-22 PR 2022 review, item 10: the pre-flight probe's cost note in the results record equals the fake's envelope
         self.assertEqual(base["preflightProbe"], {"cost": 0.01, "ms": 7, "sessionId": "11111111-2222-4333-8444-555555555555"},
                          "the probe's cost note is the fake's envelope: %r" % base.get("preflightProbe"))
-        # review PR 2022 (item 3): the builds' inputs are IDENTICAL up to the per-call security mark, made a fact here (the
-        # 0-flaps assertion above witnesses determinism given fixed replies, not input identity). For the base arm's planner
-        # calls, every RAW input is unique (a fresh mark per call), and mark-normalized they collapse to strictly fewer: the
-        # three builds of each ending send the same normalized input. A `>=` here would also hold; the collapse is the point.
+        # the 2026-09-22 PR 2022 review, item 3 (+ PR 2040 low 1): the builds' inputs are IDENTICAL up to the per-call
+        # security mark, made a fact PER BUILD-TRIPLE, not merely as an aggregate collapse (which would pass a build-dependent
+        # byte confined to one ending). Every RAW input is unique (a fresh mark per call); and every distinct mark-normalized
+        # input recurs a MULTIPLE of the build count (each of the three builds sends it once), so a byte that differs across
+        # the builds of ONE ending splits that ending's hashes into counts of one and reds this.
+        import collections as _c
         base_planner = [r for r in self._calls("planner") if not r["candidate"]]
-        raw = [r["rawHash"] for r in base_planner]; norm = set(r["markNorm"] for r in base_planner)
+        raw = [r["rawHash"] for r in base_planner]
         self.assertEqual(len(set(raw)), len(raw), "the security mark makes every raw planner input unique per call: %d unique of %d" % (len(set(raw)), len(raw)))
-        self.assertLess(len(norm), len(raw), "mark-normalized, the builds collapse (input identity up to the mark): %d normalized of %d calls" % (len(norm), len(raw)))
-        self.assertEqual(len(raw) % 3, 0, "three builds ran, so the base arm's planner calls are a multiple of three: %d" % len(raw))
+        counts = _c.Counter(r["markNorm"] for r in base_planner)
+        self.assertGreater(len(counts), 1, "several distinct planner inputs were observed: %d" % len(counts))
+        self.assertTrue(all(v % 3 == 0 for v in counts.values()),
+                        "every mark-normalized planner input recurs once per build (a multiple of three); a build-dependent byte in one ending would split it: %r" % dict(counts))
 
     def _add_node_log(self, sid, suffix, ev):
         """Append an event to a live top-level node's log (a helper for the unblocker-ruling pins)."""
@@ -805,7 +809,7 @@ class Harness(unittest.TestCase):
         self.assertNotIn("{}", msg, "never empty braces (the decode-failure branch keeps and quotes the process): %r" % msg)
         self.assertIn("hand-place", msg, "the refusal names the hand-placed-helper remedy: %r" % msg)
         self.assertIn("do NOT rebuild", msg, "the refusal tells the operator NOT to rebuild (a rebuild re-picks endings): %r" % msg)
-        # review PR 2022 item 4: the login remedy is the ENVIRONMENT-token road (the child's config dir is the corpus root,
+        # the 2026-09-22 PR 2022 review, item 4: the login remedy is the ENVIRONMENT-token road (the child's config dir is the corpus root,
         # so a file-based `claude login` never reaches it); the remedy names the token vars, not "sign a login in on this machine"
         self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", msg, "the refusal names the environment login-token road: %r" % msg)
         self.assertNotIn("on this machine", msg, "the refusal does not point at a file-based machine login the probe's child cannot read: %r" % msg)
@@ -906,7 +910,7 @@ class Harness(unittest.TestCase):
         run_root = os.path.join(self.td, "runs-noauth")
         os.environ["JE_TEST_NOAUTH"] = "1"
         try:
-            # review PR 2022: drive the in-process arm DIRECTLY, so the refusal is the pre-flight's SystemExit (not any proxy
+            # the 2026-09-22 PR 2022 review: drive the in-process arm DIRECTLY, so the refusal is the pre-flight's SystemExit (not any proxy
             # error raised ahead of it), and it names the failure in its own words
             jd = self.je.load_judge(Path(self.td, "noauth-state"), Path(dest, "claude"), self.fake)
             with self.assertRaises(SystemExit) as cm:
@@ -1261,7 +1265,7 @@ class Harness(unittest.TestCase):
         Path(mixed).write_text("".join(json.dumps(r) + "\n" for r in rows))
         self.assertEqual(counter(mixed), 5, "placer, opener, triage (rate-limited) and romp (history-unreadable) count with the "
                          "planner; the grouper, consolidator, distiller and gister rows do not")
-        # review PR 2022 (nonArmFailures): the excluded rows are counted too, so an excluded fault is never invisible
+        # the 2026-09-22 PR 2022 review (nonArmFailures): the excluded rows are counted too, so an excluded fault is never invisible
         self.assertEqual(self.je.count_non_arm_failure_rows(mixed), 4, "the four non-arm rows (grouper, consolidator, distiller, gister) are counted apart")
         # a rejected closer reply files its own row: it is counted once, not once as a row and once as a None
         dest, m = self._corpus()
@@ -2124,6 +2128,20 @@ class Harness(unittest.TestCase):
         for cols in (["needs_input", "completed", "completed"], ["completed", "needs_input", "completed"]):
             mm = self.je.measure(manifest, res(cols), self.state)
             self.assertEqual(mm["leaks"], 1, "a real 2-of-3 majority completed scores the leak, order %r: %r" % (cols, mm))
+
+    def test_report_records_a_wrong_shape_labels_file_as_unreadable_not_a_raise(self):
+        """PR 2040 round one: a labels.json that is valid JSON of the WRONG SHAPE (a top-level object, a list of strings, a
+        number) must be recorded as labellerKeying `unreadable`, never raise out of report. The head caught only OSError and
+        ValueError, so a wrong shape raised (AttributeError / TypeError) out of the report."""
+        dest, m = self._corpus(name="lblshape")
+        e = self._ending(m, SIDS[0], 0)
+        run_root = os.path.join(self.td, "runs-lblshape"); os.makedirs(os.path.join(run_root, "baseline"))
+        results = {"arm": "baseline", "failures": 0, "buildsPerCard": 3, "endings": {e["id"]: {"builds": [{}] * 3}}}
+        Path(run_root, "baseline", "results.json").write_text(json.dumps(results))
+        for shape in (json.dumps({"an": "object"}), json.dumps(["a", "list", "of", "strings"]), json.dumps(7)):
+            Path(run_root, "labels.json").write_text(shape)
+            r = self.je.report(dest, run_root, self.state, figure=None)[0]   # must not raise
+            self.assertEqual(r.get("labellerKeying"), "unreadable", "a wrong-shape labels.json (%s) is recorded unreadable, not raised: %r" % (shape[:20], r.get("labellerKeying")))
 
     def test_report_keys_labeller_buckets_from_labels_and_records_a_torn_file(self):
         """PR 2035 round one MEDIUM: report keys the labeller buckets from labels.json's `label` (not the heuristic
