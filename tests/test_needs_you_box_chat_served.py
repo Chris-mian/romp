@@ -110,10 +110,18 @@ const feedBuiltPast = async (floor, id, brief, ms) => {   // the kernel's feed b
   return null;
 };
 const writeStore = async (mutate) => {   // the feed build id before the write (null when that read fails: its own miss, never a floor of -1), the write (seq bumped), the order touch
-  const b0 = ((await kernelFeed()) || {}).buildId; const st = JSON.parse(fs.readFileSync(cfg.store, "utf8")); mutate(st); st.seq = (st.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(st));
+  // The write is a PUBLICATION the kernel's own writers must see: `rev` advances as save_goals advances it, so a judge pass whose store predates
+  // this write rebases onto it (the kernel's compare-and-swap keys on rev and, since the CI red of 2026-09-23, on the file's identity; before,
+  // an in-place rewrite that left rev alone was invisible to a save holding an older base, and the pass's save erased the node just written)
+  const b0 = ((await kernelFeed()) || {}).buildId; const st = JSON.parse(fs.readFileSync(cfg.store, "utf8")); mutate(st); st.seq = (st.seq || 0) + 1; st.rev = (st.rev || 0) + 1;
+  fs.writeFileSync(cfg.store, JSON.stringify(st));
   fs.utimesSync(cfg.order, new Date(), new Date()); return typeof b0 === "number" ? b0 : null;
 };
-const onMiss = async (o) => { o.perf = await kernelPerf(); o.kernelBrief = briefOf(await kernelFeed(), o.id); return o; };
+const onMiss = async (o) => {   // the counters, the kernel's own view of the card, and the FILE: a write the kernel published over reads as a node gone and rev moved
+  o.perf = await kernelPerf(); o.kernelBrief = briefOf(await kernelFeed(), o.id);
+  try { const st = JSON.parse(fs.readFileSync(cfg.store, "utf8")); o.store = { rev: st.rev, seq: st.seq, hasNode: !!(st.nodes || {})[o.id], brief: ((st.nodes || {})[o.id] || {}).blockSummary }; } catch (e) { o.store = String(e); }
+  return o;
+};
 const builtRecord = async (id, floor, brief) => { const o = { id, floor, built: await feedBuiltPast(floor, id, brief, 90000) }; if (o.built === null) await onMiss(o); return o; };   // { id, floor, built }, the counters on a miss
 const w1 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.brief; });
 out.brief = await builtRecord(cfg.g1, w1, cfg.brief);

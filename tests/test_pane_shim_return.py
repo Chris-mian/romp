@@ -454,7 +454,8 @@ class ReturnBreadcrumbs(unittest.TestCase):
         r = _run(r"""open();out({first:JSON.parse(sockets[0].sent[0])});""",
                  pre='var performance={getEntriesByType:function(){return [{type:"reload"}];}};\n')
         self.assertEqual(r["first"], {"type": "clientDiag", "surface": "pane-shim", "what": "page-load",
-                                      "data": {"wasDiscarded": False, "nav": "reload", "app": "test"}})
+                                      "data": {"wasDiscarded": False, "nav": "reload", "app": "test"},
+                                      "build": 0, "boot": km._BOOT_ID})   # every diag row leaves stamped (tests/test_client_diag_build_boot.py)
 
     def test_a_discarded_load_is_flagged(self):
         # the flag is read at load, so the fake document must carry it before the core runs

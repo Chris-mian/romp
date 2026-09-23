@@ -63,8 +63,9 @@ import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
 import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody, refusedRestoreText } from "./send-pending";
-import { type FrameWm, frameOlder, droppedLandedHuman, dropsLandedRow, forgetHeldWm } from "./frame-guard";
-import { readBaseFp, checkBase, newResyncState, onMismatch, onAgree, forgetResync, staleAnswer } from "./chat-resync";   // the delta's base check (2026-09-23): a delta cut against a base the page does not hold is refused and the full asked for, bounded by event   // the frame watermark guard (2026-09-22): an older build's frame is ignored, a vanished landed turn is filed; a reconnect forgets the held watermarks
+import { type FrameWm, frameOlder, droppedLandedHuman, dropsLandedRow, forgetHeldWm } from "./frame-guard";   // the frame watermark guard (2026-09-22): an older build's frame is ignored, a vanished landed turn is filed; a reconnect forgets the held watermarks
+import { type LandEvent, LandingWatch } from "./send-landing";   // the send-landing invariant (2026-09-23): observation only, around the frame dispatch (landingBefore / landingAfter)
+import { readBaseFp, checkBase, newResyncState, onMismatch, onAgree, forgetResync, staleAnswer } from "./chat-resync";   // the delta's base check (2026-09-23): a delta cut against a base the page does not hold is refused and the full asked for, bounded by event
 import { reconcileHeld, heldAsQueued, type HeldCopy, type HeldQueued, type HeldMemory } from "./queued-held";
 import { rescindedComposerState } from "./queued-rescind";   // a queued message's edit pulls it back into the composer (T373)
 import { reloadHoldReason } from "./reload-hold";
@@ -462,6 +463,17 @@ const order: string[] = [];           // positional tab order (for cycling)
 // last 30 events, so an absorbed landing placed above them never ended the bubble (2026-09-06 review).
 const pendingSent = new Map<string, PendingSend[]>();
 const isOptimistic = (e: ChatEvent): boolean => isOptimisticUuid(e.uuid);
+// The send-landing watch (send-landing.ts): every send registered here, its landing and its losses read at each frame the
+// dispatch applies (landingBefore / landingAfter). Declared beside the pending sends it reads, ahead of every caller.
+const landingWatch = new LandingWatch();
+/** The reconcile's verdicts, handed to the watch (a text-matched landing, a never-delivered verdict). Never throws: the
+ *  reconcile's own catch would otherwise restore a group this observer has no business touching. */
+function noteLandings(sid: string, events: ChatEvent[], r: { landed: { p: PendingSend; idx: number }[]; lost: PendingSend[] }): void {
+  try {
+    for (const { p, idx } of r.landed) landingWatch.claim(sid, p.qid, events[idx]?.uuid);
+    for (const p of r.lost) landingWatch.lost(sid, p.qid);
+  } catch { /* observation only */ }
+}
 
 // The kernel's own queued group, if one is at the tail. Since T252 ours is never merged into it: a copy of
 // OUR text in it is hidden (hideQueuedCopy — one bubble per message, ours in its own bare group right below
@@ -521,6 +533,7 @@ function reconcileOptimisticInner(s: Session): void {
   // sits in the kernel's group at the tail while the bubble the user watches is ours, right below it — so
   // that copy is hidden and ours stays, one bubble per message; the group keeps its other texts.
   const r = reconcilePending(s.events as TailEvent[], list);
+  noteLandings(s.id, s.events, r);   // observation only (send-landing.ts)
   if (r.keep.length) pendingSent.set(s.id, r.keep); else pendingSent.delete(s.id);
   const heldBy = new Map<PendingSend, NonNullable<Extract<ChatEvent, { kind: "queued" }>["held"]>>();
   const covered = new Set<PendingSend>();   // a kernel copy that stays shown (non-cancelable: no recall exists) covers ours
@@ -659,6 +672,7 @@ function registerOptimistic(id: string, text: string, imgPaths?: string[], qid?:
   const p = newPending(text, imgPaths, Date.now(), qid, paths);
   arr.push(p);   // the anchor (`at`) is stamped by the reconcile just below
   pendingSent.set(id, arr);
+  try { if (p.qid) landingWatch.send(id, p.qid, p.ts); } catch { /* observation only (send-landing.ts) */ }
   const s = sessions.get(id);
   // No resident frame to stamp against: the active tab is a PLACEHOLDER (its meta arrived, its payload
   // is pending — selectable, composer live). The first upsert stamps the entry, against a frame that may
@@ -11408,13 +11422,15 @@ function nearBottomForSend(c: HTMLElement): boolean {
 // lands, only that the landing is on the record.
 let lastScrollWriteAfter: number | null = null;
 let lastKnownSh = 0;   // the last scroll height the pane recorded (every write, every scroll event): the "before" a tail mutation row reports
-/** Reduce a MutationObserver batch on a tail container to the row's shape (scroll-write.ts summarizeTailMutations). */
-function tailMutations(records: MutationRecord[]): { removedTail: string[]; addedTail: string[]; reAdded: boolean } | null {
+/** Reduce a MutationObserver batch on a tail container to the row's shape (scroll-write.ts summarizeTailMutations): each node
+ *  as its class list, its unit's uuid (data-uuid) and the node itself, the identity a re-add is judged by. Reads only. */
+function tailMutations(records: MutationRecord[]): ReturnType<typeof summarizeTailMutations> {
+  const node = (n: Node) => ({ cls: n instanceof Element ? n.className : n.nodeName, uuid: n instanceof HTMLElement ? (n.dataset.uuid || "") : "", node: n });
   return summarizeTailMutations(records.map((r) => ({
-    removed: Array.from(r.removedNodes).map((n) => ({ cls: n instanceof Element ? n.className : n.nodeName, node: n })),
-    added: Array.from(r.addedNodes).map((n) => ({ cls: n instanceof Element ? n.className : n.nodeName, node: n })),
+    removed: Array.from(r.removedNodes).map(node),
+    added: Array.from(r.addedNodes).map(node),
     atEnd: r.nextSibling === null,
-  })).map((m) => ({ removed: m.removed, added: m.added, atEnd: m.atEnd })));
+  })));
 }
 // the cap is the default unless the page's localStorage says otherwise (a laptop capturing raises it; T262j)
 const scrollDiagCap = readScrollDiagCap((k) => { try { return localStorage.getItem(k); } catch { return null; } });
@@ -16772,9 +16788,10 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
   else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text, qid, ...att }); registerOptimistic(sid, text, imgPaths, qid, paths); }
   // One breadcrumb per composer send (client-diag.jsonl): sid, when, how long, which route — never the
   // text. A send that "vanished" can then be traced from the press through the kernel's own logs
-  // instead of reconstructed from memory.
+  // instead of reconstructed from memory. `key` is the copy's id, the one the `landed` row names (send-landing.ts), so the
+  // press and its landing join on it.
   vscodeApi.postMessage({ type: "clientDiag", surface: "chat", what: "send",
-    data: { sid, ts: Date.now(), len: text.length, route: goalCite?.itemId ? "followup" : quoteCites.length ? "quote" : "plain" } });
+    data: { sid, key: qid, ts: Date.now(), len: text.length, route: goalCite?.itemId ? "followup" : quoteCites.length ? "quote" : "plain" } });
 }
 
 /** Release the tab's staged stack as ONE message: stagedPosts (staged-messages.ts, executed by its test)
@@ -17570,6 +17587,49 @@ function sharesAnyUuid(a: ChatEvent[], b: ChatEvent[]): boolean {
  *  (chat-proto2-exec.test.ts, a Proxy scope) records the rows instead of tripping on a bare postMessage. */
 function chatDiagRow(what: string, data: Record<string, unknown>): void {
   vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what, data });
+}
+
+// The send-landing invariant's two ends (send-landing.ts, 2026-09-23), around the ONE dispatch chain every frame takes, so every
+// path that applies server events to a session's resident events is watched, a path added later included: `landingBefore` copies
+// the resident events before the frame's handler runs (chatTail truncates the array in place) and notes whether the page itself
+// asked for a rewind (the handler's reconcile may clear that mark); `landingAfter` hands both lists to the watch and files its rows.
+// Observation only: neither end writes a session, a view or a pending send, and either end's error is swallowed (one row says
+// so), so the instruments can cost a row and never a render. LAND_FRAME_TYPES is every frame whose handler writes s.events
+// (landing-watch.test.ts pins it against the writers); the subagent viewer's frames are left out, a read-only tab nobody sends to.
+const LAND_FRAME_TYPES: ReadonlySet<string> = new Set(["session", "update", "chatTail", "chatHead", "chatWindow", "chatTurns"]);
+const LAND_DIAG_CAP = 30;   // per session, per row kind, per minute; one "-capped" row at the cap (scroll-write.ts ScrollDiagBudget)
+const landDiag = new ScrollDiagBudget(LAND_DIAG_CAP);
+let landWatchFailed = false;
+type LandSnap = { events: ChatEvent[]; rewind: boolean };
+function landingBefore(m: any): LandSnap | null {
+  try {
+    if (!m || typeof m.id !== "string" || !LAND_FRAME_TYPES.has(m.type)) return null;
+    const s = sessions.get(m.id);
+    return { events: s ? s.events.slice() : [], rewind: pendingRewind.has(m.id) };
+  } catch { return null; }
+}
+function landingAfter(m: any, snap: LandSnap | null): void {
+  if (!snap) return;
+  try {
+    const s = sessions.get(m.id);
+    if (!s) return;   // the session left the page: nothing is resident to watch
+    const pending = new Set<string>();
+    for (const p of pendingSent.get(m.id) || []) if (p.qid) pending.add(p.qid);
+    // the kernel's word on a turn: a full's or an update's list, a delta's suffix (its prefix is unchanged by definition); a history
+    // page (chatHead, chatWindow, chatTurns) carries a slice of older turns and says nothing about the tail, so null there
+    const kernelList = (m.type === "session" || m.type === "update" || m.type === "chatTail") && Array.isArray(m.events);
+    const rows = landingWatch.apply(m.id, snap.events as unknown as LandEvent[], s.events as unknown as LandEvent[], {
+      path: String(m.type), now: Date.now(), wm: m.wm && typeof m.wm === "object" ? m.wm : null,
+      frame: kernelList ? (m.events as LandEvent[]) : null,
+      expected: m.rebased ? "rebased" : snap.rewind ? "rewind" : null, pending });
+    for (const r of rows) {
+      const v = landDiag.take(m.id, r.what, Date.now());
+      if (v === "send") chatDiagRow(r.what, r.data);
+      else if (v === "cap") chatDiagRow(r.what + "-capped", { sid: m.id, perMinute: LAND_DIAG_CAP });
+    }
+  } catch (err) {
+    if (!landWatchFailed) { landWatchFailed = true; chatDiagRow("landing-watch-failed", { error: String((err as any)?.message || err).slice(0, 200) }); }
+  }
 }
 
 /** upsert's stale-frame branch (2026-09-23): whether an answer OLDER than what the page holds applies. Never when the page
@@ -19159,6 +19219,9 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // dropFile was not delivered" toast (and tore down an in-flight provisional create) an RTT before
   // the relay's own onopen re-shipped correctly. romp:hostRelayUp IS that onopen — the one exact event.
   if (m.type === "hostUp") { refreshSettledPreviews(); healPathImgs(); }
+  // the send-landing watch's first end (send-landing.ts): the resident events as the frame found them; its second end,
+  // landingAfter, runs where the chain ends. Null for every frame that applies no events.
+  const landSnap = landingBefore(m);
   // The held watermarks go on the shim's wsup FRAME (frame-guard.ts forgetHeldWm, 2026-09-23): the kernel behind the new socket
   // may be a fresh process whose live-tail revision restarted at 0, and a held revision would refuse its every frame for a
   // session whose files have not moved. In FRAME order for the same reason as the skeleton flip below: a reset at onopen
@@ -19690,6 +19753,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     }
   }
   else if (m.type === "closed") dismissSession(m.id, m.hostDrop === true ? "hostDrop" : "end");   // a session died on its own (or the kernel confirms our close) — or its HOST dropped (federation's stand-in, stamped: not an end)
+  landingAfter(m, landSnap);   // the send-landing watch's second end: the frame is applied, its rows filed (observation only)
   // any payload that rebuilt transcript DOM must get its highlights re-applied (marks live IN that DOM)
   if (m && m.id && (m.type === "session" || m.type === "chatTail" || m.type === "chatHead" || m.type === "chatWindow" || m.type === "chatTurns" || m.type === "chatEpisode"))
     applyCommentMarks(String(m.id));

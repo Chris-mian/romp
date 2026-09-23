@@ -3547,6 +3547,32 @@ frames it received is measured in the panes themselves, by
   `frame-drops-landed` whatever its watermark said (the wire, the count, the
   uuids' tails, whether the frame carried a watermark, and the expected cause when
   a rebased fork or a rewind the page asked for removed the row on purpose).
+- Every row a page files carries `build`, the dist token the page was served
+  with, and `boot`, the boot id of the kernel that served it. The page's one
+  diag door stamps them (the pane shim, and the shell's twin) and the kernel
+  keeps them; a page older than the stamp, or the VS Code webview, reads `null`
+  for both. A row is then told to come from old or new page code by reading it.
+- The chat pane follows each composer send from the kernel's copy of it to its
+  landed turn, on every frame it applies (a full, a delta, an update, a history
+  page), and files `landed`: the send's id (`key`, the id the `send` row
+  carries), the landed turn's uuid, the ms since the press, the frame type,
+  whether the record wore the id or the pending-send reconcile matched it by
+  text (`by`), and how many events sit below it. `landed-lost` is filed when a
+  frame takes a landed human turn off the newest three and not because the list
+  slid off the top, a fork replaced it, or a rewind the page asked for or a
+  rebased full removed it: the frame type, its watermark, the last six events
+  before and after, and whether the frame's own events still carry the turn
+  (`inKernel`). `landed-missing` is filed when the kernel's copies of a send it
+  had shown (its echo, its queued copy, the page's held copy) are gone, no
+  landed turn for the send is resident, and an agent message lands below where
+  the copy sat: the frame type, its watermark, the copy last seen, the answer's
+  uuid, and whether the frame carried the record (`inFrame`). At most 30 rows a
+  minute per session and kind.
+- A `tailmut` row (an element leaving the end of the chat view) carries the
+  units' uuids beside their classes, the full list lengths (`nRemoved`,
+  `nAdded`) beside the four it clips to, `gone` (the uuids that came back
+  nowhere in the same batch), `slide` (the batch added or removed the top
+  spacer: a window re-render), and `reAdded`, judged by the DOM node.
 - The kernel rotates `client-diag.jsonl` once it reaches 8 MB: the file
   becomes `client-diag.jsonl.1` (replacing the previous one) and a new file
   starts, so at most two files, about 16 MB, are kept. A minute row is about
