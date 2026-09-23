@@ -160,7 +160,9 @@ class HostScopes(unittest.TestCase):
         sb.write_lease(d, {"sid": live, "fsid": live, "pid": 999999999, "start": "1", "holder": {"pid": 999999998, "start": "2", "kind": "host"}, "version": "", "t": time.time()})
         sb.write_lease(d, {"sid": dead, "fsid": dead, "pid": 999999997, "start": "1", "holder": {"pid": 999999996, "start": "2", "kind": "host"}, "version": "", "t": time.time()})
         starts = {999999999: "1", 999999998: "2"}      # the live pair is alive; the dead host's pids are gone
-        listing = "romp-host-11111111-1.scope loaded active running a\nromp-host-22222222-2.scope loaded active running b\n"
+        T = sb.state_tag_of(d)   # both units carry this backend's state tag, as _spawn_host writes it (the sweep's proof)
+        listing = ("romp-host-11111111-1.scope loaded active running romp session host %s romp-state=%s\n"
+                   "romp-host-22222222-2.scope loaded active running romp session host %s romp-state=%s\n") % (live, T, dead, T)
         runs = []
         def run(argv, **kw):
             runs.append(list(argv)); return mock.Mock(stdout=listing if argv == sb.HOST_SCOPE_LIST_ARGV else "", returncode=0)

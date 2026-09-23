@@ -90,6 +90,7 @@
 # changed since boot.
 #
 # Environment: ROMP_CLI_REAL (required) — the real CLI; ROMP_SID — the session id (kernel-set);
+# ROMP_STATE_TAG — the kernel's state tag, written into the scope's Description (kernel-set);
 # ROMP_CLI_SCOPE=0 — run the CLI directly, no scope; the limits above. Arguments pass through verbatim.
 set -u
 
@@ -201,6 +202,13 @@ case "$t" in
 esac
 unit="romp-session-$(printf '%.8s' "$sid")-$$-$t"
 
+# The Description names the kernel that started this CLI: `romp-state=<tag>`, the kernel's ROMP_STATE_TAG (2026-09-23).
+# A booting kernel stops a leftover session scope only when the tag is its own, since the unit list is machine-wide and
+# a session id is not a kernel's (state_tag_of in kernel/sdk_backend.py). The kernel sets the variable on every launch;
+# without it (a hand run) the Description is the plain one, and no kernel's sweep will stop the unit.
+desc="romp session $sid"
+if [ -n "${ROMP_STATE_TAG:-}" ]; then desc="$desc romp-state=$ROMP_STATE_TAG"; fi
+
 # shellcheck disable=SC2086  # split on purpose, as above
 exec systemd-run --user --scope --quiet --collect --unit="$unit" \
-    --description="romp session $sid" $props -- "$ROMP_CLI_REAL" "$@"
+    --description="$desc" $props -- "$ROMP_CLI_REAL" "$@"
