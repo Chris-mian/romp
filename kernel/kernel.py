@@ -62041,7 +62041,7 @@ var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
 // kernel retires this page's previous socket on a reconnect, and never another page's (a duplicated tab copies
 // sessionStorage, and with it wid; it must not copy this).
 var IID="";try{IID=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():"";}catch(e){}if(!IID)IID=String(Math.random()).slice(2)+"-"+Date.now();
-var APP="%s";var LABEL="%s";var LOADEDV=%d;var NOSTALE=%s;var LOADEDPV=%s;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
+var APP="%s";var LABEL="%s";var LOADEDV=%d;var BOOTID=%s;var NOSTALE=%s;var LOADEDPV=%s;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
 // the reload core's 'fresh' hold (invisible restarts, 2026-09-14): the chat pane alone, the pane the ruling names, armed at the drop and
 // kept through the redial; a Files or Settings page gets no resync frame, so a hold armed there would never end (the round-two review).
 // Stamped once per hold: a flapping socket or a kernel in a crash loop re-arms without moving the stamp, so the core's bound is
@@ -62295,7 +62295,13 @@ if(inWin){d=eagerDial?0:250;eagerDial=false;}   // …so the FIRST such close re
 if(restartAnnounced&&Date.now()-restartAnnounced<30000)d=Math.min(d,250);   // an announced death keeps its tight redial
 setTimeout(connect,d);};   // the blind 1.5 s stays for unannounced drops outside any return window
 ws.onerror=function(){try{ws.close();}catch(e){}};}
-function send(m){var s=JSON.stringify(m);if(m&&m.type==="ready"){bundleReady=true;readyProto=(m.proto===2?2:1);readyMsg=s;}   // the bundle's listener is installed: from here a redial may declare itself (the dial term in connect)
+// EVERY clientDiag row this page files leaves stamped with the page's build and the kernel boot it loaded against (2026-09-23):
+// LOADEDV, the dist token this page was served with (its ?v= urls), and BOOTID, the serving kernel's boot id baked in beside it.
+// The page reloads often, and a row that could not say which bundle wrote it could not be told from an older page's. Here,
+// in the one door every pane row takes (the bundle's posts, the reload core's __rompDiag, federation's own rows), so no
+// call site has to remember; a copy, so the caller's object is untouched. The kernel keeps both (the clientDiag branch).
+function diagStamp(m){var c={};for(var k in m)c[k]=m[k];c.build=LOADEDV;c.boot=BOOTID;return c;}
+function send(m){if(m&&m.type==="clientDiag")m=diagStamp(m);var s=JSON.stringify(m);if(m&&m.type==="ready"){bundleReady=true;readyProto=(m.proto===2?2:1);readyMsg=s;}   // the bundle's listener is installed: from here a redial may declare itself (the dial term in connect)
 if(ws&&ws.readyState===1){ws.send(s);return;}
 if(m&&m.type==="ready")readyQueued=true;   // ...and this one waits for the open: the redial that carries it dials as a fresh page (onopen clears the bit after the flush)
 if(m&&m.type==="clientDiag"){if(queuedDiag>=DIAG_QUEUE_MAX)return;queuedDiag++;}   // breadcrumbs waiting for a reconnect are capped; everything else queues as before
@@ -62420,7 +62426,7 @@ pendingWhy="foreground";freshPending=true;armFresh();   // the reconnect's arm r
 if(ws&&ws.readyState===1)abandon();else{try{if(ws&&ws.readyState===0)ws.close();}catch(e){}}   // OPEN-but-quiet → abandoned + redialed below, now; stuck-CONNECTING → aborted, onclose retries
 if(!ws||ws.readyState===3)connect();
 returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial so it queues for the new socket instead of vanishing into the dead one
-""" % (_reload_core(v, pvv), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, label, int(v), "true" if no_stale else "false", json.dumps(pvv), app, app)
+""" % (_reload_core(v, pvv), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, label, int(v), json.dumps(_BOOT_ID), "true" if no_stale else "false", json.dumps(pvv), app, app)
 
 
 # The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
@@ -66034,8 +66040,12 @@ _LANDING_MOBILE_JS = """
 // the kernel aims at a dashboard's shell by wid (_reveal_chat_for's second line) has a target at last.
 var diagQ=[],DIAGQ_MAX=20,shellSock=null;
 function shellDiag(what,data){var m={type:'clientDiag',surface:'shell',what:what,data:data};
-if(shellSock&&shellSock.readyState===1){try{shellSock.send(JSON.stringify(m));}catch(e){}}
+if(shellSock&&shellSock.readyState===1){try{shellSock.send(JSON.stringify(diagStamp(m)));}catch(e){}}
 else if(diagQ.length<DIAGQ_MAX)diagQ.push(m);}
+// …stamped as it LEAVES with the page's build and the boot it loaded against (2026-09-23), the pane shim's diagStamp twin: read
+// off the landing's reload core (window.__rompReload: loaded, boot, both baked by the kernel that served this page), which
+// parses after this script, so a row queued before it existed is stamped at the flush, never at the call
+function diagStamp(m){var R=window.__rompReload,c={};for(var k in m)c[k]=m[k];c.build=R&&typeof R.loaded==='number'?R.loaded:null;c.boot=R&&R.boot?R.boot:null;return c;}
 window.__rompShellDiag=shellDiag;
 // the bottom bar's API health detail sends its ops (the pause button's setGlobalRetryPaused, a row's openSession)
 // on the shell socket, whose wid aims a reveal at THIS dashboard; false when no socket is open, so the button can
@@ -66180,7 +66190,7 @@ var ws=new WebSocket(proto+location.host+'/ws?app=shell&wid='+encodeURIComponent
 // ready → the kernel sends the current needs-you count, so a relaunched installed app trues up
 // its icon badge immediately instead of waiting for the next change (plans/ios-app.md proposal 3)
 ws.onopen=function(){try{ws.send(JSON.stringify({type:'ready'}));}catch(e){}
-shellSock=ws;var q=diagQ;diagQ=[];q.forEach(function(m){try{ws.send(JSON.stringify(m));}catch(e){}});   // the rows that waited for this socket
+shellSock=ws;var q=diagQ;diagQ=[];q.forEach(function(m){try{ws.send(JSON.stringify(diagStamp(m)));}catch(e){}});   // the rows that waited for this socket
 if(shellOpened&&window.__rompReload)window.__rompReload.checkBoot();shellOpened=true;};
 ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data);}catch(e){return;}
 if(m&&m.type==='ka'&&m.pv&&window.__rompReload&&window.__rompReload.notePanes)window.__rompReload.notePanes(m.pv);   // the pane set's revision beside the build token (plans/panes-as-data.md): a define or remove at the kernel offers a reload
@@ -72324,6 +72334,12 @@ class Handler(BaseHTTPRequestHandler):
                        # every such row, could not). The wsopen row the accept files carries the same value, but it names
                        # the socket by cid and this row does not, so the two cannot be joined without the stamp.
                        "reconnect": bool(client.get("redial")),
+                       # the page's build and the kernel boot it loaded against (2026-09-23), stamped by the page's one diag door
+                       # (the pane shim's diagStamp, the shell's twin) so every surface carries them: `build` the dist token the page
+                       # was served with, `boot` the serving kernel's boot id baked into it. A row from a page that predates the
+                       # stamp (or a host that sends none, the VS Code webview) reads null for both, itself a statement of old code
+                       "build": msg.get("build") if isinstance(msg.get("build"), int) and not isinstance(msg.get("build"), bool) else None,
+                       "boot": str(msg.get("boot"))[:40] if isinstance(msg.get("boot"), str) and msg.get("boot") else None,
                        "data": msg.get("data")}
                 # past the size cap the file becomes .1 and a new one starts; the check, rename and write are one
                 # locked step, since every pane's socket posts from its own handler thread

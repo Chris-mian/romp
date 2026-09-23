@@ -44,9 +44,11 @@ function shimJs(app: string, noStale = false, core = ""): string {
   const label = LABELS[app] || app.charAt(0).toUpperCase() + app.slice(1);
   // the pane-set revision slot (plans/panes-as-data.md): a JSON string the shim compares against the keepalive's pv
   const pv = slice.includes("var LOADEDPV=%s;") ? ['"0"'] : [];
+  // the serving kernel's boot id beside the build (2026-09-23: every diag row leaves stamped with both, diagStamp): a JSON string
+  const boot = slice.includes("var BOOTID=%s;") ? ['"1.1"'] : [];
   const args = slice.includes('var LABEL="%s"')
-    ? [core, "var RESTART_DIET=false;", app, label, "5", noStale ? "true" : "false", ...pv, app, app]
-    : [core, "var RESTART_DIET=false;", app, "5", noStale ? "true" : "false", ...pv, app, app];
+    ? [core, "var RESTART_DIET=false;", app, label, "5", ...boot, noStale ? "true" : "false", ...pv, app, app]
+    : [core, "var RESTART_DIET=false;", app, "5", ...boot, noStale ? "true" : "false", ...pv, app, app];
   let i = 0;
   return slice.replace(/%[sd]/g, () => args[i++]).replace(/%%/g, "%");
 }
@@ -537,7 +539,8 @@ test("the diagnostics door sends a reload-core breadcrumb up this pane's socket"
   h.win.__rompDiag("held", { reason: "build", hold: "typing", ageMs: 60000 });
   const rows = h.sent.filter((m) => m.type === "clientDiag" && m.surface === "reload-core");
   assert.equal(rows.length, 1);
-  assert.deepEqual(rows[0], { type: "clientDiag", surface: "reload-core", what: "held", data: { reason: "build", hold: "typing", ageMs: 60000 } });
+  assert.deepEqual(rows[0], { type: "clientDiag", surface: "reload-core", what: "held", data: { reason: "build", hold: "typing", ageMs: 60000 },
+                              build: 5, boot: "1.1" }, "stamped with the page's build and boot as it leaves (diagStamp, 2026-09-23)");
 });
 
 // The loss is decided at the RELOAD, from the queue's state then (the round-three review: a socket that returned and flushed
