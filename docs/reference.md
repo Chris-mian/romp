@@ -4918,31 +4918,33 @@ before, and a click that lands while text is selected inside a link opens nothin
 A tab wears a dashed red ring, **Blocked**, while its session is stopped: on a permission or
 picker prompt, or on an API error only you can clear. When the feed shows one of the session's
 cards under Needs you (it asked you something, it is waiting on a decision, a peer's message is
-waiting for your say, or a stalled task needs a look), the tab wears a dashed magenta ring
-instead, **Needs you**, whether the session is idle, waiting on background work or still working,
-so the sessions that need you stand out in the strip without a click through each of them; a
-working session keeps its gold dot inside the ring. The ring follows the feed, one refresh behind
-it at most, and goes when the card does: answer it, resolve it or clear it and the tab is plain
-again. A red ring outranks the magenta one; the amber ring of a session retrying an API error on
-its own gives way to it. The three rings are rows of **Settings**, **Chat**, **Tab widgets**
+waiting for your say, or a stalled task needs a look), a small **magenta dot** sits at the tab's
+top-right corner, **Needs you**, carrying a count of what needs you in the session (a number, "99+"
+past ninety-nine), whether the session is idle, waiting on background work or still working, so the
+sessions that need you stand out in the strip without a click through each of them; a working
+session keeps its gold dot at the left. The count follows the feed, one refresh behind it at most,
+and goes when the card does: answer it, resolve it or clear it and the tab is plain again. A session
+**retrying** an API error on its own shows a hollow **amber left dot**, a ring around the dot's slot
+whose distinct shape tells it from the filled working gold and awaiting green without relying on
+colour. Blocked outranks Needs you, and Needs you outranks retrying. The three rings are rows of **Settings**, **Chat**, **Tab widgets**
 (**Blocked**, **Needs you**, **Retrying**), each with its own switch, listed in that order because
-a tab wears one ring at a time and the first that applies wins: red over magenta over amber. A
-ring switched off leaves the tab with its dot; the small dot on a folded group's header and the
+a tab wears one cue at a time and the first that applies wins: Blocked over Needs you over retrying. A
+cue switched off leaves the tab with its dot; the small dot on a folded group's header and the
 phone's picker follow the same switches. With notifications on, the card entering Needs you is
 also what notifies you (see [Notifications on your phone](guide.md#notifications-on-your-phone)):
 the ring is that card, shown in the strip, and it stays as long as the card does, including across
 a kernel restart, which announces nothing. On a phone, the session picker marks the same sessions
-with a magenta bar at the row's left edge, and the button that names the current session wears the
-dashed magenta border. One colour, the Needs you colour, marks the category everywhere: the column's
+with the magenta count dot, on each picker row and on the button that names the current session. One colour, the Needs you colour, marks the category everywhere: the column's
 chip, a card's question mark, the ring, the picker's bar.
 
 A per-browser setting, **State badge instead of the outline ring** (a checkbox in the gear's
-**Chat** tab, beside the tab lock), swaps two of these cues for dots. Needs you becomes a small
-magenta dot at the tab's top-right corner carrying a count of what needs you in the session (a
-number, "99+" past ninety-nine); retrying moves to the amber **left status dot**, but only while
-the **Status dot** widget is on, since that is the dot it moves to, so with the Status dot widget
-off retrying keeps its amber ring. Blocked keeps its red ring and fill either way, and the dashed
-rings are what shows when the setting is off (the default). On a phone the count dot replaces the current-session chip's dashed magenta border and each picker row's magenta left bar. The setting is off by default.
+**Chat** tab, beside the tab lock), is **on by default** and is what the paragraph above describes:
+Needs you a small magenta dot with its count, retrying a hollow amber left dot. Turn it OFF to swap
+those two back to the outline shapes: Needs you the dashed magenta ring, retrying the dashed amber
+ring, and on a phone the picker row's magenta left bar and the current-session chip's dashed magenta
+border in place of the count dot. Blocked keeps its red ring and fill either way. The retrying left
+dot needs the **Status dot** widget on, since that is the slot it moves to; with the Status dot
+widget off, retrying keeps its amber ring even under the badge.
 
 ### Tags and groups in the tab strip
 

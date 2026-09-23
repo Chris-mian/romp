@@ -94,9 +94,9 @@ const setTheme = (p, t) => p.evaluate((t) => document.body.classList.toggle("the
 const themes = ["dark", "light"];
 const rect = (r) => ({ top: r.top, right: r.right, bottom: r.bottom, left: r.left, width: r.width, height: r.height });
 
-// ── the desktop strip under BADGE mode ──
+// ── the desktop strip at the DEFAULT (no seed): the badge is ON by default since 2026-09-23, so the served strip's
+//    default path is pinned here (before the flip this context showed the ring and the .tab-badge wait below would red) ──
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
-await ctx.addInitScript(BADGE);   // the setting is read from localStorage on load; seed it before any page script
 const page = await ctx.newPage(); page.on("pageerror", (e) => errors.push("desktop: " + String(e).slice(0, 200)));
 await page.goto(cfg.chat);
 await page.waitForSelector('#tabs .tab[data-id="' + cfg.one + '"] .tab-badge', { timeout: 60000 }).catch(async () => {
@@ -117,11 +117,12 @@ const readBadge = (p) => p.evaluate((ids) => {
   const o = {}; for (const [k, id] of Object.entries(ids)) o[k] = one(id); return o;
 }, cfg.ids);
 for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(150); out.badge[t] = await readBadge(page); }
-// (item 10, the second contributor on PR 2017) a probe: a bare `.tab-dot retrying` span's COMPUTED background is the
-// retrying amber token, so the left-dot amber is exercised without seeding a hard-to-mint retrying session.
+// (item 10, the second contributor on PR 2017; the shape cue, 2026-09-23) a probe: a bare `.tab-dot retrying` span is a
+// HOLLOW amber ring, so its computed FILL is transparent and the amber rides the inset box-shadow (the outline): the
+// left-dot amber and its distinct shape are exercised without seeding a hard-to-mint retrying session.
 out.retryProbe = {};
 for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(100);
-  out.retryProbe[t] = await page.evaluate(() => { const p = document.createElement("span"); p.className = "tab-dot retrying"; document.body.appendChild(p); const bg = getComputedStyle(p).backgroundColor; p.remove(); return bg; }); }
+  out.retryProbe[t] = await page.evaluate(() => { const p = document.createElement("span"); p.className = "tab-dot retrying"; document.body.appendChild(p); const cs = getComputedStyle(p); const r = { bg: cs.backgroundColor, shadow: cs.boxShadow }; p.remove(); return r; }); }
 
 const geomEval = (id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const lbl = t.querySelector(".tab-label, .tab-name, .tab-title"); return { w: t.getBoundingClientRect().width, labelLeft: lbl ? lbl.getBoundingClientRect().left : null }; };
 await setTheme(page, "dark"); await page.waitForTimeout(120);
@@ -212,8 +213,8 @@ async function openGear(seed) {
       const demo = r.querySelector(".rs-widget-demo .tab"); if (!demo) continue;
       const cs = getComputedStyle(demo); const badge = demo.querySelector(".tab-badge"); const dot = demo.querySelector(".tab-dot.retrying");
       rows[r.dataset.widget] = { cls: demo.className, tab: R(demo), outlineStyle: cs.outlineStyle, outlineColor: cs.outlineColor,
-        badge: badge ? { bg: getComputedStyle(badge).backgroundColor, position: getComputedStyle(badge).position, rect: R(badge) } : null,
-        dot: dot ? { bg: getComputedStyle(dot).backgroundColor, visibility: getComputedStyle(dot).visibility } : null };
+        badge: badge ? { bg: getComputedStyle(badge).backgroundColor, position: getComputedStyle(badge).position, rect: R(badge), text: badge.textContent } : null,
+        dot: dot ? { bg: getComputedStyle(dot).backgroundColor, shadow: getComputedStyle(dot).boxShadow, visibility: getComputedStyle(dot).visibility } : null };
     }
     const tsb = document.getElementById("rs-statebadge");   // the badge's OWN switch (a checkbox styled as a slider): its checked state must track the setting the strip reads
     return { tokens, rows, sw: tsb ? { checked: !!tsb.checked } : null };
@@ -444,7 +445,10 @@ class TabBadgeServed(unittest.TestCase):
     def test_the_retrying_left_dot_paints_the_amber_token(self):
         r = self._result()
         for t in ("dark", "light"):
-            self.assertEqual(r["retryProbe"][t], AMBER[t], "%s: a .tab-dot.retrying span (the retrying left dot under badge mode) computes to the amber token" % t)
+            probe = r["retryProbe"][t]
+            self.assertIn(probe["bg"], ("rgba(0, 0, 0, 0)", "transparent"), "%s: the retrying left dot is HOLLOW (a transparent fill), not a filled disc: %r" % (t, probe))
+            self.assertIn(AMBER[t], probe["shadow"], "%s: the amber rides the inset outline (the ring shape): %r" % (t, probe))
+            self.assertIn("inset", probe["shadow"], "%s: the outline is inset (a hollow ring, a distinct shape from the filled working/awaiting dots): %r" % (t, probe))
 
     def test_the_gear_preview_renders_the_badge_vocabulary_in_badge_mode_in_both_themes(self):
         # ROUND ONE MEDIUM (PR 2065): the gear's ring-section demos, run through applyTabBadgeMode when the badge is on,
@@ -464,6 +468,8 @@ class TabBadgeServed(unittest.TestCase):
             self.assertIsNotNone(nu["badge"], "%s: the Needs-you demo wears a .tab-badge (the ring dropped for the dot)" % t)
             self.assertEqual(nu["badge"]["position"], "absolute", "%s: the demo badge is positioned, not an unstyled static span: %r" % (t, nu["badge"]))
             self.assertEqual(nu["badge"]["bg"], tok["needs"], "%s: the demo badge's background is the needs token: %r" % (t, nu["badge"]))
+            self.assertEqual(nu["badge"]["text"], "2", "%s: the Needs-you demo carries the count 2, so the preview draws the NUMBERED dot (the :not(:empty) rules live, not the bare older-kernel dot): %r" % (t, nu["badge"]))
+            self.assertGreaterEqual(nu["badge"]["rect"]["width"], 14, "%s: the numbered dot is at least the 14px the :not(:empty) rule sizes it: %r" % (t, nu["badge"]))
             self.assertEqual(nu["outlineStyle"], "none", "%s: the Needs-you demo dropped its ring for the dot: %r" % (t, nu))
             self.assertLessEqual(abs(nu["badge"]["rect"]["top"] - nu["tab"]["top"]), 8, "%s: the demo badge sits at the tab's TOP, not below in the flow: %r" % (t, nu))
             self.assertLessEqual(abs(nu["tab"]["right"] - nu["badge"]["rect"]["right"]), 8, "%s: the demo badge sits at the tab's RIGHT corner: %r" % (t, nu))
@@ -471,7 +477,9 @@ class TabBadgeServed(unittest.TestCase):
             rt = rows.get("ring-retrying")
             self.assertIsNotNone(rt, "%s: the Retrying demo row rendered a tab" % t)
             self.assertIsNotNone(rt["dot"], "%s: the Retrying demo re-inks a .tab-dot.retrying slot" % t)
-            self.assertEqual(rt["dot"]["bg"], tok["retrying"], "%s: the retrying demo dot is the amber token, not the working gold: %r" % (t, rt["dot"]))
+            self.assertIn(rt["dot"]["bg"], ("rgba(0, 0, 0, 0)", "transparent"), "%s: the retrying demo dot is HOLLOW (a transparent fill), the strip's shape cue mirrored: %r" % (t, rt["dot"]))
+            self.assertIn(tok["retrying"], rt["dot"]["shadow"], "%s: the amber rides the demo dot's inset outline, not the working gold: %r" % (t, rt["dot"]))
+            self.assertIn("inset", rt["dot"]["shadow"], "%s: the demo retrying dot is a hollow ring (a distinct shape): %r" % (t, rt["dot"]))
             self.assertEqual(rt["dot"]["visibility"], "visible", "%s: the retrying demo dot is visible: %r" % (t, rt["dot"]))
             # Blocked (ring-needs-you): the badge does not touch this ring, so it STAYS dashed in the awaiting token
             bl = rows.get("ring-needs-you")

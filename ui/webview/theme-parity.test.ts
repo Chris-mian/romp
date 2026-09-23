@@ -242,8 +242,8 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     for (const [g, ground] of [["hovered tab", hover], ["selected tab", active], ["Needs you box wash", box]] as const) {
       assert.ok(contrast(rings.ask, ground) >= 3, `${name}: the Needs you ring on the ${g} = ${contrast(rings.ask, ground).toFixed(2)} < 3`);
     }
-    // the RETRYING amber is a filled LEFT DOT under badge mode (plans/tab-state-badge.md), so it sits on the tab face like
-    // the Needs-you dot: 3:1 (large chrome, not text) on the page, the hovered tab and the selected tab's fill, both themes.
+    // the RETRYING amber is a HOLLOW LEFT DOT (a ring) under badge mode (plans/tab-state-badge.md), so its amber outline
+    // sits on the tab face: 3:1 (large chrome, not text) on the page, the hovered tab and the selected tab's fill, both themes.
     for (const [g, ground] of [["page", page], ["hovered tab", hover], ["selected tab", active]] as const) {
       assert.ok(contrast(rings.retrying, ground) >= 3, `${name}: the retrying amber dot on the ${g} = ${contrast(rings.retrying, ground).toFixed(2)} < 3`);
     }
@@ -359,4 +359,53 @@ test("the 5xx marks of the API-health cell clear the validator's two floors agai
   }
   assert.equal(pairs.length, 2);
   assert.ok(KERNEL.includes(".ah-c-r5xx{color:var(--st-5xx-ink,#8a8aff)}") && KERNEL.includes("body.theme-light .ah-c-r5xx{color:var(--st-5xx-ink,#4c1b7e)}"), "the landing's inks ride the token");
+});
+
+// BADGE MODE, the left-slot dots (plans/tab-state-badge.md): working (a filled gold disc), awaiting (a filled green
+// disc) and retrying (a HOLLOW amber ring since 2026-09-23). Two dots in the same slot must be told apart, and colour
+// alone is not enough under a red-green deficiency (the review's math: dark retrying vs awaiting 2.7 deutan, far below
+// the categorical floor 8). The amended rule: a pair whose hues clear the floors (15 full colour, 8 under a deficiency)
+// needs no shape; a pair whose hues cannot must wear a distinct SHAPE. The retrying ring is that shape, so it needs no
+// colour floor against the filled dots. The working gold vs the awaiting green is a PRE-EXISTING miss (4.2 protan dark,
+// both filled, no shape apart) recorded for the user's decision, not fixed in this PR (like the compacting pair above).
+test("badge mode: a distinct SHAPE tells the retrying dot from the filled working/awaiting dots where colour cannot; the working-vs-awaiting miss is recorded, not fixed", () => {
+  const css = read("styles.css");
+  // (a) the SHAPE cue is real: retrying is hollow (transparent fill + an inset amber outline), working/awaiting are filled discs
+  const body = (re: RegExp, what: string) => { const m = css.match(re); assert.ok(m, what + " rule present"); return m![1]; };
+  const nc = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "");   // comment-blind, so a word in a comment cannot satisfy a declaration match
+  const retrying = nc(body(/\n\.tab-dot\.retrying \{([^}]*)\}/, ".tab-dot.retrying"));
+  assert.match(retrying, /background:\s*transparent/, "the retrying dot is HOLLOW (transparent fill)");
+  assert.match(retrying, /box-shadow:\s*inset 0 0 0 [\d.]+px var\(--st-retrying-bg\)/, "the retrying dot wears an inset amber outline (the ring shape)");
+  const base = nc(body(/\n\.tab-dot \{([^}]*)\}/, ".tab-dot"));
+  assert.match(base, /background:\s*var\(--st-working-bg\)/, "the working dot is a FILLED disc");
+  assert.doesNotMatch(base, /box-shadow/, "no ring on the working dot");
+  const awaitDot = nc(body(/\n\.tab-dot\.await \{([^}]*)\}/, ".tab-dot.await"));
+  assert.match(awaitDot, /background:\s*var\(--st-awaitbg-bg\)/, "the awaiting dot is a FILLED disc");
+  assert.doesNotMatch(awaitDot, /box-shadow/, "no ring on the awaiting dot");
+  // (b) every left-dot pair, both themes, RECORDED against the categorical floors (15 full colour, 8 under a red-green
+  // deficiency, cvdWorst) the ring pairs use. A pin at those floors reds three of four pairs, so each pair a SHAPE now
+  // separates is recorded at a stated LESSER floor with the reason (the way the 5xx ink pair is conceded above), and the
+  // one pair no shape separates is conceded on the user's call. The measured hues (the review's math) are in the comments.
+  for (const [name, theme] of [["dark", props(block(css, ":root {"))], ["light", props(block(css, "body.theme-light {"))]] as const) {
+    const page = rgbOf(theme.get("--bg")!, [30, 30, 30])!;
+    const rgb: Record<string, [number, number, number]> = {
+      working: rgbOf(theme.get("--st-working-bg")!, page)!, awaiting: rgbOf(theme.get("--st-awaitbg-bg")!, page)!, retrying: rgbOf(theme.get("--st-retrying-bg")!, page)!,
+    };
+    const check = (what: string, a: string, b: string, floorFull: number, floorCvd: number) => {
+      const full = deltaE(rgb[a], rgb[b]), c = cvdWorst(rgb[a], rgb[b]);
+      assert.ok(full >= floorFull, `${name}: ${what} = ${full.toFixed(1)} < ${floorFull} (full colour)`);
+      assert.ok(c >= floorCvd, `${name}: ${what} = ${c.toFixed(1)} < ${floorCvd} (under a red-green deficiency)`);
+    };
+    // retrying (a HOLLOW ring) against the FILLED working and awaiting dots: their hues do not reach the deficiency floor
+    // (the review: dark retrying-vs-working 12.1 full / 8.2 deficiency, light 8.1 / 3.3; dark retrying-vs-awaiting 2.7
+    // deficiency), so the distinct SHAPE carries the pair and the floors drop to a drift-guard of 2, recorded in
+    // plans/tab-state-badge.md and the .tab-dot.retrying rule in styles.css.
+    check("the retrying ring against the working dot", "retrying", "working", 2, 2);
+    check("the retrying ring against the awaiting dot", "retrying", "awaiting", 2, 2);
+    // working (gold) against awaiting (green), both FILLED with no shape apart: the DARK pair is a PRE-EXISTING miss (4.2
+    // protan) conceded at a drift-guard floor of 2 on the user's decision (relayed by the manager 2026-09-22), recorded in
+    // the plan and styles.css and named as a separate decision, not fixed here. The light pair clears comfortably, so it
+    // holds the full categorical floors.
+    check("the working dot against the awaiting dot", "working", "awaiting", name === "dark" ? 2 : 15, name === "dark" ? 2 : 8);
+  }
 });

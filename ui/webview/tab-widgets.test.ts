@@ -329,7 +329,12 @@ test("the built-in rings: registration order IS RING_ORDER; a ring renders no no
     assert.equal(W.ringDemoClass(w, P({ on: { [w.id]: false } })), null, w.id + " switched off: a plain demo tab");
     assert.equal(w.options, undefined, "no options");
   }
-  assert.deepEqual(W.ringWidgets().map((w) => w.demo), [{ state: "awaiting" }, { state: "working", needsYou: true }, { state: "retrying" }]);
+  assert.deepEqual(W.ringWidgets().map((w) => w.demo), [{ state: "awaiting" }, { state: "working", needsYou: true, needsYouCount: 2 }, { state: "retrying" }]);   // the Needs-you demo carries a count (2) so the gear preview draws the numbered dot and the :not(:empty) rules live (PR 2065 review)
+  // the popover descriptions read by STATE, not SHAPE (PR 2065 review): the same rows drive both the badge and the ring,
+  // so "a dashed ring" was wrong in badge mode. No shape word ("ring", "dashed") survives in a description.
+  for (const w of W.ringWidgets()) {
+    assert.doesNotMatch(w.description || "", /\bdashed\b|\brings?\b/i, w.id + " describes the STATE, not the shape: " + JSON.stringify(w.description));
+  }
   const statuses: WidgetStatus[] = [
     { state: "ready" }, { state: "ready", needsYou: true }, { state: "idle", needsYou: true }, { state: "working" }, { state: "working", needsYou: true },
     { state: "awaitingBg", needsYou: true }, { state: "compacting", needsYou: true }, { state: "needsInput" }, { state: "needsInput", needsYou: true },
@@ -498,4 +503,36 @@ test("needsYouPhrase: the ONE Needs-you phrase for the badge aria-label and a co
   assert.equal(W.needsYouPhrase(1), "1 thing needs you", "the singular");
   assert.equal(W.needsYouPhrase(0), "needs you", "no count (an older kernel with the needsYou bit): the bare phrase");
   assert.equal(W.needsYouPhrase(150), "150 things need you", "never capped, so the phone leg and the tooltip agree with the desktop label above 99");
+});
+
+// plan test 5, EXECUTED (PR 2065 review item 4): the source pin in settings-previews.test.ts proves the gear's ring-demo
+// calls the badge branch, but cannot see the ORDER it depends on: the ring class is added BEFORE applyTabBadgeMode, so
+// the badge pass runs last and the ring it dropped is not re-added. Swapping those two lines leaves the source pin green.
+// Here the demo function is sliced from gear.js and EXECUTED over the real tab-widgets module and the tiny DOM above, so
+// the swap reds: applyTabBadgeMode would drop the Needs-you ring, then the ringDemoClass line would put it back.
+test("plan test 5 executed: the gear ring demo drops the Needs-you ring for the badge dot, and the swap of the ring-class and badge-call lines reds it", () => {
+  const gear = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
+  const ringSection = gear.slice(gear.indexOf("var ringSection = widgetSection({"), gear.indexOf("function statusPrefs(s)"));
+  const m = ringSection.match(/demo: function \(w, prefs\) \{([\s\S]*?)\n\s*\},/);
+  assert.ok(m, "the ring-section demo function is where the pin expects it");
+  const body = m![1];
+  // the swap the review names: the ringDemoClass line must come BEFORE the applyTabBadgeMode line in the CODE (strip the
+  // comment first, which mentions applyTabBadgeMode in prose)
+  const code = body.replace(/^[ \t]*\/\/.*$/gm, "");
+  assert.ok(code.indexOf("ringDemoClass") < code.indexOf("applyTabBadgeMode"), "the ring class is added before the badge pass, so the badge pass runs last");
+  store.set("romp:settings", JSON.stringify({ tabStateBadge: true }));
+  const demo = new Function("w", "prefs", "TW", "load", "demoTab", "demoLabel", body + "\n") as
+    (w: any, prefs: any, TW: any, load: any, demoTab: () => El, demoLabel: () => El) => El;
+  const run = (src: string) => {
+    const fn = new Function("w", "prefs", "TW", "load", "demoTab", "demoLabel", src + "\n") as typeof demo;
+    return fn(W.tabWidget("ring-waiting-on-you"), P(), W, S.loadSettings, () => mkEl("span"), () => mkEl("span"));
+  };
+  const tab = run(body);
+  assert.ok(!classes(tab).includes("ring-waiting-on-you"), "badge on: the Needs-you ring class is gone (dropped for the top-right dot)");
+  assert.ok(tab.children.some((c) => classes(c).includes("tab-badge")), "…and the top-right badge dot is on the demo");
+  // the swap: run applyTabBadgeMode BEFORE the ring class is added, so the ring is put back and the class returns (the bug)
+  const swapped = body.replace(/(\s*)(var cls = TW\.ringDemoClass\(w, prefs\); if \(cls\) tab\.classList\.add\(cls\);)(\s*)(if \(badge\) TW\.applyTabBadgeMode\(tab, sid, st, prefs\);)/, "$1$4$3$2");
+  assert.notEqual(swapped, body, "the swap rewrite matched the two lines");
+  const swappedTab = run(swapped);
+  assert.ok(classes(swappedTab).includes("ring-waiting-on-you"), "the swap re-adds the ring class after the badge pass: the demo wrongly keeps the ring (this is what the pin catches)");
 });

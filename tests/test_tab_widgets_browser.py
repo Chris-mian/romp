@@ -131,7 +131,7 @@ const readPanel = () => setF.evaluate(() => {
              demo: demo ? Array.from(demo.children).map((c) => ({ cls: c.className, text: c.textContent, title: c.title || "" })) : null,
              opts: Array.from(r.querySelectorAll(".rs-widget-opt")).map((o) => ({ key: o.dataset.opt, label: o.title, current: (o.querySelector("button") || {}).textContent || "" })) };
   });
-  // the SECTION: the Tab widgets head against the card's box and scroll (the gear's ask scrolls the card so the head sits under the padding)
+  // the SECTION: the Tab strip head (data-section="tabstrip", T415; Tab widgets until then) against the card's box and scroll (the gear's ask scrolls the card so the head sits under the padding)
   const card = document.querySelector("#rsettings .rs-card"); const sec = document.querySelector('#rsettings .rs-sec[data-section="tabstrip"]');
   const cr = card.getBoundingClientRect(); const sr = sec ? sec.getBoundingClientRect() : null;
   const section = sec ? { top: sr.top, cardTop: cr.top, cardBottom: cr.bottom, pad: parseFloat(getComputedStyle(card).paddingTop), scrollTop: card.scrollTop, overflow: card.scrollHeight - card.clientHeight,
@@ -202,7 +202,7 @@ out.pillBack = await readPanel();
 // strip while the panel is open, so the glyph itself is not reachable by a pointer then): switches back to Chat and scrolls
 await page.evaluate(() => window.__rompOpenSettings("chat", "tabstrip")); out.landedReask = await landed(setF);
 out.reask = await readPanel();
-// the screenshots: the strip with the glyph and the Chat tab at its Tab widgets section, dark then light
+// the screenshots: the strip with the glyph and the Chat tab at its Tab strip section (T415; Tab widgets until then), dark then light
 const shot = async (theme) => {
   await page.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
   await chatF.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
@@ -210,7 +210,7 @@ const shot = async (theme) => {
   await page.waitForTimeout(200);
   out.ringsByTheme = out.ringsByTheme || {}; out.ringsByTheme[theme] = await readRings();   // the ring demos' colours per theme (2026-09-14)
   if (!cfg.shots) return;
-  const card = await setF.evaluate(() => { const b = document.querySelector("#rsettings .rs-card").getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; });   // the whole card: the scrolled Tab widgets section sits in its lower part
+  const card = await setF.evaluate(() => { const b = document.querySelector("#rsettings .rs-card").getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; });   // the whole card: the gear scrolls the Tab strip head to the card's top, Tab widgets beneath it (T415)
   const fr = await page.evaluate(() => { const f = document.getElementById("f-settings").getBoundingClientRect(); return { x: f.left, y: f.top }; });
   await page.screenshot({ path: cfg.shots + "-settings-" + theme + ".png", clip: { x: fr.x + card.x, y: fr.y + card.y, width: card.width, height: card.height } });
 };
@@ -557,7 +557,7 @@ class ServedTabWidgets(unittest.TestCase):
         # the section head sits inside the card's visible box, under its padding, unless the card ran out of scroll first
         sec = p["section"]
         table = "\n  section=" + json.dumps(sec) + table   # the numbers first: the panel's table is long and cut
-        self.assertIsNotNone(sec, "the Tab widgets head carries the section anchor" + table)
+        self.assertIsNotNone(sec, "the Tab strip head carries the section anchor" + table)
         self.assertTrue(sec["inChat"] and not sec["paneHidden"], "the section is in the Chat pane, which is shown" + table)
         self.assertGreaterEqual(sec["top"], sec["cardTop"] - 0.5, "the head is not above the card's box" + table)
         self.assertLess(sec["top"], sec["cardBottom"], "the head is inside the card's box" + table)
@@ -703,7 +703,7 @@ class ServedTabWidgets(unittest.TestCase):
         shown = [x["pane"] for x in c["panes"] if x["display"] != "none"]
         self.assertEqual(shown, ["feed"], json.dumps(c["panes"]))
         self.assertEqual(c["remembered"], "feed")
-        self.assertTrue(c["section"]["paneHidden"], "the Tab widgets section is in the hidden Chat pane now")
+        self.assertTrue(c["section"]["paneHidden"], "the Tab strip section is in the hidden Chat pane now")
         # the follow-up's round one, LOW 1: a pill round trip (Feed, then Chat by its pill) leaves no section room on the Chat pane
         pb = r["pillBack"]
         self.assertEqual([x["pane"] for x in pb["panes"] if x["display"] != "none"], ["chat"], json.dumps(pb["panes"]))

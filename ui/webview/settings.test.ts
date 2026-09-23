@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 // Minimal localStorage shim BEFORE importing the module (load/save read it at call time).
 const store: Record<string, string> = {};
@@ -262,4 +264,12 @@ test("a stored showArtifactsControl is dropped at load and gone after a save", (
   saveSettings({ compact: false });
   assert.equal("showArtifactsControl" in JSON.parse(store["romp:settings"]), false, "gone on the next save");
   delete store["romp:settings"];
+});
+
+test("saveSettings has no production caller (a whole-object save would stamp the current default into a store that never chose)", () => {
+  const dir = path.resolve(process.cwd(), "..", "ui", "webview");
+  const callers = fs.readdirSync(dir)
+    .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "settings.ts")
+    .filter((f) => /\bsaveSettings\s*\(/.test(fs.readFileSync(path.join(dir, f), "utf8")));
+  assert.deepEqual(callers, [], "no webview module CALLS saveSettings (the gear posts settingsSync; render.ts only imports it): a caller must not be added without the fresh-key rule, since a save stamps DEFAULT_SETTINGS.tabStateBadge (true today) into a never-chose store and would defeat a future flip to off");
 });

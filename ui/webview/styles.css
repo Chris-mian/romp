@@ -612,7 +612,11 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
 .tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the await-green chip (the user 2026-07-13) */
-.tab-dot.retrying { background: var(--st-retrying-bg); visibility: visible; }   /* badge mode (tabStateBadge): retrying leaves the amber ring for the left dot (plans/tab-state-badge.md) */
+/* CONCEDED (recorded, not fixed): the working GOLD dot against this awaiting GREEN dot sits at 4.2 under the protan
+   deficiency in the dark theme, below the categorical floor 8, and both are filled discs with no shape apart. A
+   pre-existing miss kept on the user's decision (relayed by the manager 2026-09-22), pinned at a drift-guard floor in
+   theme-parity.test.ts and recorded in plans/tab-state-badge.md; the light pair clears (17.0 under a deficiency). */
+.tab-dot.retrying { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-retrying-bg); visibility: visible; }   /* badge mode (tabStateBadge): retrying leaves the amber tab-ring for a HOLLOW amber LEFT dot (plans/tab-state-badge.md): a distinct SHAPE, not colour alone, tells it from the filled working/awaiting dots under a red-green deficiency (the blocked state uses a shape cue too, the dashed ring) */
 /* the STATE BADGE: a contained top-right dot for the Needs-you state under badge mode, drawn on top and moving nothing
    (.tab is position:relative already), in the magenta token the Needs-you ring reads. It carries a count later. */
 .tab-badge { position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); pointer-events: none; z-index: 3; }
