@@ -86,11 +86,7 @@ out.first = await readBox();
 // 0. COLLAPSED BY DEFAULT and opened in steps (the user 2026-09-23): the header line alone, one click the items (titles and buttons), a second the
 // full context (the background under each title); read in both themes at each level (the theme is the body's class, as the colour lab sets it)
 const setTheme = (t) => page.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), t);
-// fold the box to `level`: a click per step, each waited on the level class; fail-soft (the waits caught), so a page without the levels (the base)
-// reads whatever it shows and the pins say what was there, rather than the driver dying and every test losing its record
-const foldTo = async (level) => { const cur = await page.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c))); if (cur < 0) return false;
-  for (let i = cur, n = 0; i !== level && n < 3; i = (i + 1) % 3, n++) { await page.click("#notices .ntc-head"); await page.waitForFunction((l) => document.getElementById("notices").classList.contains("ntc-l" + l), (i + 1) % 3, { timeout: 5000 }).catch(() => {}); }   // loop-ok: at most three clicks, each waited on the level class
-  return true; };
+const foldTo = (level) => openNeedsBox(page, level);   // the shared fold helper (test_ship_reship_served NEEDS_BOX_OPEN_JS): a click per step, each waited on the level class, fail-soft at the base
 out.levels = {};
 for (const t of ["dark", "light"]) {
   await setTheme(t); await foldTo(0); out.levels[t + "0"] = await readBox();
@@ -255,7 +251,7 @@ out.hiddenPane = { frame: !!fr };
 if (fr) {
   out.hiddenPane.loaded = await fr.waitForSelector("#notices .ntc-head", { timeout: 60000 }).then(() => true).catch(() => false);   // the box on screen once, collapsed to its header line (a fresh page)
   out.hiddenPane.collapsedFresh = await fr.evaluate(() => document.getElementById("notices").classList.contains("ntc-l0") && Array.from(document.querySelectorAll("#notices .ntc-row")).every((r) => getComputedStyle(r).display === "none"));   // collapsed by default: the rows attached and hidden
-  if (out.hiddenPane.collapsedFresh) for (let i = 0; i < 2; i++) { await fr.click("#notices .ntc-head"); await fr.waitForFunction((l) => document.getElementById("notices").classList.contains("ntc-l" + l), i + 1, { timeout: 5000 }).catch(() => {}); }   // loop-ok: two clicks to the full context, each waited on the level class; a page without the levels (the base) shows everything already
+  await openNeedsBox(fr, 2);   // to the full context; a page without the levels (the base) shows everything already
   out.hiddenPane.rowsShown = await fr.waitForSelector("#notices .ntc-row", { timeout: 15000 }).then(() => true).catch(() => false);   // the rows visible at the full context
   out.hiddenPane.g5MoreBefore = await fr.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);   // the long-brief row's button stands before the hide
   await shell.evaluate(() => { window.__rompPaneToggle("chat", false); });                                                    // the rail hides the pane (display:none on its wrapper): the observer's word
@@ -424,7 +420,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
                 json.dump({"chat": base + "/chat?token=" + self.token, "feed": base + "/feed?token=" + self.token, "feedJson": base + "/feed.json?token=" + self.token, "perf": base + "/perf?token=" + self.token, "sid": SID, "api": API, "g1": self.g[0], "g2": self.g[1], "g3": self.g[2], "g4": self.g[3],
                            "reply": "Postgres, the same as production", "store": self.store, "brief": BRIEF, "longBrief": LONG_BRIEF, "g5": SID + ":g5", "g5q": "should the fixtures use the production database name or a scratch one?", "g6": SID + ":g6", "g6q": "which of the two fixture loaders should the CI job run first?", "landing": base + "/?token=" + self.token, "ledger": self.ledger, "order": self.order}, f)
             driver = os.path.join(self.lab, "needsbox.mjs")
-            Path(driver).write_text(DRIVER)
+            Path(driver).write_text(_lab.NEEDS_BOX_OPEN_JS + DRIVER)   # the fold helper the held-mail lab shares
             try:
                 p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=DRIVER_TIMEOUT_S,
                                    env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
