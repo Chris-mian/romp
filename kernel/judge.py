@@ -4891,7 +4891,10 @@ def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
         raise bad
     if _quarantine_store(path, reason, st) is not None or _tries <= 1:
         return None                                  # the bad bytes are preserved aside: a fresh store is legitimate
-    return _read_store_json(path, quarantine=True, _tries=_tries - 1)   # declined: the file changed under us
+    return _read_store_json(path, quarantine=True, _tries=_tries - 1, ident_out=ident_out)   # declined: the file changed under us; the
+    #                                                                                          retry appends ITS file's identity, and the caller
+    #                                                                                          takes the last (the round-one verifier of PR 2064:
+    #                                                                                          the unparseable file's identity stood as the base)
 
 
 def _fresh_store(fsid):
@@ -4902,6 +4905,7 @@ def _fresh_store(fsid):
     store = {"rompUuid": fsid, "seq": 0, "nodes": {}, "placements": {}, "status": {},
              "placementsV": PLACEMENTS_V}
     store["_baseRev"] = 0
+    store["_baseIdent"] = None                       # no file at the load: a file that appears before the save is a publication (save_goals)
     return store
 
 
@@ -5016,7 +5020,7 @@ def _or_fault(fsid, loader):
 def save_goals_or_fault(fsid, store):
     """save_goals behind the same per-session boundary, for a USER GESTURE's write: None when the publish
     landed (or was a no-op), the exception when it did not. The save path reads the file strictly
-    (_matches_disk, _disk_rev, _rebase_onto_disk: a fault or a corrupt file raises so nothing is published
+    (_matches_disk, _disk_rev_ident, _rebase_onto_disk: a fault or a corrupt file raises so nothing is published
     over bytes we could not read), and the write itself can fail (a full disk, a directory gone read-only).
     Either way the gesture's flag did not land and the caller answers the user; left to raise, an OSError
     out of a WS gesture handler reached the receive loop's catch, which re-raises it to the outer handler,
@@ -5656,9 +5660,9 @@ def _own_hash(store):
 # keep the size because it keeps the in-memory node's text and only unions logs. The memo therefore
 # serves the NO-OP CHECK ONLY. A false match there skips a publish whose content the file already held
 # once and every later publisher rebased over, so nothing of ours is lost. It holds no revision and the
-# CAS never reads it: an earlier draft served _disk_rev from the entry too, and in that interleaving a
+# CAS never reads it: an earlier draft served the revision from the entry too, and in that interleaving a
 # writer whose base equalled the stale revision passed the CAS without rebasing and wrote over the
-# events published since. The CAS reads the file (_disk_rev).
+# events published since. The CAS reads the file (_disk_rev_ident: the revision and the identity from one descriptor).
 #
 # Filled lazily (the first check after a foreign publish parses once) and by the publisher itself
 # (_disk_seed: the temp file's identity, which the rename keeps). Entries for absent files go at the
@@ -5667,7 +5671,7 @@ def _own_hash(store):
 # the save path follows (_read_store_json), so nothing is published over bytes the check could not read. A
 # warm entry answers without a read, so a fault the file develops while its identity stands is not seen by
 # the no-op check; that answer is still safe (a match publishes nothing), and a real publish's CAS read
-# (_disk_rev) raises on it.
+# (_disk_rev_ident) raises on it.
 _DISK_CONTENT = {}
 _DISK_CONTENT_LOCK = threading.Lock()
 
@@ -5751,13 +5755,15 @@ def _disk_entry(fsid):
     return ent
 
 
-def _disk_seed(path, tmp, canon_hash):
+def _disk_seed(path, tmp, canon_hash, st=None):
     """Memoize a publish's own content under the identity its TEMP file carries, before the rename. A
     rename keeps the inode, size and mtime, so the temp's stat is the destination's afterwards, and the
     temp is ours alone. Never stat the destination after the rename: a concurrent publisher's file could
-    be captured there and paired with our content."""
+    be captured there and paired with our content. `st`: the temp's stat when the caller took it already
+    (save_goals takes one for the identity base it re-stamps; the round-one verifier of PR 2064: two stats
+    of the temp per uncontended publish)."""
     try:
-        st = os.stat(tmp)
+        st = st if st is not None else os.stat(tmp)
     except OSError:
         return
     with _DISK_CONTENT_LOCK:
@@ -6204,6 +6210,9 @@ def load_goals_shared(fsid):
                                                      # store-quarantined row) and answers the fresh store; the
                                                      # path then reads as absent, so nothing is cached for it
     store = _finish_load(fsid, store, lines=lines)   # a malformed row raises, as in load_goals
+    store["_baseIdent"] = skey                       # the identity of the bytes this view was built from, as load_goals stamps its own: the two views agree by
+    #                                                  construction, and a copy taken from this view and saved rebases on the same facts (the round-one lane red of
+    #                                                  PR 2064: the writer's view carried the key and the shared view did not)
     if store.get("_unread"):
         # the replay marked the store (its journal did not read): not the files' content, so not shared.
         # Unreachable while the journal's rows arrive as `lines` (the only marker left is the lines-is-None
@@ -6266,7 +6275,7 @@ def save_goals(fsid, store):
 
     The disk side of that check is memoized by file identity (_disk_entry), so a no-op save costs one
     serialization of our own store, not a parse of the file, and the write seeds the entry for the next check
-    when no rebase changed what we wrote. The CAS below reads the file's revision from the file (_disk_rev),
+    when no rebase changed what we wrote. The CAS below reads the file's revision and identity from the file (_disk_rev_ident),
     never from the memo, so a real publish parses once, for the CAS. Both readers raise on a read fault or a
     corrupt file, as _rebase_onto_disk does: nothing is published over bytes this save could not read.
 
@@ -6289,6 +6298,8 @@ def save_goals(fsid, store):
         return                                       # nothing of ours to publish → leave the file (and its
     base = store.pop("_baseRev", None)               # mtime) alone.  transient: never serialized
     ident0 = store.pop("_baseIdent", None)           # the identity of the file the base was read from (None: no file at the load)
+    ident0 = tuple(ident0) if ident0 is not None else None   # a store that went through a JSON round trip holds it as a list, and a list never equals a
+    #                                                          tuple: compared as lists, every save from such a store would rebase forever (the round-one lane red)
     unread = store.pop("_unread", None)              # likewise transient (_replay_overrides' unread-journal mark)
     pending = store.pop("_relayPending", None)       # likewise: the relay entries this publish carries (_relay_enqueue)
     rebased = published = False
@@ -6312,10 +6323,10 @@ def save_goals(fsid, store):
         _goal_io_bump("writes")
         tmp = _publish_tmp(GOALDIR, fsid)
         tmp.write_text(json.dumps(store))
-        _st = os.stat(tmp)
+        _st = os.stat(tmp)                           # one stat of the temp: the identity base below and the memo seed share it
         written = (_st.st_ino, _st.st_mtime_ns, _st.st_size)   # the identity the rename carries to the path (the inode and mtime stand)
         if mine is not None and not rebased:         # a rebase changed the content `mine` describes
-            _disk_seed(GOALDIR / (fsid + ".json"), tmp, mine)
+            _disk_seed(GOALDIR / (fsid + ".json"), tmp, mine, st=_st)
         tmp.rename(GOALDIR / (fsid + ".json"))        # atomic publish
         published = True
         _session_file_written(fsid)
