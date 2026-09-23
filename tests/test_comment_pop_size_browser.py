@@ -72,13 +72,45 @@ catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const KEY = "romp:cmtPopSize";
 const page = await browser.newPage({ viewport: { width: cfg.W, height: cfg.H } });
 
+// The seeded highlight (mark.cmt-hl[data-tid]) is a CLIENT-side join of TWO kernel frames for this session: the
+// {type:"session"} chat frame that renders the anchored reply turn (data-uuid == the anchor), and the {type:"comments"}
+// frame that carries the thread's anchorUuid straight from the store. The comments frame rides only the full pusher
+// cycle (never the targeted per-session push), so under the runner's CPU quota it trails the chat frame by tens of
+// seconds; a blind wall-clock ceiling on the mark flaked (2026-09-11 and again 2026-09-23, both at the mark wait, the
+// mark LATE not absent). Both the kernel socket's frames and the shim's reposts reach the page as a window `message`
+// event (the bg-kinds lab's note), so capture the comments frame HERE, before any navigation, and gate the load on the
+// kernel's OWN delivery of it rather than on wall-clock. addInitScript re-runs on every navigation, so the counter is
+// fresh per load().
+await page.addInitScript(({ sid, anchor }) => {
+  window.__cmtFrames = 0; window.__frameTypes = [];
+  window.addEventListener("message", (e) => {
+    const m = e.data; if (!m || !m.type) return;
+    window.__frameTypes.push(m.type);
+    if (m.type === "comments" && m.id === sid && (m.threads || []).some((t) => t && t.anchorUuid === anchor)) window.__cmtFrames++;
+  }, true);
+}, { sid: cfg.sid, anchor: cfg.anchor });
+
 async function load() {
   await page.goto(cfg.chat);
-  // 60 s, not 20: the highlight lands after the kernel's comments frame, which on a loaded runner follows the chat frame
-  // by tens of seconds (2026-09-11: red twice on CI for a head that changed nothing on this road; under a 20% CPU quota
-  // main itself misses 20 s two runs in three and lands by 90 s). The wait is still the event, only its ceiling moved.
-  await page.waitForSelector("#content .turn p", { timeout: 60000 });
-  await page.waitForSelector("mark.cmt-hl[data-tid]", { timeout: 60000 });   // the seeded thread's highlight has landed
+  // (1) the chat frame read SID.jsonl and rendered the anchored reply turn (the DOM half of the highlight's join)
+  await page.waitForSelector('#content .turn[data-uuid="' + cfg.anchor + '"] p', { timeout: 60000 });
+  // (2) the mark wraps only when a comments frame is processed WITH the anchor turn already in the DOM. Handle BOTH
+  // orders: a comments frame that arrived BEFORE the turn applied to a page without it, and the turn's later render does
+  // not always re-apply the held marks under load (a client gap, flagged for its own fix). So after the turn, if the
+  // mark is not there yet, wait for the NEXT comments frame past the turn's render (n0 read now), which re-applies with
+  // the turn present. The ceiling is a failure bound, not a wall-clock guess; a miss names the order (n0 and the frames seen).
+  const n0 = await page.evaluate(() => window.__cmtFrames);
+  const markHere = async () => !!(await page.$("mark.cmt-hl[data-tid]"));
+  if (!(await markHere())) {
+    const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+    if (!got) {
+      const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
+      console.error("comments-frame-after-turn-miss: no comments frame carrying anchor " + cfg.anchor + " for " + cfg.sid + " ran with the turn present (n0=" + n0 + "): " + JSON.stringify(seen));
+      process.exit(4);
+    }
+  }
+  // (3) a comments frame has now run with the turn present; a short ceiling confirms the mark wrapped
+  await page.waitForSelector("mark.cmt-hl[data-tid]", { timeout: 15000 });
   await page.waitForTimeout(300);
 }
 const geom = () => page.evaluate(() => {
@@ -274,16 +306,26 @@ class ServedCommentPopSize(unittest.TestCase):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
             json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token),
-                       "W": W, "H": H, "TINY_W": TINY_W, "TINY_H": TINY_H}, f)
+                       "W": W, "H": H, "TINY_W": TINY_W, "TINY_H": TINY_H, "sid": SID, "anchor": A_UUID}, f)
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
-        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=300,
+        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
                            env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served dialog needs one (CI installs none)")
         klog = open(os.path.join(self.lab, "kernel.log")).read()[-2000:]
-        self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + klog)
+        perf = ""
+        if p.returncode != 0:
+            # a miss records the kernel's COUNTERS and TAIL so the red names the link (the comments frame): the kernel.log
+            # tail shows whether the comments projection was even built ("[comments] thread ..."), and /perf's build
+            # counters say whether a full pusher cycle ran at all.
+            try:
+                import urllib.request
+                perf = urllib.request.urlopen("http://127.0.0.1:%d/perf?token=%s" % (self.port, self.token), timeout=3).read().decode("utf-8", "replace")[-1500:]
+            except Exception as e:
+                perf = "(/perf unreadable: %r)" % e
+        self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + klog + (("\n/perf:\n" + perf) if perf else ""))
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         return json.loads(line[len("RESULT:"):])
