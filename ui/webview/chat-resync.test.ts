@@ -91,7 +91,9 @@ function world(): World {
   const upJs = liftBetween("function upsert(msg: any) {", "\nfunction ");
   // upsert's stale-answer helpers; absent in a render.ts from before the check, where the Proxy answers them with no-ops (so the
   // behavioural tests below read red there on what they assert, not on a missing anchor)
-  const helpersJs = RENDER.includes("function applyStaleAnswer(id: string): boolean {") ? liftBetween("function applyStaleAnswer(id: string): boolean {", "\nfunction upsert(msg: any) {") : "";
+  const END = "function endStaleAnswer(id: string): void { staleAnswerReasked.delete(id); }";
+  const hA = RENDER.indexOf("function applyStaleAnswer(id: string): boolean {"), hB = RENDER.indexOf(END);
+  const helpersJs = hA > 0 && hB > hA ? requireCjs("esbuild").transformSync(RENDER.slice(hA, hB + END.length), { loader: "ts" }).code : "";
   const asks: [string, string][] = [], rows: { what: string; data: any }[] = [];
   const awaitingFull = new Set<string>();
   const S: Record<string, unknown> = {

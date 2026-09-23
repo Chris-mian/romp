@@ -17589,6 +17589,16 @@ function chatDiagRow(what: string, data: Record<string, unknown>): void {
   vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what, data });
 }
 
+/** upsert's stale-frame branch (2026-09-23): whether an answer OLDER than what the page holds applies. Never when the page
+ *  did not ask (ignored and filed, frame-guard.ts); when it did, the first such answer re-sends the ask for a fresh build and
+ *  applies nothing, and the second applies (chat-resync.ts staleAnswer: a full always wins). */
+function applyStaleAnswer(id: string): boolean {
+  if (!awaitingFull.has(id)) return false;
+  if (staleAnswer(staleAnswerReasked, id) === "reask") { awaitingFull.delete(id); requestFullSession(id, "stale-full"); return false; }
+  return true;
+}
+function endStaleAnswer(id: string): void { staleAnswerReasked.delete(id); }
+
 // The send-landing invariant's two ends (send-landing.ts, 2026-09-23), around the ONE dispatch chain every frame takes, so every
 // path that applies server events to a session's resident events is watched, a path added later included: `landingBefore` copies
 // the resident events before the frame's handler runs (chatTail truncates the array in place) and notes whether the page itself
@@ -17631,16 +17641,6 @@ function landingAfter(m: any, snap: LandSnap | null): void {
     if (!landWatchFailed) { landWatchFailed = true; chatDiagRow("landing-watch-failed", { error: String((err as any)?.message || err).slice(0, 200) }); }
   }
 }
-
-/** upsert's stale-frame branch (2026-09-23): whether an answer OLDER than what the page holds applies. Never when the page
- *  did not ask (ignored and filed, frame-guard.ts); when it did, the first such answer re-sends the ask for a fresh build and
- *  applies nothing, and the second applies (chat-resync.ts staleAnswer: a full always wins). */
-function applyStaleAnswer(id: string): boolean {
-  if (!awaitingFull.has(id)) return false;
-  if (staleAnswer(staleAnswerReasked, id) === "reask") { awaitingFull.delete(id); requestFullSession(id, "stale-full"); return false; }
-  return true;
-}
-function endStaleAnswer(id: string): void { staleAnswerReasked.delete(id); }
 
 function upsert(msg: any) {
   retryCmtCreates(String(msg.id || ""));   // a session frame = the kernel re-parsed → retry a lag-refused create (T106)
