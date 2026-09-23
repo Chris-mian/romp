@@ -637,6 +637,10 @@ class HostProcess(unittest.TestCase):
         self.assertEqual([o for o, _ in journal], list(range(len(emitted))))
         by_offset = {o: (r["type"], r.get("uuid")) for o, r in journal}
         self.assertEqual({o: by_offset.get(o) for o in seen}, seen, "every frame the kernel saw sits at its own offset")
+        # the lease flip (_lease_version_becomes above) precedes the `reexeced` row: the re-exec'd host writes the lease then
+        # logs (session_host.py: _write_lease then log("reexeced")), so wait on that row before reading the kinds, else the
+        # read races ahead of it (the CI flake read ['reexec-deferred', 'reexec'] without 'reexeced')
+        self.assertIsNotNone(self._log_row(lambda r: r["kind"] == "reexeced", timeout=20), "the reexeced row landed after the lease flip")
         log = self._hostlog()
         self.assertEqual([r["kind"] for r in log if r["kind"] in ("reexec-deferred", "reexec", "reexeced")], ["reexec-deferred", "reexec", "reexeced"])
         self.assertTrue(any(r["kind"] == "turn-reopened" for r in log), "the bookkeeping rows re-opened a turn, which the after turn's result closed")
