@@ -536,3 +536,34 @@ test("plan test 5 executed: the gear ring demo drops the Needs-you ring for the 
   const swappedTab = run(swapped);
   assert.ok(classes(swappedTab).includes("ring-waiting-on-you"), "the swap re-adds the ring class after the badge pass: the demo wrongly keeps the ring (this is what the pin catches)");
 });
+
+// PR 2080 review LOW 7: the DRAGGED order (a stored order with the status dot AFTER the name) is the case the demo's
+// both-sides composition exists for. Run the sliced demo against the STRIP's own composition (compose before, the name,
+// compose after, the ring class, applyTabBadgeMode) for that order, every ring row: they must AGREE. On the base (the
+// demo composing only the before slot) the dragged dot is missing from the demo, so applyTabBadgeMode cannot re-ink it
+// and the demo keeps the ring while the strip shows the dot: the two disagree.
+test("plan test 5 (dragged order): the gear demo matches the strip's composition with the dot after the name, all three ring rows", () => {
+  const gear = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
+  const ringSection = gear.slice(gear.indexOf("var ringSection = widgetSection({"), gear.indexOf("function statusPrefs(s)"));
+  const body = ringSection.match(/demo: function \(w, prefs\) \{([\s\S]*?)\n\s*\},/)![1];
+  store.set("romp:settings", JSON.stringify({ tabStateBadge: true }));
+  const demoFn = new Function("w", "prefs", "TW", "load", "demoTab", "demoLabel", body + "\n") as
+    (w: any, prefs: any, TW: any, load: any, demoTab: () => El, demoLabel: () => El) => El;
+  const dragged = P({ order: [W.NAME_DIVIDER, "dot", "ctx", "hotkey"] });   // every widget AFTER the name (the dot dragged past it)
+  const strip = (w: any) => {   // the strip's own composition, as render.ts assembles it
+    const tab = mkEl("span"); const st = w.demo || W.DEMO_STATUS, sid = w.demoSid || W.DEMO_SID;
+    W.composeTabWidgets(tab as unknown as HTMLElement, "before", sid, st, dragged);
+    tab.appendChild(mkEl("span"));
+    W.composeTabWidgets(tab as unknown as HTMLElement, "after", sid, st, dragged);
+    const cls = W.ringDemoClass(w, dragged); if (cls) tab.classList.add(cls);
+    W.applyTabBadgeMode(tab as unknown as HTMLElement, sid, st, dragged);
+    return tab;
+  };
+  const sig = (t: El) => classes(t).filter((c) => c.startsWith("ring-")).sort().join(",") + " :: "
+    + t.children.map((c) => classes(c).sort().join(".")).join(" | ");
+  for (const id of ["ring-needs-you", "ring-waiting-on-you", "ring-retrying"]) {
+    const w = W.tabWidget(id)!;
+    const demoTab = demoFn(w, dragged, W, S.loadSettings, () => mkEl("span"), () => mkEl("span"));
+    assert.equal(sig(demoTab), sig(strip(w)), id + ": the demo's composition matches the strip's for the dragged order");
+  }
+});

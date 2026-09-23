@@ -626,7 +626,7 @@ class ServedTabWidgets(unittest.TestCase):
             self.assertTrue(x["desc"], "a one-line description" + table)
             self.assertIn(x["id"], x["demo"]["cls"].split(), "the demo wears the ring's class" + table)
             self.assertEqual((x["demo"]["outlineStyle"], x["demo"]["outlineWidth"]), ("dashed", "2px"), x["id"] + "'s demo wears the dashed ring" + table)
-        self.assertEqual(g["hint"], "Rings around the tab. One at a time: the first that applies wins, in this order.", table)
+        self.assertEqual(g["hint"], "One cue at a time on the tab: the first state that applies wins, in this order.", table)
         self.assertTrue(g["previewBeforeRings"], "the title rows' preview sits above the rings' rows" + table)
         self.assertFalse(any(i.startswith("ring-") for i in g["titleIds"]), "the title rows and the divider list carry no ring" + table)
         # one grid per group, so the switches line up down each list (the two grids' auto columns differ: the title rows carry

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """THE TAB STATE BADGE (plans/tab-state-badge.md; the user 2026-09-21, the numbered dot chosen 2026-09-21 evening) on the
 served chat page and the phone picker, in BOTH themes, driven by Playwright over a hermetic kernel. Badge mode is the
-per-browser `tabStateBadge` setting, seeded into localStorage before the page loads. Three synthetic notes-api sessions
+per-browser `tabStateBadge` setting. It is the DEFAULT since 2026-09-23, so the desktop strip context runs UNSEEDED (the served default, pinned here); the ring context seeds false and the phone context seeds true, before the page loads. Three synthetic notes-api sessions
 sit in the Needs-you state with 1, 3 and 12 needs-you cards (that many blocked root goals), and one idle control with none.
 
 What it reads, computed by the real page, never inferred from source:
@@ -177,6 +177,15 @@ for (const t of themes) {
              overRowBadge: rbOver ? rbOver.textContent : null, overRowLabel: rbOver ? rbOver.getAttribute("aria-label") : null,
              curPill: R(cb), curChevron: R(cv), rowPill: R(rb), rowClose: R(mclose) };
   }, cfg.ids);
+  // (PR 2080 review HIGH) the phone's retrying leading dot is the same HOLLOW amber ring as the desktop: a bare
+  // `.wd retrying` injected into #mcur (where the mobile picker CSS scopes it) computes a transparent fill and the amber
+  // on the inset box-shadow, so form not colour tells it from the filled working/awaiting dots on the phone too.
+  out.phoneRetryProbe = out.phoneRetryProbe || {};
+  out.phoneRetryProbe[t] = await phone.evaluate(() => {
+    const cur = document.getElementById("mcur"); if (!cur) return null;
+    const w = document.createElement("span"); w.className = "wd retrying"; cur.appendChild(w);
+    const cs = getComputedStyle(w); const r = { bg: cs.backgroundColor, shadow: cs.boxShadow }; w.remove(); return r;
+  });
 }
 // ── (round-one MEDIUM + LOW 2) the GEAR PREVIEW and its own switch on the dashboard's settings page. openGear opens
 //    the gear from the strip's glyph at the Tab strip section over a seeded store and reads, in both themes: the three
@@ -500,6 +509,19 @@ class TabBadgeServed(unittest.TestCase):
             self.assertTrue(on["checked"], "%s: a store that never chose shows the switch ON (the badge is the default): %r" % (t, on))
             self.assertIsNotNone(off, "%s: the state-badge switch is present in the gear (chosen off)" % t)
             self.assertFalse(off["checked"], "%s: a stored false shows the switch OFF: %r" % (t, off))
+
+    def test_the_phone_retrying_dot_is_the_hollow_amber_ring_too(self):
+        # PR 2080 review HIGH: the phone's retrying leading dot (#mcur .wd.retrying / .mrow .workdot.retrying in the
+        # kernel's mobile CSS) was a FILLED amber disc, told from the filled working gold and awaiting green by colour
+        # alone on the default path. It is now the same HOLLOW amber ring as the desktop: a transparent fill and the
+        # amber on the inset outline, a distinct shape.
+        r = self._result()
+        for t in ("dark", "light"):
+            p = r["phoneRetryProbe"][t]
+            self.assertIsNotNone(p, "%s: the phone retry probe rendered in #mcur" % t)
+            self.assertIn(p["bg"], ("rgba(0, 0, 0, 0)", "transparent"), "%s: the phone retrying dot is HOLLOW (a transparent fill): %r" % (t, p))
+            self.assertIn(AMBER[t], p["shadow"], "%s: the amber rides the inset outline on the phone: %r" % (t, p))
+            self.assertIn("inset", p["shadow"], "%s: the phone retrying dot is a hollow ring (a distinct shape): %r" % (t, p))
 
 
 if __name__ == "__main__":

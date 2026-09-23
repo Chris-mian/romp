@@ -31,6 +31,11 @@ class TabBadgeDoc(unittest.TestCase):
                       "the rings are the switched-off shapes, not the default")
         self.assertNotIn("off by default", para, "the reference no longer calls the ring/the setting the default")
         self.assertNotIn("what shows when the setting is off (the default)", para)
+        # the notification and one-colour sentences name the cue/count dot, not the ring/picker's bar as what shows
+        self.assertNotIn("the ring is that card", para, "the notification's cue is the card by the default dot, not 'the ring'")
+        self.assertIn("the cue is that card", para)
+        self.assertNotIn("a card's question mark, the ring, the picker's bar", para, "the one-colour list names the count dot, the ring/bar as the switched-off shapes")
+        self.assertIn("the tab's count dot (its dashed ring with the badge off)", para)
 
 
 if __name__ == "__main__":

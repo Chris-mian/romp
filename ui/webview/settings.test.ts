@@ -267,9 +267,19 @@ test("a stored showArtifactsControl is dropped at load and gone after a save", (
 });
 
 test("saveSettings has no production caller (a whole-object save would stamp the current default into a store that never chose)", () => {
-  const dir = path.resolve(process.cwd(), "..", "ui", "webview");
-  const callers = fs.readdirSync(dir)
-    .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "settings.ts")
-    .filter((f) => /\bsaveSettings\s*\(/.test(fs.readFileSync(path.join(dir, f), "utf8")));
-  assert.deepEqual(callers, [], "no webview module CALLS saveSettings (the gear posts settingsSync; render.ts only imports it): a caller must not be added without the fresh-key rule, since a save stamps DEFAULT_SETTINGS.tabStateBadge (true today) into a never-chose store and would defeat a future flip to off");
+  // scan the webview AND the extension-host TS (either could call it); the kernel is Python and cannot call a TS symbol,
+  // so grep it too to say so. No PRODUCTION module calls saveSettings; the gear posts settingsSync, render.ts only imports it.
+  const roots = [path.resolve(process.cwd(), "..", "ui", "webview"), path.resolve(process.cwd(), "..", "vscode-extension", "src")];
+  const callers = [];
+  for (const dir of roots) {
+    for (const f of fs.readdirSync(dir, { recursive: true })) {
+      const rel = String(f);
+      if (!rel.endsWith(".ts") || rel.endsWith(".test.ts") || rel.endsWith("settings.ts")) continue;
+      const p = path.join(dir, rel);
+      try { if (/\bsaveSettings\s*\(/.test(fs.readFileSync(p, "utf8"))) callers.push(path.join(path.basename(dir), rel)); } catch { /* a dir entry */ }
+    }
+  }
+  assert.deepEqual(callers, [], "no webview or extension-host module CALLS saveSettings (the gear posts settingsSync; render.ts only imports it): a caller must not be added without the fresh-key rule, since a save stamps DEFAULT_SETTINGS.tabStateBadge (true today) into a never-chose store and would defeat a future flip to off");
+  const kernel = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.doesNotMatch(kernel, /\bsaveSettings\s*\(/, "the kernel is Python: it does not call the webview's saveSettings either");
 });

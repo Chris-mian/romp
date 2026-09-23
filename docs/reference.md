@@ -4932,10 +4932,10 @@ a tab wears one cue at a time and the first that applies wins: Blocked over Need
 cue switched off leaves the tab with its dot; the small dot on a folded group's header and the
 phone's picker follow the same switches. With notifications on, the card entering Needs you is
 also what notifies you (see [Notifications on your phone](guide.md#notifications-on-your-phone)):
-the ring is that card, shown in the strip, and it stays as long as the card does, including across
+the cue is that card, shown in the strip (the count dot, or the dashed ring with the badge off), and it stays as long as the card does, including across
 a kernel restart, which announces nothing. On a phone, the session picker marks the same sessions
 with the magenta count dot, on each picker row and on the button that names the current session. One colour, the Needs you colour, marks the category everywhere: the column's
-chip, a card's question mark, the ring, the picker's bar.
+chip, a card's question mark, the tab's count dot (its dashed ring with the badge off) and the phone picker's dot (its left bar off).
 
 A per-browser setting, **State badge instead of the outline ring** (a checkbox in the gear's
 **Chat** tab, beside the tab lock), is **on by default** and is what the paragraph above describes:

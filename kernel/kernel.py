@@ -62744,7 +62744,7 @@ _CHAT_MOBILE_CSS = (
     # a count instead of the ring, and the phone (which scrapes the tabs) follows. On the phone the dot is an in-flow flex
     # item in the chip's/row's own line, before the chevron and the close (both order:1), not the desktop's absolute
     # corner; retrying moves to the leading dot in amber.
-    "#mcur .wd.retrying{background:var(--st-retrying-bg,#e67e22)}"
+    "#mcur .wd.retrying{background:transparent;box-shadow:inset 0 0 0 1.5px var(--st-retrying-bg,#e67e22)}"
     ".m-badge{position:static;flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--st-needs-bg,#d946ef)}"   # RESERVE room, do not stack: an inline flex item so the pill never covers the chevron or the close glyph (the second contributor on PR 2017, 2026-09-22); the chevron and close get order:1 so they stay at the right edge
     ".m-badge:not(:empty){width:auto;min-width:14px;height:14px;border-radius:7px;padding:0 3px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;font-size:9px;line-height:1}"
     "#mtag-slot{flex:0 0 auto;display:flex;align-items:center;gap:5px}"   # T161: the tag control's slot, sized by the shared button's own inline metrics
@@ -62784,7 +62784,7 @@ _CHAT_MOBILE_CSS = (
     # a row whose session has a card that needs you: a magenta bar at its left edge, the desktop tab's
     # dashed ring (ring-waiting-on-you), in the one Needs you token, on a list row where a ring would fight the hairlines
     ".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}"
-    ".mrow .workdot.retrying{background:var(--st-retrying-bg,#e67e22)}"   # badge mode: retrying on the leading dot
+    ".mrow .workdot.retrying{background:transparent;box-shadow:inset 0 0 0 1.5px var(--st-retrying-bg,#e67e22)}"   # badge mode: retrying on the leading dot, a HOLLOW amber ring (a shape cue matching desktop .tab-dot.retrying) so form not colour tells it from the filled working/awaiting dots
     # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
     # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
     # (cloned) and the count; no caret and no pointer, since the phone folds nothing
