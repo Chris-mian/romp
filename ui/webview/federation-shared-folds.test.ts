@@ -38,9 +38,22 @@ function fakeKernel(opts: { folds?: boolean } = {}) {
       if (!keepsFolds) return;                                      // an older kernel answers unknownOp; nothing is kept
       if (k.folds !== null && JSON.stringify(k.folds) === JSON.stringify(folds)) return;   // unchanged: no push
       k.folds = JSON.parse(JSON.stringify(folds));
-      for (const v of k.viewers) v.deliver(k.frame());
+      for (const v of k.viewers) if (v.connected) v.deliver(k.frame());   // a dropped socket hears nothing
     },
-    connect(v: Viewer) { v.deliver(k.frame()); },
+    connect(v: Viewer) { v.connected = true; v.deliver(k.frame()); },
+    /** the page's socket drops: the kernel no longer reaches it, and what it sends waits in the shim's queue
+     *  (the page shim queues every send while its socket is down and flushes the queue when a new one opens) */
+    drop(v: Viewer) { v.connected = false; },
+    /** a new socket opens: the shim flushes what the page queued while down, the reconnect's `wsup` frame reaches the
+     *  page, then (before the kernel's viewOrder frame) whatever the connect push's earlier frames make the page write
+     *  (`beforeFrame`: the views frame's rename follow, say), then the viewOrder frame */
+    reconnect(v: Viewer, beforeFrame?: () => void) {
+      v.connected = true;
+      for (const f of v.queued.splice(0)) k.post(f);
+      v.deliver({ type: "wsup" });
+      if (beforeFrame) beforeFrame();
+      v.deliver(k.frame());
+    },
   };
   return k;
 }
@@ -48,6 +61,8 @@ type Kernel = ReturnType<typeof fakeKernel>;
 
 interface Viewer {
   name: string;
+  connected: boolean;
+  queued: Record<string, unknown>[];   // sends made while the socket was down (the shim's queue)
   store: Map<string, string>;
   fm: any;
   repaints: number;
@@ -68,7 +83,7 @@ function makeViewer(name: string, k: Kernel, seed: Record<string, unknown> = {},
     removeItem: (key: string) => { store.delete(key); },
   };
   const v: Viewer = {
-    name, store, fm: null, repaints: 0,
+    name, store, fm: null, repaints: 0, connected: false, queued: [],
     as<T>(fn: () => T): T {
       const saved: Record<string, [boolean, unknown]> = {};
       for (const key of ["window", "document", "localStorage", "setInterval", "fetch"]) saved[key] = [key in g, g[key]];
@@ -89,7 +104,7 @@ function makeViewer(name: string, k: Kernel, seed: Record<string, unknown> = {},
   v.as(() => {
     const fm: any = new FederationManager();
     fm.start();
-    fm.outbound = (m: any) => { if (m && m.type === "setViewFolds") k.post(m.folds); };
+    fm.outbound = (m: any) => { if (m && m.type === "setViewFolds") { if (v.connected) k.post(m.folds); else v.queued.push(m.folds); } };
     v.fm = fm;
   });
   k.viewers.push(v);
@@ -234,6 +249,53 @@ test("a REMOTE kernel's folds are ignored: they belong to whoever sits in front 
   k.connect(desktop);
   desktop.as(() => desktop.fm.inbound("TESTHOST", { type: "viewOrder", order: [], stored: true, folds: { collapsed: ["api", "web"], expanded: [], pinned: [] } }));
   assert.deepEqual(shape(desktop, false), ["#api", API, TESTS, "#web", WEB], "untouched");
+});
+
+// ── a dropped connection: the page stops speaking for the folds until the next one hears the kernel's ─────────────
+test("a page whose connection drops while another device folds adopts the kernel's folds on reconnect and publishes nothing stale", () => {
+  // the order half's per-connection gate (#2062, view-order.ts hearSharedOrder), applied to the folds: the publisher is the
+  // current connection's, granted by its viewOrder frame and withdrawn by the reconnect. Kept across the drop, the page put
+  // its pre-drop copy over the kernel's with the first write its reconnect made before that frame (here the connect push's
+  // views frame, whose rename follow writes the memory): the fold another device made meanwhile was lost on every device
+  const k = fakeKernel();
+  const desktop = makeViewer("desktop", k), phone = makeViewer("phone", k);
+  for (const v of [desktop, phone]) k.connect(v);
+  fold(desktop, "api", true);
+  k.drop(phone);                                                       // the phone goes offline…
+  fold(desktop, "web", true);                                          // …while the desktop folds web
+  assert.deepEqual(phone.shared().collapsed, ["api"], "premise: the phone never heard of web's fold");
+  const before = k.posts.length;
+  k.reconnect(phone, () => phone.as(() => writeTabGroups({ ...readTabGroups(UNIONS), followed: { g2: "web" } })));
+  const fromPhone = k.posts.slice(before);
+  assert.ok(fromPhone.every((f: any) => f.collapsed.includes("web")), "nothing the phone published drops the desktop's fold: " + JSON.stringify(fromPhone));
+  assert.deepEqual(k.folds, { collapsed: ["api", "web"], expanded: [], pinned: [], followed: { g2: "web" } },
+    "the kernel's folds stand, the phone's own change (the follow) landed over them");
+  assert.deepEqual(shape(phone, true), ["#api(folded)", "#web(folded)"], "the phone adopted the desktop's fold");
+  assert.deepEqual(shape(desktop, false), ["#api(folded)", "#web(folded)"]);
+  // and a reconnect with no change of its own publishes nothing at all
+  k.drop(phone); fold(desktop, "web", false);
+  const quiet = k.posts.length;
+  k.reconnect(phone);
+  assert.equal(k.posts.length, quiet, "adopted, not answered");
+  assert.deepEqual(shape(phone, true), ["#api(folded)", "#web", WEB]);
+});
+
+test("a fold made while offline is kept and merged over the kernel's folds when the next connection hears them", () => {
+  const k = fakeKernel();
+  const desktop = makeViewer("desktop", k), phone = makeViewer("phone", k);
+  for (const v of [desktop, phone]) k.connect(v);
+  fold(desktop, "api", true);
+  k.drop(phone);
+  phone.as(() => (globalThis as any).window.dispatchEvent(new Event("romp:wsdown")));   // the shim's own drop event
+  fold(desktop, "web", true);                                          // the desktop folds web meanwhile
+  fold(phone, "api", false);                                           // the phone, offline, opens api
+  assert.deepEqual(phone.queued, [], "nothing queued to publish blind: the drop withdrew the publisher");
+  assert.deepEqual(shape(phone, true), ["#api", API, TESTS, "#web", WEB], "the phone shows its own gesture meanwhile");
+  k.reconnect(phone);
+  assert.deepEqual(k.folds, { collapsed: ["web"], expanded: [], pinned: [] }, "api opened (the phone's), web folded (the desktop's)");
+  assert.deepEqual(shape(desktop, false), ["#api", API, TESTS, "#web(folded)"], "and the desktop follows");
+  fold(phone, "tests", true);
+  assert.deepEqual(k.folds.collapsed, ["web", "tests"], "heard again: a fold here is published at once");
 });
 
 // ── the active session on the phone ───────────────────────────────────────────────────────────────

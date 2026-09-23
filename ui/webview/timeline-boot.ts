@@ -73,9 +73,9 @@ export function dispatchFrame(panel: any, m: any): boolean {
     if ("folds" in m && foldsPost) hearSharedFolds(m.folds, foldsPost, setFoldsPublisher);
     return true;
   }
-  // (No drop edge to withdraw the arrangement's publisher on: the extension gives this view no pipe-state frame, and
-  // its reconnect reloads the webview — a fresh page, which hears afresh. A lane drag made while the pipe is down
-  // still rides its queue.)
+  // (No drop edge to withdraw the arrangement's or the folds' publisher on: the extension gives this view no pipe-state
+  // frame, and its reconnect reloads the webview — a fresh page, which hears afresh. A lane drag or a fold made while
+  // the pipe is down still rides its queue.)
   return false;
 }
 

@@ -64,5 +64,6 @@ test("such a page is a viewer of the kernel like any other: it publishes its arr
   assert.match(RENDER, /else if \(m\.type === "viewOrder" && paneArranges\(window as any\)\) \{/);
   assert.match(RENDER, /if \(hearSharedOrder\(served, m\.stored === true, \(o\) => vscodeApi\?\.postMessage\(\{ type: "setViewOrder", order: o\.slice\(\) \}\), setViewOrderPublisher\)\) \{/,
     "the migration, the merge and the install are the shared implementation, not a second copy of the rule");
-  assert.match(RENDER, /if \(m\.type === "pipeState" && !m\.up && paneArranges\(window as any\)\) setViewOrderPublisher\(null\);/);
+  // (the folds' publisher goes with it, 2026-09-23: the same frame granted both; tab-folds-shared.test.ts)
+  assert.match(RENDER, /if \(m\.type === "pipeState" && !m\.up && paneArranges\(window as any\)\) \{ setViewOrderPublisher\(null\); setFoldsPublisher\(null\); \}/);
 });

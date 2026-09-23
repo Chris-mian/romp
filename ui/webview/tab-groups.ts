@@ -216,10 +216,13 @@ export function readTabGroups(unions: readonly TagUnion[] = []): TabGroupsState 
 
 /** How a fold change reaches the kernel: federation.ts installs `window.__rompPublishViewFolds` on every page
  *  that has a manager, and a page with none (a VS Code webview) installs one directly (setFoldsPublisher) —
- *  in both cases only once the kernel's own folds have reached the page (the frame's `folds` half), so a page
- *  never publishes its WHOLE fold state over the kernel's before it has heard it: the connect push serves the
- *  strip, and with it the header a person can click and the views frame a rename follow runs on, before that
- *  frame, and a whole-state publish from then would put this browser's older copy over what another device
+ *  in both cases only once the kernel's own folds have reached the page ON THE CURRENT CONNECTION (the frame's
+ *  `folds` half), and withdrawn when that connection drops (federation.ts unhearViewOrder on the shim's wsdown and
+ *  the reconnect's wsup; render.ts on a VS Code pipe's down edge) — the arrangement's gate (view-order.ts
+ *  ViewOrderPublisher), the same frame granting both. So a page never publishes its WHOLE fold state over the
+ *  kernel's before it has heard it: the connect push serves the strip, and with it the header a person can click
+ *  and the views frame a rename follow runs on, before that frame, and a whole-state publish from then (or, after a
+ *  drop, a fold made offline riding the shim's queue) would put this browser's older copy over what another device
  *  folded since. A change made in that window is kept as a DELTA instead (TABGROUPS_PENDING_KEY, mergeFolds)
  *  and applied over the kernel's folds when they arrive: the gesture is new information and lands, and the
  *  kernel's newer state around it stands. No publisher ever (a kernel from before the folds were shared) →

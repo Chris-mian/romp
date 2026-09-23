@@ -19272,7 +19272,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // the pipe's down edge is the VS Code twin of the shim's romp:wsdown: unconfirmed sends say so (markPendingLost)
   if (m.type === "pipeState" && m.up) reaskWaitingSubagents();   // the extension's reconnect-class event (it never sees romp:wsup), T355
   if (m.type === "pipeState" && m.up) forgetHeldWm(sessions, null);   // …and the held watermarks go (frame-guard.ts, 2026-09-23): the kernel behind the pane's pipe may be a fresh process whose live-tail revision restarted at 0
-  if (m.type === "pipeState" && !m.up && paneArranges(window as any)) setViewOrderPublisher(null);   // the pipe that heard the kernel's arrangement is gone: stop speaking for it until the next connection's viewOrder frame (view-order.ts ViewOrderPublisher, 2026-09-23)
+  if (m.type === "pipeState" && !m.up && paneArranges(window as any)) { setViewOrderPublisher(null); setFoldsPublisher(null); }   // the pipe that heard the kernel's arrangement is gone: stop speaking for it until the next connection's viewOrder frame (view-order.ts ViewOrderPublisher, 2026-09-23)
   if (m.type === "pipeState") { if (!m.up) { markPendingLost("connection"); onWireDown(); } pipeBanner(!!m.up, Number(m.queued) || 0); return; }   // the pane's down edge clears the in-flight asks as the socket's does (round nine, medium 2)
   // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
   // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's

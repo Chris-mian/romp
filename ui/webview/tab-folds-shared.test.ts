@@ -143,3 +143,16 @@ test("a fold goes to the LOCAL kernel whole, and every page hears the folds thro
   // a VS Code chat webview: its own frame branch, publishing through its host pipe
   assert.match(RENDER, /if \("folds" in m\) hearSharedFolds\(m\.folds, \(f\) => vscodeApi\?\.postMessage\(\{ type: "setViewFolds", folds: f \}\), setFoldsPublisher\);/);
 });
+
+test("the folds' publisher is the CURRENT connection's: a drop withdraws it with the arrangement's, on every kind of page", () => {
+  // the order half's per-connection gate (#2062): the viewOrder frame grants both publishers and a drop withdraws both, so a
+  // page reconnecting after an outage cannot publish a stale fold copy before it hears the kernel's current one (executed
+  // end to end in federation-shared-folds.test.ts: the reconnect and the offline fold)
+  const unhear = FED.slice(FED.indexOf("private unhearViewOrder(): void {"), FED.indexOf("private lastFeedCounts"));
+  assert.match(unhear, /delete \(window as any\)\.__rompPublishViewOrder;/);
+  assert.match(unhear, /delete \(window as any\)\.__rompPublishViewFolds;/, "the socket's drop (romp:wsdown) and a new connection (wsup) withdraw the folds' too");
+  assert.match(FED, /w\.addEventListener\("romp:wsdown", \(\) => this\.unhearViewOrder\(\)\);/);
+  assert.match(FED, /if \(m && m\.type === "wsup" && host === LOCAL\) this\.unhearViewOrder\(\);/);
+  // the VS Code chat webview's pipe going down withdraws both of its publishers
+  assert.match(RENDER, /if \(m\.type === "pipeState" && !m\.up && paneArranges\(window as any\)\) \{ setViewOrderPublisher\(null\); setFoldsPublisher\(null\); \}/);
+});

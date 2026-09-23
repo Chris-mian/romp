@@ -1132,9 +1132,9 @@ export class FederationManager {
     // instead, so a drag made before then is measured from what the user was looking at (view-order.ts shownOrder).
     w.__rompShownOrder = () => (this.lastShownOrder ? this.lastShownOrder.slice() : null);
     // The socket dropped: from here until the next connection's viewOrder frame this page's copy may be stale —
-    // another device can drag meanwhile — so it stops speaking for the arrangement. A drag in the gap is kept as
-    // a pending change and merged over the kernel's when it arrives. (The shim's own event: this document's
-    // socket. The reconnect's `wsup` FRAME, below, does the same in frame order.)
+    // another device can drag or fold meanwhile — so it stops speaking for the arrangement and the folds. A drag or a
+    // fold in the gap is kept as a pending change and merged over the kernel's when it arrives. (The shim's own event:
+    // this document's socket. The reconnect's `wsup` FRAME, below, does the same in frame order.)
     w.addEventListener("romp:wsdown", () => this.unhearViewOrder());
     // The tab-groups store's ONE write, for the kernel-served timeline page's inline view (romp-timeline-view.js, served
     // raw, imports nothing — the __rompWriteOrder precedent above): a fold there splits into this browser's switches and
@@ -1287,7 +1287,8 @@ export class FederationManager {
       // The FOLDS beside it (2026-09-23, the user: fold groups on the phone too, synced like the order). The same
       // migration and adoption (tab-groups.ts hearSharedFolds), and the adoption's announce is what repaints the strip
       // and the Sessions pane of this document; its cache write is what repaints the other panes (`storage`). From
-      // here on this page publishes its folds, the slot every bundle on it reads (the view-order slot's pattern).
+      // here on, on THIS connection, this page publishes its folds, the slot every bundle on it reads (the view-order
+      // slot's pattern); a drop withdraws it with the arrangement's (unhearViewOrder).
       if ("folds" in m) {
         hearSharedFolds(m.folds, (f) => this.outbound({ type: "setViewFolds", folds: f }), (fn) => { w.__rompPublishViewFolds = fn; });
       }
@@ -1430,10 +1431,14 @@ export class FederationManager {
   private reportDeferred = false;                    // a host report arrived before the hearing: fold it in when it lands
   private lastShownOrder: string[] | null = null;   // the merged strip last emitted: a pre-hearing drag's base
 
-  /** The connection that heard the arrangement is gone: stop speaking for it until the next one hears it. */
+  /** The connection that heard the viewer's store is gone: stop speaking for it until the next one hears it — the
+   *  arrangement and the FOLDS alike (2026-09-23), both granted by the viewOrder frame. A fold made in the gap waits as
+   *  a delta and lands over the kernel's folds when the next connection's frame arrives (tab-groups.ts FoldsPublisher);
+   *  kept across the drop, the publisher put this page's pre-drop copy over whatever another device folded meanwhile. */
   private unhearViewOrder(): void {
     this.viewOrderHeard = false;
     try { delete (window as any).__rompPublishViewOrder; } catch { /* no window */ }
+    try { delete (window as any).__rompPublishViewFolds; } catch { /* no window */ }
   }
 
   private lastFeedCounts = "";   // last per-host ask-count signature — breadcrumb only on change
