@@ -303,7 +303,7 @@ test("the FILE VIEWER owns its own selection menu, so every pane that mounts it 
   assert.match(FILEVIEW, /window\.postMessage\(\{ romp: "stageNote", sid, text: body, exact: picked, src \}, "\*"\)/);
   assert.match(FILEVIEW, /const src = quoteSrcLabel\(path, text, picked\);/);
   // the composer-less pane keeps the kernel path: a thread is the only place a note can land there
-  assert.match(FILEVIEW, /post\(\{ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src \}\);/);
+  assert.match(FILEVIEW, /post\(\{ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src, createId: mintCreateId\(\) \}\);/);
   // the chat bundle keeps the TRANSCRIPT menu and nothing else — one owner per surface, no duplicate
   assert.doesNotMatch(RENDER, /fileViewSelection/);
   assert.match(RENDER, /if \(!content \|\| !sel \|\| !sel\.anchorNode \|\| !content\.contains\(sel\.anchorNode\) \|\| !text\.trim\(\)\) return;/);

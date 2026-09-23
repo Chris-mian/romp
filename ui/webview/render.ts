@@ -9642,7 +9642,7 @@ function cmtBootHolds(tid: string): boolean {
   return Date.now() - t0 < CMT_BOOT_BACKSTOP_MS;
 }
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
-let pendingCommentAnchor: { sid: string; uuid: string; exact: string; src?: string;
+let pendingCommentAnchor: { sid: string; uuid: string; exact: string;
   model?: string; effort?: string; fast?: string; color?: string } | null = null; // create mode (+ the thread's own picks)
 let pendingAdoptTid: string | null = null;                          // commentCreated ack that beat its frame
 let commentPopPos: { x: number; y: number } | null = null;
@@ -10059,8 +10059,8 @@ function pickThreadColor(sid: string): string {
   return free || paletteColors.find((c) => c.toLowerCase() !== parent) || "#e8b220";
 }
 
-function openCommentComposer(sid: string, uuid: string, exact: string, x: number, y: number, src?: string): void {
-  pendingCommentAnchor = { sid, uuid, exact, src, color: pickThreadColor(sid) };
+function openCommentComposer(sid: string, uuid: string, exact: string, x: number, y: number): void {
+  pendingCommentAnchor = { sid, uuid, exact, color: pickThreadColor(sid) };
   openCommentKey = null;
   commentPopPos = { x, y };
   renderCommentPopover();

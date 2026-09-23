@@ -25,6 +25,7 @@ import { openPdfTab, wantsOwnTab } from "./preview";   // a PDF's own tab, and t
 import { openFileTab, canPreview } from "./preview";   // any file's own tab, for the links inside a shown file, and the web-vs-webview test
 import { kernelUrl } from "./media";
 import { quoteSrcLabel } from "./docreview";
+import { mintCreateId } from "./comments";   // one id per send gesture, so a same-words comment is its own thread
 import { linkifyFileText, linkMarkdownAnchors, viewerWalkTokens, fragmentTarget, URL_LINK_CLASS, FRAG_LINK_CLASS } from "./file-view-links";
 import { selectionOpenIn } from "./path-links";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -508,6 +509,7 @@ export function closeFileView(): void {
   dropMediaUrl();                                      // an image/PDF view's bytes leave with the viewer
   dropUrlRead();                                       // …and a URL view's in-flight read is cancelled
   dropWidthWatch();                                    // …and the body's width watch (watchBodyWidth)
+  document.querySelectorAll(".fileview-cmt, .fileview-ctx").forEach((n) => n.remove());   // mounted on body, not in the viewer
   if (zoomOpen) { zoomOpen.close(); zoomOpen = null; }   // the text-size flyout's reference leaves with the viewer (review: a keyboard close kept it, and the next viewer's first Escape was swallowed)
   wrap.remove();
   document.body.classList.remove("fileview-open");
@@ -1177,7 +1179,7 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
         catch { /* messaging our own window cannot really fail */ }
       } else {
         // An empty anchor asks the kernel to resolve it to the transcript leaf: a file passage has none.
-        post({ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src });
+        post({ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src, createId: mintCreateId() });
       }
     });
     ta.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -1313,7 +1315,7 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
   renderBody();   // buttons take their initial state now; the loader stays up until the fetch lands
 
   const onKey = (e: KeyboardEvent) => {
-    if (e.key !== "Escape" || !document.getElementById("romp-fileview")) return;
+    if (e.key !== "Escape" || e.defaultPrevented || !document.getElementById("romp-fileview")) return;   // the comment box's Escape closes only the box
     e.preventDefault();
     if (editing) {                              // Escape peels edit mode first, never the whole viewer
       if (confirmDiscard()) exitEdit();
@@ -1549,7 +1551,7 @@ export function openUrlView(href: string): void {
   renderBody();
 
   const onKey = (e: KeyboardEvent) => {
-    if (e.key !== "Escape" || !document.getElementById("romp-fileview")) return;
+    if (e.key !== "Escape" || e.defaultPrevented || !document.getElementById("romp-fileview")) return;   // the comment box's Escape closes only the box
     e.preventDefault();
     closeFileView();
     document.removeEventListener("keydown", onKey);

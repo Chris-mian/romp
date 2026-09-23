@@ -160,8 +160,7 @@ const BACKEND = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "sdk
 
 test("the selection menu offers Comment, gated on a real transcript turn", () => {
   assert.match(UI, /mk\("Comment", \(\) => openCommentComposer\(/);
-  // the session must be real and non-provisional; the ANCHOR is the selected turn's own uuid, or
-  // the conversation tip when the passage came from a file viewer instead
+  // the session must be real and non-provisional; the ANCHOR is the selected turn's own uuid
   assert.match(UI, /if \(q\?\.uuid && activeId && !isProvisionalId\(activeId\) && liveSession\(activeId\)\) \{/);
 });
 

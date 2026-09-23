@@ -175,20 +175,60 @@ class CreateIsIdempotent(unittest.TestCase):
         self.assertEqual([a["uuid"] for a in self._acks()], [""], "the ack keeps the file viewer's empty uuid")
         self.assertTrue(any(t.startswith("About this part of ~/notes/decisions.md:") for t in sends), sends)
 
-    def test_a_fork_that_dies_after_the_ack_is_rolled_back_and_recorded(self):
-        """The ack goes on the durable row, ahead of the fork. A fork that then raises rolls the row
-        back, sends the failure frames, and records the reason where every pane shows it."""
+    def test_a_file_passage_at_an_attachment_tip_anchors_at_the_last_chat_event(self):
+        """The transcript's leaf is usually an attachment or system record, which no surface renders."""
+        p = self.proj / (PARENT + ".jsonl")
+        with p.open("a") as fh:
+            fh.write(json.dumps({"type": "attachment", "timestamp": iso(self.now - 590), "uuid": "at1",
+                                 "parentUuid": "a1", "attachment": {"type": "total_tokens_reminder"}}) + "\n")
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear()
+        self._file_create()
+        self.assertEqual(self._rows()[0]["anchorUuid"], "a1")
+
+    def _boom_fork(self):
         def boom(*a, **k):
             raise RuntimeError("spawn refused")
         self.be.fork = boom
+
+    def test_a_fork_that_dies_after_a_file_ack_is_rolled_back_and_recorded(self):
+        """A file passage is acked on the durable row, ahead of the fork. A fork that then raises rolls
+        the row back, re-sends the thread list without it, and records the reason and the words."""
+        self._boom_fork()
         before = len(km._SDK_BOOT_PROBLEMS)
         self._file_create()
         kinds = [f.get("type") for f in self.sent]
-        self.assertEqual(kinds[kinds.index("commentCreated"):], ["commentCreated", "warn", "commentCreateFailed"])
+        self.assertEqual(kinds[kinds.index("commentCreated"):],
+                         ["commentCreated", "warn", "comments", "commentCreateFailed"])
         self.assertEqual(self._rows(), [], "the half-born row is rolled back")
+        last_frame = [f for f in self.sent if f.get("type") == "comments"][-1]
+        self.assertNotIn(self._acks()[0]["tid"], json.dumps(last_frame), "the fresh frame drops the thread")
         problems = km._SDK_BOOT_PROBLEMS[before:]
         self.assertEqual(len(problems), 1)
         self.assertIn("spawn refused", problems[0]["text"])
+        self.assertIn("Which of these still matter?", problems[0]["text"], "the words survive")
+
+    def test_a_chat_comment_is_acked_only_after_its_fork(self):
+        """The chat popover keeps its draft on a failure, so it must never see an ack the fork undoes."""
+        self._boom_fork()
+        self._create(create_id="c-chat-1")
+        self.assertEqual(self._acks(), [])
+        self.assertIn("commentCreateFailed", [f.get("type") for f in self.sent])
+
+    def test_an_ack_the_socket_cannot_take_still_starts_the_thread(self):
+        """A send that raises inside the early ack leaves the row to its fork, never orphaned."""
+        def full(_s):
+            raise OSError("client queue over its byte cap")
+        self.client["send"] = full
+        self._file_create()
+        self.assertTrue(any(call[0] == "fork" for call in self.be.calls), "the fork still ran")
+        self.assertEqual(len(self._rows()), 1)
+
+    def test_the_same_words_on_two_files_are_two_threads(self):
+        """A frame with no createId keys on its words and the file they came from."""
+        for src in ("~/notes/a.md", "~/notes/b.md"):
+            self._drive({"type": "commentCreate", "id": PARENT, "uuid": "", "exact": "Kept gates:",
+                         "text": "Still true?", "src": src})
+        self.assertEqual(sorted(r["src"] for r in self._rows()), ["~/notes/a.md", "~/notes/b.md"])
 
     def test_a_refusal_before_the_row_records_no_problem(self):
         """A refusal the user provoked is answered on the socket alone; nothing was acked, so nothing
