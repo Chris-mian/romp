@@ -422,7 +422,7 @@ test("state badge: a dense-chrome tab shrinks the count pill and tucks it into t
   // dense pill is the INTENDED effect, pinned by the rule's text so a re-cut cannot silently drop it; whether that
   // reduces the hover-lifted close's overpaint is not asserted as a measured fact here. dense-chrome-layout.test.ts
   // covers the dense tab box the pill sits in.
-  assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge \{ top: 1px; right: 1px; \}/, "the dense badge sits higher and tighter into the corner");
+  assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge \{ top: 2px; right: 2px; \}/, "the dense badge sits higher and tighter into the corner");
   assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge:not\(:empty\) \{ min-width: 12px; height: 12px; border-radius: 6px; \}/, "the dense pill is a smaller box (not a smaller digit: the dense block carries no sub-10px font-size), tucked into the corner");
 });
 
