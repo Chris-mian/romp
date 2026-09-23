@@ -4713,8 +4713,12 @@ cancel. If the session took the message before you pressed, the bubble says so a
 box is left as it was, so nothing is sent twice. One case to know about: a chat page
 from before an update, still open on the new kernel. The page never reloads itself. A
 line near the top of the window says a newer romp build is ready, with **Reload** and
-**Not now**: Reload keeps your place, your drafts, your tab and the notification center,
-and Not now keeps the line away for that build (a later build asks again). Until you
+**Not now**: Reload keeps your place, your drafts, your tab, the notification center and
+the comment thread you had open — reopened on the same thread, back where you had moved its
+box — and Not now keeps the line away for that build (a later build asks again). A new
+comment you were still writing is not kept: its text was never sent. Neither is a thread
+that was resolved, broken out or deleted while the page was away, or one whose highlighted
+passage the fresh page does not render. Until you
 reload, the old page keeps working against the new kernel: reading, sending and switching
 tabs are unaffected, and the one thing that can go differently is an action the new kernel
 no longer knows in the old page's form, which falls back to the older path (a pencil on a

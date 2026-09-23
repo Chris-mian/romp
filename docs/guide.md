@@ -37,6 +37,11 @@ A path or a markdown link in the chat opens the file in the viewer, rendered. A
 passage selected there lands in the composer as a quote, labelled with the file
 and the line it came from.
 
+Select a passage in the chat itself and comment on it, and a side conversation
+opens on the highlight; a reload brings you back to where you were reading with
+that thread still open, back where you had moved its box, though anything you
+typed and did not send is gone.
+
 Tabs carry the state of their sessions. A tab wears a ring while its session
 needs you, tags group the strip into sections, and a tab can take a hot key of
 your own.
