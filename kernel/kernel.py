@@ -10246,11 +10246,11 @@ def _deploy_would_cut():
     this gate blind to Codex): its app-server is this kernel's child and ends with it. Without them a box whose Claude
     sessions were all hosted read "would cut no turn" over an open Codex turn, and the converge waived the cool-down
     and pre-empted the quiet window that /busy now holds for that turn. Read only when already built, never built
-    here; a built one that cannot answer makes the whole answer unknown, as the SDK side does. This gate and the
-    restart's cut row count Codex turns differently, on purpose (2026-09-23, the review of this lane): the cut row
-    (_codex_cut_turns, CodexBackend.inflight_turns) counts an ended session's open turn, a cut the next load still
-    settles, and never a compaction; this gate (CodexBackend.would_cut) skips ended sessions, whose turn is not work
-    a quiet window should wait for, and counts a compaction once seen active."""
+    here; a built one that cannot answer makes the whole answer unknown, as the SDK side does. Like the Claude half,
+    the Codex half is the drain's own predicate, minus the dead (2026-09-23, the promise in #2055's body): the gates
+    read what the restart's cut row names (CodexBackend.inflight_turns, through _codex_cut_turns: an open turn, or a
+    compaction once its active status was seen) less the ended sessions, whose open turn the row names because the
+    next load still settles it, but which is not work a quiet window should wait for."""
     be = _sdk_backend or None
     if be is None or not hasattr(be, "would_cut"):
         return None
@@ -73762,16 +73762,18 @@ def _graceful_term(signum, frame):
 
 
 def _codex_cut_turns():
-    """The Codex turns open at this exit, for its cut row (2026-09-22): [{sid, name, backend}]. The Codex app-server is
+    """The Codex work this exit cuts, for its cut row (2026-09-22): [{sid, name, backend}]. The Codex app-server is
     this process's child and ends with it, so each open turn is cut too, and a row naming only the SDK drain's cuts
-    counted a Codex cut as a clean restart (the next load settles each one, CodexBackend._settle_restart_turn). The
-    backend is read, never built: none ran if it is not. A read that raises is logged and names none, so the row
-    this exit exists to leave still lands."""
+    counted a Codex cut as a clean restart (the next load settles each one, CodexBackend._settle_restart_turn). A
+    compaction running as its own turn is one of them (2026-09-23, the promise in #2055's body): inflight_turns is
+    the one predicate the restart gates read too, through would_cut minus the ended sessions, and the next load ends
+    that compaction with its restart notice. The backend is read, never built: none ran if it is not. A read that
+    raises is logged and names none, so the row this exit exists to leave still lands."""
     try:
         cx = _codex_backend or None
         return list(cx.inflight_turns()) if cx is not None and hasattr(cx, "inflight_turns") else []
     except Exception:
-        _exit_log("romp-kernel: the Codex backend's open turns could not be read for the cut row: %s\n"
+        _exit_log("romp-kernel: the Codex work this exit cuts (open turns, running compactions) could not be read for the cut row: %s\n"
                   % traceback.format_exc().strip().splitlines()[-1][:200])
         return []
 
@@ -73874,7 +73876,7 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
             _phases["drainS"] = round(time.monotonic() - _drain_t0, 2)
             row = _restart_cut_row(res, watches_armed=len(_pr_watches) + len(_watches),
                                    audit_reason=reason, phases=_phases)
-            row["cutTurns"].extend(_codex_cut_turns())   # the Codex turns this exit cuts too (2026-09-22)
+            row["cutTurns"].extend(_codex_cut_turns())   # the Codex work this exit cuts too: open turns and running compactions (2026-09-22, 2026-09-23)
             if audit:
                 row["auditT"] = int(audit["t"])     # the audit row this cut CONSUMED (see _recent_restart_audit)
             if err:

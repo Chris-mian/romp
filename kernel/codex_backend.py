@@ -1592,19 +1592,45 @@ class CodexBackend:
             out[sid] = row
         return out
 
-    def inflight_turns(self):
-        """The sessions with an accepted turn open right now, [{sid, name, backend}]: what a kernel exit cuts, for the
-        restart's cut row (kernel _drain_and_exit, 2026-09-22), which counted a Codex cut as a clean restart. Their
-        rows name the turn, so the next load settles each one (_settle_restart_turn). An ENDED session's open turn
-        counts too (2026-09-23, the review of this lane): a kill whose interrupt never landed before the exit leaves
-        the turn open, and the next load writes its notice as it does for any row still naming a turn, so a row that
-        skipped dead sessions called that cut a clean restart while the transcript said otherwise."""
+    def _cuts(self):
+        """[(row, dead)] for every session a kernel exit NOW cuts: the one predicate inflight_turns() and would_cut()
+        both read (2026-09-23, the promise in #2055's body; inflight_turns says what counts and why). The row and the
+        dead bit are read under the session's one lock, so would_cut's filter cannot see a session end between two
+        reads."""
         out = []
         for sid, s in self._session_items():
             with s.lock:
-                if s.turn_id:
-                    out.append({"sid": sid, "name": s.name, "backend": "codex"})
+                if s.turn_id or (s.compacting and s.compact_active_seen):
+                    out.append(({"sid": sid, "name": s.name, "backend": "codex"}, s.dead))
         return out
+
+    def inflight_turns(self):
+        """The Codex work a kernel exit cuts, [{sid, name, backend}], for the restart's cut row (kernel _drain_and_exit,
+        2026-09-22), which counted a Codex cut as a clean restart: every session with an accepted turn open, or with a
+        compaction running as its own turn. The app-server is the kernel's child and ends with both, and the next load
+        ends each loudly: a row still naming a turn is settled with a notice (_settle_restart_turn), a row still
+        reading compacting is ended with the restart notice (_load_registry).
+
+        This is the ONE predicate for what a restart cuts (2026-09-23, the promise in #2055's body that whichever of
+        #2052 and #2055 landed second would make one for both): the restart gates read it through would_cut(), minus
+        the ended sessions. Before, the two counted differently, and the cut row read open turns alone, so a restart
+        over a running compaction wrote an empty row, a clean restart to every reader of the ledger, while /busy had
+        held the quiet window for that same compaction and the next load ended it with its restart notice.
+
+        A compaction counts once its active status was seen (compacting and compact_active_seen: the test the worker
+        itself uses before it stops sending turns, _work, and the rule #2055's review set for the gates). A bracket
+        latched with no active status yet may be one Codex acknowledged and never ran (the limit docs/codex.md
+        describes), which is no cut, and counting it in the gates would hold a quiet refresh taken as that limit's way
+        out to the 15-minute backstop. The race this accepts, here as in the gates: a restart in the moment between
+        the ACK and the active status cuts a compaction that was starting, the row does not name it, and the next load
+        still ends its bracket with the notice that its outcome is unknown.
+
+        An ENDED session counts too (2026-09-23, the review of #2052): a kill whose interrupt never landed before the
+        exit leaves the turn open, and the next load writes its notice as it does for any row still naming a turn, so
+        a row that skipped dead sessions called that cut a clean restart while the transcript said otherwise. A dead
+        row's compaction counts by the same rule, since the load ends every row still reading compacting; kill ends
+        the bracket and the worker latches none on a dead row, so none is expected."""
+        return [row for row, _dead in self._cuts()]
 
     def busy(self, sid):
         """A turn is open, or a queued send is about to open one. A queue the worker has PARKED on a permanent
@@ -1638,29 +1664,18 @@ class CodexBackend:
     def would_cut(self):
         """The Codex work a kernel restart NOW would cut, [{sid, name}] in SdkBackend.would_cut's shape, for the
         kernel's restart gates (2026-09-22, the review that found the quiet window and the converge blind to Codex:
-        both read the SDK backend alone, so a quiet refresh applied over an open Codex turn). A session counts while
-        the app-server holds a turn open for it, or a compaction running as its own turn: the app-server is the
-        kernel's child and ends with it, and the turn's prompt left the durable queue at the turn/start ACK, so the
-        next kernel has nothing to run it from. busy()'s queued half is left out on purpose: a queued send is on disk
-        until that ACK, and the next kernel sends it.
+        both read the SDK backend alone, so a quiet refresh applied over an open Codex turn): the drain's own
+        predicate, inflight_turns(), minus the ended sessions (2026-09-23, the promise in #2055's body). So an open
+        turn counts, and a compaction once its active status was seen, by the one rule the cut row counts them by.
+        An ended session's open turn is a cut the next load still settles, so the row names it, but it is not work a
+        quiet window should wait for: the session was ended, and a kill whose interrupt never landed can leave its turn
+        open with nothing left to end it, so a gate that waited on it would hold a quiet refresh to the 15-minute
+        backstop.
 
-        A compaction counts only once its active status was seen (2026-09-23, the review of this lane), the test the
-        worker itself uses before it stops sending turns (_work). A bracket compact() latched with no active status
-        yet may be one Codex acknowledged and never ran, the limit docs/codex.md describes, and counting it would hold
-        a quiet refresh taken as that limit's way out to the 15-minute backstop. The race this accepts: a restart in the
-        moment between the ACK and the active status cuts a compaction that was starting, and the next load ends its
-        bracket with the notice that its outcome is unknown (_load_registry).
-
-        The restart's cut row reads inflight_turns, not this, and the two count differently on purpose (2026-09-23,
-        the review of this lane): the cut row counts an ended session's open turn, a cut the next load still settles,
-        and never a compaction; this gate skips ended sessions, whose turn is not work a quiet window should wait
-        for, and counts a compaction once seen active."""
-        out = []
-        for sid, s in self._session_items():
-            with s.lock:
-                if not s.dead and (s.turn_id or (s.compacting and s.compact_active_seen)):
-                    out.append({"sid": sid, "name": s.name})
-        return out
+        busy()'s queued half is left out on purpose, as it is from the cut row: a queued send is on disk until the
+        turn/start ACK, and the next kernel sends it, while an open turn's prompt left the durable queue at that ACK,
+        so the next kernel has nothing to run it from."""
+        return [{"sid": row["sid"], "name": row["name"]} for row, dead in self._cuts() if not dead]
 
     def busy_breakdown(self):
         """(in flight, background) in SdkBackend.busy_breakdown's shape (2026-09-22): each session would_cut() names

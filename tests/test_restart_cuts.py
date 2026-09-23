@@ -31,6 +31,7 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)
 km = load_source("romp_kernel_cuts", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
+cxb = load_source("romp_codex_backend_cuts", os.path.join(os.path.dirname(HERE), "kernel", "codex_backend.py"))
 
 SID = "11111111-2222-3333-4444-00000000c001"
 
@@ -1344,6 +1345,25 @@ class CodexCutTurns(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["cutTurns"], [{"sid": SID, "name": "web"},
                                                {"sid": self.CX_SID, "name": "api", "backend": "codex"}])
+
+    def test_a_running_compaction_is_named_in_the_cut_row(self):
+        # 2026-09-23, the promise in #2055's body: the row and the restart gates read one predicate. The row read open
+        # turns alone, so a restart over a compaction running as its own turn wrote an empty row, a clean restart to
+        # every ledger reader, while /busy had held the quiet window for that compaction and the next load ended it
+        # with its restart notice. A real CodexBackend (no app-server, no worker); synthetic sids
+        cx = cxb.CodexBackend(tempfile.mkdtemp(), client_factory=lambda: None, log=lambda m: None)
+        running = cxb._Session(self.CX_SID, "T-1", "api", "/TESTDIR")
+        running.compacting, running.compact_active_seen, running.state = True, True, "compacting"   # seen active
+        latched = cxb._Session("11111111-2222-3333-4444-00000000c0df", "T-2", "tests", "/TESTDIR")
+        latched.compacting, latched.state = True, "compacting"   # latched at the ACK, never seen running: no cut
+        for s in (running, latched):
+            cx._put_session(s)
+        rows = self._exit(sdk=LiveDrain(), codex=cx)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["cutTurns"], [{"sid": SID, "name": "web"},
+                                               {"sid": self.CX_SID, "name": "api", "backend": "codex"}],
+                         "the running compaction is cut with the app-server, beside the SDK drain's cuts")
+        self.assertEqual(cx.would_cut(), [{"sid": self.CX_SID, "name": "api"}], "the compaction the gates waited on")
 
     def test_no_codex_backend_built_is_no_codex_cut(self):
         for unbuilt in (None, False):          # never built / module unavailable
