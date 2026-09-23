@@ -12008,7 +12008,7 @@ class SdkBackend:
                         problem_row(self.state_dir,
                                     "boot: %d claude processes were holding session %s's conversation at once "
                                     "(pids %s); the orphans this kernel started are being ended, any other kernel's "
-                                    "is left alone and named below" % (len(pids), r0.get("name") or fsid[:8],
+                                    "stays and is named below" % (len(pids), r0.get("name") or fsid[:8],
                                                                        ", ".join(str(p) for p in pids)),
                                     "reconcile.duplicate-cli", log=self._log, sid=r0.get("sid"), name=r0.get("name"),
                                     fsid=fsid, pids=",".join(str(p) for p in pids), n=len(pids))
