@@ -12265,12 +12265,20 @@ class SdkBackend:
         — with no turn in flight between their own turns. Each session is counted once, in-flight
         first. Background work counted nowhere was how a quiet deploy applied instantly over live
         Workflow runs and killed them (T240: eight review runs lost in one night). Queued-but-
-        unstarted turns still don't count — the persisted queue survives a bounce losslessly."""
+        unstarted turns still don't count — the persisted queue survives a bounce losslessly. Nor does
+        a session under a host (T315), whatever it is running: the drain detaches it, and its host keeps
+        the CLI, the turn and the background work across the restart."""
         with self._lock:
             sessions = list(self.sessions.values())
         inflight = background = 0
         for s in sessions:
             if s.ended:
+                continue
+            # 2026-09-22 (a post-merge review of a kernel refresh from an older main): a hosted session counted
+            # here held the manager's quiet window, and its drain hold over every idle session's queued turn,
+            # for work the restart never cuts; the drain's own ledger recorded no cut. The skip is cut_list's
+            # predicate, written out here because tests/test_restart_cuts.py pins cut_list's source.
+            if getattr(s, "_host", None) is not None or getattr(s, "_host_intent", False):
                 continue
             if s.inflight:
                 inflight += 1
@@ -12422,7 +12430,10 @@ class SdkBackend:
             self._drain_wake_timer = threading.Timer(hold_s + 0.5, self._drain_wake_fired)
             self._drain_wake_timer.daemon = True
             nt = self._drain_wake_timer
-            n = sum(1 for s in self.sessions.values() if s.inflight and not s.ended)
+            # the turns the stop would cut, the ones /down waits on (2026-09-22, the same review as busy_breakdown's
+            # skip): the stop detaches a hosted turn and never cuts it, so this line counts it no more than busy_count
+            n = sum(1 for s in self.sessions.values() if s.inflight and not s.ended
+                    and getattr(s, "_host", None) is None and not getattr(s, "_host_intent", False))
         if t is not None:
             t.cancel()
         nt.start()
@@ -12450,10 +12461,14 @@ class SdkBackend:
         self._wake_all_inputs()
 
     def inflight_names(self) -> list:
-        """The names of the sessions with a turn in flight right now (what a stop would cut)."""
+        """The names of the sessions with a turn in flight right now that a stop would cut: /down's report,
+        read while busy_count is still above 0. A session under a host is left out (2026-09-22, the same
+        review as busy_breakdown's skip): the stop detaches it and its turn keeps running, so a box where
+        one kernel child is still mid-turn must not name the hosted sessions beside it as about to be cut."""
         with self._lock:
             sessions = list(self.sessions.values())
-        return [s.name for s in sessions if s.inflight and not s.ended]
+        return [s.name for s in sessions if s.inflight and not s.ended
+                and getattr(s, "_host", None) is None and not getattr(s, "_host_intent", False)]
 
     def _drain_wake_fired(self) -> None:
         """The lease's wake timer fired. Held inputs are woken only once the hold has LAPSED: a timer

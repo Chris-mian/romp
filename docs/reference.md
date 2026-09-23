@@ -23,7 +23,7 @@ update` starts a session called "update".
 | `romp refresh` | Restart the postal bus and every kernel immediately, picking up new code (cut turns resume with their history) |
 | `romp update [host…]` | Push this machine's committed Romp to attached remotes and restart them at once (every deploy restart is immediate; boot reconcile resumes the cut turns with their history); a remote stopped by `romp down` is synced and left stopped |
 | `romp up` | Start the kernel: through the login service when one is installed, in the foreground otherwise. Clears a `romp down` marker |
-| `romp down` | Stop the kernel and keep it stopped until `romp up`. Turns in flight get 5 seconds to finish first; sessions resume with their history at the next start. See [Stopping the kernel on purpose](#stopping-the-kernel-on-purpose) |
+| `romp down` | Stop the kernel and keep it stopped until `romp up`. The turns the stop would cut get 5 seconds to finish first (a turn under a session host keeps running); sessions resume with their history at the next start. See [Stopping the kernel on purpose](#stopping-the-kernel-on-purpose) |
 | `romp version` | Version report across the moving parts |
 | `romp help` | The same list, from the terminal |
 
@@ -52,8 +52,8 @@ These are for scripting and for agents rather than daily use:
 | `romp default-dir [PATH]` | The default working directory for new sessions; no argument prints it, `""` clears it |
 | `romp login add <label> --cmd '<shell line>'`, `romp login list`, `romp login remove <label>` | The stored Claude logins a session can be billed to beside the machine's own (see [Several Claude logins](#several-claude-logins)): `add` records the command that prints the login's setup-token on demand (`--op` is the 1Password shorthand for `op read`); `list` and `remove` print labels only, never a token |
 | `romp debug [on\|off\|status]` | Judge debug mode, where rejection rows carry the full input and reply |
-| `romp refresh --quiet` | Refresh at the next quiet window instead — waits for sessions to finish their turns (15-min backstop). The ONLY door to the quiet window: a deploy (a peer's `romp update`, a release self-update, an automatic converge) restarts immediately, by the user's 2026-09-08 decision |
-| `romp down --wait <s>`, `romp down --now` | How long `romp down` waits for turns in flight to finish (0 to 600 seconds; default 5), or no wait at all |
+| `romp refresh --quiet` | Refresh at the next quiet window instead — waits for the turns and background work a restart would cut to finish (15-min backstop); a session under a host keeps its turn across the restart, so it is not waited on. The ONLY door to the quiet window: a deploy (a peer's `romp update`, a release self-update, an automatic converge) restarts immediately, by the user's 2026-09-08 decision |
+| `romp down --wait <s>`, `romp down --now` | How long `romp down` waits for the turns it would cut to finish (0 to 600 seconds; default 5), or no wait at all |
 | `romp up --foreground` | Run the manager in this terminal even with a login service installed (its log in front of you); the manager refuses to start beside a running one |
 
 Raw `POST` callers, anything that talks to the kernel's routes directly rather
@@ -1105,7 +1105,10 @@ Before stopping, `romp down` gives the turns in flight `--wait` seconds
 (default 5, up to 600) to reach a turn boundary. It asks the kernel to quiesce
 (`POST /down`), which holds new turn starts and new session creation, and then
 reports whether the kernel went quiet or which sessions are still mid-turn and
-about to be cut. The wait ends on the event the in-flight count reaches zero;
+about to be cut. A session under a host is neither waited on nor named: the
+stop detaches it and its turn keeps running (see
+[What survives a restart](#what-survives-a-restart)). The wait ends on the
+event the in-flight count reaches zero;
 `--wait` is only its bound. `--now` skips the wait, not the request: when a
 kernel answers on the port, the same `POST /down` goes out with a wait of 0 and
 nothing is reported about it, so the token check below still comes first; the
