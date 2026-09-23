@@ -270,12 +270,14 @@ test("saveSettings has no production caller (a whole-object save would stamp the
   // scan the webview AND the extension-host TS (either could call it); the kernel is Python and cannot call a TS symbol,
   // so grep it too to say so. No PRODUCTION module calls saveSettings; the gear posts settingsSync, render.ts only imports it.
   const roots = [path.resolve(process.cwd(), "..", "ui", "webview"), path.resolve(process.cwd(), "..", "vscode-extension", "src")];
+  const SETTINGS_TS = path.join(roots[0], "settings.ts");   // the ONE module that DEFINES saveSettings; exempt it by EXACT path, not any *settings.ts (low c)
   const callers = [];
   for (const dir of roots) {
     for (const f of fs.readdirSync(dir, { recursive: true })) {
       const rel = String(f);
-      if (!rel.endsWith(".ts") || rel.endsWith(".test.ts") || rel.endsWith("settings.ts")) continue;
+      if (!rel.endsWith(".ts") || rel.endsWith(".test.ts")) continue;
       const p = path.join(dir, rel);
+      if (p === SETTINGS_TS) continue;   // ui/webview/settings.ts alone, by exact path (a vscode-extension/src/settings.ts would NOT be exempt)
       try { if (/\bsaveSettings\s*\(/.test(fs.readFileSync(p, "utf8"))) callers.push(path.join(path.basename(dir), rel)); } catch { /* a dir entry */ }
     }
   }

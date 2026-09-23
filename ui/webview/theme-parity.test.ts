@@ -366,8 +366,9 @@ test("the 5xx marks of the API-health cell clear the validator's two floors agai
 // alone is not enough under a red-green deficiency (the review's math: dark retrying vs awaiting 2.7 deutan, far below
 // the categorical floor 8). The amended rule: a pair whose hues clear the floors (15 full colour, 8 under a deficiency)
 // needs no shape; a pair whose hues cannot must wear a distinct SHAPE. The retrying ring is that shape, so it needs no
-// colour floor against the filled dots. The working gold vs the awaiting green is a PRE-EXISTING miss (4.2 protan dark,
-// both filled, no shape apart) recorded for the user's decision, not fixed in this PR (like the compacting pair above).
+// colour floor against the filled dots. TWO same-shape pairs are PRE-EXISTING misses conceded on the user's decision, both
+// filled with no shape apart, not fixed in this PR (like the compacting pair above): dark working gold vs awaiting green
+// (18.4 full / 4.2 protan) and light working gold vs opening accent (12.7 full / 2.4 deutan).
 test("badge mode: the SIX left-slot dot classes are told apart by shape or colour; each pre-existing filled miss is conceded on the user's decision", () => {
   const css = read("styles.css");
   const body = (re: RegExp, what: string) => { const m = css.match(re); assert.ok(m, what + " rule present"); return m[1]; };
@@ -379,6 +380,12 @@ test("badge mode: the SIX left-slot dot classes are told apart by shape or colou
   assert.match(retrying, /background:\s*transparent/, "retrying is HOLLOW"); assert.match(retrying, /box-shadow:\s*inset 0 0 0 [\d.]+px var\(--st-retrying-bg\)/, "…an inset amber ring");
   const unknown = nc(body(/\n\.tab-dot\.unknown \{([^}]*)\}/, ".tab-dot.unknown"));
   assert.match(unknown, /background:\s*transparent/, "unknown is HOLLOW"); assert.match(unknown, /box-shadow:\s*inset 0 0 0 [\d.]+px/, "…an inset ring (retrying shares this form)");
+  // LOW b: read unknown's stroke colour and idle's opacity from the SHEET the shapes were parsed from, so a re-ink is graded (not a hardcoded #8a8a8a / 0.45).
+  const unknownStroke = (unknown.match(/box-shadow:\s*inset\s+0\s+0\s+0\s+[\d.]+px\s+(#[0-9a-fA-F]+|var\([^)]+\))/) || [])[1];
+  assert.ok(unknownStroke, "unknown's inset stroke colour is read from styles.css");
+  const idleRule = nc(body(/\n\.tab-dot\.idle \{([^}]*)\}/, ".tab-dot.idle"));
+  const idleOp = parseFloat((idleRule.match(/opacity:\s*([\d.]+)/) || [])[1]);
+  assert.ok(idleOp > 0 && idleOp < 1, "idle's opacity is read from styles.css");
   for (const [sel, tok] of [["\\n\\.tab-dot ", "--st-working-bg"], ["\\n\\.tab-dot\\.await ", "--st-awaitbg-bg"], ["\\n\\.tab-dot\\.idle ", "--dim"], ["\\n\\.tab-dot\\.opening ", "--accent"]]) {
     const d = nc(body(new RegExp(sel + "\\{([^}]*)\\}"), sel));
     assert.match(d, new RegExp("background:\\s*var\\(" + tok + "\\)"), sel + " is a FILLED disc (" + tok + ")");
@@ -387,20 +394,22 @@ test("badge mode: the SIX left-slot dot classes are told apart by shape or colou
   const SHAPE: Record<string, string> = { working: "filled", awaiting: "filled", idle: "filled", opening: "filled", retrying: "hollow", unknown: "hollow" };
   // (b) the amended rule for every pair among the six, both themes: a pair whose shapes DIFFER is told apart by form (no
   // colour floor). A same-shape pair needs the categorical floors (15 full colour, 8 under a red-green deficiency). A
-  // same-shape pair whose hues cannot reach them is a PRE-EXISTING miss conceded on the user's decision (relayed by the
-  // manager 2026-09-22), recorded here at a floor set to its measured deficiency figure LESS a 0.3 margin, so a drift
+  // same-shape pair whose hues cannot reach them is a PRE-EXISTING miss conceded on the user's decision (the gold-vs-green
+  // pair relayed by the manager 2026-09-22, the light gold-vs-opening pair the same way 2026-09-23), recorded here with BOTH
+  // its measured full-colour and deficiency figures, each floored at that value LESS a 0.3 margin, so a drift
   // toward collapse still reds while today's value passes. retrying's hue vs the filled dots is BELOW the floor (dark
   // retrying-vs-awaiting 2.7, light retrying-vs-working 3.3); the hollow shape is what carries those, so they skip the floor.
-  const CONCEDE: Record<string, number> = {   // theme|a|b (a,b sorted) -> measured deficiency figure; the floor is this less 0.3 (LOW 3)
-    "dark|awaiting|working": 4.2, "light|opening|working": 2.4,
+  const CONCEDE: Record<string, { full: number; def: number }> = {   // theme|a|b (a,b sorted) -> the measured [full colour, deficiency] of a same-shape pair below the floors; each guarded at its figure LESS a 0.3 margin (LOW a), so a drift toward collapse reds while today passes
+    "dark|awaiting|working": { full: 18.4, def: 4.2 },    // dark working GOLD vs awaiting GREEN: full clears 15, the protan deficiency 4.2 does not; both filled discs, no shape apart
+    "light|opening|working": { full: 12.7, def: 2.4 },    // light working GOLD vs opening ACCENT: full 12.7 AND deutan 2.4 both below the floors; both filled discs, no shape apart
   };
   for (const [name, theme] of [["dark", props(block(css, ":root {"))], ["light", props(block(css, "body.theme-light {"))]] as const) {
     const page = rgbOf(theme.get("--bg")!, [30, 30, 30])!;
     const tok = (t: string) => rgbOf(theme.get(t)!, page)!;
     const dim = tok("--dim");
     const rgb: Record<string, [number, number, number]> = { working: tok("--st-working-bg"), awaiting: tok("--st-awaitbg-bg"), retrying: tok("--st-retrying-bg"),
-                  unknown: rgbOf("#8a8a8a", page)!, opening: tok("--accent"),
-                  idle: [0, 1, 2].map((i) => Math.round(dim[i] * 0.45 + page[i] * 0.55)) as [number, number, number] };
+                  unknown: rgbOf(unknownStroke, page)!, opening: tok("--accent"),
+                  idle: [0, 1, 2].map((i) => Math.round(dim[i] * idleOp + page[i] * (1 - idleOp))) as [number, number, number] };
     const names = Object.keys(SHAPE);
     for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) {
       const a = names[i], b = names[j];
@@ -408,8 +417,9 @@ test("badge mode: the SIX left-slot dot classes are told apart by shape or colou
       const full = deltaE(rgb[a], rgb[b]), c = cvdWorst(rgb[a], rgb[b]);
       const key = name + "|" + [a, b].sort().join("|");
       if (key in CONCEDE) {
-        const floor = CONCEDE[key] - 0.3;
-        assert.ok(c >= floor, `${name}: ${a} vs ${b} (conceded pre-existing miss) = ${c.toFixed(1)} < ${floor.toFixed(1)} (drift below the recorded ${CONCEDE[key]})`);
+        const rec = CONCEDE[key];   // a conceded pair: guard BOTH figures at the measured value less 0.3, so a drift on EITHER axis reds (LOW a)
+        assert.ok(full >= rec.full - 0.3, `${name}: ${a} vs ${b} (conceded pre-existing miss) full ${full.toFixed(1)} < ${(rec.full - 0.3).toFixed(1)} (drift below the recorded ${rec.full})`);
+        assert.ok(c >= rec.def - 0.3, `${name}: ${a} vs ${b} (conceded pre-existing miss) deficiency ${c.toFixed(1)} < ${(rec.def - 0.3).toFixed(1)} (drift below the recorded ${rec.def})`);
       } else {
         assert.ok(full >= 15 && c >= 8, `${name}: ${a} vs ${b} (same shape ${SHAPE[a]}) reads ${full.toFixed(1)} full / ${c.toFixed(1)} deficiency; below 15/8 and not conceded`);
       }
