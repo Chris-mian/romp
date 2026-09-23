@@ -19596,9 +19596,12 @@ def _fire_api_retry(sid, be, manual=False):
         # gate below never terminated — and in fallback configurations each retry manufactures another
         # model downgrade. Manual keeps firing: the button is only rendered where a retry can work, and
         # an explicit click is the user's call (they may have rewritten or dropped the thread since).
+        # A notice NOTHING retries joins them (noRetry, 2026-09-22, the review of the restart-cut fix): the
+        # Codex turn a kernel restart cut. Retried, a bare "retry" reached the thread about a second after
+        # boot, telling the model nothing of the cut; picking the work back up is the person's call.
         if _rerr and (_rerr.get("tooLong") or _rerr.get("spendLimit")
                       or _rerr.get("modelLimit") or _rerr.get("authErr")
-                      or _rerr.get("refusal")):
+                      or _rerr.get("refusal") or _rerr.get("noRetry")):
             return
         if _auto_retried.get(sid) == _rk:
             return                                        # this episode already got its retry
@@ -32252,7 +32255,12 @@ def _api_error_pass(path, start):
                                      # (rewrite the ask or drop the thread), never auto-retried; see
                                      # _is_refusal_text, and the system-record event path below (the user
                                      # 2026-08-15, after one refused prompt drew 12 auto-retries in ~6min)
-                                     "refusal": _is_refusal_text(text)}
+                                     "refusal": _is_refusal_text(text),
+                                     # a notice nothing retries, marked on the record by the backend that wrote it:
+                                     # the Codex turn a kernel restart cut (codex_events abandoned, 2026-09-22). The
+                                     # auto-retry skips it and the card draws no countdown, so no bare "retry" goes
+                                     # into a thread whose turn was cut without the model being told
+                                     "noRetry": bool(o.get("rompNoRetry"))}
                 elif (isinstance(c, list) and any(isinstance(b, dict)
                         and b.get("type") in ("text", "tool_use", "thinking") for b in c)) \
                         or (isinstance(c, str) and c.strip()):
@@ -41110,7 +41118,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # 2026-06-24). Mirrors the feed, which gates the same _api_error on `not who_working` and treats awaiting
     # as a working flavor (build_feed).
     aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
-    _launch_no_retry = False   # the launch-error card below is one nothing retries (a failed compaction); status apiNoRetry
+    _launch_no_retry = False   # the card is one nothing retries (a failed compaction, a turn a restart cut); status apiNoRetry
     if aerr:
         # While the session is still blocked on THIS error, the live card below carries the same record
         # with the buttons and countdown — drop the durable note so the error doesn't show twice. The
@@ -41118,6 +41126,9 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
         events = [ev for ev in events
                   if not (ev.get("kind") == "apiErrorNote" and ev.get("uuid") == aerr.get("uuid"))]
         events.append({"kind": "apiError", "text": aerr["text"], "status": aerr["status"]})
+        # a transcript notice nothing retries (the record's noRetry: the Codex turn a restart cut, 2026-09-22) wears
+        # the same dress as the launch-error notices below: the words, with no countdown the auto-retry would never keep
+        _launch_no_retry = bool(aerr.get("noRetry"))
     elif not (open_now or awaiting_why):
         # The session's CLI could not START (SessionBackend.launch_error) — a blocked session with NO
         # transcript atom to detect it by, since nothing ever connected to write one. It rides the same
@@ -45072,8 +45083,10 @@ def _feed_session_entry(s, ctx):
         # A safeguards REFUSAL joins them (the user 2026-08-15): deterministic on the same input,
         # never auto-retried, so a Working card would sit on a session nothing can move — the
         # human rewriting or dropping the ask IS the only unblock.
+        # A notice NOTHING retries joins them too (noRetry, 2026-09-22): a Codex turn a kernel restart cut,
+        # which only the person picks back up.
         api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit")
-                                                      or aerr.get("modelLimit")
+                                                      or aerr.get("modelLimit") or aerr.get("noRetry")
                                                       or aerr.get("authErr") or aerr.get("refusal"))))
         # NUDGE FAILED (plans/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
         # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
@@ -45262,6 +45275,10 @@ def _feed_session_entry(s, ctx):
                          "modelLimit": bool(aerr.get("modelLimit")),
                          "authErr": bool(aerr.get("authErr")),
                          "refusal": bool(aerr.get("refusal")),
+                         # a notice nothing retries (the Codex turn a kernel restart cut), mirrored like every
+                         # on-you flag above so a client can tell it from a transient API error (2026-09-23,
+                         # the review of this lane: without it the badge and the bell called it one)
+                         "noRetry": bool(aerr.get("noRetry")),
                          "what": ("this account hit its monthly spend limit — raise it at claude.ai/settings/usage to continue" if aerr.get("spendLimit")
                                   else "this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
                                   # the CLI's own text names the model and the two remedies; the card
@@ -45274,6 +45291,9 @@ def _feed_session_entry(s, ctx):
                                   # a refusal is deterministic: retrying re-sends the same prompt and
                                   # collects the same refusal — name the real fix (the user 2026-08-15)
                                   else "the model's safeguards refused this prompt — rewrite it or drop this thread" if aerr.get("refusal")
+                                  # a notice nothing retries says what happened in its own words; a turn a restart
+                                  # cut was not an API error (2026-09-22)
+                                  else (aerr.get("text") or "this session stopped and nothing retries it") if aerr.get("noRetry")
                                   else "this session stopped on an API error — Retry to resume")} if nid == api_top
                         # the session itself is fine — it's romp's ANALYSIS of it whose credential is
                         # refused, so the copy blames the judges, not the session (the user 2026-08-12)
@@ -59125,7 +59145,8 @@ def _api_health_frame(now, live_map):
         else:
             path = s.get("path")
             e = _api_last_failed(path) if path else None
-            if not e or e.get("tooLong") or e.get("modelLimit") or e.get("authErr") or e.get("refusal"):
+            if not e or e.get("tooLong") or e.get("modelLimit") or e.get("authErr") or e.get("refusal") \
+                    or e.get("noRetry"):               # (a turn a restart cut says nothing of the API, 2026-09-22)
                 continue                               # nothing latched, or an on-you failure (the session's own)
             status = e.get("status")
             # The word follows the LIVE state: a turn open on the retry prompt (romp's own, or a human's) with
@@ -73381,6 +73402,21 @@ def _graceful_term(signum, frame):
     _drain_and_exit(_audit_reason_text(rec), signum=signum, what="SIGTERM", audit=rec)
 
 
+def _codex_cut_turns():
+    """The Codex turns open at this exit, for its cut row (2026-09-22): [{sid, name, backend}]. The Codex app-server is
+    this process's child and ends with it, so each open turn is cut too, and a row naming only the SDK drain's cuts
+    counted a Codex cut as a clean restart (the next load settles each one, CodexBackend._settle_restart_turn). The
+    backend is read, never built: none ran if it is not. A read that raises is logged and names none, so the row
+    this exit exists to leave still lands."""
+    try:
+        cx = _codex_backend or None
+        return list(cx.inflight_turns()) if cx is not None and hasattr(cx, "inflight_turns") else []
+    except Exception:
+        _exit_log("romp-kernel: the Codex backend's open turns could not be read for the cut row: %s\n"
+                  % traceback.format_exc().strip().splitlines()[-1][:200])
+        return []
+
+
 def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
     """Drain the SDK sessions, write the restart-cut row, exit: the tail every kernel exit shares
     (_graceful_term, _parent_watch). `reason` is the request on record when the exit was decided, and
@@ -73479,6 +73515,7 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
             _phases["drainS"] = round(time.monotonic() - _drain_t0, 2)
             row = _restart_cut_row(res, watches_armed=len(_pr_watches) + len(_watches),
                                    audit_reason=reason, phases=_phases)
+            row["cutTurns"].extend(_codex_cut_turns())   # the Codex turns this exit cuts too (2026-09-22)
             if audit:
                 row["auditT"] = int(audit["t"])     # the audit row this cut CONSUMED (see _recent_restart_audit)
             if err:
