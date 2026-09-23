@@ -8,7 +8,8 @@ count reaches 0 or `wait` runs out, and answers what a stop right now would cut.
 the explicit-token gate (a WRITE that holds every session's turn starts, so the ambient cookie is
 not enough, the /busy?drain=1 rule), the wait against a fake backend whose count falls mid-wait,
 the bounded give-up with the in-flight names, the cancel arm, both create doors refusing while
-the hold is in force, the no-backend case (nothing to hold: quiet at once), and the pid every 200
+the hold is in force, the no-backend case (nothing to hold: quiet at once, unless a Codex turn is
+open, see DownCountsCodexTurns), and the pid every 200
 names, which is the only pid `romp down` will send a stop signal to (the auth-exempt /version
 vouches for nothing, and a CLI aimed at the wrong port once took a pid from it).
 Synthetic only: the real Handler on an ephemeral loopback port, a fake backend, an invented token.
@@ -651,6 +652,138 @@ class QuiesceLease(unittest.TestCase):
             km._thread_msgs_cache.pop(tsid, None)
         self.assertEqual([r["text"] for r in got], ["what did the cache test show?", "It passed on the second run."])
         self.assertEqual([r["who"] for r in got], ["you", "agent"])
+
+
+class _FakeCodexBackend:
+    """What the route needs of CodexBackend: the (in flight, background) breakdown /busy sums, and the [{sid, name}]
+    rows would_cut() names behind it. `open_turns` is how many sessions hold a turn open; `raises` makes both reads
+    raise, a backend that cannot answer."""
+
+    SIDS = ("11111111-2222-4333-8444-000000000c01", "11111111-2222-4333-8444-000000000c02")
+
+    def __init__(self, open_turns=0, names=("api",)):
+        self.open_turns = open_turns
+        self.names = list(names)
+        self.raises = False
+
+    def would_cut(self):
+        if self.raises:
+            raise RuntimeError("synthetic: the Codex backend cannot answer")
+        return [{"sid": self.SIDS[i], "name": n} for i, n in enumerate(self.names[: self.open_turns])]
+
+    def busy_breakdown(self):
+        return len(self.would_cut()), 0
+
+
+class DownCountsCodexTurns(unittest.TestCase):
+    """An open Codex turn is a cut too (2026-09-23, the review of this lane): the SIGTERM `romp down` ends with takes
+    the Codex app-server, this kernel's child, and the turn with it, and the turn's prompt already left the durable
+    queue. The route read the SDK backend alone, so over an open Codex turn it answered quiet at once, the CLI said
+    no turn was in flight, and the stop cut the turn, while /busy in the same kernel said busy. Pinned here, through
+    the real Handler with a fake Codex backend beside the fake SDK one: the wait holds on a Codex turn and the report
+    names its session, the wait ends on the event the turn ends, both backends add up and both sessions are named, a
+    kernel with no SDK backend still waits on a Codex turn and is quiet at once without one, a Codex backend that
+    cannot answer is waited on as one open turn, and an unbuilt Codex backend (None, or False for a missing module)
+    leaves the SDK's answer as it was and is never built. Synthetic sids and names."""
+
+    _post = DownRoute._post
+    _down = DownRoute._down
+
+    def setUp(self):
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self._saved = (km._sdk_backend, km._codex_backend, km._codex, km._live_map)
+        km._live_map = lambda *a, **k: {}     # no live sessions in a test
+        self.be = _FakeBackend()
+        self.cx = _FakeCodexBackend()
+        km._sdk_backend = self.be
+        km._codex_backend = self.cx
+
+    def tearDown(self):
+        km._sdk_backend, km._codex_backend, km._codex, km._live_map = self._saved
+        self.srv.shutdown()
+        self.srv.server_close()
+
+    def test_an_open_codex_turn_holds_the_wait_and_is_named(self):
+        self.cx.open_turns = 1
+        status, body = self._down({"wait": 0.3})
+        self.assertEqual(status, 200)
+        self.assertFalse(body["quiet"], body)
+        self.assertEqual(body["busy"], 1)
+        self.assertEqual(body["inflight"], ["api"], "the CLI names the Codex session the stop cuts")
+        self.assertEqual(self.be.quiesced, [0.3 + km.DOWN_HOLD_GRACE_S], "the Claude hold is armed as before")
+        self.cx.open_turns = 0
+        status, body = self._down({"wait": 5})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["quiet"], body)
+        self.assertEqual((body["busy"], body["inflight"], body["waited"]), (0, [], 0.0))
+
+    def test_the_wait_ends_on_the_event_the_codex_turn_ends(self):
+        self.cx.open_turns = 1
+        seen = []
+
+        def finish_turn():
+            seen.append(self.cx.open_turns)
+            time.sleep(0.4)
+            self.cx.open_turns = 0
+
+        threading.Thread(target=finish_turn, daemon=True).start()
+        status, body = self._down({"wait": 30})
+        self.assertEqual(status, 200)
+        self.assertEqual(seen, [1], "the Codex turn was open when the wait began")
+        self.assertTrue(body["quiet"])
+        self.assertEqual((body["busy"], body["inflight"]), (0, []))
+        self.assertLess(body["waited"], 30, "the wait ended on the event, not at its bound")
+
+    def test_both_backends_add_up_and_both_sessions_are_named(self):
+        self.be.busy, self.be.names = 1, ["web"]
+        self.cx.open_turns = 1
+        status, body = self._down({"wait": 0.3})
+        self.assertEqual(status, 200)
+        self.assertFalse(body["quiet"])
+        self.assertEqual(body["busy"], 2, "one Claude turn and one Codex turn")
+        self.assertEqual(body["inflight"], ["web", "api"], "the SDK names first, the Codex ones after")
+
+    def test_no_sdk_backend_still_waits_on_a_codex_turn_and_is_quiet_without_one(self):
+        km._sdk_backend = None
+        self.cx.open_turns = 1
+        status, body = self._down({"wait": 0.3})
+        self.assertEqual(status, 200)
+        self.assertFalse(body["quiet"], "a Codex turn is open: not quiet, though there is no Claude hold to arm")
+        self.assertEqual((body["busy"], body["inflight"]), (1, ["api"]))
+        self.assertEqual(body["pid"], os.getpid())
+        self.cx.open_turns = 0
+        status, body = self._down({"wait": 5})
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"ok": True, "quiet": True, "busy": 0, "inflight": [], "waited": 0,
+                                "pid": os.getpid()}, "no SDK backend and no Codex turn: the no-backend answer as before")
+
+    def test_a_codex_backend_that_cannot_answer_is_waited_on_as_a_turn(self):
+        # _deploy_would_cut reads an unknown answer as a non-empty one; the wait reads it as one open turn
+        self.cx.raises = True
+        status, body = self._down({"wait": 0.3})
+        self.assertEqual(status, 200, body)
+        self.assertFalse(body["quiet"])
+        self.assertEqual(body["busy"], 1)
+        self.assertEqual(body["inflight"], [], "no name to give; the CLI's line prints the count")
+
+    def test_an_unbuilt_codex_backend_leaves_the_sdk_answer_and_is_never_built(self):
+        builds = []
+        km._codex = lambda: builds.append(1)             # the lazy builder: this route must never reach it
+        for unbuilt in (None, False):                    # never built / its module unavailable
+            with self.subTest(unbuilt=unbuilt):
+                km._codex_backend = unbuilt
+                self.be.busy, self.be.names = 1, ["web"]
+                status, body = self._down({"wait": 0})
+                self.assertEqual(status, 200)
+                self.assertEqual((body["quiet"], body["busy"], body["inflight"]), (False, 1, ["web"]))
+                self.be.busy = 0
+                status, body = self._down({"wait": 5})
+                self.assertEqual((body["quiet"], body["busy"], body["inflight"]), (True, 0, []))
+                self.assertIs(km._codex_backend, unbuilt)
+        self.assertEqual(builds, [])
+
 
 if __name__ == "__main__":
     unittest.main()

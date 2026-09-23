@@ -1489,7 +1489,12 @@ class CodexBackend:
         yet may be one Codex acknowledged and never ran, the limit docs/codex.md describes, and counting it would hold
         a quiet refresh taken as that limit's way out to the 15-minute backstop. The race this accepts: a restart in the
         moment between the ACK and the active status cuts a compaction that was starting, and the next load ends its
-        bracket with the notice that its outcome is unknown (_load_registry)."""
+        bracket with the notice that its outcome is unknown (_load_registry).
+
+        The restart's cut row reads inflight_turns, not this, and the two count differently on purpose (2026-09-23,
+        the review of this lane): the cut row counts an ended session's open turn, a cut the next load still settles,
+        and never a compaction; this gate skips ended sessions, whose turn is not work a quiet window should wait
+        for, and counts a compaction once seen active."""
         out = []
         for sid, s in self._session_items():
             with s.lock:

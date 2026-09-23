@@ -10239,9 +10239,11 @@ def _deploy_would_cut():
     this gate blind to Codex): its app-server is this kernel's child and ends with it. Without them a box whose Claude
     sessions were all hosted read "would cut no turn" over an open Codex turn, and the converge waived the cool-down
     and pre-empted the quiet window that /busy now holds for that turn. Read only when already built, never built
-    here; a built one that cannot answer makes the whole answer unknown, as the SDK side does. The drain's cut record
-    does not name Codex turns (2026-09-23, the review of this lane): the restart's cut row reads the Claude drain
-    alone, so for a Codex turn this answer and that row can disagree until the Codex side of the row lands."""
+    here; a built one that cannot answer makes the whole answer unknown, as the SDK side does. This gate and the
+    restart's cut row count Codex turns differently, on purpose (2026-09-23, the review of this lane): the cut row
+    (_codex_cut_turns, CodexBackend.inflight_turns) counts an ended session's open turn, a cut the next load still
+    settles, and never a compaction; this gate (CodexBackend.would_cut) skips ended sessions, whose turn is not work
+    a quiet window should wait for, and counts a compaction once seen active."""
     be = _sdk_backend or None
     if be is None or not hasattr(be, "would_cut"):
         return None
@@ -69897,7 +69899,8 @@ class Handler(BaseHTTPRequestHandler):
                 # about to cut. {"cancel": true} releases the hold (the stop did not happen). A WRITE
                 # that holds every session's turn starts, so it needs the EXPLICIT serve token
                 # (_write_token_ok) on top of the preamble's _authorize: the /busy?drain=1 rule.
-                # No SDK backend ever built: nothing to hold or wait for, quiet at once.
+                # No SDK backend ever built: nothing to hold; quiet at once unless the Codex backend holds a
+                # turn open, which the wait below then reads as it reads the SDK's.
                 # Every 200 names this process's pid: `romp down` ends by SIGTERMing a kernel nothing
                 # above it stopped, and the pid it signals must come from a route the serve token
                 # gates. GET /version's pid is auth-exempt and vouches for nothing: a CLI aimed at
@@ -69924,21 +69927,55 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(wait, bool) or not isinstance(wait, (int, float)) or wait < 0 or wait > DOWN_WAIT_MAX_S:
                     return self._send(400, json.dumps({"ok": False, "error":
                         "wait must be a number of seconds in [0, %d]" % int(DOWN_WAIT_MAX_S)}), "application/json")
+                # An open Codex turn is a cut too (2026-09-23, the review of this lane): the SIGTERM `romp down`
+                # ends with takes the Codex app-server, this kernel's child, and the turn with it, and the turn's
+                # prompt already left the durable queue. Read the SDK backend alone, this route answered quiet at
+                # once over an open Codex turn, the CLI said no turn was in flight, and the stop cut the turn while
+                # /busy in the same kernel said busy. Read as /busy reads it: once built, never built here (an
+                # unbuilt backend has no turn open). A read that raises counts as one open turn: an unknown count
+                # is waited on as a busy one, the way _deploy_would_cut keeps its gates over an unknown answer.
+                # Codex has no hold to arm (its worker never reads the quiesce), so the count and the names are
+                # its whole part of this route.
+                cx = _codex_backend or None
+                if cx is not None and not (hasattr(cx, "busy_breakdown") and hasattr(cx, "would_cut")):
+                    cx = None
+
+                def _busy():
+                    n = be.busy_count() if be is not None and hasattr(be, "busy_count") else 0
+                    if cx is not None:
+                        try:
+                            n += sum(cx.busy_breakdown())
+                        except Exception:
+                            n += 1
+                    return n
+
+                def _inflight():
+                    names = list(be.inflight_names()) if be is not None and hasattr(be, "inflight_names") else []
+                    if cx is not None:
+                        try:
+                            names += [str(t.get("name") or t.get("sid") or "?") for t in cx.would_cut()]
+                        except Exception:
+                            pass     # counted above as one unknown turn; the CLI's line names what it has
+                    return names
+
                 if be is None or not hasattr(be, "quiesce"):
-                    return self._send(200, json.dumps({"ok": True, "quiet": True, "busy": 0,
-                                                       "inflight": [], "waited": 0, "pid": os.getpid()}),
-                                      "application/json")
-                be.quiesce(float(wait) + DOWN_HOLD_GRACE_S)
+                    # no SDK backend: nothing to hold, and quiet at once unless a Codex turn is open
+                    if _busy() == 0:
+                        return self._send(200, json.dumps({"ok": True, "quiet": True, "busy": 0,
+                                                           "inflight": [], "waited": 0, "pid": os.getpid()}),
+                                          "application/json")
+                else:
+                    be.quiesce(float(wait) + DOWN_HOLD_GRACE_S)
                 # the wait ends on the EVENT the in-flight count reaches 0 (each poll reads the
-                # backend's own counters); `wait` is only its bound
+                # backends' own counters); `wait` is only its bound
                 t0 = time.monotonic()
-                busy = be.busy_count()
+                busy = _busy()
                 while busy and time.monotonic() - t0 < wait:
                     time.sleep(min(0.25, max(0.01, wait - (time.monotonic() - t0))))
-                    busy = be.busy_count()
+                    busy = _busy()
                 return self._send(200, json.dumps({
                     "ok": True, "quiet": busy == 0, "busy": busy,
-                    "inflight": be.inflight_names() if busy else [],
+                    "inflight": _inflight() if busy else [],
                     "waited": round(time.monotonic() - t0, 1), "pid": os.getpid()}), "application/json")
             if u.path == "/update-dismiss":
                 # the banner's Not-now, PERSISTED (the user 2026-08-31): the dismissal outlives the
