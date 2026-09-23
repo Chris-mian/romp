@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FederationManager } from "./federation";
-import { VIEW_ORDER_KEY, VIEW_ORDER_SHARED_KEY } from "./view-order";
+import { VIEW_ORDER_KEY, VIEW_ORDER_SHARED_KEY, writeViewOrder } from "./view-order";
 
 const WEB = "11111111-2222-4333-8444-000000000001";   // two sessions on the kernel the browsers talk to
 const API = "11111111-2222-4333-8444-000000000002";
@@ -39,7 +39,7 @@ function fakeKernel() {
       if (k.stored && k.order.length === next.length && k.order.every((id, i) => id === next[i])) return;
       k.order = next.slice();
       k.stored = true;
-      for (const v of k.viewers) v.deliver(k.frame());
+      for (const v of k.viewers) if (v.online) v.deliver(k.frame());   // a viewer whose socket is down hears nothing
     },
     /** the connect push: one viewer's `ready` is answered with the arrangement this kernel holds */
     connect(v: Viewer) { v.deliver(k.frame()); },
@@ -52,6 +52,8 @@ interface Viewer {
   store: Map<string, string>;
   fm: any;
   emitted: any[];
+  online: boolean;
+  queued: string[][];   // setViewOrder posts made while the socket was down: the shim queues them and flushes on reopen
   as<T>(fn: () => T): T;
   deliver(frame: any): void;
   order(): string[] | undefined;
@@ -70,7 +72,7 @@ function makeViewer(name: string, k: ReturnType<typeof fakeKernel>, seed: Record
     removeItem: (key: string) => { store.delete(key); },
   };
   const v: Viewer = {
-    name, store, emitted, fm: null,
+    name, store, emitted, fm: null, online: true, queued: [],
     // Every entry point runs with THIS browser's globals installed; nested calls restore what they found,
     // so one viewer's kernel push landing inside another's drag (which is what convergence IS) nests safely.
     as<T>(fn: () => T): T {
@@ -93,7 +95,7 @@ function makeViewer(name: string, k: ReturnType<typeof fakeKernel>, seed: Record
     fm.onFrame((e: MessageEvent) => emitted.push(e.data));
     fm.start();
     // the socket, replaced by the kernel above: setViewOrder is the only thing this test sends
-    fm.outbound = (m: any) => { if (m && m.type === "setViewOrder") k.post(m.order); };
+    fm.outbound = (m: any) => { if (m && m.type === "setViewOrder") { if (v.online) k.post(m.order); else v.queued.push(m.order); } };
     v.fm = fm;
   });
   k.viewers.push(v);
@@ -101,6 +103,21 @@ function makeViewer(name: string, k: ReturnType<typeof fakeKernel>, seed: Record
 }
 
 const merged = (v: Viewer) => v.emitted.filter((m) => m && m.type === "tabOrder").at(-1);
+
+/** A drag, as a pane bundle's commitTabOrder makes one: view-order.ts writeViewOrder in this browser. */
+const drag = (v: Viewer, order: string[]) => v.as(() => writeViewOrder(order));
+const strip = (v: Viewer, ...ids: string[]) => v.as(() => v.fm.inbound("", { type: "tabOrder", order: ids, tabs: tabs(...ids), live: ids }));
+/** The socket drops: the shim fires romp:wsdown on the page, and the kernel stops reaching it. */
+const drop = (v: Viewer) => { v.online = false; v.as(() => (globalThis as any).window.dispatchEvent(new Event("romp:wsdown"))); };
+/** It comes back, in the order the real page sees it: the shim flushes what it queued, enqueues its `wsup` frame,
+ *  and the kernel serves the connect push — the strip FIRST (`strip`), then the viewOrder frame. */
+const reconnect = (k: ReturnType<typeof fakeKernel>, v: Viewer, ...ids: string[]) => {
+  v.online = true;
+  for (const o of v.queued.splice(0)) k.post(o);
+  v.deliver({ type: "wsup" });
+  strip(v, ...ids);
+  k.connect(v);
+};
 
 function world(fn: (k: ReturnType<typeof fakeKernel>, mk: (name: string, seed?: Record<string, unknown>) => Viewer) => void): void {
   const k = fakeKernel();
@@ -243,5 +260,81 @@ test("a REMOTE kernel's arrangement is ignored: it belongs to whoever sits in fr
     desktop.as(() => (globalThis as any).window.__rompPublishViewOrder([API, WEB]));
     desktop.as(() => desktop.fm.inbound("TESTHOST", { type: "viewOrder", order: [WEB], stored: true }));
     assert.deepEqual(desktop.order(), [API, WEB], "untouched — one viewer's drag cannot rearrange another's");
+  });
+});
+
+// ── the page speaks for the arrangement only once it has HEARD the kernel's (review find on #2062, 2026-09-23) ──
+// The connect push serves the strip BEFORE the viewOrder frame. A page that published from boot answered that strip
+// with whatever it held, and a new device or a cleared browser holds nothing: it adopted every session in the
+// kernel's seed order and put THAT over the arrangement the user had made on every other device.
+test("a cold browser connecting to a kernel that holds an arrangement adopts it and publishes NOTHING", () => {
+  world((k, mk) => {
+    k.post([API, WEB]);                               // the arrangement the user made on another device
+    const writes = k.writes;
+    const fresh = mk("new-phone");                    // no arrangement cached, no pre-move key: a new device
+    strip(fresh, WEB, API);                           // the connect push's strip, in the kernel's SEED order, first…
+    k.connect(fresh);                                 // …then the viewOrder frame
+    assert.equal(k.writes, writes, "nothing published: the page had not heard the kernel's arrangement when the strip landed");
+    assert.deepEqual(k.order, [API, WEB], "the arrangement on every other device is untouched");
+    assert.deepEqual(fresh.order(), [API, WEB], "the new device adopted it");
+    assert.deepEqual(merged(fresh).order, [API, WEB], "and shows it");
+  });
+});
+
+test("a reconnect does not answer the new connection's strip with the copy it held before the drop", () => {
+  world((k, mk) => {
+    const desktop = mk("desktop"), phone = mk("phone");
+    for (const v of [desktop, phone]) { strip(v, WEB, API); k.connect(v); }
+    drop(desktop);
+    drag(phone, [API, WEB]);                          // the phone rearranges while the desktop is away
+    assert.deepEqual(k.order, [API, WEB]);
+    reconnect(k, desktop, WEB, API, TESTS);           // …and a new session started meanwhile
+    assert.deepEqual(k.order, [API, WEB, TESTS], "the phone's drag stands; the newcomer is adopted at the end, once heard");
+    assert.deepEqual(merged(desktop).order, [API, WEB, TESTS]);
+  });
+});
+
+test("a drag made while the socket was down lands OVER the kernel's arrangement, and another device's move stands", () => {
+  world((k, mk) => {
+    const desktop = mk("desktop"), phone = mk("phone");
+    for (const v of [desktop, phone]) { strip(v, WEB, API, TESTS); k.connect(v); }
+    drop(desktop);
+    drag(phone, [TESTS, WEB, API]);                   // the phone brings tests to the front
+    drag(desktop, [API, WEB, TESTS]);                 // offline, the desktop drags api in front of web
+    assert.deepEqual(desktop.queued, [], "nothing queued to flush blind at the reopen");
+    reconnect(k, desktop, WEB, API, TESTS);
+    assert.deepEqual(k.order, [TESTS, API, WEB], "both moves: tests first (the phone), api before web (the desktop)");
+    assert.deepEqual(phone.order(), [TESTS, API, WEB], "the phone took the merge off the kernel's push");
+    assert.deepEqual(merged(desktop).order, [TESTS, API, WEB]);
+  });
+});
+
+test("a cold browser's drag before it has heard is merged over the kernel's arrangement, not published blind", () => {
+  world((k, mk) => {
+    k.post([TESTS, WEB, API]);                        // another device's arrangement
+    const fresh = mk("new-laptop");
+    strip(fresh, WEB, API, TESTS);                    // the strip lands first, in seed order
+    drag(fresh, [API, WEB, TESTS]);                   // …and the user drags api to the front before the frame arrives
+    assert.deepEqual(k.order, [TESTS, WEB, API], "nothing published yet");
+    k.connect(fresh);
+    assert.deepEqual(k.order, [TESTS, API, WEB], "the drag lands (api before web) and the other device's order around it stands");
+    assert.deepEqual(merged(fresh).order, [TESTS, API, WEB]);
+  });
+});
+
+test("hearing another viewer's arrangement never prunes it against this page's own session list", () => {
+  // Only a host's own report is evidence about what exists (the 2026-08-02 rule). A page whose list lags for a
+  // moment (the phone has not had the strip that carries the new session yet) must adopt the desktop's publish,
+  // not answer it with a pruned copy — two devices doing that re-prune each other's publish without end.
+  world((k, mk) => {
+    const desktop = mk("desktop"), phone = mk("phone");
+    for (const v of [desktop, phone]) { strip(v, WEB, API); k.connect(v); }
+    strip(desktop, WEB, API, TESTS);                  // only the desktop has heard about the new session so far
+    const writes = k.writes;
+    assert.deepEqual(k.order, [WEB, API, TESTS], "the desktop adopted the arrival and published it");
+    assert.deepEqual(phone.order(), [WEB, API, TESTS], "the phone took it off the push");
+    assert.equal(k.writes, writes, "…and published nothing back");
+    strip(phone, WEB, API, TESTS);                    // its own strip catches up: nothing to change
+    assert.equal(k.writes, writes);
   });
 });

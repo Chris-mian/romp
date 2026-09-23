@@ -8,12 +8,19 @@ finished list is KEPT: the kernel this browser talks to persists it, serves it o
 it changes, as opaque data. This drives that end to end in a real browser, with two independent contexts —
 separate localStorage, so they are two devices, not two tabs sharing a store — against one hermetic kernel.
 
-Three phases in one run:
+Four phases in one run:
   0. a browser carrying a pre-move arrangement meets a kernel with none: it PUBLISHES its own, so nobody's
      existing order is lost in the move.
   1. a second browser opens and is served that arrangement on connect, with no drag of its own; then it
      drags, and the FIRST browser's strip follows — no reload, no poll, the kernel's push is the event.
   2. the pre-move local key in the first browser is exactly where it was: reverting is harmless.
+  3. the first browser drags the order AWAY from the kernel's seed, and then a freshly CLEARED browser opens
+     (review find on #2062, 2026-09-23). The connect push serves the strip before the viewOrder frame, and a
+     page that spoke for the arrangement from boot answered it with the seed order it had adopted into an empty
+     copy, putting that over the user's arrangement on every device. The arrangement must survive: on the new
+     page, on the two open ones, and in the kernel's file.
+
+The kernel's seed is pinned (session-order.json, web then api) so phase 3's arrangement is known to differ from it.
 
 Skips LOUDLY without the extension deps or a Playwright browser. The lab kernel's environment is
 kernel_env's list of names, never a copy of the runner's. SYNTHETIC sessions and text only (the notes-api
@@ -91,40 +98,44 @@ const T = 20000;
 
 // One "device": its own browser context, so its own localStorage. Two tabs of one context share a store
 // and would converge through the `storage` event alone, which is what this test must NOT be measuring.
-const device = async (seedLocalOrder) => {
+// `standalone`: the chat page on its own (/chat) rather than the dashboard around it. There the chat pane's socket is
+// the only one, so nothing else on the page can hear the kernel's arrangement before the strip lands; inside the
+// dashboard another pane often hears first and hides the race phase 3 is about.
+const device = async (seedLocalOrder, standalone = false) => {
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
   if (seedLocalOrder) await ctx.addInitScript((o) => { try { localStorage.setItem("romp:vieworder", JSON.stringify(o)); } catch (e) {} }, seedLocalOrder);
   const page = await ctx.newPage();
+  const sa = standalone;
   const d = {
     page,
     open: async () => {
-      await page.goto(cfg.url);
-      await d.waitFn((sids) => { const doc = document.getElementById("f-chat") && document.getElementById("f-chat").contentDocument;
+      await page.goto(sa ? cfg.url.replace("/?token=", "/chat?token=") : cfg.url);
+      await d.waitFn(([sids, sa]) => { const f = document.getElementById("f-chat"); const doc = sa ? document : f && f.contentDocument;
         if (!doc) return false; const ids = Array.from(doc.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.dataset.id);
-        return sids.every((s) => ids.includes(s)); }, cfg.sids, "the chat never showed both tabs");
-      await d.waitFn(() => !!(document.getElementById("f-chat") && document.getElementById("f-chat").contentWindow.__rompFed), null, "the pane never got its federation manager");
-      // the no-reload witness: a property on the chat frame's own window, gone if anything reloads it
-      await page.evaluate(() => { document.getElementById("f-chat").contentWindow.__rompConvergeMark = 1; });
+        return sids.every((s) => ids.includes(s)); }, [cfg.sids, sa], "the chat never showed both tabs");
+      await d.waitFn((sa) => { const f = document.getElementById("f-chat"); const w = sa ? window : f && f.contentWindow; return !!(w && w.__rompFed); }, sa, "the pane never got its federation manager");
+      // the no-reload witness: a property on the chat's own window, gone if anything reloads it
+      await page.evaluate((sa) => { (sa ? window : document.getElementById("f-chat").contentWindow).__rompConvergeMark = 1; }, sa);
     },
     waitFn: (fn, arg, why) => page.waitForFunction(fn, arg, { timeout: T }).catch(async (e) => { await die(why + " (" + String(e).split("\n")[0] + ")"); }),
-    strip: () => page.evaluate(() => Array.from(document.getElementById("f-chat").contentDocument.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.dataset.id)),
+    strip: () => page.evaluate((sa) => Array.from((sa ? document : document.getElementById("f-chat").contentDocument).querySelectorAll("#tabs .tab[data-id]")).map((t) => t.dataset.id), sa),
     keys: () => page.evaluate(() => ({ shared: JSON.parse(localStorage.getItem("romp:vieworder:shared") || "null"),
                                        local: JSON.parse(localStorage.getItem("romp:vieworder") || "null") })),
-    fresh: () => page.evaluate(() => document.getElementById("f-chat").contentWindow.__rompConvergeMark === 1),
-    waitStrip: (want, why) => d.waitFn((want) => { const doc = document.getElementById("f-chat") && document.getElementById("f-chat").contentDocument;
+    fresh: () => page.evaluate((sa) => (sa ? window : document.getElementById("f-chat").contentWindow).__rompConvergeMark === 1, sa),
+    waitStrip: (want, why) => d.waitFn(([want, sa]) => { const f = document.getElementById("f-chat"); const doc = sa ? document : f && f.contentDocument;
       if (!doc) return false; const ids = Array.from(doc.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.dataset.id);
-      return JSON.stringify(ids) === JSON.stringify(want); }, want, why),
+      return JSON.stringify(ids) === JSON.stringify(want); }, [want, sa], why),
     // the strip's own dragstart / dragover / drop / dragend on the tab nodes, with one DataTransfer:
     // a tab dropped on another lands AFTER it, so the first onto the second reverses the pair
-    drag: (from, to) => page.evaluate(([from, to]) => {
-      const w = document.getElementById("f-chat").contentWindow, doc = w.document;
+    drag: (from, to) => page.evaluate(([from, to, sa]) => {
+      const w = sa ? window : document.getElementById("f-chat").contentWindow, doc = w.document;
       const src = doc.querySelector('#tabs .tab[data-id="' + from + '"]'), dst = doc.querySelector('#tabs .tab[data-id="' + to + '"]');
       const dt = new w.DataTransfer(), r = dst.getBoundingClientRect();
       const fire = (type, target, x) => target.dispatchEvent(new w.DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, clientX: x, clientY: r.top + r.height / 2 }));
       const started = fire("dragstart", src, src.getBoundingClientRect().left + 4);
       fire("dragover", dst, r.right - 2); fire("drop", dst, r.right - 2); fire("dragend", src, r.right - 2);
       return { started, strip: Array.from(doc.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.dataset.id) };
-    }, [from, to]),
+    }, [from, to, sa]),
   };
   return d;
 };
@@ -147,6 +158,28 @@ await phone.waitStrip(K.slice().reverse(), "the dragging device's own strip neve
 await desktop.waitStrip(K.slice().reverse(), "the OTHER device never took the arrangement from the kernel");
 out.converged = { desktopStrip: await desktop.strip(), phoneStrip: await phone.strip(),
                   desktopKeys: await desktop.keys(), desktopNeverReloaded: await desktop.fresh() };
+
+// ---- 3. an arrangement that is NOT the seed survives a freshly cleared browser opening ----
+const K2 = await desktop.strip();                          // the seed order again (phase 1 reversed the reversal)
+out.desktopDrag2 = await desktop.drag(K2[0], K2[1]);
+const ARR = K2.slice().reverse();
+await desktop.waitStrip(ARR, "the desktop's second drag never took");
+await phone.waitStrip(ARR, "the phone never took the desktop's second drag");
+const cleared = await device(null, true);                  // a new context: nothing cached, no pre-move key; the chat page alone
+await cleared.open();
+await cleared.waitFn(() => localStorage.getItem("romp:vieworder:shared") !== null, null, "the cleared browser never heard the kernel's arrangement");
+// whatever the cleared browser did, let it reach the other device before reading it: wait until the desktop shows
+// the same order as the cleared page (both the arrangement when it survives; both the seed when it was overwritten)
+const t0 = Date.now();
+let same = false;
+while (Date.now() - t0 < T) {
+  const [a, b] = [await desktop.strip(), await cleared.strip()];
+  if (JSON.stringify(a) === JSON.stringify(b)) { same = true; break; }
+  await new Promise((r) => setTimeout(r, 100));
+}
+if (!same) await die("the desktop and the cleared browser never showed the same order");
+out.afterCleared = { arrangement: ARR, clearedStrip: await cleared.strip(), clearedKeys: await cleared.keys(),
+                     desktopStrip: await desktop.strip(), phoneStrip: await phone.strip(), desktopNeverReloaded: await desktop.fresh() };
 
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
@@ -176,6 +209,14 @@ class SharedOrderServed(unittest.TestCase):
         claude = os.path.join(cls.lab, "claude")
         proj = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cwd)))
         os.makedirs(proj, exist_ok=True)
+        Path(state, "session-hosts").write_text("off\n")   # a lab root of its own: no per-session host process (CLAUDE.md, 2026-09-11)
+        Path(state, "session-order.json").write_text(json.dumps([SID_A, SID_B]))   # the seed, pinned: web, then api
+        # the machine's user manager is not the lab's: these shadow systemctl and systemd-run on the lab kernel's PATH
+        fakebin = os.path.join(cls.lab, "fakebin")
+        os.makedirs(fakebin)
+        for tool, body in (("systemctl", "exit 0\n"), ("systemd-run", "echo 'no user manager in this lab' >&2\nexit 1\n")):
+            Path(fakebin, tool).write_text("#!/bin/sh\n" + body)
+            os.chmod(os.path.join(fakebin, tool), 0o755)
         for sid, name in ((SID_A, "web"), (SID_B, "api")):
             Path(state, "names", sid).write_text("%s\t%s\t\t\n" % (name, cwd))
             Path(state, "sdk", sid + ".json").write_text(json.dumps(
@@ -186,6 +227,7 @@ class SharedOrderServed(unittest.TestCase):
         cls.port = _free_port()
         cls.token = "testtok-sharedorder"
         cls.env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token)
+        cls.env["PATH"] = fakebin + os.pathsep + cls.env.get("PATH", os.environ.get("PATH", ""))
         cls.klog = os.path.join(cls.lab, "kernel.log")
         cls.kernel = subprocess.Popen([os.path.join(BIN, "romp-kernel")],
                                       stdout=open(cls.klog, "w"), stderr=subprocess.STDOUT, env=cls.env)
@@ -284,7 +326,20 @@ class SharedOrderServed(unittest.TestCase):
         self.assertEqual(c["desktopKeys"]["shared"], want, "…off the kernel's push, not a reload")
         self.assertTrue(c["desktopNeverReloaded"],
                         "the other device's chat frame is the same document it was: nothing reloaded, nothing polled")
-        self.assertEqual(self._kernel_file(), want, "the kernel holds the newest drag — last write wins")
+        # (the kernel's file after the LAST drag, phase 3's, is what test_5 reads — last write wins)
+
+    def test_5_a_freshly_cleared_browser_opening_does_not_overwrite_the_arrangement(self):
+        r = self._r()
+        self.assertTrue(r["desktopDrag2"]["started"], "the second drag was not refused: %r" % r["desktopDrag2"])
+        a = r["afterCleared"]
+        want = [SID_B, SID_A]
+        self.assertEqual(a["arrangement"], want, "phase 3 arranged the sessions AWAY from the pinned seed (web, api)")
+        self.assertIsNone(a["clearedKeys"]["local"], "the new browser carried no arrangement of its own: %r" % a["clearedKeys"])
+        self.assertEqual(a["clearedStrip"], want, "the cleared browser shows the user's arrangement, not the seed: %r" % a["clearedStrip"])
+        self.assertEqual(a["desktopStrip"], want, "the desktop's arrangement survived a new device connecting: %r" % a["desktopStrip"])
+        self.assertEqual(a["phoneStrip"], want, "…and the phone's: %r" % a["phoneStrip"])
+        self.assertTrue(a["desktopNeverReloaded"])
+        self.assertEqual(self._kernel_file(), want, "the kernel still holds the user's arrangement")
 
     def test_4_the_pre_move_local_key_is_left_exactly_where_it_was(self):
         # the migration is lossless in both directions: reverting this change hands the viewer back the

@@ -675,6 +675,7 @@ test("a session created after a remote host attached lands at the END of the mer
   // The 2026-08-10 report: the new session's provisional tab rendered last, then the merged push
   // re-slotted it in front of the remote host's block (host-blocked seed, local first).
   withManager((fm, emitted) => {
+    fm.inbound("", { type: "viewOrder", order: [], stored: false });   // heard on this connection: the page may fold host reports into the arrangement (view-order.ts ViewOrderPublisher)
     fm.inbound("", { type: "tabOrder", order: ["a", "b"],
                      tabs: [{ id: "a", name: "web" }, { id: "b", name: "api" }] });
     fm.inbound("TESTHOST", { type: "tabOrder", order: [V], tabs: [{ id: V, name: "tests" }] });
@@ -705,6 +706,7 @@ test("a relaunch that swaps the transcript fsid keeps the session's slot — it 
 
 test("a closed session leaves the arrangement; a detached host's sessions keep their slots", () => {
   withManager((fm, emitted, store) => {
+    fm.inbound("", { type: "viewOrder", order: [], stored: false });   // heard on this connection: the page may fold host reports into the arrangement (view-order.ts ViewOrderPublisher)
     fm.inbound("", { type: "tabOrder", order: ["a", "b"],
                      tabs: [{ id: "a", name: "web" }, { id: "b", name: "api" }] });
     fm.inbound("TESTHOST", { type: "tabOrder", order: [V], tabs: [{ id: V, name: "tests" }] });

@@ -12,7 +12,7 @@
 // headlessly; timeline-main.ts is the thin entry that wires it to the real
 // window.
 
-import { setViewOrderPublisher, writeViewOrder } from "./view-order";
+import { hearSharedOrder, setViewOrderPublisher, writeViewOrder, type ViewOrderPublisher } from "./view-order";
 
 export type Post = (m: Record<string, unknown>) => void;
 
@@ -56,8 +56,23 @@ export function dispatchFrame(panel: any, m: any): boolean {
   // kernel's answer to an op it does not know — a refusal of that write, and the cap is withdrawn
   if (m.type === "caps" && panel.setCaps) { panel.setCaps(m); return true; }
   if (m.type === "unknownOp" && panel.unknownOp) { panel.unknownOp(m); return true; }
+  // the viewer's ARRANGEMENT the kernel keeps (2026-09-23): heard here, which is what lets a lane drag in this
+  // webview be published at all (view-order.ts hearSharedOrder: a drag made before it lands over the kernel's list,
+  // and the publisher is installed only now). This view does not re-sort its own lanes by it; the cache it adopts is
+  // what the next drag is measured from. A browser page never gets here: its federation manager consumes the frame.
+  if (m.type === "viewOrder") {
+    const served = Array.isArray(m.order) ? m.order.filter((x: any) => typeof x === "string") : [];
+    if (orderPost) hearSharedOrder(served, m.stored === true, orderPost, setViewOrderPublisher);
+    return true;
+  }
+  // (No drop edge to withdraw it on: the extension gives this view no pipe-state frame, and its reconnect reloads
+  // the webview — a fresh page, which hears afresh. A lane drag made while the pipe is down still rides its queue.)
   return false;
 }
+
+// the host pipe an arrangement is published through, set by bridgeFunctions (which holds `post`); installed as the
+// publisher only once the kernel's arrangement has reached this page (dispatchFrame's viewOrder arm)
+let orderPost: ViewOrderPublisher | null = null;
 
 // A lane's open-external URL → the message to post. A vscode:// deep link is
 // unwrapped into the kernel's deepLink op (the extension host reveals the chat
@@ -89,8 +104,9 @@ export function bridgeFunctions(post: Post): Record<string, (...a: any[]) => voi
   // This page has no federation manager, so nothing publishes the window slot a browser pane's arrangement
   // rides (view-order.ts viewOrderPublisher); the host pipes every message to the kernel verbatim, so the
   // bridge's own `post` is the channel (2026-09-23). Without it a lane drag here would move this webview's
-  // lanes and nobody else's.
-  setViewOrderPublisher((order) => post({ type: "setViewOrder", order: order.slice() }));
+  // lanes and nobody else's. Installed as the publisher only once the kernel's arrangement has been heard
+  // (dispatchFrame's viewOrder arm; view-order.ts ViewOrderPublisher says why).
+  orderPost = (order) => post({ type: "setViewOrder", order: order.slice() });
   return {
     __rompTimelineOpenExternal: (url: string) => post(openExternalMessage(String(url))),
     // A lane drag writes the VIEWER's arrangement, the same store the chat strip writes — not the kernel's
