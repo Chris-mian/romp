@@ -24,9 +24,11 @@ frame passes at once, since a delayed echo of a switch would widen the pane's ec
 second contributor's post-merge review of PR 2075). Two more holds make the leg exact: the boot state is made deterministic
 by a REAL pre-switch to the remote tab before the switch to the hub's own, so the switch's outcome has one meaning (a confirmed
 already-active tab would have been vacuous, and a broken switch green on hub-first boots); and after that switch the driver
-waits for the kernel's echo of it, the frame carrying the nonce of the HUB'S OWN relay (both recorded by the init script; the
-last relay alone would be satisfied by the pre-switch's own pair on a hub-first boot, the second contributor's post-merge review
-of PR 2086 at 12:40Z), before the
+waits for the kernel's echo of it, the frame carrying the nonce of the HUB'S OWN relay, which must be the LAST relay recorded
+(both recorded by the init script; the last relay alone would be satisfied by the pre-switch's own pair on a hub-first boot, the
+second contributor's post-merge review of PR 2086 at 12:40Z, and the last HUB relay alone by a hub re-announcement recorded
+before the pre-switch, the same reviewer on PR 2091 at 15:02Z; the driver records such a re-announcement on purpose, so the
+constant-true switch mutant reds on echoOk), before the
 card opens, so no echo can move the selection under the read or the pick that follows."""
 import json
 import os
@@ -102,25 +104,33 @@ out.tabs = cf ? await cf.evaluate(() => Array.from(document.querySelectorAll("#t
 await page.click('.rail-btn[data-pane="artifacts"]');
 let fr = await findFrame(/\/artifacts(\?|$)/);
 out.frame = !!fr;
+// a hold that ran out is false; any other failure of a hold (a detached frame, a thrown predicate) is a fault and surfaces
+const timedOut = (e) => { if (e && e.name === "TimeoutError") return false; throw e; };
 // a SWITCH is a click on a tab that is not the column's active one; the wait confirms the strip's own state
-const switchTo = async (col, sid) => { await col.click('#tabs .tab[data-id="' + sid + '"] .tab-label', { timeout: 15000 }).catch(() => {}); return col.waitForFunction((t) => { const a = document.querySelector("#tabs .tab.active"); return !!a && a.getAttribute("data-id") === t; }, sid, { timeout: 15000 }).then(() => true).catch(() => false); };
+const switchTo = async (col, sid) => { await col.click('#tabs .tab[data-id="' + sid + '"] .tab-label', { timeout: 15000 }).catch(() => {}); return col.waitForFunction((t) => { const a = document.querySelector("#tabs .tab.active"); return !!a && a.getAttribute("data-id") === t; }, sid, { timeout: 15000 }).then(() => true).catch(timedOut); };
 if (fr) {
   await fr.waitForSelector("#art-pick", { timeout: 30000 }).catch(() => {});
   // the mark follows the pane's selection, the chat's active tab: make the boot state deterministic by a REAL pre-switch to the remote
   // tab, then make the hub's own the active tab by a real switch, wait for the kernel's echo of that switch (the frame carrying the
-  // last relay's nonce), hold on the pane's render of the selection (the button wearing the name), then open the card and hold on the
-  // mark (the module docstring)
+  // nonce of the hub's own relay, the last relay recorded), hold on the pane's render of the selection (the button wearing the name),
+  // then open the card and hold on the mark (the module docstring)
   const t0 = Date.now();
   const bootActive = cf ? await cf.evaluate(() => { const a = document.querySelector("#tabs .tab.active"); return a ? a.getAttribute("data-id") : null; }) : null;   // which boot the run exercised: the hub's own first, or the remote's
+  // the checked-in red-first (the review of PR 2091): a hub re-announcement, a relay of the hub's own tab and its echo, recorded in
+  // the pane BEFORE the pre-switch, the pair a boot whose hub session frame is processed after the pane's document exists would
+  // record; a wait that took the last hub relay would be satisfied by it, and the constant-true switch mutant would keep echoOk true
+  await fr.evaluate((lsid) => { (window.__relays = window.__relays || []).push({ id: lsid, nonce: -1 }); (window.__echoes = window.__echoes || []).push({ id: lsid, nonce: -1 }); }, cfg.lsid);
   const preSwitched = cf ? await switchTo(cf, "TESTHOST:" + cfg.rsid) : false;
   const switched = cf ? await switchTo(cf, cfg.lsid) : false;
-  // the echo of THE switch to the hub's own tab: the relay whose id is the hub's own, and an echo carrying its nonce; the last relay
-  // alone would be the pre-switch's pair on a hub-first boot, so the wait would certify nothing about the switch
-  const echoOk = switched ? await fr.waitForFunction((lsid) => { const r = (window.__relays || []).filter((x) => x.id === lsid).slice(-1)[0]; return !!r && typeof r.nonce === "number" && (window.__echoes || []).some((e) => e.id === r.id && e.nonce === r.nonce); }, cfg.lsid, { timeout: 30000 }).then(() => true).catch(() => false) : false;
-  const buttonOk = await fr.waitForFunction(() => { const n = document.querySelector("#art-pick .session-name"); return !!n && n.textContent === "web"; }, null, { timeout: 30000 }).then(() => true).catch(() => false);
+  // the echo of THE switch to the hub's own tab: the LAST relay overall must carry the hub's id, and an echo its nonce. The last relay
+  // alone would be the pre-switch's pair on a hub-first boot; the last HUB relay alone would be a hub relay recorded before the
+  // pre-switch (a boot re-announcement, injected below on purpose), echoed long before the switch: either would certify nothing
+  // about the switch (the second contributor's post-merge reviews of PR 2086 at 12:40Z and PR 2091 at 15:02Z)
+  const echoOk = switched ? await fr.waitForFunction((lsid) => { const r = (window.__relays || []).slice(-1)[0]; return !!r && r.id === lsid && typeof r.nonce === "number" && (window.__echoes || []).some((e) => e.id === r.id && e.nonce === r.nonce); }, cfg.lsid, { timeout: 30000 }).then(() => true).catch(timedOut) : false;
+  const buttonOk = await fr.waitForFunction(() => { const n = document.querySelector("#art-pick .session-name"); return !!n && n.textContent === "web"; }, null, { timeout: 30000 }).then(() => true).catch(timedOut);
   await fr.click("#art-pick", { timeout: 15000 }).catch(() => {});
   // the picker's rows are the shell's union of the open tabs, the shown one marked: hold for the remote row AND the mark on the hub's own
-  const markOk = await fr.waitForFunction((a) => !!document.querySelector('#art-picker .ctx-item[data-sid="TESTHOST:' + a.rsid + '"]') && !!document.querySelector('#art-picker .ctx-item.current[data-sid="' + a.lsid + '"]'), { rsid: cfg.rsid, lsid: cfg.lsid }, { timeout: 30000 }).then(() => true).catch(() => false);
+  const markOk = await fr.waitForFunction((a) => !!document.querySelector('#art-picker .ctx-item[data-sid="TESTHOST:' + a.rsid + '"]') && !!document.querySelector('#art-picker .ctx-item.current[data-sid="' + a.lsid + '"]'), { rsid: cfg.rsid, lsid: cfg.lsid }, { timeout: 30000 }).then(() => true).catch(timedOut);
   out.cardHolds = { bootActive: bootActive === cfg.lsid ? "hub" : (bootActive === "TESTHOST:" + cfg.rsid ? "remote" : bootActive), preSwitched, switched, echoOk, buttonOk, markOk, ms: Date.now() - t0 };
   out.card = await fr.evaluate(() => {
     const card = document.getElementById("art-picker"); if (!card) return null;
