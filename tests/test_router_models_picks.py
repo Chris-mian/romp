@@ -722,6 +722,49 @@ class SeedInflight(_OnThenOff):
         self.assertEqual(self._read(), "default")
         self.assertIn("(the extra models switch is off)", self.err.getvalue())
 
+    def test_a_fault_after_an_on_then_off_resets_rather_than_holds(self):
+        # review round sixteen: the flag meant "was on once", so after the ordinary on then off a persisting fault held
+        # every create while the payload read the switch off; the flag tracks the LAST applied flip's direction
+        import os as _os
+        if _os.geteuid() == 0:
+            self.skipTest("root reads any file: the fault cannot be staged")
+        self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        km._set_router_models(True, gt=1700000000010)
+        km._set_router_models(False, gt=1700000000011)       # real flips: the last applied one is off
+        path = km.jd.STATE / km.ROUTER_MODELS_FILE
+        path.chmod(0)
+        try:
+            self.assertIsNone(km._reset_unvouched_seed(), "after an off, a fault reads as off: reset")
+            self.assertEqual(self._read(), "default")
+            self.assertIn("(the extra models switch is off (its file could not be read: ", self.err.getvalue(), "the fault is named")
+            self.assertNotIn("not offered yet", self.err.getvalue())
+        finally:
+            if path.exists():
+                path.chmod(0o644)
+
+    def test_a_boot_over_an_unreadable_switch_file_installs_nothing_logs_the_fault_and_arms_no_hold(self):
+        # review rounds fifteen and sixteen: the real boot, not a hand-set flag; the fault reaches the log once
+        import os as _os
+        if _os.geteuid() == 0:
+            self.skipTest("root reads any file: the fault cannot be staged")
+        self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")
+        km._ROUTER_SEEN_ON[0] = False
+        path = km.jd.STATE / km.ROUTER_MODELS_FILE
+        path.write_text(json.dumps({"enabled": True, "gt": 1}))
+        path.chmod(0)
+        try:
+            with mock.patch.object(km, "_models_changed", lambda: None):
+                self.assertEqual(km._router_models_boot(), [], "an on store it cannot read installs nothing")
+            self.assertFalse(km._ROUTER_SEEN_ON[0], "and arms no hold")
+            self.assertIn("extra models (boot): the switch file could not be read", self.err.getvalue())
+            self.assertIsNone(km._reset_unvouched_seed(), "the next create resets")
+            self.assertIn("its file could not be read", self.err.getvalue())
+        finally:
+            if path.exists():
+                path.chmod(0o644)
+
     def test_a_fault_before_the_switch_was_ever_on_reads_as_off(self):
         # review round fifteen: a fault that persists held every create while boot and the payload read it as off; a
         # fault holds only once this kernel life applied the switch on
@@ -736,8 +779,8 @@ class SeedInflight(_OnThenOff):
         try:
             self.assertIsNone(km._reset_unvouched_seed(), "never seen on: the fault reads as off")
             self.assertEqual(self._read(), "default")
-            self.assertIn("(the extra models switch is off)", self.err.getvalue())
-            self.assertNotIn("could not be read", self.err.getvalue())
+            self.assertIn("the extra models switch is off (its file could not be read: ", self.err.getvalue(), "off, the fault named")
+            self.assertNotIn("not offered yet", self.err.getvalue())
         finally:
             if path.exists():
                 path.chmod(0o644)
@@ -749,10 +792,9 @@ class SeedInflight(_OnThenOff):
         if _os.geteuid() == 0:
             self.skipTest("root reads any file: the fault cannot be staged")
         self._seed("gw-7-nova")
+        _env(self, "ROMP_ROUTER_MODELS", "gw-6-astra")       # the seed undeclared; no URL, so no mark: the fault alone holds
+        km._set_router_models(True, gt=1700000000010)       # a REAL on flip is what arms the hold (review round sixteen)
         path = km.jd.STATE / km.ROUTER_MODELS_FILE
-        path.write_text(json.dumps({"enabled": True, "gt": 1}))
-        km._ROUTER_SEEN_ON[0] = True                          # this kernel life applied the switch on (the fixture's flip did)
-        km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]           # a listing in flight under an on switch
         real_state = km._router_listing_state
 
         def state_then_fault():
@@ -812,10 +854,12 @@ class SeedInflight(_OnThenOff):
             if str(path).endswith(km.ROUTER_MODELS_FILE) and not inside.is_set():
                 inside.set()
                 go.wait(5)                  # the flip parks here: the store is written ON, the bump and the mark not yet, all
-            return r                        # inside its settings hold. In rounds twelve and thirteen the park sat in
-        #                                     _router_fetch_allowed, also after the store write; parked there the test could not
-        #                                     tell a catalog-only snapshot from the two-lock one. The one-hold and two-lock
-        #                                     claims themselves are carried by two structural pins in the pins module.
+            return r                        # inside its settings hold. Round twelve parked in _router_fetch_allowed and round
+        #                                     thirteen here, both after the store write; what tells a catalog-only snapshot from
+        #                                     the two-lock one is round fourteen's path assertions below, not the park. The one-
+        #                                     hold and two-lock claims are carried by the pins module's
+        #                                     test_the_flip_publishes_the_mark_in_the_bumps_own_catalog_hold and
+        #                                     test_the_snapshot_takes_the_settings_lock_then_the_catalog_lock.
 
         def listing(url, timeout=4):
             listing_gate.wait(5)

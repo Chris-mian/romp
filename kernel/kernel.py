@@ -3147,9 +3147,10 @@ _router_status_note = [None]                 # the standing EVENT-sourced adviso
 #                                              declared, no gateway, a settings fault) are derived LIVE in _router_status, never frozen
 #                                              here (verify find, 2026-09-22)
 _ROUTER_FETCH_GEN = [None]                   # the generation whose listing fetch is in flight (None when none): the create door reads it
-_ROUTER_SEEN_ON = [False]                    # this kernel life applied the switch ON (a flip, or a boot that installed): a read fault
-#                                              of the switch file holds a create's seed only then; with the switch never seen on, a
-#                                              fault reads as off, as the boot and the payload read it (review round fifteen)
+_ROUTER_SEEN_ON = [False]                    # the LAST flip this kernel life applied was ON (assigned at every applied flip, and by a
+#                                              boot that reads the switch on): a read fault of the switch file holds a create's seed
+#                                              only then; after an off, or with the switch never on, a fault reads as off, as the boot
+#                                              and the payload read it (review rounds fifteen and sixteen)
 _ROUTER_FETCH_FAILED_GEN = [None]            # the generation whose listing fetch FAILED (None when none, or once a later flip owns the
 #                                              catalog): a remembered listing-sourced pick is not a removal while this is the current
 #                                              generation, nothing retrying a failed listing (the second reviewer's note, 2026-09-22)
@@ -3162,7 +3163,8 @@ ROUTER_NOTE_NO_GATEWAY = "No gateway configured: ANTHROPIC_BASE_URL is unset or 
 ROUTER_NOTE_LISTING_FAILED = "The gateway's model list could not be fetched; the declared models are offered"
 ROUTER_NOTE_LISTING_FAILED_NONE = "The gateway's model list could not be fetched and nothing is declared; no gateway model is offered"
 ROUTER_NOTE_COUNT_UNKNOWN = "The live sessions could not be counted; one may still run a removed model"
-ROUTER_NOTE_SWITCH_FAULT = "The extra models switch file could not be read; the switch reads as off until it can"
+ROUTER_NOTE_SWITCH_FAULT = ("The extra models switch file could not be read; the models already offered stay until it can be "
+                            "read or the switch is flipped")
 
 
 def _parse_router_models(raw):
@@ -3561,8 +3563,7 @@ def _set_router_models(enabled, gt=None):
             gen = _ROUTER_GEN[0]            # (review rounds eleven and twelve)
             if enabled and lists:
                 _ROUTER_FETCH_GEN[0] = gen
-            if enabled:
-                _ROUTER_SEEN_ON[0] = True
+            _ROUTER_SEEN_ON[0] = bool(enabled)   # the last applied flip's direction, on or off
     # The models frame goes out on EVERY applied flip, the stale paths included (the second reviewer's note, 2026-09-22): the gear's line and
     # the pickers redraw from that frame alone, and a flip whose catalog work a later flip superseded still changed the
     # store the frame's readers consult.
@@ -3634,12 +3635,15 @@ def _router_models_boot():
     network-free declared install (see _router_fetch_allowed). The backend is told the installed set whatever
     happened, so a module registered before this point knows it. Returns the ids installed."""
     with _SETTINGS_LOCK:
-        on = _router_models_on()
+        on, sfault = _router_switch_state()
+        if sfault:
+            sys.stderr.write("extra models (boot): the switch file could not be read (%s); the switch reads as off until it can\n"
+                             % sfault)   # the fault's one log line: a create's reset names it too (review round sixteen)
         if on:
             with _catalog_lock:
                 _ROUTER_GEN[0] += 1
                 gen = _ROUTER_GEN[0]
-                _ROUTER_SEEN_ON[0] = True
+                _ROUTER_SEEN_ON[0] = True   # a boot that reads the switch on, installed or not
             # no early mark here: every create door passes _sdk_ready(), which holds _sdk_lock while this boot runs, so
             # the apply's own guarded write below is in place before a create can read (review round twelve)
     if not on:
@@ -17517,9 +17521,11 @@ def _reset_unvouched_seed():
             on_now, fault = _router_switch_state()   # the switch as it reads NOW, before ANY hold: an off flip in the window
     #                                                  is a removal whatever the listing was doing (review round thirteen),
     #                                                  so every hold below is conditioned on the switch reading on
+    discarded = None
     if fault and not _ROUTER_SEEN_ON[0]:
-        fault = None                        # the switch was never applied on in this kernel life: a fault reads as off, as the
-        #                                     boot and the payload read it; holding here would hold every create forever
+        discarded, fault = fault, None      # the last applied flip was off (or the switch was never on): a fault reads as off, as
+        #                                     the boot and the payload read it; holding here would hold every create forever. The
+        #                                     fault is still NAMED in the reset's cause below (review round sixteen)
     if fault and not _router_first_party(seed):
         # the file could not be READ (an OS fault, not an off) after this kernel saw the switch on: no evidence of a
         # removal, and a reset would name an untrue cause. Held, said so; this row starts on the account default (review
@@ -17561,7 +17567,7 @@ def _reset_unvouched_seed():
     # the cause, as established: the knob when it gates the listing the pick would need, the switch when it is off,
     # else a declaration that no longer carries the id (or a listing that never did)
     if not on_now:
-        cause = "the extra models switch is off"
+        cause = "the extra models switch is off" + (" (its file could not be read: %s)" % discarded if discarded else "")
     elif (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip() and not _router_fetch_allowed():
         cause = "the gateway's model list is not fetched under ROMP_MODEL_CATALOG=off"
     elif (os.environ.get("ROMP_ROUTER_MODELS_URL") or "").strip():
