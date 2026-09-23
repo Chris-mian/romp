@@ -14,9 +14,10 @@ T262i lab's idiom, a real frame as the base): a frame that LANDS the send (a use
 frame built from an OLDER reading (its watermark behind: fewer transcript bytes, a newer live tail, the echo still in it)
 that lacks the row — the page must keep the landed row and file `frame-stale` — and then the same older list with NO
 watermark (an older kernel): the row goes, as it did before the guard, and the page files `frame-drops-landed` so the
-loss is never silent. The landed frame is bumped ahead of the last whole frame the page received of EITHER type (a
-chatTail delta advances the page floor as much as a session frame does, which the session-only base did not see), so the
-injection is ahead of the page real floor on the transcript row; a bounded poll confirms the landed row applied; and a
+loss is never silent. The landed frame is bumped ahead of the send's chatTail delta, the last frame the page received of
+EITHER type (that delta advances the page's floor as much as a session frame does, which the session-only base did not
+see), so the injection is ahead of the page's real floor on the transcript row; a bounded poll confirms the landed row
+applied; and a
 later frame that removes it is a loss the guard files, not a refusal. SYNTHETIC fixtures only; skips loudly without the
 extension deps or a Playwright browser.
 """
@@ -132,13 +133,13 @@ page.on("pageerror", (e) => fs.appendFileSync(cfg.consoleLog, "pageerror: " + e 
 await page.addInitScript(() => {
   window.__frames = 0; window.__sockets = []; window.__sent = []; window.__diag = []; window.__last = null; window.__lastAny = null; window.__wmLog = []; window.__types = [];
   window.addEventListener("message", (e) => { const m = e.data; if (m && typeof m.type === "string") window.__types.push(m.type);
-    if (m && (m.type === "session" || m.type === "update" || m.type === "chatTail")) { window.__frames++;
+    if (m && (m.type === "session" || m.type === "update" || m.type === "chatTail") && !m.__reposted) { window.__frames++;   // __reposted marks the driver's OWN posts (the injected frames and the red-first replay), so the listener never mistakes them for kernel frames
       if (m.type === "session" && Array.isArray(m.events)) window.__last = m;
       // the page's watermark floor advances on chatTail deltas too (render.ts sets s.wm on every applied chatTail), which
       // __last (session-only) does not see, so track the last frame of EITHER type that carried a watermark, and log every
       // transcript frame's type, watermark and count (the count at capture makes frames-since derivable)
       if (m.wm && typeof m.wm === "object") window.__lastAny = m;
-      if (m.type === "chatTail" && Array.isArray(m.events) && m.events.length === 0 && m.wm && typeof m.wm === "object") window.__lastEmptyTail = m;   // the kernel's own trailing empty delta, kept for the red-first re-post
+      if (m.type === "chatTail" && m.wm && typeof m.wm === "object") window.__lastTail = m;   // the SEND's last kernel chatTail. PR 2077 (kernel.py _tail_noop) stopped the kernel sending the no-change EMPTY tail after a delta, so current main sends ONE delta with events everywhere: the red-first replays THIS, not a trailing empty tail that no longer exists
       window.__wmLog.push({ type: m.type, wm: (m.wm && typeof m.wm === "object") ? m.wm : null, ev: Array.isArray(m.events) ? m.events.length : null, n: window.__frames }); } });
   const origSend = WebSocket.prototype.send;
   WebSocket.prototype.send = function (d) {
@@ -271,29 +272,36 @@ if (on("G")) {
   await page.waitForTimeout(400);
   const text = fresh("land");
   await send(text);
+  const nAtSend = await page.evaluate(() => window.__frames);   // low 1: bound the trailing-tail scan to frames the SEND produced, so a PRE-send empty tail (live already above the base) cannot satisfy it
   await waitFrames(1, 4000); await painted();
   // variant-G race (the reviewer, 2026-09-23): the listener's window.__last tracks SESSION frames only, but the page's
-  // watermark floor advances on the send's chatTail deltas too (render.ts sets s.wm on every applied chatTail). The send
-  // pushes two chatTail deltas about 30 ms apart, the second EMPTY (no events, its live above the base session's); a base
-  // captured between them derives the injection from a floor BEHIND the page's real one, a mixed reading the guard applies,
-  // and the trailing delta applied after the injection drops the landed row. So wait for that trailing empty chatTail (the
-  // event the listener already sees) before capturing, and derive the injected watermark from the last frame of EITHER type.
+  // watermark floor advances on the send's chatTail DELTA too (render.ts sets s.wm on every applied chatTail), which
+  // __last (session-only) does not see. Current main sends ONE delta carrying the send's events (PR 2077 stopped the
+  // no-change empty tail that used to follow it). Wait for that delta (any chatTail past the send with a live above the
+  // base session's) before capturing, and derive the injected watermark from the last frame of EITHER type, so the
+  // injection is ahead of the page's real floor, not just the redial full's transcript row. Dropping the ev===0 filter is
+  // safe: were a kernel to send a later empty tail with the same watermark, the either-type floor refuses it as stale.
   const baseLive = await page.evaluate(() => (window.__last && window.__last.wm && typeof window.__last.wm.live === "number") ? window.__last.wm.live : 0);
-  injected.trailWait = await page.waitForFunction((bl) => window.__wmLog.some((fr) => fr.type === "chatTail" && fr.ev === 0 && fr.wm && typeof fr.wm.live === "number" && fr.wm.live > bl), baseLive, { timeout: 8000 }).then(() => "seen").catch((e) => { if (!e || e.name !== "TimeoutError") throw e; return "timeout"; });
+  injected.trailWait = await page.waitForFunction(({ bl, n0 }) => window.__wmLog.some((fr) => fr.n > n0 && fr.type === "chatTail" && fr.wm && typeof fr.wm.live === "number" && fr.wm.live > bl), { bl: baseLive, n0: nAtSend }, { timeout: 8000 }).then(() => "seen").catch((e) => { if (!e || e.name !== "TimeoutError") throw e; return "timeout"; });
   await painted();
   const base = await page.evaluate(() => window.__last);
   const qid = await page.evaluate(() => (window.__sent[window.__sent.length - 1] || {}).qid);
-  injected.baseOk = !!(base && base.wm && Array.isArray(base.wm.tx) && base.wm.leaf);
   injected.baseWm = base && base.wm ? base.wm : null;
   injected.floorWm = await page.evaluate(() => (window.__lastAny && window.__lastAny.wm) ? window.__lastAny.wm : null);
-  injected.seen = await page.evaluate(() => ({ last: window.__last ? { type: window.__last.type, keys: Object.keys(window.__last).sort(), wm: window.__last.wm } : null, lastAny: window.__lastAny ? window.__lastAny.wm : null, sockets: window.__sockets.length, types: window.__types.slice(-30), wmLog: window.__wmLog.slice(-8) }));
+  injected.baseOk = !!(base && base.wm && Array.isArray(base.wm.tx) && base.wm.leaf && injected.floorWm && Array.isArray(injected.floorWm.tx));   // low 3: bump() maps floor.tx too, so the floor needs a keyed parse (a kernel wm whose parse could not be keyed carries tx null)
+  injected.seen = await page.evaluate(() => {
+    const lite = (wm) => wm ? { tx: wm.tx, live: wm.live } : null;   // low 2: drop the ~150-char leaf (it repeats across base, lastAny and every wmLog row; recorded once by the Python print)
+    return { last: window.__last ? { type: window.__last.type, keys: Object.keys(window.__last).sort(), wm: lite(window.__last.wm) } : null,
+             lastAny: window.__lastAny ? lite(window.__lastAny.wm) : null, sockets: window.__sockets.length, types: window.__types.slice(-30),
+             wmLog: window.__wmLog.slice(-8).map((fr) => ({ type: fr.type, ev: fr.ev, n: fr.n, wm: lite(fr.wm) })) };
+  });
   if (injected.baseOk) {
     const landedRow = { kind: "user", uuid: "11111111-2222-3333-4444-aaaaaaaaaaaa", md: text, qid, human: true, ts: new Date().toISOString().replace(/\.\d{3}Z$/, ".000Z") };
     const olderRow = { kind: "user", uuid: qid, md: text, ts: landedRow.ts };
     // Build and inject each frame in ONE page.evaluate. The EVENTS base is the last full session frame (window.__injBase;
     // a chatTail delta has no full list to append to). The WATERMARK floor is the last frame the page received of EITHER
     // type (window.__injFloor from window.__lastAny), snapshotted on the landed injection so the stale and bare frames
-    // reuse it and stay BEHIND the landed frame. So the landed frame is ahead of the last whole frame the page received,
+    // reuse it and stay BEHIND the landed frame. So the landed frame is ahead of the send's chatTail delta (the last frame the page received of either type),
     // on the transcript row; a bounded poll below confirms the landed row applied; and a later frame that removes it is a
     // loss the guard files, not a refusal (in G no transcript write happens, so the injected frame is never refused).
     const injectFrame = (which, row) => page.evaluate(({ which, row }) => {
@@ -301,26 +309,36 @@ if (on("G")) {
       const bump = (wm, dSize, dLive) => ({ leaf: wm.leaf, tx: wm.tx.map((r, i) => (i === 0 ? [r[0] + (dSize > 0 ? 1 : 0), r[1] + dSize] : r)), live: (typeof wm.live === "number" ? wm.live : 0) + dLive });
       if (which === "newer") { window.__injBase = window.__last; window.__injFloor = (window.__lastAny && window.__lastAny.wm) ? window.__lastAny.wm : window.__last.wm; }
       const b = window.__injBase, floor = window.__injFloor;
-      const f = { ...b, events: [...strip(b.events), row], wm: bump(floor, which === "newer" ? 400 : 0, which === "newer" ? 1 : 3) };
+      const f = { ...b, events: [...strip(b.events), row], wm: bump(floor, which === "newer" ? 400 : 0, which === "newer" ? 1 : 3), __reposted: true };
       if (which === "bare") delete f.wm;
       window.postMessage(f, "*");
       return { baseWm: b.wm || null, floorWm: floor || null, injWm: f.wm || null };
     }, { which, row });
-    injected.injWm = (await injectFrame("newer", landedRow)).injWm;   // the bumped watermark actually shipped (a red names the frame it bumped)
+    const injNewer = await injectFrame("newer", landedRow);
+    injected.injWm = injNewer.injWm; injected.floorWmNewer = injNewer.floorWm;   // the bumped watermark actually shipped, and the floor it bumped from (a red names the frame; the older call must reuse this floor, pinned below)
     injected.landedWait = await page.waitForFunction((u) => { const el = document.querySelector('#content .turn[data-uuid="' + u + '"]'); return !!el && el.getClientRects().length > 0; }, landedRow.uuid, { timeout: 5000 }).then(() => "applied").catch((e) => { if (!e || e.name !== "TimeoutError") throw e; return "timeout"; });   // resolves to applied|timeout (no swallowed cap), so a red tells slow from dropped
     injected.diagAfterLanded = await page.evaluate(() => window.__diag.slice());
     await check("inject-landed", 0, "landed", text);
     injected.landed = await page.evaluate((u) => { const el = document.querySelector('#content .turn[data-uuid="' + u + '"]'); return !!el && el.getClientRects().length > 0; }, landedRow.uuid);
-    // RED-FIRST (checked in): re-post the kernel's OWN trailing empty delta (the real frame the listener kept), delayed until
-    // the landed row is in the DOM. Derived ahead of the page's real floor, the landed injection makes this a frame the guard
-    // REFUSES (frame-stale); derived from the session-only base (the pre-fix bug) it was a mixed reading the guard APPLIED,
-    // dropping the row. So the landed row must survive it. Red at the pre-fix tree, green here.
-    if (await page.evaluate(() => !!window.__lastEmptyTail)) {
-      await page.evaluate(() => window.postMessage(window.__lastEmptyTail, "*"));
+    // RED-FIRST (checked in): re-post the kernel's OWN last chatTail (the send's ONE delta on current main) after the landed
+    // row is in the DOM. Its watermark is behind the injection (derived ahead of the page's floor of EITHER type: same leaf,
+    // same parse-row count, a smaller size and live), so the guard REFUSES the re-post (frame-stale, type chatTail) and the
+    // landed row survives. With 302's floor set back to window.__last.wm (the session-only base), the re-posted delta is a
+    // mixed reading the guard neither applies nor refuses cleanly: the page asks a full session frame, which lacks the
+    // injected row and drops it (frame-drops-landed). Red at that pre-fix floor, green here.
+    injected.reposted = await page.evaluate((bl) => {
+      const fr = window.__lastTail;   // the SEND's last kernel chatTail; NOT a connect-time tail (guard: its live is above the base session frame's read at capture)
+      if (!fr || !fr.wm || typeof fr.wm.live !== "number" || fr.wm.live <= bl) return null;
+      fr.__reposted = true;   // mark the driver's own re-post so the listener never re-captures it as a kernel frame
+      window.postMessage(fr, "*");
+      return { ev: Array.isArray(fr.events) ? fr.events.length : null, live: fr.wm.live, wm: { tx: fr.wm.tx, live: fr.wm.live } };
+    }, baseLive);
+    if (injected.reposted) {
       await painted();
       injected.afterKernelDelta = await page.evaluate((u) => { const el = document.querySelector('#content .turn[data-uuid="' + u + '"]'); return !!el && el.getClientRects().length > 0; }, landedRow.uuid);
+      injected.diagAfterKernelDelta = await page.evaluate(() => window.__diag.slice());
     }
-    await injectFrame("older", olderRow); await check("inject-stale", 0, "after-stale", text);
+    injected.floorWmOlder = (await injectFrame("older", olderRow)).floorWm; await check("inject-stale", 0, "after-stale", text);   // the older frame must reuse the landed call's floor snapshot (pinned in _assert_injected)
     injected.afterStale = await page.evaluate((u) => { const el = document.querySelector('#content .turn[data-uuid="' + u + '"]'); return !!el && el.getClientRects().length > 0; }, landedRow.uuid);
     injected.diagAfterStale = await page.evaluate(() => window.__diag.slice());
     await injectFrame("bare", olderRow); await painted();
@@ -387,6 +405,13 @@ LOCAL_SETUP_S = 60
 REMOTE_SETUP_S = 150
 DRIVER_TIMEOUT_S = 480
 DRIVER_TIMEOUT_REMOTE_S = 420
+
+
+def _deleaf(o):
+    """Strip the repeated ~150-char TMPDIR leaf from every watermark in an injected-diagnostics dict (it is printed once):
+    watermarks, uuid tails and one leaf line carry no transcript text, so this stays inside the no-transcript-text rule."""
+    return ({k: (None if k == "leaf" else _deleaf(v)) for k, v in o.items()} if isinstance(o, dict)
+            else [_deleaf(x) for x in o] if isinstance(o, list) else o)
 
 
 def _kernel_tail(*logs):
@@ -487,7 +512,8 @@ class ServedSendBubbleVisible(unittest.TestCase):
             print("  MISS", json.dumps({k: c[k] for k in ("variant", "round", "at", "carriers", "tail", "sh", "st", "ch", "composer")}))
         console = open(console_log).read()
         self.assertEqual(console.strip(), "", "the page logged errors:\n" + console[-2000:])
-        print("SEND-BUBBLE injected:", json.dumps(r.get("injected", {}), default=str)[:4000])   # watermarks, uuid tails, a TMPDIR leaf: no transcript text. One print covers a red at the misses line and at inj["landed"]
+        _inj = r.get("injected", {})   # the ~150-char leaf repeats across base/floor/injWm and every diag/wmLog wm; strip it (printed once) so the cap drops no key
+        print("SEND-BUBBLE injected (leaf %s):" % ((_inj.get("baseWm") or {}).get("leaf")), json.dumps(_deleaf(_inj), default=str)[:8000])   # watermarks, uuid tails, one leaf line: no transcript text; one print covers a red at the misses line and at inj["landed"]
         self.assertEqual(misses, [], "every checkpoint after a send shows the sent text in a visible element; misses above")
         # the injected frames (the module docstring's second paragraph)
         inj = r["injected"]
@@ -503,11 +529,18 @@ class ServedSendBubbleVisible(unittest.TestCase):
 
     def _assert_injected(self, inj):
         self.assertTrue(inj.get("baseOk"), "the kernel's real frame carries a watermark with the leaf and the parse rows: %r" % (inj.get("seen"),))
+        self.assertEqual(inj.get("trailWait"), "seen", "the SEND's chatTail delta was seen before the base capture (bounded to frames past the send; current main sends ONE delta carrying the events, PR 2077 dropped the trailing empty tail): %r" % (inj.get("seen"),))
         self.assertEqual(inj.get("landedWait"), "applied", "the landed row applied within the bounded poll, not a swallowed timeout: %r" % (inj,))
         self.assertTrue(inj["landed"], "the landing frame put the landed row on the page")
-        # the RED-FIRST: the kernel's own trailing empty delta, re-posted after the landed row is in the DOM, is REFUSED
-        # (the injection is derived ahead of the page's real floor), not applied as a mixed reading that drops the row
-        self.assertTrue(inj.get("afterKernelDelta", False), "the kernel's own trailing empty delta, re-posted after the landed row, does not drop it: %r" % (inj,))
+        # the RED-FIRST: the kernel's own last chatTail (the send's ONE delta on current main), re-posted after the landed row
+        # is in the DOM, is REFUSED (its watermark is behind the injection, which is derived ahead of the page's floor of
+        # EITHER type), not applied. Pin that a replay frame EXISTED (a missing one would silently pass as the default False),
+        # the row's SURVIVAL, and the REFUSAL.
+        self.assertTrue(inj.get("reposted"), "the send's kernel chatTail was available and above the base to re-post as the red-first: %r" % (inj.get("seen"),))
+        self.assertTrue(inj.get("afterKernelDelta", False), "the kernel's own chatTail delta (%r), re-posted after the landed row, does not drop it: %r" % ((inj.get("reposted") or {}).get("wm"), inj))
+        repost_stale = [d for d in inj.get("diagAfterKernelDelta", []) if d["what"] == "frame-stale" and d["data"].get("type") == "chatTail"]
+        self.assertEqual(len(repost_stale), 1, "…and the re-post was refused once as frame-stale (type chatTail), not applied: %r" % inj.get("diagAfterKernelDelta"))
+        self.assertEqual(inj.get("floorWmOlder"), inj.get("floorWmNewer"), "the older frame reuses the landed call's floor snapshot (window.__injFloor), not a per-call recompute: %r vs %r" % (inj.get("floorWmOlder"), inj.get("floorWmNewer")))
         self.assertTrue(inj["afterStale"], "an OLDER frame lacking the row left the landed row on the page: %r" % (inj,))
         # attribute the frame-stale row to the INJECTED older frame by TYPE (built from the session base), never by counting:
         # the kernel's own re-post, refused as a chatTail if the race fires, would otherwise red the count (the reviewer)
@@ -616,6 +649,8 @@ class ServedSendBubbleVisibleRemote(ServedSendBubbleVisible):
             print("  MISS", json.dumps({k: c[k] for k in ("variant", "round", "at", "carriers", "tail", "sh", "st", "ch", "composer")}))
         console = open(console_log).read()
         self.assertEqual(console.strip(), "", "the page logged errors:\n" + console[-2000:])
+        _ri = r.get("injected", {})
+        print("SEND-BUBBLE remote injected (leaf %s):" % ((_ri.get("baseWm") or {}).get("leaf")), json.dumps(_deleaf(_ri), default=str)[:8000])   # a remote failure at the misses line or at inj["landed"] now carries the injected record too
         self.assertEqual(misses, [], "every checkpoint after a send into the remote session shows the sent text in a visible element; misses above")
         self._assert_injected(r["injected"])
         self._assert_landings(r)
