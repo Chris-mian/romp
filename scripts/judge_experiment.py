@@ -56,6 +56,14 @@ FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited
 #   `scratch`, `unregistered-caller`). A `timeout` files under `call`, so it is not named. The `*-unreadable` family and the store-fault pair
 #   (`history-unreadable` aside) cannot fire on the arm's road (it hands the judges a store it just wrote and read), and are named only so a
 #   future road that can reach them counts them.
+# A transient arm-judge model call (a 120s-alarm kill with empty stdout, an empty reply, an error envelope) leaves a `call`
+# failure row that marks the arm not comparable. The candidate arm's longer closer/planner menus hit that kill more often
+# than the baseline's by chance, not by verdict (the 2026-09-22 clean pilot: 2 timeouts baseline, 5 candidate), so the paid
+# arms came out not-comparable for a reason the measure does not care about. The harness re-samples a transiently-failed call
+# up to CALL_ATTEMPTS times (identically for every arm) and gives each attempt HARNESS_ALARM_S rather than the module's 120s,
+# so a slow-but-real closer menu finishes; a call that fails EVERY attempt still counts. See install_call_retry.
+CALL_ATTEMPTS = 3
+HARNESS_ALARM_S = 240
 ID_EPOCH_RE = re.compile(r"^[0-9a-f-]{36}:(\d{9,11})(?::|$)")   # a turn id or segment id carries its epoch second after the fsid
 
 
@@ -775,6 +783,36 @@ def count_non_arm_failure_rows(errors_path):
     return n
 
 
+def install_call_retry(jd, errors_path, attempts=CALL_ATTEMPTS):
+    """Wrap jd._judge_run_impl so a transiently-failed arm-judge call is re-sampled up to `attempts` times, and the failed
+    attempts' rows are dropped from the errors ledger when a later attempt serves, so count_failure_rows sees only a call
+    that failed every attempt. A served reply, or a pause/stand-down "" (jd._judge_ctx.paused: the rate gate, a scratch or
+    auth pause), returns at once and is never retried. Every arm-judge call routes through _judge_run_impl, so this is
+    symmetric across arms by construction. Returns the saved original for the caller to restore in its finally."""
+    saved = jd._judge_run_impl
+    ep = Path(errors_path)
+    def _retrying(*a, **k):
+        out = None
+        for attempt in range(max(1, attempts)):                          # loop-ok: bounded re-sample of one failed call
+            try:
+                before = sum(1 for _ in ep.open(encoding="utf-8")) if ep.exists() else 0
+            except OSError:
+                before = 0
+            out = saved(*a, **k)
+            if out or jd._judge_ctx.paused or not jd._judge_ctx.last_call_fail:
+                return out                                               # served, or a stand-down skip (not a failure): keep it
+            if attempt < attempts - 1:                                   # a transient failure with an attempt left: drop its row(s), re-sample
+                try:
+                    lines = ep.open(encoding="utf-8").read().splitlines(keepends=True)
+                    with ep.open("w", encoding="utf-8") as f:
+                        f.writelines(lines[:before])
+                except OSError:
+                    pass
+        return out
+    jd._judge_run_impl = _retrying
+    return saved
+
+
 def ledger_cost(usage_path):
     """(dollars, calls, mean ms) from the arm's own usage ledger."""
     cost, n, ms = 0.0, 0, 0.0
@@ -821,6 +859,9 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     jd._consolidate_store = lambda *a, **k: 0
     usage = jd.USAGE
     errors_path = Path(jd.ERRORS)
+    saved_run_impl = install_call_retry(jd, errors_path)   # re-sample a transiently-failed arm call; restored in the finally
+    saved_alarm = jd.CALL_ALARM_S
+    jd.CALL_ALARM_S = HARNESS_ALARM_S                      # a slow-but-real closer/planner menu finishes rather than a 120s kill
     def error_rows():
         return count_failure_rows(errors_path)
     def flush():
@@ -896,6 +937,8 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     finally:
         restore_prompts(jd, saved)
         jd._group_store, jd._consolidate_store = saved_group, saved_consolidate   # restore the grouper/consolidator (in-process safety)
+        jd._judge_run_impl = saved_run_impl                                       # restore the un-retried call and the module alarm
+        jd.CALL_ALARM_S = saved_alarm
         try:
             cost, n, mean_ms = ledger_cost(usage)
             results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)

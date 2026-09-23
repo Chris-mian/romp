@@ -609,6 +609,47 @@ class Harness(unittest.TestCase):
         km = load_source("romp_kernel_whys", os.path.join(BIN, "romp-kernel"))
         self.assertEqual(self.je.MUTE_CLEAR_WHY, km._HIDDEN_FROM_FEED_WHY, "the harness excludes exactly the kernel's mute why")
 
+    def test_install_call_retry_resamples_a_transient_call_and_drops_its_recovered_rows(self):
+        """A transiently-failed arm-judge call (a 120s-alarm kill, an empty reply) is re-sampled and, once a later attempt
+        serves, its failure rows are dropped from the errors ledger so count_failure_rows counts only a call that failed
+        every attempt. A pause/stand-down "" is not a failure and is never retried."""
+        ep = Path(self.td) / "judge-errors.jsonl"
+        def fake_jd(script):
+            calls = {"n": 0}
+            ctx = types.SimpleNamespace(paused=False, last_call_fail=None)
+            jd = types.SimpleNamespace(_judge_ctx=ctx)
+            def impl(*a, **k):
+                ctx.paused = False
+                verdict = script(calls["n"]); calls["n"] += 1
+                if verdict == "serve":
+                    ctx.last_call_fail = None; return "ok"
+                if verdict == "pause":
+                    ctx.paused = True; ctx.last_call_fail = None; return ""
+                with ep.open("a", encoding="utf-8") as f:                 # a real transient call failure files one `call` row
+                    f.write(json.dumps({"judge": "planner", "err": "call", "note": "timeout"}) + "\n")
+                ctx.last_call_fail = {"note": "timeout"}; return ""
+            jd._judge_run_impl = impl
+            return jd
+        # fails once, then serves: with no retry the row stays (not comparable); with retries it is recovered (comparable)
+        ep.write_text("")
+        jd = fake_jd(lambda n: "fail" if n == 0 else "serve")
+        self.je.install_call_retry(jd, ep, attempts=1)
+        self.assertEqual((jd._judge_run_impl(), self.je.count_failure_rows(ep)), ("", 1), "no retry: the failed call stays a failure")
+        ep.write_text("")
+        jd = fake_jd(lambda n: "fail" if n == 0 else "serve")
+        self.je.install_call_retry(jd, ep, attempts=3)
+        self.assertEqual((jd._judge_run_impl(), self.je.count_failure_rows(ep)), ("ok", 0), "retry re-samples and drops the recovered row")
+        # fails every attempt: exactly one row survives (the last attempt's), the call still counts
+        ep.write_text("")
+        jd = fake_jd(lambda n: "fail")
+        self.je.install_call_retry(jd, ep, attempts=3)
+        self.assertEqual((jd._judge_run_impl(), self.je.count_failure_rows(ep)), ("", 1), "a call that fails every attempt still counts once")
+        # a pause/stand-down is not retried and files no failure row
+        ep.write_text("")
+        jd = fake_jd(lambda n: "pause")
+        self.je.install_call_retry(jd, ep, attempts=3)
+        self.assertEqual((jd._judge_run_impl(), self.je.count_failure_rows(ep)), ("", 0), "a pause is a skip, not a failure to retry")
+
     def test_a_plainly_cleared_completed_top_is_no_leak_and_a_reopened_needs_input_is_no_false_interrupt(self):
         """The plan's negatives (round three): a completed top the user plainly cleared (no re-open) is NOT a leak; a
         needs_input top the user re-opened, even if later cleared, is NOT a false interrupt (the re-open short-circuits)."""
