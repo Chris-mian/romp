@@ -34,6 +34,20 @@ class MobilePickerClickSafe(unittest.TestCase):
         self.assertIn("if(!row)row=rowMake(s);else rowUpdate(row,s);", km._CHAT_MOBILE_JS,
                       "rows update in place, keyed the strip's way (data-key: the tab's id and the group of its copy)")
 
+    def test_a_reused_row_follows_the_tabs_copy_attribute(self):
+        """CI, 2026-09-23: the picker's row key collapses a missing copy attribute and the trail's empty one, so a row made while the
+        strip was flat is reused once the strip sections, and rowUpdate never touched data-copy: the reused row kept the missing
+        attribute and the picker order lab read the phone's first trail row as a flat-strip row against its own strip's tab. The
+        attribute is set (or removed) in rowUpdate, which rowMake calls, so a reused row follows the tab it mirrors.
+        tests/test_mobile_picker_order_browser.py executes the reuse in a real browser."""
+        js = km._CHAT_MOBILE_JS
+        upd = js[js.index("function rowUpdate(row,s){"):js.index("function rowMake(s){")]
+        self.assertIn("if(s.copy!==null)row.setAttribute('data-copy',s.copy);else row.removeAttribute('data-copy');", upd,
+                      "the copy attribute follows the tab on every update, set or removed")
+        mk = js[js.index("function rowMake(s){"):js.index("function headUpdate(row,s){")]
+        self.assertNotIn("setAttribute('data-copy'", mk, "one writer: rowMake gets it through the rowUpdate it calls")
+        self.assertIn("rowUpdate(row,s);return row;}", mk)
+
     def test_the_list_mirrors_the_strips_children_headings_and_the_trails_divider_included(self):
         """The phone listed the sessions in another order than the desktop strip once the tabs were grouped
         by tag (the user 2026-09-16): the plan flattened on the phone and the picker scraped that flat strip.
