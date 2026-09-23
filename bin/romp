@@ -2596,7 +2596,8 @@ PYEOF
                # Deploys bounce IMMEDIATELY, cutting in-flight turns (T160 — the parked
                # quiet window cost minutes per push; boot reconcile resumes cut turns with
                # their history). `romp refresh --quiet` defers to the next quiet window
-               # explicitly (no SDK turn in flight, drain lease held, backstop-capped).
+               # explicitly (no turn in flight, Claude or Codex, and no background work; the
+               # drain lease held while a Claude turn runs; backstop-capped).
                exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all "${2:-}" ;;
     status)
         _st_marker="$(_romp_state_dir)/down-by-romp"

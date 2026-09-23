@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -56,6 +57,14 @@ FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited
 #   `scratch`, `unregistered-caller`). A `timeout` files under `call`, so it is not named. The `*-unreadable` family and the store-fault pair
 #   (`history-unreadable` aside) cannot fire on the arm's road (it hands the judges a store it just wrote and read), and are named only so a
 #   future road that can reach them counts them.
+# A transient arm-judge model call (a 120s-alarm kill with empty stdout, an empty reply, an error envelope) leaves a `call`
+# failure row that marks the arm not comparable. The candidate arm's longer closer/planner menus hit that kill more often
+# than the baseline's by chance, not by verdict (the 2026-09-22 clean pilot: 2 timeouts baseline, 5 candidate), so the paid
+# arms came out not-comparable for a reason the measure does not care about. The harness re-samples a transiently-failed call
+# up to CALL_ATTEMPTS times (identically for every arm) and gives each attempt HARNESS_ALARM_S rather than the module's 120s,
+# so a slow-but-real closer menu finishes; a call that fails EVERY attempt still counts. See install_call_retry.
+CALL_ATTEMPTS = 3
+HARNESS_ALARM_S = 240
 ID_EPOCH_RE = re.compile(r"^[0-9a-f-]{36}:(\d{9,11})(?::|$)")   # a turn id or segment id carries its epoch second after the fsid
 
 
@@ -750,6 +759,8 @@ def count_failure_rows(errors_path):
                 r = json.loads(line)
             except ValueError:
                 continue
+            if r.get("retried"):
+                continue                                          # a re-sampled attempt a later one recovered: not a failure (install_call_retry)
             if r.get("err") in FAILURE_KINDS and r.get("judge") not in NON_ARM_JUDGES:
                 n += 1
     except OSError:
@@ -768,11 +779,106 @@ def count_non_arm_failure_rows(errors_path):
                 r = json.loads(line)
             except ValueError:
                 continue
+            if r.get("retried"):
+                continue                                          # a recovered re-sample is not a failure, arm or non-arm (install_call_retry)
             if r.get("err") in FAILURE_KINDS and r.get("judge") in NON_ARM_JUDGES:
                 n += 1
     except OSError:
         return 0
     return n
+
+
+def failure_rows_by_kind(errors_path):
+    """{err: count} for the ARM failure rows that mark an arm not comparable (err in FAILURE_KINDS, judge not a non-arm
+    judge, not a retried attempt). The breakdown behind count_failure_rows, so a reader sees which kind remained after the
+    retries: a `call` timeout that failed every attempt, a `parse` the retry does not touch (it re-samples the CALL, not a
+    reply that came back and failed to parse downstream)."""
+    from collections import Counter
+    c = Counter()
+    try:
+        for line in Path(errors_path).open(encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("retried"):
+                continue
+            if r.get("err") in FAILURE_KINDS and r.get("judge") not in NON_ARM_JUDGES:
+                c[r["err"]] += 1
+    except OSError:
+        pass
+    return dict(c)
+
+
+def install_call_retry(jd, errors_path, counters=None, attempts=CALL_ATTEMPTS):
+    """Wrap jd._judge_run_impl so a transiently-failed arm-judge call is re-sampled up to `attempts` times, symmetric across
+    arms (every arm-judge call routes through _judge_run_impl). A failed attempt's rows are KEPT but tagged "retried": true
+    (count_failure_rows and count_non_arm_failure_rows skip a tagged row), so the ledger still shows every first-attempt kill
+    while comparability counts only a call that failed EVERY attempt. `counters` (a dict) tallies, for the measured (arm)
+    judges only: firstAttemptKills (calls whose first attempt was a transient kill), retryAttempts (re-samples made),
+    recoveredCalls (calls that served after a kill). A served reply, or a pause/stand-down "" (jd._judge_ctx.paused: the rate
+    gate, a scratch or auth pause), returns at once and is never retried. Returns the saved original for the caller to
+    restore in its finally."""
+    saved = jd._judge_run_impl
+    ep = Path(errors_path)
+    ctr = counters if counters is not None else {}
+    for key in ("firstAttemptKills", "retryAttempts", "recoveredCalls"):
+        ctr.setdefault(key, 0)
+    def _lines():
+        try:
+            return ep.open(encoding="utf-8").read().splitlines(keepends=True) if ep.exists() else []
+        except OSError:
+            return []
+    def _tag(start, end):
+        lines = _lines()
+        for i in range(start, min(end, len(lines))):
+            try:
+                r = json.loads(lines[i]); r["retried"] = True
+                lines[i] = json.dumps(r) + "\n"
+            except ValueError:
+                pass
+        try:
+            with ep.open("w", encoding="utf-8") as f:
+                f.writelines(lines)
+        except OSError:
+            pass
+    # This wrapper tags rows by LINE RANGE and rewrites the shared errors ledger whole, and the counters are a plain dict, so
+    # it is correct ONLY when the arm reaches _judge_run_impl one call at a time. It does: run_arm_inprocess calls
+    # _plan_session / _close_turn / _unblock_session directly and in sequence (never the pooled run_plan / run_close /
+    # run_unblock orchestrators), and none of those three fans out to a ThreadPoolExecutor internally. The guard below turns
+    # that construction into an enforced invariant: a concurrent entry raises rather than silently racing the tag-and-count.
+    # If a future path pools these calls, mark rows at WRITE time (a per-call id via a wrapped _log_judge_error) instead.
+    _guard = threading.Lock()
+    def _retrying(*a, **k):
+        if not _guard.acquire(blocking=False):
+            raise RuntimeError("install_call_retry: _judge_run_impl reached concurrently; the by-line-range tag-and-count "
+                               "assumes the arm's single-threaded loop (run_arm_inprocess). Mark rows at write time instead.")
+        try:
+            judge = k.get("judge") if "judge" in k else (a[4] if len(a) > 4 else None)
+            arm = judge not in NON_ARM_JUDGES                            # count only the measured judges; still retry a non-arm call
+            ranges, out = [], None
+            for attempt in range(max(1, attempts)):                      # loop-ok: bounded re-sample of one failed call
+                if attempt > 0 and arm:
+                    ctr["retryAttempts"] += 1
+                before = len(_lines())
+                out = saved(*a, **k)
+                if out or jd._judge_ctx.paused or not jd._judge_ctx.last_call_fail:
+                    if ranges:                                           # a kill earlier, now served/skipped: recovered, tag its rows out
+                        if arm:
+                            ctr["recoveredCalls"] += 1
+                        for s, e in ranges:
+                            _tag(s, e)
+                    return out
+                if not ranges and arm:
+                    ctr["firstAttemptKills"] += 1
+                ranges.append((before, len(_lines())))
+            for s, e in ranges[:-1]:                                     # every attempt failed: the LAST rows are the one real failure, tag the earlier ones
+                _tag(s, e)
+            return out
+        finally:
+            _guard.release()
+    jd._judge_run_impl = _retrying
+    return saved
 
 
 def ledger_cost(usage_path):
@@ -821,6 +927,10 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     jd._consolidate_store = lambda *a, **k: 0
     usage = jd.USAGE
     errors_path = Path(jd.ERRORS)
+    retry_counters = {}
+    saved_run_impl = install_call_retry(jd, errors_path, retry_counters)   # re-sample a transiently-failed arm call; restored in the finally
+    saved_alarm = jd.CALL_ALARM_S
+    jd.CALL_ALARM_S = HARNESS_ALARM_S                      # a slow-but-real closer/planner menu finishes rather than a 120s kill
     def error_rows():
         return count_failure_rows(errors_path)
     def flush():
@@ -896,12 +1006,16 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     finally:
         restore_prompts(jd, saved)
         jd._group_store, jd._consolidate_store = saved_group, saved_consolidate   # restore the grouper/consolidator (in-process safety)
+        jd._judge_run_impl = saved_run_impl                                       # restore the un-retried call and the module alarm
+        jd.CALL_ALARM_S = saved_alarm
         try:
             cost, n, mean_ms = ledger_cost(usage)
             results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
         except Exception as e:
             results["costError"] = type(e).__name__    # a ledger read that raises is RECORDED, not swallowed: a reader tells a free arm from a broken tally
         results["nonArmFailures"] = count_non_arm_failure_rows(errors_path)   # excluded from comparability, surfaced beside it (review 2026-09-22 PR 2022)
+        results["retry"] = retry_counters                          # firstAttemptKills / retryAttempts / recoveredCalls, so the comparability claim is visible (manager 2026-09-23)
+        results["failuresByKind"] = failure_rows_by_kind(errors_path)   # the remaining (arm, un-retried) failures by kind: a lone `parse` stays named
         flush()                                      # results.json is written in the finally, whatever raised in the loop or after it
     return results
 
@@ -1159,6 +1273,7 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
             "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
             "stopped": results.get("stopped"), "failures": failures, "nonArmFailures": int(results.get("nonArmFailures") or 0),
             "comparable": failures == 0, "buildsPerCard": builds_n,
+            "retry": results.get("retry") or {}, "failuresByKind": results.get("failuresByKind") or {},
             "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
             "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
             "labellerKeying": labels_state, "attribution": attribution,   # the labeller-keying source: present / absent / unreadable (the 2026-09-22 PR 2035 review, MED)
@@ -1184,16 +1299,23 @@ def report(corpus, run_root, live_state, figure=None):
     rows = []
     for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
         rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, labels=labels, labels_state=labels_state))
-    lines = ["| arm | endings | gestured | untouched | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| arm | endings | gestured | untouched | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | stopped | first-attempt kills | re-samples | recovered | failures |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
-        cell = "0" if r["comparable"] else "%d, not comparable" % r["failures"]
+        fbk = r.get("failuresByKind") or {}
+        if r["comparable"]:
+            cell = "0"
+        else:
+            named = ", ".join("%s %d" % (k, v) for k, v in sorted(fbk.items())) or ("%d" % r["failures"])
+            cell = "%s, not comparable" % named                 # the remaining failures named by kind, so a lone `parse` is visible (manager 2026-09-23)
         if r.get("nonArmFailures"):
             cell += " (%d non-arm)" % r["nonArmFailures"]       # an excluded failure is surfaced, never invisible (review 2026-09-22 PR 2022)
-        lines.append("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %.2f | %d | %d | %s | %s |" % (
+        rt = r.get("retry") or {}
+        lines.append("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %.2f | %d | %d | %s | %d | %d | %d | %s |" % (
             r["arm"], r["endings"], r["gesturedEndings"], r["untouchedEndings"], r["unplacedEndings"], r["unresolvedEndings"],
             r["leaks"], r["falseInterrupts"], r["answeredThenCleared"], r["flaps"], r["costUsd"], r["calls"], r["callMsMean"],
-            "yes" if r["stopped"] else "no", cell))
+            "yes" if r["stopped"] else "no",
+            rt.get("firstAttemptKills", 0), rt.get("retryAttempts", 0), rt.get("recoveredCalls", 0), cell))
     counts = sorted({r.get("buildsPerCard") or 0 for r in rows})
     scope = ("%d builds" % counts[0]) if (len(counts) == 1 and counts[0]) else \
             ("builds per arm (" + ", ".join("%s %d" % (r["arm"], r.get("buildsPerCard") or 0) for r in rows) + ")" if rows else "the builds")
@@ -1204,7 +1326,11 @@ def report(corpus, run_root, live_state, figure=None):
             "TWO keyings: leaksByClass / falseInterruptsByClass on the manifest's heuristic class, and leaksByLabellerClass / "
             "falseInterruptsByLabellerClass on the labeller's class (labellerKeying names the source; an unlabeled bucket "
             "carries the rest so both sum to the totals). Offer, question and undone are the loose-ended strata, finished the "
-            "tier-one stratum." % (scope, ", ".join(NON_ARM_JUDGES)))
+            "tier-one stratum. A transiently-failed arm-judge call (a 120s-alarm kill) is re-sampled up to %d times: "
+            "first-attempt kills counts the calls killed on their first attempt, re-samples the extra attempts made, "
+            "recovered the kills a later attempt then served; only a call that failed EVERY attempt is a failure, named by "
+            "kind in the failures cell (a `parse` the re-sample does not touch stays its own row). An arm is comparable when "
+            "that cell is 0." % (scope, ", ".join(NON_ARM_JUDGES), CALL_ATTEMPTS))
     (run_root / "table.md").write_text("\n".join(lines) + "\n\n" + note + "\n")
     (run_root / "measures.json").write_text(json.dumps(rows, indent=1))
     if figure:

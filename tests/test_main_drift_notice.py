@@ -785,6 +785,78 @@ class ConvergeWaitsSpareOnlyCuts(unittest.TestCase):
         finally:
             km._sdk_backend = saved
 
+    CX_SID = "11111111-2222-3333-4444-5555555555c2"
+
+    def _hosted_box_with_a_codex_turn(self):
+        """A Claude session with a turn in flight under its host (the drain detaches it: no cut) and a Codex session
+        with an open turn (its app-server is the kernel's child: cut). Real backends; nothing runs. Synthetic."""
+        import sys, types
+        sbm = sys.modules.get("romp_sdk_backend") or load_source("romp_sdk_backend", os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py"))
+        cxm = sys.modules.get("romp_codex_backend_drift") or load_source("romp_codex_backend_drift", os.path.join(os.path.dirname(HERE), "kernel", "codex_backend.py"))
+        roots = []
+        for _ in range(2):
+            roots.append(tempfile.mkdtemp())
+            open(os.path.join(roots[-1], "session-hosts"), "w").write("off")   # a bare state root pins hosts off (T348)
+        sdk = sbm.SdkBackend(roots[0], "/bin/true", lambda *a, **k: None)
+        sdk.sessions = {"c": types.SimpleNamespace(sid="c" * 36, name="web", inflight=True, _host=object(), _host_intent=False)}
+        cx = cxm.CodexBackend(roots[1], client_factory=lambda: None, log=lambda m: None)
+        s = cxm._Session(self.CX_SID, "T-1", "api", "/TESTDIR")
+        s.turn_id, s.state = "t-1", "working"          # a turn the app-server ACKed; no worker runs it
+        cx._put_session(s)
+        saved = (km._sdk_backend, km._codex_backend)
+        self.addCleanup(lambda: (setattr(km, "_sdk_backend", saved[0]), setattr(km, "_codex_backend", saved[1])))
+        km._sdk_backend, km._codex_backend = sdk, cx
+        self.sdk = sdk
+        return s
+
+    def test_an_open_codex_turn_is_a_cut(self):
+        # 2026-09-22, the review that found the restart gates blind to Codex: the answer read the SDK drain alone, so
+        # a box whose Claude sessions were all hosted read "would cut no turn" over an open Codex turn
+        s = self._hosted_box_with_a_codex_turn()
+        real = self.saved[5]                             # the real predicate (other tests here stub km's)
+        self.assertEqual(real(), [{"sid": self.CX_SID, "name": "api"}], "the Codex turn ends with the app-server")
+        with s.lock:
+            s.turn_id, s.compacting, s.compact_active_seen = None, True, True
+        self.assertEqual(real(), [{"sid": self.CX_SID, "name": "api"}], "a running compaction is its own turn: cut too")
+        with s.lock:
+            s.compact_active_seen = False
+        # 2026-09-23, the review of this lane: a bracket latched at the ACK and never seen active may never run
+        self.assertEqual(real(), [], "a compaction with no active status seen is not counted, as the worker reads it")
+        with s.lock:
+            s.compacting = False
+        self.assertEqual(real(), [], "the turn's end is the cut's end")
+        for unbuilt in (None, False):                    # never built / its module unavailable: never built here
+            with self.subTest(unbuilt=unbuilt):
+                km._codex_backend = unbuilt
+                self.assertEqual(real(), [], "no Codex backend: the SDK drain's answer alone")
+                self.assertIs(km._codex_backend, unbuilt)
+        km._codex_backend = mock.Mock(**{"would_cut.side_effect": RuntimeError("synthetic")})
+        self.assertIsNone(real(), "a built backend that cannot answer makes the answer unknown, never 'none'")
+
+    def test_an_unhosted_claude_turn_and_a_codex_turn_are_both_cuts(self):
+        # the review of this lane: with the SDK side empty in every other test, an overwrite of its list by the Codex
+        # one read the same as the sum; here both contribute at once
+        import types
+        self._hosted_box_with_a_codex_turn()
+        self.sdk.sessions["a"] = types.SimpleNamespace(sid="a" * 36, name="tests", inflight=True, _host=None,
+                                                       _host_intent=False)   # a plain child: the drain cuts it
+        real = self.saved[5]
+        self.assertEqual(real(), [{"sid": "a" * 36, "name": "tests"}, {"sid": self.CX_SID, "name": "api"}],
+                         "the Claude drain's cut, then the Codex turn")
+
+    def test_a_parked_quiet_deploy_waits_for_an_open_codex_turn(self):
+        # the converge the gate feeds: before the fix it pre-empted the quiet window over the Codex turn (the spares
+        # branch, "converging without waiting for the window"), cutting the turn /busy holds the window for
+        self._hosted_box_with_a_codex_turn()
+        km._deploy_would_cut = self.saved[5]             # the real predicate, whatever an earlier test left
+        km._checkout_sha = lambda: "bbb"                  # the checkout is ahead of the kernel: a restart is owed…
+        km._origin_main_sha = lambda: "bbb"
+        km._parked_quiet_deploy = lambda checkout, now=None: 1   # …and a quiet deploy is parked for it
+        self._pass()
+        self.assertEqual(self.ran, [], "an open Codex turn is a turn to spare: the park stands the check down")
+        self.assertEqual(self._lines(), ["romp-kernel: converge: bbb is parked as a quiet deploy; leaving it to the "
+                                         "quiet window; a restart now would cut 1 turn: api"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -513,7 +513,15 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 #                                          consolidator / courier; the
 #                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
 #                                          already had their own.
-PLACEMENTS_V = 14                        # placements-identity schema version (plan P2, the user 2026-07-06).
+PLACEMENTS_V = 15                        # placements-identity schema version (plan P2, the user 2026-07-06).
+#                                          v15 (2026-09-23): a parallel tool batch's branch beside the spine is kept
+#                                          (em.FileAdapter._batch_head). The CLI parents each call's result at the record
+#                                          carrying that call, so once the reply chains off the last result, the results of
+#                                          the batch's other calls hung off the spine and were filed as rewound: on every
+#                                          transcript with a parallel batch those results now parse out. v3's shape, a GROWN
+#                                          atom set; tool_result atoms open no segment, but a settle seam whose split falls
+#                                          inside a batch's result window now starts its tail at a result it never saw,
+#                                          which moves that tail's anchor and so its id. Same seal.
 #                                          v14 (T333, 2026-09-11): the harness's own skill-load wrapper (the bare-named
 #                                          <skill-format> command wrapper with no arguments slot that the orchestration
 #                                          mode writes right after the prompt) no longer parses to a command atom, so on
@@ -3972,7 +3980,8 @@ def tasks_for(fsid, leaf, files, now, done=None):
     cf = PCACHE / (fsid + ".json")
     try:
         o = json.loads(cf.read_text())
-        if o.get("key") == key and o.get("capKey") == cap_key and o.get("v") == 9:    # v8 = the harness skill-load wrapper no longer emits a command atom, so the prompt segment grows (T333, 2026-09-11; with PLACEMENTS_V 14);
+        if o.get("key") == key and o.get("capKey") == cap_key and o.get("v") == 10:   # v10 = a parallel tool batch's results parse out, so the segments holding one grow (2026-09-23; with PLACEMENTS_V 15);
+            #                                             v8 = the harness skill-load wrapper no longer emits a command atom, so the prompt segment grows (T333, 2026-09-11; with PLACEMENTS_V 14);
             #                                             v7 = machine-written triggers key their segment on the anchor uuid, so those seg ids moved (T318, 2026-09-10; with PLACEMENTS_V 13);
             #                                             v6 = absorbed atoms placed at their landing time, so their seg ids moved (T252d, 2026-09-08);
             #                                             v5 = absorbed SDK-injection atoms carry real text (2026-07-06); older caches regenerate
@@ -3996,7 +4005,7 @@ def tasks_for(fsid, leaf, files, now, done=None):
     try:
         PCACHE.mkdir(parents=True, exist_ok=True)
         tmp = cf.with_suffix(".tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps({"key": key, "capKey": cap_key, "v": 9, "tasks": tasks}))
+        tmp.write_text(json.dumps({"key": key, "capKey": cap_key, "v": 10, "tasks": tasks}))
         tmp.rename(cf)
     except Exception:
         pass
@@ -4824,7 +4833,7 @@ def raw_store_stats():
     return out
 
 
-def _read_store_json(path, *, quarantine=False, _tries=3):
+def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
     """The parsed JSON object at `path`, or None when the file is ABSENT (a session with no store yet).
 
     Every other failure is a fact about the file the caller must not paper over: a read FAULT (EIO,
@@ -4844,7 +4853,12 @@ def _read_store_json(path, *, quarantine=False, _tries=3):
     and THEIR bytes get their own read, bounded by `_tries` (review find, 2026-09-08).
 
     The parse is memoized per file version (the _RAW_STORE note above): a read whose identity and text match
-    the entry answers a fresh copy of the earlier parse; any other outcome drops the path's entry."""
+    the entry answers a fresh copy of the earlier parse; any other outcome drops the path's entry.
+
+    `ident_out`, a list, receives the identity (inode, mtime_ns, size) of the file whose bytes this call returns,
+    for load_goals' CAS base (save_goals compares it beside the revision: an in-place rewrite that left `rev`
+    alone is a publication too; the CI red of 2026-09-23 on the box lab, whose driver
+    edits the store in place and never advances `rev`, so a judge pass's save published over its new node)."""
     path_s = str(path)
     try:
         st = path.stat()
@@ -4861,6 +4875,8 @@ def _read_store_json(path, *, quarantine=False, _tries=3):
         ident = (st.st_ino, st.st_mtime_ns, st.st_size)
         with _RAW_STORE_LOCK:
             ent = _RAW_STORE.get(path_s)
+        if ident_out is not None:
+            ident_out.append(ident)
         if ent is not None and ent[0] == ident:
             if ent[1] == raw:
                 _raw_bump("hit")
@@ -4884,7 +4900,10 @@ def _read_store_json(path, *, quarantine=False, _tries=3):
         raise bad
     if _quarantine_store(path, reason, st) is not None or _tries <= 1:
         return None                                  # the bad bytes are preserved aside: a fresh store is legitimate
-    return _read_store_json(path, quarantine=True, _tries=_tries - 1)   # declined: the file changed under us
+    return _read_store_json(path, quarantine=True, _tries=_tries - 1, ident_out=ident_out)   # declined: the file changed under us; the
+    #                                                                                          retry appends ITS file's identity, and the caller
+    #                                                                                          takes the last (the round-one verifier of PR 2064:
+    #                                                                                          the unparseable file's identity stood as the base)
 
 
 def _fresh_store(fsid):
@@ -4895,6 +4914,7 @@ def _fresh_store(fsid):
     store = {"rompUuid": fsid, "seq": 0, "nodes": {}, "placements": {}, "status": {},
              "placementsV": PLACEMENTS_V}
     store["_baseRev"] = 0
+    store["_baseIdent"] = None                       # no file at the load: a file that appears before the save is a publication (save_goals)
     return store
 
 
@@ -4944,10 +4964,13 @@ def load_goals(fsid):
     aside by _read_store_json and the fresh store is the legitimate answer; an ABSENT file is the fresh
     store, unmarked (empty IS its content)."""
     _goal_io_bump("loads")
-    raw = _read_store_json(GOALDIR / (fsid + ".json"), quarantine=True)
+    ident = []
+    raw = _read_store_json(GOALDIR / (fsid + ".json"), quarantine=True, ident_out=ident)
     if raw is None:
-        return _fresh_store(fsid)
-    return _finish_load(fsid, _guard_nodes(raw))
+        return _fresh_store(fsid)                    # _baseRev 0 and no _baseIdent: a file that appears before the save is a publication
+    store = _finish_load(fsid, _guard_nodes(raw))
+    store["_baseIdent"] = ident[-1] if ident else None   # the file the base was read from (transient, popped by save_goals)
+    return store
 
 
 _STORE_FAULTS = {}                       # fsid -> the fault text of its CURRENT unreadable episode (load_goals_or_fault)
@@ -5006,7 +5029,7 @@ def _or_fault(fsid, loader):
 def save_goals_or_fault(fsid, store):
     """save_goals behind the same per-session boundary, for a USER GESTURE's write: None when the publish
     landed (or was a no-op), the exception when it did not. The save path reads the file strictly
-    (_matches_disk, _disk_rev, _rebase_onto_disk: a fault or a corrupt file raises so nothing is published
+    (_matches_disk, _disk_rev_ident, _rebase_onto_disk: a fault or a corrupt file raises so nothing is published
     over bytes we could not read), and the write itself can fail (a full disk, a directory gone read-only).
     Either way the gesture's flag did not land and the caller answers the user; left to raise, an OSError
     out of a WS gesture handler reached the receive loop's catch, which re-raises it to the outer handler,
@@ -5061,6 +5084,22 @@ def _disk_rev(fsid):
     finally:
         os.close(fd)
     return int(_disk_parse(path_s, data).get("rev") or 0)
+
+
+def _disk_rev_ident(fsid):
+    """_disk_rev and the identity (inode, mtime_ns, size) of the file it read, from the same descriptor: (0, None) when
+    absent. save_goals' CAS compares both against the load's, so a publication that did not advance `rev` is seen."""
+    path_s = str(GOALDIR / (fsid + ".json"))
+    try:
+        fd = os.open(path_s, os.O_RDONLY)
+    except FileNotFoundError:
+        return 0, None
+    try:
+        ident = _disk_ident(fd)
+        data = _disk_read(fd, path_s)
+    finally:
+        os.close(fd)
+    return int(_disk_parse(path_s, data).get("rev") or 0), ident
 
 
 def _rebase_onto_disk(fsid, store):
@@ -5579,7 +5618,7 @@ def _replay_overrides(fsid, store, lines=None):
     return applied
 
 
-_NONCONTENT_KEYS = ("rev", "_baseRev", "_unread", "_relayPending")   # the revision counter + the transient CAS base,
+_NONCONTENT_KEYS = ("rev", "_baseRev", "_baseIdent", "_unread", "_relayPending")   # the revision counter + the transient CAS base,
 #                                                      unread-journal mark (_replay_overrides) and the relay entries
 #                                                      awaiting this holder's publish (_relay_enqueue): not store CONTENT
 
@@ -5630,9 +5669,9 @@ def _own_hash(store):
 # keep the size because it keeps the in-memory node's text and only unions logs. The memo therefore
 # serves the NO-OP CHECK ONLY. A false match there skips a publish whose content the file already held
 # once and every later publisher rebased over, so nothing of ours is lost. It holds no revision and the
-# CAS never reads it: an earlier draft served _disk_rev from the entry too, and in that interleaving a
+# CAS never reads it: an earlier draft served the revision from the entry too, and in that interleaving a
 # writer whose base equalled the stale revision passed the CAS without rebasing and wrote over the
-# events published since. The CAS reads the file (_disk_rev).
+# events published since. The CAS reads the file (_disk_rev_ident: the revision and the identity from one descriptor).
 #
 # Filled lazily (the first check after a foreign publish parses once) and by the publisher itself
 # (_disk_seed: the temp file's identity, which the rename keeps). Entries for absent files go at the
@@ -5641,7 +5680,7 @@ def _own_hash(store):
 # the save path follows (_read_store_json), so nothing is published over bytes the check could not read. A
 # warm entry answers without a read, so a fault the file develops while its identity stands is not seen by
 # the no-op check; that answer is still safe (a match publishes nothing), and a real publish's CAS read
-# (_disk_rev) raises on it.
+# (_disk_rev_ident) raises on it.
 _DISK_CONTENT = {}
 _DISK_CONTENT_LOCK = threading.Lock()
 
@@ -5725,13 +5764,15 @@ def _disk_entry(fsid):
     return ent
 
 
-def _disk_seed(path, tmp, canon_hash):
+def _disk_seed(path, tmp, canon_hash, st=None):
     """Memoize a publish's own content under the identity its TEMP file carries, before the rename. A
     rename keeps the inode, size and mtime, so the temp's stat is the destination's afterwards, and the
     temp is ours alone. Never stat the destination after the rename: a concurrent publisher's file could
-    be captured there and paired with our content."""
+    be captured there and paired with our content. `st`: the temp's stat when the caller took it already
+    (save_goals takes one for the identity base it re-stamps; the round-one verifier of PR 2064: two stats
+    of the temp per uncontended publish)."""
     try:
-        st = os.stat(tmp)
+        st = st if st is not None else os.stat(tmp)
     except OSError:
         return
     with _DISK_CONTENT_LOCK:
@@ -6178,6 +6219,9 @@ def load_goals_shared(fsid):
                                                      # store-quarantined row) and answers the fresh store; the
                                                      # path then reads as absent, so nothing is cached for it
     store = _finish_load(fsid, store, lines=lines)   # a malformed row raises, as in load_goals
+    store["_baseIdent"] = skey                       # the identity of the bytes this view was built from, as load_goals stamps its own: the two views agree by
+    #                                                  construction, and a copy taken from this view and saved rebases on the same facts (the round-one lane red of
+    #                                                  PR 2064: the writer's view carried the key and the shared view did not)
     if store.get("_unread"):
         # the replay marked the store (its journal did not read): not the files' content, so not shared.
         # Unreachable while the journal's rows arrive as `lines` (the only marker left is the lines-is-None
@@ -6240,7 +6284,7 @@ def save_goals(fsid, store):
 
     The disk side of that check is memoized by file identity (_disk_entry), so a no-op save costs one
     serialization of our own store, not a parse of the file, and the write seeds the entry for the next check
-    when no rebase changed what we wrote. The CAS below reads the file's revision from the file (_disk_rev),
+    when no rebase changed what we wrote. The CAS below reads the file's revision and identity from the file (_disk_rev_ident),
     never from the memo, so a real publish parses once, for the CAS. Both readers raise on a read fault or a
     corrupt file, as _rebase_onto_disk does: nothing is published over bytes this save could not read.
 
@@ -6262,6 +6306,9 @@ def save_goals(fsid, store):
             _relay_flush(fsid, store, store.pop("_relayPending", None))
         return                                       # nothing of ours to publish → leave the file (and its
     base = store.pop("_baseRev", None)               # mtime) alone.  transient: never serialized
+    ident0 = store.pop("_baseIdent", None)           # the identity of the file the base was read from (None: no file at the load)
+    ident0 = tuple(ident0) if ident0 is not None else None   # a store that went through a JSON round trip holds it as a list, and a list never equals a
+    #                                                          tuple: compared as lists, every save from such a store would rebase forever (the round-one lane red)
     unread = store.pop("_unread", None)              # likewise transient (_replay_overrides' unread-journal mark)
     pending = store.pop("_relayPending", None)       # likewise: the relay entries this publish carries (_relay_enqueue)
     rebased = published = False
@@ -6269,20 +6316,26 @@ def save_goals(fsid, store):
         if base is not None:
             disk = 0
             for _ in range(4):                       # a busy store settles in a pass or two
-                disk = _disk_rev(fsid)
-                if disk == base:
-                    break                            # nobody published since we loaded → ours is current
+                disk, dident = _disk_rev_ident(fsid)
+                if disk == base and dident == ident0:
+                    break                            # nobody published since we loaded → ours is current: the revision AND the file's
+                #                                      identity stand where the load read them. A rewrite that left `rev` alone (an editor
+                #                                      outside this module: a hand edit, the box lab's driver) moved the identity and is a
+                #                                      publication too; on the revision alone this save published over it (the CI red of
+                #                                      2026-09-23: a judge pass's save erased the node the lab had just written)
                 _rebase_onto_disk(fsid, store)       # fold their events in, then re-check
                 rebased = True
-                base = disk
+                base, ident0 = disk, dident
             store["rev"] = disk + 1                  # the revision the loop settled on; no second parse
         else:
             store["rev"] = int(store.get("rev") or 0) + 1
         _goal_io_bump("writes")
         tmp = _publish_tmp(GOALDIR, fsid)
         tmp.write_text(json.dumps(store))
+        _st = os.stat(tmp)                           # one stat of the temp: the identity base below and the memo seed share it
+        written = (_st.st_ino, _st.st_mtime_ns, _st.st_size)   # the identity the rename carries to the path (the inode and mtime stand)
         if mine is not None and not rebased:         # a rebase changed the content `mine` describes
-            _disk_seed(GOALDIR / (fsid + ".json"), tmp, mine)
+            _disk_seed(GOALDIR / (fsid + ".json"), tmp, mine, st=_st)
         tmp.rename(GOALDIR / (fsid + ".json"))        # atomic publish
         published = True
         _session_file_written(fsid)
@@ -6297,6 +6350,7 @@ def save_goals(fsid, store):
             # that plus the disk events a rebase folded in, and `base` is the revision either state stands
             # on, so the retry stays CAS-protected instead of stomping (review find, 2026-09-08)
             store["_baseRev"] = store["rev"] if published else base
+            store["_baseIdent"] = written if published else ident0   # and the file that revision lives in
         if not published and unread is not None:
             store["_unread"] = unread                # the mark describes the object still held
         if not published and pending:

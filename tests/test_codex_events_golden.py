@@ -405,6 +405,105 @@ class Chain(unittest.TestCase):
         self.assertFalse(n.turn_open)
         assert_chain(self, recs)
 
+    def test_completed_turn_with_no_final_reply_writes_an_end_record(self):
+        """A turn can complete with nothing held (2026-09-23, the post-merge review of the restart-cut
+        fix): its last item anything other than a non-empty reply (a command, a tool call, a file
+        change, reasoning, a steer, a compaction), its final agentMessage empty, or no item. turn/
+        completed flushed nothing then, so the file's turn never ended (segment_turns reads the last
+        assistant stop_reason): the chat, the lane and the card read working with nothing running, and
+        the next prompt was absorbed into the dead turn. A text-less end record now closes it, carrying
+        the turn's usage, which used to be dropped, and stamped no earlier than the turn's newest record
+        (the frozen test clock sits behind the wire stamps, so an unfloored stamp would sort mid-turn).
+        Red on stock: turn/completed wrote []. The compaction-last shape already read ended on stock (a
+        boundary's turn with no assistant work is self-contained); it is here to pin the record, and
+        ParseIntegration pins its parse. Every shape here feeds the prompt; "prompt only" feeds nothing
+        after it, and a turn with no item at all, not even the prompt, is
+        ParseIntegration.test_a_turn_with_no_item_at_all_ends_on_its_end_record_alone."""
+        cmd = {"type": "commandExecution", "id": "c1", "command": "make test"}
+        mcp = {"type": "mcpToolCall", "id": "m1", "server": "notes", "tool": "lookup",
+               "arguments": {"q": "retry policy"}}
+        shapes = {
+            "command last": [item_started(cmd, MS + 1000),
+                             item_completed(dict(cmd, aggregatedOutput="ok", exitCode=0,
+                                                 status="completed"), MS + 5000)],
+            "tool call last": [item_started(dict(mcp, status="inProgress"), MS + 1000),
+                               item_completed(dict(mcp, status="completed",
+                                                   result={"content": [{"type": "text", "text": "3 tries"}]}),
+                                              MS + 3000)],
+            "file change last": [item_completed({"type": "fileChange", "id": "f1", "status": "completed",
+                                                 "changes": [{"path": "/TESTDIR/app.py",
+                                                              "kind": {"type": "update"},
+                                                              "diff": "-a\n+b"}]}, MS + 2000)],
+            "reasoning last": [item_completed({"type": "reasoning", "id": "r1",
+                                               "content": ["The fixture is stale."], "summary": []}, MS + 2000)],
+            "steer last": [item_completed(agent_item("Looking at the tests now.", "a0"), MS + 1000),
+                           item_completed(user_item("also check the docs", "u2"), MS + 2000)],
+            "empty final reply": [item_started(cmd, MS + 1000),
+                                  item_completed(dict(cmd, aggregatedOutput="ok", exitCode=0,
+                                                      status="completed"), MS + 5000),
+                                  item_completed(agent_item("", "a1"), MS + 6000)],
+            "compaction last": [item_completed(compaction_item("cc1"), MS + 9000)],
+            "prompt only": [],
+        }
+        for label, middle in shapes.items():
+            with self.subTest(label):
+                n = norm()
+                recs = feed(n, turn_started("t1"), item_completed(user_item("run the tests"), MS),
+                            *middle)
+                settle = feed(n, token_usage(), turn_completed("t1"))
+                self.assertEqual(len(settle), 1, "one end record: %r" % settle)
+                end = settle[0]
+                self.assertEqual(end["type"], "assistant")
+                self.assertEqual(end["uuid"], "t1-end")
+                self.assertEqual(end["message"]["stop_reason"], "end_turn")
+                self.assertTrue(cx.ends_turn(end))
+                self.assertEqual(end["message"]["content"], [], "renders nothing, counts as no work")
+                self.assertEqual(end["message"]["usage"]["input_tokens"], 1000,
+                                 "the turn's usage lands on the end record")
+                self.assertGreaterEqual(cx.record_ms(end["timestamp"]),
+                                        max(cx.record_ms(r["timestamp"]) for r in recs),
+                                        "the clock stamp is floored at the turn's newest record")
+                assert_chain(self, recs + settle)
+
+    def test_completed_turn_with_a_held_reply_writes_no_second_end(self):
+        """The end record is for a completion with NOTHING held (2026-09-23, the post-merge review of the
+        restart-cut fix): a held final reply is the turn's end, flushed end_turn with the usage, and no
+        empty record follows or replaces it. Passes on stock by design; it guards the new branch.
+        The flush that ends the turn marks it settled too (2026-09-23, the fold's verify pass of this
+        lane): a repeat of the completion then finds nothing held and writes nothing, where an unmarked
+        turn would take a second end, 't1-end' after 'a1'. The other repeats of a completed turn
+        (ParseIntegration's double delivery, test_token_usage's) are command last, so this is the one
+        that reads the mark a held reply's flush leaves. Red when the mark is set only on the
+        nothing-held branch."""
+        n = norm()
+        recs = feed(n, turn_started("t1"), item_completed(user_item("fix it")),
+                    item_completed(agent_item("Fixed.")), token_usage(), turn_completed("t1"))
+        self.assertEqual([(r["type"], r["uuid"], r["message"].get("stop_reason")) for r in recs],
+                         [("user", "u1", None), ("assistant", "a1", "end_turn")])
+        self.assertEqual(recs[-1]["message"]["content"], [{"type": "text", "text": "Fixed."}])
+        self.assertEqual(recs[-1]["message"]["usage"]["input_tokens"], 1000, "the reply carries the turn's usage")
+        self.assertFalse([r["uuid"] for r in recs if r["uuid"].endswith("-end")], "no end record")
+        self.assertEqual(feed(n, turn_completed("t1")), [],
+                         "a repeat after the held reply ended the turn writes no second end")
+
+    def test_a_completion_after_another_settle_writes_no_end(self):
+        """The normalizer's memory of the turns it ended covers every settle (2026-09-23, the post-merge
+        review of the restart-cut fix): a turn already ended by an interrupt record, a failure card or a
+        terminal error's card writes no empty end when a completed turn/completed follows for it. Not on
+        the wire (one turn/completed per turn, and the pinned Turn model carries an error only with status
+        failed); pinned so a settle that forgets to mark its turn is caught. Passes on stock, which wrote
+        nothing for any completion with nothing held; red when a branch drops its mark."""
+        faces = {"interrupted": [turn_completed("t1", status="interrupted")],
+                 "failed": [turn_completed("t1", status="failed", error={"message": "boom"})],
+                 "terminal error": [("error", {"threadId": TID, "turnId": "t1", "willRetry": False,
+                                               "error": {"message": "stream broke"}})]}
+        for label, settle in faces.items():
+            with self.subTest(label):
+                n = norm()
+                recs = feed(n, turn_started("t1"), item_completed(user_item("run the tests"), MS), *settle)
+                self.assertTrue(recs[-1]["uuid"].startswith(("t1-", "err-t1")), "fixture: %r" % recs[-1]["uuid"])
+                self.assertEqual(feed(n, turn_completed("t1")), [], "the turn already ended")
+
     def test_context_tracking_uses_last_not_cumulative(self):
         n = norm()
         feed(n, token_usage(last_total=54000, window=272000, cum_total=500000))
@@ -774,6 +873,184 @@ class ParseIntegration(unittest.TestCase):
         self.assertEqual(len(s["turns"]), 2)
         self.assertEqual(s["turns"][1]["trigger"]["uuid"], "u2")
         self.assertTrue(s["turns"][0]["ended"] and s["turns"][1]["ended"])
+
+    def test_a_turn_ending_on_a_command_ends_and_the_next_prompt_opens_its_own(self):
+        """The parse face of the end record (2026-09-23, the post-merge review of the restart-cut
+        fix): a completed turn with no final reply reads ended, and the next prompt is its own turn's
+        trigger. Red on stock in every shape: one turn, u2 absorbed as mid-turn input, and the first
+        turn read open (working) until the second one replied."""
+        cmd = {"type": "commandExecution", "id": "c1", "command": "make test"}
+        shapes = {
+            "command last": [item_started(cmd, MS + 1000),
+                             item_completed(dict(cmd, aggregatedOutput="ok", exitCode=0,
+                                                 status="completed"), MS + 5000)],
+            "file change last": [item_completed({"type": "fileChange", "id": "f1", "status": "completed",
+                                                 "changes": [{"path": "/TESTDIR/app.py",
+                                                              "kind": {"type": "update"},
+                                                              "diff": "-a\n+b"}]}, MS + 2000)],
+            "empty final reply": [item_completed(agent_item("", "a1"), MS + 6000)],
+            "prompt only": [],
+        }
+        for label, middle in shapes.items():
+            with self.subTest(label):
+                n = norm()
+                first = feed(n, turn_started("t1"), item_completed(user_item("run the tests", "u1"), MS),
+                             *middle, turn_completed("t1"))
+                s = self._parse(first)
+                self.assertTrue(s["turns"][-1]["ended"], "the completed turn is over, not working")
+                recs = first + feed(n,
+                                    turn_started("t2"),
+                                    item_completed(user_item("now lint", "u2"), MS + 300000),
+                                    item_completed(agent_item("Lint is clean.", "a2"), MS + 301000),
+                                    turn_completed("t2"))
+                s = self._parse(recs)
+                self.assertEqual([(t["trigger"] or {}).get("uuid") for t in s["turns"]], ["u1", "u2"])
+                self.assertTrue(all(t["ended"] for t in s["turns"]))
+                texts = [em._text_of(a["message"]["content"]) for t in s["turns"] for a in t["atoms"]
+                         if a.get("message") and a["type"] == "assistant"]
+                self.assertEqual([x for x in texts if x], ["Lint is clean."],
+                                 "the end record adds no text of its own")
+
+    def test_a_turn_ending_on_a_compaction_ends_in_the_boundarys_turn(self):
+        """The compaction-last shape as it truly parses (2026-09-23, the post-merge review of the
+        restart-cut fix). The held reply flushes stop null ahead of the boundary, the boundary opens
+        its own turn, and the end record lands in THAT turn. So the part before the boundary, [u1,
+        a1], reads open in history, exactly as it did before the end record existed and as a Claude
+        pre-boundary segment does (test_in_turn_compaction_survives_parse). That is fine: working is
+        read from the LAST turn, and the readers that scan history for an ended turn find the
+        boundary's. Ending the pre-boundary part would mean stamping a reply end_turn that was not
+        the turn's end. Red on stock only at the end record's place: the boundary's turn held the
+        boundary alone and already read ended (self-contained)."""
+        n = norm()
+        recs = feed(n,
+                    turn_started("t1"),
+                    item_completed(user_item("start the refactor", "u1"), MS),
+                    item_completed(agent_item("chunk one done", "a1"), MS + 1000),
+                    item_completed(compaction_item("cc1"), MS + 9000),
+                    token_usage(),
+                    turn_completed("t1"),
+                    turn_started("t2"),
+                    item_completed(user_item("now write the tests", "u2"), MS + 60000, turn="t2"),
+                    item_completed(agent_item("tests written", "a2"), MS + 61000, turn="t2"),
+                    turn_completed("t2"))
+        assert_chain(self, recs)
+        s = self._parse(recs)
+        shape = [((t["trigger"] or {}).get("uuid"), [a.get("uuid") for a in t["atoms"]], t["ended"])
+                 for t in s["turns"]]
+        self.assertEqual(shape, [("u1", ["u1", "a1"], False),
+                                 (None, ["cc1", "t1-end"], True),
+                                 ("u2", ["u2", "a2"], True)])
+        end = next(a for a in s["turns"][1]["atoms"] if a.get("uuid") == "t1-end")
+        self.assertEqual(end["message"]["usage"]["input_tokens"], 1000, "the turn's usage rides the end")
+
+    def test_a_completion_delivered_twice_writes_no_second_end(self):
+        """A turn/completed delivered twice (2026-09-23, the post-merge review of the restart-cut
+        fix). Not a live path: the pinned client routes a turn's completion to its registered queue,
+        the worker stops reading at the first one and unregisters, and the router drops a completion
+        for a turn nobody registered. Were it to happen, the normalizer knows the turn is settled (its
+        own in-memory record of the turns it ended, never a uuid in the file, which a repeated turn id
+        would collide with), so the repeat writes nothing: the file and its parse are what one delivery
+        gives, and the turn's usage rides its one end record."""
+        cmd = {"type": "commandExecution", "id": "c1", "command": "make test"}
+
+        def stream(deliveries):
+            n = norm()
+            first = feed(n, turn_started("t1"), item_completed(user_item("run the tests", "u1"), MS),
+                         item_started(cmd, MS + 1000),
+                         item_completed(dict(cmd, aggregatedOutput="ok", exitCode=0, status="completed"),
+                                        MS + 5000),
+                         token_usage(), turn_completed("t1"))
+            repeats = [feed(n, turn_completed("t1")) for _ in range(deliveries - 1)]
+            rest = feed(n, turn_started("t2"),
+                        item_completed(user_item("now lint", "u2"), MS + 300000, turn="t2"),
+                        item_completed(agent_item("Lint is clean.", "a2"), MS + 301000, turn="t2"),
+                        turn_completed("t2"))
+            return first + sum(repeats, []) + rest, repeats
+
+        twice, repeats = stream(2)
+        self.assertEqual(repeats, [[]], "the repeat writes no second end")
+        once, _ = stream(1)
+        self.assertEqual([r["uuid"] for r in twice], [r["uuid"] for r in once])
+        assert_chain(self, twice)
+        s = self._parse(twice)
+        self.assertEqual([((t["trigger"] or {}).get("uuid"), t["ended"]) for t in s["turns"]],
+                         [("u1", True), ("u2", True)])
+        ends = [a for a in s["turns"][0]["atoms"] if a.get("uuid", "").startswith("t1-end")]
+        self.assertEqual([a["uuid"] for a in ends], ["t1-end"])
+        self.assertEqual(ends[0]["message"]["usage"]["input_tokens"], 1000, "the turn's usage, carried once")
+
+    def test_a_late_completion_for_the_previous_turn_ends_nothing(self):
+        """A stale turn/completed (2026-09-23, the post-merge review of the restart-cut fix): t1 settles,
+        t2 starts and is running a command, and a completion for t1 arrives. Before the guard the
+        nothing-held branch wrote '<t1>-end~1', which ended the CURRENT file turn: the chip read ready
+        while the backend worked. The normalizer's own state says t1 is settled and t2 is current, so the
+        late completion writes nothing, and t2's usage so far stays for t2's own settle. The second face
+        is a t1 whose own completion never came: t2 is still the current turn, so a late t1 completion
+        still ends nothing (the file already folded t2's prompt into the open t1, and that merged turn
+        is what it would have ended). Not a live path (the pinned router drops a completion for a turn
+        nobody registered), which is why the guard is this normalizer's memory and not the file. Red
+        before the guard: a record, and t2 read ended."""
+        cmd = {"type": "commandExecution", "id": "c2", "command": "make lint"}
+        first = [turn_started("t1"),
+                 item_completed(user_item("run the tests", "u1"), MS),
+                 item_completed({"type": "fileChange", "id": "f1", "status": "completed",
+                                 "changes": [{"path": "/TESTDIR/app.py", "kind": {"type": "update"},
+                                              "diff": "-a\n+b"}]}, MS + 2000)]
+        faces = {"after t1 settled": (first + [turn_completed("t1")], [("u1", True), ("u2", True)]),
+                 "t1 never settled": (first, [("u1", True)])}
+        for label, (t1, final) in faces.items():
+            with self.subTest(label):
+                n = norm()
+                recs = feed(n, *t1, turn_started("t2"),
+                            item_completed(user_item("now lint", "u2"), MS + 300000, turn="t2"),
+                            item_started(cmd, MS + 301000, turn="t2"))
+                m, p = token_usage()
+                recs += feed(n, (m, dict(p, turnId="t2")))
+                late = feed(n, turn_completed("t1"))
+                self.assertEqual(late, [], "a completion for the previous turn writes no record")
+                self.assertFalse(self._parse(recs)["turns"][-1]["ended"], "t2 is still working")
+                recs += feed(n,
+                             item_completed(dict(cmd, aggregatedOutput="ok", exitCode=0, status="completed"),
+                                            MS + 302000, turn="t2"),
+                             item_completed(agent_item("Lint is clean.", "a2"), MS + 303000, turn="t2"),
+                             turn_completed("t2"))
+                assert_chain(self, recs)
+                s = self._parse(recs)
+                self.assertEqual([((t["trigger"] or {}).get("uuid"), t["ended"]) for t in s["turns"]], final)
+                reply = recs[-1]
+                self.assertEqual((reply["uuid"], reply["message"]["stop_reason"]), ("a2", "end_turn"))
+                self.assertEqual(reply["message"]["usage"]["input_tokens"], 1000,
+                                 "t2's usage, which the late completion did not take")
+
+    def test_a_turn_with_no_item_at_all_ends_on_its_end_record_alone(self):
+        """The triggerless shape (2026-09-23, the post-merge review of the restart-cut fix): turn/started,
+        a usage frame and turn/completed, with no item at all, not even the userMessage. Whether the
+        app-server ever answers romp's turn/start that way is unverified; the record is kept because it
+        carries the turn's usage and lets the restart check (codex_backend._turn_ended_after) see the turn
+        ended. At a thread's start the record is the whole turn: no trigger, no work, ended. (Its bar has
+        no anchor to name, so the view lands by time, and it arms no nudge: test_kernel's
+        CodexEndRecordAnchors and test_nudge_injected_turn_arm's EndOnlyTurnArmsNothing.) After an ended
+        turn the record joins that turn, which stays ended; no turn of its own opens."""
+        n = norm()
+        recs = feed(n, turn_started("t1"), token_usage(), turn_completed("t1"))
+        self.assertEqual([(r["type"], r["uuid"], r["message"]["content"], r["message"]["stop_reason"])
+                          for r in recs], [("assistant", "t1-end", [], "end_turn")])
+        self.assertEqual(recs[0]["message"]["usage"]["input_tokens"], 1000)
+        m, p = token_usage()
+        recs += feed(n, turn_started("t2"),
+                     item_completed(user_item("now lint", "u2"), MS + 300000, turn="t2"),
+                     item_completed(agent_item("Lint is clean.", "a2"), MS + 301000, turn="t2"),
+                     (m, dict(p, turnId="t2")), turn_completed("t2"))
+        assert_chain(self, recs)
+        s = self._parse(recs)
+        self.assertEqual([((t["trigger"] or {}).get("uuid"), [a.get("uuid") for a in t["atoms"]], t["ended"])
+                          for t in s["turns"]],
+                         [(None, ["t1-end"], True), ("u2", ["u2", "a2"], True)])
+        after = recs + feed(n, turn_started("t3"), (m, dict(p, turnId="t3")), turn_completed("t3"))
+        s = self._parse(after)
+        self.assertEqual([((t["trigger"] or {}).get("uuid"), [a.get("uuid") for a in t["atoms"]], t["ended"])
+                          for t in s["turns"]],
+                         [(None, ["t1-end"], True), ("u2", ["u2", "a2", "t3-end"], True)])
 
     def test_double_compaction_keeps_early_history(self):
         """Deprecated-runtime path (2026-09-19): the thread/compacted notification, which Codex

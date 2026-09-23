@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 // Minimal localStorage shim BEFORE importing the module (load/save read it at call time).
 const store: Record<string, string> = {};
@@ -8,7 +10,7 @@ const store: Record<string, string> = {};
   setItem: (k: string, v: string) => { store[k] = v; },
   removeItem: (k: string) => { delete store[k]; },
 };
-import { loadSettings, saveSettings, DEFAULT_SETTINGS, paneSet, OPTIONAL_PANES } from "./settings";
+import { loadSettings, saveSettings, installSettingsSync, DEFAULT_SETTINGS, paneSet, OPTIONAL_PANES } from "./settings";
 
 test("loadSettings returns defaults when nothing is stored", () => {
   delete store["romp:settings"];
@@ -60,6 +62,52 @@ test("stripGroupRows defaults ON: every tag group on its own row; an explicit fa
   assert.equal(loadSettings().stripGroupRows, false, "the opt-out round-trips");
   store["romp:settings"] = JSON.stringify({});
   assert.equal(loadSettings().stripGroupRows, true, "a store from before the key reads as on");
+  delete store["romp:settings"];
+});
+
+// The state badge became the DEFAULT 2026-09-23 (the user 2026-09-21's follow-up). The MECHANISM of the flip is the
+// default itself (DEFAULT_SETTINGS.tabStateBadge = true, supplied by the spread when the key is absent); the read
+// `!== false` is only the GUARD around it, keeping a chosen false off and coercing a non-boolean stored value to a real
+// boolean. The EXISTING key is kept, not a fresh one: no writer ever merged the old default into stored profiles (the
+// gear's load() defaults exclude the key, no webview saveSettings caller, broadcastSettings/installSettingsSync write
+// the stored object as-is), so a stored false is always a chosen off, and a fresh key would only discard it.
+test("tabStateBadge defaults ON (the badge is the default): absent reads on, a chosen false stays off through a save and a settings-sync write, a literal true stays on", () => {
+  assert.equal(DEFAULT_SETTINGS.tabStateBadge, true);
+  delete store["romp:settings"];
+  assert.equal(loadSettings().tabStateBadge, true, "absent (never chosen): the badge is on");
+  store["romp:settings"] = JSON.stringify({ tabStateBadge: false });
+  assert.equal(loadSettings().tabStateBadge, false, "a literal false is a CHOSEN off and stays off");
+  store["romp:settings"] = JSON.stringify({ tabStateBadge: true });
+  assert.equal(loadSettings().tabStateBadge, true, "a literal true stays on");
+  // the read's DISTINCT effect (its only one the default spread does not already cover): a NON-boolean stored value,
+  // from a corrupt or foreign write, coerces to a real boolean ON, never leaks as the raw value. Delete the read line
+  // and this reads back 0/""/null (a falsy badge that no code path intends); the default spread cannot catch it, since
+  // the key is present. This is the guard, distinct from the default.
+  for (const bad of [0, null, "", "yes", 1]) {
+    store["romp:settings"] = JSON.stringify({ tabStateBadge: bad });
+    assert.equal(loadSettings().tabStateBadge, true, "a non-boolean stored tabStateBadge (" + JSON.stringify(bad) + ") reads ON as a real boolean");
+  }
+  // a chosen off survives a whole-object save (saveSettings merges every default, yet keeps the chosen false, not the new on)
+  delete store["romp:settings"];
+  saveSettings({ tabStateBadge: false });
+  assert.equal(loadSettings().tabStateBadge, false, "the chosen off survives a save");
+  assert.equal(JSON.parse(store["romp:settings"]).tabStateBadge, false, "…stored as the literal false, never flipped to the new default");
+  // a settings-sync write, driven through installSettingsSync's OWN message handler (not a store poke): the handler
+  // applies the peer pane's object verbatim, so a chosen off carried in it stays off here
+  delete store["romp:settings"];
+  const handlers: Record<string, (e: any) => void> = {};
+  const prevWindow = (globalThis as any).window, prevEvent = (globalThis as any).Event;
+  (globalThis as any).window = { addEventListener: (t: string, fn: (e: any) => void) => { handlers[t] = fn; }, dispatchEvent: () => {} };
+  (globalThis as any).Event = class { type: string; constructor(t: string) { this.type = t; } };
+  try {
+    installSettingsSync();
+    handlers.message({ data: { type: "settingsSync", settings: { tabStateBadge: false, compact: true, colormap: "aurora" } } });
+    assert.equal(JSON.parse(store["romp:settings"]).tabStateBadge, false, "the sync handler wrote the peer object verbatim");
+    assert.equal(loadSettings().tabStateBadge, false, "the chosen off survives a settings-sync write applied by installSettingsSync");
+  } finally {
+    if (prevWindow === undefined) delete (globalThis as any).window; else (globalThis as any).window = prevWindow;
+    if (prevEvent === undefined) delete (globalThis as any).Event; else (globalThis as any).Event = prevEvent;
+  }
   delete store["romp:settings"];
 });
 
@@ -216,4 +264,24 @@ test("a stored showArtifactsControl is dropped at load and gone after a save", (
   saveSettings({ compact: false });
   assert.equal("showArtifactsControl" in JSON.parse(store["romp:settings"]), false, "gone on the next save");
   delete store["romp:settings"];
+});
+
+test("saveSettings has no production caller (a whole-object save would stamp the current default into a store that never chose)", () => {
+  // scan the webview AND the extension-host TS (either could call it); the kernel is Python and cannot call a TS symbol,
+  // so grep it too to say so. No PRODUCTION module calls saveSettings; the gear posts settingsSync, render.ts only imports it.
+  const roots = [path.resolve(process.cwd(), "..", "ui", "webview"), path.resolve(process.cwd(), "..", "vscode-extension", "src")];
+  const SETTINGS_TS = path.join(roots[0], "settings.ts");   // the ONE module that DEFINES saveSettings; exempt it by EXACT path, not any *settings.ts (low c)
+  const callers = [];
+  for (const dir of roots) {
+    for (const f of fs.readdirSync(dir, { recursive: true })) {
+      const rel = String(f);
+      if (!rel.endsWith(".ts") || rel.endsWith(".test.ts")) continue;
+      const p = path.join(dir, rel);
+      if (p === SETTINGS_TS) continue;   // ui/webview/settings.ts alone, by exact path (a vscode-extension/src/settings.ts would NOT be exempt)
+      try { if (/\bsaveSettings\s*\(/.test(fs.readFileSync(p, "utf8"))) callers.push(path.join(path.basename(dir), rel)); } catch { /* a dir entry */ }
+    }
+  }
+  assert.deepEqual(callers, [], "no webview or extension-host module CALLS saveSettings (the gear posts settingsSync; render.ts only imports it): a caller must not be added without the fresh-key rule, since a save stamps DEFAULT_SETTINGS.tabStateBadge (true today) into a never-chose store and would defeat a future flip to off");
+  const kernel = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.doesNotMatch(kernel, /\bsaveSettings\s*\(/, "the kernel is Python: it does not call the webview's saveSettings either");
 });

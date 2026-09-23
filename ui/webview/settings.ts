@@ -33,7 +33,7 @@ export interface RompSettings {
   tabWidgets: TabWidgetPrefs;   // the tab-title WIDGETS (T379, the user 2026-09-12): which of the registered marks a tab carries (the status dot, the context bar, the hot-key keycap), their order and their options, set from the gear's Tab widgets section on the Chat tab. `tabCtx` above stays the context bar's MIRROR: a store with no tabWidgets derives them from it, and every save writes it back from them (tab-widgets.ts).
   statusWidgets: StatusWidgetPrefs;   // the status line's WIDGETS (T409, the user 2026-09-13): which of the registered items the line above the composer carries (the folder and the branch by default, the session name and the host on request), in what order, with which options. showBranch and showSessionBadge above are its MIRRORS: written back on every save, never read (a store without this key reads the widget defaults: the one-shot migration).
   tabsLocked: boolean;   // chat tab strip: THE LOCK (T395, the user 2026-09-12): on, no tab moves (the drag reorder, a drag into another column or the split's edge, the tab menu's Move to rows) until the lock is clicked again. Per browser like every gear setting and fanned out the same way (settingsSync). OFF by default; only the literal true locks.
-  tabStateBadge: boolean;   // chat tab strip: THE STATE BADGE (the user 2026-09-21, plans/tab-state-badge.md): on, Needs you shows as a small magenta dot at a tab's top-right corner carrying a count of what needs you (instead of the dashed magenta ring), and retrying moves to the amber LEFT status dot (only while the Status dot widget is on; with that widget off, retrying keeps its amber ring). Blocked keeps its red ring and fill either way, and every other state is unchanged; the dashed rings are the default (off). Per browser like every gear setting, fanned out by settingsSync. OFF by default; only the literal true turns it on.
+  tabStateBadge: boolean;   // chat tab strip: THE STATE BADGE (the user 2026-09-21, plans/tab-state-badge.md): on, Needs you shows as a small magenta dot at a tab's top-right corner carrying a count of what needs you (instead of the dashed magenta ring), and retrying moves to the amber LEFT status dot (only while the Status dot widget is on; with that widget off, retrying keeps its amber ring). Blocked keeps its red ring and fill either way, and every other state is unchanged; the dashed rings are what a chosen-off browser (a literal false) keeps. Per browser like every gear setting, fanned out by settingsSync. ON by default since 2026-09-23 (the badge is the default); only a literal false, a chosen off, turns it off (read `!== false`).
 }
 // Solarized LIGHT is deliberately absent (the user allowed skipping it): its text tiers are designed
 // for a paper-light ground and invert into mud on romp's dark canvas — an unreadable preset is worse
@@ -79,7 +79,7 @@ export function tabCtxMode(v: unknown): TabCtxMode {
 // hand-written "why" as their line; they show the distiller's summary instead (the why demotes to a hover).
 // compact defaults ON (the user 2026-07-14): a fresh install reads the tidy transcript
 // (thinking hidden, tool runs folded); the gear opts back into the full stream.
-export const DEFAULT_SETTINGS: RompSettings = { tabsLocked: false, tabStateBadge: false, compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: true, showSessionBadge: false, tabCtx: "over50", stripGroupRows: true, showFilesControl: false, chatScheme: "default", chatTabTheme: "classic", theme: "classic", denseChrome: false, needsBox: true, paneDocking: false, panes: { timeline: true, fleet: true, feed: true }, statusWidgets: { on: {}, order: [], opts: {} }, tabWidgets: { on: {}, order: [], opts: {} } };
+export const DEFAULT_SETTINGS: RompSettings = { tabsLocked: false, tabStateBadge: true, compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: true, showSessionBadge: false, tabCtx: "over50", stripGroupRows: true, showFilesControl: false, chatScheme: "default", chatTabTheme: "classic", theme: "classic", denseChrome: false, needsBox: true, paneDocking: false, panes: { timeline: true, fleet: true, feed: true }, statusWidgets: { on: {}, order: [], opts: {} }, tabWidgets: { on: {}, order: [], opts: {} } };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {
@@ -91,7 +91,7 @@ export function loadSettings(): RompSettings {
       s.tabCtx = tabCtxMode(s.tabCtx);   // a store written by the boolean-era gear holds true/false
       delete (s as Record<string, unknown>).fileLinkPane;   // the file-links preference (removed T404: the route follows the open Files pane): never read, gone on the next save
       s.tabsLocked = s.tabsLocked === true;   // the tab lock (T395): only the literal true locks; a store from before the key reads unlocked
-      s.tabStateBadge = s.tabStateBadge === true;   // the state badge (2026-09-21): only the literal true turns it on; a store from before the key, or any other value, reads OFF (the ring)
+      s.tabStateBadge = s.tabStateBadge !== false;   // the state badge (default ON since 2026-09-23): absent (never chosen) reads ON, a literal false is a CHOSEN off and stays off; no writer ever merged the old default, so the existing key is kept (no fresh key needed)
       s.showFilesControl = s.showFilesControl === true;   // only the literal true shows the control; anything else hides it (the default since T317b)
       s.paneDocking = s.paneDocking === true;   // the pane docking kit opt-in (fresh key): only the literal true turns it on; a store from before the key, or any other value, reads OFF
 
@@ -125,6 +125,13 @@ export function loadSettings(): RompSettings {
 }
 
 export function saveSettings(patch: Partial<RompSettings>): RompSettings {
+  // WHOLE-OBJECT SAVE (no production caller today: the gear posts settingsSync, no webview code calls this; pinned in
+  // settings.test.ts). `next` merges every default from loadSettings under the patch and writes the lot, so any save
+  // STAMPS DEFAULT_SETTINGS.tabStateBadge (today a literal `true`) into a store that never chose, converting "never
+  // chose" (reads on via the default) into "chose on" (a literal true). Harmless today (both read on), but it would
+  // DEFEAT a future flip of the badge to OFF: the stamped-true stores would ignore the new off default and stay on. So
+  // a flip to off needs a fresh key (see the tabStateBadge note in loadSettings), and this function must not gain a
+  // production caller before that.
   const next = { ...loadSettings(), ...patch };
   if ("tabCtx" in patch && !("tabWidgets" in patch)) {
     // an older writer setting the gauge mode alone: the context bar's prefs follow it (the mirror runs both ways

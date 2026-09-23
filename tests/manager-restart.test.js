@@ -62,6 +62,18 @@ test('in-flight turns defer the bounce', () => {
   assert.match(g.reason, /2 turn/);
 });
 
+test('a Codex turn defers the bounce and the wait reason names it (2026-09-23)', () => {
+  // the review of this lane: the kernel counts a Codex turn in `busy` and in its own `codex` field, never in
+  // `inflight` (the hold's input), so a reason built from inflight alone would read "0 turn(s) in flight" over it
+  const g = quietGate({ since: 1000 }, 1, 2000, QOPTS, { inflight: 0, background: 0, codex: 1 });
+  assert.equal(g.action, 'wait', 'the Codex turn defers the restart');
+  assert.equal(g.reason, '1 turn(s) in flight (0 Claude, 1 Codex), 0 session(s) with background work');
+  const both = quietGate({ since: 1000 }, 4, 2000, QOPTS, { inflight: 2, background: 1, codex: 1 });
+  assert.equal(both.reason, '3 turn(s) in flight (2 Claude, 1 Codex), 1 session(s) with background work');
+  const none = quietGate({ since: 1000 }, 2, 2000, QOPTS, { inflight: 1, background: 1, codex: 0 });
+  assert.equal(none.reason, '1 turn(s) in flight, 1 session(s) with background work', 'no Codex turn: worded as before');
+});
+
 test('an unreachable kernel applies only after three consecutive missed polls (T240b)', () => {
   // T240b: ONE failed busy poll is a MISS, not quiet — under load (a review workflow's agents) the
   // kernel answers /busy late, and a single null applied a parked deploy over live background work

@@ -118,6 +118,16 @@ export function onSocketUp(st: SkeletonState): void {
   st.loaded.clear();
 }
 
+/** A host's RELAY socket (re)opened (romp:hostRelayUp; `admits` names that host's ids): the per-host twin of onSocketUp
+ *  (2026-09-23). A remote kernel's restart redials the relay with reconnect=1, and the fresh remote client withholds every
+ *  background tab as a skeleton, including tabs this page loaded on the dead relay socket. `loaded` cleared only on the local
+ *  socket's flip, so the remote's list naming those tabs was refused as a stale relay (the rule above), the page held them
+ *  as loaded, the remote sent them status frames alone, and their transcripts froze until clicked. The dead socket's frames
+ *  are all delivered before the new socket opens (the relay redials from its onclose), so the record is safe to drop here. */
+export function onHostSocketUp(st: SkeletonState, admits: (id: string) => boolean): void {
+  for (const id of Array.from(st.loaded)) if (admits(id)) st.loaded.delete(id);
+}
+
 /** The one skeleton to fetch in this idle callback, or null. Null while the page is hidden (bytes and work
  *  nobody sees — the very regime this exists to spare), while ANY skeleton id is already in flight (one at a
  *  time: a 1 MB full ahead of the active tab's 2 KB tail on a slow link delays that tail; one bounds it), and

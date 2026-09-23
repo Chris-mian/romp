@@ -170,7 +170,9 @@ test("render.ts applies the guard on both wires and files both rows; the kernel 
   assert.match(RENDER, /wm\?: FrameWm;/, "the session keeps the newest frame's watermark");
   const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
   assert.match(KERNEL, /"wm": _chat_wm\(sess\["path"\], parsed, _wm_live\)/, "build_session stamps the frame");
-  assert.match(KERNEL, /if pc is not None and _chat_wm_older\(m\.get\("wm"\), \(c\.get\("echatWm"\) or \{\}\)\.get\(sid\)\):/, "the sender refuses an older build to a base holder");
+  // the floor is read once and refuses an older build to a base holder; since 2026-09-23 it also stands through a needFull, so
+  // the ask's answer is never older than the page holds (refused once, the cycle rebuilds; tests/test_chat_resync_kernel.py)
+  assert.match(KERNEL, /_floor = \(c\.get\("echatWm"\) or \{\}\)\.get\(sid\)\n\s*if _floor is not None and _chat_wm_older\(m\.get\("wm"\), _floor\):\n\s*if pc is not None:/, "the sender refuses an older build to a base holder");
   assert.equal((KERNEL.match(/tail\["wm"\] = m\.get\("wm"\)/g) || []).length, 2, "both delta wires carry the watermark");
   assert.equal((KERNEL.match(/_chat_wm_note\(c, sid, m\)/g) || []).length, 4, "every echat write records the watermark handed");
 });

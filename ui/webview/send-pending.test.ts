@@ -265,7 +265,7 @@ test("render.ts appends the pending sends as ONE bare group at the tail, in send
     "one bare group pushed at the tail, the sends in list (send) order");
   assert.doesNotMatch(RENDER, /injectionGroups|placementIndex/, "the send-slot placement machinery is gone from render.ts");
   const fn = RENDER.split("function reconcileOptimisticInner(")[1].split("\nfunction ")[0];   // the guarded body (T262h)
-  assert.match(fn, /settle\(inject\.map\(\(p\) => p\.text\)\);/, "the repaint signature is the texts alone: the tail slot moves with every push by design");
+  assert.doesNotMatch(fn, /settle\(/, "no repaint signature: the wrapper names the first event the pass swapped (repaintFromChange, 2026-09-23)");
   assert.match(RENDER, /function stripOptimistic\(s: Session, keepHeld = false\): void \{/, "one strip, used by every ingest path (keepHeld: the pending reconcile leaves the held kernel copies in, T262i)");
   const tail = RENDER.slice(RENDER.indexOf("function chatTail(msg: any) {"), RENDER.indexOf("s.events.length = from;"));
   assert.match(tail, /stripOptimistic\(s\);/, "the delta's kernel index is applied to KERNEL events only — a mid-array bubble would shift it");

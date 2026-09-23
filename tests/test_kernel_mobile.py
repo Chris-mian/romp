@@ -374,6 +374,7 @@ class ChatSessionPicker(unittest.TestCase):
         # the dots are the SAME status colors desktop uses (styles.css --st-working-bg gold, --st-awaitbg-bg green)
         self.assertIn(".mrow .workdot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}", css)
         self.assertIn(".mrow .workdot.await{background:var(--st-awaitbg-bg,#54B204)}", css)
+        self.assertIn(".mrow .workdot.retrying{background:transparent;box-shadow:inset 0 0 0 1.5px var(--st-retrying-bg,#e67e22)}", css)   # the row's retrying dot: the same HOLLOW amber ring (a shape cue), not a filled disc
         self.assertIn(".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}", css)   # the Needs you ring's mark on a row (plans/needs-you.md)
         self.assertIn("#mcur.ask{border-color:var(--st-needs-bg,#d946ef);border-style:dashed}", css)
         self.assertLess(css.index("#mcur.colored{"), css.index("#mcur.ask{"), "the ring's border wins over the identity colour: declared after")
@@ -387,7 +388,7 @@ class ChatSessionPicker(unittest.TestCase):
         # the state badge on the chip (plans/tab-state-badge.md): retrying on the leading dot (amber), the Needs-you dot with its count in the chip's flow, before the chevron and the close
         self.assertIn("wd.classList.toggle('retrying',!!(act&&act.retrying&&!act.working&&!act.awaitbg))", js)
         self.assertIn("if(act&&act.badgeNeeds){if(!cb){cb=document.createElement('span');cb.className='m-badge';cb.setAttribute('role','img');cur.appendChild(cb);}cb.textContent=act.needsCount||'';cb.setAttribute('aria-label',act.needsLabel||'needs you');}", js)   # the chip's dot, an image with a label
-        self.assertIn("#mcur .wd.retrying{background:var(--st-retrying-bg,#e67e22)}", css)
+        self.assertIn("#mcur .wd.retrying{background:transparent;box-shadow:inset 0 0 0 1.5px var(--st-retrying-bg,#e67e22)}", css)   # the retrying dot is a HOLLOW amber ring (a shape cue matching desktop .tab-dot.retrying), not a filled disc, so form tells it from the filled working/awaiting dots (PR 2065 review)
         self.assertIn(".m-badge{position:static;flex:0 0 auto", css)   # item 2: the pill RESERVES room (an inline flex item), never stacks over the chevron/close
         self.assertIn("#mcur .cv{flex:0 0 auto;order:1", css)   # the caret is ordered right of the pill
         self.assertIn(".mrow .mclose{flex:0 0 auto;order:1", css)   # the close x is ordered right of the pill

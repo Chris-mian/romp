@@ -147,18 +147,16 @@ class PushSessionNow(_Base):
 
     def test_idempotent_with_the_periodic_pusher(self):
         # the next full cycle re-sends both slots; per-client dedup absorbs the overlap, so a repeated targeted push
-        # on an unchanged build sends NOTHING new, bar the one frame the pusher's steady state sends after a full
-        # (2026-09-19): the first push seeds the shared baseline for a sid that had none, so the second diffs against
-        # it and hands the caught-up client one empty-suffix tail (the status-only frame every cycle sends after a
-        # full, a few hundred bytes) where the unseeded kernel re-sent the whole session and relied on the dedup to
-        # swallow it; the third is byte-identical to the second and dedups
+        # on an unchanged build sends NOTHING new: the first push seeds the shared baseline for a sid that had none
+        # (2026-09-19), so the second diffs against it and finds an empty suffix, which would leave the caught-up client
+        # holding exactly what it holds, and is not sent (2026-09-23, test_chat_noop_tail.py; until then it went once, the
+        # status-only frame every cycle sent after a full); the third is the same
         km._push_session_now(SID)
         n = len(self.sent)
         km._push_session_now(SID)
-        self.assertEqual(len(self.sent), n + 1, "one empty-suffix tail: nothing changed against the seeded baseline")
-        self.assertEqual((self.sent[-1]["type"], self.sent[-1]["id"], self.sent[-1]["events"]), ("chatTail", SID, []))
+        self.assertEqual(len(self.sent), n, "no frame: nothing changed against the seeded baseline, and the page holds it all")
         km._push_session_now(SID)
-        self.assertEqual(len(self.sent), n + 1, "unchanged payloads dedup — no re-send storm")
+        self.assertEqual(len(self.sent), n, "unchanged payloads send nothing — no re-send storm")
 
     def test_an_unknown_sid_sends_nothing(self):
         km._push_session_now("99999999-8888-7777-6666-555555555555")

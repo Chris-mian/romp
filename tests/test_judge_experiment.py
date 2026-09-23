@@ -10,10 +10,12 @@ the report writes counts only. Every string invented."""
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from datetime import datetime, timezone
@@ -29,6 +31,9 @@ os.environ.pop("ROMP_STATE_DIR", None)
 os.makedirs(os.path.join(os.environ["XDG_STATE_HOME"], "romp"), exist_ok=True)
 Path(os.environ["XDG_STATE_HOME"], "romp", "session-hosts").write_text("off")
 em = load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))   # the shared event model an in-process arm must leave alone
+PV = int(re.search(r"^PLACEMENTS_V = (\d+)", Path(ROOT, "kernel", "judge.py").read_text(), re.M).group(1))   # the version a
+#   store must carry for the judges to read it as current (a store under any other is sealed); read from the source, so a
+#   PLACEMENTS_V bump does not turn every seeded store here into a sealed one
 
 T0 = 1_700_000_000
 SIDS = ["11111111-2222-3333-4444-eeeeeeeeee%02d" % i for i in (1, 2)]
@@ -343,7 +348,7 @@ class Harness(unittest.TestCase):
                "log": [{"ev_t": start_t, "at": cut_t + 8, "src": "closer", "kind": "done", "why": "synthetic"}]}   # ev_t is the turn it closed (its start), at the arrival (the cut)
         sub_later = {"id": sid + ":g3", "text": "A sub of the later turn", "parentId": sid + ":g2", "t": cut_t + 3000, "trail": [segl], "log": []}
         store = {"rompUuid": sid, "seq": 3, "nodes": {old["id"]: old, new["id"]: new, sub_later["id"]: sub_later},
-                 "status": {old["id"]: "completed", new["id"]: "completed"}, "placementsV": 14, "rev": 4, "lastNode": sub_later["id"],
+                 "status": {old["id"]: "completed", new["id"]: "completed"}, "placementsV": PV, "rev": 4, "lastNode": sub_later["id"],
                  "placements": {seg0: old["id"], segp + "#p": new["id"], segp: new["id"], segl: sub_later["id"]},
                  "closedTurns": ["%s:%d:dddddddd" % (sid, start_t - 4990), "%s:%d:eeeeeeee" % (sid, start_t), "%s:%d:ffffffff" % (sid, cut_t + 3000)],
                  "closedSig": {"%s:%d:dddddddd" % (sid, start_t - 4990): "x", "%s:%d:eeeeeeee" % (sid, start_t): "y"}}
@@ -604,6 +609,78 @@ class Harness(unittest.TestCase):
         """The harness's mute-clear why must equal the kernel's own literal, or the mute exclusion drifts silent."""
         km = load_source("romp_kernel_whys", os.path.join(BIN, "romp-kernel"))
         self.assertEqual(self.je.MUTE_CLEAR_WHY, km._HIDDEN_FROM_FEED_WHY, "the harness excludes exactly the kernel's mute why")
+
+    def test_install_call_retry_tags_recovered_rows_counts_the_kills_and_leaves_the_parse(self):
+        """A transiently-failed arm-judge call is re-sampled; a recovered attempt's rows are KEPT but tagged (so first-attempt
+        kills stay auditable) and count_failure_rows skips them, so only a call that failed every attempt counts. The counters
+        tally first-attempt kills, re-samples and recoveries for the ARM judges only; a non-arm judge is retried but not
+        counted; a pause is never retried."""
+        ep = Path(self.td) / "judge-errors.jsonl"
+        def fake_jd(script, judge="planner"):
+            calls = {"n": 0}
+            ctx = types.SimpleNamespace(paused=False, last_call_fail=None)
+            jd = types.SimpleNamespace(_judge_ctx=ctx)
+            def impl(*a, **k):
+                ctx.paused = False
+                verdict = script(calls["n"]); calls["n"] += 1
+                if verdict == "serve":
+                    ctx.last_call_fail = None; return "ok"
+                if verdict == "pause":
+                    ctx.paused = True; ctx.last_call_fail = None; return ""
+                with ep.open("a", encoding="utf-8") as f:                 # a real transient call failure files one `call` row
+                    f.write(json.dumps({"judge": judge, "err": "call", "note": "timeout"}) + "\n")
+                ctx.last_call_fail = {"note": "timeout"}; return ""
+            jd._judge_run_impl = impl
+            return jd
+        # fails once, then serves: with no retry the row stays a failure; with retries it recovers, the row kept but tagged out
+        ep.write_text(""); c1 = {}
+        jd = fake_jd(lambda n: "fail" if n == 0 else "serve")
+        self.je.install_call_retry(jd, ep, c1, attempts=1)
+        self.assertEqual((jd._judge_run_impl(k="v") or "", self.je.count_failure_rows(ep)), ("", 1), "no retry: the failed call stays a failure")
+        ep.write_text(""); c2 = {}
+        jd = fake_jd(lambda n: "fail" if n == 0 else "serve")
+        self.je.install_call_retry(jd, ep, c2, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="planner"), self.je.count_failure_rows(ep)), ("ok", 0), "retry recovers: not comparable becomes comparable")
+        self.assertEqual(len(ep.read_text().splitlines()), 1, "the kill row is KEPT (tagged), never deleted, so it stays auditable")
+        self.assertEqual((c2["firstAttemptKills"], c2["recoveredCalls"]), (1, 1), "one first-attempt kill, one recovery")
+        # fails every attempt: exactly one row counts, three rows on disk, the re-samples counted
+        ep.write_text(""); c3 = {}
+        jd = fake_jd(lambda n: "fail")
+        self.je.install_call_retry(jd, ep, c3, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="closer"), self.je.count_failure_rows(ep)), ("", 1), "a call that fails every attempt counts once")
+        self.assertEqual((len(ep.read_text().splitlines()), c3["firstAttemptKills"], c3["retryAttempts"], c3["recoveredCalls"]), (3, 1, 2, 0))
+        # a downstream parse failure (not a call kill) is left untouched and named by kind
+        ep.write_text(json.dumps({"judge": "planner", "err": "parse", "note": "bad reply"}) + "\n")
+        self.assertEqual(self.je.failure_rows_by_kind(ep), {"parse": 1}, "a parse the re-sample does not touch stays its own row")
+        # a non-arm judge is retried but not tallied into the arm counters; a pause is never retried
+        ep.write_text(""); c4 = {}
+        jd = fake_jd(lambda n: "fail" if n == 0 else "serve", judge="gister")
+        self.je.install_call_retry(jd, ep, c4, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="gister"), c4["firstAttemptKills"]), ("ok", 0), "a non-arm recovery is not an arm kill")
+        ep.write_text(""); c5 = {}
+        jd = fake_jd(lambda n: "pause")
+        self.je.install_call_retry(jd, ep, c5, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="planner"), self.je.count_failure_rows(ep), c5["firstAttemptKills"]), ("", 0, 0), "a pause is a skip, not a failure to retry")
+
+    def test_install_call_retry_refuses_a_concurrent_entry(self):
+        """The by-line-range tag-and-count is correct only single-threaded (the arm's construction); the guard makes that an
+        enforced invariant: a concurrent _judge_run_impl entry raises rather than silently racing the ledger rewrite."""
+        ep = Path(self.td) / "e.jsonl"; ep.write_text("")
+        ctx = types.SimpleNamespace(paused=False, last_call_fail=None)
+        jd = types.SimpleNamespace(_judge_ctx=ctx)
+        box = {}
+        def impl(*a, **k):
+            def reenter():
+                try:
+                    jd._judge_run_impl(judge="planner")               # a second thread enters while this call holds the guard
+                except Exception as e:
+                    box["e"] = e
+            t = threading.Thread(target=reenter); t.start(); t.join()
+            ctx.last_call_fail = None; return "ok"
+        jd._judge_run_impl = impl
+        self.je.install_call_retry(jd, ep, {}, attempts=1)
+        self.assertEqual(jd._judge_run_impl(judge="planner"), "ok")
+        self.assertIsInstance(box.get("e"), RuntimeError, "a concurrent entry is refused, not silently raced")
 
     def test_a_plainly_cleared_completed_top_is_no_leak_and_a_reopened_needs_input_is_no_false_interrupt(self):
         """The plan's negatives (round three): a completed top the user plainly cleared (no re-open) is NOT a leak; a
@@ -1185,7 +1262,7 @@ class Harness(unittest.TestCase):
         # every offer of the third session completed by the judges in its own turn
         ends = self.je.turn_ends(recs)
         log = [{"ev_t": self.je.turn_start(recs, i), "at": self.je._ts(recs[i]) + 2, "src": "closer", "kind": "done", "why": "x"} for i in ends]   # ev_t at the turn's start, at the arrival (the cut)
-        store = {"rompUuid": sid3, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
+        store = {"rompUuid": sid3, "seq": 1, "placementsV": PV, "placements": {}, "status": {},
                  "nodes": {sid3 + ":g1": {"id": sid3 + ":g1", "text": "The goal", "parentId": None, "t": T0 + 49000, "trail": [], "log": log}}}
         (self.state / "goals" / (sid3 + ".json")).write_text(json.dumps(store))
         m = self._corpus(per_class=1, name="oldest")[1]
@@ -1204,7 +1281,7 @@ class Harness(unittest.TestCase):
         seg0 = "%s:%d:aaaaaaaa" % (sid, start - 5000)
         cleared = {"id": sid + ":g1", "text": "An older goal the user cleared", "parentId": None, "t": start - 5000, "trail": [seg0],
                    "log": [{"ev_t": start - 4000, "at": start - 3999, "src": "user", "kind": "clear", "why": "seen"}]}
-        store = {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg0: sid + ":g1"}, "status": {}, "nodes": {cleared["id"]: cleared},
+        store = {"rompUuid": sid, "seq": 1, "placementsV": PV, "placements": {seg0: sid + ":g1"}, "status": {}, "nodes": {cleared["id"]: cleared},
                  "closedTurns": [], "closedSig": {}}
         (self.state / "goals" / (sid + ".json")).write_text(json.dumps(store))
         dest, m = self._corpus(name="corpus-scored")
@@ -1234,7 +1311,7 @@ class Harness(unittest.TestCase):
                "log": [{"ev_t": start - 4000, "at": start - 3999, "src": "closer", "kind": "done", "why": "x"}]}
         cleared = {"id": sid + ":g3", "text": "A top the user crossed off", "parentId": None, "t": start - 4800, "trail": [seg0],
                    "log": [{"ev_t": start - 3000, "at": start - 2999, "src": "user", "kind": "clear", "why": "seen"}]}
-        store = {"rompUuid": sid, "seq": 3, "placementsV": 14, "placements": {seg0: sid + ":g1"}, "status": {},
+        store = {"rompUuid": sid, "seq": 3, "placementsV": PV, "placements": {seg0: sid + ":g1"}, "status": {},
                  "nodes": {n["id"]: n for n in (top, sub, cleared)}, "closedTurns": [], "closedSig": {}}
         (self.state / "goals" / (sid + ".json")).write_text(json.dumps(store))
         dest, m = self._corpus(name="corpus-menu")
@@ -1291,7 +1368,7 @@ class Harness(unittest.TestCase):
         start, cut = float(e["startT"]), float(e["cutT"])
         segp = "%s:%d:bbbbbbbb" % (sid, start)
         node = {"id": sid + ":g2", "text": "The turn's own goal", "parentId": None, "t": start, "trail": [segp], "log": []}
-        store = {"rompUuid": sid, "seq": 2, "placementsV": 14, "status": {}, "nodes": {node["id"]: node},
+        store = {"rompUuid": sid, "seq": 2, "placementsV": PV, "status": {}, "nodes": {node["id"]: node},
                  "placements": {segp + "#p": node["id"], segp + "#d": node["id"], segp: node["id"], segp + "#live": node["id"], segp + "#n2": node["id"]}}
         try:
             before = self.je.store_before(store, cut, start, e["id"])
@@ -1460,7 +1537,7 @@ class Harness(unittest.TestCase):
         node = {"id": sid + ":g1", "text": "older", "parentId": None, "t": start - 5000, "trail": [seg],
                 "blockCheckT": cut, "blockCheckDoneT": cut + 50, "delegLookT": cut + 60, "titledT": cut + 70, "servingT": start - 20,
                 "log": []}
-        store = {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":g1"}, "status": {}, "nodes": {node["id"]: node},
+        store = {"rompUuid": sid, "seq": 1, "placementsV": PV, "placements": {seg: sid + ":g1"}, "status": {}, "nodes": {node["id"]: node},
                  "seams": [1, 2, 3], "confirming": [sid + ":g1"], "groupedSig": {"x": "y"}, "closeFails": 4}
         before = self.je.store_before(store, cut, start, e["id"])
         g1 = before["nodes"][e["id"] + ":g1"]
@@ -1577,13 +1654,13 @@ class Harness(unittest.TestCase):
         def store_with_clear(clear_t):
             node = {"id": sid + ":gA", "text": "A cleared top", "parentId": None, "t": start - 5000, "cleared": True, "trail": [seg],
                     "log": [{"ev_t": clear_t, "at": clear_t + 1, "src": "user", "kind": "clear", "why": "seen"}]}
-            return {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":gA"}, "status": {}, "nodes": {node["id"]: node}}
+            return {"rompUuid": sid, "seq": 1, "placementsV": PV, "placements": {seg: sid + ":gA"}, "status": {}, "nodes": {node["id"]: node}}
         before_start = self.je.store_before(store_with_clear(start - 100), cut, start, e["id"])
         ga = before_start["nodes"][e["id"] + ":gA"]
         self.assertEqual([ev["kind"] for ev in ga["log"]], ["clear"], "a clear before the turn start survives in the seed")
         jd = self.je.load_judge(Path(self.td) / "rollup-state", Path(self.td) / "noclaude", self.fake)   # roll it up as the arm would
         try:
-            st = {"rompUuid": e["id"], "seq": 1, "placementsV": 14, "placements": {}, "status": {}, "nodes": before_start["nodes"]}
+            st = {"rompUuid": e["id"], "seq": 1, "placementsV": PV, "placements": {}, "status": {}, "nodes": before_start["nodes"]}
             jd.rollup_status(st, True)
             self.assertEqual(st["status"].get(e["id"] + ":gA"), "cleared", "it rolls up cleared: %r" % st.get("status"))
         finally:
@@ -1652,7 +1729,7 @@ class Harness(unittest.TestCase):
         seg = "%s:%d:aaaaaaaa" % (sid, T0 + 900)                     # born between turn 1's cut (T0+630) and turn 2's cut (T0+1230)
         node = {"id": sid + ":gX", "text": "born after the previous cut", "parentId": None, "t": T0 + 900, "trail": [seg], "log": []}
         (self.state / "goals" / (sid + ".json")).write_text(json.dumps(
-            {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":gX"}, "status": {}, "nodes": {node["id"]: node}}))
+            {"rompUuid": sid, "seq": 1, "placementsV": PV, "placements": {seg: sid + ":gX"}, "status": {}, "nodes": {node["id"]: node}}))
         (self.state / "overrides" / (sid + ".jsonl")).write_text(
             json.dumps({"node": sid + ":gX", "op": "followup", "t": T0 + 100}) + "\n"        # before every turn's start: always kept
             + json.dumps({"node": sid + ":gX", "op": "followup", "t": T0 + 900}) + "\n")     # after turn 1's cut: in turn 2 only
@@ -1689,13 +1766,13 @@ class Harness(unittest.TestCase):
         node = {"id": sid + ":g1", "text": "A blocked top waiting on the user", "parentId": None, "t": start - 5000, "blocked": True,
                 "blockCheckT": start, "trail": [seg],
                 "log": [{"ev_t": start - 4000, "at": start - 3999, "src": "planner", "kind": "block", "why": "your call?"}]}
-        store = {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":g1"}, "status": {}, "nodes": {node["id"]: node},
+        store = {"rompUuid": sid, "seq": 1, "placementsV": PV, "placements": {seg: sid + ":g1"}, "status": {}, "nodes": {node["id"]: node},
                  "closedTurns": [], "closedSig": {}}
         before = self.je.store_before(store, cut, start, e["id"])
         gid = e["id"] + ":g1"
         self.assertNotIn("blockCheckT", before["nodes"][gid], "the stamp at the turn start is dropped from the seed")
         jd = self.je.load_judge(Path(self.td) / "ub-state", Path(self.td) / "ub-noclaude", self.fake)
-        rolled = {"rompUuid": e["id"], "seq": 1, "placementsV": 14, "placements": {}, "status": {}, "nodes": dict(before["nodes"])}
+        rolled = {"rompUuid": e["id"], "seq": 1, "placementsV": PV, "placements": {}, "status": {}, "nodes": dict(before["nodes"])}
         jd.rollup_status(rolled, True)                    # the arm's rollup sets the blocked flag from the diary
         cands = jd._blocked_sub_candidates(rolled)
         self.assertEqual([c[0] for c in cands], [gid], "the seeded blocked top is a re-examine candidate: %r" % cands)
@@ -1751,7 +1828,7 @@ class Harness(unittest.TestCase):
         (self.pdir / (lane + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
         # the lane's OWN store: a top the closer completed in the lane's first turn, at that turn's start
         laneseg = "%s:%d:aaaaaaaa" % (lane, T0 + 80000)
-        (self.state / "goals" / (lane + ".json")).write_text(json.dumps({"rompUuid": lane, "seq": 1, "placementsV": 14,
+        (self.state / "goals" / (lane + ".json")).write_text(json.dumps({"rompUuid": lane, "seq": 1, "placementsV": PV,
             "placements": {laneseg: lane + ":gL"}, "status": {},
             "nodes": {lane + ":gL": {"id": lane + ":gL", "text": "The lane's own goal", "parentId": None, "t": T0 + 80000, "trail": [laneseg],
                                      "log": [{"ev_t": T0 + 80000, "at": T0 + 80005, "src": "closer", "kind": "done", "why": "delivered"}]}}}))
@@ -1828,7 +1905,7 @@ class Harness(unittest.TestCase):
         (root / "names" / solo).write_text("solo\t%s\t#abcdef\n" % cwd)
         def store_for(sid, base):
             log = [{"ev_t": base + j * 600 + 5, "at": base + j * 600 + 6, "src": "closer", "kind": "done", "why": "x"} for j in range(2)]   # a done in each turn's window: every offer eligible
-            return {"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
+            return {"rompUuid": sid, "seq": 1, "placementsV": PV, "placements": {}, "status": {},
                     "nodes": {sid + ":g1": {"id": sid + ":g1", "text": "g", "parentId": None, "t": base, "trail": [], "log": log}}}
         (root / "goals" / (solo + ".json")).write_text(json.dumps(store_for(solo, T0 + 10000)))
         (root / "goals" / (lane + ".json")).write_text(json.dumps(store_for(lane, T0 - 5000)))
@@ -1905,7 +1982,7 @@ class Harness(unittest.TestCase):
         victim = m["endings"][1]["id"]
         # a valid-JSON seed of a shape the rollup chokes on (a node log that is a string, not a list of events)
         (Path(dest) / "state" / "romp" / "goals" / (victim + ".json")).write_text(json.dumps({
-            "rompUuid": victim, "seq": 1, "placementsV": 14, "placements": {}, "status": {},
+            "rompUuid": victim, "seq": 1, "placementsV": PV, "placements": {}, "status": {},
             "nodes": {victim + ":gx": {"id": victim + ":gx", "parentId": None, "t": 1, "log": "not-a-list"}}}))
         run_root = os.path.join(self.td, "runs-crash")
         self.je.run_arm_inprocess(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
@@ -1938,7 +2015,7 @@ class Harness(unittest.TestCase):
                 uline(sid, T0 + 6000, "ask two", "u2", "a1"), aline(sid, T0 + 6030, "Answer two.", "a2", "u2")]
         (self.pdir / (sid + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in recs))
         seg = "%s:%d:aaaaaaaa" % (sid, T0)
-        (self.state / "goals" / (sid + ".json")).write_text(json.dumps({"rompUuid": sid, "seq": 1, "placementsV": 14, "placements": {seg: sid + ":g1"}, "status": {},
+        (self.state / "goals" / (sid + ".json")).write_text(json.dumps({"rompUuid": sid, "seq": 1, "placementsV": PV, "placements": {seg: sid + ":g1"}, "status": {},
             "nodes": {sid + ":g1": {"id": sid + ":g1", "text": "g1", "parentId": None, "t": T0, "trail": [seg],
                                     "log": [{"ev_t": T0 + 10, "at": T0 + 12, "src": "closer", "kind": "done", "why": "x"}]}}}))
         m = self._corpus(name="win")[1]
@@ -1973,7 +2050,7 @@ class Harness(unittest.TestCase):
         nodes = {("%s:g%d" % (eid, i)): {"id": "%s:g%d" % (eid, i), "text": "Open top %d" % i, "parentId": None,
                                          "t": st + i, "trail": [], "log": []} for i in (1, 2, 3)}
         (Path(dest) / "state" / "romp" / "goals" / (eid + ".json")).write_text(json.dumps(
-            {"rompUuid": eid, "seq": 3, "placementsV": 14, "placements": {}, "status": {}, "nodes": nodes,
+            {"rompUuid": eid, "seq": 3, "placementsV": PV, "placements": {}, "status": {}, "nodes": nodes,
              "closedTurns": [], "closedSig": {}}))
         run_root = os.path.join(self.td, "runs-nogroup")
         res = self.je.run_arm_inprocess(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6, builds=1)

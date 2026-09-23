@@ -3,6 +3,7 @@
 // it is pinned at the source in skeleton-tabs-wiring.test.ts. Synthetic ids only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import { onHostSocketUp } from "./skeleton-tabs";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch,
          renderKind, type SkeletonState } from "./skeleton-tabs";
 
@@ -163,4 +164,21 @@ test("a dismissed tab leaves the loaded set, so its re-listing is a skeleton aga
   assert.ok(!st.loaded.has("A"), "no longer loaded here");
   applyTabOrderSkeleton(st, ["A"], ["A", "B"]);       // the host re-attached: the strip names it a skeleton again
   assert.ok(st.ids.has("A"), "…and now it is one, so the pane asks for its frame");
+});
+
+test("a relay's reopen forgets what loaded for that host on the dead relay socket: a restarted remote kernel's skeleton list is adopted, not refused (2026-09-23)", () => {
+  // The audit's lead: `loaded` cleared only on the LOCAL socket's flip, so after a REMOTE kernel restart the relay's redial got a
+  // skeleton list naming tabs this page had loaded before, refused it as a stale relay, took status frames alone for them and
+  // froze their transcripts until clicked. The per-host twin clears that host's ids alone.
+  const st = newSkeletonState();
+  const R1 = "TESTHOST:11111111-2222-4333-8444-555555550101", R2 = "TESTHOST:11111111-2222-4333-8444-555555550102";
+  const L1 = "11111111-2222-4333-8444-555555550103";
+  onFull(st, R1); onFull(st, R2); onFull(st, L1);                      // all three loaded on the sockets of before
+  applyTabOrderSkeleton(st, [R1, R2], [L1, R1, R2]);
+  assert.deepEqual([...st.ids], [], "before the fix's event: the loaded ids are refused, the remote's tabs read as loaded");
+  onHostSocketUp(st, (id) => id.startsWith("TESTHOST:"));
+  assert.ok(!st.loaded.has(R1) && !st.loaded.has(R2), "that host's loaded record is gone");
+  assert.ok(st.loaded.has(L1), "the local tab's stays: its socket did not move");
+  applyTabOrderSkeleton(st, [R1, R2], [L1, R1, R2]);
+  assert.deepEqual([...st.ids].sort(), [R1, R2].sort(), "the restarted kernel's list is adopted: the tabs are skeletons, so the page asks for their frames");
 });

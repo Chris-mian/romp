@@ -84,7 +84,7 @@ test("the kernel answers the op off the request thread, advertises it, and never
   assert.match(KERNEL, /elif msg and msg\.get\("type"\) == "restartSession" and msg\.get\("id"\):/);
   assert.match(KERNEL, /threading\.Thread\(target=_restart_session, args=\(msg\["id"\], client\), daemon=True\)\.start\(\)/,
     "off the recv loop, as the revive beside it");
-  assert.match(KERNEL, /KERNEL_WS_CAPS = \("tagEdit", "chatProto2", "restartSession"\)/, "advertised, so an older kernel's unknownOp is the degrade path");
+  assert.match(KERNEL, /KERNEL_WS_CAPS = \([^)]*"restartSession"[^)]*\)/, "advertised, so an older kernel's unknownOp is the degrade path");
   const door = KERNEL.slice(KERNEL.indexOf("def _restart_session("), KERNEL.indexOf("# ───────────────────── the unowned route"));
   assert.match(door, /Sessions\.backend_for\(sid\)\.relaunch\(sid\)/, "the owning backend does the work; nothing here duplicates the revive's resume");
   for (const forbidden of ["_record_death", "_kill_at_end_door", '"closed"', "_reveal_chat_for"])

@@ -215,6 +215,19 @@ test('an older kernel without the draining field stays silent (unknown is not re
   assert.equal(logged, '', 'no field is no evidence — never a false refusal line against an old kernel');
 });
 
+test('the breakdown carries the kernel\'s Codex count, 0 from a kernel without the field (2026-09-23)', async () => {
+  // the review of this lane: the kernel counts a Codex turn in `busy` and in `codex`, never in `inflight`
+  const withBd = (port) => new Promise((resolve) => fetchBusy(port, (busy, draining, bd) => resolve({ busy, bd })));
+  const s = await serve(JSON.stringify({ busy: 2, inflight: 1, background: 0, codex: 1, draining: false }));
+  let got;
+  try { got = await withBd(s.port); } finally { await s.close(); }
+  assert.equal(got.busy, 2);
+  assert.deepEqual(got.bd, { inflight: 1, background: 0, codex: 1 });
+  const old = await serve(JSON.stringify({ busy: 2, inflight: 2, background: 0, draining: false }));
+  try { got = await withBd(old.port); } finally { await old.close(); }
+  assert.deepEqual(got.bd, { inflight: 2, background: 0, codex: 0 }, 'an older kernel reads exactly as before');
+});
+
 test('kernelToken prefers the env, then the token file', () => {
   fs.writeFileSync(TOKEN_FILE, 'file-credential\n');
   assert.equal(kernelToken(), 'file-credential');
@@ -259,6 +272,42 @@ test('a park held only by background work polls plainly, carries its identity, a
     'only the uninformed first probe(s) ask for the hold, then the polls stay plain: ' + kstub.seen.join(' '));
   assert.ok(kstub.seen.length >= 2 && kstub.seen.every((u) => /[?&]park=\d+/.test(u)),
     'every parked poll carries the park identity: ' + kstub.seen.join(' '));
+  // a park no Codex turn held records lastCodex 0: the Codex-held test alone let busy, busy minus inflight and
+  // codex read the same number (2026-09-23, the second verify pass of this lane)
+  const bgRows = fs.readFileSync(path.join(STATE, 'restart-audit.jsonl'), 'utf8').trim().split('\n')
+    .map((l) => JSON.parse(l)).filter((r) => r.action === 'quiet-window');
+  assert.equal(bgRows[bgRows.length - 1].lastCodex, 0, 'no Codex turn held this park: ' + JSON.stringify(bgRows[bgRows.length - 1]));
+});
+
+test('a park held only by a Codex turn defers but asks for no hold past the first probe (2026-09-23)', async () => {
+  // the review of this lane: the hold pauses Claude sessions' new turns and the Codex worker never reads it, so
+  // over a Codex turn it would pause every Claude session and shorten nothing. The kernel answers the Codex turn in
+  // `busy` and `codex`, never in `inflight`, and the hold decision (holdTurns) reads inflight alone. A guard: the
+  // kernel's half is red first in tests/test_kernel_auth_hardening.py BusyCountsCodexTurns.
+  fs.writeFileSync(TOKEN_FILE, 'drain-probe-credential\n');
+  kstub.seen.length = 0;
+  kstub.answers = [];
+  kstub.fallback = (url) => JSON.stringify({ busy: 1, inflight: 0, background: 0, codex: 1, draining: /drain=1/.test(url) });
+  let logged;
+  try {
+    logged = await capturedUntil(/applying deferred refresh/, () => { queueQuietRestart('ghost'); });
+  } finally { clearPendingQuiet(); }
+  assert.match(logged, /refresh queued — applying at the next quiet window \(no turn in flight and no background work;/,
+    'the queue line names what the window waits for, never an SDK turn alone');
+  const applyLine = logged.split('\n').find((l) => /applying deferred refresh/.test(l));
+  assert.match(applyLine, /backstop cap/, 'the Codex turn never ends here, so the park waits to the backstop');
+  assert.doesNotMatch(applyLine, /refused|never armed|LOST/, 'plain polls answer draining:false by construction');
+  const firstPlain = kstub.seen.findIndex((u) => !/drain=1/.test(u));
+  assert.ok(firstPlain >= 0 && firstPlain <= 2 && kstub.seen.slice(firstPlain).every((u) => !/drain=1/.test(u)),
+    'only the uninformed first probe(s) ask for the hold, then the polls stay plain: ' + kstub.seen.join(' '));
+  // the audit row names the Codex turn the backstop cut: lastInflight is the Claude count alone, so without
+  // lastCodex the row read nothing in flight (2026-09-23, the review of this lane)
+  const rows = fs.readFileSync(path.join(STATE, 'restart-audit.jsonl'), 'utf8').trim().split('\n')
+    .map((l) => JSON.parse(l)).filter((r) => r.action === 'quiet-window');
+  const row = rows[rows.length - 1];
+  assert.equal(row.backstop, true, JSON.stringify(row));
+  assert.equal(row.lastInflight, 0, JSON.stringify(row));
+  assert.equal(row.lastCodex, 1, 'the row records the Codex turn that held the park: ' + JSON.stringify(row));
 });
 
 test('a real refusal on a poll that ASKED for the hold is still counted (T240c behavioral)', async () => {

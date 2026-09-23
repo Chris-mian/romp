@@ -1258,9 +1258,24 @@ Only `romp refresh` stops the postal bus on purpose; `romp down` leaves it
 alone, but on Linux a bus the kernel started dies with the service anyway: the
 kernel runs `romp-postal-service ensure` at boot, which spawns the bus in a
 process session of its own but inside the service's cgroup, and the service
-stop kills that cgroup. A bus started from a session's postal MCP server lives
-in that session's scope and keeps running. Either way the next kernel boot runs
-`ensure` again, so at worst mail parks until `romp up`.
+stop kills that cgroup. A bus started from inside a session (its postal MCP
+server, its turn-end mail check, or `romp refresh` or `romp mail` typed in its
+shell) runs in a transient scope of its own, `romp-postal-bus-<pid>-<time>`, so
+it keeps running. The kernel stopping that session's scope does not end it, and
+neither does its reap of an orphaned session CLI's process tree, which spares
+the bus's `serve` running in a scope of exactly that name (a bus the session's
+postal MCP server started is still that server's child); before 2026-09-22 it
+lived in the session's scope and died with it. When `systemd-run` cannot start
+that scope, the bus starts in the session's scope after all, and `server.log`
+says so in a `fallback:` line that quotes that launch's own `systemd-run`. A
+`systemd-run` still waiting on the user manager when `ensure`'s few-second wait
+ends is left to finish, with a `pending:` line there; if no bus comes of it,
+the next `ensure` logs what it said and tries again. It still carries the
+session's `oom_score_adj`: `systemd-run --scope` runs it in place, and a scope
+has no `OOMScoreAdjust=` to reset it, so with `ROMP_CLI_SCOPE_OOM_SCORE_ADJ` set
+the machine-wide OOM killers rank it with the sessions, not with the kernel.
+Either way the next kernel boot runs `ensure` again, so at worst mail parks
+until `romp up`.
 
 ### What survives a restart
 
@@ -1596,6 +1611,27 @@ restart monitors read. Two CLIs on one conversation is the boot sweep's own row
 there. The CLI takes no lock on a transcript it resumes, so the one writer per
 conversation is entirely the lease's to keep.
 
+A boot reaps only what the booting kernel can prove it started. The unit list
+and the process table are machine-wide, and a session id is not a kernel's: two
+kernels with state directories of their own can hold the same session (a lab
+copy of a live one), and until 2026-09-23 every boot of the second stopped the
+first one's host and ended its CLI. Each kernel now tags what it starts with its
+state tag, the first 16 hex digits of the SHA-256 of its resolved state
+directory: a session CLI carries it as `ROMP_STATE_TAG` in its environment, and
+a session scope or host scope carries `romp-state=<tag>` in its description.
+The orphan reap, the leftover session-scope sweep and the host-scope sweep act
+only on what carries the kernel's own tag. Anything with another kernel's tag,
+or with none (a unit or CLI started by a build from before the tag, or a process
+whose environment cannot be read), is left alone along with its CLI's scope,
+and the kernel log names all of it on one `boot reconcile: left alone` line. A
+kernel's own leftovers from before the upgrade carry no tag either, so every
+boot on the new build leaves them in place and names them, until they exit or
+are stopped by hand (`systemctl --user stop <unit>` for a scope, `kill` for an
+orphaned CLI). A session whose conversation one of those spared processes still
+holds is not resumed by that boot either, since a second CLI on the transcript
+would be two writers on one conversation; the log says the session stays down,
+and once the process is gone the next boot resumes it as usual.
+
 A session can outlive the kernel that started it. By default, on every machine
 on this version, a new session's CLI runs under a small per-session host
 process, `bin/romp-session-host`, instead of as the kernel's child. The
@@ -1643,7 +1679,8 @@ session from the transcript, so a conversation never has two writers. On
 Linux the host runs in a transient scope of its own (`romp-host-<sid8>-<t>`)
 outside the service cgroup and starts the CLI through `bin/romp-cli-scope` as
 before, so the CLI's own scope and its memory limits are unchanged; the boot
-sweep stops a dead host's scope by its lease. On macOS the host is a plain
+sweep stops a dead host's scope by its lease and the kernel's state tag in the
+scope's description. On macOS the host is a plain
 detached process and everything else is the same.
 
 A host upgrades itself in place when the kernel that attaches runs newer code.
@@ -1673,9 +1710,8 @@ it hands over and the journal agree, writes a handoff file
 conversation id, the three pipe descriptors, the read count, the open turns,
 the open requests and the acknowledged offset), marks the descriptors
 inheritable, writes `reexec-now` to the kernel (its backlog empty, the frame
-reaches the socket at once; a kernel whose socket is full at that instant
-misses it and reads the close as unplanned, the lease holding for its next
-connect), closes its socket, and calls `execv` on the same pid: the CLI stays
+reaches the socket at once), logs the `reexec` line, closes its socket, and
+calls `execv` on the same pid: the CLI stays
 its child, the pipes stay open (descriptors survive an execve), the lease
 holder's pid and start time are unchanged, so `hostAck` still names this host
 and the replay offset holds, and the journal is reopened from its segment
@@ -1688,17 +1724,41 @@ lease with the new version (in that order, so a kernel that reads the new
 version finds a listener; the kernel's wait for the re-executed host also
 connects before it trusts the lease), and waits for the kernel's attach; the
 kernel, told `reexec-now`, treats the socket's close as the planned handover,
-not a host death: no `host.died` row, no orphan replay, no resume, one
-re-attach from the same acknowledged offset, and a `host.reexeced` row. A
-re-exec that fails before the exec leaves the old host running and says so (a
-`reexec-failed` line in the host's log; a `fault` to an attached kernel, which
-files a `host.reexec-failed` row, as does a kernel whose wait for the
-re-executed host runs out); one that fails inside the new process, on a
-handoff that does not check out, makes the new host exit with the CLI still
-running, which the kernel's existing orphan road handles as a host death: the
-CLI finishes its turn on end-of-file and the session resumes from the
-transcript. The worst case is the pre-host behaviour for one session, never a
-dead one. What the guarantee covers: every record parsed off the CLI before
+not a host death: no `host.died` row, no orphan replay, no resume, a wait for
+the re-executed host (its lease with the new version under the same holder and
+a listener that accepts, as on the `now` road, never a second request), one
+re-attach from the same acknowledged offset, and a `host.reexeced` row. The
+frame can miss the kernel: a socket full at that instant, or the kernel's own
+write at the same `result` (its context refresh, an acknowledgment) hitting
+the closed socket first, which makes asyncio close the whole connection with
+the frame still unread. A kernel holding an accepted handover whose socket
+ends unasked therefore reads the host's log, and when the latest re-exec line
+since its own attach is `reexec` (or `reexeced`, the new code already
+serving) and the lease still names the same live holder, it takes the same
+planned road; a deferral, a failure, a dead host or no such line leaves the
+close the lost host it reads as (2026-09-22). A re-exec that fails before the
+exec leaves the old host running and says so (a `reexec-failed` line in the
+host's log; a `fault` to an attached kernel, which files a
+`host.reexec-failed` row, as does a kernel whose wait for the re-executed host
+runs out); the fault also clears the wait its `reexec-now` frame armed, so the
+next attach asks again. One that fails inside the new process, on a handoff
+that does not check out, makes the new host exit with the CLI still running (a
+`cli-adopt-failed` line), which the kernel's existing orphan road handles as a
+host death: the CLI finishes its turn on end-of-file and the session resumes
+from the transcript. The kernel's wait for the re-executed host ends the
+moment that happens, with no row of its own: when the lease goes, names
+another holder, or names a CLI or a holder that is no longer alive, or when
+the host log's newest line records the new process ending (`cli-adopt-failed`
+or `host-crashed`). A stale heartbeat alone does not end it: nothing beats
+between the exec and the new code's first lease write, so a slow start is
+still waited for, up to the bound. After any wait the connect reads the lease
+again and takes the orphan road for a host that is gone, never an attach into
+a socket nobody serves; past the whole bound, a lease that has not beaten
+within its twelve seconds reads as it does at any connect's first read, an
+orphan (2026-09-23). A connect that finds the host gone also drops the
+handover it had asked for, so the next host's hello files no `host.reexeced`
+row. The worst case is the pre-host behavior for one session, never
+a dead one. What the guarantee covers: every record parsed off the CLI before
 the exec is in the journal, numbered as the kernel was told; every byte still
 in the pipe reaches the new host. What it cannot cover is a line the SDK's
 reader has split across two chunks (its framer holds the first part between
@@ -1774,7 +1834,8 @@ same drain. A scoped CLI outlives a service restart only when the drain does not
 reach it: a kernel killed before its drain finishes (SIGKILL at the service's
 stop timeout), or a CLI the drain could not find. The reaper handles that case:
 at the next kernel boot, an SDK-driven CLI holding one of the kernel's sessions
-whose parent is not a live romp kernel is treated as orphaned and terminated.
+whose parent is not a live romp kernel, and whose environment carries the
+kernel's state tag, is treated as orphaned and terminated.
 Under `systemd --user` an orphan re-parents to the user manager, not to pid 1,
 so a ppid check alone would miss it and did, before 2026-09-05.
 
@@ -2093,10 +2154,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   judges each by observation. A ref that died went by reference counting
   (acyclic, no reclaim); a ref still alive whose worker thread has finished is a
   cycle the collector must take (a reclaim); a ref alive whose thread still runs
-  is not garbage yet (judged again next tick). A ref a live ROOT keeps (a
-  never-joined helper thread's `_target`), not a cycle, reads the same and is
-  treated as a surviving cycle: the reclaim frees nothing, so it costs one pause,
-  is counted a `survivor`, and is dropped (never re-registered). A record-cache pop is never a
+  is not garbage yet (judged again next tick). A ref a live ROOT keeps (a helper
+  thread still running when the tick judges it, its frame and its target), not a
+  cycle, reads the same and is treated as a surviving cycle: the reclaim frees
+  nothing, so it costs one reclaim, is counted a `survivor`, and is dropped (never
+  re-registered). A record-cache pop is never a
   trigger: its decoded json is acyclic and dies by reference counting, so
   `recordCache.released` is a statistic. A BACKSTOP reclaim runs after `backstopFoldins`
   load fold-ins since the last reclaim (default 1000, about ten hours at the
@@ -2107,17 +2169,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `loadTrees` and `backstopFoldins` (the two thresholds), `freezes` and
   `reclaims` (a freeze ran one collection and a reclaim ran one, EXCEPT a full
   release that unfroze runs TWO generation-2 collections for its one reclaim, so
-  the organic full collections are `gen."2".collections` less `freezes`, less
-  `reclaims`, less one more per full release; the exact residue needs that count,
-  and the served lab keeps the inequality rather than the equality), `endedPending` (ended sessions
+  `reclaims` alone cannot derive the organic count), `collections` (every
+  `gc.collect()` the run step issued, so the organic full collections are
+  `gen."2".collections` less `collections`, an EQUALITY: a full release's two
+  collects are both counted here), `endedPending` (ended sessions
   registered by weakref and not yet judged, awaiting their worker thread to
   finish), `lastReconcileMs` and
   `lastReconcileKind` (`initial`, `load`, `release` or `backstop`), `survivors`
   (owed refs a live root kept through a reclaim, a wasted pause each),
+  `lastReleaseSurvivors` (of the last RUN's owed refs, how many a live root
+  kept through it: 0 when the reclaim freed them, so the release line reads
+  "reclaimed", else the count the line names as kept by a live root; rebound each
+  run, so a load after a live-root release reads it back at 0, like `lastReleaseSids`),
   `lastReleaseSids` (the first eight characters of the sids the LAST JUDGEMENT
   owed a reclaim for, cleared each judgement, so a tick that owed nothing clears
   it and a cheap-collect release judged `load` shows them too; a full release also
-  writes one stderr line naming the sessions),
+  writes one stderr line, "reclaimed" when nothing survived and otherwise naming the kept sids),
   `totalReconcileMs` and `errors` (a reconcile that raised is counted here and
   said once on stderr, never ending the pusher). The reconcile's own collection
   pause lands after the cycle closed its ring row, so the pusher and jobs rings
@@ -2212,7 +2279,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   and the cycle itself as the sender that read the baseline absent with a
   seed landing inside its build, a race the detector does not mark (nothing
   marked, no strand), one full and one row per base holder where a tail went
-  before, and tails with no new row at the next cycle; in the
+  before, and at the next cycle tails with no new row, or nothing at all
+  where the seed's list already matched the cycle's (2026-09-23); in the
   `chatFull` row below every change-0 face has `changeFrom` 0 with both edges
   held, the floor's has `firstHeld` false);
   `changeBelowFirst` for a change at or before the held first edge;
@@ -3426,6 +3494,13 @@ sixteen files, least recently read out first. Slugs come from the file's heading
 through the viewer's own rule, the Not-coinages heading included, so a card opens
 the viewer on the heading the viewer gave that id.
 
+The comments frame follows the same own-slot model. The `{type: "comments"}` frame carries a
+thread's anchorUuid, which the chat page joins with the anchored reply turn (`data-uuid`) to draw
+the reply's mark, and it reaches a page on four roads: the pusher's full cycle, the targeted
+per-session push (`_push_session_now`, so a mark lands with its turn when a page connects before
+the session is built), the create handler's direct send when a comment is written, and the ready
+reset's re-send once a reconnecting page's listeners are up.
+
 The chat page compiles one matcher per index (`glossary-links.ts`): every form
 (the term, its aliases, and their plurals by the everyday rule; nothing shorter
 than two characters) whole-word and case-insensitive, longest first, minus the
@@ -3572,6 +3647,32 @@ frames it received is measured in the panes themselves, by
   `frame-drops-landed` whatever its watermark said (the wire, the count, the
   uuids' tails, whether the frame carried a watermark, and the expected cause when
   a rebased fork or a rewind the page asked for removed the row on purpose).
+- Every row a page files carries `build`, the dist token the page was served
+  with, and `boot`, the boot id of the kernel that served it. The page's one
+  diag door stamps them (the pane shim, and the shell's twin) and the kernel
+  keeps them; a page older than the stamp, or the VS Code webview, reads `null`
+  for both. A row is then told to come from old or new page code by reading it.
+- The chat pane follows each composer send from the kernel's copy of it to its
+  landed turn, on every frame it applies (a full, a delta, an update, a history
+  page), and files `landed`: the send's id (`key`, the id the `send` row
+  carries), the landed turn's uuid, the ms since the press, the frame type,
+  whether the record wore the id or the pending-send reconcile matched it by
+  text (`by`), and how many events sit below it. `landed-lost` is filed when a
+  frame takes a landed human turn off the newest three and not because the list
+  slid off the top, a fork replaced it, or a rewind the page asked for or a
+  rebased full removed it: the frame type, its watermark, the last six events
+  before and after, and whether the frame's own events still carry the turn
+  (`inKernel`). `landed-missing` is filed when the kernel's copies of a send it
+  had shown (its echo, its queued copy, the page's held copy) are gone, no
+  landed turn for the send is resident, and an agent message lands below where
+  the copy sat: the frame type, its watermark, the copy last seen, the answer's
+  uuid, and whether the frame carried the record (`inFrame`). At most 30 rows a
+  minute per session and kind.
+- A `tailmut` row (an element leaving the end of the chat view) carries the
+  units' uuids beside their classes, the full list lengths (`nRemoved`,
+  `nAdded`) beside the four it clips to, `gone` (the uuids that came back
+  nowhere in the same batch), `slide` (the batch added or removed the top
+  spacer: a window re-render), and `reAdded`, judged by the DOM node.
 - The kernel rotates `client-diag.jsonl` once it reaches 8 MB: the file
   becomes `client-diag.jsonl.1` (replacing the previous one) and a new file
   starts, so at most two files, about 16 MB, are kept. A minute row is about
@@ -4310,8 +4411,11 @@ the kernel's growth between restarts is a series without a sampler of its own.
 And the manager writes a `quiet-window` row to `restart-audit.jsonl` when a
 parked deploy refresh applies (`since`, `waitedS`, `reason` as the gate's
 verdict, `backstop` when the fifteen-minute cap fired, `coalesced`, `mode`,
-`lastInflight`, `misses`, and the park's drain-hold counts); it is a note, not
-a request, and the kernel's restart-reason walk passes it over. Three more
+`lastInflight`, `lastCodex`, `misses`, and the park's drain-hold counts); it
+is a note, not a request, and the kernel's restart-reason walk passes it over.
+`lastInflight` counts the Claude turns in flight at the park's last answered
+poll and `lastCodex` the Codex turns, so a park an open Codex turn held to the
+backstop reads `lastInflight` 0 and `lastCodex` 1. Three more
 manager notes sit beside it: `restart-folded` (a restart request that arrived
 while a restart was in flight and its successor not yet spawned rode that
 restart: `trigger`, `into` the pid signaled), `restart-trailing` (a request
@@ -4876,31 +4980,33 @@ before, and a click that lands while text is selected inside a link opens nothin
 A tab wears a dashed red ring, **Blocked**, while its session is stopped: on a permission or
 picker prompt, or on an API error only you can clear. When the feed shows one of the session's
 cards under Needs you (it asked you something, it is waiting on a decision, a peer's message is
-waiting for your say, or a stalled task needs a look), the tab wears a dashed magenta ring
-instead, **Needs you**, whether the session is idle, waiting on background work or still working,
-so the sessions that need you stand out in the strip without a click through each of them; a
-working session keeps its gold dot inside the ring. The ring follows the feed, one refresh behind
-it at most, and goes when the card does: answer it, resolve it or clear it and the tab is plain
-again. A red ring outranks the magenta one; the amber ring of a session retrying an API error on
-its own gives way to it. The three rings are rows of **Settings**, **Chat**, **Tab widgets**
+waiting for your say, or a stalled task needs a look), a small **magenta dot** sits at the tab's
+top-right corner, **Needs you**, carrying a count of what needs you in the session (a number, "99+"
+past ninety-nine), whether the session is idle, waiting on background work or still working, so the
+sessions that need you stand out in the strip without a click through each of them; a working
+session keeps its gold dot at the left. The count follows the feed, one refresh behind it at most,
+and goes when the card does: answer it, resolve it or clear it and the tab is plain again. A session
+**retrying** an API error on its own shows a hollow **amber left dot**, a ring around the dot's slot
+whose distinct shape tells it from the filled working gold and awaiting green without relying on
+colour. Blocked outranks Needs you, and Needs you outranks retrying. The three rings are rows of **Settings**, **Chat**, **Tab widgets**
 (**Blocked**, **Needs you**, **Retrying**), each with its own switch, listed in that order because
-a tab wears one ring at a time and the first that applies wins: red over magenta over amber. A
-ring switched off leaves the tab with its dot; the small dot on a folded group's header and the
+a tab wears one cue at a time and the first that applies wins: Blocked over Needs you over retrying. A
+cue switched off leaves the tab with its dot; the small dot on a folded group's header and the
 phone's picker follow the same switches. With notifications on, the card entering Needs you is
 also what notifies you (see [Notifications on your phone](guide.md#notifications-on-your-phone)):
-the ring is that card, shown in the strip, and it stays as long as the card does, including across
+the cue is that card, shown in the strip (the count dot, or the dashed ring with the badge off), and it stays as long as the card does, including across
 a kernel restart, which announces nothing. On a phone, the session picker marks the same sessions
-with a magenta bar at the row's left edge, and the button that names the current session wears the
-dashed magenta border. One colour, the Needs you colour, marks the category everywhere: the column's
-chip, a card's question mark, the ring, the picker's bar.
+with the magenta count dot, on each picker row and on the button that names the current session. One colour, the Needs you colour, marks the category everywhere: the column's
+chip, a card's question mark, the tab's count dot (its dashed ring with the badge off) and the phone picker's dot (its left bar off).
 
 A per-browser setting, **State badge instead of the outline ring** (a checkbox in the gear's
-**Chat** tab, beside the tab lock), swaps two of these cues for dots. Needs you becomes a small
-magenta dot at the tab's top-right corner carrying a count of what needs you in the session (a
-number, "99+" past ninety-nine); retrying moves to the amber **left status dot**, but only while
-the **Status dot** widget is on, since that is the dot it moves to, so with the Status dot widget
-off retrying keeps its amber ring. Blocked keeps its red ring and fill either way, and the dashed
-rings are what shows when the setting is off (the default). On a phone the count dot replaces the current-session chip's dashed magenta border and each picker row's magenta left bar. The setting is off by default.
+**Chat** tab, beside the tab lock), is **on by default** and is what the paragraph above describes:
+Needs you a small magenta dot with its count, retrying a hollow amber left dot. Turn it OFF to swap
+those two back to the outline shapes: Needs you the dashed magenta ring, retrying the dashed amber
+ring, and on a phone the picker row's magenta left bar and the current-session chip's dashed magenta
+border in place of the count dot. Blocked keeps its red ring and fill either way. The retrying left
+dot needs the **Status dot** widget on, since that is the slot it moves to; with the Status dot
+widget off, retrying keeps its amber ring even under the badge.
 
 ### Tags and groups in the tab strip
 
@@ -4930,7 +5036,11 @@ adds that tag and drops the tag of the group you right-clicked it in, leaving it
 **+** adds the tag without moving the tab. **Group tabs by tag**, at the foot of the tag
 button's menu, turns the sections off for this browser. On a phone the session picker, which stands in
 for the strip, lists the sessions the same way: each under its tag's heading, in the same order, and
-nothing folded (its tag menu has the same switch). The Sessions pane has the same
+nothing folded (its tag menu has the same switch). One thing the two do not share: the order you have
+DRAGGED your tabs into belongs to the browser you dragged them in, so a desktop whose loose tabs you have
+rearranged reads in that order while a phone, which has no drag, reads them in the order romp has kept for
+them, the same order every browser starts from before it drags. The groups, their order, and which sessions
+sit in each of them are the same everywhere the tabs are grouped. The Sessions pane has the same
 sections: **Group by tag** in its Filter menu (off until you turn it on, per browser) lays the
 lanes out one section per tag in the same order, each session under every tag it carries and
 the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row

@@ -646,7 +646,32 @@ export interface StripPlan {
  *    does the trail; a lone folded group between open ones has nothing to pack with and keeps its row.
  *    The item right before, not the section: a folded section with a member pinned through its fold
  *    ends in that member's tab, so the next folded header opens a row as it would after an open group.
- *    Never on the phone, where nothing folds. */
+ *    Never on the phone, where nothing folds.
+ *
+ *  WHAT TWO VIEWERS SHARE, AND THE ONE THING THEY DO NOT (measured 2026-09-23, after the user asked twice
+ *  why their phone and their desktop disagree; tests/test_mobile_picker_order_browser.py prints the table).
+ *  This function is the ONE ordered source both surfaces render: the desktop strip paints its items, and
+ *  the phone's picker is built by walking that strip's children, so within a page they cannot disagree.
+ *  Across two VIEWERS, everything this function reads is shared but two inputs, both this browser's own:
+ *    - the SECTIONS and their order come from `unions` — the kernel's tags and tagOrder — so the headings
+ *      and their sequence are identical on every machine;
+ *    - which section a session sits in comes from tag membership, also the kernel's, so a session loose on
+ *      one surface is loose on every other: the trail's MEMBERSHIP never diverges;
+ *    - `visibleIds` is the viewer's OWN arrangement (view-order.ts, romp:vieworder in this browser's
+ *      localStorage), and that is per-browser on purpose — the user's ruling of 2026-07-31, that the order
+ *      is a property of how you are looking at your sessions, so a drag on the laptop must not move the
+ *      tab on the desktop. It governs the order INSIDE each section and the order of the trail alike;
+ *    - `st` is the viewer's OWN tab-groups store (romp:tabgroups, per browser like the arrangement; the head
+ *      of this file). It governs whether and how the strip sections at all: the group switch (`st.on`) on
+ *      both surfaces, since the phone's picker menu carries the same switch (render.ts builds one groupToggle
+ *      for both mounts), and the folds and pins on the desktop alone, since nothing folds on the phone.
+ *      Switched off, a viewer reads one flat run in its arrangement's order, with no headings and no trail.
+ *  So the one way two viewers that are both grouped can read differently is that one of them has arranged
+ *  its tabs: same sessions, same headings, each viewer's own sequence. It shows up in the trail first simply
+ *  because the trail is usually the longest run of tabs. Nothing here is a second sort to be reconciled: a
+ *  surface that wants to match another must be fed the same arrangement, which is a question about that
+ *  ruling, not about this plan. (The phone offers no drag, so its arrangement is the kernel's order as it
+ *  first adopted it, plus later arrivals at the end.) */
 export function planStrip(visibleIds: readonly string[], unions: readonly TagUnion[], st: TabGroupsState,
                           activeId: string | null, phone: boolean,
                           pending?: { id: string; tags: readonly string[] } | null): StripPlan {

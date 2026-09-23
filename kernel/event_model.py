@@ -3116,12 +3116,64 @@ class FileAdapter:
                 out.add(u)
         return out
 
+    def _batch_head(self, fork, head):
+        """Whether `head`, an off-spine record whose parent `fork` is on the spine, is the rest of a PARALLEL TOOL BATCH
+        (2026-09-23). The CLI writes a model message that makes several tool calls as one assistant record per content
+        block, chained block to block under one message id, and parents each call's RESULT at the record carrying that
+        call (the result's sourceToolAssistantUUID names it). The transcript is a tree there: while the results land the
+        leaf is whichever result, or the hook attachment after it, was written last, so the spine passes through that
+        result's call alone, and when the reply chains off the last result, the other results hang beside the spine.
+        Filed as a rewound fork, the second and later calls left the chat until their own results landed, and every
+        result but the last one's was gone for good once the batch ended (their tool rows never showed an output).
+
+        The two designed links, read off the records, never guessed: `fork` is an assistant record carrying a tool_use
+        and `head` is either the next record of fork's own message (same message id) or a tool_result answering only
+        calls fork carries. In a sample of one machine's transcripts (2026-09-23, structure only) every child of a
+        tool-call record was one of those two (2,411 results, 156 next blocks, nothing else): machine output of the
+        call's own turn, never a rollback's or a retry's residue. The keep is the branch under `head`, up to a message
+        someone sent (chain_verdicts: _sent_message). A single call's result takes the same link: on the normal chain
+        it IS the spine, and when a retry storm's api_error spur takes the spine from the call record, its result
+        (which the eclipse probe used to salvage as "eclipsed") is kept as the call's own, "active"."""
+        fr = self.by_uuid.get(fork)
+        hr = self.by_uuid.get(head)
+        if fr is None or hr is None or fr.get("type") != "assistant":
+            return False
+        fmsg = fr.get("message") if isinstance(fr.get("message"), dict) else {}
+        calls = {b.get("id") for b in _content(fmsg) if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id")}
+        if not calls:
+            return False
+        if hr.get("type") == "assistant":
+            hmsg = hr.get("message") if isinstance(hr.get("message"), dict) else {}
+            return bool(fmsg.get("id")) and hmsg.get("id") == fmsg.get("id")
+        if hr.get("type") == "user":
+            answers = [b.get("tool_use_id") for b in _content(hr.get("message"))
+                       if isinstance(b, dict) and b.get("type") == "tool_result"]
+            return bool(answers) and all(a in calls for a in answers)
+        return False
+
+    def _sent_message(self, u):
+        """Whether record `u` is a message someone sent (a user record carrying no tool_result, not the harness's isMeta
+        bookkeeping, not a compaction summary): where a parallel batch's keep stops (chain_verdicts). A rollback
+        re-parents the user's next prompt, so a prompt found under a batch branch the leaf left keeps the verdict it
+        always had (fork_kind's: a rewind, or an eclipse behind a retry storm's spur), rather than showing again a
+        message the person deleted."""
+        r = self.by_uuid.get(u) or {}
+        if r.get("type") != "user" or r.get("isMeta") or r.get("isCompactSummary"):
+            return False
+        blocks = _content(r.get("message"))
+        return bool(blocks) and not _has_tool_result(blocks)
+
     def chain_verdicts(self, active=None):
         """THE chain-membership identity, one verdict per uuid in the graph — the single
         implementation every consumer must share (the goal-store rewind cleanup grew four
         hand-rolled partial twins of this walk before it was exported, and they disagreed
         on exactly the cases that matter — resume forks, pending cuts, broken chains):
-          "active" — on the leaf->root spine (what the chat shows).
+          "active" — on the leaf->root spine (what the chat shows), or on a branch that is the
+                     rest of a parallel tool batch hanging off it (see _batch_head): the
+                     calls of one model message and their results, which the CLI writes as a
+                     tree, not a line. Such a branch is in the `active` verdict but not in the
+                     `active` SET (the spine walk), so kept_uuids and _membership_of read the
+                     verdict.
           "rewind" — the chain rejoins the active spine: this line was REWOUND AWAY. The
                      only verdict that ever justifies dropping/sweeping content.
           "eclipsed" — the chain rejoins the active spine, but the spine leaves the fork
@@ -3212,14 +3264,20 @@ class FileAdapter:
             _fork_memo[f] = res
             return res
         verdict = {}
+        batch_fork = {}                            # a batch branch's record -> the spine tool call it hangs from
         def classify(start):
-            path, u = [], start
+            path, u, fork = [], start, None
             while True:
                 if u in active:
-                    res = fork_kind(u); break      # chain rejoins the active spine -> rewound fork,
-                    #                                unless a machine spur abandoned it (eclipsed)
+                    # chain rejoins the active spine -> rewound fork, unless a machine spur abandoned it
+                    # (eclipsed), or the branch is the rest of a parallel tool batch (see _batch_head)
+                    if self._batch_head(u, path[-1]):
+                        res, fork = "active", u
+                    else:
+                        res = fork_kind(u)
+                    break
                 if u in verdict:
-                    res = verdict[u]; break
+                    res = verdict[u]; fork = batch_fork.get(u); break
                 if u not in self.by_uuid:
                     sv = seed_verdicts.get(u)      # a record before the cut: the checkpoint recorded its verdict
                     if sv == "active":
@@ -3234,6 +3292,20 @@ class FileAdapter:
                 if p is None:
                     res = "clear"; break            # clean null root, not the leaf's -> pre-clear
                 u = p
+            if fork is not None:
+                # A batch branch, or a record under one reached through the memo. The keep stops at a message
+                # someone sent: that message and everything under it take the verdict the fork gives any other
+                # branch leaving the spine there (fork_kind: a rewind, or an eclipse behind a retry storm's spur).
+                # `path` runs from `start` up toward the branch, so the sent message nearest the spine cuts it.
+                cut = max((i for i, x in enumerate(path) if self._sent_message(x)), default=-1)
+                below = fork_kind(fork) if cut >= 0 else None
+                for i, x in enumerate(path):
+                    if i <= cut:
+                        verdict[x] = below
+                    else:
+                        verdict[x] = "active"
+                        batch_fork[x] = fork
+                return verdict[start]
             for x in path:
                 verdict[x] = res
             return res
@@ -3396,6 +3468,8 @@ class FileAdapter:
         An ECLIPSED chain is also kept: a machine-written api_error spur stole the leaf's
         ancestry from a turn's real output (see chain_verdicts) — dropping it ate the only
         visible copy of a rendered reply (T209).
+        So is the rest of a PARALLEL TOOL BATCH beside the spine (its "active" verdict off the
+        spine walk, _batch_head): the other calls of the message and their results.
         Derived from chain_verdicts — one implementation, so the exported membership
         predicate (chain_membership) can never diverge from what the parse keeps.
         set(active) is unioned as-is: the walk can record a dangling FINAL ancestor that is
@@ -3405,7 +3479,7 @@ class FileAdapter:
         headed chains demote behind a completed flush; a tail spur keeps everything) — so this
         union keeps exactly what the eclipse salvages."""
         return set(active) | {u for u, v in self.chain_verdicts(active).items()
-                              if v in ("broken", "eclipsed")}
+                              if v in ("active", "broken", "eclipsed")}
 
     def _absorbed_atom(self, full, t, seq, auid, rompuuid, postal_index):
         """One synthesized user atom for a mid-turn splice, placed where the model READ it (T252d, the
@@ -4507,8 +4581,10 @@ def chain_membership(leaf_path, candidate_files=None, states=None, leaf_override
     narrowed by _select_eclipsed_chains to the fork's one machine-orphaned reply chain when one
     qualifies, else per its terminal rules, so nothing sweeps a reply nobody abandoned and
     nothing keeps a sibling the walk drops on-spine),
-    and a uuid in NO set is unprovable (a synthetic orphan:<t> salvage id, a cross-file uuid whose
-    file is outside the lineage, a legacy None) — callers must treat unknown as NOT abandoned.
+    the rest of a parallel tool batch beside the spine is in "kept" and in no other set (its verdict
+    is "active": FileAdapter._batch_head), and a uuid in NO set is unprovable (a synthetic
+    orphan:<t> salvage id, a cross-file uuid whose file is outside the lineage, a legacy None) —
+    callers must treat unknown as NOT abandoned.
     Caveat (resume-fork stitch shape): a recorded fork's fresh head is re-pointed at the from-file's
     LAST record — if that tip was itself an abandoned tail, the stitch makes it active again; this
     predicate follows the stitch exactly as the display parse does (kept semantics, by design)."""
@@ -4691,10 +4767,11 @@ def _membership_of(adapter):
             verdicts.setdefault(u, v)
         active = set(active) | {u for u, v in adapter.seed["verdicts"].items() if v == "active"}
     # kept, derived from the verdicts already in hand — BY DEFINITION the same set kept_uuids
-    # computes (active ∪ broken ∪ eclipsed; see its docstring: "derived from chain_verdicts — one
+    # computes (active ∪ broken ∪ eclipsed, the "active" verdict included for a parallel tool
+    # batch's branch beside the spine; see its docstring: "derived from chain_verdicts — one
     # implementation"), without paying the graph walk a second time inside it. The hold view
     # re-asks this on every build of a held session, so the walk count matters there.
-    out = {"kept": set(active) | {u for u, v in verdicts.items() if v in ("broken", "eclipsed")},
+    out = {"kept": set(active) | {u for u, v in verdicts.items() if v in ("active", "broken", "eclipsed")},
            "rewind": set(), "clear": set(), "broken": set(), "eclipsed": set()}
     for u, v in verdicts.items():
         if v != "active":
@@ -5036,7 +5113,7 @@ def _asm_fold(entry, delta, leaf_recs, leaf_key, leaf_stem, rompuuid, postal_ind
 # ids and atom uuids. Bodies come back on demand (hydrate). Anything that does not verify is a counted fallback to a
 # whole parse; a compaction landing after the document demotes the tail fold to a whole parse exactly as before, and
 # the next settle writes a new document with the new cut.
-_ASM_CKPT_V = 7                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
+_ASM_CKPT_V = 8                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
 #                                       4: a `turns` section over the pre-cut rows (T323 stage 4c: the lazy index)
 #                                       5: lazy markers carry pc (assistant prose chars) and mid (postal message ids); a turn row
 #                                          carries pcs and hT, a segment row w, mids and hp (T358: the per-cycle walkers read scalars).
@@ -5055,6 +5132,10 @@ _ASM_CKPT_V = 7                       # 2: atom rows carry [offset, len], nt for
 # every chat build cold at 5.6 s: a ceiling under the working set is a thrash, not a saving.
 #                                       7: the cut is the boundary before the last SETTLED turn, not only a compaction's (stage one b, 2026-09-15):
 #                                          every v6 document is refused once (`version`) at the deploy boot and rewritten at the next settle
+#                                       8: a parallel tool batch's branch beside the spine is kept (FileAdapter._batch_head, 2026-09-23): its
+#                                          records' stored verdict is "a", not "r", and the pre-cut atom rows hold the results a v7 document
+#                                          dropped, so a v7 document restores a history the whole parse no longer builds; refused once
+#                                          (`version`) at the deploy boot and rewritten at the next settle, as v7 was
 _MAT_CAP = _env_or("ROMP_ASM_INDEX_CAP", max(500_000, _machine_memory_bytes() // (32 * 1024)))
 _MAT_LRU = collections.OrderedDict()  # (id(LazyAtoms), row) → (weakref.ref(LazyAtoms), row): eviction drops the memo, never a field
 #                                       in place. The list is held WEAKLY (measured 2026-09-15): a strong reference here kept every
@@ -6698,6 +6779,17 @@ def atom_has_work(atom):
     if atom.get("type") != "assistant" or atom.get("isApiError"):
         return False
     return _has_text(atom) or bool(atom_tool_uses(atom))
+
+
+def atom_is_bare_end(atom):
+    """Whether an assistant atom only ENDS its turn: a stop in END_STOPS with no text and no tool use. That is the shape
+    of the Codex normalizer's end record for a completion with nothing held, an empty content list (2026-09-23, the
+    post-merge review of the restart-cut fix). The chat renders no row for it, so a deep-link anchor must never name
+    it (kernel _seg_anchors), and a turn holding nothing else has no opener to arm on (kernel _turn_only_ends). Read
+    from the lazy scalars (sr, nt, tu) for a lazy atom: no hydration."""
+    if atom.get("type") != "assistant":
+        return False
+    return _stop_reason(atom) in END_STOPS and not _has_text(atom) and not atom_tool_uses(atom)
 
 
 _SETTLE_TEXT_H8 = hashlib.sha1(b"No response requested.").hexdigest()[:8]

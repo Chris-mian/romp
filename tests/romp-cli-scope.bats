@@ -45,6 +45,8 @@ SH
     # the per-session limits: a self-hosted suite inherits a real service.env setting through its tool
     # shell, and every exact argv pin below assumes none is set
     unset ROMP_CLI_SCOPE_MEMORY_MAX ROMP_CLI_SCOPE_MEMORY_HIGH ROMP_CLI_SCOPE_MEMORY_SWAP_MAX ROMP_CLI_SCOPE_OOM_SCORE_ADJ
+    # the kernel's state tag: a session's tool shell inherits its CLI's, and the plain Description pins below assume none
+    unset ROMP_STATE_TAG
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
@@ -69,6 +71,17 @@ teardown() { rm -rf "$TEST_DIR"; }
     grep -qx -- '--collect' "$FAKE_LOG"
     grep -qx -- "--description=romp session $ROMP_SID" "$FAKE_LOG"
     # after `--`: the real CLI, then the args verbatim
+    tail_after_dash="$(sed -n '/^--$/,$p' "$FAKE_LOG" | sed 1d)"
+    [ "$tail_after_dash" = "$(printf '%s\n' "$REAL" a b)" ]
+}
+
+@test "the Description carries the kernel's state tag when the kernel set one, so only that kernel's boot stops the unit" {
+    export ROMP_STATE_TAG="0123456789abcdef"
+    run "$WRAPPER" a b
+    [ "$status" -eq 0 ]
+    grep -qx -- "--description=romp session $ROMP_SID romp-state=0123456789abcdef" "$FAKE_LOG"
+    # the tag rides the Description alone: the unit name and the command are as before
+    grep -q -- "^--unit=romp-session-11111111-" "$FAKE_LOG"
     tail_after_dash="$(sed -n '/^--$/,$p' "$FAKE_LOG" | sed 1d)"
     [ "$tail_after_dash" = "$(printf '%s\n' "$REAL" a b)" ]
 }

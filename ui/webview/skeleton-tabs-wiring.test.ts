@@ -202,14 +202,17 @@ test("run: render.ts's paneHidden() over window stand-ins says hidden when the p
 });
 
 test("requestFullSession(id, why): every ask names its why, from the fixed vocabulary", () => {
-  assert.match(RENDER, /type NeedFullWhy = "gap" \| "nobase" \| "skeleton-click" \| "prefetch" \| "skeleton-delta";/);   // reattach retired with the detached client (T386 stage 2)
+  // reattach retired with the detached client (T386 stage 2); resync (a delta whose base fingerprint disagreed) and stale-full (the
+  // asked full was older than what the page holds, asked once more) joined with the delta base check (chat-resync.ts, 2026-09-23)
+  assert.match(RENDER, /type NeedFullWhy = "gap" \| "nobase" \| "skeleton-click" \| "prefetch" \| "skeleton-delta" \| "resync" \| "stale-full";/);
   assert.match(RENDER, /function requestFullSession\(id: string, why: NeedFullWhy\): void \{\s*\n\s*if \(!id\) return;\s*\n\s*if \(awaitingFull\.has\(id\)\) \{[\s\S]*?\n\s*return;\s*\n\s*\}\s*\n\s*awaitingFull\.add\(id\);\s*\n\s*const ask[\s\S]{0,500}?vscodeApi\?\.postMessage\(ask\);/);   // the latched branch's row is pinned in needfull-latch-hygiene.test.ts (2026-09-19)
   const calls = [...RENDER.matchAll(/requestFullSession\(([^()]*?)\)/g)].map((m) => m[1]).filter((a) => !a.startsWith("id: string"));
   assert.ok(calls.length >= 9, "the gap ×6 (three plus the round-two guards), no-base ×2 (chatTail and update; statusOnly holds a status for its strip instead, 2026-09-11), skeleton-delta ×2, skeleton-click and prefetch sites (the reattach site and a missing chatMore's gap retired with the detached client, T386 stage 2)");
-  for (const c of calls) assert.match(c, /, "(gap|nobase|skeleton-click|prefetch|skeleton-delta)"$/, `call site without a why: requestFullSession(${c})`);
+  for (const c of calls) assert.match(c, /, "(gap|nobase|skeleton-click|prefetch|skeleton-delta|resync|stale-full)"$/, `call site without a why: requestFullSession(${c})`);
   const why = (w: string) => RENDER.split(`, "${w}")`).length - 1;
   assert.equal(why("gap"), 6); assert.equal(why("nobase"), 2); assert.equal(why("skeleton-delta"), 2); assert.equal(why("reattach"), 0);   // no detached client, no re-attach (T386 stage 2)   // gap ×6: the index tail's, the uuid tail's, a missing chatHead's, plus (round two) upsert's full-frame-desync refusal, the numeric-from history-truncation refusal, and regionsAbsorbTail's short-store re-base (an anchor gone from the transcript; chatMore is retired); nobase ×2: chatTail and update (statusOnly holds a status for its strip instead)
   assert.equal(why("skeleton-click"), 1); assert.equal(why("prefetch"), 1);
+  assert.equal(why("resync"), 2, "chatTail's base check: the ask, and the latched ask while one is out"); assert.equal(why("stale-full"), 1, "upsert's one re-ask for an older answer");
 });
 
 test("dismissSession is the one removal site: onDismiss right after the session map forgets the id", () => {
@@ -339,6 +342,7 @@ function chipWorld(opts: { clientHeight: number; innerHeight: number; transcript
     let snapView = null, snapKeep = null;
     const renderSnapshot = () => false, hideSnapshot = () => {}, composerRestingPlaceholder = () => "";
     const setSnapMode = () => {}, growComposer = () => {};   // the overview mode's switch and the box re-measure on leaving it (T322)
+    const tailBackShow = () => {};   // the tailback watch's switch end (tail-back.ts, 2026-09-23): observation only, inert here
     const requestFullSession = (id, why) => { HOOKS.fulls.push(why + ":" + id); };
   `;
   const epilogue = `
@@ -411,4 +415,11 @@ test("run: a column's own session, listed by the strip but not among its skeleto
   // …the neighbouring skeleton still asks on its pick: the gate is the set, not the missing session
   w.api.set({ activeId: "B" }); w.api.showActive();
   assert.deepEqual(w.HOOKS.fulls, ["skeleton-click:B"]);
+});
+
+test("the relay's reopen forgets that host's loaded record (2026-09-23): a restarted remote kernel's skeleton list is adopted", () => {
+  const i = RENDER.indexOf('window.addEventListener("romp:hostRelayUp", (e) => {');
+  assert.ok(i > 0, "the relay-up listener");
+  const body = RENDER.slice(i, RENDER.indexOf("\n});", i));
+  assert.match(body, /if \(h\) onHostSocketUp\(skeletonTabs, \(sid\) => hostOf\(sid\) === h\);/, "that host's ids alone, on the relay's own open event");
 });
