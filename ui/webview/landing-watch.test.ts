@@ -46,7 +46,7 @@ const LAND_TYPES = (() => {
 
 test("every function that writes a session's events is classified: a frame path the watch covers, the page's own injection, or a new tab's mint", () => {
   const FRAME = ["upsert", "update", "chatTail", "chatHead", "eventsFromRegions", "regionsAbsorbTail", "applySubagentFrame"];
-  const INJECTION = ["reconcileOptimistic", "reconcileOptimisticInner", "stripOptimistic", "reconcileHeldCopies", "hideQueuedCopy"];   // optimistic/held groups and hide marks: never a landed human turn (frame-guard.ts isLandedHuman)
+  const INJECTION = ["reconcileOptimistic", "reconcileOptimisticInner", "stripOptimistic", "reconcileHeldCopiesInner", "hideQueuedCopy"];   // optimistic/held groups and hide marks: never a landed human turn (frame-guard.ts isLandedHuman)
   const MINT = ["openProvisional", "showReviveLoader", "openSubagentView"];                                                             // a new empty tab, before any frame
   assert.deepEqual([...eventWriters().keys()].sort(), [...FRAME, ...INJECTION, ...MINT].sort(),
                    "a new writer of s.events: classify it here, and if it applies server events, add its frame to LAND_FRAME_TYPES");

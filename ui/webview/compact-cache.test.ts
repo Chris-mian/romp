@@ -11,11 +11,12 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 
 test("a switch with no change is a NO-OP (the cached DOM is revealed), in compact too", () => {
-  assert.match(RENDER, /if \(v\.rendered === len && !v\.stale && v\.el\.childNodes\.length > 0\) return v;/);
+  assert.match(RENDER, /const current = v\.rendered === len && !v\.stale && !v\.rediff && v\.el\.childNodes\.length > 0 && !!v\.painted && v\.painted\.items\.length === total;[\s\S]{0,120}?if \(current\) return v;/);
 });
 
-test("compact / a stale view re-renders the CURRENT window (not a full transcript rebuild)", () => {
-  assert.match(RENDER, /if \(settings\.compact \|\| v\.stale\) \{[\s\S]*?renderWindowItems\(v, s, items, ws, we, working\); v\.stale = false; return v;/);
+test("a stale view re-renders the CURRENT window (not a full transcript rebuild); compact mode takes the keyed paint like normal mode", () => {
+  assert.match(RENDER, /if \(!v\.stale && tailDiff\(v, s, items, working, wasAtTail\)\) return v;[\s\S]*?renderWindowItems\(v, s, items, ws, we, working\); v\.stale = false; return v;/);
+  assert.doesNotMatch(RENDER, /if \(settings\.compact \|\| v\.stale\) \{/, "compact mode rebuilt the whole window on every frame until 2026-09-23");
 });
 
 test("toggling a tool group forces a re-render past the cache (sets stale) — an expand still repaints", () => {
