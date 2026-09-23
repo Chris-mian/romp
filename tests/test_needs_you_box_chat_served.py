@@ -113,6 +113,7 @@ for (let i = 0; i < 40; i++) {   // loop-ok: bounded; the walk stops when focus 
   const a = await active(); if (a && a.inBox) { out.keys.entered = true; out.keys.landed = a; break; }
 }
 if (out.keys.entered) {
+  out.keys.headName = await page.locator("#notices .ntc-head").ariaSnapshot().catch((e) => "snapshot failed: " + e);   // the computed name on the standalone page too
   await page.keyboard.press("Enter");
   out.keys.opened = await page.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l1"), null, { timeout: 5000 }).then(() => true).catch(() => false);
   out.keys.afterEnter = await readBox(); out.keys.focusAfterEnter = await active();
@@ -323,6 +324,7 @@ if (fr) {
   }
   if (out.shellKeys.entered) {
     await shell.keyboard.press("Shift+Tab"); out.shellKeys.second = await frActive();
+    out.shellKeys.headName = await fr.locator("#notices .ntc-head").ariaSnapshot().catch((e) => "snapshot failed: " + e);   // the COMPUTED accessible name, from the browser's accessibility tree (the post-merge review of PR 2108: the attribute and the label's text passed a mutant whose label carried its own aria-label)
     await shell.keyboard.press("Enter");
     out.shellKeys.opened = await fr.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l1"), null, { timeout: 5000 }).then(() => true).catch(() => false);
     await shell.keyboard.press("Tab"); out.shellKeys.afterTab1 = await frActive();
@@ -698,6 +700,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(k["opened"], "Enter opens the items: %r" % k)
         self.assertEqual((k["afterEnter"]["level"], k["afterEnter"]["head2"]["role"], k["afterEnter"]["head2"]["tabIndex"], k["afterEnter"]["head2"]["expanded"]), (1, "button", 0, "true"), "level 1, a button with a tab stop, expanded: %r" % k["afterEnter"]["head2"])
         self.assertEqual(k["afterEnter"]["head2"]["caretHidden"], "true", "the caret is decoration to assistive tech")
+        self.assertRegex(((k.get("headName") or "").splitlines() or [""])[0], r'^- button "Needs you · \d+"$', "the computed accessible name on the standalone page: the label's text, a button (no gear here): %r" % k.get("headName"))
         self.assertTrue(k["focusAfterEnter"]["head"], "focus stays on the header after Enter: %r" % k["focusAfterEnter"])
         self.assertEqual((k["afterTab"]["inBox"], k["afterTab"]["text"], k["afterTab"]["act"]), (True, "Reply", "ntc-reply"), "Tab lands on the first row's Reply: %r" % k["afterTab"])
 
@@ -729,8 +732,11 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(k["entered"], "Shift+Tab from the composer enters the box within the walk: %r" % k)
         self.assertEqual(k["first"]["act"], "ntc-gear", "the gear, the header's last control, is the first stop backwards: %r" % k["first"])
         self.assertEqual((k["second"]["head"], k["second"]["labelledby"]), (True, "ntc-label"), "then the header, named by its label alone (before: the gear's name folded into it): %r" % k["second"])
-        self.assertRegex(k["second"]["labelText"] or "", r"^Needs you · \d+$", "the name is the label's text, the title with the count and nothing of the gear: %r" % k["second"])
-        self.assertNotIn("settings", k["second"]["labelText"] or "", "the gear's label is not in the name")
+        self.assertRegex(k["second"]["labelText"] or "", r"^Needs you · \d+$", "the label's text is the title with the count (the mechanism's witness): %r" % k["second"])
+        self.assertNotIn("settings", k["second"]["labelText"] or "", "the gear's label is not in the label")
+        first = (k.get("headName") or "").splitlines()[0] if k.get("headName") else ""
+        self.assertRegex(first, r'^- button "Needs you · \d+"', "the COMPUTED accessible name, read from the browser's accessibility tree, is the label's text alone (the post-merge review of PR 2108: a label with an aria-label of its own renamed the header while the attribute pin passed): %r" % k.get("headName"))
+        self.assertNotIn("settings", first, "and nothing of the gear in it")
         self.assertTrue(k["opened"], "Enter opens the items")
         self.assertEqual(k["afterTab1"]["act"], "ntc-gear", "Tab from the header: the gear: %r" % k["afterTab1"])
         self.assertEqual((k["afterTab2"]["inBox"], k["afterTab2"]["text"], k["afterTab2"]["act"]), (True, "Reply", "ntc-reply"), "then the first row's Reply: %r" % k["afterTab2"])

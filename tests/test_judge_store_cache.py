@@ -37,7 +37,7 @@ T0 = NOW - 3600
 def _norm(store):
     """A store's content as plain JSON with the forensic arrival stamps dropped: record_verdict stamps `at`
     from the clock at replay time, so two loads a second apart differ there and nowhere else."""
-    out = json.loads(json.dumps({k: v for k, v in store.items() if k != "_baseRev"}))
+    out = json.loads(json.dumps({k: v for k, v in store.items() if k not in ("_baseRev", "_baseSrc")}))   # the writer's transient base reference beside the CAS base
     for nd in (out.get("nodes") or {}).values():
         for e in nd.get("log") or []:
             e.pop("at", None)
@@ -106,7 +106,9 @@ class SharedStoreCache(unittest.TestCase):
         self.assertEqual(_norm(shared), _norm(writer), "same guard, same replay, same rollup")
         self.assertEqual(shared["_baseRev"], writer["_baseRev"], "the CAS base rides the shared view too, so a "
                          "shallow copy handed to save_goals still meets the CAS")
-        self.assertEqual(json.dumps(shared), json.dumps(writer), "json.dumps sees a plain store")
+        plain = lambda st: {k: v for k, v in st.items() if k not in jd._NONCONTENT_KEYS}   # the writer alone carries its transient base reference
+        self.assertEqual(json.dumps(plain(shared)), json.dumps(plain(writer)), "json.dumps sees a plain store, the same content")
+        self.assertEqual(json.dumps(writer)[:1], "{", "and a loaded writer store still serializes whole (its reference as an empty object)")
         nid = self._nid(1)
         self.assertIsInstance(shared, dict)
         self.assertIsInstance(shared["nodes"][nid], jd.GuardedNode)
