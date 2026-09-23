@@ -20745,6 +20745,64 @@ def _revive_session_inner(sid, client=None):
         _reveal_chat_for(client, {"type": "focus", "id": sid})
 
 
+# The panes whose menus offer Restart session, and which therefore latch a row on the click and re-arm it on
+# the kernel's reply: the chat's tab menu and the Sessions pane's row menu (its pane id is the second name).
+_RESTART_VIEWS = ("chat", "fleet")
+
+
+def _restart_reply_views(client):
+    """Which panes of the asking dashboard hear a restart's answer: the ONE that asked, when it is a pane that
+    offers the row (its own socket carries its app), else both. One pane latched the row, one pane re-arms it and
+    says what happened — a second copy in the other pane would report a click that pane never saw. Narrower than
+    the revive's chat+feed pair on purpose, and possible where that one is not: a revive is answered for a dead
+    session two panes can both be showing."""
+    app = (client or {}).get("app") or ""
+    return (app,) if app in _RESTART_VIEWS else _RESTART_VIEWS
+
+
+@_stage_marked("restart")
+def _restart_session(sid, client=None):
+    """The restart door (the WS restartSession op, on its own thread): relaunch the session's own CLI
+    process in place. The session survives the action whole — same sid, same tab in the same place, same
+    name, tags, folder, model and effort, same conversation — and only the process it runs is replaced,
+    by one that resumes the newest transcript. That is what End + Revive reached in two destructive-looking
+    steps, and the reason to reach it is a CLI UPGRADE (the user 2026-09-23): a session launched before an
+    upgrade keeps the binary it launched with, so a model only the newer CLI knows is unreachable from it.
+
+    The work is the owning backend's (SessionBackend.relaunch → SdkBackend.relaunch, which rides
+    request_reconnect, the road every connect-time switch already takes), so nothing here duplicates the
+    revive's resume: the two doors reach different machinery on purpose, and only this one leaves the
+    session live throughout. Runs off the WS recv loop like the revive — the interrupt and the reconnect
+    must not block the socket.
+
+    FAILURE IS LOUD and AIMED (the per-viewer rule, as reviveFailed is): a restartFailed carrying the reason
+    goes to the pane that asked, in the window that asked (_restart_reply_views), and nowhere else. Success
+    sends restarted to the same place — the event that pane's latched row re-arms on, since a restart
+    deliberately changes nothing else it could notice. Neither frame moves the focus: the tab the user is
+    looking at is theirs (2026-07-29), and a restart of some other session must not pull them off it."""
+    sid = str(sid)
+    name = _name_of(sid) or sid
+    wid = (client or {}).get("wid") or ""
+    if not _kernel_knows(sid):
+        detail = ("this romp kernel has no session with id %s — on a board showing more than one machine, "
+                  "that means the pane addressed the wrong kernel" % sid)
+    else:
+        try:
+            detail = Sessions.backend_for(sid).relaunch(sid)
+        except Exception as e:
+            detail = str(e)[:200]
+    if detail:
+        sys.stderr.write("restart '%s' (%s): refused — %s\n" % (name, sid, detail))
+        failed = {"type": "restartFailed", "id": sid, "name": name, "text": detail}
+        for app in _restart_reply_views(client):
+            _send_to_view(app, failed, wid)
+        return
+    sys.stderr.write("restart: %s via restartSession WS op\n" % sid)   # the attribution the End door writes for a kill
+    for app in _restart_reply_views(client):
+        _send_to_view(app, {"type": "restarted", "id": sid, "name": name}, wid)
+    _push_soon()   # the fresh CLI's state (spawning → connected) reaches the board on the next build
+
+
 # ───────────────────── the unowned route: what answers for a sid no backend owns ─────────────────────
 # Sessions.backend_for used to fall through to the tmux backend for every sid neither the SDK nor the Codex
 # backend owned, and tmux's send "accepted" anything (a missing session was reported only on stderr, in its
@@ -52472,7 +52530,9 @@ def _send_slot_delta(c, key, ftype, payload, pre, sig, parts=None):
 #   tagEdit — the targeted `tagEdit` op (create / rename / recolor / addMember / removeMember /
 #             delete / move, by tag id), the `tagEditAck` / `viewsAck` answers on the poster's socket,
 #             and the write sequence (`seq`) on every views blob.
-KERNEL_WS_CAPS = ("tagEdit", "chatProto2")   # chatProto2: the uuid-anchored chat wire (T323 stage 4b)
+KERNEL_WS_CAPS = ("tagEdit", "chatProto2", "restartSession")   # chatProto2: the uuid-anchored chat wire (T323 stage 4b);
+#   restartSession: the menus' Restart session (2026-09-23) — a page that has the row and a kernel that does not answers
+#   unknownOp, which the row reads as the refusal it is instead of latching on a reply that never comes
 # The caps frame: {type: "caps", caps: [...], viewsSeq: int|null}. `viewsSeq` (the 2026-09-05
 # review) is the write seq of the views blob the READY HANDLER'S OWN connect push served this client — the
 # tabOrder frame's for a chat page, the timeline skeleton's (`data.views`), the feed frame's — read from
@@ -72412,6 +72472,12 @@ class Handler(BaseHTTPRequestHandler):
             # confirmRevive → "Revive": resume the dead session in the background (the kernel had
             # no handler, so the modal's Revive silently did nothing — the user 2026-06-16)
             threading.Thread(target=_revive_session, args=(msg["id"], client), daemon=True).start()
+        elif msg and msg.get("type") == "restartSession" and msg.get("id"):
+            # The menus' "Restart session" (the user 2026-09-23): relaunch the session's CLI in place so it
+            # picks up the version installed now. Off the recv loop like the revive beside it — the
+            # interrupt and the reconnect take as long as they take. Advertised in KERNEL_WS_CAPS, so a
+            # page newer than its kernel meets the unknownOp refusal instead of a click that vanishes.
+            threading.Thread(target=_restart_session, args=(msg["id"], client), daemon=True).start()
         elif msg and msg.get("type") == "viewReadOnly" and msg.get("id"):
             _kept_open.add(msg["id"])            # confirmRevive → "View read-only": this dead session
             #                                      gets a (struck) read-only tab now, without resuming it

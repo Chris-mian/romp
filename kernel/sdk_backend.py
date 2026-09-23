@@ -15237,6 +15237,49 @@ class SdkBackend:
         self._finish_move(s, sid, old, new)
         return ""
 
+    def relaunch(self, sid: str) -> str:
+        """Relaunch this session's CLI process in place (see SessionBackend.relaunch; the user 2026-09-23,
+        who wanted one action for what End + Revive was doing in two — a session that has been up since
+        before a CLI upgrade cannot reach a model only the new binary knows). "" on success, else the
+        reason, verbatim for the user.
+
+        THE ROAD IS THE ONE ALREADY HERE: request_reconnect, what /effort, per-session env and the billing
+        switch take to apply a connect-time change. The run loop leaves its `async with ClaudeSDKClient`
+        and re-enters it, and for a kernel child that IS a new CLI process — spawned from `cli_path`, the
+        `claude` symlink the kernel resolved (_claude_bin), so the fresh process is whatever version is
+        installed NOW. Nothing else is touched: no kill, no `alive` flip, no death record, so no surface
+        ever paints this session dead on the way through (the board's tab, its place and its history all
+        stay put), and the reconnect resumes the same conversation.
+
+        A RUNNING TURN IS CUT, and the dashboard's confirm says so before it gets here: the reconnect is
+        ARMED first and the turn is then interrupted, so the arm exists before the interrupted turn's
+        result fires it (the deferred reconnect the ResultMessage handler runs — the CLI is never torn
+        down under a live turn, whichever order the two land in). A queued-but-not-started turn is not
+        interrupted: there is nothing running to cut, and the armed reconnect fires at the next turn end.
+
+        A session with no live object (dormant, or one this kernel has not started this life) has no
+        process to replace — connect() starts one, which is a fresh CLI on the current binary and so the
+        same outcome by the shortest road."""
+        reg = read_reg(self.state_dir, sid)
+        if not reg:
+            return "romp has no record of this session"
+        if not reg.get("alive"):
+            return "this session is not running — revive it to bring it back"
+        with self._lock:
+            s = self.sessions.get(sid)
+        if s is None:
+            # nothing to tear down: the next connect IS the fresh CLI
+            return "" if self.connect(sid) else "the session's CLI did not start (see the kernel log)"
+        with s._lock:
+            running = s.inflight > 0          # a turn in flight NOW (busy() also counts a queued one: nothing to cut there)
+        s.request_reconnect()                 # armed first — see the docstring's order
+        if running:
+            self.interrupt(sid)
+        self._log("relaunch (%s): %s; its CLI is replaced by a fresh one resuming the same conversation"
+                  % (s.name, "the running turn is cut" if running else "idle, reconnecting now"))
+        self._poke()
+        return ""
+
     def _stand_down_move(self, s, sid: str) -> None:
         """A move() exit that leaves the session where it was: lower the arm (_disarm_move_settle), THEN
         drop the claim (cwdPending), in that order. The claim is what keeps a second move() of this sid out

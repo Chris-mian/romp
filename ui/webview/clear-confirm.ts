@@ -56,3 +56,28 @@ export function endConfirmDetail(titles: string[], base: string): string {
     + shown + ". Ending takes them off the working surfaces with it. " + base;
 }
 
+
+// ── Restart session (the user 2026-09-23) ────────────────────────────────────────────────────────
+// One action for what End + Revive was doing in two: the session's own CLI process is replaced by a
+// fresh one that picks the same conversation up. The reason it exists is a CLI UPGRADE — a session
+// launched before one keeps the binary it started with, so a model only the newer CLI knows is out of
+// reach from it. Nothing about the session changes, which is exactly why the copy has to say so: the
+// user is being asked to accept an interruption for a change they will not see.
+// One copy for both menus (the chat's tab menu, the Sessions pane's row menu), like the two above.
+export const RESTART_LABEL = "Restart session";
+export const RESTART_BUSY_LABEL = "Restarting…";                 // the row's own label while the relaunch is in flight
+export const RESTART_SUBLINE = "relaunches its CLI on the version installed now — the conversation stays";
+export const RESTART_BUSY_SUBLINE = "replacing its CLI; the tab and the conversation stay put";
+export const RESTART_STANDING = "It keeps its name, its place and its whole conversation — only the program running it is replaced, by one that picks up where it left off.";
+
+// The restart confirm's detail, shown ONLY when the session is working (an idle one restarts with no
+// dialog at all): what the click interrupts, named the way the End dialog names what it drops — the open
+// tops are what the running turn is about, so they say more than "a turn" does.
+export function restartConfirmDetail(titles: string[]): string {
+  if (!titles.length) return "The turn it is running now is cut off. " + RESTART_STANDING;
+  const list = titles.join(", ");
+  const shown = list.length > 140 ? list.slice(0, 139) + "…" : list;
+  const n = titles.length;
+  return (n === 1 ? "It is working on 1 open card: " : "It is working on " + n + " open cards: ")
+    + shown + ". The turn it is running now is cut off. " + RESTART_STANDING;
+}

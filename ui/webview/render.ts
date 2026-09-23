@@ -44,6 +44,7 @@ import { flash } from "./actions";   // its own line: the import above is pinned
 import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, listBreakdown, keptWord, GROUP_TITLE, ROW_KINDS, workingFor, type AwaitRow } from "./spin-caption";
 import { CHIP_LABEL, chipWords, statusChip, type ChipState } from "./status-chip";   // the session status chip: its words and its classes, the one builder the bar and the tag overview's rows share (T322b)
 import { isClearCmd, isNewCmd, openTopTitles, clearConfirmDetail, endConfirmDetail, RENAME_SUBLINE, END_SESSION_STANDING } from "./clear-confirm";
+import { addRestartRow, restartInterrupts, settleRestart } from "./restart-row";   // the one Restart session row, shared with the Sessions pane's menu
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { historyMarks, historyBands, windowSpans, HIST_H, HIST_GAP } from "./glow-history";
 import { newSkeletonState, applyTabOrderSkeleton, onStatus, holdStatus, onFull, onDismiss, onSocketUp, nextPrefetch, renderKind } from "./skeleton-tabs";
@@ -980,6 +981,12 @@ function onKernelCaps(m: { caps?: unknown; viewsSeq?: unknown }) {
 // gesture takes the path that kernel does know
 function onUnknownOp(m: { op?: unknown; writeId?: unknown }) {
   if (typeof m.op === "string") kernelCaps.delete(m.op);
+  if (m.op === "restartSession") {
+    // a kernel older than this page (it advertises restartSession in its caps): every latched row re-arms
+    // on the refusal rather than waiting for a reply that is never coming, and the toast says what to do
+    for (const id of sessions.keys()) settleRestart(id);
+    warnToast("This romp kernel is older than the dashboard and has no Restart session — end the session and revive it instead.");
+  }
   if (typeof m.writeId === "string" && viewsWrites.some((w) => w.id === m.writeId))
     onViewsAck({ type: "unknownOp", writeId: m.writeId, ok: false,
                  error: "the kernel does not know the " + String(m.op) + " operation, so the edit was not applied — try again; this dashboard now uses the older path" });
@@ -7182,7 +7189,7 @@ function setSessionColor(id: string, bg: string) {
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
-function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil" | "key", off: boolean): HTMLElement {
+function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil" | "key" | "restart", off: boolean): HTMLElement {
   const span = el("span", "ctx-icon" + (off ? " off" : ""));
   const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
   const body = kind === "feed"
@@ -7197,6 +7204,8 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
           ? '<path d="M2 3.4 A1.4 1.4 0 0 1 3.4 2 L7.6 2 A1.4 1.4 0 0 1 8.6 2.4 L13.6 7.4 A1.4 1.4 0 0 1 13.6 9.4 L9.4 13.6 A1.4 1.4 0 0 1 7.4 13.6 L2.4 8.6 A1.4 1.4 0 0 1 2 7.6 Z"/><circle cx="5.4" cy="5.4" r="1.1"/>'  // luggage tag (session tags)
         : kind === "key"
           ? '<rect x="1.5" y="4" width="13" height="8" rx="1.5"/><line x1="4.5" y1="9.5" x2="11.5" y2="9.5"/>'  // a keycap (the tab's hot key)
+        : kind === "restart"
+          ? '<path d="M13.2 8 A5.2 5.2 0 1 1 11.4 4.1"/><path d="M13.4 1.9 L13.4 5 L10.3 5"/>'  // a circling arrow (relaunch the session\'s CLI)
         : kind === "pencil"
           ? '<path d="M3 13 L3.6 10.4 L10.8 3.2 A1.3 1.3 0 0 1 12.8 5.2 L5.6 12.4 Z"/><line x1="9.8" y1="4.2" x2="11.8" y2="6.2"/>'  // pencil (rename)
           : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
@@ -7756,7 +7765,23 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     wireFlyout(menu, item, ".ctx-sub-billing", () => openBillingFly());
     menu.appendChild(item);
   }
-  // ── 4. FILES: Browse files (web only). A different kind of thing, it opens another surface; last and
+  // ── 4. THE SESSION'S PROCESS: Restart session. Not how it shows, not where it belongs, not what
+  // reaches you — the one row that acts on the running program itself, so it takes a section of its own
+  // (the user 2026-09-23, who asked for this in place of End then Revive: a session keeps the CLI it
+  // launched with, and only a relaunch puts it on a newer one — a model the old binary does not know is
+  // otherwise unreachable from it). The row and its gesture live in restart-row.ts, the ONE copy both
+  // menus that offer it build from; everything it needs is resolved by id here, never off a node the next
+  // push rebuilds.
+  addMenuSep(menu);
+  addRestartRow(menu, id, {
+    name: s?.name || id,
+    working: restartInterrupts(st?.state),
+    titles: openTopTitles(ledgers.get(id)?.tree),
+    icon: ctxIcon("restart", false),
+    confirm: (title, detail, buttons, cb) => showConfirm(title, detail, buttons, cb),
+    post: () => { vscodeApi?.postMessage({ type: "restartSession", id }); },
+  });
+  // ── 5. FILES: Browse files (web only). A different kind of thing, it opens another surface; last and
   // alone behind its own divider (the 2026-08-24 ruling).
   // BROWSE FILES — at the BOTTOM behind its own divider (the user 2026-08-24: it is a different
   // kind of thing from the switches above), wearing the standard icon + sub-description dress. It opens
@@ -19471,6 +19496,16 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "reviveFailed" && m.id) {
     // the kernel's loud revive failure → named, in that session's own pane + the dismissible toast
     reviveFailedLocal(String(m.id), String(m.name || m.id), String(m.text || "unknown error"));
+  }
+  // The restart's two answers (2026-09-23), for the pane that asked: the menu row's latch lifts on the
+  // event — the kernel's own word for THIS sid, never a clock — and nothing else moves. A restart that
+  // worked is deliberately invisible (same tab, same place, same history), so the settle is all there is;
+  // a restart that did not is named in the dismissible toast, the revive failure's surface, with the
+  // session left exactly as it was.
+  else if (m.type === "restarted" && m.id) settleRestart(String(m.id));
+  else if (m.type === "restartFailed" && m.id) {
+    settleRestart(String(m.id));
+    warnToast(`Couldn’t restart “${String(m.name || m.id)}” — ${String(m.text || "unknown error")}`);
   }
   else if (m.type === "moved" && m.id) moveLanded(String(m.id), String(m.name || m.id), String(m.cwd || ""));
   else if (m.type === "moveFailed" && m.id) {

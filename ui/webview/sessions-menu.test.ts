@@ -25,7 +25,7 @@ const PANE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("a right-click on a session's head, or the menu key on the focused head, opens the shared menu; the goal rows keep their clicks", () => {
-  assert.match(PANE, /import \{ openContextMenu, openConfirmBox \} from "\.\/ctx-menu";/);
+  assert.match(PANE, /import \{ menuCard, addMenuItem, showMenuCard, openConfirmBox \} from "\.\/ctx-menu";/, "the card is built row by row since Restart session joined it (2026-09-23): that row latches its own label, so the builder hands it back");
   assert.match(PANE, /list\.addEventListener\("contextmenu", \(e\) => \{\s*\n\s*const head = \(e\.target as Element\)\.closest\?\.\("\.fl-head"\) as HTMLElement \| null;\s*\n\s*if \(!head \|\| !head\.dataset\.sid\) return;/);
   assert.match(PANE, /if \(e\.key === "ContextMenu" \|\| \(e\.key === "F10" && e\.shiftKey\)\) \{/, "the row's menu key and Shift+F10");
   assert.match(PANE, /showSessionMenu\(r\.left \+ 12, r\.bottom, head\.dataset\.sid, true\);/, "a keyboard opening anchors to the row and focuses the first item; the menu is keyed by sid, never the node");
@@ -67,8 +67,16 @@ test("Delete is the strip's close-button road: the End confirm with the open goa
 
 test("the menu's rows: Rename first, Delete second and marked danger; the danger dress is a token rule in the reference sheet", () => {
   const fn = PANE.slice(PANE.indexOf("function showSessionMenu("), PANE.indexOf("function startRowRename("));
-  assert.match(fn, /\{ label: "Rename", sub: RENAME_SUBLINE, pick: \(\) => startRowRename\(sid\) \},\s*\n\s*\{ label: "Delete", sub: "ends the session; its history stays on disk", danger: true, pick: \(\) => confirmEndSession\(sid\) \},/,
-    "both picks carry the sid alone");
+  assert.match(fn, /addMenuItem\(menu, \{ label: "Rename", sub: RENAME_SUBLINE, pick: \(\) => startRowRename\(sid\) \}\);/, "the pick carries the sid alone");
+  assert.match(fn, /addMenuItem\(menu, \{ label: "Delete", sub: "ends the session; its history stays on disk", danger: true, pick: \(\) => confirmEndSession\(sid\) \}\);/, "…and so does Delete's");
+  // Restart session (2026-09-23) sits between them: it changes the session least of the three, where Delete ends it.
+  // The row itself is restart-row.ts's, the one copy this pane and the chat's tab menu both build from.
+  const at = (m: string) => fn.indexOf(m);
+  assert.ok(at('label: "Rename"') < at("addRestartRow(menu, sid,") && at("addRestartRow(menu, sid,") < at('label: "Delete"'),
+    "Rename, Restart session, Delete");
+  assert.match(fn, /working: restartInterrupts\(sessionRow\(sid\)\?\.status\?\.state\)/, "a working session confirms first; an idle one restarts with no dialog");
+  assert.match(fn, /titles: openTopTitles\(\(sessionRow\(sid\)\?\.ledger\?\.tree \|\| \[\]\) as any\)/, "the confirm names the open tops, as Delete's does");
+  assert.match(fn, /post: \(\) => vscodeApi\?\.postMessage\(\{ type: "restartSession", id: sid \}\)/, "one op, the session's id and nothing else");
   assert.match(fn, /onClose: \(\) => \{ if \(!document\.hasFocus\(\)\) return; const h = headOf\(sid\); if \(h\) h\.focus\(\{ preventScroll: true \}\); \}/,
     "focus returns to the row's head when the menu closes, unless the close followed the focus out of the document (the window's blur: a click into another pane, where the composer lost the keyboard to the head in Firefox)");
   assert.doesNotMatch(fn, /onClose: \(\) => \{ const h = headOf\(sid\);/, "the unguarded return is gone");

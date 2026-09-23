@@ -213,6 +213,17 @@ Right-click its tab and choose **Move to folder…**, or run `romp move <session
 <dir>`: its conversation, name, mail and history stay with it, and the agent
 reads the new folder's `CLAUDE.md` from the next turn.
 
+A session can also be restarted in place. Right-click its tab — or its row in
+the Sessions panel — and choose **Restart session**: the agent's own program
+ends and a fresh one picks the same conversation up, so the session keeps its
+name, its place, its tags, its model and its whole history.
+
+That is how a long-running session gets onto a newly installed Claude Code. A
+session keeps the version it launched with, so when a new model ships, only a
+session running the new version can reach it. If the session is working when
+you ask, Romp says what the restart interrupts first; if it is idle, it just
+happens.
+
 Words your team coined wear a quiet dotted underline wherever a session writes
 them: hover one for the definition, click it to open the group's glossary at
 that entry.
