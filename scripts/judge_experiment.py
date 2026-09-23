@@ -52,7 +52,7 @@ NON_ARM_JUDGES = ("grouper", "consolidator", "distiller", "gister")   # the resh
 #   carry judge None (a rate-limited row carries the TIER "triage", a store-quarantined or history-unreadable row carries
 #   "romp"), so an allowlist let those through. A row naming a non-arm judge above is the only kind excluded.
 FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",
-                 "unregistered-caller", "history-unreadable", "store-quarantined")   # judge-errors rows that mean the ending was not judged:
+                 "unregistered-caller", "history-unreadable", "store-quarantined", "no-seed-cut")   # judge-errors rows that mean the ending was not judged:
 #   a rejected reply, a crashed or refused call, the two pause kinds (`auth`, `rate-limited`), the call-level stand-downs (`fast-refused`,
 #   `scratch`, `unregistered-caller`). A `timeout` files under `call`, so it is not named. The `*-unreadable` family and the store-fault pair
 #   (`history-unreadable` aside) cannot fire on the arm's road (it hands the judges a store it just wrote and read), and are named only so a
@@ -970,6 +970,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
     prompts = json.loads(Path(prompts_file).read_text()) if prompts_file else {}
     now = int(time.time()) if now is None else int(now)
     results = {"arm": arm, "prompts": sorted(prompts), "endings": {}, "stopped": None, "failures": 0, "closerNone": 0,
+               "endingsUnplanned": [],       # endings whose arm run made ZERO planner calls: any marks the arm not comparable (per-ending precondition, 2026-09-23)
                "buildsPerCard": builds}     # stamp the per-card build count so a reader knows a card's column is the majority of N (the 2026-09-22 PR 2022 review, MED 1)
     results["preflightProbe"] = preflight_auth(jd, jd.TRIAGE_MODEL)   # refuse before the first ending if the arm
     #                            cannot authenticate; the probe's own cost is noted here, outside the arm's judge ledger
@@ -998,13 +999,14 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
             path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % eid)), None)
             if path is None:
                 continue
-            lo = e.get("seedStart", e.get("startT"))         # the seed's own cut: the module's rule (build_corpus line ~644): the ending's
-            if lo is None:                                    # turn start, else the previous turn's end for an OPENER-LESS continuation. An
-                lo = e.get("cutT")                           # older manifest carries no seedStart; its startT is the same value. Falls to cutT
-            #                                                   only for a degenerate opener-less FIRST turn, so every ending is sealed and adopted.
+            lo0 = e.get("seedStart", e.get("startT"))         # the seed's own cut: the ending's turn start, else the previous turn's end for an
+            #                                                   OPENER-LESS continuation. An older manifest carries no seedStart; its startT is the
+            #                                                   same value. When NEITHER is present it is derived from the store below, never cutT
+            #                                                   (which would seal the ending's own turn), else the ending is refused loudly.
             seed_path = corpus / "state" / "romp" / "goals" / (eid + ".json")
             seed = seed_path.read_text() if seed_path.is_file() else None
             builds_out = []
+            planner0 = calls_by_judge(usage).get("planner", 0)   # per-ending precondition: this ending must make at least one planner call
             try:
                 for _b in range(builds):
                     errs0 = error_rows()
@@ -1017,6 +1019,15 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                     session = jd.parsed_session(eid, [str(path)], now)
                     turns = session.get("turns") or []
                     store = jd.load_goals(eid)
+                    lo = lo0
+                    if lo is None:                               # neither seedStart nor startT: derive the seed cut from the store, the previous
+                        ct = [jd.id_epoch(t) or 0 for t in (store.get("closedTurns") or [])]   # turn's end (the rule build_corpus applies)
+                        lo = max(ct) if ct else None
+                    if lo is None:                               # no previous turn: refuse LOUDLY, counting against comparability, never seal on cutT
+                        jd._log_judge_error("planner", eid, "no-seed-cut", note="opener-less ending with no previous turn's end to seal on")
+                        results["failures"] += error_rows() - errs0
+                        builds_out.append({})
+                        continue
                     seal_pre_cut_adopt(jd, eid, session, store, lo)   # every ending (opener-less included): plan its own turn, independent of the seed's placementsV (2026-09-23)
                     closed = jd._session_settled(eid, str(path), session, store, now=now)   # the settled gate over the ending's own transcript
                     jd.rollup_status(store, closed, now=now)                            # the flags from the seed's diary, before the first menu
@@ -1057,6 +1068,8 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                 results["endings"][eid] = {"class": e["class"], "builds": builds_out, "crashed": repr(ex)[:200]}
                 flush()
                 continue
+            if calls_by_judge(usage).get("planner", 0) == planner0:   # this ending planned nothing (a sealed-whole seed, a refusal): never silent
+                results["endingsUnplanned"].append(eid)
             results["endings"][eid] = {"class": e["class"], "builds": builds_out}
             flush()
             cost, n, _ = ledger_cost(usage)
@@ -1292,7 +1305,7 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
         majority = {nid: mv for nid, mv in ((nid, _majority(vals)) for nid, vals in vals_of.items()) if mv is not _UNSCORED}
         flaps += sum(1 for vals in vals_of.values() if len(set(vals)) > 1)
         if store_key:
-            g = placement_gestures(live_state, store_key, e.get("startT"), float(e.get("cutT") or 0), faults=faults)
+            g = placement_gestures(live_state, store_key, e.get("seedStart", e.get("startT")), float(e.get("cutT") or 0), faults=faults)   # seedStart so an opener-less ending's window is [prev turn end, cut], not empty (2026-09-23)
             if g is None:
                 unresolved += 1                                 # the live store is gone or unreadable (a fault is recorded for the unreadable cases)
             elif not g:
@@ -1331,13 +1344,15 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
     calls_by_j = results.get("callsByJudge")
     no_record = calls_by_j is None                                          # an old/withdrawn results record: no per-judge record, cannot be read comparable
     silent_judges = [j for j in MEASURED_JUDGES if not calls_by_j.get(j)] if not no_record else []   # a measured judge with ZERO calls: not comparable
+    unplanned = list(results.get("endingsUnplanned") or [])                 # endings whose arm run made zero planner calls: any one marks the arm not comparable
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
             "answeredThenCleared": answered_then_cleared, "flaps": flaps, "gesturedEndings": gestured,
             "untouchedEndings": untouched, "unplacedEndings": unplaced, "unresolvedEndings": unresolved,
             "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
             "stopped": results.get("stopped"), "failures": failures, "nonArmFailures": int(results.get("nonArmFailures") or 0),
-            "comparable": failures == 0 and not silent_judges and not no_record, "buildsPerCard": builds_n,
+            "comparable": failures == 0 and not silent_judges and not no_record and not unplanned, "buildsPerCard": builds_n,
             "callsByJudge": calls_by_j or {}, "silentJudges": silent_judges, "noPerJudgeRecord": no_record,
+            "endingsUnplanned": unplanned,
             "retry": results.get("retry") or {}, "failuresByKind": results.get("failuresByKind") or {},
             "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
             "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
@@ -1378,6 +1393,8 @@ def report(corpus, run_root, live_state, figure=None):
                 parts.append("; ".join("%s 0 calls" % j for j in r["silentJudges"]))   # a silent measured judge names the arm not comparable (manager 2026-09-23)
             if r.get("noPerJudgeRecord"):
                 parts.append("no per-judge record")            # an old/withdrawn results record has no callsByJudge: cannot be read comparable
+            if r.get("endingsUnplanned"):
+                parts.append("%d ending(s) unplanned" % len(r["endingsUnplanned"]))   # an ending that planned nothing (a sealed-whole seed): never silent
             cell = "%s, not comparable" % ("; ".join(parts) or ("%d" % r["failures"]))
         if r.get("nonArmFailures"):
             cell += " (%d non-arm)" % r["nonArmFailures"]       # an excluded failure is surfaced, never invisible (review 2026-09-22 PR 2022)
@@ -1595,7 +1612,7 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         key = key_of.get(e.get("lane") or e["session"])   # the lane's own store; never the anchor's when a lane hash is present but unresolved
         row_faults = []
         if key:
-            t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=row_faults)
+            t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("seedStart", e.get("startT")), faults=row_faults)   # seedStart so an opener-less ending's window is not empty (2026-09-23)
             # a tierOneError marks a GENUINE read fault, when tier one could not be read AT ALL (t1 is None); a torn journal
             # row that still yields a label leaves that label standing with NO error beside it, the fault recorded at the run
             # level (tierOneErrors in the summary), not on the labeled row (the 2026-09-22 PR 2022 review, low 7)

@@ -512,10 +512,14 @@ class Harness(unittest.TestCase):
         self.assertFalse(m2["comparable"]); self.assertTrue(m2["noPerJudgeRecord"], "no callsByJudge -> not comparable, not a silent pass")
 
     def test_an_old_version_seed_is_planned_through_the_real_road_and_an_opener_less_ending_is_not_skipped(self):
-        """End-to-end (manager round-one medium 1 + 2): a corpus seed at an OLD placements version is driven through the real
-        _plan_session road the harness uses (the fake as the model), and the seal_pre_cut_adopt wiring makes its turn plan the
-        SAME as at the current version, version-independently (a mutant removing the call would seal it whole and red this). An
-        OPENER-LESS ending (startT None, seedStart set) is sealed and adopted by seedStart, not skipped."""
+        """End-to-end (manager round-one medium 1 + 2, round-two medium): a corpus seed at an OLD placements version is driven
+        through the real _plan_session road the harness uses (the fake as the model), and the seal_pre_cut_adopt WIRING makes
+        its turn plan the SAME as at the current version, version-independently (a mutant removing the call would seal it whole
+        and red this). NOTE the seal HALF (which units it seals) is not pinned here: these fixture placements are written at the
+        current derivation, so _placed_key dedups the pre-cut units and seal_pre_cut_adopt seals zero of them; the seal's own
+        logic is pinned by the stubbed unit test above. Opener-less endings (startT None): with seedStart set the run seals by
+        seedStart; with seedStart ABSENT it derives the seed cut from the store's closedTurns; with neither and no previous
+        turn it is refused loudly (no-seed-cut) and reads not comparable, never sealed on cutT."""
         self._judge_written_stores()                       # populate the live 2-turn stores so the corpus carries pre-cut seeds
         dest, m = self._corpus(name="seeded")
         self.assertTrue(all("seedStart" in e for e in m["endings"]), "build_corpus records seedStart for the run-time seal (opener-less endings included)")
@@ -536,13 +540,56 @@ class Harness(unittest.TestCase):
             self.assertEqual(planner_of("r-v%d" % v), base,
                              "an old-version (%d) seed plans the SAME turn (seal_pre_cut_adopt normalizes; the whole-store seal did not fire)" % v)
         # opener-less: startT None but seedStart set -> sealed and adopted by seedStart, not skipped
-        mp = Path(dest, "manifest.json"); mm = json.loads(mp.read_text())
-        for me in mm["endings"]:
-            me["startT"] = None                            # a continuation; seedStart stays as the seed's cut
-        mp.write_text(json.dumps(mm))
+        mp = Path(dest, "manifest.json")
+        def set_manifest(mutate):
+            mm = json.loads(mp.read_text())
+            for me in mm["endings"]:
+                mutate(me)
+            mp.write_text(json.dumps(mm))
+        set_manifest(lambda me: me.__setitem__("startT", None))   # a continuation; seedStart stays as the seed's cut
         set_all(9)
         self.assertEqual(planner_of("r-openerless"), base,
                          "an opener-less ending (startT None, seedStart set) is sealed, adopted and its turn planned via seedStart, not skipped")
+
+    def test_a_degenerate_opener_less_ending_with_no_previous_turn_is_refused_and_a_zero_planner_ending_is_not_comparable(self):
+        """Round-two medium's degenerate leg + the per-ending precondition. An ending with no seed cut at all (startT None, no
+        seedStart, an empty store with no previous turn) is REFUSED loudly (a no-seed-cut failure) rather than sealed on cutT,
+        and the per-ending precondition names any zero-planner ending in endingsUnplanned and marks the arm not comparable."""
+        self._judge_written_stores()
+        dest, m = self._corpus(name="degen")
+        seeded = [x for x in m["endings"] if Path(dest, "state", "romp", "goals", x["id"] + ".json").is_file() and x["turn"] == 1]
+        self.assertTrue(seeded, "a turn-1 ending with a seed store")
+        e = seeded[0]
+        Path(dest, "state", "romp", "goals", e["id"] + ".json").unlink()      # DEGENERATE: empty store, no previous turn to derive from
+        # a SECOND ending derives its seed cut from the store: startT None, no seedStart, but a closedTurns row (the previous
+        # turn's end, at its original seed cut) -> lo derived, the turn planned, never refused
+        self.assertGreaterEqual(len(seeded), 2, "the fixture yields two turn-1 seeded endings")
+        derive = seeded[1]
+        if derive is not None:
+            sp = Path(dest, "state", "romp", "goals", derive["id"] + ".json")
+            d = json.loads(sp.read_text())
+            d["closedTurns"] = ["11111111-2222-4333-8444-555555555555:%d" % int(derive["seedStart"])]
+            sp.write_text(json.dumps(d))
+        mp = Path(dest, "manifest.json"); mm = json.loads(mp.read_text())
+        for me in mm["endings"]:
+            if me["id"] == e["id"]:
+                me["startT"] = None; me.pop("seedStart", None)               # startT None, no seedStart, empty store -> refused
+            elif derive is not None and me["id"] == derive["id"]:
+                me["startT"] = None; me.pop("seedStart", None)               # startT None, no seedStart, but closedTurns -> derived
+        mp.write_text(json.dumps(mm))
+        res = self.je.run_arm(dest, "current", None, os.path.join(self.td, "r-degen"), None, self.fake, now=T0 + 10**6)
+        self.assertIn(e["id"], res.get("endingsUnplanned") or [], "the refused ending planned nothing and is named unplanned: %r" % res.get("endingsUnplanned"))
+        if derive is not None:
+            self.assertNotIn(derive["id"], res.get("endingsUnplanned") or [], "an ending whose seed cut is DERIVED from the store's closedTurns is planned, not refused")
+        self.assertGreater(res.get("failures", 0), 0, "the no-seed-cut refusal counts as a failure")
+        errs = [json.loads(l) for l in (Path(self.td, "r-degen", "current", "state", "romp", "judge-errors.jsonl")).read_text().splitlines()]
+        self.assertTrue(any(r.get("err") == "no-seed-cut" for r in errs), "a no-seed-cut failure row was filed (never a cutT seal)")
+        mb = self.je.measure(m, res, self.state)
+        self.assertFalse(mb["comparable"], "a refused / zero-planner ending marks the arm not comparable")
+        # the per-ending precondition also fires from the measure record alone (a withdrawn re-read)
+        m2 = self.je.measure(m, {"arm": "x", "failures": 0, "buildsPerCard": 3, "callsByJudge": {"planner": 5, "closer": 5},
+                                 "endingsUnplanned": ["abc"], "endings": {}}, self.state)
+        self.assertFalse(m2["comparable"]); self.assertEqual(m2["endingsUnplanned"], ["abc"])
 
     def _add_node_log(self, sid, suffix, ev):
         """Append an event to a live top-level node's log (a helper for the unblocker-ruling pins)."""
