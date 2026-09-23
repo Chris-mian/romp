@@ -4285,8 +4285,11 @@ the kernel's growth between restarts is a series without a sampler of its own.
 And the manager writes a `quiet-window` row to `restart-audit.jsonl` when a
 parked deploy refresh applies (`since`, `waitedS`, `reason` as the gate's
 verdict, `backstop` when the fifteen-minute cap fired, `coalesced`, `mode`,
-`lastInflight`, `misses`, and the park's drain-hold counts); it is a note, not
-a request, and the kernel's restart-reason walk passes it over. Three more
+`lastInflight`, `lastCodex`, `misses`, and the park's drain-hold counts); it
+is a note, not a request, and the kernel's restart-reason walk passes it over.
+`lastInflight` counts the Claude turns in flight at the park's last answered
+poll and `lastCodex` the Codex turns, so a park an open Codex turn held to the
+backstop reads `lastInflight` 0 and `lastCodex` 1. Three more
 manager notes sit beside it: `restart-folded` (a restart request that arrived
 while a restart was in flight and its successor not yet spawned rode that
 restart: `trigger`, `into` the pid signaled), `restart-trailing` (a request

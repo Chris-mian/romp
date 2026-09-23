@@ -10237,14 +10237,29 @@ def _parked_quiet_deploy(checkout, now=None):
 
 
 def _deploy_would_cut():
-    """The turns a deploy restart NOW would cut, as the drain would record them (SdkBackend.would_cut), or None when
-    that is unknown (no backend built yet, or one without the method). The gates that spare in-flight turns apply to
-    an unknown answer exactly as to a non-empty one (T352): only a KNOWN empty list waives them."""
+    """The turns a deploy restart NOW would cut, or None when that is unknown (no backend built yet, or one without
+    the method). The Claude half is the drain's own predicate (SdkBackend.would_cut), so it answers as the drain
+    records its cuts. The gates that spare in-flight turns apply to an unknown answer exactly as to a non-empty one
+    (T352): only a KNOWN empty list waives them.
+
+    The Codex backend's open turns are cuts too (CodexBackend.would_cut; 2026-09-22, the review that found /busy and
+    this gate blind to Codex): its app-server is this kernel's child and ends with it. Without them a box whose Claude
+    sessions were all hosted read "would cut no turn" over an open Codex turn, and the converge waived the cool-down
+    and pre-empted the quiet window that /busy now holds for that turn. Read only when already built, never built
+    here; a built one that cannot answer makes the whole answer unknown, as the SDK side does. This gate and the
+    restart's cut row count Codex turns differently, on purpose (2026-09-23, the review of this lane): the cut row
+    (_codex_cut_turns, CodexBackend.inflight_turns) counts an ended session's open turn, a cut the next load still
+    settles, and never a compaction; this gate (CodexBackend.would_cut) skips ended sessions, whose turn is not work
+    a quiet window should wait for, and counts a compaction once seen active."""
     be = _sdk_backend or None
     if be is None or not hasattr(be, "would_cut"):
         return None
     try:
-        return list(be.would_cut())
+        cut = list(be.would_cut())
+        cx = _codex_backend or None
+        if cx is not None:
+            cut += list(cx.would_cut())
+        return cut
     except Exception:
         return None
 
@@ -10352,8 +10367,10 @@ def _main_drift_check():
         # end, the cool-down spaces the cuts. A restart that would cut none (every working session under a host,
         # T315; the default since T348) has nothing to spare, so neither wait applies to it (T352, the manager's
         # find: a merged fix waited 23 minutes behind the cool-down on a box where every session was hosted). The
-        # answer comes from the drain's own predicate (SdkBackend.would_cut), and only a KNOWN empty list waives a
-        # wait: unknown (no backend yet) keeps both, as before. Every held pass says so, each time.
+        # answer comes from the drain's own predicate (SdkBackend.would_cut) plus the Codex backend's open turns and
+        # running compactions (CodexBackend.would_cut, through _deploy_would_cut; 2026-09-22, the compactions named
+        # 2026-09-23 by the review of this lane), and only a KNOWN empty list waives a wait: unknown (no backend yet)
+        # keeps both, as before. Every held pass says so, each time.
         try:
             since_crash = time.time() - _CONVERGE_CRASH_T[0]
             if _CONVERGE_CRASH_T[0] and since_crash < _CONVERGE_COOLDOWN_S:
@@ -69265,7 +69282,7 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/version":                               # build/version report — exempt from auth (no paths, harmless)
                 return self._send(200, json.dumps(_version_info(authed=self._authorize(q)[0])), "application/json", cache="no-cache")
             if p == "/busy":
-                # In-flight SDK turn count — the manager's quiet-window gate for deferred deploy
+                # In-flight turn count (SDK and Codex) — the manager's quiet-window gate for deferred deploy
                 # refreshes (it polls this only while a refresh is pending). The READ is auth-exempt
                 # like /healthz: a bare count leaks nothing and healthz-style probes rely on it.
                 # ?drain=1 (T121): the PARKED poll also refreshes the kernel's drain lease — new
@@ -69283,6 +69300,24 @@ class Handler(BaseHTTPRequestHandler):
                 # busyness but asks for the drain hold only while turns are actually in flight —
                 # background work must never freeze other sessions' queued prompts
                 inflight, background = (be.busy_breakdown() if be and hasattr(be, "busy_breakdown") else (n, 0))
+                # An open Codex turn is work a restart cuts too (2026-09-22, the review that found this route blind
+                # to Codex): the app-server is this kernel's child and ends with it, and the turn's prompt already
+                # left the durable queue, so the quiet window applied over the turn and the restart lost it. Read only
+                # once built: a poll never builds the backend (_codex() would), and an unbuilt one has no turn open.
+                # In `busy` (the manager defers on it) and in its own `codex` field, never in `inflight` (2026-09-23,
+                # the review of this lane): `inflight` is what the manager asks the drain hold for, the hold pauses
+                # only Claude sessions' new turns, and the Codex worker never reads it, so asking for it over a Codex
+                # turn would pause every Claude session for the Codex turn's length and shorten nothing. An older
+                # manager reads `busy` and defers the same way; it has no `codex` field to name.
+                codex = 0
+                cx = _codex_backend or None
+                if cx is not None and hasattr(cx, "busy_breakdown"):
+                    codex = sum(cx.busy_breakdown())
+                    n += codex
+                # the park lines below report the counts this answer carries (2026-09-23, the review of this lane):
+                # recounted on the SDK side, a park held by a Codex turn alone would read "0 in-flight turn(s), 0
+                # session(s)" and ring that at 5 minutes as a problem naming nothing to wait on
+                counts = (inflight, background, codex)
                 # ?park=<since> (T240c): the manager's park identity, on EVERY parked poll — the drain
                 # episode (its "parked" line, its 5-minute ring) keys on it, not on a time window, and a
                 # park held only by background work (plain polls, no hold) still rings. Never a hold —
@@ -69292,24 +69327,24 @@ class Handler(BaseHTTPRequestHandler):
                 # poll, and an older manager sends no park at all.
                 park = (q.get("park", [""])[0] or "")[:32]
                 if park and be is not None and hasattr(be, "note_parked_poll") and self._write_token_ok(q):
-                    be.note_parked_poll(park)
+                    be.note_parked_poll(park, counts=counts)
                 draining = False
                 if be is not None and hasattr(be, "refresh_drain_hold"):
                     if q.get("drain", [""])[0] == "1":
                         if self._write_token_ok(q):
-                            # The keyword only when a park arrived: a backend without it (an older
-                            # build, a test stand-in) keeps arming the hold the old way.
+                            # The park keyword only when a park arrived: an older manager sends none,
+                            # and the backend keeps its time-window episode for that poll.
                             if park:
-                                be.refresh_drain_hold(park=park)
+                                be.refresh_drain_hold(park=park, counts=counts)
                             else:
-                                be.refresh_drain_hold()
+                                be.refresh_drain_hold(counts=counts)
                             _note_drain_armed()
                         else:
                             _note_drain_refused()    # T224: the one event the gate exists for —
                             #                          read LOUDLY, once per episode (see the helper)
                     draining = be.drain_holding()
                 return self._send(200, json.dumps({"busy": n, "inflight": inflight, "background": background,
-                                                   "draining": draining}),
+                                                   "codex": codex, "draining": draining}),
                                   "application/json", cache="no-cache")
             if p == "/manifest.webmanifest":
                 # the install manifest — auth-exempt like /healthz, and for a hard reason: the
@@ -70048,7 +70083,8 @@ class Handler(BaseHTTPRequestHandler):
                 # about to cut. {"cancel": true} releases the hold (the stop did not happen). A WRITE
                 # that holds every session's turn starts, so it needs the EXPLICIT serve token
                 # (_write_token_ok) on top of the preamble's _authorize: the /busy?drain=1 rule.
-                # No SDK backend ever built: nothing to hold or wait for, quiet at once.
+                # No SDK backend ever built: nothing to hold; quiet at once unless the Codex backend holds a
+                # turn open, which the wait below then reads as it reads the SDK's.
                 # Every 200 names this process's pid: `romp down` ends by SIGTERMing a kernel nothing
                 # above it stopped, and the pid it signals must come from a route the serve token
                 # gates. GET /version's pid is auth-exempt and vouches for nothing: a CLI aimed at
@@ -70075,21 +70111,55 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(wait, bool) or not isinstance(wait, (int, float)) or wait < 0 or wait > DOWN_WAIT_MAX_S:
                     return self._send(400, json.dumps({"ok": False, "error":
                         "wait must be a number of seconds in [0, %d]" % int(DOWN_WAIT_MAX_S)}), "application/json")
+                # An open Codex turn is a cut too (2026-09-23, the review of this lane): the SIGTERM `romp down`
+                # ends with takes the Codex app-server, this kernel's child, and the turn with it, and the turn's
+                # prompt already left the durable queue. Read the SDK backend alone, this route answered quiet at
+                # once over an open Codex turn, the CLI said no turn was in flight, and the stop cut the turn while
+                # /busy in the same kernel said busy. Read as /busy reads it: once built, never built here (an
+                # unbuilt backend has no turn open). A read that raises counts as one open turn: an unknown count
+                # is waited on as a busy one, the way _deploy_would_cut keeps its gates over an unknown answer.
+                # Codex has no hold to arm (its worker never reads the quiesce), so the count and the names are
+                # its whole part of this route.
+                cx = _codex_backend or None
+                if cx is not None and not (hasattr(cx, "busy_breakdown") and hasattr(cx, "would_cut")):
+                    cx = None
+
+                def _busy():
+                    n = be.busy_count() if be is not None and hasattr(be, "busy_count") else 0
+                    if cx is not None:
+                        try:
+                            n += sum(cx.busy_breakdown())
+                        except Exception:
+                            n += 1
+                    return n
+
+                def _inflight():
+                    names = list(be.inflight_names()) if be is not None and hasattr(be, "inflight_names") else []
+                    if cx is not None:
+                        try:
+                            names += [str(t.get("name") or t.get("sid") or "?") for t in cx.would_cut()]
+                        except Exception:
+                            pass     # counted above as one unknown turn; the CLI's line names what it has
+                    return names
+
                 if be is None or not hasattr(be, "quiesce"):
-                    return self._send(200, json.dumps({"ok": True, "quiet": True, "busy": 0,
-                                                       "inflight": [], "waited": 0, "pid": os.getpid()}),
-                                      "application/json")
-                be.quiesce(float(wait) + DOWN_HOLD_GRACE_S)
+                    # no SDK backend: nothing to hold, and quiet at once unless a Codex turn is open
+                    if _busy() == 0:
+                        return self._send(200, json.dumps({"ok": True, "quiet": True, "busy": 0,
+                                                           "inflight": [], "waited": 0, "pid": os.getpid()}),
+                                          "application/json")
+                else:
+                    be.quiesce(float(wait) + DOWN_HOLD_GRACE_S)
                 # the wait ends on the EVENT the in-flight count reaches 0 (each poll reads the
-                # backend's own counters); `wait` is only its bound
+                # backends' own counters); `wait` is only its bound
                 t0 = time.monotonic()
-                busy = be.busy_count()
+                busy = _busy()
                 while busy and time.monotonic() - t0 < wait:
                     time.sleep(min(0.25, max(0.01, wait - (time.monotonic() - t0))))
-                    busy = be.busy_count()
+                    busy = _busy()
                 return self._send(200, json.dumps({
                     "ok": True, "quiet": busy == 0, "busy": busy,
-                    "inflight": be.inflight_names() if busy else [],
+                    "inflight": _inflight() if busy else [],
                     "waited": round(time.monotonic() - t0, 1), "pid": os.getpid()}), "application/json")
             if u.path == "/update-dismiss":
                 # the banner's Not-now, PERSISTED (the user 2026-08-31): the dismissal outlives the

@@ -12308,7 +12308,7 @@ class SdkBackend:
     DRAIN_HOLD_TTL = 12.0     # seconds; ~4 manager polls — the lease outlives a missed poll, not a dead manager
     DRAIN_LOUD_S = 300.0      # a drain still holding after 5 min rings — visible, never mysterious
 
-    def note_parked_poll(self, park: str) -> None:
+    def note_parked_poll(self, park: str, counts=None) -> None:
         """A parked quiet poll carrying the manager's park identity (T240c). The EPISODE — the one
         "deploy restart parked" line and the 5-minute "still parked" ring — keys on that identity, never
         on a time window: the manager drops the hold for minutes at a time during background-only
@@ -12317,8 +12317,9 @@ class SdkBackend:
         after its first line. A plain parked poll now starts, continues and rings the episode too.
         An empty identity is a no-op (nothing to key on), and one BELOW the current identity is a
         stale probe from a park the manager has since replaced — ignored rather than flipping the
-        episode back and forth (review find: handler threads take the lock in no fixed order)."""
-        self._park_seen(str(park or ""), time.time())
+        episode back and forth (review find: handler threads take the lock in no fixed order).
+        `counts` is what the kernel's /busy answered for this poll (see _park_counts)."""
+        self._park_seen(str(park or ""), time.time(), counts)
 
     @staticmethod
     def _park_ord(park):
@@ -12327,7 +12328,20 @@ class SdkBackend:
         except (TypeError, ValueError):
             return None
 
-    def _park_seen(self, park: str, now: float) -> None:
+    def _park_counts(self, counts) -> str:
+        """The counts a park line reports, in words (2026-09-23, the review of this lane): `counts` is
+        (in flight, background, Codex) as the kernel's /busy answered them, and this backend's own
+        breakdown, with no Codex count, when a caller passes none (a direct caller, a test). Recounted
+        here always, a park held by a Codex turn alone would read "0 in-flight turn(s), 0 session(s)
+        with background work" and ring those zeros at 5 minutes as a problem naming nothing to wait on.
+        Codex turns are named apart because the drain hold pauses Claude sessions only."""
+        inflight, background, codex = counts if counts is not None else self.busy_breakdown() + (0,)
+        if codex:
+            return ("%d in-flight turn(s) (%d Claude, %d Codex), %d session(s) with background work"
+                    % (inflight + codex, inflight, codex, background))
+        return "%d in-flight turn(s), %d session(s) with background work" % (inflight, background)
+
+    def _park_seen(self, park: str, now: float, counts=None) -> None:
         if not park:
             return
         with self._lock:
@@ -12344,22 +12358,26 @@ class SdkBackend:
             if ring:
                 self._drain_hold_rang = True
         if new_episode:
-            self._log("deploy restart parked: draining — %d in-flight turn(s), %d session(s) with background "
-                      "work; new turn starts hold while a turn is in flight (queued prompts persist and "
-                      "start after the bounce)" % self.busy_breakdown())
+            self._log("deploy restart parked: draining — %s; new Claude turn starts hold while a Claude "
+                      "turn is in flight (queued prompts persist and start after the bounce)"
+                      % self._park_counts(counts))
         elif ring:
-            self._log("deploy restart still parked after %d min — %d in-flight turn(s), %d session(s) with "
-                      "background work have not finished (the manager's backstop will apply the restart "
-                      "regardless)" % ((int((now - self._drain_hold_since) / 60),) + self.busy_breakdown()),
-                      problem=True)
+            self._log("deploy restart still parked after %d min — %s have not finished (the manager's "
+                      "backstop will apply the restart regardless)"
+                      % (int((now - self._drain_hold_since) / 60), self._park_counts(counts)), problem=True)
 
-    def refresh_drain_hold(self, park: str | None = None) -> None:
+    def refresh_drain_hold(self, park: str | None = None, counts=None) -> None:
         """Arm/extend the drain lease (the manager's parked quiet poll calls this each tick). With a
         park identity the episode bookkeeping is _park_seen's (no time window); without one — an
-        older manager — the 2×TTL flap window below stands in for it."""
+        older manager — the 2×TTL flap window below stands in for it. `counts` is what the kernel's
+        /busy answered for this poll (see _park_counts)."""
         now = time.time()
         if park:
-            self._park_seen(str(park), now)
+            # the counts ride this path too (2026-09-23, the review of this lane): through the route
+            # note_parked_poll has already seen this park with the same counts, but the 5-minute ring
+            # lands here when the bound passes between the two calls, and a direct caller starts the
+            # episode here; recounted, either line would read a Codex-only park as nothing in flight
+            self._park_seen(str(park), now, counts)
         with self._lock:
             first = self._drain_hold_until <= now
             # a NEW episode, not a flap (the legacy, no-park path): the manager drops the hold during
@@ -12385,16 +12403,14 @@ class SdkBackend:
             t.cancel()
         nt.start()
         if new_episode:
-            self._log("deploy restart parked: draining — %d in-flight turn(s), %d session(s) with background "
-                      "work; new turn starts held until this box quiets (queued prompts persist and "
-                      "start after the bounce)" % self.busy_breakdown())
+            self._log("deploy restart parked: draining — %s; new Claude turn starts held until this box "
+                      "quiets (queued prompts persist and start after the bounce)" % self._park_counts(counts))
         elif not park and now - self._drain_hold_since > self.DRAIN_LOUD_S and not self._drain_hold_rang:
             with self._lock:
                 self._drain_hold_rang = True
-            self._log("deploy restart still parked after %d min — %d in-flight turn(s), %d session(s) with "
-                      "background work have not finished; new turn starts remain held (the manager's "
-                      "backstop will apply the restart regardless)"
-                      % ((int((now - self._drain_hold_since) / 60),) + self.busy_breakdown()), problem=True)
+            self._log("deploy restart still parked after %d min — %s have not finished; new Claude turn "
+                      "starts remain held (the manager's backstop will apply the restart regardless)"
+                      % (int((now - self._drain_hold_since) / 60), self._park_counts(counts)), problem=True)
 
     def drain_holding(self) -> bool:
         """Whether new turn starts are currently held for a parked deploy restart."""

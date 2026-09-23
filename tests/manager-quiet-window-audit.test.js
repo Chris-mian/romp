@@ -13,12 +13,24 @@ process.env.ROMP_STATE_DIR = STATE;                 // before the require: the m
 const { quietWindowRow, auditQuietWindow } = require(path.join(__dirname, '..', 'bin', 'romp-manager'));
 
 test('quietWindowRow: the park and the verdict, in epoch seconds', () => {
-  const park = { since: 1_700_000_000_000, count: 3, mode: 'all', lastInflight: 2, misses: 0,
+  const park = { since: 1_700_000_000_000, count: 3, mode: 'all', lastInflight: 2, lastCodex: 0, misses: 0,
                  drainRefusedCount: 1, drainArmedCount: 4, drainRefusedAfterArm: 0 };
   const row = quietWindowRow(park, { action: 'apply', reason: 'backstop cap' }, 1_700_000_900_000);
   assert.deepEqual(row, { t: 1_700_000_900, action: 'quiet-window', since: 1_700_000_000, waitedS: 900,
                           reason: 'backstop cap', backstop: true, coalesced: 3, mode: 'all', lastInflight: 2,
-                          misses: 0, drainRefusedCount: 1, drainArmedCount: 4, drainRefusedAfterArm: 0 });
+                          lastCodex: 0, misses: 0, drainRefusedCount: 1, drainArmedCount: 4, drainRefusedAfterArm: 0 });
+});
+
+test('quietWindowRow: a park a Codex turn held to the backstop names the Codex turn (2026-09-23)', () => {
+  // the review of this lane: the kernel's /busy counts a Codex turn in `busy` and `codex`, never in `inflight`,
+  // so a row with lastInflight alone read nothing in flight over the turn the backstop then cut
+  const park = { since: 1_700_000_000_000, count: 1, mode: 'all', lastInflight: 0, lastCodex: 1, misses: 0,
+                 drainRefusedCount: 0, drainArmedCount: 0, drainRefusedAfterArm: 0 };
+  const row = quietWindowRow(park, { action: 'apply', reason: 'backstop cap' }, 1_700_000_900_000);
+  assert.equal(row.backstop, true);
+  assert.equal(row.lastInflight, 0, 'no Claude turn in flight');
+  assert.equal(row.lastCodex, 1, 'the Codex turn that held the park');
+  assert.equal(JSON.parse(JSON.stringify(row)).lastCodex, 1, 'the field survives JSON');
 });
 
 test('quietWindowRow: a quiet apply is not a backstop; unknown counts read as zero, not undefined', () => {
@@ -27,6 +39,7 @@ test('quietWindowRow: a quiet apply is not a backstop; unknown counts read as ze
   assert.equal(row.waitedS, 12);
   assert.equal(row.coalesced, 1);
   assert.equal(row.lastInflight, null, 'never polled → null, distinguishable from zero in flight');
+  assert.equal(row.lastCodex, null, 'and the same for the Codex count');
   assert.equal(row.drainRefusedCount, 0);
   assert.equal(JSON.parse(JSON.stringify(row)).misses, 0, 'every field survives JSON');
 });

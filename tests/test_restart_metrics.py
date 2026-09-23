@@ -134,6 +134,19 @@ class Parsers(unittest.TestCase):
         self.assertEqual(counts["byAction"]["quiet-window"], 2)
         self.assertEqual(counts["sigtermTriggers"], {"restart-all": 2})
 
+    def test_a_quiet_window_carries_its_codex_count(self):
+        # 2026-09-23, the review of this lane: the manager's row counts the park's Codex turns in `lastCodex`,
+        # apart from `lastInflight` (the Claude turns), so a park a Codex turn held to the backstop reads
+        # lastInflight 0 and lastCodex 1 here too; a row from an older manager has no field and reads None
+        audit = [{"t": self.t2 - 1, "action": "quiet-window", "since": self.t2 - 901, "waitedS": 900,
+                  "reason": "backstop cap", "backstop": True, "coalesced": 1, "mode": "all", "lastInflight": 0,
+                  "lastCodex": 1, "misses": 0, "drainRefusedCount": 0, "drainArmedCount": 1},
+                 {"t": self.t1 - 3, "action": "quiet-window", "since": self.t1 - 300, "waitedS": 297,
+                  "reason": "quiet", "backstop": False, "coalesced": 1, "mode": "all", "lastInflight": 0}]
+        q = rm.parse_quiet_windows(audit, [])
+        self.assertEqual([(x["backstop"], x["lastInflight"], x["lastCodex"]) for x in q],
+                         [(True, 0, 1), (False, 0, None)])
+
     def test_events_turns_and_state_log(self):
         ev, _ = rm._read_jsonl(self.state / "session-events.jsonl")
         events = rm.parse_events(ev)

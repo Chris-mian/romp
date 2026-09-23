@@ -952,6 +952,76 @@ class PostalTools(unittest.TestCase):
         self.assertEqual(seen, [])
 
 
+class RestartWork(unittest.TestCase):
+    """would_cut and busy_breakdown (2026-09-22, the review that found the kernel's /busy and its converge gate blind
+    to Codex: both read the SDK backend alone, so the manager's quiet window applied a refresh over an open Codex
+    turn). What a kernel restart cuts here: the app-server is the kernel's child and ends with it, and a turn's
+    prompt leaves the durable queue at the turn/start ACK, so an open turn, or a compaction running as its own turn,
+    is cut and lost. A queued send is not: it stays on disk until the ACK and the next kernel sends it. Synthetic."""
+
+    def test_an_open_turn_counts_until_it_ends(self):
+        be, fake, _ = build()
+        fake.hold_open = True
+        fake.scripts = [[]]
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertEqual(be.busy_breakdown(), (0, 0), "an idle session is nothing to wait on")
+        self.assertEqual(be.would_cut(), [])
+        self.assertTrue(be.send(sid, "synthetic held turn"))
+        try:
+            self.assertTrue(until(lambda: be._sessions[sid].turn_id is not None))
+            self.assertEqual(be.busy_breakdown(), (1, 0), "an open turn is a turn in flight, cut by a restart")
+            self.assertEqual(be.would_cut(), [{"sid": sid, "name": "web"}])
+            self.assertTrue(be.interrupt(sid))
+            self.assertTrue(until(lambda: not be.busy(sid)))
+            self.assertEqual(be.busy_breakdown(), (0, 0), "the turn's end is the count's end")
+        finally:
+            be.kill(sid)
+
+    def test_a_compaction_counts_and_a_queued_send_does_not(self):
+        be, _, _ = build()
+        sids = ["11111111-2222-3333-4444-5555555555%02d" % i for i in (1, 2, 3)]
+        turn = cb._Session(sids[0], "T-1", "web", "/TESTDIR")
+        compaction = cb._Session(sids[1], "T-2", "api", "/TESTDIR")
+        queued = cb._Session(sids[2], "T-3", "tests", "/TESTDIR")
+        turn.turn_id, turn.state = "t-1", "working"               # a turn the app-server ACKed
+        compaction.compacting, compaction.compact_active_seen, compaction.state = True, True, "compacting"   # its own
+        #                                                           turn on the app-server, seen active
+        queued.queue, queued.queue_ids = ["synthetic queued send"], ["q-1"]   # still on the durable queue
+        for s in (turn, compaction, queued):
+            be._put_session(s)                                    # no worker: nothing runs the queue meanwhile
+        self.assertTrue(be.busy(sids[2]), "busy() counts the queue, for the gates that must not race it...")
+        self.assertEqual(be.would_cut(), [{"sid": sids[0], "name": "web"}, {"sid": sids[1], "name": "api"}],
+                         "...but the queue survives a restart on disk, so it is nothing a restart cuts")
+        self.assertEqual(be.busy_breakdown(), (2, 0), "Codex has no background work romp tracks")
+        with turn.lock:
+            turn.dead = True
+        self.assertEqual(be.would_cut(), [{"sid": sids[1], "name": "api"}], "an ended session is nobody's turn")
+        self.assertEqual(be.busy_breakdown(), (1, 0))
+
+    def test_a_compaction_counts_only_once_its_active_status_is_seen(self):
+        # 2026-09-23, the review of this lane: a bracket compact() latched with no active status yet may be a
+        # compaction Codex acknowledged and never ran (docs/codex.md), and counting it would hold a quiet refresh taken
+        # as that limit's way out to the 15-minute backstop. The worker's own test (_work) is compacting AND active.
+        be, fake, _ = build()
+        sid = be.spawn("web", "/TESTDIR")
+        self.assertTrue(be.send(sid, "first synthetic turn"))
+        self.assertTrue(_lock_free(be, sid))
+        try:
+            self.assertEqual(be.compact(sid), "")
+            self.assertIs(be.compacting(sid), True, "the bracket is latched at the ACK")
+            self.assertEqual(be.would_cut(), [], "latched, no active status seen: maybe never run, nothing to wait on")
+            self.assertEqual(be.busy_breakdown(), (0, 0))
+            _status(fake, "T-1", "active")
+            self.assertTrue(until(lambda: be.would_cut() == [{"sid": sid, "name": "web"}]),
+                            "the active status says the compaction runs: a restart would cut it")
+            self.assertEqual(be.busy_breakdown(), (1, 0))
+            _status(fake, "T-1", "idle")
+            self.assertTrue(until(lambda: be.compacting(sid) is False))
+            self.assertEqual(be.would_cut(), [], "the idle after the active ends it")
+        finally:
+            be.kill(sid)
+
+
 class Lifecycle(unittest.TestCase):
     def test_spawn_send_turn_materializes_transcript(self):
         be, fake, _ = build()
