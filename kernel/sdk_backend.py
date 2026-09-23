@@ -7323,8 +7323,12 @@ class SdkSession:
                     # the kernel's opening chip stands down on) — push THIS session now. Left to the
                     # periodic cycle, a fresh session wore the opening dots seconds after its CLI was
                     # ready to take a message (measured live 2026-08-10: connect done ~1.5s after
-                    # create, the ready chip landing at 5-12s with the cycle).
-                    self.backend._push_session(self.sid)
+                    # create, the ready chip landing at 5-12s with the cycle). Named to the FRONT of the
+                    # one cycle since 2026-09-23 (_push_soon, the queue pop's road), not built beside it:
+                    # a resumed session's handshake lands while its transcript is live, and the targeted
+                    # push's own read of it raced the cycle's to the page. The cycle's build loop re-reads
+                    # the names before every tab, so the flip waits at most the one tab in flight.
+                    self.backend._push_soon(self.sid)
                     self._connected.set()   # the control channel exists from here (move() waits on this)
                     if self._host is None:
                         self.backend._lease_open(self, client)   # ownership by lease (T305): pid + start time, heartbeat
@@ -16622,7 +16626,9 @@ class SdkBackend:
 
     def _push_session(self, sid: str) -> None:
         """Targeted one-session push (kernel _push_session_now), for per-session events the chat chip
-        keys on — today the connect handshake, the exact flip the opening chip stands down on. THREADED:
+        keys on. NO CALLER in this backend since 2026-09-23: the connect handshake, its last one, names its
+        sid to the one pusher cycle (_push_soon) like the queue pop, because a whole-session build beside the
+        cycle's raced it to the page; tests/test_chat_resync_kernel.py refuses a new caller. THREADED:
         the callback builds and serializes that session's payload, which must never run on the session's
         asyncio loop thread (it would stall the stream it is reporting on). Falls back to the plain
         pusher wake when the kernel didn't wire the callback (older kernel / tests)."""
@@ -16867,6 +16873,11 @@ class SdkBackend:
         killed process). Left in place it is merged forever, and its live_work forces the turn open —
         the chat chip read WORKING with a 3h20m timer on a session whose turn died in a usage-limit
         retry storm, while the timeline lane said READY (the user 2026-07-03).
+
+        Dropping an atom whose record the CLI has written is safe for every chat build (2026-09-23): build_session
+        snapshots this tail BEFORE it parses the transcript, so a build that misses the atom parses the file after this
+        retire, and the record with it. The settle runs once the CLI has written what the turn keeps (the orphan
+        salvage below reads those records at this moment), which is what the drop relies on.
 
         Three phases around the live-tail lock: the work atoms are snapshotted under it, the orphan
         salvage's I/O (a transcript tail read, the marker append) runs outside it, and the pops go

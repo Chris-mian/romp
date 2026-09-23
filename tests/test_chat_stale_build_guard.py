@@ -205,15 +205,21 @@ class StaleBuildGuard(unittest.TestCase):
         self.assertEqual([f["type"] for f in self._chat_frames(a, S1)], ["session"], "a client holding nothing is served")
         self.assertEqual(self._rows("chatStale"), [])
 
-    def test_05_a_reset_drops_the_floor_with_the_base(self):
+    def test_05_a_needfull_keeps_the_floor_and_ready_drops_every_one(self):
+        # 2026-09-23 (the resync fix): the floor STAYS through a needFull. The page still holds what it was sent and refuses a
+        # frame older than that (render.ts upsert), so an older answer left its one ask latched. The kernel now refuses such an
+        # answer once and has the cycle build afresh (tests/test_chat_resync_kernel.py pins the whole road); a second older
+        # answer to the same ask is sent all the same, so the ask is always answered.
         a = self._client(active=S1, proto=2)
         km._clients.append(a)
         km._push([a])
         km._client_reset_chat_sid(a, S1)               # needFull: the client re-bases and holds nothing for S1
-        self.assertNotIn(S1, a.get("echatWm", {}), "the floor went with the base")
+        self.assertIn(S1, a.get("echatWm", {}), "the floor stays with the page's own watermark")
         self._older()
         km._push_session_now(S1)
-        self.assertEqual(len(self._chat_frames(a, S1)), 2, "the ask is answered with whatever the kernel now has: no floor stands")
+        self.assertEqual(len(self._chat_frames(a, S1)), 1, "the older build does not answer the ask")
+        km._push_session_now(S1)
+        self.assertEqual(len(self._chat_frames(a, S1)), 2, "…a second older build for the same ask does: never a frozen tab")
         km._client_reset_chat_base(a)
         self.assertEqual(a.get("echatWm"), {}, "ready: every floor goes")
 
