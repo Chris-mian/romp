@@ -14,6 +14,8 @@ import contextlib
 import errno
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -44,6 +46,11 @@ class StoreCas(unittest.TestCase):
 
     def _nid(self, n):
         return "%s:g%d" % (SID, n)
+
+    @staticmethod
+    def _ident(path):
+        st = os.stat(path)
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
 
     def _seed(self):
         """One working top goal, published."""
@@ -320,6 +327,213 @@ class StoreCas(unittest.TestCase):
         after = json.loads(path.read_text())
         self.assertIn(g7, after["nodes"], "the node the editor created survives the fresh store's first save (before: 0 against 0 passed the CAS)")
         self.assertEqual(sorted(after["nodes"]), sorted([self._nid(1), g7]), "both writers' nodes: %r" % sorted(after["nodes"]))
+
+    def test_a_field_the_other_writer_changed_is_carried_onto_a_stale_save(self):
+        """The manager's ruling of 2026-09-23 on the box lab's long-brief miss: two writers hold one node; the second changes a plain field
+        (a brief edited without its family's stamp) and publishes; the first, holding the older base, adds a node and saves. The rebase
+        adopted the new node but kept the first writer's copy of the field, so the second's edit was published over (live: a brief edited
+        in place lost to a judge pass's save). The load records a digest per field as the file held it, and the rebase carries every field
+        the other writer moved where this writer did not."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID)                       # the pass's copy, loaded before the edit
+        b = jd.load_goals(SID)                       # the editor: a field changed, no family stamp
+        b["nodes"][g1]["parentId"] = "the parent the editor set"   # a plain field (a brief is a FAMILY field: its own pin below)
+        jd.save_goals(SID, b)
+        jd.apply_plan(a, "s2", T0 + 20, [{"do": "mint", "why": "x", "text": "The pass's new goal"}], jd.open_menu(a))
+        jd.save_goals(SID, a)                        # a's base is behind: the rebase folds b's publish in
+        after = jd.load_goals(SID)
+        self.assertEqual(after["nodes"][g1].get("parentId"), "the parent the editor set", "the field the other writer changed rides the stale save (before: the holder's copy won and the edit was lost)")
+        self.assertIn(self._nid(2), after["nodes"], "and the new node is there, as before")
+
+    def test_where_both_writers_changed_one_field_the_incoming_writers_change_wins(self):
+        """The per-field rule's tie: both moved the same field since the base; the writer publishing now keeps its own change (said in the
+        design line), and the fields only the other moved still carry."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID); b = jd.load_goals(SID)
+        b["nodes"][g1]["text"] = "theirs"; b["nodes"][g1]["parentId"] = "their parent"
+        jd.save_goals(SID, b)
+        a["nodes"][g1]["text"] = "ours"
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="an event of ours")
+        jd.save_goals(SID, a)
+        after = jd.load_goals(SID)["nodes"][g1]
+        self.assertEqual(after.get("text"), "ours", "both moved text: the incoming writer's change wins")
+        self.assertEqual(after.get("parentId"), "their parent", "the field only they moved is carried beside it")
+
+    def test_a_field_the_other_writer_removed_goes_on_a_stale_save(self):
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID); b = jd.load_goals(SID)
+        b["nodes"][g1]["label"] = "a label to remove later"; jd.save_goals(SID, b)
+        a2 = jd.load_goals(SID)                      # a fresh holder at the revision with the label
+        b2 = jd.load_goals(SID); b2["nodes"][g1].pop("label", None); jd.save_goals(SID, b2)   # the other writer removes it
+        jd.record_verdict(a2, a2["nodes"][g1], "unblocker", "note", T0 + 50, why="ours"); jd.save_goals(SID, a2)
+        self.assertNotIn("label", jd.load_goals(SID)["nodes"][g1], "the removal the other writer made rides the stale save")
+
+    def test_the_field_base_is_the_bytes_the_load_read_found_by_identity_and_moves_with_each_publish(self):
+        """No digest, no copy at a load or a save: the base is the bytes the load read, found by the identity the load stamped in the
+        raw-parse memo's history of the last few versions, only when a rebase runs. After a publish the holder stands on what it wrote,
+        so a later move by the other writer is carried on the next save."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID)
+        self.assertNotIn("_baseFields", a, "no field digests on the loaded store (the round-one verifier: 121 ms a load against 15, 6 MB more retained)")
+        self.assertIsNotNone(a["_baseIdent"])
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="one"); jd.save_goals(SID, a)
+        raw = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
+        self.assertNotIn("_baseIdent", raw, "transient, never serialized"); self.assertIn("_baseIdent", a, "re-stamped on the holder after the publish")
+        b = jd.load_goals(SID); b["nodes"][g1]["parentId"] = "later parent"; jd.save_goals(SID, b)   # the other writer moves a plain field after our publish
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 60, why="two"); jd.save_goals(SID, a)
+        self.assertEqual(jd.load_goals(SID)["nodes"][g1].get("parentId"), "later parent", "the re-stamped base sees the move after our publish and carries it")
+        shared, writer = jd.load_goals_shared(SID), jd.load_goals(SID)
+        self.assertEqual(json.dumps(shared), json.dumps(writer), "the shared view and the writer loader still agree key for key")
+
+    def test_a_second_rebase_iteration_stands_on_the_first_iterations_disk(self):
+        """The round-one verifier: the field base was the load's for every iteration of the CAS loop, so when a third writer published
+        between the first rebase's re-check and the retry, the second iteration read the values the first had carried as this holder's
+        own moves and published them over the newer ones. The identity the rebase reads moves to the version it rebased onto, and the
+        next iteration compares against that."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID)
+        b = jd.load_goals(SID); b["nodes"][g1]["parentId"] = "V1"; jd.save_goals(SID, b)   # the first other writer
+        real = jd._rebase_onto_disk
+        calls = []
+
+        def rebase_then_third(fsid, store):
+            real(fsid, store)
+            calls.append(1)
+            if len(calls) == 1:                      # between the first rebase and the loop's re-check: a third writer publishes V2
+                c = jd.load_goals(SID); c["nodes"][g1]["parentId"] = "V2"; jd.save_goals(SID, c)
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="ours")
+        with mock.patch.object(jd, "_rebase_onto_disk", rebase_then_third):
+            jd.save_goals(SID, a)
+        self.assertEqual(len(calls), 2, "premise: two rebase iterations")
+        self.assertEqual(jd.load_goals(SID)["nodes"][g1].get("parentId"), "V2", "the second iteration carries the third writer's V2 (before: V1, carried in the first, was published over V2)")
+
+    def test_a_family_field_is_left_to_the_family_merge_and_an_in_place_edit_stamps_its_family(self):
+        """The round-one verifier: the carry copied a family's stamp and fields one by one, so the family merge never fired and a holder who
+        edited one family field published one episode's line with another's parts. Every family-managed key is excluded from the carry
+        and the family merge adopts a family as a unit by its stamp: an in-place brief edit without the stamp is not carried; with its
+        family stamped newer it is adopted, parts and all."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID); a["nodes"][g1]["briefedMt"] = 1000; a["nodes"][g1]["blockSummary"] = "the pass's brief"; a["nodes"][g1]["briefParts"] = ["p1"]; jd.save_goals(SID, a)
+        holder = jd.load_goals(SID)                  # stands on the stamped brief
+        path = jd.GOALDIR / (SID + ".json")
+        st = json.loads(path.read_text()); st["nodes"][g1]["blockSummary"] = "edited without a stamp"; st["rev"] += 1; path.write_text(json.dumps(st))
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, holder)
+        self.assertEqual(json.loads(path.read_text())["nodes"][g1].get("blockSummary"), "the pass's brief", "a family field edited without its stamp is the family merge's call: equal stamps keep the holder's")
+        holder2 = jd.load_goals(SID)
+        st = json.loads(path.read_text()); st["nodes"][g1]["blockSummary"] = "edited and stamped"; st["nodes"][g1]["briefParts"] = ["e1", "e2"]; st["nodes"][g1]["briefedMt"] = 2000; st["rev"] += 1; path.write_text(json.dumps(st))
+        jd.record_verdict(holder2, holder2["nodes"][g1], "unblocker", "note", T0 + 50, why="ours again"); jd.save_goals(SID, holder2)
+        after = json.loads(path.read_text())["nodes"][g1]
+        self.assertEqual((after.get("blockSummary"), after.get("briefParts"), after.get("briefedMt")), ("edited and stamped", ["e1", "e2"], 2000), "the stamped family is adopted as a unit")
+
+    def test_a_diary_owned_key_the_other_writer_wrote_is_not_carried(self):
+        """The rollup re-derives the protected keys after the rebase, which hid this: with the rollup held still, a diary-owned key the other
+        writer wrote directly (a why without its landing event) is not the carry's to copy."""
+        self._seed()
+        g1 = self._nid(1)
+        holder = jd.load_goals(SID)
+        path = jd.GOALDIR / (SID + ".json")
+        st = json.loads(path.read_text()); st["nodes"][g1]["blockWhy"] = "a why written by hand"; st["rev"] += 1; path.write_text(json.dumps(st))
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="ours")
+        with mock.patch.object(jd, "rollup_status", lambda store, session_closed=False, **kw: None):
+            jd.save_goals(SID, holder)
+        self.assertNotEqual(json.loads(path.read_text())["nodes"][g1].get("blockWhy"), "a why written by hand", "a diary-owned key is not carried (the log is its source)")
+
+    def test_a_base_that_rolled_out_of_the_raw_history_carries_nothing_and_says_so(self):
+        """The history keeps the last few versions per path; a holder that outlived them (more publishes meanwhile than it keeps) rebases as
+        before the rule, carrying no plain field, and the goals counters count the miss."""
+        self._seed()
+        g1 = self._nid(1)
+        holder = jd.load_goals(SID)
+        for i in range(jd._RAW_HISTORY_KEEP + 2):    # loop-ok: bounded by the history's depth
+            w = jd.load_goals(SID); w["nodes"][g1]["parentId"] = "V%d" % i; jd.save_goals(SID, w)
+        before = dict(jd._GOAL_IO) if hasattr(jd, "_GOAL_IO") else None
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, holder)
+        after = json.loads((jd.GOALDIR / (SID + ".json")).read_text())["nodes"][g1]
+        self.assertIsNone(after.get("parentId"), "the base rolled out: nothing carried, the holder's field stands (as before the rule)")
+        if before is not None:
+            self.assertEqual(jd._GOAL_IO.get("carryNoBase", 0) - before.get("carryNoBase", 0), 1, "and the counter says the base was gone")
+
+    def test_an_in_place_editor_that_changes_a_field_is_carried_too(self):
+        """The box lab's own shape: the file rewritten in place with rev and seq bumped, a brief changed WITH its family stamped (briefedMt, as
+        the lab's driver and every kernel writer of a brief do) and a plain field changed, while a holder's base predates it."""
+        self._seed()
+        g1 = self._nid(1)
+        holder = jd.load_goals(SID)
+        path = jd.GOALDIR / (SID + ".json"); st = json.loads(path.read_text())
+        st["nodes"][g1]["blockSummary"] = "the editor's long brief"; st["nodes"][g1]["briefedMt"] = 5000; st["nodes"][g1]["parentId"] = "the editor's parent"
+        st["seq"] = (st.get("seq") or 0) + 1; st["rev"] = (st.get("rev") or 0) + 1
+        path.write_text(json.dumps(st))
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="the pass ends with a save"); jd.save_goals(SID, holder)
+        after = json.loads(path.read_text())["nodes"][g1]
+        self.assertEqual((after.get("blockSummary"), after.get("parentId")), ("the editor's long brief", "the editor's parent"), "the in-place edit survives the holder's save: the stamped family through the family merge, the plain field through the carry (before: the holder's copy won on both)")
+
+    def test_a_writers_own_publish_is_its_next_base_with_no_read_in_this_process(self):
+        """The second contributor's pre-merge review of PR 2101: a publish stamped its identity as the holder's next base and seeded only the
+        disk-content memo, while only a read fills the raw-parse memo, so unless some load in this process parsed the published version
+        first the next save found no base (carryNoBase) and an editor's move after the publish was published over, as at main. The
+        publish keeps the text it wrote in the history under the written identity; the editor here is ANOTHER process writing the file
+        in place, so nothing in this process reads the version between the publish and the save."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID)
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="our first move"); jd.save_goals(SID, a)   # our own publish
+        path = jd.GOALDIR / (SID + ".json")
+        subprocess.run([sys.executable, "-c",
+                        "import json, sys\np = sys.argv[1]; d = json.loads(open(p).read())\n"
+                        "d['nodes'][sys.argv[2]]['text'] = 'edited by another process'; d['rev'] += 1\nopen(p, 'w').write(json.dumps(d))",
+                        str(path), g1], check=True, timeout=60)
+        before = dict(jd._GOAL_IO)
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 60, why="our second move"); jd.save_goals(SID, a)
+        after = json.loads(path.read_text())["nodes"][g1]
+        self.assertEqual(after.get("text"), "edited by another process", "the other process's edit rides our save: our own published version is the base (before: no base, the edit lost as at main)")
+        self.assertEqual((jd._GOAL_IO["carryBase"] - before["carryBase"], jd._GOAL_IO["carryNoBase"] - before["carryNoBase"]), (1, 0), "and the counters say the base was found")
+        self.assertEqual(len([e for e in after.get("log") or [] if e.get("why") in ("our first move", "our second move")]), 2, "both of our events stand")
+
+    def test_a_publish_never_evicts_a_concurrent_holders_read_base(self):
+        """The round-three verifier of PR 2101: the publish's text entries took the readers' history slots, so a concurrent in-process holder
+        whose base was version V lost V's entry a cycle sooner than before the texts were kept (a judge pass runs about four publish-then-load
+        cycles), found no base at its save, carried nothing and published its copy over the other writer's edit, the loss this rule exists to
+        prevent, in a narrower window. The published texts live in a deque of their own: one holder, three publish-then-load cycles by another
+        writer in the same process, and the holder's save still finds its base and carries the other writer's field."""
+        self._seed()
+        g1 = self._nid(1)
+        holder = jd.load_goals(SID)                  # stands on V0
+        for i in range(3):                           # loop-ok: the three cycles the review executed
+            w = jd.load_goals(SID); w["nodes"][g1]["parentId"] = "V%d" % (i + 1); jd.save_goals(SID, w)   # a load (the memo rolls), then a publish (a text kept)
+        before = dict(jd._GOAL_IO)
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, holder)
+        after = json.loads((jd.GOALDIR / (SID + ".json")).read_text())["nodes"][g1]
+        self.assertEqual(after.get("parentId"), "V3", "the other writer's last move is carried: the holder's base survived three of the other's cycles (before: evicted by the published texts, nothing carried, the holder's copy published over it)")
+        self.assertEqual((jd._GOAL_IO["carryBase"] - before["carryBase"], jd._GOAL_IO["carryNoBase"] - before["carryNoBase"]), (1, 0), "and the counters say the base was found")
+        self.assertTrue(any(e.get("why") == "ours" for e in after.get("log") or []), "with the holder's own event")
+
+    def test_the_retry_after_a_raised_write_stands_on_the_version_it_rebased_onto(self):
+        """The second contributor's pre-merge review of PR 2101: after a raised write the finally hands the holder the identity the loop last
+        rebased onto, never the load's. With the load's, the retry's carry would compare a third writer's newer value against the load's
+        base, read the value the first rebase carried as this holder's own move, and publish the earlier writer's value over the newer."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID)
+        b = jd.load_goals(SID); b["nodes"][g1]["parentId"] = "V1"; jd.save_goals(SID, b)   # the first other writer
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="ours")
+
+        def raising_write(*args, **kw):
+            raise OSError(errno.EIO, "one raised write")
+        with mock.patch.object(jd, "_publish_tmp", raising_write):
+            with self.assertRaises(OSError):
+                jd.save_goals(SID, a)                # the rebase folded V1 in; the write raised
+        self.assertEqual(a.get("_baseIdent"), self._ident(jd.GOALDIR / (SID + ".json")), "premise: the holder stands on the version it rebased onto")
+        c = jd.load_goals(SID); c["nodes"][g1]["parentId"] = "V2"; jd.save_goals(SID, c)   # a third writer, before the retry
+        jd.save_goals(SID, a)                        # the retry
+        after = jd.load_goals(SID)["nodes"][g1]
+        self.assertEqual(after.get("parentId"), "V2", "the retry carries the third writer's V2 (handing back the load's identity: V1 published over V2)")
+        self.assertTrue(any(e.get("why") == "ours" for e in after.get("log") or []), "and our event is there")
 
     def test_rebase_folds_a_duplicate_verdict_instead_of_doubling_it(self):
         # verdict identity is (ev_t, src, kind) - the same triple _replay_overrides dedups on

@@ -2750,7 +2750,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   from a request handler and runs under that request's
   `http.<METHOD>.<route>` mark.
 - `goals`: `loads`, `saves`, `writes` on the goal stores through the writer's
-  loader (`load_goals`) and `save_goals`; the pusher's read-only loads go
+  loader (`load_goals`) and `save_goals`, and `carryBase` and `carryNoBase`, a
+  save's rebase that found the holder's base bytes for its field carry or found
+  them rolled out of the raw-parse memo's history (carrying no plain field
+  then); the pusher's read-only loads go
   through the shared store cache and show under `memos.shared`, not here. A
   save that would rewrite identical bytes is a save without a write.
 - `memos`: the identity memos on the goal-store path. `pass` is the
