@@ -203,16 +203,18 @@ const STORM_MAX = 8;                  // ≥ this many restarts in the window = 
 const STORM_COOLDOWN_MS = 30000;      // during a storm, hold to 1 restart per this
 
 // Quiet-window deploy refreshes (the user 2026-07-20): peers deploying with `romp refresh` bounced
-// the kernel 11x in one day, and every bounce cuts whatever SDK turns are in flight (the drain
-// interrupts them; the next boot resumes them with a nudge — recoverable, but each cut costs the
-// model a full re-read and the user a working-session hiccup). A refresh is a DEPLOY, not an
-// emergency: nothing about it needs to land mid-turn. So `?when=quiet` queues the restart and the
-// manager applies it on the EVENT the fleet's SDK turns drain to zero (the kernel's /busy count,
+// the kernel 11x in one day, and every bounce cuts whatever turns are in flight, Claude or Codex (a
+// Claude turn the drain interrupts and the next boot resumes with a nudge — recoverable, but each cut
+// costs the model a full re-read and the user a working-session hiccup; a Codex turn ends with its
+// app-server, the kernel's child). A refresh is a DEPLOY, not an emergency: nothing about it needs to
+// land mid-turn. So `?when=quiet` queues the restart and the manager applies it on the EVENT the
+// turns in flight (Claude or Codex) across every session drain to zero (the kernel's /busy count,
 // polled only while a refresh is pending), coalescing every refresh queued meanwhile into ONE
 // bounce. The poll is the observation channel, not a heuristic: the gate itself is "no turn in
-// flight". A backstop cap applies the refresh anyway if the fleet never quiets (deploys must land),
+// flight". A backstop cap applies the refresh anyway if those turns never drain (deploys must land),
 // loudly. Immediate restarts (the dashboard ↻, `--now`) behave exactly as before and satisfy any
-// pending quiet request in passing.
+// pending quiet request in passing. (Codex turns named here 2026-09-23, the review of this lane:
+// /busy has counted them since 2026-09-22.)
 const QUIET_POLL_MS = Number(process.env.ROMP_QUIET_POLL_MS) || 3000;
 // T240b: a busy poll that gets NO answer is a MISS, not quiet. Under load — exactly when a review
 // workflow's agents are running — the kernel answers /busy late, and one timed-out poll applied a
@@ -272,12 +274,16 @@ function stopTrigger() { return downMarkerHeld() ? 'cli-down' : 'stop'; }
 // the restart it releases writes its own manager-sigterm note. `since` and `t` are epoch seconds; `reason`
 // is quietGate's verdict verbatim ('quiet', 'backstop cap', or the unreachable-kernel sentence), `backstop`
 // the one bit a reader wants most; the drain counts are the park's evidence (queueQuietRestart records them).
+// `lastInflight` is the last answered poll's Claude turns in flight and `lastCodex` its Codex turns, both null
+// for a park no poll answered (2026-09-23, the review of this lane: /busy counts Codex turns apart from
+// `inflight`, so a park a Codex turn held to the backstop wrote a row reading nothing in flight).
 function quietWindowRow(park, g, now) {
   const p = park || {}; const since = Number(p.since) || now;
   return { t: Math.floor(now / 1000), action: 'quiet-window', since: Math.floor(since / 1000),
            waitedS: Math.max(0, Math.round((now - since) / 1000)), reason: String((g && g.reason) || ''),
            backstop: !!(g && g.reason === 'backstop cap'), coalesced: p.count || 1, mode: String(p.mode || 'all'),
-           lastInflight: p.lastInflight === undefined ? null : p.lastInflight, misses: p.misses || 0,
+           lastInflight: p.lastInflight === undefined ? null : p.lastInflight,
+           lastCodex: p.lastCodex === undefined ? null : p.lastCodex, misses: p.misses || 0,
            drainRefusedCount: p.drainRefusedCount || 0, drainArmedCount: p.drainArmedCount || 0,
            drainRefusedAfterArm: p.drainRefusedAfterArm || 0 };
 }
@@ -577,9 +583,10 @@ function restartAllOrSelf() {
 }
 
 // ── quiet-window deferral (deploy refreshes) ────────────────────────────────
-// Pure decision (time injected → unit-testable). `st` = {since}; `busy` = the kernel's in-flight
-// SDK turn count, or null when the kernel is unreachable — a kernel that isn't answering has no
-// turns a restart could cut, so unreachable counts as quiet.
+// Pure decision (time injected → unit-testable). `st` = {since}; `busy` = the kernel's busy count
+// (turns in flight, Claude and Codex, and Claude sessions with background work), or null when the
+// kernel is unreachable — a kernel that isn't answering has no turns a restart could cut, so
+// unreachable counts as quiet.
 function quietGate(st, busy, now, opts, bd, misses) {
   if (busy === null) {
     // no answer: a MISS (T240b) — injected like `now`, counted by quietTick on the park
@@ -591,9 +598,13 @@ function quietGate(st, busy, now, opts, bd, misses) {
   if (busy === 0) return { action: 'apply', reason: 'quiet' };
   if (now - st.since >= opts.maxDeferMs) return { action: 'apply', reason: 'backstop cap' };
   // T240: `busy` counts sessions with a turn in flight OR live background work (a Workflow run, a
-  // background agent) — either kind defers the restart; the breakdown says which
-  const why = bd ? `${bd.inflight} turn(s) in flight, ${bd.background} session(s) with background work`
-                 : `${busy} turn(s) in flight`;
+  // background agent) — either kind defers the restart; the breakdown says which. Codex turns ride
+  // apart (2026-09-23, the review of this lane): `inflight` is the Claude count the hold is asked
+  // for, `codex` the Codex turns, which defer the restart but ask for no hold
+  const codex = bd && bd.codex ? bd.codex : 0;
+  const why = !bd ? `${busy} turn(s) in flight`
+    : codex ? `${bd.inflight + codex} turn(s) in flight (${bd.inflight} Claude, ${codex} Codex), ${bd.background} session(s) with background work`
+    : `${bd.inflight} turn(s) in flight, ${bd.background} session(s) with background work`;
   return { action: 'wait', reason: why };
 }
 
@@ -663,9 +674,12 @@ function fetchBusy(port, cb, path) {
         const j = JSON.parse(b);
         n = Number.isFinite(j.busy) ? j.busy : null;
         draining = typeof j.draining === 'boolean' ? j.draining : null;
-        // the breakdown (T240); an older kernel reports only `busy`, which then all counts as in flight
+        // the breakdown (T240); an older kernel reports only `busy`, which then all counts as in flight.
+        // `codex` (2026-09-23, the review of this lane): the Codex turns the kernel counts in `busy`
+        // but not in `inflight`, 0 from a kernel without the field, which reads exactly as before
         if (n !== null) bd = { inflight: Number.isFinite(j.inflight) ? j.inflight : n,
-                               background: Number.isFinite(j.background) ? j.background : 0 };
+                               background: Number.isFinite(j.background) ? j.background : 0,
+                               codex: Number.isFinite(j.codex) ? j.codex : 0 };
       } catch { n = null; }
       if (wantDrain && n !== null && draining === false && !drainNoticed) {
         drainNoticed = true;
@@ -751,7 +765,7 @@ function queueQuietRestart(mode) {
   pendingQuiet = { since: Date.now(), count: 1, mode, timer: null,
                    drainRefusedCount: 0, drainArmedCount: 0, drainRefusedAfterArm: 0 };
   resetDrainNotices();                   // the token/refusal notices re-arm when a fresh park begins
-  log(`refresh queued — applying at the next quiet window (no SDK turn in flight; backstop ${Math.round(QUIET_MAX_DEFER_MS / 60000)} min)`);
+  log(`refresh queued — applying at the next quiet window (no turn in flight and no background work; backstop ${Math.round(QUIET_MAX_DEFER_MS / 60000)} min)`);
   const tick = () => quietTick({
     pending: () => pendingQuiet,
     fetchBusy: (done) => {
@@ -766,8 +780,13 @@ function queueQuietRestart(mode) {
         if (park && busy !== null) {
           // T240: remember whether any TURN is in flight — the drain hold (new turn starts held
           // box-wide) is asked for only while one is; background-only busyness defers the restart
-          // without freezing other sessions' queued prompts for up to the backstop
+          // without freezing other sessions' queued prompts for up to the backstop. `inflight` is the
+          // Claude count: a Codex turn (bd.codex) defers the restart but asks for no hold, since the
+          // Codex worker never reads the hold and it would only pause Claude sessions (2026-09-23)
           park.lastInflight = bd ? bd.inflight : busy;
+          // the Codex turns beside it, for the audit row alone (2026-09-23, the review of this lane): 0 from
+          // a kernel that does not report them
+          park.lastCodex = bd && bd.codex ? bd.codex : 0;
           // a plain /busy poll (no hold asked) answers draining:false by construction — that is not
           // a REFUSAL, and counting it as one made the backstop line blame a lost hold (review find)
           if (draining === false && park.lastAsked) {

@@ -227,15 +227,17 @@ def kernel_series(restarts: list[dict]) -> list[dict]:
 
 
 def parse_quiet_windows(audit_rows: list[dict], restarts: list[dict]) -> list[dict]:
-    """The manager's quiet-window rows, each joined to the first restart within QUIET_JOIN_S after it."""
+    """The manager's quiet-window rows, each joined to the first restart within QUIET_JOIN_S after it. `lastCodex`
+    rides beside `lastInflight` (2026-09-23, the review of this lane): the manager's row counts the park's Codex turns
+    apart from its Claude ones, and a row from an older manager has none (None, never a guessed 0)."""
     out = []
     for r in audit_rows:
         if r.get("action") != "quiet-window" or not isinstance(r.get("t"), (int, float)):
             continue
         q = {"t": int(r["t"]), "since": r.get("since"), "waitedS": r.get("waitedS"), "reason": str(r.get("reason") or ""),
              "backstop": bool(r.get("backstop")), "coalesced": r.get("coalesced"), "mode": r.get("mode"),
-             "lastInflight": r.get("lastInflight"), "drainRefusedCount": r.get("drainRefusedCount"),
-             "drainArmedCount": r.get("drainArmedCount")}
+             "lastInflight": r.get("lastInflight"), "lastCodex": r.get("lastCodex"),
+             "drainRefusedCount": r.get("drainRefusedCount"), "drainArmedCount": r.get("drainArmedCount")}
         hit = next((x for x in restarts if q["t"] <= x["t"] <= q["t"] + QUIET_JOIN_S), None)
         q["restartT"] = hit["t"] if hit else None
         q["cutTurns"] = hit["cutTurns"] if hit else None

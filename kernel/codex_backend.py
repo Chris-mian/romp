@@ -1475,6 +1475,36 @@ class CodexBackend:
             parked = s.turn_rejection is not None and s.turn_rejection[0] == s.change_generation
             return bool(s.queue) and not parked
 
+    def would_cut(self):
+        """The Codex work a kernel restart NOW would cut, [{sid, name}] in SdkBackend.would_cut's shape, for the
+        kernel's restart gates (2026-09-22, the review that found the quiet window and the converge blind to Codex:
+        both read the SDK backend alone, so a quiet refresh applied over an open Codex turn). A session counts while
+        the app-server holds a turn open for it, or a compaction running as its own turn: the app-server is the
+        kernel's child and ends with it, and the turn's prompt left the durable queue at the turn/start ACK, so the
+        next kernel has nothing to run it from. busy()'s queued half is left out on purpose: a queued send is on disk
+        until that ACK, and the next kernel sends it.
+
+        A compaction counts only once its active status was seen (2026-09-23, the review of this lane), the test the
+        worker itself uses before it stops sending turns (_work). A bracket compact() latched with no active status
+        yet may be one Codex acknowledged and never ran, the limit docs/codex.md describes, and counting it would hold
+        a quiet refresh taken as that limit's way out to the 15-minute backstop. The race this accepts: a restart in the
+        moment between the ACK and the active status cuts a compaction that was starting, and the next load ends its
+        bracket with the notice that its outcome is unknown (_load_registry)."""
+        out = []
+        for sid, s in self._session_items():
+            with s.lock:
+                if not s.dead and (s.turn_id or (s.compacting and s.compact_active_seen)):
+                    out.append({"sid": sid, "name": s.name})
+        return out
+
+    def busy_breakdown(self):
+        """(in flight, background) in SdkBackend.busy_breakdown's shape (2026-09-22): each session would_cut() names
+        is a turn in flight. Codex runs no background work romp tracks, so the second count is always 0. The kernel's
+        /busy reports the sum in its own `codex` field and in `busy`, never in `inflight` (2026-09-23, the review of
+        this lane): `inflight` is what the manager asks the drain hold for, and the hold pauses Claude sessions only,
+        since the Codex worker never reads it."""
+        return len(self.would_cut()), 0
+
     def clearing(self, sid):
         """AUTHORITATIVE 'is a clear in progress right now' (SessionBackend.clearing): the bracket clear() holds
         from before thread/start until the new thread id is durable, or the attempt raises. None when no session
