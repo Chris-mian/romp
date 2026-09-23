@@ -506,10 +506,12 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 #                                          3 genuine parse rejects on the SAME work item → a loud "give-up" row,
 #                                          then quiet until the item's own event re-arms it (a turn gaining atoms,
 #                                          a top set changing). Call-level failures never count — only replies the
-#                                          model actually wrote — with ONE exception: the closer strikes a KILLED
-#                                          call (the timer ending it; never an API error or a process that ended
-#                                          another way) against the turn it died on, _call_fail_kill /
-#                                          _close_strike. Closer / grouper /
+#                                          model actually wrote — except calls the same item would fail again
+#                                          identically: the closer strikes a KILLED call (the timer ending it;
+#                                          never an API error or a process that ended another way) against the
+#                                          turn it died on, _call_fail_kill / _close_strike, and a safeguards
+#                                          refusal of the turn; the planner's work run strikes a content refusal
+#                                          of the segment (_REFUSAL_ENVELOPE_RE, 2026-09-23). Closer / grouper /
 #                                          consolidator / courier; the
 #                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
 #                                          already had their own.
@@ -1922,6 +1924,23 @@ _USAGE_REFRESH_FN = None   # the kernel wires this to SdkBackend.refresh_usage: 
 #                            (get_usage rides turn ends — an idle fleet refreshes nothing, measured
 #                            ~15h stale) updates on the FIRST doomed call and the gate blocks the rest.
 _LIMIT_ENVELOPE_RE = re.compile(r"usage limit|rate.?limit|limit reached", re.I)
+# A CONTENT REFUSAL: the filter ruling on what THIS call carried, deterministic per prompt — the same
+# prompt gets the same envelope every time, so no retry can ever serve it. Two envelopes carry that
+# ruling today, and one matcher names both for the health latch and the planner's strike (the user
+# 2026-09-23; the closer's tombstone arm still keeps its own safeguards substring test):
+#   - the safeguards refusal ("the model's safeguards flagged this message"), exempted from the
+#     model-health latch since 2026-08-18 (the 2,955-flag closer storm), by a bare substring test only
+#     _judge_run knew about;
+#   - the classifier stop ("<model> can't help with this. Start a new session to continue."), the CLI's
+#     rendering of the API's `refusal` stop reason — the SAME class as the safeguards flag, a DIFFERENT
+#     string, so nothing recognised it: it latched model health it had no bearing on, and the planner
+#     retried one segment 42,600 times over five days at ~300 an hour (a transient-failure branch
+#     with no strike and no horizon, the doomed-call loop this matcher exists to end). The raw
+#     stop-reason field is matched too in case an envelope ever carries it verbatim.
+# Anchored on the envelope texts on purpose: "refuse"/"refusal" alone would sweep up a model that
+# ANSWERED with a refusal of the ask (a reply, parseable, the parse path's business) and any 5xx
+# body that happens to mention one. Both apostrophes: the CLI has typeset it either way.
+_REFUSAL_ENVELOPE_RE = re.compile(r"safeguards flagged|can[’']t help with this|stop_reason\W{0,4}refusal", re.I)
 
 
 def _limit_down():
@@ -2434,12 +2453,22 @@ def _judge_run_impl(model, sys_prompt, user, effort=None, judge=None, tier="tria
                 # No usage row: a zero-cost error envelope is not a model call the cost rollup should count.
                 msg = str(wrap.get("result") or wrap.get("subtype") or "")
                 _judge_ctx.last["reply"] = str(wrap.get("result") or "")[:2000]
-                _judge_ctx.last_call_fail = {"note": msg[:160], "model": model}
-                if "safeguards flagged" not in msg:
-                    # A safeguards refusal is the FILTER ruling on this call's CONTENT — deterministic
-                    # per prompt, not model health (the 2026-08-18 closer storm: 2,955 flags on research
-                    # transcripts while the same model served every other call). Latching it would flap
-                    # the degraded→serving edge on every flag/success interleave.
+                refusal = bool(_REFUSAL_ENVELOPE_RE.search(msg))
+                _judge_ctx.last_call_fail = {"note": msg[:160], "model": model, "refusal": refusal}
+                # ^ `refusal` rides the stash so a CALLER can tell the two classes of failed call apart
+                #   without re-matching the text (the way `kill` does for the closer, _call_fail_kill):
+                #   a transient failure — a 529, a limit, an auth blip, a dead CLI — retries next pass and
+                #   costs no strike, since its recovery is the storm ending; a content refusal returns
+                #   identically forever, so the retrying judges strike it against the item it refused
+                #   and give up at their cap (the planner's work-run, 2026-09-23). The producer knows
+                #   the class; the readers only ask.
+                if not refusal:
+                    # A content refusal is the FILTER ruling on this call's CONTENT — deterministic per
+                    # prompt, not model health (the 2026-08-18 closer storm: 2,955 safeguards flags on
+                    # research transcripts while the same model served every other call). Latching it
+                    # would flap the degraded→serving edge on every flag/success interleave. The
+                    # classifier-stop envelope joined the exemption on 2026-09-23 through the shared
+                    # matcher: until then it read as model health and latched a serving model degraded.
                     _mark_call_failed(model, msg[:160])
                 _log_judge_error(judge or tier, fsid, "call",
                                  note="error envelope: %r" % msg[:160])
@@ -12490,33 +12519,60 @@ def _plan_session(fsid, path, now):
         p_target = store["placements"].get(seg_id + "#live") or store["placements"].get(seg_id + "#p")
         pgi = (next((i for i, nd in enumerate(menu, 1) if nd["id"] == p_target), None)
                if isinstance(p_target, str) else None)
+        _judge_ctx.last_call_fail = None               # a stale stash must never charge THIS unit (the closer's
+        #                                                rule, 2026-09-03): a pause-skip or a rate-gate skip returns
+        #                                                "" and writes NO stash, so without this reset the PREVIOUS
+        #                                                unit's refusal would strike a unit whose call never went out
         raw = plan_llm(text, _menu_text(store, menu), human=human, goal_num=pgi)
         ops = _parse_plan(raw, len(menu))
+        strike, last = None, None
         if not ops and not raw:
             _judge_ctx.stage_incomplete = True         # the unit stays due: no stamp for this pass
-            continue                                   # the CALL failed (gate skip / error envelope / timeout),
-            #                                            already logged upstream — retry next pass. It must not
-            #                                            burn a PLAN_PARSE_RETRIES try: a rate-limit window
-            #                                            could exhaust all 3 and drop the segment for good
-        if not ops:
+            last = getattr(_judge_ctx, "last_call_fail", None)
+            if getattr(_judge_ctx, "paused", False) or not (isinstance(last, dict) and last.get("refusal")):
+                continue                               # the CALL failed TRANSIENTLY (gate skip / error envelope /
+                #                                        timeout), already logged upstream — retry next pass. It
+                #                                        must not burn a PLAN_PARSE_RETRIES try: a rate-limit
+                #                                        window could exhaust all 3 and drop the segment for good.
+                #                                        That exemption STAYS, deliberately: it is right for every
+                #                                        failure whose recovery is the storm ending (a 529, a limit,
+                #                                        an auth blip, a dead CLI — none of them about this segment)
+            # …and exactly wrong for a CONTENT REFUSAL (the user 2026-09-23): the filter ruled on THIS
+            # segment's text (_REFUSAL_ENVELOPE_RE — the safeguards flag, the classifier stop), so the same
+            # call returns the same envelope forever, and "retry next pass" was one doomed call per pass with
+            # no strike and no horizon. Measured: one segment retried ~42,600 times over five days at ~300 an
+            # hour, while the model-scoped latch never tripped either (its consecutive count is reset by every
+            # served call on the same model, which every other segment supplies). Strike it against the SAME
+            # item-scoped counter the parse path uses and resolve it through the same give-up below — a user
+            # message hard-placed, a non-user segment dropped — loudly, so an operator can see the segment
+            # parked and read the envelope that parked it.
+            strike = "refusal"
+        elif not ops:
             _log_judge_error("planner", fsid, "parse", note="reply tail: %r" % raw[-160:], seg=seg_id)
+            strike = "parse"
+        if strike:
             fails = store.setdefault("parseFails", {})
             fails[seg_id] = fails.get(seg_id, 0) + 1
-            if fails[seg_id] < PLAN_PARSE_RETRIES:     # the model is non-deterministic → give it a few tries
-                save_goals(fsid, store)                # remember the attempt; retry next pass
-                continue
-            # Exhausted: a reply that never parses must not retry forever (storm the error log, burn a
-            # Sonnet call every pass). Resolve deterministically — a user message lands via the hard
-            # guard; a non-user segment we still can't read is dropped (place nothing).
+            if fails[seg_id] < PLAN_PARSE_RETRIES:     # a parse reject may not repeat (the model is non-deterministic);
+                save_goals(fsid, store)                # a refusal will, but a few tries is cheap insurance against a
+                continue                               # one-off misfire of the filter, and keeps ONE counter. Remember
+                #                                        the attempt (the store write is the re-arm); retry next pass
+            # Exhausted: a reply that never parses — or a call the filter refuses every time — must not
+            # retry forever (storm the error log, burn a Sonnet call every pass). Resolve deterministically —
+            # a user message lands via the hard guard; a non-user segment we still can't read is dropped
+            # (place nothing).
             fails.pop(seg_id, None)
+            what = ("%d parse rejects" % PLAN_PARSE_RETRIES if strike == "parse" else
+                    "%d content refusals — the model's filter ruled on this segment's text (%r), not a parse reject"
+                    % (PLAN_PARSE_RETRIES, str((last or {}).get("note") or "")[:100]))
             if not human or p_target:                 # already placed by its prompt/live run → can't vanish;
                 _log_judge_error("planner", fsid, "give-up", seg=seg_id,
-                                 note="%d parse rejects; non-user (or already-placed) segment dropped" % PLAN_PARSE_RETRIES)
+                                 note="%s; non-user (or already-placed) segment dropped" % what)
                 store["placements"][seg_id] = None    #  re-placing it was the duplicate (the user 2026-07-08)
                 save_goals(fsid, store)
                 continue
             _log_judge_error("planner", fsid, "give-up", seg=seg_id,
-                             note="%d parse rejects; the user message was hard-placed deterministically" % PLAN_PARSE_RETRIES)
+                             note="%s; the user message was hard-placed deterministically" % what)
             ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)   # HARD GUARD: a user
             #                                           message never silently vanishes
         if len(ops) == 1 and ops[0]["do"] == "skip":
