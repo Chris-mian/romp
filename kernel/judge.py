@@ -4838,7 +4838,9 @@ def _quarantine_store(path, reason, st):
 _RAW_STORE = {}                                  # store path → ((st_ino, st_mtime_ns, st_size), text, pickled parse)
 _RAW_STORE_LOCK = threading.Lock()
 _RAW_STORE_STATS = {"hit": 0, "miss": 0, "compare_miss": 0, "evict": 0}
-_RAW_HISTORY_KEEP = 3
+_RAW_HISTORY_KEEP = 4                            # a judge pass runs about four publish-then-load cycles by another writer between a holder's load and its
+#                                                  save, and each cycle rolls the memo past one version, so four read versions cover a pass; three lost the
+#                                                  base on the fourth (the round-four verifier of PR 2101), one read parse more per path, bounded and gauged
 _RAW_HISTORY = {}                                # store path → the last few versions a READ rolled the memo past, as (identity, pickled parse): a
 #                                                  reference to the memo's own pickle, no copy. The field carry's base for a holder still standing on one
 #                                                  of them; a deque of _RAW_HISTORY_KEEP per path, dropped with the path's memo entry (_raw_store_forget,
@@ -5025,6 +5027,9 @@ def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
                         _raw_history_push(_RAW_HISTORY, path_s, prev[0], prev[2], _RAW_HISTORY_KEEP)
                         _raw_history_drop(_RAW_PUBLISHED, path_s, prev[0])   # its parse stands now: the text this process published for it goes
                     _RAW_STORE[path_s] = (ident, raw, pickle.dumps(value, pickle.HIGHEST_PROTOCOL))
+                    _raw_history_drop(_RAW_PUBLISHED, path_s, ident)   # and the version the memo just took needs no published text either: the
+                    #                                                    memo's own text and parse stand for it (the round-four verifier of PR 2101: a
+                    #                                                    duplicate text per current version, the store's size again)
                 return value
             reason = "top-level JSON value is %s, not an object" % type(value).__name__
             bad = ValueError("%s: %s" % (path, reason))

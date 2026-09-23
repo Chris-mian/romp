@@ -888,15 +888,29 @@ class WriterParseMemo(unittest.TestCase):
             pub = list(jd._RAW_PUBLISHED.get(path_s, ())); hist = list(jd._RAW_HISTORY.get(path_s, ()))
         self.assertEqual(([(i == seed, isinstance(t, str)) for i, t in pub], hist), ([(True, True)], []), "the published version's text under the identity the rename carried, the readers' history empty")
         self.assertEqual(jd._base_nodes(path_s, seed)["%s:g1" % SID]["text"], "A goal", "found as a base without any read")
-        jd.load_goals(SID)                           # the memo now holds this version
+        jd.load_goals(SID)                           # the memo now holds this version (and drops its published text: the memo stands for it)
         w = jd.load_goals(SID); w["nodes"]["%s:g1" % SID]["parentId"] = "V1"; jd.save_goals(SID, w)   # a second published text
-        jd.load_goals(SID)                           # rolls the memo past the seed's version: its parse to the readers' history, its text gone
+        with jd._RAW_STORE_LOCK:
+            pub = [i for i, _t in jd._RAW_PUBLISHED.get(path_s, ())]
+        self.assertEqual(pub, [self._ident(p)], "the later publish's text stands, the seed's gone with the read that took it")
+        jd.load_goals(SID)                           # rolls the memo past the seed's version: its parse to the readers' history; the memo takes V1 and drops its text
         with jd._RAW_STORE_LOCK:
             pub = list(jd._RAW_PUBLISHED.get(path_s, ())); hist = list(jd._RAW_HISTORY.get(path_s, ()))
         self.assertEqual([i for i, _b in hist], [seed], "the seed's version is held as its parse in the readers' history")
-        self.assertNotIn(seed, [i for i, _t in pub], "and its text left the published deque")
-        self.assertEqual(len(pub), 1, "the later publish's text stands there alone")
+        self.assertEqual(pub, [], "no published text stands for a version the memo or the readers' history holds")
         self.assertEqual(jd._base_nodes(path_s, seed)["%s:g1" % SID]["text"], "A goal", "still found, from the parse now")
+
+    def test_a_read_of_a_published_version_drops_its_text_the_memo_now_stands_for_it(self):
+        """The round-four verifier of PR 2101: the read dropped a published text only for the version the memo rolled PAST, never for the one
+        it just took, so the memo's current version kept a duplicate text in the published deque (the store's size again per path). The read
+        that fills the memo with a published version drops that version's text; the base is still found, from the memo."""
+        p = self._seed(); path_s = str(p); seed = self._ident(p)
+        self.assertEqual(self._held(path_s), (0, 1), "premise: the seed's publish kept its text")
+        jd.load_goals(SID)                           # the memo takes the seed's version
+        self.assertEqual(self._held(path_s), (0, 0), "its published text is gone: the memo's text and parse stand for it (before: a duplicate)")
+        self.assertEqual(jd._base_nodes(path_s, seed)["%s:g1" % SID]["text"], "A goal", "and the base is found, from the memo")
+        s = jd.raw_store_stats()
+        self.assertEqual((s["entries"], s["published"]), (1, 0))
 
     def test_a_read_fault_raises_as_before_and_nothing_is_remembered(self):
         p = self._seed()

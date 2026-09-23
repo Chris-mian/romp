@@ -15126,7 +15126,9 @@ function buildNoticeHead(): HTMLElement {
   head.addEventListener("keydown", (e) => { if (e.target !== head) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } });
   const caret = el("span", "ntc-caret"); caret.setAttribute("aria-hidden", "true"); head.appendChild(caret);
   head.appendChild(el("span", "ntc-dot"));
-  head.appendChild(el("span", "ntc-label"));
+  const label = el("span", "ntc-label"); label.id = "ntc-label"; head.appendChild(label);
+  head.setAttribute("aria-labelledby", "ntc-label");   // the name is the label alone, "Needs you · N": without this the gear below, nested in the button,
+  //                                                    was folded into the header's name (the round-one verifier of PR 2105: "Needs you · 4 Needs you box settings")
   // THE BOX'S OWN GEAR (the second contributor's post-merge review of PR 2093: the strip's gear, the one section-targeted opener, lands on
   // Tab strip with the box's section out of view above it): the shell's gear glyph at the header's right end, opening the settings' Chat tab
   // scrolled to the "Boxes below the transcript" section (gear.js showSection), so the switch is reachable from the box the person is
