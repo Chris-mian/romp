@@ -7213,11 +7213,16 @@ class SdkSession:
                     self._ping_feeding = True       # hold feeds until this turn's first streamed message
                 self._mark_producing()              # the one gate: a text fed under a standing prompt leaves the prompt's state
                 self.backend._poke()
-                # …and THIS session's frame now (2026-09-19): the copy just left _pending, so the chat's queued bubble for
-                # it goes and its echo shows, which the pane reads as "taken by the session" and drops the ✎ whose recall
-                # could no longer win (render.ts, send-pending.ts `handed`). The poke wakes the fleet cycle, seconds
-                # behind on a busy kernel; the targeted push lands the flip at once, as the connect handshake's does.
-                self.backend._push_session(self.sid)
+                # …and THIS session at the FRONT of the next cycle (2026-09-19, rebuilt 2026-09-23): the copy just left
+                # _pending, so the chat's queued bubble for it goes and its echo shows, which the pane reads as "taken by
+                # the session" and drops the ✎ whose recall could no longer win (render.ts, send-pending.ts `handed`).
+                # 66486701 landed that flip by running the targeted whole-session push here — a SECOND builder of chat
+                # frames, with its own transcript read, firing at the instant the CLI takes the message and writes its
+                # record. The two builds reached a client in either order and the older list took the just-landed row off
+                # the page (the user 2026-09-22). The flip is a small state change, not a transcript: this names the sid
+                # to the ONE cycle (which the poke above has already woken) so it is built and flushed first, and no
+                # second list of this session exists to be ordered.
+                self.backend._push_soon(self.sid)
                 yield {"type": "user",
                        "message": {"role": "user", "content": [{"type": "text", "text": item}]}}
 
@@ -10570,7 +10575,7 @@ class SdkBackend:
     pushing to clients and a few launch parameters that mirror the tmux launch."""
 
     def __init__(self, state_dir, claude_bin: str, notify, poke=None, push=None,
-                 push_session=None,
+                 push_session=None, push_soon=None,
                  mcp_config: str | None = None, append_prompt_path: str | None = None,
                  log=None, reconcile: bool = False, boot_at=None, code_version=None, boot_phase=None):
         self.state_dir = Path(state_dir)
@@ -10600,6 +10605,9 @@ class SdkBackend:
         self._push_session_cb = push_session   # targeted ONE-session push (kernel _push_session_now) for
         #   per-session chip events (the connect handshake): a wake alone leaves the flip riding the next
         #   full push cycle, which runs seconds on a busy fleet (the user 2026-08-10)
+        self._push_soon_cb = push_soon     # ask the ONE pusher cycle to build this sid FIRST, now (kernel
+        #   _push_session_soon, 2026-09-23): the immediacy above without a second builder of chat frames, for the
+        #   per-session events that fire WHILE that session's transcript is being written — the queue pop above all
         self.mcp_config = mcp_config
         self.append_prompt_path = append_prompt_path
         self._log_cb = log
@@ -16596,6 +16604,27 @@ class SdkBackend:
             except Exception as e:
                 self._log("session push (%s) failed: %s" % (sid, e))
         threading.Thread(target=run, name="sdk-push-session", daemon=True).start()
+
+    def _push_soon(self, sid: str) -> None:
+        """Ask the kernel's ONE pusher cycle to build `sid` FIRST, now (kernel _push_session_soon, 2026-09-23).
+
+        For a per-session event that fires WHILE that session's transcript is being written — the queue pop, where
+        the CLI takes the message and writes its record in the same breath. _push_session above would build a whole
+        chat frame here on a thread of its own, from its own transcript read, racing the cycle's: the two lists
+        reached a client in either order and the older one took the just-landed row off the page (the user
+        2026-09-22; the builder was added by 66486701 for the `handed` flip alone). This names the sid and wakes the
+        one cycle instead, which ranks it with the watched tabs and flushes it first, so the flip still lands at once
+        and no second list of the same session exists to be ordered. NOT threaded: the callback is a set add and an
+        Event set, so it cannot stall the session's asyncio loop. Falls back to the plain pusher wake when the kernel
+        didn't wire it (an older kernel, a test), so the frame still goes."""
+        if not self._push_soon_cb:
+            self._wake_push()
+            return
+        try:
+            self._push_soon_cb(sid)
+        except Exception as e:
+            self._log("session push-soon (%s) failed: %s" % (sid, e))
+            self._wake_push()   # the ask never reached the cycle: the plain wake still gets the frame out
 
     def _touch_live(self, sid: str) -> None:
         """Record that `sid`'s live tail changed: advance its revision (`_live_rev[sid]`), the integer the

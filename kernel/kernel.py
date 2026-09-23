@@ -18880,6 +18880,8 @@ def _sdk_locked():
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,
                 poke=_wake_kernel, push=_pusher_wake.set,   # poke = the turn END: judges AND parked-op delivery
+                push_soon=_push_session_soon,   # …and the no-builder ask (2026-09-23): the SDK's queue pop names its sid to
+                #   the ONE cycle rather than building a second whole-session frame beside it (the send-flash race)
                 push_session=_stage_default("push.session")(_push_session_now),   # targeted one-session push for per-session chip
                 #   events (connect); marked at the hand-off as the thread's DEFAULT: the backend runs it on a thread of its own
                 #   (unmarked; the read boot of 2026-09-14 counted 3,312 builds and 9.4 MB under `none:` from it), while a
@@ -56520,13 +56522,19 @@ def _push(targets, connect=False, live_map=None):
                 if redialed:                             # the redial's first strip stands in for the ready it never posts:
                     _consume_pending_reveal(c, why="the pane's redial")   # a reveal parked for its window lands behind the strip
             active = {c.get("active") for c in chat_clients if c.get("active")}
+            # …and the sids a per-session event named since the last cycle (_push_session_soon, 2026-09-23): the SDK's
+            # queue pop, which needs the pane to learn at once that the copy left romp's queue for the CLI. They rank
+            # with the watched tabs below, and the loop FLUSHES each build as it lands, so the frame goes at the front
+            # of this cycle instead of riding a builder of its own. Drained by the non-connect cycle only: a connect
+            # push serves one client and must not eat the ordering the next cycle owes everyone.
+            first = _push_first_drain() if not connect else set(_push_first)
             # Stable: active tabs first — and TRANSCRIPT-LESS sessions with them. A just-created session
             # has no transcript, so its build is near-free, and its creator is guaranteed to be staring
             # at its placeholder — yet the active-first hint can never name it: a client cannot declare
             # a tab active before that tab's first payload arrives. Ranked last, the new session's
             # payload waited out the whole fleet's builds (~22s measured), leaving "Opening session"
             # dots on a session that had been ready for all of it (the user 2026-08-08).
-            build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active
+            build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active or s["sid"] in first
                                  or not os.path.exists(s["path"]) else 1)
             # ONE key for every tab (_chat_build_sig): the watched tab and the background tabs alike are served
             # from _built_chat while the complete signature holds, and rebuilt when a component moved. The
@@ -57487,6 +57495,34 @@ _LOOPS_STOP = threading.Event()
 # instead of waiting out the 4s poll — the SDK stream leads the transcript on disk, so an immediate push
 # of the in-memory live atoms makes messages appear instantly. 4s stays as the backstop.
 _pusher_wake = _CountedEvent()      # a threading.Event; set() also counts the wake for /perf
+# The sids the next cycle must build FIRST (2026-09-23). ONE builder of chat frames: the pusher cycle. A
+# per-session event that wants its frame at once names its sid here and sets the wake above, and the cycle
+# ranks it with the watched tabs (_push_first_drain, read in _push's build_order) — it does not build a frame
+# of its own. Before this, the SDK's queue pop ran the targeted whole-session push (66486701), a SECOND
+# whole-session builder firing at the instant a send lands, with its own transcript read racing the cycle's:
+# the two lists reached a client in either order and the older one took the just-landed row off the page
+# (the user 2026-09-22; the watermark guard of PR 2050 is the loud backstop, not the fix). A plain set: adds
+# and discards are atomic, the drain swaps it out, and a mark lost to a failed cycle costs order, never content.
+_push_first: set = set()
+
+
+def _push_session_soon(sid):
+    """Ask the ONE pusher cycle to build `sid` FIRST, now (2026-09-23): the immediacy the targeted push was
+    added for, without a second builder of chat frames. Non-blocking (a set add and an Event set), so a
+    backend may call it from its own event loop thread."""
+    _push_first.add(str(sid))
+    _pusher_wake.set()
+
+
+def _push_first_drain():
+    """The sids named since the last cycle, taken out in one step. Read by the non-connect cycle only: a
+    connect push serves one client and must not eat another cycle's ordering."""
+    out = set()
+    while _push_first:
+        out.add(_push_first.pop())
+    return out
+
+
 # The last kernel-side OPTIMISTIC mutation (a parked-op chip, a follow-up card reopen, a model-pending
 # stamp, an interrupt click): state that lives in MEMORY or a goal store, which NO file-mtime signature
 # sees. _cached_feed/_cached_timeline must rebuild past this mark — even inside REBUILD_MIN_S and even on
