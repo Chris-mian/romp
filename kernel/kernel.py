@@ -1232,8 +1232,8 @@ _PERF_STATS = _PerfStats()
 # decoded heap out of the cycle collector's walk (a warm full collection over 5.6M loaded objects fell from
 # 2.83 s to 0.1 ms once frozen; plans/gc-full-collection-pause.md); it reconciles at the idle boundary. A LOAD
 # fold-in keys on the record cache's insert counter; a RELEASE reclaim is owed when an ended session, registered
-# by weakref at its pop, is observed still alive with its worker thread finished (a surviving cycle), or by a
-# bounded fold-in backstop. The reconcile's pause is paid with no browser waiting. Default on; ROMP_GC_FREEZE=off.
+# by weakref at its pop, is observed still alive with its worker thread finished (a surviving cycle, or a ref a live root keeps,
+# which reads the same, costs one reclaim and is counted a survivor), or by a bounded fold-in backstop. The reconcile's pause is paid with no browser waiting. Default on; ROMP_GC_FREEZE=off.
 _GC_FREEZE_ERRORS = [0]
 _GC_FREEZE_SAID = [False]
 _GC_FREEZE_LOAD_TREES, _gc_freeze_bad_knob = gcf.load_trees_from_env()   # parsed with a fallback, never a bare int() at import (#1735 high)
@@ -1261,10 +1261,16 @@ def _gc_freeze_tick(idle, first):
             except Exception:
                 pass
     kind = gcf.pusher_tick(_GC_FREEZE, idle, first, em.record_cache_stats, on_error)
-    if kind == "release":    # #1735: a release means a session ended with a surviving cycle and a full-heap pause; name it (one line per release, none per load tick)
+    if kind == "release":    # #1735: a release means a session ended and the collector took (or was owed) a full-heap pause; name it (one per release, none per load)
         try:
-            sys.stderr.write("gc-freeze: a release reclaimed a surviving cycle for ended session(s) %s in %.1f ms\n"
-                             % (",".join(_GC_FREEZE.last_release_sids) or "?", _GC_FREEZE.last_ms))
+            survivors = getattr(_GC_FREEZE, "last_release_survivors", 0)
+            if survivors:    # nothing was freed: a LIVE ROOT keeps the ref (not a cycle); name it kept, never "reclaimed"
+                sys.stderr.write("gc-freeze: a release walked the frozen heap for ended session(s) %s in %.1f ms and freed nothing "
+                                 "(kept alive by a live root, one wasted reclaim)\n"
+                                 % (",".join(getattr(_GC_FREEZE, "last_kept_sids", [])) or "?", _GC_FREEZE.last_ms))
+            else:            # the reclaim freed the released cycle
+                sys.stderr.write("gc-freeze: a release reclaimed a surviving cycle for ended session(s) %s in %.1f ms\n"
+                                 % (",".join(_GC_FREEZE.last_release_sids) or "?", _GC_FREEZE.last_ms))
         except Exception:
             pass
 
@@ -19613,9 +19619,12 @@ def _fire_api_retry(sid, be, manual=False):
         # gate below never terminated — and in fallback configurations each retry manufactures another
         # model downgrade. Manual keeps firing: the button is only rendered where a retry can work, and
         # an explicit click is the user's call (they may have rewritten or dropped the thread since).
+        # A notice NOTHING retries joins them (noRetry, 2026-09-22, the review of the restart-cut fix): the
+        # Codex turn a kernel restart cut. Retried, a bare "retry" reached the thread about a second after
+        # boot, telling the model nothing of the cut; picking the work back up is the person's call.
         if _rerr and (_rerr.get("tooLong") or _rerr.get("spendLimit")
                       or _rerr.get("modelLimit") or _rerr.get("authErr")
-                      or _rerr.get("refusal")):
+                      or _rerr.get("refusal") or _rerr.get("noRetry")):
             return
         if _auto_retried.get(sid) == _rk:
             return                                        # this episode already got its retry
@@ -32269,7 +32278,12 @@ def _api_error_pass(path, start):
                                      # (rewrite the ask or drop the thread), never auto-retried; see
                                      # _is_refusal_text, and the system-record event path below (the user
                                      # 2026-08-15, after one refused prompt drew 12 auto-retries in ~6min)
-                                     "refusal": _is_refusal_text(text)}
+                                     "refusal": _is_refusal_text(text),
+                                     # a notice nothing retries, marked on the record by the backend that wrote it:
+                                     # the Codex turn a kernel restart cut (codex_events abandoned, 2026-09-22). The
+                                     # auto-retry skips it and the card draws no countdown, so no bare "retry" goes
+                                     # into a thread whose turn was cut without the model being told
+                                     "noRetry": bool(o.get("rompNoRetry"))}
                 elif (isinstance(c, list) and any(isinstance(b, dict)
                         and b.get("type") in ("text", "tool_use", "thinking") for b in c)) \
                         or (isinstance(c, str) and c.strip()):
@@ -35084,6 +35098,13 @@ def _parse(path, sid, now):
     session = jd.parsed_session(sid, [path], now, asm_mode_out=_mode, stats=stats, states=states,
                                 sdk_human=_display_sdk_human(sid))
     _parse_mode[path] = _mode[-1] if _mode else "full"
+    # The fileset key this parse was SERVED under (jd.parsed_session `stats["key"]`: the [mtime, size] row of every file it
+    # read, taken before the read, so the content is at least as new as the rows say), stamped on the tree for the chat
+    # frame's watermark (_chat_wm, 2026-09-22). The tree is the shared cache object and the stamp is idempotent for it: one
+    # key per cached tree. A stat that failed leaves no key, and the frame carries no transcript watermark.
+    _tx = stats.get("key")
+    if isinstance(session, dict) and isinstance(_tx, (tuple, list)) and _tx and _tx[0] is not None:
+        session["_txKey"] = _tx[0]
     try:
         if stats.get("miss"):
             try:
@@ -40053,6 +40074,8 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     tm0 = live_map.get(sid)
     compacting_now = (False if path_override else
                       _compacting(sid, (tm0 or {}).get("state", ""), parsed, now, (tm0 or {}).get("since")))
+    _wm_live = None if path_override else Sessions.live_rev(sid, be)   # read BEFORE the tail is read (the watermark, _chat_wm): _touch_live
+    #                                                                   writes the atoms first and bumps after, so this is a lower bound on the tail the merge folds
     session = parsed if path_override else _merge_live_atoms(parsed, sid, shown_texts=queued)
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     uuid2seg, seg_anchors = {}, {}            # atom uuid → seg id; seg id → (promptId, workId) for the dot/bar split
@@ -41128,8 +41151,9 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # as a working flavor (build_feed).
     aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
     _launch_no_retry = False   # the launch-error card below is one nothing retries (the Codex bracket's end notices, per
-                               # SessionBackend.launch_error; count-free since 2026-09-22, when the restart end outgrew a
-                               # gloss of one failed compaction); lifted onto the status as apiNoRetry
+                               # SessionBackend.launch_error, and a Codex turn a kernel restart cut, the transcript record's
+                               # noRetry, 2026-09-23; count-free since 2026-09-22, when the restart end outgrew a gloss of one
+                               # failed compaction); lifted onto the status as apiNoRetry
     if aerr:
         # While the session is still blocked on THIS error, the live card below carries the same record
         # with the buttons and countdown — drop the durable note so the error doesn't show twice. The
@@ -41137,6 +41161,9 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
         events = [ev for ev in events
                   if not (ev.get("kind") == "apiErrorNote" and ev.get("uuid") == aerr.get("uuid"))]
         events.append({"kind": "apiError", "text": aerr["text"], "status": aerr["status"]})
+        # a transcript notice nothing retries (the record's noRetry: the Codex turn a restart cut, 2026-09-22) wears
+        # the same dress as the launch-error notices below: the words, with no countdown the auto-retry would never keep
+        _launch_no_retry = bool(aerr.get("noRetry"))
     elif not (open_now or awaiting_why):
         # The session's CLI could not START (SessionBackend.launch_error) — a blocked session with NO
         # transcript atom to detect it by, since nothing ever connected to write one. It rides the same
@@ -41495,6 +41522,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                       seen=(_fe.get("keyCounts") if _fold_ok and _fe is not None and _fe.get("keyCounts") is not None else None))   # every event addressable, once, the
     #                                                                                 overlays included (the proto-2 wire keys on it)
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
+            "wm": _chat_wm(sess["path"], parsed, _wm_live),   # what this build READ (the transcript's parse key, the live tail's revision): the senders and the page refuse an older one after a newer (2026-09-22)
             "branch": branch, "branches": _kids,
             "floor": _floor,   # the turn the events start at (T323 stage 4b): 0 = the whole transcript; the send path reads it
             "headCards": head_cards,   # the cards above the first event (the system card, a /clear notice): in `events` only at floor 0
@@ -45093,8 +45121,10 @@ def _feed_session_entry(s, ctx):
         # A safeguards REFUSAL joins them (the user 2026-08-15): deterministic on the same input,
         # never auto-retried, so a Working card would sit on a session nothing can move — the
         # human rewriting or dropping the ask IS the only unblock.
+        # A notice NOTHING retries joins them too (noRetry, 2026-09-22): a Codex turn a kernel restart cut,
+        # which only the person picks back up.
         api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit")
-                                                      or aerr.get("modelLimit")
+                                                      or aerr.get("modelLimit") or aerr.get("noRetry")
                                                       or aerr.get("authErr") or aerr.get("refusal"))))
         # NUDGE FAILED (plans/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
         # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
@@ -45283,6 +45313,10 @@ def _feed_session_entry(s, ctx):
                          "modelLimit": bool(aerr.get("modelLimit")),
                          "authErr": bool(aerr.get("authErr")),
                          "refusal": bool(aerr.get("refusal")),
+                         # a notice nothing retries (the Codex turn a kernel restart cut), mirrored like every
+                         # on-you flag above so a client can tell it from a transient API error (2026-09-23,
+                         # the review of this lane: without it the badge and the bell called it one)
+                         "noRetry": bool(aerr.get("noRetry")),
                          "what": ("this account hit its monthly spend limit — raise it at claude.ai/settings/usage to continue" if aerr.get("spendLimit")
                                   else "this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
                                   # the CLI's own text names the model and the two remedies; the card
@@ -45295,6 +45329,9 @@ def _feed_session_entry(s, ctx):
                                   # a refusal is deterministic: retrying re-sends the same prompt and
                                   # collects the same refusal — name the real fix (the user 2026-08-15)
                                   else "the model's safeguards refused this prompt — rewrite it or drop this thread" if aerr.get("refusal")
+                                  # a notice nothing retries says what happened in its own words; a turn a restart
+                                  # cut was not an API error (2026-09-22)
+                                  else (aerr.get("text") or "this session stopped and nothing retries it") if aerr.get("noRetry")
                                   else "this session stopped on an API error — Retry to resume")} if nid == api_top
                         # the session itself is fine — it's romp's ANALYSIS of it whose credential is
                         # refused, so the copy blames the judges, not the session (the user 2026-08-12)
@@ -50814,6 +50851,97 @@ def _note_chat_full(client, sid, reason, change_from, total, first_held, last_he
         pass
 
 
+def _chat_wm(leaf, parsed, live_rev):
+    """The WATERMARK of one chat build (2026-09-22): what the build read, so a frame built from an older reading is never
+    sent after one built from a newer, and the page can tell the same. `leaf`: the transcript the build parsed (a fork or
+    a rewind mints a new file: two leaves never compare). `tx`: the parse's fileset key, the [mtime, size] row of every
+    file the parse read, taken BEFORE the read (jd.parsed_session, stamped on the tree by _parse as `_txKey`), so the
+    content is at least as new as the rows say; None when the parse could not be keyed. `live`: the live tail's revision
+    read before the merge (Sessions.live_rev), carried only when it is an int (the SDK backend's counter; a bool is not
+    one). A backend without a counter (the Codex backend) answers Sessions.live_rev with the tail's serialized atoms, the
+    typed message text among them, and that value carries no live component here: the frame's `live` is None and its
+    frames order on the tx rows alone (_chat_wm_older and the page's frameOlder treat a non-int live as unordered either
+    way, so nothing is lost), because the watermark rides every frame and delta and _note_chat_stale and the page's
+    frame-stale row write both watermarks verbatim to client-diag.jsonl and stderr, which carry numbers and identifiers
+    only, never event text (_note_chat_full's rule; 2026-09-23). The user (2026-09-22) watched a landed message vanish from the chat and a
+    reload bring it back: a frame built from an older parse (its record not yet read) but a newer live tail (the echo
+    still in it, the streamed reply after) reached the pane after the frame that had landed the record, and the pane took
+    it as the kernel's newest word; the remote kernel filed a `lastGone:record` full at the moment (its own client-diag rows),
+    and the second face was a delta 97 s after the landing whose suffix lacked the row. Two builders can read the transcript
+    in either order (the pusher cycle and the targeted push of sdk_backend inputs(), 66486701) and hand their lists to a
+    client in either order; the watermark orders the SENDS, whatever order the builds ran in."""
+    tx = parsed.get("_txKey") if isinstance(parsed, dict) else None
+    live = live_rev if isinstance(live_rev, int) and not isinstance(live_rev, bool) else None
+    return {"leaf": str(leaf or ""), "tx": tx if isinstance(tx, (list, tuple)) and tx else None, "live": live}
+
+
+def _chat_wm_older(new, last):
+    """Whether chat build `new` read an OLDER world than build `last`, whose frame a client already holds (2026-09-22):
+    the same leaf, and either every file row of the parse key at or behind the last's with one strictly behind (a
+    parse that had not read what the other had), or the same key and a smaller live-tail revision (an older tail). Two
+    leaves, a key of a different shape (a fork lane joined the fileset), a mixed reading (one file ahead, another behind:
+    it carries something new) or a missing part are NOT older: the frame goes, as every frame did before the watermark,
+    since withholding a newer word is the worse error. Pure; tests/test_chat_stale_build_guard.py executes it."""
+    if not isinstance(new, dict) or not isinstance(last, dict):
+        return False
+    if new.get("leaf") != last.get("leaf"):
+        return False
+    a, b = new.get("tx"), last.get("tx")
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        if len(a) != len(b):
+            return False
+        a, b = [tuple(r) for r in a], [tuple(r) for r in b]
+        if a != b:
+            try:
+                return all(x <= y for x, y in zip(a, b))
+            except TypeError:
+                return False
+    elif a is not None or b is not None:
+        return False
+    la, lb = new.get("live"), last.get("live")
+    if isinstance(la, bool) or isinstance(lb, bool):
+        return False
+    return isinstance(la, int) and isinstance(lb, int) and la < lb
+
+
+_CHAT_STALE_SAID = set()   # the sids a stale-build refusal was said for on stderr (once per sid per kernel life; the rows count every one)
+
+
+def _chat_wm_note(client, sid, m):
+    """Record beside the client's echat entry the watermark of the build it was just handed (the senders call this where they
+    write the entry): the floor _send_chat_locked refuses an older build under."""
+    wm = m.get("wm") if isinstance(m, dict) else None
+    if isinstance(wm, dict):
+        client.setdefault("echatWm", {})[sid] = wm
+
+
+def _note_chat_stale(client, sid, new, last, now=None):
+    """A chat build OLDER than the one this client already holds was refused (2026-09-22): one stderr line per sid per kernel
+    life, and one client-diag row per refusal (surface kernel, what chatStale: the client, the session, both watermarks'
+    transcript rows and live revisions), so a builder that keeps reading an older world is counted from the serving side.
+    Diagnostic only; its own failure is swallowed. Called under the client's slot lock, like _note_chat_full: the row is
+    parked on the thread's outbox when one is open and appended once the lock block has closed."""
+    try:
+        if sid not in _CHAT_STALE_SAID:
+            _CHAT_STALE_SAID.add(sid)
+            sys.stderr.write("chat: a build of %s older than the one %s client %s holds was not sent (parse %r behind %r, live %r behind %r); "
+                             "said once per session, counted in client-diag as chatStale\n"
+                             % (str(sid)[:8], client.get("kind") or "?", str(client.get("cid") or "")[:12],
+                                (new or {}).get("tx"), (last or {}).get("tx"), (new or {}).get("live"), (last or {}).get("live")))
+        now = time.time() if now is None else now
+        data = {"cid": client.get("cid"), "kind": client.get("kind"), "sid": str(sid),
+                "txFrame": (new or {}).get("tx"), "txHeld": (last or {}).get("tx"),
+                "liveFrame": (new or {}).get("live"), "liveHeld": (last or {}).get("live")}
+        line = json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "chatStale", "data": data}, default=str) + "\n"
+        rows = getattr(_CHAT_FULL_ROWS, "pending", None)
+        if rows is not None:
+            rows.append(line)
+        else:
+            _client_diag_append(jd.STATE / "client-diag.jsonl", line)
+    except Exception:
+        pass
+
+
 def _note_chat_withheld_at_close(client, now=None):
     """One client-diag row for a socket that CLOSED without its handshake after chat frames were withheld from it: the permanent
     case (an older shim's redial with no proto term, a page whose ready never came), told apart from the routine pre-ready race
@@ -51529,6 +51657,7 @@ def _client_reset_chat_sid(client, sid):
     skeleton before the full that answers the ask goes out (the mark below)."""
     with _client_lock(client):
         client.get("echat", {}).pop(sid, None)
+        client.get("echatWm", {}).pop(sid, None)         # the watermark floor goes with the base: a client holding nothing takes any build (2026-09-22)
         client.get("sent", {}).pop(("chat", sid), None)
         client.get("heldTailFirst", {}).pop(sid, None)   # a stale held-tail key for this sid goes with the base (M3, 2026-09-19)
         _release_skeleton_locked(client, sid)   # a needFull for a skeleton tab (a click, the idle prefetch) loads it
@@ -51564,6 +51693,7 @@ def _client_reset_chat_base(client):
     (an unchanged strip: the same signature) and the page had no tabs until the strip changed."""
     with _client_lock(client):
         client.get("echat", {}).clear()
+        client.get("echatWm", {}).clear()   # the watermark floors go with the bases (2026-09-22)
         # …and the reconnect skeleton set (2026-09-07): a renderer that just evaluated holds NOTHING, so there
         # is nothing it could lazily reload — every tab must arrive whole, and the status slots go with the set;
         # and the asked-whole marks (2026-09-19): it asked nothing either, and the connect push below serves the set
@@ -53249,10 +53379,12 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                         # the per-session view flags ride this delta as they ride the index client's (2026-09-11, the bell
                         # on a key): the empty-suffix tail a flag-only change sends is how another window learns the flip
                         "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
+                tail["wm"] = m.get("wm")              # what the build read (_chat_wm), for the page's own stale-build rule (2026-09-22)
                 if led_changed:
                     tail["ledger"] = m.get("ledger")
                 _send_client(c, ("chat", sid), tail, kind="delta")
                 st[sid] = {"first": pc["first"], "last": _last_anchor(evs)}
+                _chat_wm_note(c, sid, m)                  # …and the watermark of the build it now holds (2026-09-22)
                 _note_chat_handed(sid)                    # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
                 return ms
     if isinstance(pc, dict) and os.environ.get("ROMP_READER_TRACE"):
@@ -53339,6 +53471,7 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     # deliberately no delivery and records nothing.
     if total:
         st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
+        _chat_wm_note(c, sid, m)                      # …and the watermark of the build it now holds (2026-09-22)
         _note_chat_handed(sid)                        # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     else:
         st.pop(sid, None)
@@ -53409,6 +53542,13 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
     #                                                    The ready handler resets the base and pushes the wire the handshake declared. Every real socket
     #                                                    carries the mark (_new_ws_client is the one constructor, the /ws upgrade its one caller); a record
     #                                                    without it is a test's dict modelling a socket past its handshake, and keeps the index wire.
+    # A build OLDER than the one this client holds is not sent (2026-09-22, _chat_wm): two builders (the pusher cycle and the
+    # targeted push) can hand a client their lists in either order, and the older list, sent as a full or a delta, took a landed
+    # message off the page until a reload (the user 2026-09-22). Only a client that HOLDS a base is protected: one holding
+    # nothing takes any build. The watermark of the build handed is recorded beside every echat write below (_chat_wm_note).
+    if pc is not None and _chat_wm_older(m.get("wm"), (c.get("echatWm") or {}).get(sid)):
+        _note_chat_stale(c, sid, m.get("wm"), (c.get("echatWm") or {}).get(sid))
+        return ms
     if c.get("proto") == 2:
         return _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc)
     if isinstance(pc, dict):
@@ -53423,10 +53563,12 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
                 # changed. An empty suffix with the new flags is the frame a flag-only change rides (the dedup
                 # signature reads them, so the flip alone sends it)
                 "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
+        tail["wm"] = m.get("wm")                      # what the build read (_chat_wm): the page's own copy of the stale-build rule reads it (2026-09-22)
         if led_changed:                               # the TOC only changed on a judge pass → usually omitted
             tail["ledger"] = m.get("ledger")
         _send_client(c, ("chat", sid), tail, kind="delta")   # the chat's delta form, for /perf's sends split
         st[sid] = (pc[0], pc[1])                       # same tail base, now caught up through `total`
+        _chat_wm_note(c, sid, m)                       # …and the watermark of the build it now holds (2026-09-22)
         _note_chat_handed(sid)                         # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
         return ms
     head_from = max(0, total - WIRE_TAIL)
@@ -53440,6 +53582,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
         m_send = dict(m); m_send["events"] = evs[head_from:]; m_send["headFrom"] = head_from; m_send["headTotal"] = total
         _send_client(c, ("chat", sid), m_send)
     st[sid] = ((evs[head_from].get("uuid") if head_from < total else None), head_from)
+    _chat_wm_note(c, sid, m)                          # …and the watermark of the build it now holds (2026-09-22)
     _note_chat_handed(sid)                            # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     return ms
 
@@ -56813,6 +56956,7 @@ def _push(targets, connect=False, live_map=None):
                     with _client_lock(c):
                         for sid in gone:
                             c.get("echat", {}).pop(sid, None)
+                            c.get("echatWm", {}).pop(sid, None)   # the watermark floor goes with the base (2026-09-22)
                             c.get("sent", {}).pop(("chat", sid), None)
             # …and every fold entry for a sid no longer shown (loadOlder / connect-push builds) — EXCEPT the
             # comment THREADS the loop below is about to rebuild (2026-09-08): evicting their prefixes here
@@ -59146,7 +59290,8 @@ def _api_health_frame(now, live_map):
         else:
             path = s.get("path")
             e = _api_last_failed(path) if path else None
-            if not e or e.get("tooLong") or e.get("modelLimit") or e.get("authErr") or e.get("refusal"):
+            if not e or e.get("tooLong") or e.get("modelLimit") or e.get("authErr") or e.get("refusal") \
+                    or e.get("noRetry"):               # (a turn a restart cut says nothing of the API, 2026-09-22)
                 continue                               # nothing latched, or an on-you failure (the session's own)
             status = e.get("status")
             # The word follows the LIVE state: a turn open on the retry prompt (romp's own, or a human's) with
@@ -73455,6 +73600,21 @@ def _graceful_term(signum, frame):
     _drain_and_exit(_audit_reason_text(rec), signum=signum, what="SIGTERM", audit=rec)
 
 
+def _codex_cut_turns():
+    """The Codex turns open at this exit, for its cut row (2026-09-22): [{sid, name, backend}]. The Codex app-server is
+    this process's child and ends with it, so each open turn is cut too, and a row naming only the SDK drain's cuts
+    counted a Codex cut as a clean restart (the next load settles each one, CodexBackend._settle_restart_turn). The
+    backend is read, never built: none ran if it is not. A read that raises is logged and names none, so the row
+    this exit exists to leave still lands."""
+    try:
+        cx = _codex_backend or None
+        return list(cx.inflight_turns()) if cx is not None and hasattr(cx, "inflight_turns") else []
+    except Exception:
+        _exit_log("romp-kernel: the Codex backend's open turns could not be read for the cut row: %s\n"
+                  % traceback.format_exc().strip().splitlines()[-1][:200])
+        return []
+
+
 def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
     """Drain the SDK sessions, write the restart-cut row, exit: the tail every kernel exit shares
     (_graceful_term, _parent_watch). `reason` is the request on record when the exit was decided, and
@@ -73553,6 +73713,7 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
             _phases["drainS"] = round(time.monotonic() - _drain_t0, 2)
             row = _restart_cut_row(res, watches_armed=len(_pr_watches) + len(_watches),
                                    audit_reason=reason, phases=_phases)
+            row["cutTurns"].extend(_codex_cut_turns())   # the Codex turns this exit cuts too (2026-09-22)
             if audit:
                 row["auditT"] = int(audit["t"])     # the audit row this cut CONSUMED (see _recent_restart_audit)
             if err:

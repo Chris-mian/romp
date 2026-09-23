@@ -23,7 +23,7 @@ update` starts a session called "update".
 | `romp refresh` | Restart the postal bus and every kernel immediately, picking up new code (cut turns resume with their history) |
 | `romp update [host…]` | Push this machine's committed Romp to attached remotes and restart them at once (every deploy restart is immediate; boot reconcile resumes the cut turns with their history); a remote stopped by `romp down` is synced and left stopped |
 | `romp up` | Start the kernel: through the login service when one is installed, in the foreground otherwise. Clears a `romp down` marker |
-| `romp down` | Stop the kernel and keep it stopped until `romp up`. Turns in flight get 5 seconds to finish first; sessions resume with their history at the next start. See [Stopping the kernel on purpose](#stopping-the-kernel-on-purpose) |
+| `romp down` | Stop the kernel and keep it stopped until `romp up`. The turns the stop would cut get 5 seconds to finish first (a turn under a session host keeps running); sessions resume with their history at the next start. See [Stopping the kernel on purpose](#stopping-the-kernel-on-purpose) |
 | `romp version` | Version report across the moving parts |
 | `romp help` | The same list, from the terminal |
 
@@ -52,8 +52,8 @@ These are for scripting and for agents rather than daily use:
 | `romp default-dir [PATH]` | The default working directory for new sessions; no argument prints it, `""` clears it |
 | `romp login add <label> --cmd '<shell line>'`, `romp login list`, `romp login remove <label>` | The stored Claude logins a session can be billed to beside the machine's own (see [Several Claude logins](#several-claude-logins)): `add` records the command that prints the login's setup-token on demand (`--op` is the 1Password shorthand for `op read`); `list` and `remove` print labels only, never a token |
 | `romp debug [on\|off\|status]` | Judge debug mode, where rejection rows carry the full input and reply |
-| `romp refresh --quiet` | Refresh at the next quiet window instead — waits for sessions to finish their turns (15-min backstop). The ONLY door to the quiet window: a deploy (a peer's `romp update`, a release self-update, an automatic converge) restarts immediately, by the user's 2026-09-08 decision |
-| `romp down --wait <s>`, `romp down --now` | How long `romp down` waits for turns in flight to finish (0 to 600 seconds; default 5), or no wait at all |
+| `romp refresh --quiet` | Refresh at the next quiet window instead — waits for the turns and background work a restart would cut to finish (15-min backstop); a session under a host keeps its turn across the restart, so it is not waited on. The ONLY door to the quiet window: a deploy (a peer's `romp update`, a release self-update, an automatic converge) restarts immediately, by the user's 2026-09-08 decision |
+| `romp down --wait <s>`, `romp down --now` | How long `romp down` waits for the turns it would cut to finish (0 to 600 seconds; default 5), or no wait at all |
 | `romp up --foreground` | Run the manager in this terminal even with a login service installed (its log in front of you); the manager refuses to start beside a running one |
 
 Raw `POST` callers, anything that talks to the kernel's routes directly rather
@@ -1105,7 +1105,10 @@ Before stopping, `romp down` gives the turns in flight `--wait` seconds
 (default 5, up to 600) to reach a turn boundary. It asks the kernel to quiesce
 (`POST /down`), which holds new turn starts and new session creation, and then
 reports whether the kernel went quiet or which sessions are still mid-turn and
-about to be cut. The wait ends on the event the in-flight count reaches zero;
+about to be cut. A session under a host is neither waited on nor named: the
+stop detaches it and its turn keeps running (see
+[What survives a restart](#what-survives-a-restart)). The wait ends on the
+event the in-flight count reaches zero;
 `--wait` is only its bound. `--now` skips the wait, not the request: when a
 kernel answers on the port, the same `POST /down` goes out with a wait of 0 and
 nothing is reported about it, so the token check below still comes first; the
@@ -2059,10 +2062,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   judges each by observation. A ref that died went by reference counting
   (acyclic, no reclaim); a ref still alive whose worker thread has finished is a
   cycle the collector must take (a reclaim); a ref alive whose thread still runs
-  is not garbage yet (judged again next tick). A ref a live ROOT keeps (a
-  never-joined helper thread's `_target`), not a cycle, reads the same and is
-  treated as a surviving cycle: the reclaim frees nothing, so it costs one pause,
-  is counted a `survivor`, and is dropped (never re-registered). A record-cache pop is never a
+  is not garbage yet (judged again next tick). A ref a live ROOT keeps (a helper
+  thread still running when the tick judges it, its frame and its target), not a
+  cycle, reads the same and is treated as a surviving cycle: the reclaim frees
+  nothing, so it costs one reclaim, is counted a `survivor`, and is dropped (never
+  re-registered). A record-cache pop is never a
   trigger: its decoded json is acyclic and dies by reference counting, so
   `recordCache.released` is a statistic. A BACKSTOP reclaim runs after `backstopFoldins`
   load fold-ins since the last reclaim (default 1000, about ten hours at the
@@ -2073,17 +2077,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `loadTrees` and `backstopFoldins` (the two thresholds), `freezes` and
   `reclaims` (a freeze ran one collection and a reclaim ran one, EXCEPT a full
   release that unfroze runs TWO generation-2 collections for its one reclaim, so
-  the organic full collections are `gen."2".collections` less `freezes`, less
-  `reclaims`, less one more per full release; the exact residue needs that count,
-  and the served lab keeps the inequality rather than the equality), `endedPending` (ended sessions
+  `reclaims` alone cannot derive the organic count), `collections` (every
+  `gc.collect()` the run step issued, so the organic full collections are
+  `gen."2".collections` less `collections`, an EQUALITY: a full release's two
+  collects are both counted here), `endedPending` (ended sessions
   registered by weakref and not yet judged, awaiting their worker thread to
   finish), `lastReconcileMs` and
   `lastReconcileKind` (`initial`, `load`, `release` or `backstop`), `survivors`
   (owed refs a live root kept through a reclaim, a wasted pause each),
+  `lastReleaseSurvivors` (of the last RUN's owed refs, how many a live root
+  kept through it: 0 when the reclaim freed them, so the release line reads
+  "reclaimed", else the count the line names as kept by a live root; rebound each
+  run, so a load after a live-root release reads it back at 0, like `lastReleaseSids`),
   `lastReleaseSids` (the first eight characters of the sids the LAST JUDGEMENT
   owed a reclaim for, cleared each judgement, so a tick that owed nothing clears
   it and a cheap-collect release judged `load` shows them too; a full release also
-  writes one stderr line naming the sessions),
+  writes one stderr line, "reclaimed" when nothing survived and otherwise naming the kept sids),
   `totalReconcileMs` and `errors` (a reconcile that raised is counted here and
   said once on stderr, never ending the pusher). The reconcile's own collection
   pause lands after the cycle closed its ring row, so the pusher and jobs rings
@@ -3517,6 +3526,27 @@ frames it received is measured in the panes themselves, by
   session, the `reason` (the `chatFullWhy` label under `/perf`), the change index,
   the list's length, and which base edges the list still held; a first send files
   nothing.
+- Every chat frame and delta carries `wm`, what its build READ: the transcript the
+  build parsed (`leaf`), the parse's fileset key (`tx`, one `[mtime, size]` row per
+  file the parse read, taken before the read) and the live tail's revision
+  (`live`, an integer; a backend without a counter, the Codex backend, carries no
+  `live` component, `null`, and its frames order on the `tx` rows alone, so no
+  event text rides the watermark). Two builders read the transcript in either order (the pusher cycle
+  and the targeted push at the SDK queue pop), and a build from an older parse
+  under a newer live tail once reached a page after the frame that had landed a
+  just-sent message, taking the landed row off the page until a reload. The
+  senders refuse a build older than the one a client holds (the same leaf, every
+  parse row at or behind with one behind, or the same rows and a smaller live
+  revision), say so once per session on stderr, and file one `chatStale` row
+  (surface `kernel`) per refusal with the client, the session and both readings.
+  A client holding no base takes any build; another leaf (a fork, a rewind), a key
+  of another shape or a mixed reading is never older. The page applies the same
+  rule on its side: a frame or delta whose `wm` is older than the session's is
+  ignored and filed as `frame-stale` (surface `chat`, the wire and both
+  watermarks), and a frame that removes a landed human turn the page held files
+  `frame-drops-landed` whatever its watermark said (the wire, the count, the
+  uuids' tails, whether the frame carried a watermark, and the expected cause when
+  a rebased fork or a rewind the page asked for removed the row on purpose).
 - The kernel rotates `client-diag.jsonl` once it reaches 8 MB: the file
   becomes `client-diag.jsonl.1` (replacing the previous one) and a new file
   starts, so at most two files, about 16 MB, are kept. A minute row is about

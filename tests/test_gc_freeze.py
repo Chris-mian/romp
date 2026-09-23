@@ -4,7 +4,7 @@
 The freeze keeps the loaded decoded heap out of the collector's walk. WHEN to reclaim is MEASURED, not
 guessed: every session-end pop registers a weakref to the session with the controller, and the idle
 tick judges each by observation (dead ref died by refcount, no reclaim; a live ref whose worker thread
-still runs is kept; a live ref whose thread finished is a surviving cycle to reclaim). These tests pin
+still runs is kept; a live ref whose thread finished is a surviving cycle to reclaim, or a ref a live root keeps, which reads the same, costs one reclaim and is counted a survivor). These tests pin
 that judgement's truth table on synthetic refs and a real SdkSession, that every session-end pop
 registers the ended session, plus the load fold-in, the backstop, the safe knob parse, the env
 switch, a weakref oracle over the freeze, and the pusher glue. Every fixture is synthetic. Real-collector
@@ -155,6 +155,16 @@ class EndedTruthTable(unittest.TestCase):
         c.note_ended(s, thread=fin)
         self.assertTrue(c.resolve_ended(), "a ref still alive with its worker thread finished is a surviving cycle: reclaim")
         self.assertEqual(c._ended, [], "and it is dropped after the reclaim it owes")
+
+    def test_a_sid_less_owed_root_yields_one_empty_string_by_equality(self):
+        """PR 2042 review (attribution): a sid-less owed root gathers one empty string into last_release_sids, so assert by
+        EQUALITY, never truthiness (a truthiness check would pass a bug that gathered nothing; [''] is truthy but wrong)."""
+        c = self._controller()
+        s = _Owner()                                  # no `.sid`
+        fin = _FakeThread(alive=False)
+        c.note_ended(s, thread=fin)
+        self.assertTrue(c.resolve_ended())
+        self.assertEqual(c.last_release_sids, [""], "one owed root with no sid: exactly one empty string, by equality: %r" % c.last_release_sids)
 
     def test_a_live_ref_with_a_running_thread_is_kept_then_reclaimed_when_it_finishes(self):  # (c) kill mid-turn
         c = self._controller()
@@ -337,26 +347,34 @@ class PusherTick(unittest.TestCase):
         saved_gf, saved_stats = km._GC_FREEZE, km.em.record_cache_stats
 
         class _RelController:
-            def __init__(self, kind):
+            def __init__(self, kind, survivors=0, kept=None):
                 self.enabled = True; self._kind = kind
                 self.last_release_sids = ["deadbeef"]; self.last_ms = 1.2
+                self.last_release_survivors = survivors; self.last_kept_sids = kept or []
             def tick(self, inserts):
                 return self._kind
-        try:
-            km.em.record_cache_stats = lambda: {"inserts": 3}
-            km._GC_FREEZE = _RelController("release")
+        def _line(controller):
+            km._GC_FREEZE = controller
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 km._gc_freeze_tick(True, False)
-            out = err.getvalue()
+            return err.getvalue()
+        try:
+            km.em.record_cache_stats = lambda: {"inserts": 3}
+            # a real reclaim (nothing survived): the line reads "reclaimed" and names the owed sid
+            out = _line(_RelController("release", survivors=0))
             self.assertEqual(out.count("\n"), 1, "exactly one line per release: %r" % out)
             self.assertIn("deadbeef", out, "the release line names the ended session: %r" % out)
-            self.assertIn("release", out)
-            km._GC_FREEZE = _RelController("load")
-            err2 = io.StringIO()
-            with contextlib.redirect_stderr(err2):
-                km._gc_freeze_tick(True, False)
-            self.assertEqual(err2.getvalue(), "", "a load tick writes no release line")
+            self.assertIn("reclaimed", out)
+            # PR 2042 review: the LIVE-ROOT case (a survivor) freed nothing: the line names the KEPT sids as kept by a live
+            # root, never "reclaimed" (the base wrote "reclaimed a surviving cycle" for this case too)
+            out2 = _line(_RelController("release", survivors=1, kept=["cafef00d"]))
+            self.assertEqual(out2.count("\n"), 1, "exactly one line for the kept case: %r" % out2)
+            self.assertIn("cafef00d", out2, "the kept case names the kept sid: %r" % out2)
+            self.assertIn("live root", out2, "the kept case says kept by a live root: %r" % out2)
+            self.assertNotIn("reclaimed", out2, "the kept case freed nothing: never 'reclaimed': %r" % out2)
+            # a load tick writes no release line
+            self.assertEqual(_line(_RelController("load")), "", "a load tick writes no release line")
         finally:
             km._GC_FREEZE = saved_gf
             km.em.record_cache_stats = saved_stats
@@ -401,8 +419,12 @@ class RealCollector(unittest.TestCase):
         self.assertEqual(c.tick(inserts=1), "release", "a live ref with a finished worker is judged a surviving cycle: a release runs")
         # the REAL resolve_ended gathered the owed sid onto last_release_sids (its first 8 chars): deleting the gather reds this
         self.assertEqual(c.last_release_sids, ["abcdef12"], "the release names the owed session by its sid's first 8 chars: %r" % c.last_release_sids)
+        # PR 2042 review (attribution): the /perf VALUE carries it, and the live-root case reads lastReleaseSurvivors 1
+        self.assertEqual(c.perf()["lastReleaseSids"], ["abcdef12"], "/perf carries the owed sid value: %r" % c.perf()["lastReleaseSids"])
+        self.assertEqual(c.perf()["lastReleaseSurvivors"], 1, "the live-root release freed nothing: one survivor on /perf")
         self.assertEqual(c.survivors, 1, "the live root kept it through the reclaim: one survivor counted")
         self.assertIsNone(c.tick(inserts=1), "the survivor was dropped, never re-registered: no second reclaim owed")
+        self.assertEqual(c.perf()["lastReleaseSids"], [], "the next tick owed nothing, so lastReleaseSids is cleared: %r" % c.perf()["lastReleaseSids"])
         self.assertEqual(c.survivors, 1, "and not double-counted")
         before = c.survivors
         a = Cyclic(); b = Cyclic(); a.other = b; b.other = a
@@ -431,6 +453,86 @@ class RealCollector(unittest.TestCase):
         self.assertGreater(c._foldins, foldins0, "the cheap release folded in like a load")
         self.assertIsNone(wcyc(), "the cheap collect freed the unfrozen cycle")
         self.assertEqual(c.survivors, 0, "nothing survived: no wasted pause")
+
+    def test_a_frozen_member_of_the_released_cycle_forces_the_full_walk(self):
+        """PR 2042 review (item 1), the condition pair: the cheap stage takes the cycle only when EVERY member postdates the
+        last freeze. A released cycle with a FROZEN member (one folded in by an earlier load pass) is not taken by the cheap
+        collect: the release must unfreeze and walk the frozen heap (a reclaim). A young cycle that merely KEEPS an unrelated
+        object alive is still all-young, so it is the load case above."""
+        gc.disable(); self.addCleanup(gc.enable)
+        c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
+        c.tick(inserts=1)                            # initial freeze
+        old = Cyclic(); old.other = None             # allocated after the initial freeze; fold it in so it is FROZEN:
+        c.tick(inserts=2)                            # a load fold-in freezes `old`
+        self.assertGreater(gc.get_freeze_count(), 0, "old is frozen")
+        reclaims0 = c.reclaims
+        young = Cyclic(); young.other = old; old.other = young   # the released cycle young<->old: `old` is a FROZEN member
+        wy = weakref.ref(young)
+        fin = _FakeThread(alive=False)
+        c.note_ended(young, thread=fin); del young, old
+        self.assertEqual(c.tick(inserts=2), "release", "a frozen member holds the cycle out of the cheap walk: the release unfreezes and reclaims")
+        self.assertEqual(c.reclaims, reclaims0 + 1, "a full-heap reclaim ran")
+        self.assertIsNone(wy(), "the unfreeze-and-collect freed the cycle with the frozen member")
+        self.assertEqual(c.survivors, 0, "the cycle was garbage: no live-root survivor")
+
+    def test_a_young_cycle_merely_keeping_a_frozen_object_is_the_load_case(self):
+        """PR 2042 review (item 1 pair, the other half): the cheap stage's condition is on the cycle's MEMBERS, not on what
+        the cycle can reach. A young end cycle whose member merely holds a strong ref to an object FROZEN by an earlier load
+        fold-in is still all-young, so the cheap collect takes it: kind load, no unfreeze, and the frozen object untouched. A
+        condition widened to anything the cycle reaches would force an unfreeze here."""
+        gc.disable(); self.addCleanup(gc.enable)
+        c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
+        c.tick(inserts=1)                            # initial freeze
+        held = _Owner(); held.other = None           # created after the initial freeze; fold it in so it is FROZEN, and keep it in a local
+        c.tick(inserts=2)
+        wfrozen = weakref.ref(held)
+        reclaims0 = c.reclaims
+        a = _Owner(); b = _Owner(); a.other = b; b.other = a   # a YOUNG cycle
+        a.kept = held                                # a merely KEEPS a ref to the frozen object (held is NOT a member of the cycle)
+        wy = weakref.ref(a)
+        fin = _FakeThread(alive=False)
+        c.note_ended(a, thread=fin); del a, b
+        self.assertEqual(c.tick(inserts=2), "load", "the cycle is all-young; the cheap collect takes it whole: a load, not a release")
+        self.assertEqual(c.reclaims, reclaims0, "no full-heap reclaim ran: a merely-kept frozen object does not force the unfreeze")
+        self.assertIsNone(wy(), "the young cycle was collected cheaply")
+        self.assertIsNotNone(wfrozen(), "the frozen object it merely kept is untouched (still held, still frozen)")
+
+    def test_collections_counts_each_run_steps_collect_calls_by_kind(self):
+        """PR 2042 review (item 1): the /perf `collections` count bumps by exactly the collect calls each run step issues, on
+        the REAL collector: initial one, a load one, a cheap release one, a full release TWO, a backstop one. A mutant
+        dropping the second collect's count in the unfreeze branch reds the full-release case."""
+        gc.disable(); self.addCleanup(gc.enable)
+        c = gf.GcFreeze(enabled=True, load_trees=1, backstop_foldins=1, gc=gc)
+        b0 = c.collections; self.assertEqual(c.tick(inserts=1), "initial"); self.assertEqual(c.collections - b0, 1, "initial: one collect")
+        b0 = c.collections; self.assertEqual(c.tick(inserts=2), "load"); self.assertEqual(c.collections - b0, 1, "a load fold-in: one collect")
+        # a cheap release (an unfrozen cycle): one collect
+        x = Cyclic(); y = Cyclic(); x.other = y; y.other = x; fx = _FakeThread(alive=False)
+        c.note_ended(x, thread=fx); del x, y
+        b0 = c.collections; self.assertEqual(c.tick(inserts=2), "load", "cheap release counts as a load"); self.assertEqual(c.collections - b0, 1, "a cheap release: one collect")
+        # a full release (a frozen member): two collects
+        old = _Owner(); old.other = None; c.tick(inserts=3)   # freeze old
+        yg = _Owner(); yg.other = old; old.other = yg; fy = _FakeThread(alive=False)
+        c.note_ended(yg, thread=fy); del yg, old
+        b0 = c.collections; self.assertEqual(c.tick(inserts=3), "release"); self.assertEqual(c.collections - b0, 2, "a full release: two collects (collect, then unfreeze-collect)")
+        # a backstop (backstop_foldins=1): one collect
+        b0 = c.collections; self.assertEqual(c.tick(inserts=4), "load")   # one fold-in to reach the backstop
+        b0 = c.collections; self.assertEqual(c.tick(inserts=4), "backstop"); self.assertEqual(c.collections - b0, 1, "a backstop: one collect")
+
+    def test_the_organic_arithmetic_is_exact_via_the_collections_count(self):
+        """PR 2042 review (item 1): the exact equality the reference states. A gc.callbacks hook counts generation-2
+        collections; every collect the controller ran is one, so (gen-2 collections) minus (the controller's `collections`)
+        equals the organic full collections the test itself ran, exactly."""
+        gc.disable(); self.addCleanup(gc.enable)
+        gen2 = [0]
+        def hook(phase, info):
+            if phase == "stop" and info.get("generation") == 2:
+                gen2[0] += 1
+        gc.callbacks.append(hook); self.addCleanup(lambda: gc.callbacks.remove(hook))
+        c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
+        c.tick(inserts=1); c.tick(inserts=2)          # two controller collects (initial + load)
+        gc.collect(); gc.collect()                    # two ORGANIC full collections the test causes
+        c.tick(inserts=3)                             # one more controller collect (a load)
+        self.assertEqual(gen2[0] - c.collections, 2, "gen-2 collections less the controller's collections is the organic count the test ran: %d - %d" % (gen2[0], c.collections))
 
     def test_the_kernels_gc_hook_still_counts_the_collections_a_reconcile_runs(self):
         km = load_source("romp_kernel_gcf_hook", os.path.join(BIN, "romp-kernel"))
@@ -730,23 +832,38 @@ class SessionEndPopsRegister(unittest.TestCase):
         owed = c.resolve_ended()
         self.assertIsNone(sref(), "the run-to-exit session died by reference counting once its refs dropped: acyclic")
         self.assertEqual(owed, [], "the common end owes NO reclaim (it was not a surviving cycle): %r" % owed)
-        # kill (mid-turn): registers exactly once with the session and its worker thread
+        # kill (mid-turn). PR 2042 review item 7: WAIT for the worker (the gone hook registers from its finally), THEN
+        # assert the count directly, so a broken `if popped:` guard that lets the gone hook register a SECOND time (count
+        # n+2) reds; the earlier poll-until-n+1 passed as soon as it hit n+1, before the worker's gone hook could add one.
         be2, d2, sid2 = self._connected("kill", "api")
         s2 = be2.sessions[sid2]; th2 = s2.thread
         n = len(c._ended)
         be2.kill(sid2)
-        self.assertTrue(self._wait(lambda: len(c._ended) == n + 1), "kill registered EXACTLY one ended session: %d" % (len(c._ended) - n))
-        self.assertIs(c._ended[-1][0](), s2, "kill registered the session")
-        self.assertIs(c._ended[-1][1](), th2, "with its worker thread")
-        # conserve-close (the stop pop): registers exactly once
+        self.assertTrue(self._wait(lambda: not th2.is_alive()), "the kill worker never finished")
+        self.assertTrue(self._wait(lambda: len(c._ended) > n), "kill registered the ended session")
+        self.assertEqual(len(c._ended), n + 1, "kill registered EXACTLY once, even after the worker's gone hook ran: %d" % (len(c._ended) - n))
+        sref2, tref2 = c._ended[-1]
+        self.assertIs(sref2(), s2, "kill registered the session"); self.assertIs(tref2(), th2, "with its worker thread")
+        # item 8 mirror: the killed session dies by refcount and owes no reclaim (a pop that stashed it would leak it, unseen)
+        del s2, th2
+        owed2 = c.resolve_ended()
+        self.assertIsNone(sref2(), "the killed session died by reference counting: acyclic, not stashed")
+        self.assertEqual(owed2, [], "the killed session owes no reclaim: %r" % owed2)
+        # conserve-close (the stop pop): same wait-then-assert and dead-ref mirror
         be3, d3, sid3 = self._connected("close", "tests")
         self.assertTrue(self._wait(lambda: be3.conserve_idle(sid3), 8.0), "never conserve-idle")
         s3 = be3.sessions[sid3]; th3 = s3.thread
         n = len(c._ended)
         be3.conserve_close(sid3)
-        self.assertTrue(self._wait(lambda: len(c._ended) == n + 1), "conserve_close registered EXACTLY one ended session: %d" % (len(c._ended) - n))
-        self.assertIs(c._ended[-1][0](), s3, "conserve_close registered the session")
-        self.assertIs(c._ended[-1][1](), th3, "with its worker thread")
+        self.assertTrue(self._wait(lambda: not th3.is_alive()), "the conserve-close worker never finished")
+        self.assertTrue(self._wait(lambda: len(c._ended) > n), "conserve_close registered the ended session")
+        self.assertEqual(len(c._ended), n + 1, "conserve_close registered EXACTLY once, even after the worker's gone hook ran: %d" % (len(c._ended) - n))
+        sref3, tref3 = c._ended[-1]
+        self.assertIs(sref3(), s3, "conserve_close registered the session"); self.assertIs(tref3(), th3, "with its worker thread")
+        del s3, th3
+        owed3 = c.resolve_ended()
+        self.assertIsNone(sref3(), "the conserve-closed session died by reference counting: acyclic, not stashed")
+        self.assertEqual(owed3, [], "the conserve-closed session owes no reclaim: %r" % owed3)
 
 
 class KernelGlue(unittest.TestCase):
@@ -756,19 +873,58 @@ class KernelGlue(unittest.TestCase):
         km = load_source("romp_kernel_gcf_glue", os.path.join(BIN, "romp-kernel"))
         self.assertRegex(inspect.getsource(km._pusher_cycle), r"_gc_freeze_tick\(_cycle_idle, first\)",
                          "the pusher cycle calls the freeze tick with the cycle's idle flag and first-cycle flag")
-        # review PR 1999 (teeth 3): the wiring is EXECUTED, not read. The kernel guards it on hasattr(sbmod, "set_ended_note");
-        # a misspelt guard name would silently skip, so assert the REAL backend exposes that exact name, then drive
-        # set_ended_note with the controller's note_ended and confirm the module's note slot IS wired to it (==, since a bound
-        # method mints a new object per attribute read, so `is` would be wrong). The kernel's hasattr and call are pinned to
-        # the same literal name.
+        # the regex reds a guard-name typo; the SDK-load function itself is executed in
+        # test_the_kernel_sdk_load_wires_the_ended_note_executed, which reds the three unreachable-call mutants the text misses.
         self.assertRegex(inspect.getsource(km), r'hasattr\(sbmod, "set_ended_note"\)[\s\S]{0,240}?sbmod\.set_ended_note\(_GC_FREEZE\.note_ended\)',
-                         "the kernel guards and wires the ended note on the same literal name when it loads the SDK backend")
+                         "the kernel guards and wires the ended note on the same literal name (executed by the glue test below)")
         sbmod = load_source("romp_sdk_backend_wire", os.path.join(ROOT, "kernel", "sdk_backend.py"))
         self.assertTrue(hasattr(sbmod, "set_ended_note"), "the real backend exposes the exact name the kernel's hasattr guards on")
         self.addCleanup(lambda: sbmod.set_ended_note(None))
         sbmod.set_ended_note(km._GC_FREEZE.note_ended)
         self.assertEqual(sbmod._ENDED_NOTE[0], km._GC_FREEZE.note_ended,
-                         "the wired note equals the controller's note_ended (==, a bound method mints anew per read)")
+                         "the backend's own setter wires the note (==, a bound method mints anew per read); the kernel's call of it is executed below")
+
+    def test_the_kernel_sdk_load_wires_the_ended_note_executed(self):
+        """PR 2042 review (item 2): the ended-note wiring is pinned by EXECUTING the kernel's SDK-load function, not only the
+        regex plus a call of the backend's own setter. Stub the kernel copy's load_source to a namespace whose backend is a
+        plain recorder (not a mock, which answers hasattr True for a misspelt guard name), whose startup_auth_env returns {}
+        (kernel.py reads it unguarded, so assert no problems) and whose set_ended_note records; save and restore the kernel
+        names and jd wires as _sdk_locked_for_real does; run _sdk_locked; the recorded note equals the controller's
+        note_ended. Three mutants that keep the source text but make the call unreachable red this."""
+        import io, types
+        from contextlib import redirect_stderr
+        km = load_source("romp_kernel_gcf_glue_exec", os.path.join(BIN, "romp-kernel"))
+        noted = []
+        class _Recorder:
+            def __init__(self, *a, **k):
+                self.args = (a, k)
+        fake = types.SimpleNamespace(SdkBackend=_Recorder, startup_auth_env=lambda *a, **k: {},
+                                     set_ended_note=lambda fn: noted.append(fn))
+        names = ("_sdk_backend", "load_source", "_sdk_import_notice", "_ensure_sdk_on_path", "_model_catalog_boot",
+                 "_claude_bin", "_mark_boot", "_sdk_problem")
+        saved = {n: getattr(km, n) for n in names}
+        wires = ("_LOGIN_AUTH_ENV_FN", "_USAGE_REFRESH_FN", "_DEFAULT_AUTH_FN", "_DEFAULT_LOGIN_FN", "_API_HEALTH_NOTE_FN")
+        saved_jd = {w: getattr(km.jd, w) for w in wires}
+        problems = []
+        try:
+            km._sdk_backend = None
+            km.load_source = lambda name, path: fake
+            km._sdk_import_notice = lambda: True
+            km._ensure_sdk_on_path = lambda: True
+            km._model_catalog_boot = lambda _async=True: False
+            km._claude_bin = lambda: "/bin/true"
+            km._mark_boot = lambda *a, **k: None
+            km._sdk_problem = problems.append
+            err = io.StringIO()
+            with redirect_stderr(err):
+                km._sdk_locked()
+        finally:
+            for n in names:
+                setattr(km, n, saved[n])
+            for w in wires:
+                setattr(km.jd, w, saved_jd[w])
+        self.assertEqual(noted, [km._GC_FREEZE.note_ended], "the executed SDK-load wired the controller's note_ended (by equality): %r" % noted)
+        self.assertEqual(problems, [], "the auth-env hook returned an empty problems list")
 
     def test_every_session_end_pop_is_paired_with_an_ended_note(self):
         """A source census beside the driven test: every `self.sessions.pop(` site in the SDK backend (a session end, in

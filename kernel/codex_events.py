@@ -134,6 +134,45 @@ def usage_from_token_usage(token_usage):
             "cache_creation_input_tokens": 0}
 
 
+# The stop reasons that END a turn in the transcript's parser (event_model.END_STOPS), mirrored here so the backend
+# can ask of its own file what the parser will answer.
+_END_STOPS = ("end_turn", "stop_sequence")
+
+
+def ends_turn(rec):
+    """Whether one materialized record ENDS the turn it lands in, read as the transcript's parser reads it
+    (event_model.segment_turns): an assistant record whose stop reason is an end (turn/completed's final reply, a
+    failure card, abandoned), or the interrupt record. The backend asks this of the records written after a turn was
+    accepted when a restart finds the turn still marked open (2026-09-22, the review of the restart-cut fix): a kernel
+    that died after the turn's end record landed but before its mark was cleared left a finished turn looking cut,
+    and the next load wrote a false notice over it.
+
+    Not every finished turn leaves such a record (2026-09-23, the review of this lane): a turn/completed with status
+    completed and no final reply held (the turn's last item a command, say) writes nothing, because
+    ThreadNormalizer._turn_completed flushes only what is held. The file reads that turn as open, so a lost clear on
+    it is settled as a cut until _turn_completed writes an end record of its own for that case, a separate fix."""
+    if not isinstance(rec, dict):
+        return False
+    msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+    if rec.get("type") == "assistant":
+        return msg.get("stop_reason") in _END_STOPS
+    if rec.get("type") == "user":
+        c = msg.get("content")
+        return isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "text"
+                                           and str(b.get("text") or "").startswith("[Request interrupted by user")
+                                           for b in c)
+    return False
+
+
+def record_ms(stamp):
+    """A record timestamp this module wrote (_iso's format) back to epoch millis, or None when it is not one."""
+    try:
+        dt = datetime.strptime(str(stamp)[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        return int(dt.timestamp()) * 1000 + int(str(stamp)[20:23])
+    except (TypeError, ValueError):
+        return None
+
+
 class ThreadNormalizer:
     """One Codex thread's notification → record state machine (single writer, append-only file).
 
@@ -149,7 +188,7 @@ class ThreadNormalizer:
     """
 
     def __init__(self, thread_id, cwd="", version="", model="", last_uuid=None, clock=time.time,
-                 seen_uuids=None):
+                 seen_uuids=None, floor_ms=0):
         self.thread_id = thread_id
         self.cwd = cwd
         self.version = version        # codex CLI version, stamped like the Claude CLI's `version`
@@ -174,7 +213,11 @@ class ThreadNormalizer:
         self._cb_items = {}           # turn id -> contextCompaction item/completed count
         self._cb_notes = {}           # turn id -> thread/compacted notification count
         self._seq = 0                 # uniquifier for synthesized/colliding uuids
-        self._last_ms = 0             # newest timestamp emitted — the floor for clock-stamped records
+        # newest timestamp emitted — the floor for clock-stamped records. Seeded from the file's newest record when the
+        # backend rebuilds this after a restart (2026-09-22, the review of the restart-cut fix): a fresh normalizer's
+        # floor was 0, so the first settle it wrote (the notice that ends a turn a restart cut) took the loading
+        # kernel's clock, and a clock behind the file's tail sorted it mid-turn, where it ended nothing
+        self._last_ms = int(floor_ms or 0)
 
     # ── record builders (every record advances the uuid chain) ────────────────────────────────
     def _mint(self, uuid):
@@ -255,7 +298,7 @@ class ThreadNormalizer:
         final message. stop stays null — the turn genuinely didn't settle."""
         return self._flush()
 
-    def abandoned(self, turn_id, message):
+    def abandoned(self, turn_id, message, no_retry=False):
         """The backend's settle for a turn whose stream ENDED WITHOUT turn/completed — the app-server
         connection died mid-turn, or a transcript write failed — so no notification will ever close
         it. Same shape as a terminal `error`: the held final reply lands mid-turn-shaped, then an
@@ -263,10 +306,18 @@ class ThreadNormalizer:
         for good: the kernel reads working from the FILE, so the session shows working while nothing
         runs, and the NEXT prompt is absorbed into the dead turn as mid-turn input instead of opening
         its own (the interrupt settle above exists for the same reason). The turn's usage never lands
-        on a later settle, as for a failed turn."""
+        on a later settle, as for a failed turn.
+
+        `no_retry` marks the end record `rompNoRetry` (2026-09-22, the review of the restart-cut fix): the card is a
+        notice nothing retries, a turn a kernel restart cut. The kernel's auto-retry decides from this record, so the
+        mark has to ride it: unmarked, a bare "retry" went into the thread about a second after boot, with nothing
+        to tell the model its turn, perhaps a command halfway through, had been cut."""
         self.turn_open = False
         self._usage = None
-        return self._error({"turnId": turn_id, "error": {"message": message}})
+        out = self._error({"turnId": turn_id, "error": {"message": message}})
+        if no_retry and out:
+            out[-1]["rompNoRetry"] = True
+        return out
 
     # ── the dispatcher ─────────────────────────────────────────────────────────────────────────
     def handle(self, method, params):

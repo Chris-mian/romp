@@ -2287,6 +2287,52 @@ class ViewBuilder(unittest.TestCase):
                          "without agents in flight the red badge + Retry still surface")
         self.assertFalse(c.get("awaiting"))
 
+    def _codex_cut_views(self, no_retry):
+        """The chat view and the feed card of a session whose Codex turn ends with the end the backend writes when
+        it can never finish: the restart-cut notice (no_retry) or a dead connection's (no mark). -> (view, card)."""
+        g1 = SID + ":g1"
+        base = [uline(T0, "run the synthetic build", "u1", ps="typed"),
+                aline(T0 + 20, "Starting the build.", "a1", "u1", tools=("Bash",), stop="tool_use")]
+        end = _codex_cut_records(no_retry, parent="a1", t=T0 + 20, tid=SID, opener=False)
+        self.tpath.write_text("\n".join(json.dumps(r) for r in base + end) + "\n")
+        km._api_err_cache.clear()
+        self._warm_tpath()
+        self._goal_store({g1: {"id": g1, "text": "Run the synthetic build", "parentId": None,
+                               "nodeComplete": False, "blocked": False, "cleared": False,
+                               "trail": [], "t": T0}}, {g1: "working"}, last=g1)
+        m = km.build_session(SID, NOW)
+        c = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[g1]
+        return m, c
+
+    def test_a_notice_nothing_retries_draws_no_countdown_and_files_its_card_under_needs_you(self):
+        # a Codex turn a kernel restart cut (2026-09-22) ends in the API-error record shape with the no-retry mark.
+        # Nothing picks the work back up but the person, so the chat card shows the words with no countdown (the
+        # failed compaction's dress, apiNoRetry) and the feed card files under Needs you, the refusal precedent: a
+        # Working card on a session nothing can move says romp is handling what it deliberately is not
+        build = self._codex_cut_views
+        m, c = build(no_retry=True)
+        self.assertEqual(m["status"]["state"], "blocked", "the session is stopped until the person acts")
+        self.assertIs(m["status"]["apiNoRetry"], True, "the card's words alone: no countdown the auto-retry would never keep")
+        self.assertEqual([e["text"] for e in m["events"] if e["kind"] == "apiError"], [CUT_NOTICE])
+        self.assertEqual([e for e in m["events"] if e["kind"] == "apiErrorNote"], [], "the words once, not twice")
+        self.assertEqual((c.get("blocked") or {}).get("state"), "apiError")
+        self.assertEqual(c["blocked"]["what"], CUT_NOTICE, "the card says what happened, not 'an API error'")
+        self.assertEqual(c["column"], "needs_input", "nothing will move it but the person")
+        # control: the same end unmarked (a dead connection's) keeps the transient treatment it always had
+        m, c = build(no_retry=False)
+        self.assertIs(m["status"]["apiNoRetry"], False)
+        self.assertEqual(c["blocked"]["what"], "this session stopped on an API error — Retry to resume")
+        self.assertEqual(c["column"], "working", "a transient error's card stays in Working while it auto-retries")
+
+    def test_the_feed_card_of_a_notice_nothing_retries_carries_noRetry(self):
+        # the review of this lane (2026-09-23): the blocked payload mirrored every on-you flag but this one, so no
+        # client could tell the restart-cut notice from a transient API error (the badge read 'API error', the bell
+        # filed an 'API error' line); the flag rides the payload as its siblings do
+        _, c = self._codex_cut_views(no_retry=True)
+        self.assertIs(c["blocked"].get("noRetry"), True)
+        _, c = self._codex_cut_views(no_retry=False)
+        self.assertIs(c["blocked"].get("noRetry"), False, "a dead connection's card carries the flag, unset")
+
     def test_awaiting_survives_an_interleaved_turn_via_live_subagent_count(self):
         # the supersede hole itself (the user 2026-07-05): the overlay's awaiting:true is treated as stale
         # once ANY later 'working' state row lands — but a mid-wait turn (the auto-nudge status check)
@@ -7129,6 +7175,133 @@ class TestApiError(unittest.TestCase):
         for t in ("API Error: 500 Internal server error.", "Request timed out",
                   "Usage limit reached — resets at 3pm.", "prompt is too long"):
             self.assertFalse(km._is_spend_limit(t), t)
+
+    def test_a_notice_nothing_retries_carries_noRetry(self):
+        # the Codex turn a kernel restart cut ends with a record its writer marks (codex_events abandoned, 2026-09-22):
+        # the kernel reads the mark off the record, so the writer's field and this reader's must agree
+        self._write(*_codex_cut_records(no_retry=True))
+        e = km._api_error(self.p)
+        self.assertIsNotNone(e, "still a blocking card: the session is stopped until the person acts")
+        self.assertIs(e["noRetry"], True)
+        self._write(*_codex_cut_records(no_retry=False))
+        self.assertIs(km._api_error(self.p)["noRetry"], False, "a dead connection's abandoned turn keeps its retry")
+
+
+# The Codex normalizer, the WRITER of the no-retry mark, and the backend whose load settles a cut turn (each loaded
+# under a name of this module's own)
+CX_EVENTS = load_source("romp_codex_events_for_kernel_tests",
+                        os.path.join(os.path.dirname(HERE), "kernel", "codex_events.py"))
+CX_BACKEND = load_source("romp_codex_backend_for_kernel_tests",
+                         os.path.join(os.path.dirname(HERE), "kernel", "codex_backend.py"))
+
+
+CUT_NOTICE = "romp restarted while Codex was working on this (a synthetic notice)"
+
+
+def _codex_turn_opener(norm, tid, t):
+    return norm.handle("item/completed", {"threadId": tid, "turnId": "t-1", "completedAtMs": t * 1000,
+                                          "item": {"type": "userMessage", "id": "cx-u1",
+                                                   "content": [{"type": "text", "text": "run the synthetic build"}]}})
+
+
+def _codex_cut_records(no_retry, parent=None, t=T0, tid="T-1", opener=True):
+    """A Codex turn's opening record and the end the backend writes when it can never finish, as the normalizer
+    writes them: the notice of a turn a kernel restart cut (no_retry, CodexBackend._settle_restart_turn) or a dead
+    connection's (no mark, the call every kernel has made). `opener=False` gives the end alone, chained on `parent`."""
+    norm = CX_EVENTS.ThreadNormalizer(tid, cwd="", version="", last_uuid=parent, clock=lambda: t + 30)
+    recs = _codex_turn_opener(norm, tid, t) if opener else []
+    end = norm.abandoned("t-1", CUT_NOTICE, no_retry=True) if no_retry else norm.abandoned("t-1", CUT_NOTICE)
+    return recs + end
+
+
+def _codex_cut_by_restart(root, sid):
+    """A Codex session whose turn a kernel restart cut, settled by the REAL load: the row as the dying kernel left it
+    (the accepted turn named; nothing ran it to its end) over a transcript holding the turn's prompt, and a fresh
+    backend over both. -> (backend, transcript path)."""
+    tid, cwd = "T-1", "/TESTDIR"
+    path = Path(root) / "codex" / "projects" / CX_BACKEND._enc_cwd(cwd) / (tid + ".jsonl")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    norm = CX_EVENTS.ThreadNormalizer(tid, cwd=cwd, version="codex", clock=lambda: T0)
+    path.write_text("".join(json.dumps(r) + "\n" for r in _codex_turn_opener(norm, tid, T0)))
+    row = {"tid": tid, "name": "api", "cwd": cwd, "model": "", "effort": "", "mode": "sandboxed", "dead": False,
+           "queue": [], "note": "", "color": "", "launchError": None, "compacting": False,
+           "turn": {"id": "t-1", "tid": tid, "at": T0, "after": None}}
+    (Path(root) / "codex" / "registry.json").write_text(json.dumps({sid: row}))
+
+    def no_client():
+        raise RuntimeError("synthetic: no app-server in this test")
+    return CX_BACKEND.CodexBackend(root, client_factory=no_client, log=lambda m: None), str(path)
+
+
+class RestartCutNoticeIsNeverAutoRetried(unittest.TestCase):
+    """The retry gate (2026-09-22, the review of the restart-cut fix): the notice rode the API-error record shape, so
+    the kernel's auto-retry tick sent a bare "retry" into the Codex thread about a second after boot, with nothing
+    to tell the model its turn, perhaps a command halfway through, had been cut. A noRetry record joins the on-you
+    classes the auto path skips; the manual Retry stays the person's. The cut is settled by the real backend load,
+    so the record under test is the one a restart writes."""
+
+    CXSID = "11111111-2222-3333-4444-00000000c0de"
+
+    class _Backend:
+        """What the retry is sent into: the send is recorded, never run."""
+        def __init__(self):
+            self.sent = []
+
+        def pending_queued(self, sid):
+            return []
+
+        def send(self, sid, text):
+            self.sent.append(text)
+            return True
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.p = os.path.join(self.td.name, "t.jsonl")
+        self.be = self._Backend()
+        for name, stub in {"_retry_paused_on": lambda: False,
+                           "_session_retry_suppressed": lambda sid: False,
+                           "_retry_suppress_unknown": lambda: False,
+                           "_path_of": lambda sid, now=None: self.p,
+                           "_alive_sessions": lambda now, live: [{"sid": self.CXSID, "path": self.p}]}.items():
+            p = mock.patch.object(km, name, stub)
+            p.start()
+            self.addCleanup(p.stop)
+        p = mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: self.be))
+        p.start()
+        self.addCleanup(p.stop)
+        km._api_err_cache.clear()
+        km._auto_retried.clear()
+        km._auto_retry_state.clear()
+
+    def tearDown(self):
+        km._api_err_cache.clear()
+        km._auto_retried.clear()
+        km._auto_retry_state.clear()
+        self.td.cleanup()
+
+    def _cut(self):
+        _, self.p = _codex_cut_by_restart(self.td.name, self.CXSID)
+        km._api_err_cache.clear()
+        self.assertIsNotNone(km._api_error(self.p), "the restart cut a turn and nothing ended it: no notice to judge")
+
+    def test_the_kernel_tick_and_a_client_ask_send_nothing(self):
+        self._cut()
+        km._auto_retry_tick(NOW, {self.CXSID: {"state": "waiting"}})
+        km._fire_api_retry(self.CXSID, self.be)             # a dashboard's countdown ask, the same decision
+        self.assertEqual(self.be.sent, [], "a blind retry went into the thread whose turn the restart cut")
+
+    def test_the_persons_retry_still_fires(self):
+        self._cut()
+        self.assertTrue(km._fire_api_retry(self.CXSID, self.be, manual=True))
+        self.assertEqual(self.be.sent, [km.RETRY_MSG], "an explicit Retry is the person's call")
+
+    def test_an_unmarked_abandoned_turn_keeps_its_auto_retry(self):
+        # the guard must not widen: a dead connection's turn is still retried as before
+        with open(self.p, "w") as f:
+            f.write("\n".join(json.dumps(r) for r in _codex_cut_records(no_retry=False)) + "\n")
+        km._api_err_cache.clear()
+        km._auto_retry_tick(NOW, {self.CXSID: {"state": "waiting"}})
+        self.assertEqual(self.be.sent, [km.RETRY_MSG])
 
 
 class ApiRetryAndTabOrderRoutes(unittest.TestCase):

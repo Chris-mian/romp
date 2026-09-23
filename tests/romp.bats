@@ -1377,7 +1377,7 @@ MOCK
     [ "$status" -eq 0 ]
     # the kernel was asked to quiesce with the default wait, under the serve token
     grep -q '^/down token=ok {"wait": 5}$' "$TEST_DIR/kreq"
-    [[ "$output" == *"quiet: no turn in flight (waited 1.2s)"* ]]
+    [[ "$output" == *"quiet: no turn the stop would cut (waited 1.2s)"* ]]
     # the marker: time + the command, so status/ensure/up can read a deliberate stop
     local marker="$XDG_STATE_HOME/romp/down-by-romp"
     [ -f "$marker" ]
@@ -1891,7 +1891,7 @@ STUB
     mock_manager 1
     run run_romp down
     [ "$status" -eq 0 ]
-    [[ "$output" == *"quiet: no turn in flight"* ]]
+    [[ "$output" == *"quiet: no turn the stop would cut"* ]]
     [[ "$output" != *"nothing was running"* ]]
     [[ "$output" == *"[romp] down: the kernel on :$ROMP_KERNEL_PORT answered the quiesce but has since gone (no login service installed or running, no manager on :${ROMP_MANAGER_PORT:-7432}); \`romp up\` starts it again"* ]]
     KERNEL_PID=""
@@ -1927,7 +1927,7 @@ STUB
     mock_manager 1
     run run_romp down
     [ "$status" -eq 1 ]
-    [[ "$output" == *"quiet: no turn in flight (waited 0s)"* ]]        # the quiesce itself was answered
+    [[ "$output" == *"quiet: no turn the stop would cut (waited 0s)"* ]]        # the quiesce itself was answered
     grep -q '^exiting before answering POST /down #2$' "$TEST_DIR/kget"
     [[ "$output" == *"romp down: the kernel on :$ROMP_KERNEL_PORT was not confirmed as the one this romp manages (POST /down got no answer); not touching it. Check ROMP_KERNEL_PORT and the state dir"* ]]
     [[ "$output" != *"[romp] down"* ]]

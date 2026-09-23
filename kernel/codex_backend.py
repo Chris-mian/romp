@@ -502,17 +502,27 @@ def _unlink_quiet(path):
 
 
 def _tail_state(path):
-    """(last_uuid, recent uuids) off a materialized file, to re-anchor the normalizer's chain and
-    seed its replay dedup after a restart. Reads the whole file once; keeps only the tail's uuids —
-    replay across a reconnect only ever re-delivers recent items."""
-    last, tail = None, []
+    """(last_uuid, recent uuids, newest record millis) off a materialized file, to re-anchor the normalizer's chain,
+    seed its replay dedup and floor its clock after a restart. Reads the whole file once; keeps only the tail's
+    uuids — replay across a reconnect only ever re-delivers recent items. The newest stamp is the lexical maximum,
+    the latest in the one fixed-width format the normalizer writes (codex_events._iso), parsed once at the end; 0
+    for a file with none (2026-09-22, the floor for the notice a restart cut writes). Undecodable bytes read as
+    replacement characters, the way the kernel's _api_error_pass reads (2026-09-23, the review of this lane): a write
+    torn mid-character at an exit left one stray byte of a multibyte character at the tail, and a strict decode raised
+    UnicodeDecodeError, which is not an OSError, out of every _ensure_norm; the torn line is unparseable either way and
+    is skipped like any other."""
+    last, tail, newest = None, [], ""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 try:
-                    u = json.loads(line).get("uuid")
+                    rec = json.loads(line)
+                    u = rec.get("uuid")
                 except Exception:
                     continue
+                ts = rec.get("timestamp")
+                if isinstance(ts, str) and ts > newest:
+                    newest = ts
                 if u:
                     last = u
                     tail.append(u)
@@ -520,7 +530,37 @@ def _tail_state(path):
                         tail.pop(0)
     except OSError:
         pass
-    return last, set(tail)
+    return last, set(tail), (_events.record_ms(newest) or 0) if newest else 0
+
+
+def _turn_ended_after(path, anchor):
+    """Did a record after `anchor` (a uuid; None = the file's start) END a turn (codex_events.ends_turn)? True or
+    False as the file says; None when the anchor is not in the file, which proves nothing either way. The restart
+    check behind _settle_restart_turn (2026-09-22, the review of the restart-cut fix): the row marks a turn open from
+    its acknowledgement to its end, and the transcript is romp's own record of whether that end landed, so a mark
+    whose turn ended in the file is a kernel death between the two writes, or a clear that failed, never a cut. A
+    missing file is a thread with no record yet, where nothing ended.
+
+    The precondition (2026-09-23, the review of this lane): a finished turn is recognized when its END RECORD landed.
+    A turn that completed with no final reply held, its last item a command say, leaves none, because
+    codex_events.ThreadNormalizer._turn_completed writes nothing when nothing is held; such a turn reads as not ended
+    here, so a lost clear on it is settled as a cut until that separate fix lands. Undecodable bytes read as
+    replacement characters (_tail_state says why), so a torn tail is one skipped line, never a raise."""
+    found = anchor is None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if not found:
+                    found = isinstance(rec, dict) and rec.get("uuid") == anchor
+                elif _events.ends_turn(rec):
+                    return True
+    except FileNotFoundError:
+        return False if anchor is None else None
+    return False if found else None
 
 
 def _ends_mid_line(path):
@@ -559,6 +599,10 @@ class _Session:
         self.queue_ids = []           # stable durable identity parallel to queue (public API stays text-only)
         self.echoes = []              # optimistic user-atom echoes ahead of the materialized file
         self.turn_id = None           # the active turn (interrupt/steer target), else None
+        self.turn_mark = None         # the accepted turn as the registry row names it, {id, tid, at, after}, from its
+                                      # acknowledgement to its end (2026-09-22): a row still naming one at load is a
+                                      # turn a kernel exit may have cut (_settle_restart_turn); `after` is the file's
+                                      # last uuid when the turn was accepted, where its records begin
         self.clearing = False         # the clear bracket (CodexBackend.clear, 2026-09-19): latched before
                                       # thread/start, dropped when the new tid is durable or the attempt raises
         self.compacting = False       # the compaction bracket (CodexBackend.compact, 2026-09-19): latched before
@@ -684,6 +728,7 @@ class CodexBackend:
             self._registry_unreadable = True
             rows = {}
         restart_ended = []          # rows still reading compacting: their bracket ends here (below the loop)
+        restart_cut = []            # rows still naming an accepted turn: settled against the transcript (below the loop)
         with self._sessions_lock:
             for sid, r in rows.items():
                 if not isinstance(r, dict) or not isinstance(r.get("tid"), str):
@@ -731,6 +776,13 @@ class CodexBackend:
                                                "Codex compacted it is unknown"),
                                       "at": time.time(), "limit": False, "noRetry": True}
                     restart_ended.append(s)
+                # A row still naming an accepted turn (2026-09-22): the previous kernel exited with the turn open, or
+                # after its end landed and before the mark was cleared. Settled below the loop against the transcript.
+                # A dead row too: a kill whose interrupt never landed before the exit leaves the same open turn, which
+                # a revive would show as Working.
+                mark = r.get("turn")
+                if isinstance(mark, dict) and isinstance(mark.get("id"), str) and mark["id"]:
+                    restart_cut.append((s, mark))
                 self._sessions[sid] = s
         for s in restart_ended:
             with s.lock:
@@ -742,6 +794,95 @@ class CodexBackend:
                 self._end_compact_locked(s, "loud", text)
                 self._save_compacting_locked(s, "launchError")
             self.log("compaction of %s ended: %s" % (s.name, text))
+        for s, mark in restart_cut:
+            self._settle_restart_turn(s, mark)
+
+    # The notice a turn a kernel restart cut ends with (2026-09-22): in the transcript's end record and the launch error.
+    CUT_TURN_TEXT = ("romp restarted while Codex was working on this and the turn was cut short; nothing picks it "
+                     "back up on its own, so send a message to carry on")
+
+    def _settle_restart_turn(self, s, mark):
+        """Settle a turn the registry row still names at load (2026-09-22). Before, the exit stopped only the Claude
+        sessions, the acknowledgement had already taken the prompt off the durable queue, and the row held no trace
+        of the turn: the next kernel loaded the session idle with no notice and no retry, while the transcript's turn
+        stayed open, so the chat read Working over a turn nothing ran and the next prompt was absorbed into it.
+
+        The transcript decides first (the review of the fix, which found a finished turn called cut): a record that
+        ended a turn after the mark's anchor means the turn finished and only its mark's clear was lost (a death
+        between the two writes, or a failed save), so the mark is dropped and nothing is written. Otherwise the turn
+        was cut. A finished turn is recognized only by its end record, which a turn that completed with no final reply
+        does not leave (_turn_ended_after names the precondition), so a lost clear on that shape is settled as a cut
+        until codex_events writes an end for it. The app-server was the previous kernel's child and ended with it, so
+        no notification will ever end the turn; it ends here, loudly, the way a dead connection's turn already ends
+        (norm.abandoned): the held state flushed, then an end record carrying the notice, marked rompNoRetry, so the
+        chat stops reading Working, the next prompt opens a turn of its own, and nothing sends a blind retry into the
+        thread; the person decides whether to pick the work back up. The same words become the launch error, WITHOUT
+        noRetry: on a launch error that mark is what `romp compact --wait` reads as a compaction's end. The transcript
+        write comes before the row's: a death between them leaves the mark, and the next load finds the notice's own
+        end record after the anchor and drops it, when the file holds the anchor (a mark whose anchor is not in the
+        file cannot show the notice landed, so such a death gets a second notice; 2026-09-23, the fold's verify pass).
+
+        The mark leaves the row only once the notice landed (2026-09-23, the review of this lane): the row used to drop
+        it whatever the append did, so a notice that failed to write (a full disk, a refused write) was written zero
+        times, the transcript's turn stayed open, and no later load could retry: the defect back for good. Now a failed
+        write saves the launch error alone, keeps the mark, logs why, and the next load tries again; until one
+        succeeds the chat still reads Working (the launch-error card shows only once the transcript's turn is closed),
+        so the log is where the failure shows. A turn accepted before that load replaces the kept mark with its own,
+        and its end record closes the file's open turn, with no notice for the cut. The normalizer the failed write
+        advanced is dropped, so the next one is rebuilt from the file and nothing chains to records that never landed.
+        An anchor the file does not hold proves nothing, and is settled as a cut: a false notice is visible, a lost
+        turn is not."""
+        turn_id = mark["id"]
+        with s.lock:
+            tid = s.tid
+        why = ""
+        if isinstance(mark.get("tid"), str) and mark["tid"] != tid:
+            ended = True                   # the row moved to a later conversation (a clear), which no open turn allows
+        else:
+            try:
+                ended = _turn_ended_after(self.transcript_path(s.sid), mark.get("after"))
+            except Exception as e:
+                ended, why = None, "%s: %s" % (type(e).__name__, e)
+        if ended:
+            try:
+                with s.lock:
+                    self._save_registry(s, fields=("turn",))   # s.turn_mark is None: the row stops naming it
+            except Exception:
+                self.log("turn %s of %s had ended before the restart, but its stale mark could not be dropped; the "
+                         "next load drops it: %s" % (turn_id, s.name, traceback.format_exc()))
+                return
+            self.log("turn %s of %s had ended before the restart; its stale mark was dropped" % (turn_id, s.name))
+            return
+        if ended is None:
+            self.log("turn %s of %s: the transcript cannot show whether it ended (%s); settled as cut"
+                     % (turn_id, s.name, why or "the mark's anchor is not in it"))
+        landed, write_err = False, None
+        try:
+            norm = self._ensure_norm(s)
+            with s.norm_lock:
+                recs = norm.abandoned(turn_id, self.CUT_TURN_TEXT, no_retry=True)
+                if recs:
+                    self._append(s, recs)
+                    landed = True
+        except Exception:
+            write_err = traceback.format_exc()
+        if not landed:
+            # the in-memory chain advanced past records the file never got: rebuilt from the file on next use
+            with s.norm_lock:
+                s.norm = None
+        try:
+            with s.lock:
+                s.launch_error = {"text": self.CUT_TURN_TEXT, "at": time.time(), "limit": False}
+                # the mark leaves the row with the notice, never without it (2026-09-23, the review of this lane)
+                self._save_registry(s, fields=("launchError", "turn") if landed else ("launchError",))
+        except Exception:
+            self.log("cut turn registry save %s: %s" % (s.name, traceback.format_exc()))
+        if landed:
+            self.log("turn %s of %s was cut by a kernel restart: ended with a notice" % (turn_id, s.name))
+        else:
+            self.log("turn %s of %s was cut by a kernel restart, and the notice that ends it could NOT be written; "
+                     "the row keeps the turn so the next load tries again, and until then the chat reads Working: %s"
+                     % (turn_id, s.name, write_err or "the settle produced no record"))
 
     def _republish_missing_names(self):
         """spawn writes the durable registry row, then names/<sid>. A kernel death between the two
@@ -828,7 +969,10 @@ class CodexBackend:
                               for entry_id, text in zip(s.queue_ids, s.queue)],
                     "note": s.note, "color": s.color,
                     "launchError": s.launch_error,
-                    "compacting": s.compacting}   # the bracket, in the row since 2026-09-21 (_save_compacting_locked)
+                    "compacting": s.compacting,   # the bracket, in the row since 2026-09-21 (_save_compacting_locked)
+                    # the accepted turn, from its acknowledgement to its end (2026-09-22): a row still naming one at
+                    # load is settled against the transcript (_settle_restart_turn)
+                    "turn": dict(s.turn_mark) if s.turn_mark else None}
 
     def _registry_rows_for_update(self):
         try:
@@ -880,7 +1024,7 @@ class CodexBackend:
         order. Snapshotting still happens before the registry lock, so no reverse lock edge exists.
         """
         allowed = {"tid", "name", "cwd", "model", "effort", "mode", "dead", "note", "color",
-                   "launchError", "compacting"}
+                   "launchError", "compacting", "turn"}
         fields = set(fields)
         unknown = fields - allowed
         if unknown:
@@ -1333,10 +1477,12 @@ class CodexBackend:
         with s.norm_lock:
             if s.norm is None:
                 path = self.transcript_path(s.sid)
-                last, seen = _tail_state(path)
+                last, seen, newest_ms = _tail_state(path)
+                # floor_ms: a record this normalizer stamps from the clock never sorts before the file's tail
+                # (2026-09-22; codex_events ThreadNormalizer._stamp)
                 s.norm = _events.ThreadNormalizer(s.tid, cwd=s.cwd, model=s.model,
                                                   version="codex", last_uuid=last,
-                                                  seen_uuids=seen)
+                                                  seen_uuids=seen, floor_ms=newest_ms)
             return s.norm
 
     def _append(self, s, recs):
@@ -1444,6 +1590,20 @@ class CodexBackend:
                     used, window = s.norm.context
                     row["context"] = max(0, min(100, round(100 * used / window)))
             out[sid] = row
+        return out
+
+    def inflight_turns(self):
+        """The sessions with an accepted turn open right now, [{sid, name, backend}]: what a kernel exit cuts, for the
+        restart's cut row (kernel _drain_and_exit, 2026-09-22), which counted a Codex cut as a clean restart. Their
+        rows name the turn, so the next load settles each one (_settle_restart_turn). An ENDED session's open turn
+        counts too (2026-09-23, the review of this lane): a kill whose interrupt never landed before the exit leaves
+        the turn open, and the next load writes its notice as it does for any row still naming a turn, so a row that
+        skipped dead sessions called that cut a clean restart while the transcript said otherwise."""
+        out = []
+        for sid, s in self._session_items():
+            with s.lock:
+                if s.turn_id:
+                    out.append({"sid": sid, "name": s.name, "backend": "codex"})
         return out
 
     def busy(self, sid):
@@ -2875,6 +3035,11 @@ class CodexBackend:
         stream_failed = False
         bracket_ended = None
         try:
+            # where this turn's records will begin: the file's last record now, the mark's anchor (2026-09-22). Read under
+            # norm_lock and before s.lock, the order _append takes them; the turn's own notifications wait in its queue
+            # until the loop below, so none of them is written yet
+            with s.norm_lock:
+                anchor = norm.last_uuid
             with s.lock:
                 if s.queue[:len(batch)] != batch or s.queue_ids[:len(batch_ids)] != batch_ids:
                     raise RuntimeError("Codex send queue prefix changed during turn/start")
@@ -2906,11 +3071,14 @@ class CodexBackend:
                 s.since = time.time()
                 s.launch_error = None
                 s.turn_rejection = None
+                # the row names the accepted turn in the same write that takes its prompt off the queue (2026-09-22):
+                # a kernel exit from here to the turn's end leaves the mark, which the next load settles
+                s.turn_mark = {"id": turn_id, "tid": tid, "at": s.since, "after": anchor}
                 killed_during_start = s.dead
                 try:
                     # compacting: a bracket this turn ended, in the row (2026-09-21)
                     ack_mismatch = self._save_registry(
-                        s, fields=("launchError", "compacting"), queue_ack=batch_ids)
+                        s, fields=("launchError", "compacting", "turn"), queue_ack=batch_ids)
                 except Exception:
                     # turn/start already succeeded, but the durable ACK did not. Restore the exact
                     # prefix before retrying so this process agrees with the still-queued disk row.
@@ -2991,11 +3159,24 @@ class CodexBackend:
                 c.unregister_turn_notifications(turn_id)
             except Exception:
                 pass
+            end_save_err = None
             with s.lock:
                 s.turn_id = None
                 s.state = "waiting"
                 s.since = time.time()
                 s.turn_ended = True        # _run_turn pokes and pushes once the turn lock is released (see there)
+                s.turn_mark = None
+                if ack_persisted:
+                    # the turn is over, its end written above: the row stops naming it (2026-09-22), one more
+                    # registry write per turn. A failed clear leaves a stale mark, which the next load drops once
+                    # the transcript shows the turn ended (_settle_restart_turn)
+                    try:
+                        self._save_registry(s, fields=("turn",))
+                    except Exception:
+                        end_save_err = traceback.format_exc()
+            if end_save_err:
+                self.log("turn end registry save (%s): the row still names the ended turn until the next load "
+                         "drops it: %s" % (s.name, end_save_err))
         return True
 
     # ── chat tail ────────────────────────────────────────────────────────────────────────────────

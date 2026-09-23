@@ -5506,6 +5506,33 @@ class LiveSubagentsRetire(unittest.TestCase):
         self.assertEqual(be.busy_breakdown(), (1, 0), "a session is counted ONCE — in flight wins")
         self.assertEqual(be.busy_count(), 1)
 
+    def test_hosted_work_is_not_busy_for_the_quiet_gate(self):
+        # 2026-09-22 (a post-merge review of a kernel refresh from an older main): the quiet window waits on what
+        # a restart would DISRUPT (busy_count's contract). A session under a per-session host (T315; on by default
+        # since T348) is DETACHED by the drain, never cut (cut_list): the host keeps the CLI, its turn and its
+        # background work. Counting it held a quiet refresh, and the drain hold over every idle session's queued
+        # turn, for work the restart never touches. A real SdkSession; the stand-in host is never called.
+        s = self._sess()
+        be = s.backend
+        _hosts_off(be.state_dir)
+        be.sessions[s.sid] = s
+        s._on_task_event("task_started", {"task_id": "w1", "task_type": "local_workflow"})
+        s.inflight = 1
+        s._host = object()                                     # a live host transport, as the drain reads it
+        self.assertEqual(be.would_cut(), [], "sanity: the drain would detach this session, not cut it")
+        self.assertEqual(be.busy_breakdown(), (0, 0), "a hosted turn is nothing a restart cuts")
+        self.assertEqual(be.busy_count(), 0)
+        self.assertEqual(be.inflight_names(), [], "nor is it about to be cut when `romp down` stops the kernel")
+        s.inflight = 0
+        self.assertEqual(be.busy_breakdown(), (0, 0), "the host keeps the workflow across the restart too")
+        s._host, s._host_intent = None, True
+        self.assertEqual(be.busy_breakdown(), (0, 0), "mid-attach by intent: the drain detaches it the same way")
+        s._host_intent = False
+        self.assertEqual(be.busy_breakdown(), (0, 1), "a kernel child's workflow still counts (T240)")
+        s.inflight = 1
+        self.assertEqual(be.busy_breakdown(), (1, 0), "and so does its turn")
+        self.assertEqual(be.inflight_names(), ["web"])
+
     def test_a_failed_workflow_agent_retires_on_the_runs_progress_list(self):
         """The shape the probe recorded: the run's task_progress re-ships the whole per-agent list on every
         state change; the failed agent's slot flips to "error" with no SubagentStop ever following."""
