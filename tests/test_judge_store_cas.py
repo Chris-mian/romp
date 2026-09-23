@@ -14,6 +14,8 @@ import contextlib
 import errno
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -44,6 +46,11 @@ class StoreCas(unittest.TestCase):
 
     def _nid(self, n):
         return "%s:g%d" % (SID, n)
+
+    @staticmethod
+    def _ident(path):
+        st = os.stat(path)
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
 
     def _seed(self):
         """One working top goal, published."""
@@ -371,7 +378,7 @@ class StoreCas(unittest.TestCase):
         self._seed()
         g1 = self._nid(1)
         a = jd.load_goals(SID)
-        self.assertNotIn("_baseFields", a, "no field digests on the loaded store (the round-one verifier: 200 ms a load, 4.7 MB retained)")
+        self.assertNotIn("_baseFields", a, "no field digests on the loaded store (the round-one verifier: 121 ms a load against 15, 6 MB more retained)")
         self.assertIsNotNone(a["_baseIdent"])
         jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="one"); jd.save_goals(SID, a)
         raw = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
@@ -465,6 +472,51 @@ class StoreCas(unittest.TestCase):
         jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="the pass ends with a save"); jd.save_goals(SID, holder)
         after = json.loads(path.read_text())["nodes"][g1]
         self.assertEqual((after.get("blockSummary"), after.get("parentId")), ("the editor's long brief", "the editor's parent"), "the in-place edit survives the holder's save: the stamped family through the family merge, the plain field through the carry (before: the holder's copy won on both)")
+
+    def test_a_writers_own_publish_is_its_next_base_with_no_read_in_this_process(self):
+        """The second contributor's pre-merge review of PR 2101: a publish stamped its identity as the holder's next base and seeded only the
+        disk-content memo, while only a read fills the raw-parse memo, so unless some load in this process parsed the published version
+        first the next save found no base (carryNoBase) and an editor's move after the publish was published over, as at main. The
+        publish keeps the text it wrote in the history under the written identity; the editor here is ANOTHER process writing the file
+        in place, so nothing in this process reads the version between the publish and the save."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID)
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="our first move"); jd.save_goals(SID, a)   # our own publish
+        path = jd.GOALDIR / (SID + ".json")
+        subprocess.run([sys.executable, "-c",
+                        "import json, sys\np = sys.argv[1]; d = json.loads(open(p).read())\n"
+                        "d['nodes'][sys.argv[2]]['text'] = 'edited by another process'; d['rev'] += 1\nopen(p, 'w').write(json.dumps(d))",
+                        str(path), g1], check=True, timeout=60)
+        before = dict(jd._GOAL_IO)
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 60, why="our second move"); jd.save_goals(SID, a)
+        after = json.loads(path.read_text())["nodes"][g1]
+        self.assertEqual(after.get("text"), "edited by another process", "the other process's edit rides our save: our own published version is the base (before: no base, the edit lost as at main)")
+        self.assertEqual((jd._GOAL_IO["carryBase"] - before["carryBase"], jd._GOAL_IO["carryNoBase"] - before["carryNoBase"]), (1, 0), "and the counters say the base was found")
+        self.assertEqual(len([e for e in after.get("log") or [] if e.get("why") in ("our first move", "our second move")]), 2, "both of our events stand")
+
+    def test_the_retry_after_a_raised_write_stands_on_the_version_it_rebased_onto(self):
+        """The second contributor's pre-merge review of PR 2101: after a raised write the finally hands the holder the identity the loop last
+        rebased onto, never the load's. With the load's, the retry's carry would compare a third writer's newer value against the load's
+        base, read the value the first rebase carried as this holder's own move, and publish the earlier writer's value over the newer."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID)
+        b = jd.load_goals(SID); b["nodes"][g1]["parentId"] = "V1"; jd.save_goals(SID, b)   # the first other writer
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="ours")
+        real = jd._publish_tmp
+
+        def raising_write(*args, **kw):
+            raise OSError(errno.EIO, "one raised write")
+        with mock.patch.object(jd, "_publish_tmp", raising_write):
+            with self.assertRaises(OSError):
+                jd.save_goals(SID, a)                # the rebase folded V1 in; the write raised
+        self.assertEqual(a.get("_baseIdent"), self._ident(jd.GOALDIR / (SID + ".json")), "premise: the holder stands on the version it rebased onto")
+        c = jd.load_goals(SID); c["nodes"][g1]["parentId"] = "V2"; jd.save_goals(SID, c)   # a third writer, before the retry
+        jd.save_goals(SID, a)                        # the retry
+        after = jd.load_goals(SID)["nodes"][g1]
+        self.assertEqual(after.get("parentId"), "V2", "the retry carries the third writer's V2 (handing back the load's identity: V1 published over V2)")
+        self.assertTrue(any(e.get("why") == "ours" for e in after.get("log") or []), "and our event is there")
 
     def test_rebase_folds_a_duplicate_verdict_instead_of_doubling_it(self):
         # verdict identity is (ev_t, src, kind) - the same triple _replay_overrides dedups on

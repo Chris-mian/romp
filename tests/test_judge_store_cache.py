@@ -805,6 +805,91 @@ class WriterParseMemo(unittest.TestCase):
         self.assertEqual(jd._raw_store_evict_unowned(set()), 2, "no owner at all: every entry goes")
         self.assertEqual(jd.raw_store_stats()["entries"], 0)
 
+    def _versions(self, n):
+        """Publish `n` versions through the writer, loading each (a load rolls the memo past the version it held, a publish keeps
+        its text): the path's history fills."""
+        for i in range(n):                           # loop-ok: bounded by the caller
+            w = jd.load_goals(SID); w["nodes"]["%s:g1" % SID]["parentId"] = "V%d" % i; jd.save_goals(SID, w)
+
+    def test_the_bytes_gauge_covers_the_history(self):
+        """The second contributor's pre-merge review of PR 2101: the history stood outside the gauge, three versions of a deleted
+        3.3 MB store at 0 bytes. Every history version's parse or text counts beside the entries' text and pickle."""
+        p = self._seed()
+        self._versions(2)
+        s = jd.raw_store_stats()
+        self.assertGreater(s["history"], 0, "premise: the path holds history versions")
+        with jd._RAW_STORE_LOCK:
+            memo = sum(len(e[1]) + len(e[2]) for e in jd._RAW_STORE.values())
+            hist = sum(len(b or b"") + len(t or "") for dq in jd._RAW_HISTORY.values() for _i, b, t in dq)
+        self.assertGreater(hist, 0)
+        self.assertEqual(s["bytes"], memo + hist, "bytes is the entries' text and pickle plus every history version")
+
+    def test_the_history_goes_with_the_path_on_forget(self):
+        """Unparseable bytes at the path drop its entry (as before) and its history with it."""
+        p = self._seed()
+        self._versions(2)
+        self.assertGreater(jd.raw_store_stats()["history"], 0, "premise")
+        p.write_text("{not json")
+        self.assertEqual(jd.load_goals(SID)["nodes"], {}, "quarantined: the fresh store")
+        s = jd.raw_store_stats()
+        self.assertEqual((s["entries"], s["history"], s["bytes"]), (0, 0, 0), "the entry, the history and the bytes gone together")
+
+    def test_the_history_goes_with_the_path_on_the_absent_eviction(self):
+        """A deleted store's history is dropped by the compaction sweep's absent eviction, with the gauge following (before: three versions
+        kept after both evictions, at 0 bytes on the gauge)."""
+        p = self._seed()
+        self._versions(2)
+        s0 = jd.raw_store_stats()
+        self.assertGreater(s0["history"], 0, "premise")
+        p.unlink()
+        self.assertEqual(jd._raw_store_evict_absent(), 1, "one path dropped")
+        s = jd.raw_store_stats()
+        self.assertEqual((s["entries"], s["history"], s["bytes"]), (0, 0, 0), "the history went with the path")
+        self.assertEqual(jd._raw_store_evict_absent(), 0, "nothing left to drop")
+
+    def test_the_history_goes_with_the_path_on_the_unowned_eviction(self):
+        """The unowned eviction drops a path's history beside its entry; the owned path keeps both."""
+        sid2 = "77777777-8888-4999-aaaa-cccccccccccc"
+        self._seed()
+        s = {"rompUuid": sid2, "seq": 0, "placementsV": jd.PLACEMENTS_V, "nodes": {}, "placements": {}, "status": {}}
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Another session's goal"}], [])
+        jd.rollup_status(s, session_closed=False)
+        jd.save_goals(sid2, s)
+        self._versions(2)
+        w = jd.load_goals(sid2); w["nodes"]["%s:g1" % sid2]["parentId"] = "theirs"; jd.save_goals(sid2, w)
+        p2 = str(jd.GOALDIR / (sid2 + ".json"))
+        with jd._RAW_STORE_LOCK:
+            own_hist = len(jd._RAW_HISTORY.get(str(jd.GOALDIR / (SID + ".json")), ()))
+            self.assertGreater(len(jd._RAW_HISTORY.get(p2, ())), 0, "premise: the unowned path holds history")
+        self.assertGreater(own_hist, 0, "premise: the owned path holds history")
+        self.assertEqual(jd._raw_store_evict_unowned({SID}), 1, "the path no discovered session owns is dropped")
+        st = jd.raw_store_stats()
+        with jd._RAW_STORE_LOCK:
+            self.assertNotIn(p2, jd._RAW_HISTORY, "its history went with it")
+            self.assertEqual(len(jd._RAW_HISTORY.get(str(jd.GOALDIR / (SID + ".json")), ())), own_hist, "the owned path's history stands")
+        self.assertEqual((st["entries"], st["history"]), (1, own_hist))
+
+    def test_a_publish_keeps_its_text_as_the_holders_next_base_and_a_read_replaces_it_with_the_parse(self):
+        """The second contributor's pre-merge review of PR 2101: only a read filled the raw memo, so a writer's own published version was
+        not findable as its next base. A publish pushes the text it wrote under the written identity; a version holds one slot, so the
+        parse a later read rolls the memo past replaces the text entry for the same identity."""
+        p = self._seed()                             # the seed's publish: one text entry
+        path_s = str(p)
+        with jd._RAW_STORE_LOCK:
+            ents = list(jd._RAW_HISTORY.get(path_s, ()))
+        self.assertEqual([(e[0] == self._ident(p), e[1] is None, e[2] is not None) for e in ents], [(True, True, True)], "the published version's text, under the identity the rename carried")
+        self.assertEqual(jd._base_nodes(path_s, self._ident(p))["%s:g1" % SID]["text"], "A goal", "found as a base without any read")
+        jd.load_goals(SID)                           # the memo now holds this version
+        w = jd.load_goals(SID); w["nodes"]["%s:g1" % SID]["parentId"] = "V1"; jd.save_goals(SID, w)
+        jd.load_goals(SID)                           # rolls the memo past the seed's version: its parse replaces the text entry
+        with jd._RAW_STORE_LOCK:
+            ents = list(jd._RAW_HISTORY.get(path_s, ()))
+        idents = [e[0] for e in ents]
+        self.assertEqual(len(idents), len(set(idents)), "one entry per identity")
+        seed_ent = [e for e in ents if e[1] is not None]
+        self.assertEqual(len(seed_ent), 1, "the seed's version is held as its parse now")
+        self.assertIsNone(seed_ent[0][2], "and its text entry is gone")
+
     def test_a_read_fault_raises_as_before_and_nothing_is_remembered(self):
         p = self._seed()
         jd.load_goals(SID)
