@@ -466,6 +466,47 @@ class Harness(unittest.TestCase):
         self.assertTrue(all(v % 3 == 0 for v in counts.values()),
                         "every mark-normalized planner input recurs once per build (a multiple of the build count; a bucket may hold several endings); a build-dependent byte in one ending would split it: %r" % dict(counts))
 
+    def test_seal_pre_cut_adopt_seals_pre_cut_and_leaves_the_turn_at_every_older_version(self):
+        """The 2026-09-23 method change (manager's condition 1): a seed at each older PLACEMENTS_V (9-14) plans exactly the
+        ending's OWN turn, with every pre-cut unit sealed. seal_pre_cut_adopt seals the units born BEFORE the cut (keyed on
+        time, derivation-independent) and adopts the current version, so _plan_session runs no whole-store seal and only the
+        turn's units (time >= cut) remain to plan. Stubbed jd so the contract is deterministic."""
+        import types as _t
+        session = {"turns": [[{"id": "s1"}, {"id": "s2"}, {"id": "s3"}, {"id": "s4"}]]}
+        units = [("s1", "work", 50), ("s2", "work", 70), ("s3", "work", 100), ("s4", "work", 120)]   # cut at 100: s1,s2 pre-cut; s3,s4 the turn
+        for v in (9, 10, 11, 12, 13, 14):
+            store = {"placements": {}, "placementsV": v}
+            jd = _t.SimpleNamespace(PLACEMENTS_V=15)
+            jd.episode_floor = lambda fsid: None
+            jd._segs = lambda turn, store: turn
+            jd.plan_units = lambda session, store, floor=None, lazy_text=True: units
+            jd._unit_key = lambda seg, phase: "%s#%s" % (seg, phase)
+            jd._placed_key = lambda placements, key, live=None, floor=None: key in placements
+            sealed = self.je.seal_pre_cut_adopt(jd, "fsid", session, store, 100)
+            self.assertEqual(store["placementsV"], 15, "adopts the current version from %d, so _plan_session skips its seal" % v)
+            self.assertEqual(sealed, 2, "exactly the two pre-cut units sealed (from version %d): %r" % (v, store["placements"]))
+            self.assertIsNone(store["placements"].get("s1#work"), "pre-cut unit sealed")
+            self.assertIsNone(store["placements"].get("s2#work"), "pre-cut unit sealed")
+            self.assertNotIn("s3#work", store["placements"], "the turn unit at the cut is left to plan")
+            self.assertNotIn("s4#work", store["placements"], "the turn unit after the cut is left to plan")
+
+    def test_a_silent_measured_judge_reads_not_comparable_and_is_named_in_the_table(self):
+        """The comparability precondition (manager's condition 2): an arm in which any measured judge made ZERO calls is not
+        comparable, whatever the failure count, and the table names the silent judge, so a silent planner can never pass."""
+        dest, m = self._corpus()
+        run_root = os.path.join(self.td, "runs-silent")
+        base = self.je.run_arm(dest, "current", None, run_root, None, self.fake, now=T0 + 10**6)
+        self.assertTrue(self.je.measure(m, base, self.state)["comparable"], "the real run is comparable to start")
+        base["callsByJudge"] = {"placer": 5, "closer": 5, "unblocker": 5}   # a run where the PLANNER was silent (every seed sealed)
+        mb = self.je.measure(m, base, self.state)
+        self.assertFalse(mb["comparable"], "a silent planner is not comparable")
+        self.assertEqual(mb["silentJudges"], ["planner"], "the placer is reported but not required (a conditional judge)")
+        (Path(run_root) / "current" / "results.json").write_text(json.dumps(base))
+        self.je.report(dest, run_root, str(self.state))
+        table = (Path(run_root) / "table.md").read_text()
+        self.assertIn("planner 0 calls", table, "the table names the silent measured judge: %s" % table)
+        self.assertIn("not comparable", table)
+
     def _add_node_log(self, sid, suffix, ev):
         """Append an event to a live top-level node's log (a helper for the unblocker-ruling pins)."""
         p = self.state / "goals" / (sid + ".json")
