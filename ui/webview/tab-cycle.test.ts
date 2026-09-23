@@ -1,4 +1,4 @@
-// Cycling the sessions of a chat column by key (the user 2026-09-23): the browser's "Switch to the next / previous
+// Cycling the sessions of a chat column by key (the user 2026-09-23): the browser's "Go to the next / previous
 // session" commands and their default chords, beside the VS Code view's rompChat.nextTab / prevTab, which had the
 // keys already. The chord rules run against the real keybindings model; the shell's registration (palette-main.ts),
 // the pane's message arm (render.ts) and the pane-focus script's bail (kernel.py) are pinned at source — the repo's
@@ -47,10 +47,13 @@ test("the chord fires from the composer, where the strip's bare arrows do not", 
 });
 
 test("palette-main.ts registers the pair, posting the pane the messages the VS Code view posts; the pane steps with cycleTab", () => {
-  assert.match(MAIN, /registerCommand\(\{ id: "chat\.nextTab", title: "Switch to the next session", run: \(\) => chatPost\(\{ type: "nextTab" \}\) \}\);/);
-  assert.match(MAIN, /registerCommand\(\{ id: "chat\.prevTab", title: "Switch to the previous session", run: \(\) => chatPost\(\{ type: "prevTab" \}\) \}\);/);
+  assert.match(MAIN, /registerCommand\(\{ id: "chat\.nextTab", title: "Go to the next session", run: \(\) => chatPost\(\{ type: "nextTab" \}\) \}\);/);
+  assert.match(MAIN, /registerCommand\(\{ id: "chat\.prevTab", title: "Go to the previous session", run: \(\) => chatPost\(\{ type: "prevTab" \}\) \}\);/);
   assert.match(RENDER, /else if \(m\.type === "nextTab"\) cycleTab\(1\);\s*\n\s*else if \(m\.type === "prevTab"\) cycleTab\(-1\);/,
                "one arm for the shell's post and the VS Code host's");
+  // "Switch to <name>" is the per-tab hot key's title: the dialog's solo heading strips that prefix and the served split
+  // test lists the hot-key rows by it, so the pair must not wear it (CI caught the first spelling, 2026-09-23)
+  for (const m of MAIN.matchAll(/id: "chat\.(?:next|prev)Tab", title: "([^"]+)"/g)) assert.doesNotMatch(m[1], /^Switch to /, m[1]);
 });
 
 test("VS Code binds the same pair to Ctrl+Alt+arrows (Cmd+Alt on a Mac) while the romp panel is active, and posts the same messages", () => {
