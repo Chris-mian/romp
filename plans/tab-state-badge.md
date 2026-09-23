@@ -94,3 +94,20 @@ The retrying ring stays in ring mode (byte-identical to today); the left-dot ret
 - 2026-09-22 (the PR 2023 post-merge review): the PHONE dot departed from the mockup's corner. On the phone the Needs-you dot is an in-flow flex item in the chip's and row's own line, before the chevron and the close (both `order:1`), so it reserves its own room and never covers them; the DESKTOP `.tab-badge` stays absolute at the top-right, as the mockup showed.
 
 - 2026-09-23 (the gear preview and default flip): the badge is the DEFAULT now (`tabStateBadge` default ON): the flip's mechanism is the default, the read `!== false` only its guard (a stored false stays a chosen off; a non-boolean coerces to on). The EXISTING key is kept because no writer ever merged the old default into stored profiles (the gear's `load()` defaults exclude the key, no webview `saveSettings` caller, `broadcastSettings`/`installSettingsSync` write the stored object as-is), so a stored false is always a chosen off and a fresh key would only discard it. The gear preview now shows the badge (the Needs-you top-right dot and the retrying left dot) over the ring rows' demos via `applyTabBadgeMode`.
+
+- 2026-09-23 (the kernel-asymmetry fix): the comment mark trailed its turn on TWO kernel roads, both now fixed. (a)
+  The {type:"comments"} frame rode only the full pusher cycle, never the TARGETED per-session push (`_push_session_now`,
+  kernel.py); it now rides the targeted push too, on the same per-sid dedup slot, so a mark lands WITH its turn.
+  (b) The pusher fires from ACCEPT, so under a CPU quota it delivered the comments frame (measured 1.9-2.1s after
+  navigation) BEFORE the bundle registered its listeners (2.6-2.8s), and the ready arm's connect push then re-sent an
+  IDENTICAL frame that the dedup suppressed for _DEDUP_REPOST_S, because the ready reset (`_client_reset_chat_base`)
+  cleared the chat/status/taborder/activeChat slots but NOT the comments (or glossary) slot; those two are now on the
+  reset list, so the connect push re-sends once the listeners are up (one duplicate frame per ready). `_comments_frame`
+  is None for a session that never had a thread (a bare stat) and the dedup keeps an unchanged frame off the wire, so
+  this is the "changed since its last frame" guard. Executed pins in tests/test_cold_tab_gate.py (a targeted push
+  delivers the frame; the ready reset clears the comments and glossary slots so the connect push re-sends; a storeless
+  session's targeted push carries none). The client half already holds: syncView re-applies the comment marks on every
+  view render (a turn rendered after a held comments frame wears its mark on that render), pinned in
+  ui/webview/comment-mark.test.ts. With the frame landing on the targeted push and the connect push re-sending it, the
+  four comment served labs' comments-frame wait shrinks from 120s to 30s, and the labs' cause comments name the measured
+  mechanism (the frame reached a page with no listener yet, the dedup suppressed the re-send).
