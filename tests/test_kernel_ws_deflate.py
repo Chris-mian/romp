@@ -6,31 +6,36 @@ The panes' view frames are JSON and deflate about seven to one (the whole feed f
 Sec-WebSocket-Extensions offer every browser and Node's `ws` make on every dial, so a tunnelled dashboard
 fell megabytes behind on the feed and was dropped. Pinned here:
 
-- negotiation: an offer is answered with the extension (no context takeover on either side; a bounded server
-  window echoed), an absent, foreign or malformed offer is not, and the kill switch declines every offer;
-- the wire: a message at or over the size floor goes compressed with RSV1 set and inflates back to its text;
-  a short one, and every message to a client without the extension, gets the plain frame it always did,
-  byte for byte;
-- the reader: a client's compressed message (RSV1 on its first frame, fragments included) is inflated before
-  it is parsed; an inflate past the reassembly cap, bytes that are not a deflate stream, or RSV1 from a client
-  that negotiated nothing end the read as a dead connection; a plain message is untouched;
-- end to end through the real Handler on a loopback server: both directions on one negotiated socket, and a
-  socket that offered nothing stays plain;
-- the federated relay keeps forwarding the offer header, since the browser negotiates with the REMOTE kernel
-  through it.
+- negotiation: an offer is answered with the extension (no context takeover on either side; a server window
+  the offer named echoed, at 15 too), an absent, foreign or malformed offer is not — a malformed window
+  value declines rather than 500s — repeated header lines are read together, and the kill switch declines
+  every offer; the environment reads and their defaults (on, level 3, the 1,024-byte floor);
+- the wire: a message at or over the floor goes compressed with RSV1 set and inflates back to its text, the
+  floor exactly where it is documented; a short one, and every message to a client without the extension,
+  gets the plain frame it always did, byte for byte; the client's sender thread is what compresses;
+- the reader: a client's compressed message (RSV1 on its first frame, fragments included, a 15-bit window
+  of varied content) is inflated before it is parsed; bytes that are not a deflate stream, an inflate past
+  the reassembly cap, RSV1 from a client that negotiated nothing, and RSV1 on a continuation or control
+  frame end the read as a dead connection, each naming a Close code; the cap bounds what a message costs
+  (a deflate bomb is refused within one piece past it), not only what it returns; a plain message is untouched;
+- end to end through the real Handler on a loopback server: both directions on one negotiated socket, a socket
+  that offered nothing stays plain, and a kernel-decided end sends a Close frame with its code and logs once;
+- the federated relay, executed: a browser dialing a remote kernel through the hub negotiates with the remote.
 
 Synthetic only: invented frame text, no session data.
 """
 import base64
-import inspect
+import contextlib
 import io
 import json
 import os
+import random
 import socket
 import struct
 import tempfile
 import threading
 import time
+import tracemalloc
 import unittest
 import zlib
 from http.server import ThreadingHTTPServer
@@ -40,6 +45,8 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
+os.environ.pop("ROMP_WS_DEFLATE", None)          # the defaults are under test: load with neither knob set
+os.environ.pop("ROMP_WS_DEFLATE_LEVEL", None)
 # Hermetic state BEFORE the loads — they resolve their state root at import time, and only
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
@@ -89,8 +96,10 @@ def cfragments(payload, chunk, rsv1=False):
 
 
 def recv_message(wire, inflate_=False):
-    pings = []
-    return km._ws_recv_message(io.BytesIO(wire), pings.append, inflate=inflate_)
+    """(opcode, payload), and the (code, reason) the reader gave on_fail, if any."""
+    fails = []
+    got = km._ws_recv_message(io.BytesIO(wire), lambda p: None, inflate=inflate_, on_fail=lambda c, w: fails.append((c, w)))
+    return got, fails
 
 
 def parse_sframe(b):
@@ -106,6 +115,28 @@ def parse_sframe(b):
 def big_text(n=300):
     return json.dumps({"type": "feed", "asks": [{"itemId": "item-%d" % i, "title": "invented card %d" % i,
                                                  "status": "completed", "why": "synthetic fixture text"} for i in range(n)]})
+
+
+def varied_json(n=2000, seed=7):
+    """A frame whose content does not repeat within a small window: hex noise per item, so a 12- to 14-bit inflate
+    window fails on it where a byte-run fixture would pass. Deterministic (seeded), synthetic."""
+    rnd = random.Random(seed)
+    return json.dumps({"type": "feed", "asks": [{"itemId": "%016x" % rnd.getrandbits(64), "title": "%032x" % rnd.getrandbits(128),
+                                                 "t": rnd.random()} for _ in range(n)]}).encode()
+
+
+class Env(unittest.TestCase):
+    def test_defaults_with_neither_knob_set(self):
+        self.assertEqual(km._ws_deflate_env({}), (True, 3))
+        self.assertTrue(km._WS_DEFLATE_ON); self.assertEqual(km._WS_DEFLATE_LEVEL, 3)   # this module loaded with both unset
+        self.assertEqual(km._WS_DEFLATE_MIN, 1024)
+
+    def test_the_knobs(self):
+        self.assertEqual(km._ws_deflate_env({"ROMP_WS_DEFLATE": "0", "ROMP_WS_DEFLATE_LEVEL": "9"}), (False, 9))
+        self.assertEqual(km._ws_deflate_env({"ROMP_WS_DEFLATE": "1"}), (True, 3))
+        self.assertEqual(km._ws_deflate_env({"ROMP_WS_DEFLATE_LEVEL": "0"}), (True, 1), "clamped to zlib's range")
+        self.assertEqual(km._ws_deflate_env({"ROMP_WS_DEFLATE_LEVEL": "12"}), (True, 9))
+        self.assertEqual(km._ws_deflate_env({"ROMP_WS_DEFLATE_LEVEL": "abc"}), (True, 3), "a malformed level falls to the default, not a boot failure")
 
 
 class Offer(unittest.TestCase):
@@ -135,6 +166,13 @@ class Offer(unittest.TestCase):
                     "permessage-deflate; client_max_window_bits; client_max_window_bits"):   # repeated
             self.assertIsNone(km._ws_deflate_offer(hdr), repr(hdr))
 
+    def test_a_malformed_window_value_declines_instead_of_raising(self):
+        # str.isdigit admits these and int() then refuses them: the Latin-1 superscripts a header decodes to, a digit run
+        # past int()'s 4,300-digit limit, a leading zero, an exponent — each used to raise out of the upgrade as a 500
+        for val in ("¹³", "²³", "0" * 5000, "09", "1e1", "+15", "15.0", "-12"):   # (whitespace around a value is tolerated, on purpose)
+            for name in ("server_max_window_bits", "client_max_window_bits"):
+                self.assertIsNone(km._ws_deflate_offer("permessage-deflate; %s=%s" % (name, val)), "%s=%r" % (name, val))
+
     def test_the_response_states_no_context_takeover_for_both_sides(self):
         self.assertEqual(km._ws_deflate_response({"wbits": 15, "bounded": False}), ACCEPT)
         self.assertEqual(km._ws_deflate_response({"wbits": 10, "bounded": True}), ACCEPT + "; server_max_window_bits=10")
@@ -162,14 +200,20 @@ class Wire(unittest.TestCase):
 
     def test_a_negotiated_clients_large_message_goes_compressed_with_rsv1(self):
         text = big_text()
-        b0, payload, used = self._sent(text, {"wbits": 15})
+        b0, payload, used = self._sent(text, {"wbits": 15, "bounded": False})
         self.assertEqual(b0, 0xC1, "FIN + RSV1 + text")
         self.assertEqual(inflate(payload).decode("utf-8"), text)
         self.assertLess(len(payload), len(text.encode()) // 4, "the JSON frame shrinks several-fold")
 
+    def test_the_floor_is_exactly_the_documented_kilobyte(self):
+        text = "ab" * 512                                                       # compressible, so only the floor decides
+        self.assertEqual(len(text.encode()), 1024)
+        self.assertEqual(self._sent(text[:1023], {"wbits": 15})[0], 0x81, "1,023 bytes: plain")
+        self.assertEqual(self._sent(text, {"wbits": 15})[0], 0xC1, "1,024 bytes: compressed")
+
     def test_a_bounded_server_window_is_kept_to(self):
         text = big_text()
-        b0, payload, _ = self._sent(text, {"wbits": 9})
+        b0, payload, _ = self._sent(text, {"wbits": 9, "bounded": True})
         self.assertEqual(b0, 0xC1)
         self.assertEqual(zlib.decompressobj(-9).decompress(payload + TAIL).decode("utf-8"), text,
                          "a client that asked for a 9-bit window can inflate with one")
@@ -192,19 +236,34 @@ class Wire(unittest.TestCase):
         noise = zlib.compress(os.urandom(4096))
         self.assertIsNone(km._ws_deflate(noise, 15), "deflate that does not shrink is not used")
 
-    def test_the_sender_thread_hands_the_clients_terms_to_the_framer(self):
-        self.assertIn('_ws_send(sock, lock, s, client.get("deflate"))', inspect.getsource(km._ws_sender))
+    def test_the_clients_own_sender_thread_compresses(self):
+        # the real client record and its sender thread over a socket pair: the terms on the client are what the thread
+        # reads, so a client without them stays plain and one with them is compressed — no source text involved
+        for terms, want in ((None, 0x81), ({"wbits": 15, "bounded": False}, 0xC1)):
+            a, b = socket.socketpair()
+            client, q, _lock = km._new_ws_client("feed", "w-sender", a)
+            try:
+                if terms:
+                    client["deflate"] = terms
+                text = big_text()
+                client["send"](text)
+                b0, payload = _Reader(b).frame()
+                self.assertEqual(b0, want)
+                self.assertEqual((inflate(payload) if want == 0xC1 else payload).decode("utf-8"), text)
+            finally:
+                q.put(None)
+                a.close(); b.close()
 
 
 class Reader(unittest.TestCase):
     BODY = json.dumps({"type": "invented", "pad": "y" * 3000}).encode()
 
     def test_a_compressed_message_is_inflated_before_it_is_parsed(self):
-        self.assertEqual(recv_message(cframe(deflate(self.BODY), rsv1=True), inflate_=True), (0x1, self.BODY))
+        self.assertEqual(recv_message(cframe(deflate(self.BODY), rsv1=True), inflate_=True), ((0x1, self.BODY), []))
 
     def test_rsv1_rides_the_first_fragment_only(self):
         wire = cfragments(deflate(self.BODY), chunk=7, rsv1=True)
-        self.assertEqual(recv_message(wire, inflate_=True), (0x1, self.BODY))
+        self.assertEqual(recv_message(wire, inflate_=True), ((0x1, self.BODY), []))
 
     def test_a_ping_between_compressed_fragments_is_still_answered(self):
         z = deflate(self.BODY)
@@ -214,22 +273,77 @@ class Reader(unittest.TestCase):
         self.assertEqual(pings, [b"hi"])
 
     def test_a_plain_message_is_untouched_when_the_extension_is_on(self):
-        self.assertEqual(recv_message(cframe(self.BODY), inflate_=True), (0x1, self.BODY))
-        self.assertEqual(recv_message(cfragments(self.BODY, chunk=100), inflate_=True), (0x1, self.BODY))
+        self.assertEqual(recv_message(cframe(self.BODY), inflate_=True), ((0x1, self.BODY), []))
+        self.assertEqual(recv_message(cfragments(self.BODY, chunk=100), inflate_=True), ((0x1, self.BODY), []))
+
+    def test_a_full_15_bit_window_of_varied_content_inflates(self):
+        # every other fixture here repeats one byte, which a 12-bit inflate window would pass; this one does not
+        body = varied_json()
+        self.assertGreater(len(body), 120 * 1024)
+        (op, got), fails = recv_message(cframe(deflate(body, wbits=15), rsv1=True), inflate_=True)
+        self.assertEqual((op, got, fails), (0x1, body, []))
 
     def test_rsv1_from_a_client_that_negotiated_nothing_ends_the_read(self):
-        self.assertEqual(recv_message(cframe(deflate(self.BODY), rsv1=True), inflate_=False), (None, None))
+        got, fails = recv_message(cframe(deflate(self.BODY), rsv1=True), inflate_=False)
+        self.assertEqual(got, (None, None))
+        self.assertEqual([c for c, _ in fails], [1002])
+
+    def test_rsv1_on_a_continuation_or_control_frame_ends_the_read(self):
+        # RFC 7692 §6.1: the flag belongs to a message's first data frame; a ping or a continuation carrying it is a
+        # protocol error, negotiated or not (the base ignored RSV1 everywhere; this narrows a leniency, review 2026-09-23)
+        for negotiated in (True, False):
+            got, fails = recv_message(cframe(b"hi", 0x9, rsv1=True) + cframe(self.BODY), inflate_=negotiated)
+            self.assertEqual((got, [c for c, _ in fails]), ((None, None), [1002]), "ping, negotiated=%s" % negotiated)
+            z = deflate(self.BODY)
+            wire = cframe(z[:5], 0x1, fin=False, rsv1=True) + cframe(z[5:], 0x0, fin=True, rsv1=True)
+            got, fails = recv_message(wire, inflate_=negotiated)
+            self.assertEqual((got, [c for c, _ in fails]), ((None, None), [1002]), "continuation, negotiated=%s" % negotiated)
 
     def test_bytes_that_are_not_a_deflate_stream_end_the_read(self):
-        self.assertEqual(recv_message(cframe(b"\xff\xfe\xfd not deflate at all", rsv1=True), inflate_=True), (None, None))
+        got, fails = recv_message(cframe(b"\xff\xfe\xfd not deflate at all", rsv1=True), inflate_=True)
+        self.assertEqual((got, [c for c, _ in fails]), ((None, None), [1007]))
+        self.assertIn("not a deflate stream", fails[0][1])
 
     def test_an_inflate_past_the_reassembly_cap_ends_the_read(self):
         saved = km._WS_MAX_MESSAGE
         km._WS_MAX_MESSAGE = 2048
         try:
-            self.assertEqual(recv_message(cframe(deflate(b"\0" * 10000), rsv1=True), inflate_=True), (None, None))
-            self.assertEqual(recv_message(cframe(deflate(b"\0" * 2048), rsv1=True), inflate_=True), (0x1, b"\0" * 2048),
+            got, fails = recv_message(cframe(deflate(b"\0" * 10000), rsv1=True), inflate_=True)
+            self.assertEqual((got, [c for c, _ in fails]), ((None, None), [1009]))
+            got, fails = recv_message(cframe(deflate(b"\0" * 2049), rsv1=True), inflate_=True)   # one byte over: the length check alone
+            self.assertEqual((got, [c for c, _ in fails]), ((None, None), [1009]))
+            self.assertEqual(recv_message(cframe(deflate(b"\0" * 2048), rsv1=True), inflate_=True), ((0x1, b"\0" * 2048), []),
                              "exactly the cap is allowed")
+        finally:
+            km._WS_MAX_MESSAGE = saved
+
+    def test_a_fragmented_plain_message_past_the_cap_names_its_code(self):
+        saved = km._WS_MAX_MESSAGE
+        km._WS_MAX_MESSAGE = 2048
+        try:
+            got, fails = recv_message(cfragments(b"x" * 5000, chunk=1000))
+            self.assertEqual((got, [c for c, _ in fails]), ((None, None), [1009]))
+        finally:
+            km._WS_MAX_MESSAGE = saved
+
+    def test_the_cap_bounds_what_a_bomb_costs_not_only_what_it_returns(self):
+        # a deflate bomb (64 MiB of zeros in ~64 KB) against a 4 MiB cap: the piecewise inflate refuses it one piece past
+        # the cap, so the peak allocation stays a small multiple of the cap (measured: 160 MiB for a 160 MiB bomb against
+        # the real 80 MiB cap in one bounded decompress call, 82 MiB piecewise; review, 2026-09-23). With no bound at
+        # all the whole 64 MiB would be built before the length check
+        saved = km._WS_MAX_MESSAGE
+        cap = km._WS_MAX_MESSAGE = 4 * 1024 * 1024
+        wire = cframe(deflate(b"\0" * (64 * 1024 * 1024), level=9), rsv1=True)     # built BEFORE the trace: the fixture is not the cost
+        try:
+            tracemalloc.start()
+            try:
+                tracemalloc.reset_peak()
+                got, fails = recv_message(wire, inflate_=True)
+                _cur, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            self.assertEqual((got, [c for c, _ in fails]), ((None, None), [1009]))
+            self.assertLess(peak, 4 * cap, "peak %.1f MiB for a %.0f MiB cap" % (peak / 2**20, cap / 2**20))
         finally:
             km._WS_MAX_MESSAGE = saved
 
@@ -264,16 +378,24 @@ class _Reader:
             ln = struct.unpack(">Q", self.rd(8))[0]
         return h[0], self.rd(ln)
 
+    def eof(self, timeout=5.0):
+        self.sock.settimeout(timeout)
+        try:
+            return self.sock.recv(1) == b""
+        except OSError:
+            return False
 
-def upgrade(port, extensions=None, wid="w-deflate", app="feed"):
-    """One raw upgrade with the token (an absent Origin passes with it) → (status, headers, socket, bytes after the head)."""
+
+def upgrade(port, extensions=None, wid="w-deflate", app="feed", path=None):
+    """One raw upgrade with the token (an absent Origin passes with it) → (status, headers, socket, bytes after the head).
+    `extensions`: one header value, or a list of values sent as SEPARATE header lines."""
     key = base64.b64encode(os.urandom(16)).decode()
-    lines = ["GET /ws?app=%s&wid=%s&token=%s HTTP/1.1" % (app, wid, km.TOKEN), "Host: 127.0.0.1:%d" % port,
+    lines = ["GET %s HTTP/1.1" % (path or "/ws?app=%s&wid=%s&token=%s" % (app, wid, km.TOKEN)), "Host: 127.0.0.1:%d" % port,
              "Upgrade: websocket", "Connection: Upgrade", "Sec-WebSocket-Key: %s" % key, "Sec-WebSocket-Version: 13"]
-    if extensions is not None:
-        lines.append("Sec-WebSocket-Extensions: %s" % extensions)
+    for ext in ([extensions] if isinstance(extensions, str) else (extensions or [])):
+        lines.append("Sec-WebSocket-Extensions: %s" % ext)
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
-    s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+    s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
     buf = b""
     while b"\r\n\r\n" not in buf:
         c = s.recv(4096)
@@ -288,6 +410,18 @@ def upgrade(port, extensions=None, wid="w-deflate", app="feed"):
         k, _, v = line.partition(":")
         headers[k.strip().lower()] = v.strip()
     return status, headers, s, rest
+
+
+def kernel_client(wid, timeout=5.0):
+    """The kernel's record of the pane that dialed with `wid`, once the handler has registered it."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        with km._clients_lock:
+            for c in km._clients:
+                if c.get("wid") == wid and c.get("alive"):
+                    return c
+        time.sleep(0.02)
+    raise AssertionError("the handler never registered the client %r" % wid)
 
 
 class EndToEnd(unittest.TestCase):
@@ -308,23 +442,12 @@ class EndToEnd(unittest.TestCase):
         self.srv.shutdown()
         self.srv.server_close()
 
-    def _client(self, wid, timeout=5.0):
-        """The kernel's record of the pane that dialed with `wid`, once the handler has registered it."""
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            with km._clients_lock:
-                for c in km._clients:
-                    if c.get("wid") == wid and c.get("alive"):
-                        return c
-            time.sleep(0.02)
-        self.fail("the handler never registered the client %r" % wid)
-
     def test_a_browsers_offer_is_taken_and_both_directions_are_compressed(self):
         status, headers, s, rest = upgrade(self.port, "permessage-deflate; client_max_window_bits", wid="w-both")
         self.socks.append(s)
         self.assertEqual(status, 101)
         self.assertEqual(headers.get("sec-websocket-extensions"), ACCEPT)
-        client = self._client("w-both")
+        client = kernel_client("w-both")
         self.assertEqual(client.get("deflate"), {"wbits": 15, "bounded": False})
         rd = _Reader(s, rest)
         # kernel → client: a frame the size of a view goes compressed, a keepalive-sized one plain
@@ -360,7 +483,7 @@ class EndToEnd(unittest.TestCase):
         self.socks.append(s)
         self.assertEqual(status, 101)
         self.assertNotIn("sec-websocket-extensions", headers)
-        client = self._client("w-plain")
+        client = kernel_client("w-plain")
         self.assertIsNone(client.get("deflate"))
         text = big_text()
         client["send"](text)
@@ -372,11 +495,21 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(status, 101)
         self.assertEqual(headers.get("sec-websocket-extensions"), ACCEPT + "; server_max_window_bits=15")
 
-    def test_a_malformed_offer_is_declined_not_refused(self):
-        status, headers, s, _ = upgrade(self.port, "permessage-deflate; bogus_param", wid="w-bogus")
+    def test_repeated_extension_header_lines_are_read_together(self):
+        # RFC 7230 lets a client send the list as several header lines; the offer on the second line must be seen
+        status, headers, s, rest = upgrade(self.port, ["x-webkit-deflate-frame", "permessage-deflate; client_max_window_bits"], wid="w-twolines")
         self.socks.append(s)
-        self.assertEqual(status, 101, "the upgrade still happens; only the extension is declined")
-        self.assertNotIn("sec-websocket-extensions", headers)
+        self.assertEqual(status, 101)
+        self.assertEqual(headers.get("sec-websocket-extensions"), ACCEPT)
+        self.assertEqual(kernel_client("w-twolines").get("deflate"), {"wbits": 15, "bounded": False})
+
+    def test_a_malformed_offer_is_declined_not_refused(self):
+        for ext in ("permessage-deflate; bogus_param", "permessage-deflate; server_max_window_bits=¹µ",
+                    "permessage-deflate; client_max_window_bits=" + "0" * 5000):
+            status, headers, s, _ = upgrade(self.port, ext, wid="w-bogus")
+            self.socks.append(s)
+            self.assertEqual(status, 101, "the upgrade still happens (no 500); only the extension is declined: %r" % ext[:60])
+            self.assertNotIn("sec-websocket-extensions", headers, ext[:60])
 
     def test_the_kill_switch_declines_every_offer(self):
         saved = km._WS_DEFLATE_ON
@@ -386,16 +519,83 @@ class EndToEnd(unittest.TestCase):
             self.socks.append(s)
             self.assertEqual(status, 101)
             self.assertNotIn("sec-websocket-extensions", headers)
-            self.assertIsNone(self._client("w-off").get("deflate"))
+            self.assertIsNone(kernel_client("w-off").get("deflate"))
         finally:
             km._WS_DEFLATE_ON = saved
 
+    def test_a_kernel_decided_end_sends_a_close_frame_and_logs_once(self):
+        # a negotiated client whose compressed message is not a deflate stream: the pane reads Close 1007, not the 1006 of
+        # a network drop, and the kernel log names the client and the cause, once
+        status, headers, s, rest = upgrade(self.port, "permessage-deflate", wid="w-close")
+        self.socks.append(s)
+        self.assertEqual(headers.get("sec-websocket-extensions"), ACCEPT)
+        kernel_client("w-close")
+        rd = _Reader(s, rest)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            s.sendall(cframe(b"\xff\xfe\xfd not deflate at all", rsv1=True))
+            b0, payload = rd.frame()
+            self.assertTrue(rd.eof(), "the socket closes after the Close frame")
+        self.assertEqual(b0, 0x88, "a Close frame")
+        self.assertEqual(struct.unpack(">H", payload[:2])[0], 1007)
+        self.assertIn("not a deflate stream", payload[2:].decode("utf-8"))
+        lines = [l for l in err.getvalue().splitlines() if "ws: dropping feed client" in l]
+        self.assertEqual(len(lines), 1, err.getvalue())
+        self.assertIn("(close 1007)", lines[0])
+        # …and a client that negotiated nothing but set RSV1 reads 1002
+        status, headers, s2, rest2 = upgrade(self.port, None, wid="w-close2")
+        self.socks.append(s2)
+        kernel_client("w-close2")
+        rd2 = _Reader(s2, rest2)
+        with contextlib.redirect_stderr(io.StringIO()):
+            s2.sendall(cframe(deflate(b"{}" * 600), rsv1=True))
+            b0, payload = rd2.frame()
+        self.assertEqual((b0, struct.unpack(">H", payload[:2])[0]), (0x88, 1002))
 
-class Relay(unittest.TestCase):
-    def test_the_federated_relay_forwards_the_offer_to_the_remote_kernel(self):
-        # the hub splices bytes without parsing frames, so the browser negotiates with the REMOTE kernel: its offer
-        # must reach it, and the remote's answer rides back in the head the hub forwards whole
-        self.assertIn('"Sec-WebSocket-Extensions"', inspect.getsource(km.Handler._remote_ws))
+
+class RelayExecuted(unittest.TestCase):
+    """The federated relay, run: a second real Handler stands in for the remote kernel behind the hub's ssh -L port.
+    The hub splices bytes without parsing frames, so it is the REMOTE that negotiates with the browser — which needs
+    the hub to forward the offer header and relay the remote's answer back in the head. A relay that dropped the
+    header would still upgrade, plain; this test then sees no extension header and a 0x81 frame."""
+
+    def setUp(self):
+        self.hub = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        self.remote = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        for srv in (self.hub, self.remote):
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self._saved = dict(km._remotes)
+        with km._remotes_lock:
+            km._remotes["gpu1"] = {"host": "gpu1", "kernel_port": 29855, "local_port": self.remote.server_address[1],
+                                   "token": km.TOKEN, "status": "up"}
+        self.socks = []
+
+    def tearDown(self):
+        for s in self.socks:
+            try:
+                s.close()
+            except OSError:
+                pass
+        with km._remotes_lock:
+            km._remotes.clear()
+            km._remotes.update(self._saved)
+        for srv in (self.hub, self.remote):
+            srv.shutdown()
+            srv.server_close()
+
+    def test_a_browser_negotiates_with_the_remote_kernel_through_the_hub(self):
+        for ext, want_hdr, want_b0 in (("permessage-deflate; client_max_window_bits", ACCEPT, 0xC1), (None, None, 0x81)):
+            wid = "w-relay-%d" % want_b0
+            status, headers, s, rest = upgrade(self.hub.server_address[1], ext, path="/remote/gpu1/ws?app=feed&wid=%s&token=%s" % (wid, km.TOKEN))
+            self.socks.append(s)
+            self.assertEqual(status, 101)
+            self.assertEqual(headers.get("sec-websocket-extensions"), want_hdr)
+            remote_client = kernel_client(wid)                    # the remote kernel's record of this browser (one process, one _clients)
+            self.assertEqual(remote_client.get("kind"), "relay")
+            text = big_text()
+            remote_client["send"](text)
+            b0, payload = _Reader(s, rest).frame()
+            self.assertEqual(b0, want_b0)
+            self.assertEqual((inflate(payload) if want_b0 == 0xC1 else payload).decode("utf-8"), text)
 
 
 if __name__ == "__main__":

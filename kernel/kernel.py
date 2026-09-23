@@ -50708,11 +50708,27 @@ WS_QUEUE_BYTES = int(os.environ.get("ROMP_WS_QUEUE_BYTES", str(16 * 1024 * 1024)
 # gains nothing from a deflate stream's header. Level 3 is the knee measured on the feed frame (17 ms per 2.5 MB;
 # level 6 took 55 ms for 14% fewer bytes), and the compress runs on the client's own sender thread with the GIL
 # released, never on the pusher's. ROMP_WS_DEFLATE=0 declines every offer; ROMP_WS_DEFLATE_LEVEL sets zlib's level.
-_WS_DEFLATE_ON = os.environ.get("ROMP_WS_DEFLATE", "1") != "0"
-_WS_DEFLATE_LEVEL = max(1, min(9, int(os.environ.get("ROMP_WS_DEFLATE_LEVEL", "3") or 3)))
+def _ws_deflate_env(env=None):
+    """(take offers?, zlib level) from the environment: ROMP_WS_DEFLATE=0 declines every offer; ROMP_WS_DEFLATE_LEVEL
+    picks zlib's level, clamped to 1..9, and a value that is not a number falls to the default rather than
+    failing the boot (review, 2026-09-23). One seam, so a test can read it with an environment of its own."""
+    env = os.environ if env is None else env
+    on = (env.get("ROMP_WS_DEFLATE") or "1").strip() != "0"
+    try:
+        level = int((env.get("ROMP_WS_DEFLATE_LEVEL") or "").strip() or 3)
+    except ValueError:
+        level = 3
+    return on, max(1, min(9, level))
+
+
+_WS_DEFLATE_ON, _WS_DEFLATE_LEVEL = _ws_deflate_env()
 _WS_DEFLATE_MIN = 1024                     # a message shorter than this goes plain
 _WS_DEFLATE_TAIL = b"\x00\x00\xff\xff"     # the empty stored block a sync flush ends with: stripped on the wire, restored to inflate
 _WS_DEFLATE_PARAMS = ("server_no_context_takeover", "client_no_context_takeover", "server_max_window_bits", "client_max_window_bits")
+_WS_WINDOW_RE = re.compile(r"[1-9][0-9]?")   # a window value: one or two ASCII digits, no leading zero. str.isdigit admits the
+#                                              Latin-1 superscripts and a 4,300-digit run, both of which int() then refuses — a
+#                                              500 on the upgrade where §7.1 says decline the offer and upgrade plain (review, 2026-09-23)
+_WS_INFLATE_STEP = 1024 * 1024             # inflate in pieces this size, so a message past the cap is refused one piece past it
 
 
 def _ws_deflate_offer(header):
@@ -50742,10 +50758,10 @@ def _ws_deflate_offer(header):
             if name.endswith("_no_context_takeover"):
                 ok = not val                                     # a flag: a value is malformed
             elif name == "server_max_window_bits":
-                ok = val.isdigit() and 9 <= int(val) <= 15       # the value is required in an offer
+                ok = bool(_WS_WINDOW_RE.fullmatch(val)) and 9 <= int(val) <= 15   # the value is required in an offer
                 wbits = int(val) if ok else wbits
             elif val:                                            # client_max_window_bits: the value is optional
-                ok = val.isdigit() and 8 <= int(val) <= 15
+                ok = bool(_WS_WINDOW_RE.fullmatch(val)) and 8 <= int(val) <= 15
             if not ok:
                 break
         if ok:
@@ -50783,18 +50799,35 @@ def _ws_deflate(data, wbits=15):
 
 
 def _ws_inflate(data, cap):
-    """A compressed message's payload restored (RFC 7692 §7.2.2): the stripped tail appended, one fresh raw
-    inflate stream (the response demanded no context takeover of the client). None when the bytes are not a
-    deflate stream or would inflate past `cap` — the reader treats either as the connection ending, as it
-    treats a fragmented message overrunning the same cap."""
+    """A compressed message's payload restored (RFC 7692 §7.2.2) → (bytes, None), or (None, why) when the bytes
+    are not a deflate stream or inflate past `cap` — the reader ends the connection on either, as it does on a
+    fragmented message overrunning the same cap. The stripped tail is appended and one fresh raw inflate stream
+    run (the response demanded no context takeover of the client), in _WS_INFLATE_STEP pieces joined only once
+    the whole is known to fit: the cap then bounds what a message COSTS as well as what it returns. A single
+    decompress call bounded by max_length still held its output blocks and the joined result at once, so a
+    deflate bomb cost about twice the cap before it was refused (review, 2026-09-23; measured: a 160 KB frame
+    inflating to 160 MiB against the 80 MiB cap peaked at 160 MiB that way, 82 MiB piecewise). What the reader
+    transiently holds is therefore about the cap plus one piece plus the compressed input for a bomb, and about
+    twice its size for a legitimate message near the cap (its pieces and their join, once) — per message, per
+    connection; only a client holding the serve token reaches this reader at all."""
+    src = data + _WS_DEFLATE_TAIL
+    out, total = [], 0
     try:
         z = zlib.decompressobj(-15)
-        out = z.decompress(data + _WS_DEFLATE_TAIL, cap + 1)
+        while True:
+            piece = z.decompress(src, _WS_INFLATE_STEP)
+            total += len(piece)
+            if total > cap:
+                return None, "a compressed message that inflates past %d bytes" % cap
+            out.append(piece)
+            if not z.unconsumed_tail:
+                break
+            if not piece:                        # no output and input left over: zlib is not moving (cannot happen with a
+                return None, "a compressed message that does not inflate"   # positive max_length, guarded so the loop cannot spin)
+            src = z.unconsumed_tail
     except zlib.error:
-        return None
-    if len(out) > cap or z.unconsumed_tail:
-        return None
-    return out
+        return None, "a compressed message that is not a deflate stream"
+    return b"".join(out), None
 
 
 # Every client OWNS a queue and a sender thread, and the shared push/heartbeat loops only ever ENQUEUE.
@@ -51331,6 +51364,32 @@ def _ws_pong(wfile, lock, payload):
         wfile.flush()
 
 
+def _ws_close(wfile, lock, code, reason):
+    """Send a Close frame (RFC 6455 §5.5.1: FIN + opcode 0x8, a two-byte status code then the reason, at most
+    125 bytes together) on this client's handler thread, the road the pongs take, before the socket is torn
+    down: the pane's wsclose row then reads the code (1002 protocol error, 1007 invalid payload, 1009 too
+    big) instead of the 1006 a bare shutdown leaves, which is the code of a network drop."""
+    data = struct.pack(">H", int(code)) + str(reason).encode("utf-8", "replace")[:123]
+    try:
+        with lock:
+            wfile.write(bytes([0x88, len(data)]) + data)
+            wfile.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _ws_fail(wfile, lock, client, code, why):
+    """A read the kernel ends (see _ws_recv_message's on_fail) is LOUD like every other drop: one stderr line in
+    _drop_dead_ws_client's voice, once per connection, and the Close frame carrying the code. A client that keeps
+    a compression context against the response's terms, or sets RSV1 where the extension forbids it, is cut off at
+    its first such message after every redial — the line names the cause each time rather than leaving a run of
+    1006s that reads as a flaky network."""
+    if not client.get("failLogged"):
+        client["failLogged"] = True
+        sys.stderr.write("ws: dropping %s client — %s (close %d)\n" % (client.get("app"), why, code))
+    _ws_close(wfile, lock, code, why)
+
+
 def _ws_recv(rfile):
     """Read one client (masked) frame → (opcode, payload bytes, fin), or (None, None, True) on
     close/EOF. One FRAME, not one message: data messages may span several frames (FIN clear until
@@ -51373,7 +51432,7 @@ def _ws_recv(rfile):
 _WS_MAX_MESSAGE = 80 * 1024 * 1024
 
 
-def _ws_recv_message(rfile, on_ping, on_pong=None, inflate=False):
+def _ws_recv_message(rfile, on_ping, on_pong=None, inflate=False, on_fail=None):
     """Read frames until one COMPLETE data message is assembled → (opcode, payload), or (None, None)
     on close/EOF/overrun. Browsers FRAGMENT large sends (RFC 6455 §5.4 — Chrome splits at ~128 KB),
     and the old per-frame loop handed each fragment straight to json.loads: a phone photo's dropFile
@@ -51385,14 +51444,26 @@ def _ws_recv_message(rfile, on_ping, on_pong=None, inflate=False):
     `inflate`: the client negotiated permessage-deflate, so a message whose first frame carries RSV1 is
     compressed and is inflated here, once assembled, before anything parses it (RFC 7692 §7.2.2; the
     payload cap applies to the inflated bytes). RSV1 from a client that negotiated nothing is a protocol
-    error (RFC 6455 §5.2) and ends the read like a close."""
+    error (RFC 6455 §5.2), and so is RSV1 on a continuation or control frame (RFC 7692 §6.1); both end the
+    read like a close. `on_fail(code, reason)` is told about every end the KERNEL decides — those two, a
+    compressed message that will not inflate (1007) or inflates past the cap (1009), a fragmented message past
+    the cap (1009) — before (None, None) comes back, so the handler can answer with a Close frame carrying the
+    code and log the reason (review, 2026-09-23: these ends left the pane a bare 1006, the code of a network
+    drop, and the log nothing). EOF and the peer's own close are the peer's doing and say nothing."""
     frag_op, frag, frag_z = None, None, False
+
+    def fail(code, why):
+        if on_fail is not None:
+            on_fail(code, why)
+        return None, None
 
     def message(op, data, compressed):
         if not compressed:
             return op, data
-        out = _ws_inflate(data, _WS_MAX_MESSAGE) if inflate else None
-        return (op, out) if out is not None else (None, None)
+        if not inflate:
+            return fail(1002, "a compressed message from a client that negotiated no compression")
+        out, why = _ws_inflate(data, _WS_MAX_MESSAGE)
+        return (op, out) if out is not None else fail(1009 if "past" in why else 1007, why)
 
     while True:
         op, payload, fin = _ws_recv(rfile)
@@ -51401,6 +51472,8 @@ def _ws_recv_message(rfile, on_ping, on_pong=None, inflate=False):
         rsv1, op = bool(op & 0x40), op & 0x0F  # RSV1 rides above the opcode (see _ws_recv)
         if op == 0x8:                          # close
             return None, None
+        if rsv1 and (op == 0x0 or op >= 0x8):  # RSV1 belongs to a message's FIRST data frame alone (RFC 7692 §6.1)
+            return fail(1002, "RSV1 on a %s frame" % ("continuation" if op == 0x0 else "control"))
         if op == 0x9:                          # ping → pong (libraries ping by default and hang up without one)
             on_ping(payload or b"")
             continue
@@ -51413,7 +51486,7 @@ def _ws_recv_message(rfile, on_ping, on_pong=None, inflate=False):
                 continue                       # stray continuation with no opening frame — drop it
             frag += payload
             if len(frag) > _WS_MAX_MESSAGE:
-                return None, None
+                return fail(1009, "a fragmented message past %d bytes" % _WS_MAX_MESSAGE)
             if fin:
                 return message(frag_op, bytes(frag), frag_z)
             continue
@@ -73494,7 +73567,8 @@ class Handler(BaseHTTPRequestHandler):
                 op, payload = _ws_recv_message(
                     self.rfile, lambda payload: _ws_pong(self.wfile, lock, payload or b""),
                     on_pong=lambda payload: _note_ws_inbound(client),
-                    inflate=bool(client.get("deflate")))   # a peer that negotiated permessage-deflate may send RSV1 frames
+                    inflate=bool(client.get("deflate")),   # a peer that negotiated permessage-deflate may send RSV1 frames
+                    on_fail=lambda code, why: _ws_fail(self.wfile, lock, client, code, why))   # an end the kernel decides: Close frame + one log line
                 if op is None:                         # EOF / close / a client overran the reassembly cap
                     break
                 _note_ws_inbound(client)               # any message proves the peer alive
