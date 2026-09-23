@@ -5,8 +5,9 @@ The judges parse the living sessions at boot (no browser needed; the boot-parses
 cache fills and, at the pusher's idle boundary, the freeze fires: /perf's gc.freeze shows `active` with `freezes`
 at least one. Then a transcript is appended and re-read repeatedly (each re-read REPLACES its acyclic cache entry,
 a record-cache pop) and `reclaims` stays put: under the corrected trigger a pop is not a cyclic release and drives
-no unfreeze pause. The gen-2 arithmetic holds: the organic full collections are `gen."2".collections` less the
-reconciles the controller ran. The reclaim of a measured cyclic ended session (a weakref judged at the idle tick) is covered by the unit tests.
+no unfreeze pause. The gen-2 arithmetic holds as an EQUALITY: the organic full collections are `gen."2".collections`
+less the controller's own `collections` (every `gc.collect()` the run step issued, a full release's two both counted),
+never `freezes` + `reclaims` (which counts a full release's two collects as one). The reclaim of a measured cyclic ended session (a weakref judged at the idle tick) is covered by the unit tests.
 The freeze is set ON in the kernel's own env here; the suite floors it OFF everywhere else. Synthetic only:
 invented text, placeholder uuids, TESTHOST.
 """
@@ -151,10 +152,14 @@ class ServedGcFreeze(unittest.TestCase):
         self.assertEqual(fr["reclaims"], reclaims_before,
                          "steady re-reads drove NO reclaim: a record-cache pop is acyclic and never triggers the unfreeze pause: %r" % fr)
         self.assertNotEqual(fr["lastReconcileKind"], "release", "and the last reconcile was not a release: %r" % fr)
-        # the gen-2 arithmetic: the reconciles the controller ran are a subset of the full collections the hook saw
+        # the gen-2 arithmetic as an EQUALITY: every collect the controller ran is a gen-2 collection the hook saw, so the
+        # organic full collections are gen2 less the controller's own `collections`, non-negative, and `collections` counts
+        # at least one per freeze and per reclaim (a full release two), so it is never below freezes + reclaims
         gen2 = pf["gc"]["gen"]["2"]["collections"]
-        self.assertGreaterEqual(gen2 - fr["freezes"] - fr["reclaims"], 0,
-                                "the controller's reconciles are told apart from the organic full collections: %r / gen2=%r" % (fr, gen2))
+        self.assertGreaterEqual(gen2 - fr["collections"], 0,
+                                "organic full collections = gen2 less the controller's own collections, non-negative: %r / gen2=%r" % (fr, gen2))
+        self.assertGreaterEqual(fr["collections"], fr["freezes"] + fr["reclaims"],
+                                "collections counts every run-step collect, so it is at least freezes + reclaims (a full release adds one more): %r" % fr)
         self.assertEqual(fr.get("errors", 0), 0, "no reconcile raised: %r" % fr)
 
 
