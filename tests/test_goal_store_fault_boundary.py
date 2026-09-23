@@ -1998,6 +1998,7 @@ class ActsUnderAFailedWrite(_World):
             self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (0, False, True), "a cold memo: the empty set")
             bell = [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
             self.assertEqual(len(bell), 1, "and one refused row: %r" % km._SYNC_NOTICES); self.assertIn("no earlier read", bell[0]["text"], "saying nothing reads as cleared: %r" % bell[0]["text"])
+            self.assertIn("until the file reads again", bell[0]["text"], "and the cold remedy names its condition (the first contributor's post-merge note on PR 2041: \"until then\" named no moment): %r" % bell[0]["text"])
             self.assertLessEqual(len(bell[0]["text"]), km.SYNC_NOTICE_FIT, "the cold row fits the bell's cut too (the first contributor's round one on PR 2032: 247 characters with a real decode error): %d %r" % (len(bell[0]["text"]), bell[0]["text"]))
         log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
@@ -2028,6 +2029,104 @@ class ActsUnderAFailedWrite(_World):
                 f = km.build_feed(NOW, self.live)
             self.assertEqual((f["dismissedCount"], f["canUndoClear"], len(rows())), (0, False, 2), "an EIO fault on the absent path: nothing cleared, no Undo, one refused row of its own")
             self.assertIn("last-known", rows()[-1]["text"])
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_a_clean_read_parsed_from_bytes_before_a_fault_ends_no_episode_the_fault_opened(self):
+        """The first contributor's post-merge note on PR 2041: the nudge walk's set-only read runs on the jobs thread beside the display builds,
+        so a walk that read good bytes and was still parsing when the file went bad and a build filed the fault then ended both episodes, and
+        the next build filed a second bell row and a second judge row for one unbroken fault. A landed read ends the episodes and takes the
+        memo only when a stat taken after the parse still equals the key taken before the read. Deterministic: the read returns the good bytes
+        and, before returning, turns the file bad and runs the build that files the fault; for the set-only reader and the display reader."""
+        log = jd.STATE / "cleared.jsonl"
+        rows = lambda: [r for r in self._rows("cleared-unreadable") if "the read" in r.get("note", "")]
+        bell = lambda: [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
+        good = json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"
+        for outer, name in ((km._cleared_ids, "the set-only read"), (km._cleared_ids_display, "the display read")):
+            with self.subTest(reader=name):
+                log.write_text(good); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None; km._cleared_read_fault[0] = ""
+                km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+                n0 = len(rows())
+                real_read, once = Path.read_text, [True]
+
+                def racing_read(q, *a, **kw):
+                    data = real_read(q, *a, **kw)
+                    if q == log and once[0]:
+                        once[0] = False
+                        log.write_bytes(b"\xff\xfe\x00 not text\n")           # the file goes bad after the bytes left the disk and before the parse
+                        km.build_feed(NOW, self.live)                             # and a build files the fault meanwhile
+                    return data
+                with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(Path, "read_text", racing_read):
+                    got = outer()
+                self.assertEqual(set(got), {A + ":g1"}, "the bytes this read parsed were the good ones")
+                self.assertEqual((len(rows()) - n0, len(bell())), (1, 1), "premise: the interposed build filed the fault once")
+                self.assertNotEqual(km._cleared_read_fault[0], "", "the stale clean read ended no episode: the reader's flag still holds the fault")
+                with contextlib.redirect_stderr(io.StringIO()):
+                    f = km.build_feed(NOW, self.live)
+                self.assertEqual((len(rows()) - n0, len(bell()), f["dismissedCount"]), (1, 1, 0), "one unbroken fault: one judge row and one bell row after the next build (before: the stale read ended both episodes and the next build filed a second of each)")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_a_memoized_fault_returning_through_a_memo_hit_after_a_different_fault_files_its_judge_row(self):
+        """The first contributor's post-merge note on PR 2041: the served branch wrote the slot's fault into the flag without filing, so
+        undecodable, stat fault, served, stat fault, served filed judge rows 1, 2, 2, 3, 3 while the bell filed 1 to 5, against the docs' one row
+        per episode ended by a different fault. The served branch files when the memoized fault differs from the flag."""
+        log = jd.STATE / "cleared.jsonl"
+        rows = lambda: [r for r in self._rows("cleared-unreadable") if "the read" in r.get("note", "")]
+        bell = lambda: [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
+        log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None; km._cleared_read_fault[0] = ""
+        km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        n0 = len(rows())
+        real_stat, real_read = os.stat, Path.read_text
+
+        def flapping_stat(q, *a, **kw):
+            if os.fspath(q) == str(log):
+                raise OSError(errno.EACCES, "Permission denied", str(q))
+            return real_stat(q, *a, **kw)
+
+        def flapping_read(q, *a, **kw):
+            if q == log:
+                raise OSError(errno.EACCES, "Permission denied", str(q))
+            return real_read(q, *a, **kw)
+        judge, rung = [], []
+        with contextlib.redirect_stderr(io.StringIO()):
+            for step in ("undecodable", "stat fault", "served", "stat fault", "served"):
+                if step == "stat fault":
+                    with mock.patch.object(os, "stat", flapping_stat), mock.patch.object(Path, "read_text", flapping_read):
+                        km.build_feed(NOW, self.live)
+                else:
+                    km.build_feed(NOW, self.live)
+                judge.append(len(rows()) - n0); rung.append(len(bell()))
+        self.assertEqual(rung, [1, 2, 3, 4, 5], "premise: the bell files on every change of the fault's text")
+        self.assertEqual(judge, [1, 2, 3, 4, 5], "the judge row too: the memoized fault returning through a memo hit after a different fault is a new episode (before: 1, 2, 2, 3, 3)")
+        self.assertEqual(km._CLEARED_STATS["served"] >= 2, True, "premise: the two lifts were memo hits")
+        log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
+
+    def test_the_bell_row_keeps_its_remedy_whole_for_the_longest_decode_error(self):
+        """The first contributor's post-merge note on PR 2041: a multi-byte decode error at a seven-digit offset ran the cold row to 242 and the
+        bell cut the closing parenthetical. The fault text is cut to the budget the remedy leaves, so the row's point survives on both rows."""
+        log = jd.STATE / "cleared.jsonl"
+        bell = lambda: [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
+        body = "".join(json.dumps({"id": A + ":g%d" % i, "t": i, "op": "clear"}) + "\n" for i in range(16000)).encode()
+        bad = body + b"\xf0\x9f\x98" + b"x\n"                                       # a broken four-byte sequence at a seven-digit offset, bytes after it
+        try:
+            bad.decode(); self.fail("premise: the bytes do not decode")
+        except UnicodeDecodeError as e:
+            self.assertGreaterEqual(len(str(e)), 85, "premise: the longest decode-error form: %r" % str(e))
+        log.write_bytes(bad); km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None; km._cleared_read_fault[0] = ""
+        km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        with contextlib.redirect_stderr(io.StringIO()):
+            km.build_feed(NOW, self.live)
+        row = bell()[0]["text"]
+        self.assertLessEqual(len(row), km.SYNC_NOTICE_FIT, "the cold row fits the bell's cut (before: 242): %d %r" % (len(row), row))
+        self.assertTrue(row.endswith("(no earlier read of it in this kernel's life)"), "and its closing clause survives: %r" % row)
+        self.assertIn("...", row, "the fault text is the part that gives way")
+        log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()   # a landed read: the warm row next
+        log.write_bytes(bad); km._CLEARED_MEMO["slot"] = None; km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        with contextlib.redirect_stderr(io.StringIO()):
+            f = km.build_feed(NOW, self.live)
+        row = bell()[0]["text"]
+        self.assertEqual(f["dismissedCount"], 1, "premise: the warm row's build holds the landed set")
+        self.assertLessEqual(len(row), km.SYNC_NOTICE_FIT, "the warm row fits too: %d %r" % (len(row), row))
+        self.assertTrue(row.endswith("until the file can be read again"), "its closing clause whole: %r" % row)
         log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
     def test_the_two_new_judge_errors_kinds_are_documented(self):
