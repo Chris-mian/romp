@@ -123,18 +123,16 @@ test("render.ts forgets the held watermarks on its three reconnect-class events,
   assert.match(RENDER, /import \{ type FrameWm, frameOlder, droppedLandedHuman, dropsLandedRow, forgetHeldWm \} from "\.\/frame-guard";/);
   assert.equal((RENDER.match(/forgetHeldWm\(/g) || []).length, 3, "three call sites and no other");
   // the local socket: the shim's {type:"wsup"} FRAME, not the romp:wsup onopen event, whose reset a dead-socket frame still draining could re-latch
-  const up = RENDER.indexOf('else if (m.type === "wsup") {'), upEnd = RENDER.indexOf('else if (m.type === "status")', up);
-  assert.ok(up > 0 && upEnd > up, "the wsup frame handler");
-  const wsup = RENDER.slice(up, upEnd);
-  assert.match(wsup, /onSocketUp\(skeletonTabs\);/);
-  assert.match(wsup, /forgetHeldWm\(sessions, null\);/, "every host's, as the kernel's ready reset drops every base");
+  const pre = RENDER.indexOf('if (m.type === "wsup") forgetHeldWm(sessions, null);'), chain = RENDER.indexOf('if (m.type === "tabOrder") noteSkeletonTabOrder(m);');
+  assert.ok(pre > 0 && chain > pre, "the reset is a statement AHEAD of the dispatch chain, in the same frame handler (every host's, as the kernel's ready reset drops every base)");
+  assert.match(RENDER, /else if \(m\.type === "wsup"\) \{ onSocketUp\(skeletonTabs\); skeletonDiagArmed = true; \}/, "the chain's wsup arm stays the one line its pins read");
   for (const line of RENDER.split("\n").filter((l) => l.includes('addEventListener("romp:wsup"'))) assert.doesNotMatch(line, /forgetHeldWm/, "not at onopen: " + line.trim().slice(0, 80));
   // the relay's reopen: that host's sids only
   const rel = RENDER.indexOf('window.addEventListener("romp:hostRelayUp", (e) => {'), relEnd = RENDER.indexOf("\n});", rel);
   assert.ok(rel > 0 && relEnd > rel, "the relay reopen listener");
   assert.match(RENDER.slice(rel, relEnd), /if \(h\) forgetHeldWm\(sessions, \(sid\) => hostOf\(sid\) === h\);/);
   // the extension pane's pipe up edge (it never sees wsup)
-  assert.match(RENDER, /if \(m\.type === "pipeState" && m\.up\) \{ reaskWaitingSubagents\(\); forgetHeldWm\(sessions, null\); \}/);
+  assert.match(RENDER, /if \(m\.type === "pipeState" && m\.up\) forgetHeldWm\(sessions, null\);/, "its own statement beside the re-ask, which pane-placeholder.test.ts pins byte for byte");
   // the premise: the kernel's counter starts at 0 in every process
   const SDK = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "sdk_backend.py"), "utf8");
   assert.match(SDK, /return \(getattr\(self, "_live_rev", None\) or \{\}\)\.get\(sid, 0\)/, "live_rev reads 0 for an untouched sid");

@@ -19091,7 +19091,8 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     return;
   }
   // the pipe's down edge is the VS Code twin of the shim's romp:wsdown: unconfirmed sends say so (markPendingLost)
-  if (m.type === "pipeState" && m.up) { reaskWaitingSubagents(); forgetHeldWm(sessions, null); }   // the extension's reconnect-class event (it never sees romp:wsup), T355; and the held watermarks go with it as on the shim's wsup frame (frame-guard.ts, 2026-09-23): the kernel behind the healed pipe may have restarted its live-tail revision at 0
+  if (m.type === "pipeState" && m.up) reaskWaitingSubagents();   // the extension's reconnect-class event (it never sees romp:wsup), T355
+  if (m.type === "pipeState" && m.up) forgetHeldWm(sessions, null);   // …and the held watermarks go (frame-guard.ts, 2026-09-23): the kernel behind the pane's pipe may be a fresh process whose live-tail revision restarted at 0
   if (m.type === "pipeState") { if (!m.up) { markPendingLost("connection"); onWireDown(); } pipeBanner(!!m.up, Number(m.queued) || 0); return; }   // the pane's down edge clears the in-flight asks as the socket's does (round nine, medium 2)
   // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
   // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's
@@ -19108,6 +19109,13 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // dropFile was not delivered" toast (and tore down an in-flight provisional create) an RTT before
   // the relay's own onopen re-shipped correctly. romp:hostRelayUp IS that onopen — the one exact event.
   if (m.type === "hostUp") { refreshSettledPreviews(); healPathImgs(); }
+  // The held watermarks go on the shim's wsup FRAME (frame-guard.ts forgetHeldWm, 2026-09-23): the kernel behind the new socket
+  // may be a fresh process whose live-tail revision restarted at 0, and a held revision would refuse its every frame for a
+  // session whose files have not moved. In FRAME order for the same reason as the skeleton flip below: a reset at onopen
+  // could be re-latched by a dead-socket frame still draining. Every host's, as the kernel's own reset at this socket's
+  // ready (_client_reset_chat_base) drops every base and awaitingFull clears whole. A statement AHEAD of the chain, like
+  // the tabOrder pre-step, so the chain's wsup arm stays the one line its pins read.
+  if (m.type === "wsup") forgetHeldWm(sessions, null);
   if (m.type === "tabOrder") noteSkeletonTabOrder(m);   // BEFORE the chain's applyTabOrder below: one repaint, final skeleton set (2026-09-07)
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
@@ -19124,14 +19132,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "chatEpisode") chatEpisode(m);
   else if (m.type === "subagent") applySubagentFrame(m);
   else if (m.type === "update") update(m);
-  else if (m.type === "wsup") {   // the shim's socket-flip marker, in FRAME order: the dead socket's frames may still be draining from the FIFO when onopen fires (review find 2026-09-07)
-    onSocketUp(skeletonTabs); skeletonDiagArmed = true;
-    // …and the held watermarks go (frame-guard.ts forgetHeldWm, 2026-09-23): the kernel behind the new socket may be a fresh process whose
-    // live-tail revision restarted at 0, and a held revision would refuse its every frame for a session whose files have not moved. In
-    // FRAME order for the same reason as the skeleton flip: a reset at onopen could be re-latched by a dead-socket frame still draining.
-    // Every host's, as the kernel's own reset at this socket's ready (_client_reset_chat_base) drops every base and awaitingFull clears whole.
-    forgetHeldWm(sessions, null);
-  }
+  else if (m.type === "wsup") { onSocketUp(skeletonTabs); skeletonDiagArmed = true; }   // the shim's socket-flip marker, in FRAME order: the dead socket's frames may still be draining from the FIFO when onopen fires (review find 2026-09-07)
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "glossary" && typeof m.id === "string") {   // the session's glossary index (T351 stage 2): a new one re-links the view
     glossaries.set(m.id, m as GlossaryIndex);

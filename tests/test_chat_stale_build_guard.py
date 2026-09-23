@@ -138,13 +138,13 @@ class StaleBuildGuard(unittest.TestCase):
         refusal, so it carries `live` only as an int (2026-09-23): a string, a bool or nothing yields None, and such frames order on
         the tx rows alone."""
         parsed = {"_txKey": [[1790000000.0, 2000], [1790000000.0, 40]]}
-        atoms = json.dumps([{"type": "user", "author": "human", "text": "tighten the notes-api search", "t": 1790000000}])
+        atoms = json.dumps([{"type": "user", "author": "human", "text": "typed words that must never ride the wire", "t": 1790000000}])
         self.assertIsNone(km._chat_wm(LEAF1, parsed, atoms)["live"], "a serialized tail is never carried")
         self.assertIsNone(km._chat_wm(LEAF1, parsed, True)["live"], "a bool is not a revision")
         self.assertIsNone(km._chat_wm(LEAF1, parsed, None)["live"])
         self.assertEqual(km._chat_wm(LEAF1, parsed, 57)["live"], 57, "the SDK backend's counter rides as is")
         self.assertEqual(km._chat_wm(LEAF1, parsed, 0)["live"], 0)
-        self.assertNotIn("notes-api", json.dumps(km._chat_wm(LEAF1, parsed, atoms)), "no event text on the frame's watermark")
+        self.assertNotIn("never ride the wire", json.dumps(km._chat_wm(LEAF1, parsed, atoms)), "no event text on the frame's watermark")
         # such frames order on the parse rows alone: equal rows never compare, a row behind is older
         a, b = km._chat_wm(LEAF1, parsed, atoms), km._chat_wm(LEAF1, parsed, atoms)
         self.assertFalse(km._chat_wm_older(a, b)); self.assertFalse(km._chat_wm_older(b, a))
