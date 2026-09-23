@@ -475,6 +475,65 @@ class RealCollector(unittest.TestCase):
         self.assertIsNone(wy(), "the unfreeze-and-collect freed the cycle with the frozen member")
         self.assertEqual(c.survivors, 0, "the cycle was garbage: no live-root survivor")
 
+    def test_a_young_cycle_merely_keeping_a_frozen_object_is_the_load_case(self):
+        """PR 2042 review (item 1 pair, the other half): the cheap stage's condition is on the cycle's MEMBERS, not on what
+        the cycle can reach. A young end cycle whose member merely holds a strong ref to an object FROZEN by an earlier load
+        fold-in is still all-young, so the cheap collect takes it: kind load, no unfreeze, and the frozen object untouched. A
+        condition widened to anything the cycle reaches would force an unfreeze here."""
+        gc.disable(); self.addCleanup(gc.enable)
+        c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
+        c.tick(inserts=1)                            # initial freeze
+        held = _Owner(); held.other = None           # created after the initial freeze; fold it in so it is FROZEN, and keep it in a local
+        c.tick(inserts=2)
+        wfrozen = weakref.ref(held)
+        reclaims0 = c.reclaims
+        a = _Owner(); b = _Owner(); a.other = b; b.other = a   # a YOUNG cycle
+        a.kept = held                                # a merely KEEPS a ref to the frozen object (held is NOT a member of the cycle)
+        wy = weakref.ref(a)
+        fin = _FakeThread(alive=False)
+        c.note_ended(a, thread=fin); del a, b
+        self.assertEqual(c.tick(inserts=2), "load", "the cycle is all-young; the cheap collect takes it whole: a load, not a release")
+        self.assertEqual(c.reclaims, reclaims0, "no full-heap reclaim ran: a merely-kept frozen object does not force the unfreeze")
+        self.assertIsNone(wy(), "the young cycle was collected cheaply")
+        self.assertIsNotNone(wfrozen(), "the frozen object it merely kept is untouched (still held, still frozen)")
+
+    def test_collections_counts_each_run_steps_collect_calls_by_kind(self):
+        """PR 2042 review (item 1): the /perf `collections` count bumps by exactly the collect calls each run step issues, on
+        the REAL collector: initial one, a load one, a cheap release one, a full release TWO, a backstop one. A mutant
+        dropping the second collect's count in the unfreeze branch reds the full-release case."""
+        gc.disable(); self.addCleanup(gc.enable)
+        c = gf.GcFreeze(enabled=True, load_trees=1, backstop_foldins=1, gc=gc)
+        b0 = c.collections; self.assertEqual(c.tick(inserts=1), "initial"); self.assertEqual(c.collections - b0, 1, "initial: one collect")
+        b0 = c.collections; self.assertEqual(c.tick(inserts=2), "load"); self.assertEqual(c.collections - b0, 1, "a load fold-in: one collect")
+        # a cheap release (an unfrozen cycle): one collect
+        x = Cyclic(); y = Cyclic(); x.other = y; y.other = x; fx = _FakeThread(alive=False)
+        c.note_ended(x, thread=fx); del x, y
+        b0 = c.collections; self.assertEqual(c.tick(inserts=2), "load", "cheap release counts as a load"); self.assertEqual(c.collections - b0, 1, "a cheap release: one collect")
+        # a full release (a frozen member): two collects
+        old = _Owner(); old.other = None; c.tick(inserts=3)   # freeze old
+        yg = _Owner(); yg.other = old; old.other = yg; fy = _FakeThread(alive=False)
+        c.note_ended(yg, thread=fy); del yg, old
+        b0 = c.collections; self.assertEqual(c.tick(inserts=3), "release"); self.assertEqual(c.collections - b0, 2, "a full release: two collects (collect, then unfreeze-collect)")
+        # a backstop (backstop_foldins=1): one collect
+        b0 = c.collections; self.assertEqual(c.tick(inserts=4), "load")   # one fold-in to reach the backstop
+        b0 = c.collections; self.assertEqual(c.tick(inserts=4), "backstop"); self.assertEqual(c.collections - b0, 1, "a backstop: one collect")
+
+    def test_the_organic_arithmetic_is_exact_via_the_collections_count(self):
+        """PR 2042 review (item 1): the exact equality the reference states. A gc.callbacks hook counts generation-2
+        collections; every collect the controller ran is one, so (gen-2 collections) minus (the controller's `collections`)
+        equals the organic full collections the test itself ran, exactly."""
+        gc.disable(); self.addCleanup(gc.enable)
+        gen2 = [0]
+        def hook(phase, info):
+            if phase == "stop" and info.get("generation") == 2:
+                gen2[0] += 1
+        gc.callbacks.append(hook); self.addCleanup(lambda: gc.callbacks.remove(hook))
+        c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
+        c.tick(inserts=1); c.tick(inserts=2)          # two controller collects (initial + load)
+        gc.collect(); gc.collect()                    # two ORGANIC full collections the test causes
+        c.tick(inserts=3)                             # one more controller collect (a load)
+        self.assertEqual(gen2[0] - c.collections, 2, "gen-2 collections less the controller's collections is the organic count the test ran: %d - %d" % (gen2[0], c.collections))
+
     def test_the_kernels_gc_hook_still_counts_the_collections_a_reconcile_runs(self):
         km = load_source("romp_kernel_gcf_hook", os.path.join(BIN, "romp-kernel"))
         st = km._PerfStats()

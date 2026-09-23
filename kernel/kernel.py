@@ -1267,7 +1267,7 @@ def _gc_freeze_tick(idle, first):
             if survivors:    # nothing was freed: a LIVE ROOT keeps the ref (not a cycle); name it kept, never "reclaimed"
                 sys.stderr.write("gc-freeze: a release walked the frozen heap for ended session(s) %s in %.1f ms and freed nothing "
                                  "(kept alive by a live root, one wasted reclaim)\n"
-                                 % (",".join(_GC_FREEZE.last_kept_sids) or "?", _GC_FREEZE.last_ms))
+                                 % (",".join(getattr(_GC_FREEZE, "last_kept_sids", [])) or "?", _GC_FREEZE.last_ms))
             else:            # the reclaim freed the released cycle
                 sys.stderr.write("gc-freeze: a release reclaimed a surviving cycle for ended session(s) %s in %.1f ms\n"
                                  % (",".join(_GC_FREEZE.last_release_sids) or "?", _GC_FREEZE.last_ms))

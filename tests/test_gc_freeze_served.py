@@ -5,9 +5,10 @@ The judges parse the living sessions at boot (no browser needed; the boot-parses
 cache fills and, at the pusher's idle boundary, the freeze fires: /perf's gc.freeze shows `active` with `freezes`
 at least one. Then a transcript is appended and re-read repeatedly (each re-read REPLACES its acyclic cache entry,
 a record-cache pop) and `reclaims` stays put: under the corrected trigger a pop is not a cyclic release and drives
-no unfreeze pause. The gen-2 arithmetic holds as an EQUALITY: the organic full collections are `gen."2".collections`
-less the controller's own `collections` (every `gc.collect()` the run step issued, a full release's two both counted),
-never `freezes` + `reclaims` (which counts a full release's two collects as one). The reclaim of a measured cyclic ended session (a weakref judged at the idle tick) is covered by the unit tests.
+no unfreeze pause. The gen-2 arithmetic: this lab drives no release, so it asserts the INEQUALITIES that hold for any
+run (`gen."2".collections` at least the controller's `collections`, which is itself at least `freezes` + `reclaims`);
+the EXACT equality, organic full collections = gen-2 collections less the controller's `collections`, is unit-tested
+(test_the_organic_arithmetic_is_exact_via_the_collections_count). The reclaim of a measured cyclic ended session (a weakref judged at the idle tick) is covered by the unit tests.
 The freeze is set ON in the kernel's own env here; the suite floors it OFF everywhere else. Synthetic only:
 invented text, placeholder uuids, TESTHOST.
 """

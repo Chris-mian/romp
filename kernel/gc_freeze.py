@@ -101,8 +101,9 @@ class GcFreeze:
         self.reclaims = 0            # unfreeze/collect/re-freeze passes (a cyclic ended ref, or the backstop)
         self.survivors = 0           # owed refs still alive after a reclaim's collect: kept by a LIVE ROOT, not a cycle (a wasted pause), counted once and dropped
         self.last_release_sids = []  # first 8 chars of each sid a reclaim was owed for, set under the ended lock, cleared per judgement
-        self.last_release_survivors = 0   # of the last release's owed refs, how many a live root kept through it (0 = a real reclaim freed them)
-        self.last_kept_sids = []     # the sids of those survivors: named as kept-by-a-live-root in the release line, never "reclaimed"
+        self.last_release_survivors = 0   # of the LAST RUN's owed refs, how many a live root kept through it (0 when the reclaim freed
+        #                                   them, and 0 on any run that owed none, e.g. a load after a live-root release: read right after a release)
+        self.last_kept_sids = []     # the sids of those survivors, likewise rebound each run (cleared to [] by a run that owed none); named kept-by-a-live-root in the release line
         self.collections = 0         # gc.collect() calls the RUN STEP issued (a full release issues two): /perf, so organic = gen2 collections less this, exactly
         self.last_ms = 0.0           # the last reconcile's collection pause
         self.total_ms = 0.0          # every reconcile's collection pause, summed
