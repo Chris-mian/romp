@@ -34445,7 +34445,8 @@ def _seed_chat_baseline(sid, m, seen):
     outside both, a race the detector does not mark (nothing marked, no strand): the cycle has no seed step, so every
     base holder gets a change-0 full of the cycle's older list with a changeAt0 row where the kernel before sent that
     list by a tail, the cycle's write puts its older list over the seed (correctly: that list is what every client then
-    holds), and the next cycle repairs by tails with no new row; cost, and a changeAt0 reading on pusher.chatFullWhy
+    holds), and the next cycle repairs by tails with no new row, or sends nothing where the seed's list already matched
+    (2026-09-23); cost, and a changeAt0 reading on pusher.chatFullWhy
     with no strand behind it (test 42). The baseline had one
     writer, the pusher's non-connect cycle, so a sid whose first whole frame since the boot came from the connect push
     (the redial's watched tab, then every tab the page's idle prefetch releases) or from the targeted push (a create's,
@@ -51060,7 +51061,8 @@ def _chat_wm_note(client, sid, m):
 # the status, the three per-session view flags, the watermark), and an empty-suffix tail whose view equals it is not sent.
 # Every other frame goes as before: a tail with events, a status, flag or watermark change, an empty tail that truncates (a
 # trailing card that left the list moves the key the tail ends on), a changed ledger, and every full. The record goes
-# wherever the base goes (a ready, a needFull, a tab leaving the strip), so a page that asked for anything gets it.
+# wherever the base goes (a ready, a needFull, a tab leaving the strip): hygiene, since the full those roads send is the
+# base reset's and never reads the record.
 #
 # …and the EVENTS a client holds past its base (2026-09-23, the per-turn face). PR 2071 ends a client's base on the last
 # recorded event, never on a streamed atom, so every uuid-wire delta cut after the base (a change anywhere in the streamed
@@ -51869,7 +51871,7 @@ def _client_reset_chat_sid(client, sid):
     skeleton before the full that answers the ask goes out (the mark below)."""
     with _client_lock(client):
         client.get("echat", {}).pop(sid, None)
-        client.get("echatView", {}).pop(sid, None)   # …and the view it held (2026-09-23): the ask's answer is a full, never withheld
+        client.get("echatView", {}).pop(sid, None)   # …and the view it held (2026-09-23): hygiene, the reset sends the full
         client.get("sent", {}).pop(("chat", sid), None)
         # the watermark floor (echatWm) STAYS (2026-09-23): the page still holds its frames and refuses an older one, so the
         # ask's answer must not be older (_send_chat_locked refuses one once, and the cycle builds afresh); `ready` drops it
@@ -53456,7 +53458,9 @@ def _last_anchor(evs):
     on the last recorded event, the next delta starts at or before the first event the transcript has not recorded.
     _chat_skip_held (2026-09-23) then moves that start past the events the client holds unchanged right after the edge
     (the record _chat_view_note keeps: key and content digest per event), so the live suffix rides a delta again only
-    where something in it changed; a page holding a different run there still gets the kernel's current view from the edge.
+    from the first event in it that changed (the skip stops at the first mismatch and the rest rides whole); a delta cut
+    below the edge still replaces everything after it, and a page holding a different run there gets the view from the
+    edge.
 
     Known, accepted residue: a list of nothing but such events (a transcript-less session whose only events are its first
     echo and the stream answering it) anchors on its last non-overlay, non-transient event, else its last event, and sends
@@ -53636,7 +53640,7 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                     #                                       answers with a full ask, the frame the targeted push stopped sending
             else:
                 start = min(change_from, pl + 1) if change_from > 0 else 0   # from the change, or from after the held
-            if start > pf:                                #  last record (changed overlay cards after it ride the suffix)
+            if start > pf:                                #  last record (overlay cards past it ride from the first change)
                 start = _chat_skip_held(c, sid, evs, start)   # …past what the client holds unchanged there (2026-09-23)
                 view = _chat_view_key(m, _event_key(evs[-1]))
                 # an EMPTY suffix that would leave the page exactly as it is (the view it holds, no ledger riding) is not sent
@@ -57687,9 +57691,10 @@ def _push_session_now(sid):
     held as a skeleton was force-loaded, on every SDK connect handshake, every Codex stream event, every create
     and fork (measured live 2026-09-18: 426 targeted builds in 20 h across 22 sessions; 973 full chat frames
     against 68,377 deltas, 133 of the fulls connect pushes). Now a caught-up client gets a chatTail whose
-    suffix begins at the change against the baseline, or right after what it holds, and is empty when nothing
-    moved (the status flip this push exists for rides it; an identical tail is deduped on its slot within the
-    repost window, _DEDUP_REPOST_S, and re-sent as a no-op after it); a client holding the tab as a skeleton
+    suffix begins at the change against the baseline, or right after what it holds, and is empty when only the
+    status, a flag, the watermark or the ledger moved (the status flip this push exists for rides it); a caught-up
+    client whose view is unchanged gets no chat frame at all, withheld at its first occurrence and not only within
+    the repost window (_chat_view_key; WHAT A CLIENT HOLDS, 2026-09-23); a client holding the tab as a skeleton
     gets its status on the status slot and keeps the skeleton (the click or the prefetch releases it, as with
     the pusher); a client with no base (a fresh socket, a redial's watched tab, a needFull reset) gets the full
     as before; a client armed for the ready arm's connect push gets nothing here, the pusher's rule. The tail
@@ -57728,7 +57733,8 @@ def _push_session_now(sid):
     forced full: for proto 2 the next tail starts at min(change_from, held last + 1), the no-change tail
     included (anchored at the client's held last when that lies before the list's last transcript event, so a
     client behind this build gets the events it lacks rather than a tail past what it holds; a caught-up client's
-    stays the empty suffix), so a client ahead of the baseline is never skipped, only re-sent the overlap since
+    stays the empty suffix, withheld when its view is unchanged), so a client ahead of the baseline is never skipped,
+    only re-sent the overlap since
     the LAST PUSHER CYCLE, which it applies idempotently (truncate at the anchor, re-append), the state every
     ready-arm connect push already leaves; the pusher advances that baseline only AFTER its cycle has delivered
     to every client, so a push landing mid-cycle reads the older baseline and re-sends the overlap, never a

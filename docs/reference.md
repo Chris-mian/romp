@@ -2225,7 +2225,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   and the cycle itself as the sender that read the baseline absent with a
   seed landing inside its build, a race the detector does not mark (nothing
   marked, no strand), one full and one row per base holder where a tail went
-  before, and tails with no new row at the next cycle; in the
+  before, and at the next cycle tails with no new row, or nothing at all
+  where the seed's list already matched the cycle's (2026-09-23); in the
   `chatFull` row below every change-0 face has `changeFrom` 0 with both edges
   held, the floor's has `firstHeld` false);
   `changeBelowFirst` for a change at or before the held first edge;
