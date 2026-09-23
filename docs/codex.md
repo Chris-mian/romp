@@ -243,8 +243,10 @@ session reading "compacting", and no message typed into the session probes that
 (each one waits behind the cue, as it would behind a real compaction). The way
 out is a kernel restart, which delivers the waiting message (the queue it waits
 in is kept on disk; the cue is kept there too, and the restart ends it with the
-unknown-outcome notice above), or End then Revive, which keeps the thread and
-its history but not the queue: a message you typed that is still waiting
+unknown-outcome notice above, which the delivered message then clears as
+any message does, so the notice stands only when nothing was waiting), or
+End then Revive, which keeps the thread and its history but not the queue: a
+message you typed that is still waiting
 behind the cue is never sent; when the session ends it comes back as a
 not-delivered notice with the text to copy, shown in one pane that is open at
 that moment (a chat pane first, the feed when no chat pane is connected), and
