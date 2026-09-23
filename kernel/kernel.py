@@ -1561,6 +1561,16 @@ def _turn_romp_injected(turn):
     return bool(a and a.get("author") == "romp")
 
 
+def _turn_only_ends(turn):
+    """True for a turn holding nothing but bare END records (em.atom_is_bare_end): a Codex turn whose app-server
+    output had no item at all, not even the prompt, ends on an empty end record, and at a thread's start that record
+    is the whole turn (2026-09-23, the post-merge review of the restart-cut fix). _turn_romp_injected's first-atom
+    fallback reads that record as the opener and, finding no romp author on it, calls the turn genuine, so it became
+    the nudge's arm. Nothing was asked or done in it: it arms nothing, as when the turn wrote no record at all."""
+    atoms = turn.get("atoms") or []
+    return bool(atoms) and all(em.atom_is_bare_end(a) for a in atoms)
+
+
 # The discriminating phrases in the resume notices romp injects to CONTINUE a machine-cut turn
 # (sdk_backend.BOOT_RESUME_NUDGE / CRASH_RESUME_NUDGE). A kernel restart or the session's own claude
 # process dying mid-turn ALSO mints a "[Request interrupted by user]" stop record — but romp, not the
@@ -15556,8 +15566,10 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
     # banner, any romp injection — neither RE-ARMS a nudge (the 2026-07-01 runaway) nor BLOCKS a first
     # one: the old `_turn_romp_injected(lt)` gate keyed on the LATEST turn, so a restart banner opening
     # a session's last turn suppressed every future first-nudge until some genuine turn ended — a
-    # working card that could never be nudged (business, found idle+working with nudged=None).
-    arm = next((tn for tn in reversed(turns) if tn.get("ended") and not _turn_romp_injected(tn)), None)
+    # working card that could never be nudged (business, found idle+working with nudged=None). A turn that is
+    # nothing but a Codex end record has no opener at all and arms nothing either (_turn_only_ends, 2026-09-23).
+    arm = next((tn for tn in reversed(turns)
+                if tn.get("ended") and not _turn_romp_injected(tn) and not _turn_only_ends(tn)), None)
     arm_id = arm.get("id") if arm else None          # None (romp-only history) → never FIRE; an already-
     #                                                  nudged goal still takes its nudge-failed stamp below
     # The newest turn romp has SEEN END — the yardstick the fire list judges "newer evidence" against, and
@@ -48293,13 +48305,18 @@ def _seg_anchors(atoms):
     (isApiErrorMessage, tagged isApiError by em), so it carries text and would otherwise WIN the
     reply anchor — deep-linking a done/blocked goal to an 'API Error: …' line instead of its real
     reply. An error is a failure, not a reply, and is never a jump target (the user 2026-06-18).
-    Scalars only (em.atom_has_text, em.atom_is_settle: a lazy atom's marker holds its text flag, text hash
-    and model stamp), so no body is hydrated (T358)."""
+    A bare END record is skipped for workUuid too (em.atom_is_bare_end, 2026-09-23, the post-merge review
+    of the restart-cut fix): a Codex turn that completes with nothing held ends on an empty assistant
+    record, and when no assistant atom came before it, it became the bar's work anchor, a uuid the chat has
+    no row for, so the bar click said "couldn't locate". Skipped, the view falls back to the prompt, or to
+    the bar's time when the turn has none, as before that record existed.
+    Scalars only (em.atom_has_text, em.atom_is_settle, em.atom_is_bare_end: a lazy atom's marker holds its
+    text flag, text hash, stop reason and model stamp), so no body is hydrated (T358)."""
     work = reply = settle = None
     for a in atoms:
         if a.get("type") != "assistant" or a.get("isApiError"):
             continue
-        if work is None:
+        if work is None and not em.atom_is_bare_end(a):
             work = a.get("uuid")
         if em.atom_has_text(a):
             # the machine-cut NULL SETTLE ("No response requested." / model "<synthetic>") is an
