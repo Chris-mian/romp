@@ -5560,9 +5560,10 @@ def _note_state_fault(exc):
         remedy = getattr(exc, "remedy", None) or ("showing the last-known value; changes to it are refused until the file can be "
                                                    "read again")   # the file's own clause when it has one, else the sentence every other file keeps (round three of PR 2032)
         text = "%s \u2014 %s" % (exc, remedy)                  # the same dash as before, the sentence byte-identical for every other file
-    if table.get(key) == text:
+    seen = getattr(exc, "dedupe_key", None) or text      # a row whose display text is cut carries the whole text as its key (_cleared_fault_row)
+    if table.get(key) == seen:
         return
-    table[key] = text
+    table[key] = seen
     sys.stderr.write("romp-kernel: %s\n" % text)
     try:
         _sync_notice(text, ok=False, kind="refused")   # the shell bell / feed sync-notice row (resolved at call time)
@@ -41706,11 +41707,13 @@ def _cleared_ids_read():
         return cur, copy
     _CLEARED_STATS["derived"] += 1
     if st is not None and _stat_key(path) != st:
-        return cur, ""                                   # the file moved under the parse: these bytes left the disk before whatever moved it, so they end no episode and take no
-        #                                                  memo (the first contributor's post-merge note on PR 2041: the nudge walk parses on the jobs thread beside the display
+        if key is not None:
+            _CLEARED_MEMO["landed"] = (key, cur)         # a real state of the file, the last landed one: a FIRST-EVER read that races a fault must not leave the display on the cold
+            #                                              arm (the round-one verifier of PR 2056: the pane served the empty set under a row saying no read ever landed)
+        return cur, ""                                   # but the file moved under the parse: these bytes left the disk before whatever moved it, so they end no episode and take
+        #                                                  no slot (the first contributor's post-merge note on PR 2041: the nudge walk parses on the jobs thread beside the display
         #                                                  builds, and a walk still parsing good bytes when the file went bad and a build filed the fault then ended both episodes,
-        #                                                  so the next build filed a second bell row and a second judge row for one unbroken fault); the set is a real state of the
-        #                                                  file, served no further than this call
+        #                                                  so the next build filed a second bell row and a second judge row for one unbroken fault)
     _cleared_read_fault[0] = ""                          # a landed read ends the episode
     _clear_state_fault(path)                             # and the bell's: every reader's clean read, not the display read's alone (the first contributor's round one on PR 2032)
     if key is not None:
@@ -41728,12 +41731,17 @@ def _cleared_fault_row(p, fault, remedy):
     """The bell row's exception for the clears log, its fault text cut to the budget the remedy leaves under SYNC_NOTICE_FIT so the row's
     point (the remedy, its closing clause included) always survives the bell's cut: a multi-byte decode error at a seven-digit offset ran
     the cold row to 242 and the bell cut the closing parenthetical (the first contributor's post-merge note on PR 2041: a 1.3 MB log ending
-    in a broken four-byte sequence, cold build). The row is composed by _note_state_fault as str(exc), a dash and the remedy."""
+    in a broken four-byte sequence, cold build). The row is composed by _note_state_fault as str(exc), a dash and the remedy; the bell's
+    episode key is the whole fault text (`dedupe_key`), so the cut never merges two faults into one episode and a remedy change alone never
+    splits one."""
     text = str(fault)
     budget = SYNC_NOTICE_FIT - len("%s could not be read () \u2014 %s" % (p.name, remedy))
     if len(text) > budget:
         text = text[:max(0, budget - 3)] + "..."
-    return _StateUnreadable(p, text, remedy=remedy)
+    exc = _StateUnreadable(p, text, remedy=remedy)
+    exc.dedupe_key = str(fault)                          # the bell's episode compares the WHOLE fault text, not the cut one, so two faults agreeing through the cut and differing
+    return exc                                           # after it are two episodes (the round-one verifier of PR 2056); the row's text stays cut. The fault alone, not the remedy:
+    #                                                      the remedy follows the display state (cold, then warm once a landed set is memoized), and one unbroken fault is one episode
 
 
 def _cleared_ids_display():
@@ -41746,10 +41754,10 @@ def _cleared_ids_display():
     set, and the row says so. Never for a gesture: an Undo answers for its OWN read (_undo_clear) and an account's stack for the read
     behind it (_ledger_batches), which is why this is not the shared set-only reader. The bell's line comes with its row: _note_state_fault
     writes the stderr line and the bell row together, beside the reader's own stderr line and judge row, each under its own episode memo: the
-    reader's flag holds the fault's copy and the bell's table holds the row's text for the path, so a different fault's text files the bell again on
-    every change and the reader again through the derive arm alone (a served memo hit re-arms the reader's flag from the slot without filing),
-    and every clean read ends both (the second contributor's post-merge comment on PR 2032; the round-one verifier of PR 2041: the bell's table
-    was described as keyed by the path alone, where it compares the text under it; the second contributor's post-merge review of PR 2041)."""
+    reader's flag holds the fault's copy and the bell's table holds the row's key for the path. The bell re-files on every change of the fault's
+    text; the reader re-files through the derive arm and through a memo hit returning a fault that differs from the flag; a clean read ends both
+    only when a stat taken after its parse equals the key taken before its read (the second contributor's post-merge comment on PR 2032 and
+    review of PR 2041; the round-one verifiers of PRs 2041 and 2056)."""
     cur, fault = _cleared_ids_read()
     p = jd.STATE / "cleared.jsonl"
     if not fault:
@@ -41761,8 +41769,9 @@ def _cleared_ids_display():
     if landed is not None and landed[0][0] == str(p):
         _note_state_fault(_cleared_fault_row(p, fault, "showing the last-known value; clears still record, and Undo waits until the file can be read again"))
         return landed[1]
-    _note_state_fault(_cleared_fault_row(p, fault, "clears still record, and Undo waits; nothing reads as cleared until the file reads again (no earlier read of it in this kernel's life)"))   # point first and short (the second
-    #                                                  contributor's post-merge comment on PR 2032), the condition named (the first contributor's post-merge note on PR 2041: "until then" named no moment)
+    _note_state_fault(_cleared_fault_row(p, fault, "clears still record, and Undo waits; nothing reads as cleared until it reads again (no earlier read in this kernel's life)"))   # point first and short (the second
+    #                                                  contributor's post-merge comment on PR 2032), the condition named (the first contributor's post-merge note on PR 2041: "until then" named no
+    #                                                  moment), and short enough that the ORDINARY position-0 decode error's row stays uncut (the round-one verifier of PR 2056: 69 left against 70)
     return cur
 
 def _mark_nodes_cleared(item_ids, value, src="user", why=None):

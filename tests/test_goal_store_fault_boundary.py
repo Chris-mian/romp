@@ -1998,7 +1998,8 @@ class ActsUnderAFailedWrite(_World):
             self.assertEqual((f["dismissedCount"], f["canUndoClear"], A + ":g1" in [a["itemId"] for a in f["asks"]]), (0, False, True), "a cold memo: the empty set")
             bell = [n for n in km._SYNC_NOTICES if "cleared.jsonl" in n["text"]]
             self.assertEqual(len(bell), 1, "and one refused row: %r" % km._SYNC_NOTICES); self.assertIn("no earlier read", bell[0]["text"], "saying nothing reads as cleared: %r" % bell[0]["text"])
-            self.assertIn("until the file reads again", bell[0]["text"], "and the cold remedy names its condition (the first contributor's post-merge note on PR 2041: \"until then\" named no moment): %r" % bell[0]["text"])
+            self.assertIn("until it reads again", bell[0]["text"], "and the cold remedy names its condition (the first contributor's post-merge note on PR 2041: \"until then\" named no moment): %r" % bell[0]["text"])
+            self.assertNotIn("...", bell[0]["text"], "the ORDINARY decode error's cold row is uncut (the round-one verifier of PR 2056: the longer remedy left 69 characters against its 70): %r" % bell[0]["text"])
             self.assertLessEqual(len(bell[0]["text"]), km.SYNC_NOTICE_FIT, "the cold row fits the bell's cut too (the first contributor's round one on PR 2032: 247 characters with a real decode error): %d %r" % (len(bell[0]["text"]), bell[0]["text"]))
         log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
@@ -2062,7 +2063,7 @@ class ActsUnderAFailedWrite(_World):
                 self.assertNotEqual(km._cleared_read_fault[0], "", "the stale clean read ended no episode: the reader's flag still holds the fault")
                 with contextlib.redirect_stderr(io.StringIO()):
                     f = km.build_feed(NOW, self.live)
-                self.assertEqual((len(rows()) - n0, len(bell()), f["dismissedCount"]), (1, 1, 0), "one unbroken fault: one judge row and one bell row after the next build (before: the stale read ended both episodes and the next build filed a second of each)")
+                self.assertEqual((len(rows()) - n0, len(bell()), f["dismissedCount"]), (1, 1, 1), "one unbroken fault: one judge row and one bell row after the next build (before: the stale read ended both episodes and the next build filed a second of each), and the pane holds the set the racing read parsed, the last landed one (the round-one verifier of PR 2056: a first-ever read that raced a fault left the display on the cold arm, the cleared cards back at a count of 0)")
         log.write_text(""); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()
 
     def test_a_memoized_fault_returning_through_a_memo_hit_after_a_different_fault_files_its_judge_row(self):
@@ -2117,8 +2118,24 @@ class ActsUnderAFailedWrite(_World):
             km.build_feed(NOW, self.live)
         row = bell()[0]["text"]
         self.assertLessEqual(len(row), km.SYNC_NOTICE_FIT, "the cold row fits the bell's cut (before: 242): %d %r" % (len(row), row))
-        self.assertTrue(row.endswith("(no earlier read of it in this kernel's life)"), "and its closing clause survives: %r" % row)
+        self.assertTrue(row.endswith("(no earlier read in this kernel's life)"), "and its closing clause survives: %r" % row)
         self.assertIn("...", row, "the fault text is the part that gives way")
+        log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None; km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        with contextlib.redirect_stderr(io.StringIO()):
+            km.build_feed(NOW, self.live)
+        row = bell()[0]["text"]
+        self.assertTrue("..." not in row and "invalid start byte)" in row and len(row) <= km.SYNC_NOTICE_FIT, "the ORDINARY position-0 decode error's cold row is whole beside the long-offset row cut (the round-one verifier of PR 2056): %d %r" % (len(row), row))
+        # the bell's episode compares the WHOLE fault text: two faults agreeing through the cut and differing after it are two rows (synthetic pair: no
+        # real decode text pair does this under the current remedies, which is why the key is the whole text rather than a longer cut)
+        km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        remedy = "clears still record, and Undo waits; nothing reads as cleared until it reads again (no earlier read in this kernel's life)"
+        long_a = "'utf-8' codec can't decode bytes in position 1273780-1273782: invalid continuation byte, first of two"
+        long_b = "'utf-8' codec can't decode bytes in position 1273780-1273782: invalid continuation byte, second of two"
+        with contextlib.redirect_stderr(io.StringIO()):
+            km._note_state_fault(km._cleared_fault_row(log, long_a, remedy)); km._note_state_fault(km._cleared_fault_row(log, long_b, remedy))
+        texts = [n["text"] for n in bell()]
+        self.assertEqual(len(texts), 2, "two faults agreeing through the cut are two episodes (before: the cut texts compared equal and the second filed no row): %r" % texts)
+        self.assertEqual(texts[0], texts[1], "premise: their display texts are the same cut text")
         log.write_text(json.dumps({"id": A + ":g1", "t": 1, "op": "clear"}) + "\n"); km._CLEARED_MEMO["slot"] = None; km._cleared_ids()   # a landed read: the warm row next
         log.write_bytes(bad); km._CLEARED_MEMO["slot"] = None; km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
         with contextlib.redirect_stderr(io.StringIO()):
@@ -2141,7 +2158,7 @@ class ActsUnderAFailedWrite(_World):
         self.assertRegex(ds, r'"clears-log" \(a clears-log write refused')
         self.assertRegex(ds.replace("\n", " "), r'"cleared-unreadable" is also the kernel\'s own reader\'s\s+kind for the clears log[^)]*holding the last landed set[^)]*one row per fault episode\s+ended by a landed read, an absent log or a different fault', "the kind list mirrors the docs: the display reader serves the last landed set, the read still files the row (the second contributor's post-merge comment on PR 2032: it still said the build read the log as nothing cleared)")
         self.assertIn('"owed-note"', ds)
-        self.assertRegex(km._cleared_ids_display.__doc__.replace("\n", " "), r"each under its own episode memo: the\s+reader's flag holds the fault's copy and the bell's table holds the row's text for the path, so a different fault's text files the bell again on\s+every change and the reader again through the derive arm alone \(a served memo hit re-arms the reader's flag from the slot without filing\),\s+and every clean read ends both", "the display reader's docstring names the two episode memos and how each re-files (the round-one verifier of PR 2041; the second contributor's post-merge review of it)")
+        self.assertRegex(km._cleared_ids_display.__doc__.replace("\n", " "), r"each under its own episode memo: the\s+reader's flag holds the fault's copy and the bell's table holds the row's key for the path\. The bell re-files on every change of the fault's\s+text; the reader re-files through the derive arm and through a memo hit returning a fault that differs from the flag; a clean read ends both\s+only when a stat taken after its parse equals the key taken before its read", "the display reader's docstring states the head's episode rule: how each memo re-files and when a clean read ends both (the round-one verifiers of PRs 2041 and 2056: an earlier sentence pinned prose the code no longer did)")
         # the note helper's and the refusal sender's own docstrings (the round-two verifier of PR 2025: the helper's sentence was pinned by nothing)
         self.assertRegex(km._clears_log_fault_note.__doc__.replace("\n", " "), r"the kernel's own READ of the log files under `cleared-unreadable`,\s+the kind the judge's side-file reader files for the same file, one row per fault episode", "the helper names the read as the kind's second writer")
         self.assertIn("`cleared-unreadable` for the read-fault account's read of it", km._gesture_store_refusal.__doc__, "the sender names the read-fault account's kind")
