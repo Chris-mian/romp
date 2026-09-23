@@ -114,6 +114,9 @@ CALLBACK_ALLOW = {
     ("SdkBackend", "notify", "_send_to_app"): "a frame to the app over its socket",
     ("SdkBackend", "poke", "_wake_kernel"): "sets the kernel's wake event",
     ("SdkBackend", "push", "_pusher_wake.set"): "sets the pusher's wake event",
+    ("SdkBackend", "push_soon", "_push_session_soon"): "names a sid for the next cycle to build FIRST and sets the pusher's "
+                                                       "wake event: a set add and an Event set, so nothing builds here (the "
+                                                       "one that builds is push_session, marked at the hand-off)",
     ("SdkBackend", "log", "_backend_log"): "a stderr line through the exit log",
     ("SdkBackend", "boot_phase", "_mark_boot"): "a boot-row stamp (censusDone, attachDone)",
     ("CodexBackend", "notify", "_send_to_app"): "a frame to the app over its socket",
