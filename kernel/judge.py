@@ -226,7 +226,7 @@ def _rebind_state(path):
         _DISK_CONTENT.clear()   # save_goals' disk-side memo is keyed on full store paths, so an old root's
     #                         entries could never hit under the new one; cleared anyway so a rebind starts empty
     with _RAW_STORE_LOCK:
-        _RAW_STORE.clear()      # the writer loader's parse memo: same full-path keys, same reasoning
+        _RAW_STORE.clear(); _RAW_HISTORY.clear()      # the writer loader's parse memo: same full-path keys, same reasoning
     with _ABSENT_FLAGS_LOCK:
         _ABSENT_FLAGS.clear()   # the absent-store predicate memo: same full-path keys, same reasoning
     with _VIEW_CLEARED_LOCK:
@@ -4681,36 +4681,25 @@ class GuardedNode(dict):
                 self[k] = v                            # route through the guard
 
 
-# THE FIELD BASE (2026-09-23): save_goals' rebase folds diary events and merges the relay keys and the distill families by their
+# THE FIELD CARRY (2026-09-23): save_goals' rebase folds diary events and merges the relay keys and the distill families by their
 # own rules, but a plain field the OTHER writer changed on a node both hold was kept as the holder had it, so a brief edited in place
-# (the box lab's write; live, any writer that sets a field without the family's stamp) was published over by a judge pass's save
-# whose base predated it (the store CAS fix of 2026-09-23 covered a node the holder lacked, not a field). The load records a digest
-# per top-level field of every node as read from the file, transient beside the revision base; the rebase compares both sides
-# against it and carries every field the other writer moved since the base where this writer did not (a per-field three-way merge);
-# where both moved the same field, the incoming writer's own change wins. The diary-owned keys are re-derived from the merged log
-# and the keys with their own merge above keep them.
+# was published over by a judge pass's save whose base predated it (the store CAS fix of 2026-09-23 covered a node the holder lacked,
+# not a field). The rebase now carries every plain field the other writer moved since the holder's base where the holder did not (a
+# per-field three-way merge); where both moved the same field, the incoming writer's own change wins. The BASE is the bytes the load
+# read, found by their identity (the load's _baseIdent) in the raw-parse memo, which keeps the last few versions' pristine parses per
+# path (_RAW_HISTORY) for the holders still standing on them: nothing is digested or copied at a load or a save, and the base is
+# unpickled only when a rebase happens (the round-one verifier of the field carry: a digest per field at every load cost a 5000-node
+# store 200 ms a load and 4.7 MB retained). A base whose bytes have rolled out of the history (more versions published meanwhile than
+# it keeps) carries nothing, as before the rule, and the goals counters say so (carryNoBase). The diary-owned keys (PROTECTED) are
+# re-derived from the merged log, and every FAMILY-managed key (the distill families' stamps and fields, _DISTILL_FAMILIES) is left
+# to the family merge, which adopts a family as a unit when the other side's stamp is newer: an in-place edit of a family field
+# therefore stamps its family (briefedMt for a brief), as every kernel writer of a brief does, or the family merge keeps the holder's.
 _NOFIELD = object()
 _FIELD_CARRY_SKIP = frozenset(("log", "logTrunc", "mt", "relayed", "relayDone", "relaySettled", "relayRecalled", "relayRecall", "relayWanted", "mergedFrom"))
-
-
-def _field_digest(v):
-    """A short digest of one field's value for the field base; None for an absent field."""
-    if v is _NOFIELD:
-        return None
-    try:
-        text = json.dumps(v, sort_keys=True, separators=(",", ":"), default=str)
-    except (TypeError, ValueError):
-        text = repr(v)
-    return hashlib.blake2b(text.encode("utf-8"), digest_size=12).hexdigest()
-
-
-def _node_field_hashes(nodes):
-    """The field base of `nodes`: per node id, a digest per top-level field, the keys with their own merge left out."""
-    out = {}
-    for nid, nd in (nodes or {}).items():
-        if isinstance(nd, dict):
-            out[str(nid)] = {k: _field_digest(v) for k, v in nd.items() if k not in _FIELD_CARRY_SKIP}
-    return out
+_DISTILL_FAMILIES = (("distilledMt", ("summary", "summaryParts", "background", "summaryAnchor", "summaryQuote", "summaryQuoteOff", "summaryAnchors", "distillFails")),
+                     ("briefedMt", ("blockSummary", "briefParts", "briefFails")),
+                     ("stalledMt", ("stallSummary", "stallFails")))   # the ONE table the family merge and the carry's exclusion read
+_FAMILY_KEYS = frozenset(k for stamp, fields in _DISTILL_FAMILIES for k in (stamp,) + tuple(fields))
 
 
 def _guard_nodes(store):
@@ -4730,7 +4719,8 @@ def _guard_nodes(store):
 # builds) read through load_goals_shared, whose hits and misses shared_store_stats reports (GET /perf
 # memos.shared), so a pass added THERE shows as shared misses, not here (review find, 2026-09-08).
 # Plain counters, one lock, no formatting on the path.
-_GOAL_IO = {"loads": 0, "saves": 0, "writes": 0}
+_GOAL_IO = {"loads": 0, "saves": 0, "writes": 0, "carryBase": 0, "carryNoBase": 0}   # carryBase / carryNoBase: a rebase that found the holder's
+#                                                                                       base bytes for the field carry, or not (they rolled out)
 _GOAL_IO_LOCK = threading.Lock()
 
 
@@ -4740,7 +4730,8 @@ def _goal_io_bump(key):
 
 
 def goal_io_stats():
-    """A copy of the goal-store I/O counters: load_goals calls (`loads`), save_goals calls (`saves`),
+    """A copy of the goal-store I/O counters: load_goals calls (`loads`), save_goals calls (`saves`), a rebase that found
+    the field carry's base (`carryBase`) or found it rolled out of the raw history (`carryNoBase`, carrying nothing),
     and the saves that wrote a file (`writes`; save_goals skips a byte-identical republish). The
     counters stay private to this module; readers get a copy."""
     with _GOAL_IO_LOCK:
@@ -4815,6 +4806,27 @@ def _quarantine_store(path, reason, st):
 _RAW_STORE = {}                                  # store path → ((st_ino, st_mtime_ns, st_size), text, pickled parse)
 _RAW_STORE_LOCK = threading.Lock()
 _RAW_STORE_STATS = {"hit": 0, "miss": 0, "compare_miss": 0, "evict": 0}
+_RAW_HISTORY_KEEP = 3
+_RAW_HISTORY = {}                                # store path → the last few (identity, pickled parse) the memo rolled past: the field carry's base for a
+#                                                  holder still standing on one of them (a reference to the memo's own pickle, no copy; a
+#                                                  deque of _RAW_HISTORY_KEEP); cleared with the memo
+
+
+def _base_nodes(path_s, ident):
+    """The nodes as the file held them at `ident`, from the raw-parse memo or its history, else None (the version rolled out)."""
+    with _RAW_STORE_LOCK:
+        ent = _RAW_STORE.get(path_s)
+        blob = ent[2] if ent is not None and ent[0] == ident else None
+        if blob is None:
+            for old_ident, old_blob in reversed(_RAW_HISTORY.get(path_s) or ()):
+                if old_ident == ident:
+                    blob = old_blob; break
+    if blob is None:
+        return None
+    try:
+        return (pickle.loads(blob) or {}).get("nodes") or {}
+    except Exception:
+        return None
 
 
 def _raw_bump(key):
@@ -4923,6 +4935,9 @@ def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
         else:
             if isinstance(value, dict):
                 with _RAW_STORE_LOCK:                # pickled BEFORE the caller can touch it: the pristine parse
+                    prev = _RAW_STORE.get(path_s)
+                    if prev is not None and prev[0] != ident:   # the version the memo rolls past: kept for the holders that loaded it (the field carry's base)
+                        _RAW_HISTORY.setdefault(path_s, collections.deque(maxlen=_RAW_HISTORY_KEEP)).append((prev[0], prev[2]))
                     _RAW_STORE[path_s] = (ident, raw, pickle.dumps(value, pickle.HIGHEST_PROTOCOL))
                 return value
             reason = "top-level JSON value is %s, not an object" % type(value).__name__
@@ -4947,7 +4962,6 @@ def _fresh_store(fsid):
              "placementsV": PLACEMENTS_V}
     store["_baseRev"] = 0
     store["_baseIdent"] = None                       # no file at the load: a file that appears before the save is a publication (save_goals)
-    store["_baseFields"] = {}                        # nothing read: every field the file shows at the save is the other writer's
     return store
 
 
@@ -5001,11 +5015,9 @@ def load_goals(fsid):
     raw = _read_store_json(GOALDIR / (fsid + ".json"), quarantine=True, ident_out=ident)
     if raw is None:
         return _fresh_store(fsid)                    # _baseRev 0 and no _baseIdent: a file that appears before the save is a publication
-    guarded = _guard_nodes(raw)
-    fields = _node_field_hashes(guarded.get("nodes"))   # the field base: the nodes as the FILE holds them, before the replay and the rollup
-    store = _finish_load(fsid, guarded)
-    store["_baseIdent"] = ident[-1] if ident else None   # the file the base was read from (transient, popped by save_goals)
-    store["_baseFields"] = fields                    # transient too; the rebase reads it, save_goals pops and re-stamps it
+    store = _finish_load(fsid, _guard_nodes(raw))
+    store["_baseIdent"] = ident[-1] if ident else None   # the file the base was read from (transient, popped by save_goals); it also names the
+    #                                                  bytes the rebase's field carry compares against (_base_nodes), so nothing is copied here
     return store
 
 
@@ -5150,10 +5162,13 @@ def _rebase_onto_disk(fsid, store):
 
     Verdict identity is (ev_t, src, kind) — the same triple _replay_overrides dedups a re-recorded block
     on — so a replayed/duplicated event folds instead of doubling."""
-    raw = _read_store_json(GOALDIR / (fsid + ".json"))
+    read_ident = []
+    raw = _read_store_json(GOALDIR / (fsid + ".json"), ident_out=read_ident)
     if raw is None:
         return                                       # no published store to rebase onto → publish as-is
-    base_fields = store.get("_baseFields") or {}      # the field base the load recorded (the field carry below)
+    bident = store.get("_baseIdent")                 # the version this holder stands on: the field carry's base (the bytes the load read)
+    base_nodes = _base_nodes(str(GOALDIR / (fsid + ".json")), tuple(bident)) if bident else None
+    _goal_io_bump("carryBase" if base_nodes is not None else "carryNoBase")   # a base that rolled out of the raw history carries nothing
     disk = _guard_nodes(raw)                         # (a fault or unparseable file raises: never rebase
     d_nodes, m_nodes = disk.get("nodes") or {}, store.get("nodes") or {}    #  past what we could not read)
     # MERGE TOMBSTONES (2026-08-13): presence-in-a-snapshot is not truth — a stale pre-merge writer
@@ -5292,20 +5307,20 @@ def _rebase_onto_disk(fsid, store):
                 mnd["relayWanted"] = d_rw                  # two holders minted a marker for one wait: the one already handed
                                                            #   to a far host wins, else the published one (its entry is
                                                            #   flushed); the loser never reaches the queue
-        # THE FIELD CARRY (2026-09-23; the second contributor's post-merge finding on the box lab, the manager's ruling): every plain field
-        # the OTHER writer moved since our base is carried where we did not move it; where both moved the same field, ours (the incoming
-        # writer's) wins; a field they removed goes; the diary-owned keys are re-derived from the merged log below and the keys with a merge
-        # of their own above keep it. Without a base (a store built without load_goals) nothing is carried, as before.
-        bf = base_fields.get(nid) if base_fields else None
-        if bf is not None:
+        # THE FIELD CARRY (2026-09-23; the second contributor's post-merge finding on the box lab, the manager's ruling; the design note
+        # above _NOFIELD): every plain field the OTHER writer moved since our base is carried where we did not move it; where both moved the
+        # same field, ours (the incoming writer's) wins; a field they removed goes. The base is the node as the bytes we loaded held it,
+        # looked up by identity only now; without it (the version rolled out of the raw history) nothing is carried, as before the rule.
+        # The diary-owned keys are re-derived from the merged log below, the keys with a merge of their own above keep it, and every
+        # family-managed key is left to the family merge below, which adopts a family as a unit by its stamp (the round-one verifier: the
+        # carry copied a family's stamp and fields one by one and the merge never fired, pairing one episode's line with another's parts).
+        bnd = base_nodes.get(nid) if base_nodes else None
+        if isinstance(bnd, dict):
             for k in set(dnd) | set(mnd):
-                if k in _FIELD_CARRY_SKIP or k in PROTECTED:
+                if k in _FIELD_CARRY_SKIP or k in PROTECTED or k in _FAMILY_KEYS:
                     continue
-                dv, mv = dnd.get(k, _NOFIELD), mnd.get(k, _NOFIELD)
-                if dv == mv:
-                    continue
-                bh = bf.get(k)                       # None: absent at the base
-                if _field_digest(dv) != bh and _field_digest(mv) == bh:   # they moved it, we did not
+                dv, mv, bv = dnd.get(k, _NOFIELD), mnd.get(k, _NOFIELD), bnd.get(k, _NOFIELD)
+                if dv != mv and dv != bv and mv == bv:   # they moved it, we did not
                     with _authority():
                         if dv is _NOFIELD:
                             mnd.pop(k, None)
@@ -5325,11 +5340,7 @@ def _rebase_onto_disk(fsid, store):
         # unit — half-merged families would pair one episode's text with another's stamps. An EQUAL
         # or older disk stamp keeps ours, which also preserves the deliberate blockSummary re-open
         # (the ""→None null keeps its old briefedMt on purpose).
-        for _stamp, _fields in (("distilledMt", ("summary", "summaryParts", "background",
-                                                 "summaryAnchor", "summaryQuote", "summaryQuoteOff",
-                                                 "summaryAnchors", "distillFails")),
-                                ("briefedMt", ("blockSummary", "briefParts", "briefFails")),
-                                ("stalledMt", ("stallSummary", "stallFails"))):
+        for _stamp, _fields in _DISTILL_FAMILIES:    # the one table (the field carry above excludes exactly these keys)
             if int(dnd.get(_stamp) or 0) > int(mnd.get(_stamp) or 0):
                 mnd[_stamp] = dnd[_stamp]
                 for _f in _fields:
@@ -5338,6 +5349,8 @@ def _rebase_onto_disk(fsid, store):
                     else:
                         mnd[_f] = dnd[_f]
     store["nodes"] = m_nodes
+    if read_ident:
+        store["_baseIdent"] = tuple(read_ident[-1])  # this holder now stands on the version it rebased onto: the next iteration's CAS and field base
     pl = dict(disk.get("placements") or {}); pl.update(store.get("placements") or {})
     for k, v in list(pl.items()):                    # a tombstoned target re-points to its survivor —
         if v in tomb:                                # mirrors _merge_nodes' own rewiring; a dangling
@@ -5674,7 +5687,7 @@ def _replay_overrides(fsid, store, lines=None):
     return applied
 
 
-_NONCONTENT_KEYS = ("rev", "_baseRev", "_baseIdent", "_baseFields", "_unread", "_relayPending")   # the revision counter + the transient CAS base,
+_NONCONTENT_KEYS = ("rev", "_baseRev", "_baseIdent", "_unread", "_relayPending")   # the revision counter + the transient CAS base,
 #                                                      unread-journal mark (_replay_overrides) and the relay entries
 #                                                      awaiting this holder's publish (_relay_enqueue): not store CONTENT
 
@@ -6274,10 +6287,8 @@ def load_goals_shared(fsid):
         return load_goals(fsid)                      # load_goals moves the bytes aside (one stderr line, one
                                                      # store-quarantined row) and answers the fresh store; the
                                                      # path then reads as absent, so nothing is cached for it
-    fields = _node_field_hashes(store.get("nodes"))  # the field base, as load_goals stamps its own (the two views agree by construction)
     store = _finish_load(fsid, store, lines=lines)   # a malformed row raises, as in load_goals
-    store["_baseIdent"] = skey
-    store["_baseFields"] = fields                    # after the identity, the writer loader's order: json.dumps sees one shape                       # the identity of the bytes this view was built from, as load_goals stamps its own: the two views agree by
+    store["_baseIdent"] = skey                       # the identity of the bytes this view was built from, as load_goals stamps its own: the two views agree by
     #                                                  construction, and a copy taken from this view and saved rebases on the same facts (the round-one lane red of
     #                                                  PR 2064: the writer's view carried the key and the shared view did not)
     if store.get("_unread"):
@@ -6310,12 +6321,17 @@ def save_goals(fsid, store):
     last-writer-wins, silently erasing the other's events — the display flicker where a freshly-blocked
     card flashed back to 'working' for one push. Now the revision we loaded at (`_baseRev`) is compared
     against the one on disk; if it moved we rebase onto disk (union of verdict logs) instead of clobbering. The rebase carries
-    plain fields too (2026-09-23, the manager's ruling on the box lab's lost brief): the load records a digest per field of every
-    node as the file held it, and on a node both writers hold every field the other writer moved since that base is carried where
-    this writer did not move it; where both moved the same field the incoming writer's own change wins, a field the other removed
-    goes, the diary-owned keys are re-derived from the merged log, and the keys with a merge of their own (the log, the relay
-    records, the distill families by their stamps) keep it. Before this a brief edited in place on a node a judge pass also held
-    was published over by the pass's save, since the rebase adopted a node the holder lacked but not a field the holder had.
+    plain fields too (2026-09-23, the manager's ruling on the box lab's lost brief): on a node both writers hold, every field the
+    other writer moved since this holder's base is carried where this holder did not move it; where both moved the same field the
+    incoming writer's own change wins; a field the other removed goes. The base is the bytes the load read, found by the identity
+    the load stamped (_baseIdent) in the raw-parse memo's history of the last few versions, unpickled only when a rebase happens,
+    and moved to the version each iteration rebased onto (a second iteration compares against the first's disk, never the load's);
+    a base that rolled out of the history carries nothing, said in the goals counters. The diary-owned keys are re-derived from
+    the merged log; the keys with a merge of their own (the log, the relay records) keep it; and every family-managed key (the
+    distill families' stamps and fields, _DISTILL_FAMILIES) is left to the family merge, which adopts a family as a unit when the
+    other side's stamp is newer, so an in-place edit of a family field stamps its family (briefedMt for a brief), as every kernel
+    writer of a brief does. Before this a brief edited in place on a node a judge pass also held was published over by the pass's
+    save, since the rebase adopted a node the holder lacked but not a field the holder had.
 
     Bounded retries, and no file lock (this codebase takes none), so a vanishingly small TOCTOU window
     remains between the last check and the rename — but a merged publish beats an unconditional stomp, and
@@ -6370,10 +6386,12 @@ def save_goals(fsid, store):
             _relay_flush(fsid, store, store.pop("_relayPending", None))
         return                                       # nothing of ours to publish → leave the file (and its
     base = store.pop("_baseRev", None)               # mtime) alone.  transient: never serialized
-    ident0 = store.pop("_baseIdent", None)           # the identity of the file the base was read from (None: no file at the load)
-    fields0 = None                                   # the field base, popped after the CAS loop (the rebase reads it off the store)
+    ident0 = store.get("_baseIdent")                 # the identity of the file the base was read from (None: no file at the load); it stays on the
+    #                                                  store through the CAS loop, where the rebase reads it as its field base and moves it to the
+    #                                                  version it rebased onto, and is popped before the write
     ident0 = tuple(ident0) if ident0 is not None else None   # a store that went through a JSON round trip holds it as a list, and a list never equals a
     #                                                          tuple: compared as lists, every save from such a store would rebase forever (the round-one lane red)
+    store["_baseIdent"] = ident0
     unread = store.pop("_unread", None)              # likewise transient (_replay_overrides' unread-journal mark)
     pending = store.pop("_relayPending", None)       # likewise: the relay entries this publish carries (_relay_enqueue)
     rebased = published = False
@@ -6390,12 +6408,15 @@ def save_goals(fsid, store):
                 #                                      2026-09-23: a judge pass's save erased the node the lab had just written)
                 _rebase_onto_disk(fsid, store)       # fold their events in, then re-check
                 rebased = True
-                base, ident0 = disk, dident
+                base, ident0 = disk, store.get("_baseIdent")   # the rebase moved the identity to the version it rebased onto: the next
+                #                                                iteration's CAS and field base stand on that state, not the load's (the
+                #                                                round-one verifier of the field carry: a second iteration published the
+                #                                                first's carried values over a newer third writer's)
             store["rev"] = disk + 1                  # the revision the loop settled on; no second parse
         else:
             store["rev"] = int(store.get("rev") or 0) + 1
         _goal_io_bump("writes")
-        fields0 = store.pop("_baseFields", None)     # read by the rebase above; transient, never serialized
+        store.pop("_baseIdent", None)                # transient, never serialized; the finally re-stamps it
         tmp = _publish_tmp(GOALDIR, fsid)
         tmp.write_text(json.dumps(store))
         _st = os.stat(tmp)                           # one stat of the temp: the identity base below and the memo seed share it
@@ -6416,8 +6437,8 @@ def save_goals(fsid, store):
             # that plus the disk events a rebase folded in, and `base` is the revision either state stands
             # on, so the retry stays CAS-protected instead of stomping (review find, 2026-09-08)
             store["_baseRev"] = store["rev"] if published else base
-            store["_baseIdent"] = written if published else ident0   # and the file that revision lives in
-            store["_baseFields"] = _node_field_hashes(store.get("nodes")) if published else (fields0 if fields0 is not None else store.get("_baseFields"))   # the fields as published, the next save's base
+            store["_baseIdent"] = written if published else store.pop("_baseIdent", ident0)   # and the file that revision lives in; not published: the version
+            #                                                  the loop last rebased onto (never the load's, whose fields the holder no longer stands on)
         if not published and unread is not None:
             store["_unread"] = unread                # the mark describes the object still held
         if not published and pending:

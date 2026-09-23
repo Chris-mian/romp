@@ -143,7 +143,10 @@ const onMiss = async (o) => {   // the counters, the kernel's own view of the ca
   return o;
 };
 const builtRecord = async (id, floor, brief) => { const o = { id, floor, built: await feedBuiltPast(floor, id, brief, 90000) }; if (o.built === null) await onMiss(o); return o; };   // { id, floor, built }, the counters on a miss
-const w1 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.brief; });
+// a brief is a FAMILY field (the store's distill families): the rebase adopts a family as a unit by its stamp, so an in-place edit of a
+// brief stamps its family (briefedMt, as every kernel writer of a brief does) or a judge pass's save keeps its own (2026-09-23)
+const briefNow = () => Math.floor(Date.now() / 1000);
+const w1 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.brief; st.nodes[cfg.g1].briefedMt = briefNow(); });
 out.brief = await builtRecord(cfg.g1, w1, cfg.brief);
 out.brief.landed = await page.waitForFunction((a) => { const r = document.querySelector(a.sel); const b = r && r.querySelector(".ntc-body"); return !!b && (b.textContent || "").trim() === a.brief; }, { sel: rowSel(cfg.g1), brief: cfg.brief }, { timeout: 30000 }).then(() => true).catch(() => false);   // the row follows the kernel's word by one chat build
 if (!out.brief.landed) await onMiss(out.brief);
@@ -151,7 +154,7 @@ mark();
 out.brief.box = await readBox();
 // 1c. a brief past the four-line clamp gets a disclosure on its row (the second contributor's review of PR 1967): the More button shows
 // only once the body overflows, opens the row (the clamp lifted, the whole brief on screen), reads Less, and folds the row back
-const w2 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.longBrief; });
+const w2 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.longBrief; st.nodes[cfg.g1].briefedMt = briefNow() + 1; });
 const moreSel = rowSel(cfg.g1) + " .ntc-more";
 // held on the kernel's build event, then the page's own events (the round-fifteen CI red read too early; the second red saw no frame for sixty
 // seconds with no word from the kernel): the feed rebuilt past the write with the brief, the body carries it, its layout clips it, then the button
