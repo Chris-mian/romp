@@ -24,7 +24,9 @@ frame passes at once, since a delayed echo of a switch would widen the pane's ec
 second contributor's post-merge review of PR 2075). Two more holds make the leg exact: the boot state is made deterministic
 by a REAL pre-switch to the remote tab before the switch to the hub's own, so the switch's outcome has one meaning (a confirmed
 already-active tab would have been vacuous, and a broken switch green on hub-first boots); and after that switch the driver
-waits for the kernel's echo of it, the frame carrying the last relay's nonce (both recorded by the init script), before the
+waits for the kernel's echo of it, the frame carrying the nonce of the HUB'S OWN relay (both recorded by the init script; the
+last relay alone would be satisfied by the pre-switch's own pair on a hub-first boot, the second contributor's post-merge review
+of PR 2086 at 12:40Z), before the
 card opens, so no echo can move the selection under the read or the pick that follows."""
 import json
 import os
@@ -109,14 +111,17 @@ if (fr) {
   // last relay's nonce), hold on the pane's render of the selection (the button wearing the name), then open the card and hold on the
   // mark (the module docstring)
   const t0 = Date.now();
+  const bootActive = cf ? await cf.evaluate(() => { const a = document.querySelector("#tabs .tab.active"); return a ? a.getAttribute("data-id") : null; }) : null;   // which boot the run exercised: the hub's own first, or the remote's
   const preSwitched = cf ? await switchTo(cf, "TESTHOST:" + cfg.rsid) : false;
   const switched = cf ? await switchTo(cf, cfg.lsid) : false;
-  const echoOk = switched ? await fr.waitForFunction(() => { const r = (window.__relays || []).slice(-1)[0]; return !!r && typeof r.nonce === "number" && (window.__echoes || []).some((e) => e.id === r.id && e.nonce === r.nonce); }, null, { timeout: 30000 }).then(() => true).catch(() => false) : false;
+  // the echo of THE switch to the hub's own tab: the relay whose id is the hub's own, and an echo carrying its nonce; the last relay
+  // alone would be the pre-switch's pair on a hub-first boot, so the wait would certify nothing about the switch
+  const echoOk = switched ? await fr.waitForFunction((lsid) => { const r = (window.__relays || []).filter((x) => x.id === lsid).slice(-1)[0]; return !!r && typeof r.nonce === "number" && (window.__echoes || []).some((e) => e.id === r.id && e.nonce === r.nonce); }, cfg.lsid, { timeout: 30000 }).then(() => true).catch(() => false) : false;
   const buttonOk = await fr.waitForFunction(() => { const n = document.querySelector("#art-pick .session-name"); return !!n && n.textContent === "web"; }, null, { timeout: 30000 }).then(() => true).catch(() => false);
   await fr.click("#art-pick", { timeout: 15000 }).catch(() => {});
   // the picker's rows are the shell's union of the open tabs, the shown one marked: hold for the remote row AND the mark on the hub's own
   const markOk = await fr.waitForFunction((a) => !!document.querySelector('#art-picker .ctx-item[data-sid="TESTHOST:' + a.rsid + '"]') && !!document.querySelector('#art-picker .ctx-item.current[data-sid="' + a.lsid + '"]'), { rsid: cfg.rsid, lsid: cfg.lsid }, { timeout: 30000 }).then(() => true).catch(() => false);
-  out.cardHolds = { preSwitched, switched, echoOk, buttonOk, markOk, ms: Date.now() - t0 };
+  out.cardHolds = { bootActive: bootActive === cfg.lsid ? "hub" : (bootActive === "TESTHOST:" + cfg.rsid ? "remote" : bootActive), preSwitched, switched, echoOk, buttonOk, markOk, ms: Date.now() - t0 };
   out.card = await fr.evaluate(() => {
     const card = document.getElementById("art-picker"); if (!card) return null;
     const probe = document.createElement("div"); probe.style.background = "var(--menu-bg)"; probe.style.position = "absolute"; document.body.appendChild(probe);
@@ -361,8 +366,12 @@ class ArtifactsRemoteServed(unittest.TestCase):
         self.assertEqual((by["TESTHOST:" + SID_R]["prefix"], by["TESTHOST:" + SID_R]["name"]), ("TESTHOST:", "api"), "the remote row: the quiet prefix, then the name")
         self.assertEqual((by[SID_L]["prefix"], by[SID_L]["name"]), (None, "web"), "the local row: no prefix")
         h = r.get("cardHolds") or {}
-        self.assertTrue(h.get("preSwitched") and h.get("switched") and h.get("echoOk") and h.get("buttonOk") and h.get("markOk"),
-                        "the holds fired: the chat pre-switched to the remote tab and then switched to the hub's own (a real switch, never a confirmation), the kernel's echo of that switch landed, the pane's button wore the name, the card's mark rendered on it (never a longer wall-clock cap): %r" % h)
+        # one assertion per hold, in the order they ran, so a red names the hold that did not fire (never a longer wall-clock cap)
+        self.assertTrue(h.get("preSwitched"), "the chat pre-switched to the remote tab (a confirmation on a remote-first boot): %r" % h)
+        self.assertTrue(h.get("switched"), "then switched to the hub's own tab, a real switch: %r" % h)
+        self.assertTrue(h.get("echoOk"), "the kernel's echo of THAT switch landed (the hub's own relay and an echo carrying its nonce): %r" % h)
+        self.assertTrue(h.get("buttonOk"), "the pane's button wore the hub's name: %r" % h)
+        self.assertTrue(h.get("markOk"), "the card's mark rendered on the hub's row: %r" % h)
         self.assertTrue(by[SID_L]["current"], "the shown session (the chat's active tab, the hub's own) wears the mark")
         self.assertFalse(by["TESTHOST:" + SID_R]["current"], "and the remote row does not")
 
