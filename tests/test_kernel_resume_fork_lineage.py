@@ -149,6 +149,29 @@ class ResumeForkStitch(unittest.TestCase):
         self.assertIn("review the new pull request", turn_texts(sess))
 
 
+class EveryRootStitches(unittest.TestCase):
+    """A fork can open with several parentless records. Each non-sidechain root is stitched onto the
+    resumed file's tail; a sidechain root stays its own thread."""
+
+    def test_every_non_sidechain_root_is_stitched_and_the_sidechain_is_not(self):
+        fork_records = [
+            {"type": "attachment", "timestamp": iso(T0 + 315), "uuid": "r-att", "parentUuid": None,
+             "attachment": {"type": "queued_command", "prompt": "a queued note"}},
+            uline(T0 + 320, NOTICE, "f1", None),
+            dict(aline(T0 + 330, "A sub-agent's own opening.", "sc1", None), isSidechain=True),
+            aline(T0 + 380, "Review finished.", "f2", "f1"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            anchor, fork = Path(td) / (SID + ".jsonl"), Path(td) / (F2 + ".jsonl")
+            write_jsonl(anchor, ANCHOR_RECORDS)
+            write_jsonl(fork, fork_records)
+            adapter = em.FileAdapter([str(anchor), str(fork)], str(fork), resume_links={F2: SID})
+        self.assertEqual(adapter.parent_of.get("r-att"), "u2", "the first root in read order")
+        self.assertEqual(adapter.parent_of.get("f1"), "u2", "a later root the walk actually follows")
+        self.assertIsNone(adapter.parent_of.get("sc1"), "a sidechain root is never stitched")
+        self.assertEqual(adapter.parent_of.get("f2"), "f1", "an intact back-link is untouched")
+
+
 class ResumeForkStates(unittest.TestCase):
     def test_appender_reader_and_links_roundtrip(self):
         with tempfile.TemporaryDirectory() as td:
