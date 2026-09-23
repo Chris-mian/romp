@@ -2890,22 +2890,28 @@ class FileAdapter:
         back-link is never overridden — and a /clear records no lineage, so its history keeps
         dropping by design.
 
-        EVERY parentless record of the to-file is stitched, not just the first in read order: a fork
-        can open with several roots (a `user` record and an `attachment` root), and the chain the walk
-        follows may hang off any of them — stitching only the first leaves the real root parentless and
-        the history still dropped. Sidechain roots are skipped; a sub-agent branch is its own thread."""
+        Every root in the to-file's OPENING run is stitched, not just the first: a fork can open with
+        several roots (an `attachment` root ahead of the `user` record), and the chain the walk follows
+        may hang off any of them. The run ends at the file's first parented record, so a later root in
+        the same file (an in-file /clear) stays a fresh root and its history keeps dropping. Sidechain
+        roots are skipped; a sub-agent branch is its own thread."""
         if not self.resume_links:
             return
-        roots_of, last_of = {}, {}
+        roots_of, last_of, opened = {}, {}, set()   # opened: files whose opening run of roots has ended
         for fs, ends in ((self.seed or {}).get("file_ends") or {}).items():   # files (or file heads) before the cut
             if ends[0]:
                 roots_of.setdefault(fs, []).append(ends[0])
+                opened.add(fs)
             if ends[1]:
                 last_of[fs] = ends[1]
         for u in self.by_uuid:               # insertion order = file read order
             fs = self.fsid_of.get(u)
             last_of[fs] = u
-            if self.parent_of.get(u) is None and not (self.by_uuid.get(u) or {}).get("isSidechain"):
+            if fs in opened:
+                continue
+            if self.parent_of.get(u) is not None:
+                opened.add(fs)
+            elif not (self.by_uuid.get(u) or {}).get("isSidechain"):
                 roots_of.setdefault(fs, []).append(u)
         for to, frm in self.resume_links.items():
             tail = last_of.get(frm)

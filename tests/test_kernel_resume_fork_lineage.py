@@ -171,6 +171,19 @@ class EveryRootStitches(unittest.TestCase):
         self.assertIsNone(adapter.parent_of.get("sc1"), "a sidechain root is never stitched")
         self.assertEqual(adapter.parent_of.get("f2"), "f1", "an intact back-link is untouched")
 
+    def test_a_later_root_in_the_fork_is_a_clear_and_stays_unstitched(self):
+        fork_records = FORK_RECORDS + [
+            uline(T0 + 600, "start over on the notes-api index", "c1", None),
+            aline(T0 + 660, "Starting fresh.", "c2", "c1"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            anchor, fork = Path(td) / (SID + ".jsonl"), Path(td) / (F2 + ".jsonl")
+            write_jsonl(anchor, ANCHOR_RECORDS)
+            write_jsonl(fork, fork_records)
+            adapter = em.FileAdapter([str(anchor), str(fork)], str(fork), resume_links={F2: SID})
+        self.assertEqual(adapter.parent_of.get("f1"), "u2", "the fork's opening root is stitched")
+        self.assertIsNone(adapter.parent_of.get("c1"), "an in-file /clear root keeps its history dropping")
+
 
 class ResumeForkStates(unittest.TestCase):
     def test_appender_reader_and_links_roundtrip(self):
