@@ -57764,6 +57764,20 @@ def _push_session_now(sid):
             _seed_chat_baseline(sid, m, _seen)       # loop's own writes, not the bases after it, where a racing sender's write
         #                                              on a target read as this loop's (test 38); established when absent, never
         #                                              advanced, declined while the detector's mark stands (the docstring)
+        # THE COMMENTS FRAME rides this targeted push too (2026-09-23): before, it rode ONLY the full pusher cycle, so a
+        # page that connected before the session was alive got the chat frame here but the comments frame a full cycle
+        # later (tens of seconds under a CPU quota), and a comment's highlight trailed its turn by that much. Emit it now
+        # on the SAME per-sid dedup slot the cycle uses, so a mark lands WITH its turn. `_comments_frame` is None for a
+        # session that never had a thread (a bare stat, the common case) and an unchanged frame dedups on the slot and
+        # costs nothing on the wire: the "changed since its last frame" guard, the cycle's own.
+        try:
+            _cfr = _comments_frame(sid, live_map)
+        except Exception:
+            _cfr = None
+            sys.stderr.write("comments frame failed for %s (targeted): %s\n" % (sid, traceback.format_exc()))
+        if _cfr:
+            for c in targets:
+                _send_client(c, ("comments", sid), _cfr)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
     finally:

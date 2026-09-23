@@ -145,7 +145,7 @@ await page.waitForSelector("#content .turn", { timeout: 60000 });
 const n0 = await page.evaluate(() => window.__cmtFrames);
 const marksHere = () => page.evaluate((n) => document.querySelectorAll("mark.cmt-hl.unread").length >= n, cfg.minMarks);
 if (!(await marksHere())) {
-  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 30000 }).then(() => true).catch(() => false);
   if (!got) {
     const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
     console.error("comments-frame-after-turn-miss: no comments frame carrying the seeded threads for " + cfg.sid + " ran with the transcript present (n0=" + n0 + "): " + JSON.stringify(seen));
