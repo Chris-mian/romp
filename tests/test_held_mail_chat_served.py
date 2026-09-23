@@ -108,7 +108,8 @@ const hold = (mid, body) => fs.writeFileSync(cfg.qdir + "/" + mid + ".json", JSO
 const rowSelOf = (mid) => '#notices .ntc-row[data-item="notice:' + cfg.sid + ":" + mid + ':1"]';
 // (1) the box and its row from the first frames; the ring trails the feed build by at most one frame
 await timed("row", page.waitForFunction((s) => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && !!document.querySelector(s); }, rowSel, { timeout: 90000 }));
-const settled1 = await timed("settled", page.waitForFunction(settledFn, null, { timeout: 15000 }));   // the box appeared: the reader's re-pin is on the pass this holds at
+await openNeedsBox(page, 2);   // the box is collapsed to its header line by default (the user 2026-09-23): every scene below presses, grows or measures a row, so the full context first
+const settled1 = await timed("settled", page.waitForFunction(settledFn, null, { timeout: 15000 }));   // the box appeared and opened: the reader's re-pin is on the pass this holds at
 await timed("ring", page.waitForFunction(() => { const tab = Array.from(document.querySelectorAll("#tabs .tab")).find((t) => ((t.querySelector(".tab-label") || t).textContent || "").trim() === "web"); return !!tab && Array.from(tab.classList).some((c) => c.startsWith("ring-")); }, null, { timeout: 60000 }));
 const first = await facts(); first.settled = settled1; first.waits = Object.assign({}, waits);
 first.geometry = await page.evaluate(() => { const c = document.getElementById("content"); const b = document.getElementById("notices"); return c ? { sh: c.scrollHeight, st: c.scrollTop, ch: c.clientHeight, box: b ? b.getBoundingClientRect().height : null } : null; });
@@ -384,7 +385,7 @@ class HeldMailChatServed(unittest.TestCase):
                 json.dump({"chat": base + "/chat?token=" + self.token, "token": self.token, "sid": SID, "mid": MID, "mid2": MID2, "mid3": MID3,
                            "notices": self.notices, "qdir": self.qdir, "text": TEXT}, f)
             driver = os.path.join(self.lab, "heldchat.mjs")
-            Path(driver).write_text(DRIVER)
+            Path(driver).write_text(_lab.NEEDS_BOX_OPEN_JS + DRIVER)   # the fold helper: the box is collapsed by default (the user 2026-09-23)
             p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=500,
                                env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
             if "browser-launch-failed" in p.stderr:

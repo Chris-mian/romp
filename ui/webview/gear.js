@@ -195,11 +195,6 @@ var GEAR_HTML =
   '<span><b>Compact tabs and agents</b>' +
   '<span class=rs-sub>Keeps more of the transcript in view: tighter rows in the background-work panel under the transcript, which shows about four rows and scrolls for the rest, and smaller tabs and group headers in the tab strip. On a phone the session picker stands in for the strip, so there only the panel changes. Off by default.</span>' +
   '</span></label>' +
-  // the NEEDS YOU BOX (plans/needs-you.md, phase three; on by default): render.ts hides the box on the save; the tab ring and the feed keep saying it
-  '<label class=rs-row><input type=checkbox id=rs-needsbox checked>' +
-  '<span><b>Needs you box</b>' +
-  '<span class=rs-sub>Lists what this session needs from you between the transcript and the composer: a question to answer, a message to approve. Off, the tab ring and the feed still say it.</span>' +
-  '</span></label>' +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Text scheme</b>" +
   "<span class=rs-sub>Chat text colors only. Each option previews its own tiers — prose, the dimmer tool text, code. (Solarized Light is omitted — its tiers are made for a light page and turn muddy here.)</span>" +
   "<div id=rs-chatscheme style='position:relative;margin-top:5px'></div>" +
@@ -207,6 +202,14 @@ var GEAR_HTML =
   '<label class=rs-row><input type=checkbox id=rs-striprows checked>' +
   '<span><b>One tag group per row in the tab strip</b>' +
   '<span class=rs-sub>With the tabs grouped by tag, each group starts on its own row with its tag at the left edge. Off, the groups follow one another across the strip and wrap as they need, so many tags do not mean many rows.</span>' +
+  '</span></label>' +
+  // BOXES BELOW THE TRANSCRIPT (the user 2026-09-23, who looked for the switch and did not find it under Display): the Needs you box's
+  // switch in a section of its own, named for where the box sits, so a scan of the section heads lands on it. plans/needs-you.md, phase
+  // three; on by default: render.ts hides the box on the save; the tab ring and the feed keep saying it
+  "<div class='rs-sec' data-section=boxes>Boxes below the transcript</div>" +
+  '<label class=rs-row><input type=checkbox id=rs-needsbox checked>' +
+  '<span><b>Needs you box</b>' +
+  '<span class=rs-sub>Between the transcript and the composer, collapsed to its header line until you open it: what this session needs from you, a question to answer or a message to approve. Off, the tab ring and the feed still say it.</span>' +
   '</span></label>' +
   "<div class='rs-sec'>Comments</div>" +
   "<div class='rs-row rs-jrow'><b>Comment model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model NEW comment threads start on. Same as the session (the default) keeps each thread on the model of the conversation it branches from; pinning one here starts every new thread on it. The comment dialog shows this default and its own pick still wins. Follows to every connected machine's kernel.</span><select id=rs-cmtmodel></select></div>" +

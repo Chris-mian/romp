@@ -15051,10 +15051,9 @@ function noticeRowPlain(row: HTMLElement, n: ChatNotice): void {
     acts.appendChild(noticeButton("Fix credential…", "ntc-ok", "ntc-fix", 0));
     return;
   }
-  if (n.kind === "goal") {   // a goal card's row (plans/needs-you.md, phase three): Reply points the composer at the card, Continue where the card offers it, Clear
-    acts.appendChild(noticeButton("Reply", "ntc-ok", "ntc-reply", 0));
-    if (n.cont) acts.appendChild(noticeButton("Continue", "ntc-ok", "ntc-cont", 1));
-    acts.appendChild(noticeButton("Clear", "ntc-clear", "ntc-clear", 2));
+  if (n.kind === "goal") {   // a goal card's row (plans/needs-you.md, phase three): Reply points the composer at the card, and Clear. Continue is not offered
+    acts.appendChild(noticeButton("Reply", "ntc-ok", "ntc-reply", 0));   // for now (the user 2026-09-23, who wanted Reply and Clear only): the stored offer (n.cont) and its
+    acts.appendChild(noticeButton("Clear", "ntc-clear", "ntc-clear", 1));   // wire (ntc-cont) stay for a later return; only the button is gone
     return;
   }
   if (!(n.actions || []).length) { acts.appendChild(noticeButton("Clear", "ntc-clear", "ntc-clear", 0)); return; }   // a notice with no stored action: Clear is its one way to act
@@ -15097,7 +15096,7 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
     const err = row.querySelector<HTMLElement>(".ntc-err"); if (err) { err.textContent = ""; err.style.display = "none"; }
   }
 }
-// the box's header bar (plans/needs-you.md, phase three): the background box's grammar, the dot in the Needs you token, the title with the count
+// the box's header bar (plans/needs-you.md, phase three): the background box's grammar, the caret, the dot in the Needs you token, the title with the count
 // the brief's disclosure button, on the row's own delegate (act ntc-more) and not on the body div; present only while the clamped body hides
 // lines, so a short brief shows no control; kept out of the latch (a disclosure is not a decision)
 function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
@@ -15114,9 +15113,24 @@ function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
 }
 function buildNoticeHead(): HTMLElement {
   const head = document.createElement("div"); head.className = "ntc-head";
+  head.dataset.act = "ntc-fold";   // the header line is the box's fold control (the user 2026-09-23): a click advances the level, on the box's delegate
+  head.appendChild(el("span", "ntc-caret"));
   head.appendChild(el("span", "ntc-dot"));
   head.appendChild(el("span", "ntc-label"));
   return head;
+}
+// THE BOX'S THREE LEVELS (the user 2026-09-23, who wanted the box collapsed by default like the awaiting box and opened in steps): 0, the
+// header line alone (the label and the count); 1, the items (each row's title and its buttons); 2, the full context (the background paragraph
+// under each title, with its disclosure where the brief runs long, and the attachment). The level is the PAGE's state for the session,
+// never a timer: kept here across the per-frame re-render (renderNotices never writes it) and reset only with the page. The header's
+// caret says which way the next click goes; a click at the last level folds the box back to its header line.
+const noticeBoxLevel = new Map<string, number>();
+function noticeBoxLevelOf(sid: string): number { return noticeBoxLevel.get(sid) || 0; }
+function applyNoticeBoxLevel(host: HTMLElement, sid: string): void {
+  const level = noticeBoxLevelOf(sid);
+  host.classList.toggle("ntc-l0", level === 0); host.classList.toggle("ntc-l1", level === 1); host.classList.toggle("ntc-l2", level === 2);
+  const caret = host.querySelector<HTMLElement>(".ntc-head .ntc-caret");
+  if (caret) { caret.textContent = level === 2 ? "\u25be" : "\u25b8"; caret.title = level === 0 ? "Show the items" : level === 1 ? "Show the full context" : "Collapse"; }
 }
 function renderNotices(): void {
   const host = document.getElementById("notices");
@@ -15128,6 +15142,7 @@ function renderNotices(): void {
   let head = host.querySelector<HTMLElement>(".ntc-head");
   if (!head) { head = buildNoticeHead(); host.prepend(head); }
   const lab = head.querySelector<HTMLElement>(".ntc-label"); if (lab) lab.textContent = "Needs you · " + rows.length;
+  applyNoticeBoxLevel(host, s.id);   // the level the page holds for this session, before the rows so a fresh row lands under the right classes
   const want = new Set(rows.map((n) => n.itemId));
   for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) r.remove();
   let prev: HTMLElement = head;   // the rows follow the header, in the frame's order
@@ -21263,6 +21278,7 @@ setupSettings();
     "ntc-deny-step": (el) => { const p = pick(el); if (p) noticeRowDenyStep(p[0], Number(el.dataset.idx)); },
     "ntc-deny-note": (el) => { const p = pick(el); if (!p) return; const t = (p[0].querySelector<HTMLTextAreaElement>(".ntc-note")?.value || "").trim(); go(p[0], p[1], p[2], el as HTMLButtonElement, t ? { note: t } : undefined); },
     "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
+    "ntc-fold": () => { if (!activeId) return; noticeBoxLevel.set(activeId, (noticeBoxLevelOf(activeId) + 1) % 3); renderNotices(); },   // the header line: one click the items, a second the full context, a third folds back; the page's state, never a timer (the user 2026-09-23)
     "ntc-more": (el) => { const row = rowOf(el); if (!row) return; const key = "notice:" + (row.dataset.item || "") + ":brief"; if (openFolds.has(key)) openFolds.delete(key); else openFolds.add(key); row.classList.toggle("ntc-open", openFolds.has(key)); noticeMoreButton(row, row.querySelector<HTMLElement>(".ntc-body")); },   // the brief's disclosure: no latch, a toggle (the second contributor's review)
     "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },
     "ntc-reply": (el) => { const p = item(el); if (p && activeId) setCitation(activeId, { itemId: p[1].itemId, title: p[1].title }); },

@@ -207,6 +207,12 @@ titled **Needs you** with the count. It shows when the session has such an item 
 frame that drops it (the answer, the judge's re-file, the clear). A settings row under Chat, **Needs you box**, on by default,
 hides it; with the box off the tab ring and the feed still say it.
 
+The box's shape after its first weeks (the user 2026-09-23, who wanted the box collapsed by default like the awaiting box and opened in
+steps, Reply and Clear only for now, and a switch they could find): collapsed to its header line until clicked, one click the items, a
+second the full context, the level the page's state for the session and never a timer; the goal row offers Reply and Clear, the Continue
+offer stored and its wire kept for a later return with no button; the switch heads its own settings section, **Boxes below the transcript**,
+under Chat.
+
 Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
 clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone; `batchesTotal`: the count of log batches before the
 wire's bound, so a truncated stack reads as truncated), except any sent while the clears log cannot be read (a refused clear alone
