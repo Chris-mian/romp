@@ -675,16 +675,22 @@ def annotate_seed_start(corpus):
     startT, so all are filled and seedStart equals startT. Only fills an ending that has no seedStart yet (a re-run is a
     no-op). Returns the count filled with a non-null value."""
     corpus = Path(corpus)
+    refuse_inside_repo(corpus)                       # a mistyped --corpus must never overwrite a manifest in the repo
     mf = corpus / "manifest.json"
     m = json.loads(mf.read_text())
-    n = 0
+    filled = nonnull = 0
     for e in m["endings"]:
         if "seedStart" not in e:
+            filled += 1
             e["seedStart"] = e.get("startT")
             if e["seedStart"] is not None:
-                n += 1
-    mf.write_text(json.dumps(m))
-    return n
+                nonnull += 1
+    if filled == 0:
+        return 0                                     # nothing to fill: leave the manifest byte-for-byte (a re-run is a true no-op)
+    tmp = mf.with_name(mf.name + ".tmp")             # atomic: write a temp beside it, then os.replace, so a kill mid-write leaves the index intact
+    tmp.write_text(json.dumps(m, indent=1))          # keep build_corpus's indent so the format does not drift
+    os.replace(str(tmp), str(mf))
+    return nonnull
 
 
 # ── the arms ────────────────────────────────────────────────────────────────────────────────────
@@ -1370,7 +1376,7 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
             "untouchedEndings": untouched, "unplacedEndings": unplaced, "unresolvedEndings": unresolved,
             "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
             "stopped": results.get("stopped"), "failures": failures, "nonArmFailures": int(results.get("nonArmFailures") or 0),
-            "comparable": failures == 0 and not silent_judges and not no_record and not unplanned, "buildsPerCard": builds_n,
+            "comparable": failures == 0 and not silent_judges and not no_record and not unplanned and not crashed, "buildsPerCard": builds_n,
             "callsByJudge": calls_by_j or {}, "silentJudges": silent_judges, "noPerJudgeRecord": no_record,
             "endingsUnplanned": unplanned, "endingsCrashed": crashed,
             "retry": results.get("retry") or {}, "failuresByKind": results.get("failuresByKind") or {},

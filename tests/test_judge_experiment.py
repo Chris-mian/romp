@@ -573,10 +573,14 @@ class Harness(unittest.TestCase):
         self.assertGreaterEqual((res.get("failuresByKind") or {}).get("no-seed-cut", 0), 1,
                                 "no-seed-cut is in FAILURE_KINDS so it counts against comparability: %r" % res.get("failuresByKind"))
         self.assertFalse(self.je.measure(m, res, self.state)["comparable"], "a refused / zero-planner ending marks the arm not comparable")
-        # the per-ending precondition also fires from the measure record alone (a withdrawn re-read), and a crashed ending is named
+        # the per-ending precondition also fires from the measure record alone (a withdrawn re-read)
         m2 = self.je.measure(m, {"arm": "x", "failures": 0, "buildsPerCard": 3, "callsByJudge": {"planner": 5, "closer": 5},
-                                 "endingsUnplanned": ["abc"], "endingsCrashed": ["def"], "endings": {}}, self.state)
-        self.assertFalse(m2["comparable"]); self.assertEqual((m2["endingsUnplanned"], m2["endingsCrashed"]), (["abc"], ["def"]))
+                                 "endingsUnplanned": ["abc"], "endings": {}}, self.state)
+        self.assertFalse(m2["comparable"]); self.assertEqual(m2["endingsUnplanned"], ["abc"])
+        # a CRASHED ending marks the arm not comparable on its own, even at failures 0 (the comparable term, not just failures)
+        m3 = self.je.measure(m, {"arm": "x", "failures": 0, "buildsPerCard": 3, "callsByJudge": {"planner": 5, "closer": 5},
+                                 "endingsCrashed": ["def"], "endings": {}}, self.state)
+        self.assertFalse(m3["comparable"], "a crashed ending alone marks the arm not comparable"); self.assertEqual(m3["endingsCrashed"], ["def"])
 
     def test_annotate_fills_seed_start_from_start_t_on_an_old_manifest(self):
         """The annotate step (round four): a manifest built before seedStart existed is filled by build_corpus's rule,
@@ -592,7 +596,25 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.je.annotate_seed_start(dest), withstart, "every opener'd ending gets seedStart = startT")
         after = json.loads(mp.read_text())["endings"]
         self.assertTrue(all(me.get("seedStart") == me.get("startT") for me in after), "seedStart equals startT after annotate (null stays null)")
+        # a re-run writes NOTHING: the bytes are identical, not a reformat
+        b1 = mp.read_bytes()
         self.assertEqual(self.je.annotate_seed_start(dest), 0, "a re-run is a no-op")
+        self.assertEqual(mp.read_bytes(), b1, "a re-run leaves the manifest byte-for-byte")
+        # a failed write leaves the ORIGINAL manifest intact (atomic temp + os.replace)
+        json.loads(b1)                                          # sanity: b1 is valid
+        d = json.loads(mp.read_text()); d["endings"][0].pop("seedStart", None); mp.write_text(json.dumps(d, indent=1))
+        before = mp.read_bytes()
+        saved_replace = self.je.os.replace
+        self.je.os.replace = lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+        try:
+            with self.assertRaises(OSError):
+                self.je.annotate_seed_start(dest)
+        finally:
+            self.je.os.replace = saved_replace
+        self.assertEqual(mp.read_bytes(), before, "a failed os.replace leaves the original manifest intact")
+        # a corpus inside a git checkout is refused (a mistyped --corpus cannot overwrite a repo manifest)
+        with self.assertRaises(SystemExit):
+            self.je.annotate_seed_start(ROOT)
 
     def test_the_measure_window_keys_on_seed_start_not_start_t(self):
         """Round-four low: placement_gestures and tier_one_label key their turn window on seedStart, not startT, so an
@@ -612,6 +634,52 @@ class Harness(unittest.TestCase):
         # tier_one_label reads the same window from the start it is passed (the measure passes seedStart)
         self.assertIsNotNone(self.je.tier_one_label(self.state, sid, c, s), "tier_one_label finds the post-cut gesture via seedStart")
         self.assertIsNone(self.je.tier_one_label(self.state, sid, c, None), "with no start there is no window")
+
+    def test_label_reads_tier_one_through_the_seed_start_window_for_an_opener_less_ending(self):
+        """Round-four low: label()'s call site passes seedStart (not startT) to tier_one_label, so an opener-less ending's tier
+        one is read from [seedStart, cut). The revert-to-startT mutant at the label() site empties the window and drops tierOne."""
+        sid = SIDS[0]
+        dest, m = self._corpus(name="lblwin")
+        e = self._ending(m, sid, 0)
+        s, c = float(e["startT"]), float(e["cutT"])
+        self._live_store_with_done(sid, s, c, [{"node": sid + ":g1", "op": "clear", "src": "user", "why": "cleared from the feed", "t": c + 600}])
+        mp = Path(dest, "manifest.json"); mm = json.loads(mp.read_text())
+        for me in mm["endings"]:
+            if me["id"] == e["id"]:
+                me["startT"] = None; me["seedStart"] = s        # opener-less: label() must key tier one on seedStart
+        mp.write_text(json.dumps(mm))
+        run_root = os.path.join(self.td, "lbl")
+        self.je.label(dest, run_root, str(self.state), claude_bin=self.fake)
+        labels = json.loads((Path(run_root) / "labels.json").read_text())
+        row = [r for r in labels if r["id"] == e["id"]][0]
+        self.assertIsNotNone(row.get("tierOne"), "label() reads tier one via the seedStart window for an opener-less ending: %r" % row)
+
+    def test_a_crashed_ending_is_named_in_endings_crashed_from_a_real_run(self):
+        """Round-four low: endingsCrashed is populated by a REAL crashed pass (not only measure's pass-through). A planner that
+        raises for one ending files pass-crash, and that ending is named in endingsCrashed and the arm reads not comparable."""
+        self._judge_written_stores()
+        dest, m = self._corpus(name="crash")
+        target = [x for x in m["endings"] if x.get("startT") is not None][0]["id"]
+        orig = self.je.load_judge
+        def patched(*a, **k):
+            jd = orig(*a, **k)
+            real = jd._plan_session
+            def boom(fsid, *aa, **kk):
+                if fsid == target:
+                    raise RuntimeError("boom in planner")
+                return real(fsid, *aa, **kk)
+            jd._plan_session = boom
+            return jd
+        self.je.load_judge = patched
+        self.addCleanup(lambda: setattr(self.je, "load_judge", orig))
+        env = {k: os.environ.get(k) for k in ("XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "ROMP_CLAUDE_BIN")}
+        def _restore():
+            for k, v in env.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        self.addCleanup(_restore)
+        res = self.je.run_arm_inprocess(dest, "current", None, os.path.join(self.td, "r-crash"), None, self.fake, now=T0 + 10**6)
+        self.assertIn(target, res.get("endingsCrashed") or [], "a crashed ending is named in endingsCrashed: %r" % res.get("endingsCrashed"))
+        self.assertFalse(self.je.measure(m, res, self.state)["comparable"], "a crashed ending marks the arm not comparable")
 
     def _add_node_log(self, sid, suffix, ev):
         """Append an event to a live top-level node's log (a helper for the unblocker-ruling pins)."""
