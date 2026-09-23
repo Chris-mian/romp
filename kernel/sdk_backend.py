@@ -11026,6 +11026,30 @@ class SdkBackend:
         now = time.time()
         lease = read_lease(self.state_dir, sess.sid)
         state = ht.host_lease_state(lease, now)
+        if state == "attach":
+            # a live host on other code re-execs first, and its wait can outlast the host it waits for (a re-executed host
+            # that dies in its start), so the lease is read again after it: a dead holder takes the orphan road below,
+            # never an attach into nobody that the connect loop files as a launch error (2026-09-23, the review of this
+            # lane, which saw the attach branch act on the lease read before a 20 s wait)
+            await self._host_reexec_on_skew(sess, lease)
+            wait, sess._host_reexec_wait = getattr(sess, "_host_reexec_wait", ""), ""
+            if wait:
+                # only after a wait: a same-version attach, a deferral or a refusal waited for nothing, and a second read
+                # costs two more process-start reads, each a `ps` run on macOS (2026-09-23, the review of this lane). The
+                # file, not the lease the wait returned: whatever was written last is what the attach meets. The clock is
+                # read again too: past the whole bound, a lease that has not beaten within LEASE_TTL_S reads as it does at
+                # any connect's first read, the orphan it would be on the next pass (2026-09-23, the review of this lane)
+                now = time.time()
+                lease = read_lease(self.state_dir, sess.sid)
+                state = ht.host_lease_state(lease, now)
+                if wait == "ended" and state == "attach":
+                    state = "orphan"    # the host's own log recorded its end, which it writes before the process is gone
+        if state != "attach":
+            # no attach, no handover: a handover this kernel asked for was the host's that is now gone, so the next host's
+            # hello files no host.reexeced row for it and the next attach waits for nothing (2026-09-23, the review of this
+            # lane: a host already dead at the connect's first read left both, and the fresh host's hello filed the row)
+            sess._host_reexec_from = None
+            sess._host_reexec_closed = False
         hdir = ht.host_dir(self.state_dir, sess.sid)
         if state == "orphan" and self._host_recently_ended.get(sess.sid) == self._holder_ident(lease):
             # the host this kernel just asked to end (an effort change's reconnect, a kill): its lease removal
@@ -11057,7 +11081,6 @@ class SdkBackend:
             return None
         if state == "attach":
             sess._host_is_attach = True
-            lease = await self._host_reexec_on_skew(sess, lease) or lease
             reg = read_reg(self.state_dir, sess.sid) or {}
             ack = reg.get("hostAck") if isinstance(reg.get("hostAck"), dict) else {}
             holder = lease.get("holder") or {}
@@ -11115,6 +11138,7 @@ class SdkBackend:
                                 on_stderr=sess._on_cli_stderr,
                                 on_exit=lambda ex, s=sess: self._host_ended(s, ex),
                                 on_reexec=lambda f, s=sess: self._on_host_reexec_now(s),
+                                on_lost=lambda t, s=sess: self._on_host_socket_lost(s, t),
                                 on_fault=lambda f, s=sess: self._on_host_fault(s, f))
 
     def _on_host_fault(self, sess, f: dict) -> None:
@@ -11127,6 +11151,9 @@ class SdkBackend:
                         "(%s); it serves on as it was" % (sess.name, was or "unknown", self.code_version, f.get("text") or "no reason"),
                         "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
             sess._host_reexec_from = None
+            # the host serves on under its old code: the next attach asks again rather than waiting out the bound for a
+            # re-executed host that is not coming, with a second row (2026-09-22)
+            sess._host_reexec_closed = False
             return
         self._log("host (%s): fault %s: %s" % (sess.name, f.get("kind"), f.get("text")), problem=True)
 
@@ -11137,12 +11164,24 @@ class SdkBackend:
         bounded, for the lease to carry the new version and returns the fresh lease, the same holder pid and start since
         an exec keeps both), `at-turn-end` (the attach proceeds against the old host; its `reexec-now` frame at the
         turn's end makes the reconnect a planned one), or a refusal (a `host.reexec-refused` row; the attach proceeds
-        as before). Nothing here raises out of the connect: a fault is a log line and the plain attach."""
+        as before). The planned reconnect after that turn-end handover asks nothing: it waits for the re-executed host as
+        the `now` road does (`_host_reexec_closed`, set by _on_host_reexec_now). A host that dies during either wait ends
+        it with None, and _host_transport_for, told by `_host_reexec_wait` that a wait ran, reads the lease again and
+        takes the orphan road (2026-09-23). Nothing here raises out of the connect: a fault is a log line and the plain
+        attach."""
         try:
             ht = _ht()
+            closed, sess._host_reexec_closed = getattr(sess, "_host_reexec_closed", False), False
             was = str((lease or {}).get("version") or "")
             if not self.code_version or was == self.code_version:
                 return None
+            if closed:
+                # the host closed this kernel's socket for its turn-end handover and the lease still reads the old version
+                # until the re-executed host serves and rewrites it (a few hundred milliseconds): wait for that host. Asking
+                # again went to a closed listener, a false host.reexec-refused row, and an attach into nobody that the
+                # connect loop filed as a launch error (2026-09-22, the refresh review); it also rewrote the spec in place
+                # while the new host could be reading it
+                return await self._await_reexeced_host(sess, lease, was)
             spec_path = ht.host_dir(self.state_dir, sess.sid) / "spawn.json"
             try:
                 spec = json.loads(spec_path.read_text())
@@ -11162,29 +11201,96 @@ class SdkBackend:
             if ans.get("when") == "at-turn-end":
                 self._log("host (%s): re-exec into %s deferred to the turn's end; attaching to the running host meanwhile" % (sess.name, self.code_version))
                 return None
-            holder = (lease or {}).get("holder") or {}
-            deadline = time.time() + ht.SOCKET_WAIT_S
-            fresh = None
-            while time.time() < deadline:                 # loop-ok: a bounded wait on the re-executed host's lease and its listener
-                fresh = read_lease(self.state_dir, sess.sid)
-                fh = (fresh or {}).get("holder") or {}
-                # the new version under the same holder pid AND a listener that accepts: the host serves its socket before it
-                # writes the lease, and the path alone proves nothing (the old process's path can outlive its listener and
-                # refuse every connect; round two of the review: the attach then went into nobody and read as a launch failure)
-                if fresh and str(fresh.get("version") or "") == self.code_version and fh.get("pid") == holder.get("pid") \
-                        and await self._host_socket_accepts(ht.host_sock(self.state_dir, sess.sid)):
-                    self._log("host (%s): re-executed into this kernel's code (%s from %s), the same host pid %s and CLI"
-                              % (sess.name, self.code_version, was or "unknown", fh.get("pid")))
-                    return fresh
-                await asyncio.sleep(0.05)
-            problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s but no re-executed host "
-                        "served within %.0f s; attached as is" % (sess.name, was or "unknown", self.code_version, ht.SOCKET_WAIT_S),
-                        "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
-            sess._host_reexec_from = None
-            return None
+            return await self._await_reexeced_host(sess, lease, was)
         except Exception as e:
             self._log("host (%s): the re-exec request failed (%s); attaching as is" % (sess.name, type(e).__name__))
             return None
+
+    async def _await_reexeced_host(self, sess, lease, was):
+        """The bounded wait for a re-executed host, shared by the `now` answer and the planned reconnect after a turn-end
+        handover (2026-09-22): the fresh lease once it carries this kernel's version under the same holder pid and a listener
+        accepts, else a `host.reexec-failed` row and None (the plain attach). A host that dies before it serves ends the
+        wait at once with no row (2026-09-23, the review of this lane): None, and the connect reads the lease again and
+        takes the orphan road, whose host.died row is the true one. `_host_reexec_wait` tells the connect a wait ran, and
+        `ended` that the host's own log recorded the end while the lease still reads live."""
+        ht = _ht()
+        holder = (lease or {}).get("holder") or {}
+        ident = self._holder_ident(lease)
+        sess._host_reexec_wait = "ran"
+        deadline = time.time() + ht.SOCKET_WAIT_S
+        fresh = None
+        while time.time() < deadline:                 # loop-ok: a bounded wait on the re-executed host's lease and its listener
+            fresh = read_lease(self.state_dir, sess.sid)
+            fh = (fresh or {}).get("holder") or {}
+            # the new version under the same holder pid AND a listener that accepts: the host serves its socket before it
+            # writes the lease, and the path alone proves nothing (the old process's path can outlive its listener and
+            # refuse every connect; round two of the review: the attach then went into nobody and read as a launch failure)
+            if fresh and str(fresh.get("version") or "") == self.code_version and fh.get("pid") == holder.get("pid") \
+                    and await self._host_socket_accepts(ht.host_sock(self.state_dir, sess.sid)):
+                self._log("host (%s): re-executed into this kernel's code (%s from %s), the same host pid %s and CLI"
+                          % (sess.name, self.code_version, was or "unknown", fh.get("pid")))
+                return fresh
+            # the host dying in its start is an event, read as it happens, not a bound waited out: its lease names a holder
+            # other than the one the handover began with (an exec keeps the pid and its start time; a lease gone names no
+            # holder, and one another process took, host or kernel, names that process), or names a CLI or a holder that is
+            # gone, or its own log records the end a moment before the process is gone (2026-09-23, the review of this lane:
+            # the wait ran its whole bound against a dead holder, then filed a false host.reexec-failed row, and the attach
+            # went into nobody). A beat older than LEASE_TTL_S is none of these: no process beats between the old code's
+            # exec and the new code's first lease write, which follows its socket, so a slow start reads stale and is still
+            # starting; it waits toward the bound (2026-09-23, the review of this lane, which saw a live host eleven seconds
+            # into its start sent down the orphan road). Each pass's liveness check reads two process start times, a `ps`
+            # run each on macOS, where there is no /proc.
+            if self._holder_ident(fresh) != ident or lease_state(fresh, time.time()) in ("no-live-process", "holder-gone"):
+                why = "its lease no longer names that live host"
+            else:
+                end = self._reexeced_host_end(sess)
+                why = ("its log records %s" % end) if end else ""
+                if end:
+                    sess._host_reexec_wait = "ended"
+            if why:
+                self._log("host (%s): the re-executed host is gone before it served (%s); the connect takes the lost host's road"
+                          % (sess.name, why))
+                sess._host_reexec_from = None
+                return None
+            await asyncio.sleep(0.05)
+        # the connect decides the road after this row: it reads the lease again and attaches to a live host or recovers a
+        # dead one, so the row says that, not "attached as is" (2026-09-23, the second verify pass of this lane)
+        problem_row(self.state_dir, "the session host for %s accepted a re-exec from code version %s into %s but no re-executed host "
+                    "served within %.0f s; the connect reads its lease again" % (sess.name, was or "unknown", self.code_version,
+                                                                                ht.SOCKET_WAIT_S),
+                    "host.reexec-failed", sid=sess.sid, name=sess.name, log=self._log, fromVersion=was, toVersion=self.code_version)
+        sess._host_reexec_from = None
+        return None
+
+    # `host-exited` is not one: the host removes its lease before it writes that row, so the wait's lease check reads the end
+    # first (2026-09-23, the review of this lane, which found listing it changed no road)
+    _HOST_END_LOG_KINDS = frozenset(("cli-adopt-failed", "host-crashed"))
+
+    def _reexeced_host_end(self, sess) -> str:
+        """The end the host's own log records for the process now serving it, or "": the log's newest line, when it is an end
+        row. A re-executed host whose adopt fails writes `cli-adopt-failed` and exits at once; one whose run raises (its
+        socket not served, say) writes `host-crashed` from its main and exits. A process writes nothing after its end row,
+        and the kernel clears a host's directory before it starts another there (the orphan and leftover roads), so an end
+        row is the log's newest line unless a clearing failed and another process wrote there since, whose rows then come
+        after it: either way the newest line decides alone. That replaced a scan back to the latest `reexec` or
+        `host-started` row, whose two stops, whose choice among ends, whose partial first line and whose handling of a tail
+        with no start row changed no answer (2026-09-23, the review of this lane: a mutant of each passed every test). A
+        line still being written does not parse and reads as no end, as does an unreadable log: the next pass reads again,
+        and the lease check beside this one stands on its own (2026-09-23, the review of this lane)."""
+        p = _ht().host_dir(self.state_dir, sess.sid) / "host.log"
+        try:
+            with open(p, "rb") as f:
+                size = f.seek(0, os.SEEK_END)
+                f.seek(max(0, size - 8192))             # an end row is short: the kind, an exception's name, a place
+                lines = f.read().decode("utf-8", "replace").splitlines()
+        except OSError:
+            return ""
+        try:
+            row = json.loads(lines[-1]) if lines else None
+        except ValueError:
+            return ""
+        kind = row.get("kind") if isinstance(row, dict) else None
+        return kind if kind in self._HOST_END_LOG_KINDS else ""
 
     @staticmethod
     async def _host_socket_accepts(sock) -> bool:
@@ -11203,10 +11309,67 @@ class SdkBackend:
     def _on_host_reexec_now(self, sess) -> None:
         """The host says it is about to exec into this kernel's code and close the socket: the stream's end that follows is
         the planned handover, so the session reconnects (the same lease, the new version) instead of reading a lost host.
-        `_reconnect` is the whole of the guard: the connect loop's next pass finds the lease valid under the same holder and
-        attaches (round two of the review dropped a flag that was written here and read nowhere)."""
+        The connect loop's next pass finds the lease valid under the same holder, and `_host_reexec_closed` makes its
+        _host_reexec_on_skew wait for the re-executed host before the attach: that host takes a few hundred milliseconds
+        to serve and rewrite the lease, and a pass that ran at once found the old version and a closed listener
+        (2026-09-22, the refresh review)."""
         sess._reconnect = True
+        sess._host_reexec_closed = True
         self._log("host (%s): re-exec at the turn's end; reconnecting to the re-executed host" % sess.name)
+
+    def _on_host_socket_lost(self, sess, t) -> None:
+        """The host's socket ended without this kernel asking (the transport's `on_lost`). With a handover the host accepted
+        still standing (`_host_reexec_from`), the host's process alive under its lease (an exec keeps the pid and its start
+        time) and the host's own log recording the exec since this kernel's attach, this is that handover with its
+        `reexec-now` frame never read: the kernel's own write at the same result (the context refresh, an ack) hit the
+        closed socket first, and asyncio's failed write closes the whole connection with the frame still unread. So the
+        planned reconnect, as the frame would have made it. Anything else is the lost host it reads as (2026-09-22, the
+        refresh review, which saw every such handover on a real kernel refresh end as a lost host)."""
+        try:
+            if getattr(sess, "_host_reexec_closed", False) or getattr(sess, "_host_reexec_from", None) is None:
+                return                  # the frame arrived (its reconnect is armed), or no handover stands
+            h = ((getattr(t, "hello", None) or {}).get("host") or {})
+            lease = read_lease(self.state_dir, sess.sid)
+            if _ht().host_lease_state(lease, time.time()) != "attach" or self._holder_ident(lease) != "%s:%s" % (h.get("pid"), h.get("start")):
+                return                  # the host is gone, or the lease names another: a lost host
+            if not self._host_logged_exec(sess, t):
+                # the host lives on its old code (a deferral, a failure, a fault on this connection): a lost host
+                self._log("host (%s): the socket closed under an accepted handover that the host's log does not show run; "
+                          "read as a lost host" % sess.name)
+                return
+            self._log("host (%s): the socket closed under the accepted handover, its reexec-now frame unread; the host's log "
+                      "records the exec" % sess.name)
+            self._on_host_reexec_now(sess)
+        except Exception as e:
+            self._log("host (%s): the lost socket's handover check failed (%s); read as a lost host" % (sess.name, type(e).__name__))
+
+    _REEXEC_LOG_KINDS = frozenset(("reexec", "reexeced", "reexec-deferred", "reexec-failed", "cli-adopt-failed"))
+
+    def _host_logged_exec(self, sess, t) -> bool:
+        """Whether the host's own log records its exec since `t`'s attach: after the last `attached` line naming this
+        kernel, the latest re-exec line is `reexec` (written just before the exec) or `reexeced` (the new code serving).
+        A deferral (`reexec-deferred`: the exec waits for the next result), a failure, or no line at all is not the exec.
+        The log, not a result having arrived, because the host defers past a result when output arrives or this kernel
+        is behind on its socket, and a socket lost in that window is no handover (2026-09-22, the refresh review)."""
+        p = _ht().host_dir(self.state_dir, sess.sid) / "host.log"
+        try:
+            lines = p.read_text().splitlines()
+        except OSError as e:
+            self._log("host (%s): the host's log could not be read (%s); no exec to go on" % (sess.name, type(e).__name__), problem=True)
+            return False
+        me = (getattr(t, "kernel", None) or {}).get("pid")
+        latest = None
+        for ln in reversed(lines):
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                continue
+            kind = row.get("kind") if isinstance(row, dict) else None
+            if kind == "attached":
+                return row.get("kernelPid") == me and latest in ("reexec", "reexeced")
+            if latest is None and kind in self._REEXEC_LOG_KINDS:
+                latest = kind
+        return False
 
     def _spawn_host(self, sess, spec_path):
         """Start bin/romp-session-host detached: in a transient scope of its own on Linux when scopes are on
