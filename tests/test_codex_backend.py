@@ -998,6 +998,36 @@ class RestartWork(unittest.TestCase):
         self.assertEqual(be.would_cut(), [{"sid": sids[1], "name": "api"}], "an ended session is nobody's turn")
         self.assertEqual(be.busy_breakdown(), (1, 0))
 
+    def test_the_gates_read_the_cut_rows_predicate_minus_the_ended_sessions(self):
+        # 2026-09-23, the promise in #2055's body: the restart's cut row (inflight_turns) and the gates (would_cut)
+        # counted differently, the row open turns alone, the gates a compaction once seen active and no ended
+        # session. One predicate now: the row counts an open turn, dead or live, and a running compaction; the gates
+        # read that list minus the ended sessions, whose open turn the next load settles but nothing waits on
+        be, _, _ = build()
+        sids = ["11111111-2222-3333-4444-5555555556%02d" % i for i in (1, 2, 3, 4, 5)]
+        live_turn = cb._Session(sids[0], "T-1", "web", "/TESTDIR")
+        dead_turn = cb._Session(sids[1], "T-2", "api", "/TESTDIR")
+        running = cb._Session(sids[2], "T-3", "tests", "/TESTDIR")
+        latched = cb._Session(sids[3], "T-4", "docs", "/TESTDIR")
+        idle = cb._Session(sids[4], "T-5", "webby", "/TESTDIR")
+        live_turn.turn_id, live_turn.state = "t-1", "working"                  # a turn the app-server ACKed
+        dead_turn.turn_id, dead_turn.dead = "t-2", True                        # a kill whose interrupt never landed
+        running.compacting, running.compact_active_seen, running.state = True, True, "compacting"   # seen active
+        latched.compacting, latched.state = True, "compacting"                 # latched at the ACK, never seen running
+        for s in (live_turn, dead_turn, running, latched, idle):
+            be._put_session(s)                                                 # no worker: nothing moves meanwhile
+        cut = be.inflight_turns()
+        self.assertEqual(cut, [{"sid": sids[0], "name": "web", "backend": "codex"},
+                               {"sid": sids[1], "name": "api", "backend": "codex"},
+                               {"sid": sids[2], "name": "tests", "backend": "codex"}],
+                         "the cut row: both open turns and the running compaction; the latched bracket and the idle "
+                         "session are no cut")
+        dead = {sid for sid, s in be._session_items() if s.dead}
+        self.assertEqual(be.would_cut(), [{"sid": r["sid"], "name": r["name"]} for r in cut if r["sid"] not in dead],
+                         "the gates: the cut row's list minus the ended sessions, in SdkBackend.would_cut's shape")
+        self.assertEqual(be.would_cut(), [{"sid": sids[0], "name": "web"}, {"sid": sids[2], "name": "tests"}])
+        self.assertEqual(be.busy_breakdown(), (2, 0), "/busy counts what the gates read")
+
     def test_a_compaction_counts_only_once_its_active_status_is_seen(self):
         # 2026-09-23, the review of this lane: a bracket compact() latched with no active status yet may be a
         # compaction Codex acknowledged and never ran (docs/codex.md), and counting it would hold a quiet refresh taken
@@ -1010,14 +1040,18 @@ class RestartWork(unittest.TestCase):
             self.assertEqual(be.compact(sid), "")
             self.assertIs(be.compacting(sid), True, "the bracket is latched at the ACK")
             self.assertEqual(be.would_cut(), [], "latched, no active status seen: maybe never run, nothing to wait on")
+            self.assertEqual(be.inflight_turns(), [], "and no cut for the restart's row either (one predicate, #2055)")
             self.assertEqual(be.busy_breakdown(), (0, 0))
             _status(fake, "T-1", "active")
             self.assertTrue(until(lambda: be.would_cut() == [{"sid": sid, "name": "web"}]),
                             "the active status says the compaction runs: a restart would cut it")
+            self.assertEqual(be.inflight_turns(), [{"sid": sid, "name": "web", "backend": "codex"}],
+                             "the restart's cut row names the compaction the gates wait on (2026-09-23)")
             self.assertEqual(be.busy_breakdown(), (1, 0))
             _status(fake, "T-1", "idle")
             self.assertTrue(until(lambda: be.compacting(sid) is False))
             self.assertEqual(be.would_cut(), [], "the idle after the active ends it")
+            self.assertEqual(be.inflight_turns(), [])
         finally:
             be.kill(sid)
 
