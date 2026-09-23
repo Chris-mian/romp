@@ -8150,15 +8150,15 @@ def _session_flag_raw(sid, flag):
 
 
 def _write_postal_override(flags, value, master):
-    """Store a session's isolation choice as an override on the POSTAL_ALL_KEY master, in place: an
-    explicit False survives a master True, and a value equal to the master is dropped rather than
-    pinned. The legacy postalOff key goes either way, so it can never outvote the new choice."""
+    """Store a session's isolation choice as an override on the POSTAL_ALL_KEY master, in place.
+    Isolation is always pinned, so a later master flip cannot open the session; an opt-in is stored
+    only under an isolating master. The legacy postalOff key goes either way."""
     flags.pop("postalOff", None)
     master_isolates = isinstance(master, dict) and bool(master.get("postalServiceOff"))
-    if bool(value) == master_isolates:
-        flags.pop("postalServiceOff", None)
-    else:
+    if value or master_isolates:
         flags["postalServiceOff"] = bool(value)
+    else:
+        flags.pop("postalServiceOff", None)
 
 
 def _set_session_flag(sid, flag, value):

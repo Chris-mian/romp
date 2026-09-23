@@ -245,3 +245,25 @@ write_flags() { mkdir -p "$XDG_STATE_HOME/romp"; printf '%s' "$1" > "$XDG_STATE_
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
+
+@test "a flags file that is valid JSON but not an object is mail off" {
+    write_reg "$FSID"; write_flags '["not", "an", "object"]'
+    ROMP_SID="$SID" run_hook "$(payload "$FSID" resume)"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "a missing flags file the kernel quarantined is mail off, as the bus reads it" {
+    write_reg "$FSID"; mkdir -p "$XDG_STATE_HOME/romp"
+    printf 'torn' > "$XDG_STATE_HOME/romp/session-flags.json.corrupt-20260101T000000Z"
+    ROMP_SID="$SID" run_hook "$(payload "$FSID" resume)"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "a null isolation key is unset, so the master still isolates" {
+    write_reg "$FSID"; write_flags "{\"*\": {\"postalServiceOff\": true}, \"$SID\": {\"postalServiceOff\": null}}"
+    ROMP_SID="$SID" run_hook "$(payload "$FSID" resume)"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}

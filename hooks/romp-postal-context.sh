@@ -63,13 +63,20 @@ fi
 # _mail_off_why order over the same files: a comment thread (its reg carries threadOf) is off unless
 # its flags hold threadMail at the literal True; then the session's own isolation key, legacy key
 # included, else the "*" master. A flags file or reg that exists but cannot be read is off, as the bus
-# holds mail for it; a missing file is no flag ever set. Exit 0 = mail off.
+# holds mail for it; a missing file is no flag ever set, unless the kernel quarantined its bytes
+# beside it. A null key is absent, as the kernel reads it. Exit 0 = mail off.
 if python3 - "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}" "$ROMP_SID" <<'PY'
-import json, os, sys
+import glob, json, os, sys
 root, sid = sys.argv[1], sys.argv[2]
 def load(path):
-    if not os.path.exists(path):
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        if glob.glob(glob.escape(path) + ".corrupt-*"):
+            sys.exit(0)
         return {}
+    except OSError:
+        sys.exit(0)
     try:
         loaded = json.loads(open(path).read())
     except Exception:
@@ -83,7 +90,7 @@ own = flags.get(sid) if isinstance(flags.get(sid), dict) else {}
 if reg.get("threadOf") and own.get("threadMail") is not True:
     sys.exit(0)
 for key in ("postalServiceOff", "postalOff"):
-    if key in own:
+    if own.get(key) is not None:
         sys.exit(0 if own[key] else 1)
 master = flags.get("*")
 sys.exit(0 if isinstance(master, dict) and master.get("postalServiceOff") else 1)

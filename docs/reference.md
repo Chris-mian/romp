@@ -5329,10 +5329,10 @@ gate.
 key `*`: with `{"*": {"postalServiceOff": true}}` every session's mail is off
 unless the session opts back in. The kernel, the postal bus and the SessionStart
 pointer resolve it the same way: a comment thread's own default first, then the
-session's own mailbox toggle (either value), then the master. The toggle writes
-an override only where it differs from the master, so turning a session's mail
-on under an isolating master stores an explicit `false`, and turning it back
-off removes the override. The master itself is set through the same flag route
+session's own mailbox toggle (either value; a `null` counts as unset), then the
+master. Turning a session's mail off always stores `true`, so a later change to
+the master cannot open it; turning it on stores an explicit `false` under an
+isolating master and removes the override otherwise. The master itself is set through the same flag route
 with `*` as the id (`POST /flag` with `{"id": "*", "flag": "postalServiceOff",
 "value": true}`); off removes the key.
 

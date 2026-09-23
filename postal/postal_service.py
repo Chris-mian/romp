@@ -1594,7 +1594,7 @@ def _mail_off_why(sid):
     # kernel to, this service would go on advertising peers and taking sends the kernel treats as isolated.
     if isinstance(f, dict):
         for key in ("postalServiceOff", "postalOff"):
-            if key in f:
+            if f.get(key) is not None:                   # a null is absent, as the kernel's _session_flag_raw reads it
                 return "isolation" if f[key] else ""
     master = flags.get(POSTAL_ALL_KEY) if isinstance(flags, dict) else None
     return "isolation" if (isinstance(master, dict) and master.get("postalServiceOff")) else ""

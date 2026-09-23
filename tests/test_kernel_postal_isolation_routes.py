@@ -22,6 +22,7 @@ load_source("romp_event_model", os.path.join(BIN, "romp-event-model"))
 load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 km = load_source("romp_kernel_isolation", os.path.join(BIN, "romp-kernel"))
+pm = load_source("romp_postal_isolation_twin", os.path.join(BIN, "romp-postal-service"))
 
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -96,11 +97,18 @@ class PostalIsolated(unittest.TestCase):
         self.assertFalse(km._postal_isolated(SID))
         self.assertFalse(km._painted_flag_value(SID, "postalServiceOff"), "the toggle repaints as mail on")
 
-    def test_a_choice_equal_to_the_master_is_dropped_not_pinned(self):
+    def test_isolation_is_pinned_so_a_later_master_flip_cannot_open_it(self):
         self._raw_flags({km.POSTAL_ALL_KEY: {"postalServiceOff": True}, SID: {"postalServiceOff": False}})
         km._set_session_flag(SID, "postalServiceOff", True)
-        self.assertNotIn(SID, self._stored(), "back on the default: the override goes")
-        self.assertTrue(km._postal_isolated(SID))
+        self.assertEqual(self._stored()[SID], {"postalServiceOff": True})
+        km._set_session_flag(km.POSTAL_ALL_KEY, "postalServiceOff", False)
+        self.assertTrue(km._postal_isolated(SID), "the session's last choice was isolate")
+
+    def test_an_opt_in_with_no_isolating_master_stores_nothing(self):
+        self._raw_flags({SID: {"postalServiceOff": True}})
+        km._set_session_flag(SID, "postalServiceOff", False)
+        self.assertNotIn(SID, self._stored())
+        self.assertFalse(km._postal_isolated(SID))
 
     def test_the_setter_clears_a_legacy_key_so_it_cannot_outvote_the_choice(self):
         self._raw_flags({SID: {"postalOff": True}})
@@ -114,6 +122,39 @@ class PostalIsolated(unittest.TestCase):
         km._set_session_flag(km.POSTAL_ALL_KEY, "postalServiceOff", False)
         self.assertNotIn(km.POSTAL_ALL_KEY, self._stored(), "off is the absent master")
         self.assertFalse(km._postal_isolated(SID))
+
+
+class KernelAndBusAgree(unittest.TestCase):
+    """The kernel's and the bus's isolation readers, fed the same flags file, give the same answer."""
+    OTHER = "99999999-8888-7777-6666-555555555555"
+    SHAPES = [
+        {},
+        {"*": {"postalServiceOff": True}},
+        {"*": {"postalServiceOff": True}, SID: {"postalServiceOff": False}},
+        {"*": {"postalServiceOff": True}, SID: {"postalServiceOff": None}},
+        {SID: {"postalServiceOff": None, "postalOff": True}},
+        {SID: {"postalServiceOff": None}},
+        {SID: {"postalOff": True}},
+        {SID: {"postalServiceOff": False, "postalOff": True}},
+    ]
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = km.jd.STATE, pm.SESSION_FLAGS
+        km.jd.STATE = Path(self.td.name)
+        pm.SESSION_FLAGS = km.jd.STATE / "session-flags.json"
+
+    def tearDown(self):
+        km.jd.STATE, pm.SESSION_FLAGS = self.saved
+        self.td.cleanup()
+
+    def test_every_shape_resolves_the_same_on_both_sides(self):
+        for shape in self.SHAPES:
+            pm.SESSION_FLAGS.write_text(json.dumps(shape))
+            pm._FLAGS_LAST[0] = None
+            for sid in (SID, self.OTHER):
+                with self.subTest(shape=shape, sid=sid):
+                    self.assertEqual(km._postal_isolated(sid), pm._postal_off(sid))
 
 
 class RouteGates(unittest.TestCase):
