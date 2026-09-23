@@ -3525,6 +3525,22 @@ DEFAULT_PORT = 25302              # the machine's fixed bus port, the one every 
 OWN_PORT_MARK = "ROMP_POSTAL_HERMETIC"   # set by the test runner and the lab builder: a ROMP_POSTAL_PORT under it is the run's own choice
 
 
+def _test_root_signal():
+    """Which sign says this process belongs to a test (or a lab under a temporary directory) rather than to the machine,
+    or None: the signals _fixed_port_refusal's docstring gives. Split out of it on 2026-09-22 so the bus's choice of
+    where to run (_bus_scope_caller) reads the same signs: a test's bus is never the machine's shared one."""
+    import tempfile
+    root = os.path.normpath(str(STATE.parent))
+    tmp = tempfile.gettempdir().rstrip("/") + "/"
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return "under a test (PYTEST_CURRENT_TEST is set)"
+    if TESTS_ROOT_MARK in root:
+        return "the state root %s is under a test runner's temporary directory" % root
+    if (root + "/").startswith(tmp) or root.startswith("/tmp/"):
+        return "the state root %s is under the temporary directory" % root
+    return None
+
+
 def _fixed_port_refusal():
     """Why this process must NOT bind the machine's fixed bus port, or None (2026-09-10, widened 2026-09-11). A hermetic
     kernel, a test's lab process or the kernel module loaded inside a test process, runs `ensure` at boot and again
@@ -3545,17 +3561,9 @@ def _fixed_port_refusal():
     number. With no signal the machine's own bus binds its port as ever, named or default, wherever its root lives.
     The reason goes to stderr, which a detached serve's log carries and which the kernel's ensure runner copies into
     its own log."""
-    import tempfile
     named = (os.environ.get("ROMP_POSTAL_PORT") or "").strip()
-    root = os.path.normpath(str(STATE.parent))
-    tmp = tempfile.gettempdir().rstrip("/") + "/"
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        why = "under a test (PYTEST_CURRENT_TEST is set)"
-    elif TESTS_ROOT_MARK in root:
-        why = "the state root %s is under a test runner's temporary directory" % root
-    elif (root + "/").startswith(tmp) or root.startswith("/tmp/"):
-        why = "the state root %s is under the temporary directory" % root
-    else:
+    why = _test_root_signal()
+    if not why:
         return None
     own = named and named == str(PORT) and os.environ.get(OWN_PORT_MARK) and PORT != DEFAULT_PORT
     if own:
@@ -5309,6 +5317,190 @@ def _remote_nudge():
         sys.stderr.write("[romp mail] you look like a remote machine on a local-only "
                          "Romp Postal Service — run `romp mail remote` to reach your laptop's sessions.\n")
 
+# ── where a bus started from inside a session runs (2026-09-22) ─────────────────────────────────────────────────────────
+# The bus is one process every session on the machine shares, but `ensure` started it wherever its caller stood, and
+# start_new_session gives the bus a process session of its own, not a cgroup of its own. So a bus started from inside a
+# session (its postal MCP server's startup, the Stop hook's mail check, `romp refresh` or `romp mail` typed in its shell)
+# lived in that session's transient scope, kept the scope loaded after the session's CLI was gone, and died when the
+# kernel stopped the scope: the boot sweep of a session's leftover scopes and the end of an orphaned CLI's scope both stop
+# the unit, which ends every process in its cgroup (the post-merge defect review watched the kernel's own sweep end a bus
+# started this way). Such a caller now launches the bus into a transient scope of its own, under a name no kernel sweep
+# lists. There is no pre-flight: the Stop hook runs `drain`, and so this, inside a 10 s budget, and a pre-flight would be
+# a systemd-run the hook waits on. The launch is its own probe, detached from every caller's output (start_new_session,
+# server.log and a capture file of its own, below), so no caller waits on it past ensure's ~4 s. systemd-run either
+# moves itself into the new scope and execs the bus in place (so the spawned pid is the bus, as server.pid and `restart`
+# expect) or exits with its reason, and that exit, before the bus answers, starts the bus in place instead, said in
+# server.log and on stderr (_bus_scope_fallback), at every check of the wait and at its last one alike (the review of
+# this lane, 2026-09-23: an exit only the last check saw once started no bus and said nothing). A launcher that has done
+# neither when ensure's wait ends (a user manager slow to answer) is left running, with a `pending:` line in server.log,
+# and ensure returns as for a slow bus: if the launcher later exits non-zero, no bus comes of it, and the next ensure
+# logs what it said and tries again.
+# Nothing kills a launcher still waiting (the review of this lane, 2026-09-23): a bound would be a timer, it would
+# protect no caller's budget, since none waits on the launcher, and it would put the bus back in the session's scope
+# whenever the user manager was merely slow.
+# Each launch's words are its own (the review of this lane, 2026-09-23). systemd-run execs in place, so its stderr is
+# also the bus's, and server.log is shared by every launch and every bus: the line server.log gained last could be
+# another launcher's refusal. So a launch's stderr is a capture file of its own, `bus-launch-<unit>.err` beside
+# server.log, and the scope runs BUS_SCOPE_SHIM first, a one-line sh that points the bus's stderr back at its stdout
+# (server.log) and execs the serve, so the pid is still the bus. The capture is flocked before a sweep can see its name,
+# and the lock lives on in the launcher's copy of the file until the launcher exits or its sh execs the serve: a capture
+# nobody holds is a finished launch. ensure reads and removes its own at a fallback, and every ensure that starts a bus,
+# in a scope or in place, removes the finished ones (_bus_launch_sweep), carrying into server.log what one said after its
+# ensure stopped watching.
+# KEEP IN SYNC with the scopes the kernel stops: sdk_backend.SESSION_SCOPE_PREFIX (bin/romp-cli-scope names each session's
+# scope) and host_transport.HOST_SCOPE_PREFIX (a session host's). tests/test_postal_bus_scope.py derives the names from
+# those producers and from the kernel's sweep patterns, so a rename on either side fails there.
+ROMP_SCOPE_PREFIXES = ("romp-session-", "romp-host-")
+# The bus's own scope. KEEP IN SYNC with sdk_backend.POSTAL_BUS_SCOPE_PREFIX and _POSTAL_BUS_SCOPE_RE (this unit's whole
+# shape, _bus_scope_unit's) and with sdk_backend.POSTAL_BUS_SERVE_NAMES (the serve's command), which the kernel's orphan
+# reap reads to spare the bus (2026-09-23, the review of this lane): systemd-run execs in place, so a bus the session's
+# postal MCP server started stays that server's child, inside the orphaned CLI's process tree.
+# tests/test_postal_bus_scope.py reads the kernel's side against the unit and the command this launch names.
+BUS_SCOPE_PREFIX = "romp-postal-bus-"
+BUS_SCOPE_SHIM = ["/bin/sh", "-c", 'exec "$@" 2>&1', "romp-postal-bus"]   # the bus's stderr back to server.log (above)
+BUS_LAUNCH_CAPTURE = "bus-launch-%s.err"                                  # a launch's own stderr, % its unit (above)
+
+
+def _proc_cgroup():
+    """/proc/self/cgroup's text, "" where there is none (macOS, no procfs)."""
+    try:
+        with open("/proc/self/cgroup") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _romp_scope_of(cgroup_text):
+    """The romp session or session-host scope a /proc/<pid>/cgroup text places the process in, or None."""
+    for ln in (cgroup_text or "").splitlines():
+        for comp in ln.rsplit(":", 1)[-1].split("/"):
+            if comp.startswith(ROMP_SCOPE_PREFIXES) and comp.endswith(".scope"):
+                return comp
+    return None
+
+
+def _bus_scope_caller():
+    """The romp scope this caller stands in when the bus it starts should get a scope of its own, else None. Everyone
+    else starts the bus in place, as before: the kernel (in the service's cgroup, where a service stop is meant to end a
+    wedged bus, as bin/romp-cli-scope's header says), a plain terminal, macOS, a box without systemd-run. So do
+    ROMP_CLI_SCOPE=0, which turns the session scopes off, and a test's state root (_test_root_signal), whose bus is not
+    the machine's: no suite reaches the real systemd-run unless it drops those signs on purpose, as the opt-in
+    tests/test_postal_bus_scope_live.py does (ROMP_BUS_SCOPE_LIVE=1, 2026-09-23)."""
+    inside = _romp_scope_of(_proc_cgroup())
+    if not inside or os.environ.get("ROMP_CLI_SCOPE", "").strip() == "0" or _test_root_signal():
+        return None
+    return inside if shutil.which("systemd-run") else None
+
+
+def _bus_scope_unit():
+    """The bus's scope: the prefix, this caller's pid and the time in ns, so no two launches share a unit or a capture."""
+    return "%s%d-%d" % (BUS_SCOPE_PREFIX, os.getpid(), time.time_ns())
+
+
+def _bus_scope_argv(serve_argv, unit):
+    return ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit=" + unit,
+            "--description=romp postal bus", "--"] + BUS_SCOPE_SHIM + serve_argv
+
+
+def _bus_launch_capture(unit):
+    """The launch's own stderr (the comment above BUS_SCOPE_PREFIX), flocked under a `.new` name no sweep reads before it
+    takes its own: (path, open file)."""
+    path = STATE / (BUS_LAUNCH_CAPTURE % unit)
+    fresh = path.with_name(path.name + ".new")
+    f = open(fresh, "a+b")
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+    os.replace(fresh, path)
+    return path, f
+
+
+def _last_words(data):
+    """The last non-blank line of a launch's capture, at most 300 characters, or ""."""
+    lines = [ln.strip() for ln in data.decode("utf-8", "replace").splitlines() if ln.strip()]
+    return lines[-1][:300] if lines else ""
+
+
+def _bus_launch_said(capture):
+    """What this launch's own capture holds, read once; the file is removed when read."""
+    path, f = capture
+    try:
+        f.seek(0)
+        data = f.read()
+    except (OSError, ValueError):
+        data = b""
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return _last_words(data)
+
+
+def _bus_launch_sweep(logf):
+    """Remove every finished launch's capture (nobody holds its lock), and say in server.log what one held: with --quiet
+    a launch that starts its scope says nothing, so words there are a refusal that came after its ensure had stopped
+    watching (a `pending:` launch, or one whose exit a bus answering beat). A capture still held is a launch under way,
+    and is left (2026-09-23, the review of this lane)."""
+    for path in sorted(STATE.glob(BUS_LAUNCH_CAPTURE % "*")):
+        try:
+            with open(path, "rb") as f:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    continue
+                said = _last_words(f.read())
+                path.unlink()
+        except OSError:
+            continue
+        if said:
+            unit = path.name[len("bus-launch-"):-len(".err")]   # BUS_LAUNCH_CAPTURE % unit
+            _bus_scope_say(logf, "[postal] the launch into a scope of its own as %s, which no ensure was still watching, "
+                           "said: %s\n" % (unit, said))
+
+
+def _bus_scope_failure(launcher, capture):
+    """Why the launch into a scope of its own did not start the bus, or None while it still may. The one event is the
+    launcher's exit, non-zero, before the bus answered: systemd-run was refused a scope (no user manager, a rejected
+    unit) and left its reason in its capture, or the bus it started died at once. An exit 0 is a bus that found another
+    one on the port (serve's `bus already running`), not a refusal. A launcher that has not exited is left alone,
+    however long it takes (the review of this lane, 2026-09-23: no timer here)."""
+    rc = launcher.poll()
+    if rc is None or rc == 0 or ping():
+        return None
+    said = _bus_launch_said(capture)
+    return ("the launch into a scope of its own exited %d before the bus answered%s"
+            % (rc, " (%s)" % said if said else ""))
+
+
+def _bus_scope_say(logf, note):
+    """One line in server.log and to the caller. The Stop hook and `romp refresh` drop the caller's stderr, so
+    server.log is where these are read."""
+    for out in (logf, sys.stderr):
+        try:
+            out.write(note)
+            out.flush()
+        except Exception:
+            pass
+
+
+def _bus_scope_fallback(logf, launcher, capture, inside, serve_argv):
+    """When the launch failed (_bus_scope_failure), say that the bus starts in place after all, inside the caller's scope,
+    and start it there; True when it did. ensure reads it at every check of its wait and at the last one alike."""
+    why = _bus_scope_failure(launcher, capture)
+    if not why:
+        return False
+    _bus_scope_say(logf, "[postal] fallback: %s; starting the bus in place, inside %s, where stopping that scope "
+                   "ends it\n" % (why, inside))
+    subprocess.Popen(serve_argv, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, start_new_session=True)
+    return True
+
+
+def _bus_scope_pending(logf, launcher, unit):
+    """Say that ensure's wait ended with the launch into a scope of its own still under way (2026-09-23)."""
+    _bus_scope_say(logf, "[postal] pending: the launch into a scope of its own (pid %d, %s) had not brought up an "
+                   "answering bus when ensure's ~4 s wait ended; it is left running, and if it exits non-zero instead "
+                   "of starting the bus, no bus comes of it: the next ensure logs what it said and tries again\n"
+                   % (launcher.pid, unit))
+
+
 def ensure():
     """Make sure the bus is reachable. On a designated client-only host (remote),
     rely on the ssh tunnel rather than starting a local bus."""
@@ -5322,13 +5514,41 @@ def ensure():
         return False
     STATE.mkdir(parents=True, exist_ok=True)
     logf = open(LOG, "a")
-    subprocess.Popen([sys.executable, os.path.abspath(__file__), "serve"],
-                     stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, start_new_session=True)
-    for _ in range(40):           # ~4s
+    serve_argv = [sys.executable, os.path.abspath(__file__), "serve"]
+    inside = _bus_scope_caller()  # 2026-09-22: started from inside a session, the bus gets a scope of its own (above)
+    unit = capture = launcher = None
+    try:
+        _bus_launch_sweep(logf)       # an earlier launch's words land before this one's, whoever starts it (2026-09-23)
+        if inside:
+            unit = _bus_scope_unit()
+            capture = _bus_launch_capture(unit)
+        launcher = subprocess.Popen(_bus_scope_argv(serve_argv, unit) if inside else serve_argv, stdout=logf,
+                                    stderr=capture[1] if capture else logf, stdin=subprocess.DEVNULL,
+                                    start_new_session=True)
+        for _ in range(40):           # ~4s
+            if ping():
+                return True
+            if inside and _bus_scope_fallback(logf, launcher, capture, inside, serve_argv):
+                inside = None
+            time.sleep(0.1)
         if ping():
             return True
-        time.sleep(0.1)
-    return ping()
+        if inside and not _bus_scope_fallback(logf, launcher, capture, inside, serve_argv) and launcher.poll() is None:
+            _bus_scope_pending(logf, launcher, unit)
+        return False
+    finally:
+        if capture:
+            rc = launcher.poll() if (inside and launcher is not None) else None
+            if rc:
+                # a launch this ensure watched, whose non-zero exit lost to another caller's bus (the failure test's
+                # recheck found it answering): said as that, from its own capture, never as a launch nobody watched
+                # (2026-09-23, the second verify pass of this lane)
+                said = _bus_launch_said(capture)
+                if said:
+                    _bus_scope_say(logf, "[postal] the launch into a scope of its own exited %d while another bus answered; "
+                                   "it said: %s\n" % (rc, said))
+            capture[1].close()        # the launcher's own copy holds the lock while its launch is under way
+            _bus_launch_sweep(logf)
 
 def restart():
     """Force a FRESH bus process so 'restart everything' (`romp refresh`) actually includes the bus, not

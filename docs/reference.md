@@ -1227,9 +1227,24 @@ Only `romp refresh` stops the postal bus on purpose; `romp down` leaves it
 alone, but on Linux a bus the kernel started dies with the service anyway: the
 kernel runs `romp-postal-service ensure` at boot, which spawns the bus in a
 process session of its own but inside the service's cgroup, and the service
-stop kills that cgroup. A bus started from a session's postal MCP server lives
-in that session's scope and keeps running. Either way the next kernel boot runs
-`ensure` again, so at worst mail parks until `romp up`.
+stop kills that cgroup. A bus started from inside a session (its postal MCP
+server, its turn-end mail check, or `romp refresh` or `romp mail` typed in its
+shell) runs in a transient scope of its own, `romp-postal-bus-<pid>-<time>`, so
+it keeps running. The kernel stopping that session's scope does not end it, and
+neither does its reap of an orphaned session CLI's process tree, which spares
+the bus's `serve` running in a scope of exactly that name (a bus the session's
+postal MCP server started is still that server's child); before 2026-09-22 it
+lived in the session's scope and died with it. When `systemd-run` cannot start
+that scope, the bus starts in the session's scope after all, and `server.log`
+says so in a `fallback:` line that quotes that launch's own `systemd-run`. A
+`systemd-run` still waiting on the user manager when `ensure`'s few-second wait
+ends is left to finish, with a `pending:` line there; if no bus comes of it,
+the next `ensure` logs what it said and tries again. It still carries the
+session's `oom_score_adj`: `systemd-run --scope` runs it in place, and a scope
+has no `OOMScoreAdjust=` to reset it, so with `ROMP_CLI_SCOPE_OOM_SCORE_ADJ` set
+the machine-wide OOM killers rank it with the sessions, not with the kernel.
+Either way the next kernel boot runs `ensure` again, so at worst mail parks
+until `romp up`.
 
 ### What survives a restart
 
