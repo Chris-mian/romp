@@ -3792,10 +3792,10 @@ def _safe_pr_payload(sid, ledger, work_tree=None):
         if sid not in _pr_payload_failed:          # said once per session, not once per push
             _pr_payload_failed.add(sid)
             print("pr payload for %s failed: %s: %s" % (sid, type(e).__name__, str(e)[:160]), file=sys.stderr)
-        return dict(_NO_PR_PAYLOAD)
+        return dict(_NO_PR_PAYLOAD, prError="PR status could not be built: %s" % type(e).__name__)
 
 
-def _fleet_ledger_row(m):
+def _outline_ledger_row(m):
     """One built session's row in the feed payload's `ledgers`, which the Outline pane draws."""
     return {"sid": m["id"], "name": m["name"], "color": m.get("color"),
             "status": m.get("status"),
@@ -39182,11 +39182,26 @@ def _session_meta(path):
 
 
 def _session_meta_fresh():
-    # pushCount = how many Bash calls in this transcript pushed or acted on a PR. A push moves REMOTE state
-    # while HEAD and branch stay put, so nothing else in a build pass would notice that a PR's checks just
-    # restarted; a RISE in this count is that event.
+    # pushCount = how many Bash calls in this transcript pushed or acted on a PR, counted when the call's
+    # RESULT lands (pushPending holds the tool_use ids still running): a refresh started at the call would
+    # race the command it reacts to. A push moves REMOTE state while HEAD and branch stay put, so nothing
+    # else in a build pass would notice that a PR's checks just restarted; a RISE in this count is that event.
     return {"cwd": "", "gitBranch": "", "version": "", "permissionMode": "", "lastEditPath": "",
-            "pushCount": 0}
+            "pushCount": 0, "pushPending": []}
+
+
+PUSH_PENDING_CAP = 32   # push calls awaiting their result; a result that never lands must not grow it forever
+
+
+def _count_landed_pushes(meta, content):
+    """Count each pending push whose tool_result is in this user record's `content`."""
+    landed = {b.get("tool_use_id") for b in (content if isinstance(content, list) else [])
+              if isinstance(b, dict) and b.get("type") == "tool_result"}
+    pending = meta.get("pushPending") or []
+    done = [i for i in pending if i in landed]
+    if done:
+        meta["pushPending"] = [i for i in pending if i not in landed]
+        meta["pushCount"] = meta.get("pushCount", 0) + len(done)
 
 
 def _session_meta_step(meta, o):
@@ -39201,6 +39216,8 @@ def _session_meta_step(meta, o):
             meta["version"] = o["version"]
         if o.get("type") == "user" and o.get("permissionMode"):
             meta["permissionMode"] = o["permissionMode"]
+        if o.get("type") == "user" and meta.get("pushPending"):
+            _count_landed_pushes(meta, (o.get("message") or {}).get("content"))
         if o.get("type") == "assistant":
             for blk in (o.get("message") or {}).get("content") or []:
                 if not (isinstance(blk, dict) and blk.get("type") == "tool_use"):
@@ -39210,9 +39227,9 @@ def _session_meta_step(meta, o):
                          (blk.get("input") or {}).get("notebook_path")
                     if isinstance(fp, str) and fp.startswith("/"):
                         meta["lastEditPath"] = fp
-                elif blk.get("name") == "Bash" and \
+                elif blk.get("name") == "Bash" and blk.get("id") and \
                         gp.is_push_command((blk.get("input") or {}).get("command") or ""):
-                    meta["pushCount"] = meta.get("pushCount", 0) + 1
+                    meta["pushPending"] = (meta.get("pushPending") or [])[-PUSH_PENDING_CAP + 1:] + [blk["id"]]
     except Exception:
         pass
     return meta
@@ -57558,7 +57575,7 @@ def _push(targets, connect=False, live_map=None):
             # from "no data yet, still loading" and keep its loader up until real data lands (the user
             # 2026-06-29). Without this, an empty/ledger-less push looked identical to a not-yet-built one.
             if (chat_sessions or want_fleet) and not feed.get("off"):   # off (T404 round two, low 4): the outline shows its notice; no ledgers, no archived tops
-                feed["ledgers"] = [_fleet_ledger_row(m) for m in chat_sessions]
+                feed["ledgers"] = [_outline_ledger_row(m) for m in chat_sessions]
                 _bo = {s["sid"]: i for i, s in enumerate(build_order)}
                 if _prov_rows:   # the skipped tabs' provisional rows join in build order (plans/outline-pane-provisional-row.md)
                     feed["ledgers"] = sorted(feed["ledgers"] + _prov_rows, key=lambda r: _bo.get(r["sid"], len(_bo)))

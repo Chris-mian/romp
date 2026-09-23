@@ -82,7 +82,9 @@ test("Fleet: the PR chip's actions are declared on the node and handled by the #
   assert.match(FLEET, /copy\.dataset\.act = "prcopy"; copy\.dataset\.num = String\(pr\.num\);/);
   assert.match(FLEET, /bad\.dataset\.act = "prretry"; bad\.dataset\.sid = sid;/);
   for (const act of ["prfold", "propen", "prcopy", "prretry"]) assert.match(FLEET, new RegExp("\\n    " + act + ": \\(el\\) =>"), act);
-  assert.match(FLEET, /prretry: \(el\) => \{ if \(el\.dataset\.sid\) vscodeApi\?\.postMessage\(\{ type: "prRetry", id: el\.dataset\.sid \}\); \}/);
+  assert.match(FLEET, /prretry: \(el\) => \{ if \(el\.dataset\.sid && !el\.dataset\.busy\) \{ markPrRetrying\(el\); vscodeApi\?\.postMessage\(\{ type: "prRetry", id: el\.dataset\.sid \}\); \} \}/);
+  // a post-and-wait control disables and relabels itself until it restores (ui/CLAUDE.md)
+  assert.match(FLEET, /chip\.setAttribute\("aria-disabled", "true"\);\n  chip\.textContent = PR_RETRYING_LABEL;/);
 });
 
 test("Fleet: the PR chips are placed on goal rows and the session head, each with its detail row", () => {

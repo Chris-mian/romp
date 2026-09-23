@@ -41,7 +41,7 @@ class LedgerRow(unittest.TestCase):
         with mock.patch.object(km, "_session_pr_payload", lambda sid, ledger, wt: dict(slice_)), \
                 mock.patch.object(km, "_mail_off_fields", lambda sid: {}), \
                 mock.patch.object(km, "_fleet_archived_tops", lambda sid: []):
-            row = km._fleet_ledger_row({"id": SID, "name": "web", "ledger": {"tree": []}})
+            row = km._outline_ledger_row({"id": SID, "name": "web", "ledger": {"tree": []}})
         self.assertEqual({k: row[k] for k in slice_}, slice_)
         self.assertEqual(row["ledger"]["archivedTops"], [])
 
@@ -52,12 +52,12 @@ class LedgerRow(unittest.TestCase):
         with mock.patch.object(km, "_session_pr_payload", boom), \
                 mock.patch.object(km, "_mail_off_fields", lambda sid: {}), \
                 mock.patch.object(km, "_fleet_archived_tops", lambda sid: []):
-            row = km._fleet_ledger_row({"id": SID, "name": "web", "ledger": None})
+            row = km._outline_ledger_row({"id": SID, "name": "web", "ledger": None})
         self.assertIsNone(row["prs"])
         self.assertEqual(row["name"], "web")
 
     def test_the_push_builds_its_rows_through_it(self):
-        self.assertIn('feed["ledgers"] = [_fleet_ledger_row(m) for m in chat_sessions]', inspect.getsource(km._push))
+        self.assertIn('feed["ledgers"] = [_outline_ledger_row(m) for m in chat_sessions]', inspect.getsource(km._push))
 
 
 class CloserStamps(unittest.TestCase):

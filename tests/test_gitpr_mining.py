@@ -204,16 +204,25 @@ def test_record_pr_refs_writes_no_key_for_a_prless_goal():
     assert "prRefs" not in store["nodes"]["g1"]
 
 
-def test_record_pr_refs_clears_refs_that_went_away():
-    """A rewind can drop the segment that carried the receipt; the stamp must not outlive its evidence
-    while the goal's other segments are still in the parse."""
+def test_record_pr_refs_keeps_refs_when_only_part_of_the_goal_resolves():
+    """A goal continued after a /clear has a segment before it (carrying the PR) and one after. The
+    earlier one being outside the parse is no evidence the PR went away, so its ref stays and the later
+    segment's refs join it."""
     store, segs = _node([_bash(CREATE), _out(URL % 8)])
-    kept = "s%d" % next(_seg_n)
-    store["nodes"]["g1"]["trail"].append(kept)
-    segs[kept] = {"id": kept, "t": 200, "atoms": [_text("follow-up with no PR")]}
+    later = "s%d" % next(_seg_n)
+    store["nodes"]["g1"]["trail"].append(later)
+    segs[later] = {"id": later, "t": 200, "atoms": [_bash(CREATE), _out(URL % 9)]}
     jd._record_pr_refs(store, segs)
-    assert store["nodes"]["g1"]["prRefs"] == [[REPO, 8]]
-    assert jd._record_pr_refs(store, {kept: segs[kept]}) is True
+    assert store["nodes"]["g1"]["prRefs"] == [[REPO, 8], [REPO, 9]]
+    jd._record_pr_refs(store, {later: segs[later]})
+    assert store["nodes"]["g1"]["prRefs"] == [[REPO, 8], [REPO, 9]]
+
+
+def test_record_pr_refs_clears_refs_whose_segments_resolve_without_them():
+    """Every recorded segment resolves and none carries a receipt: the stamp goes."""
+    store, segs = _node([_text("no receipt")])
+    store["nodes"]["g1"]["prRefs"] = [[REPO, 8]]
+    assert jd._record_pr_refs(store, segs) is True
     assert store["nodes"]["g1"]["prRefs"] is None
 
 
@@ -239,3 +248,13 @@ def test_record_pr_refs_indexes_the_parse_once_per_pass(monkeypatch):
     monkeypatch.setattr(jd, "_seg_key", lambda k: (calls.append(k), real(k))[1])
     jd._record_pr_refs({"nodes": nodes, "placements": {}}, segs)
     assert len(calls) <= 2 * (len(nodes) + len(segs)), len(calls)
+
+
+def test_a_bare_number_is_read_only_from_its_own_command_and_past_flag_values():
+    """Chained commands, flag values and redirections never lend their numbers to the PR."""
+    for cmd in ("gh pr merge --auto --merge && sleep 30", 'gh pr edit --title "Fix 3 bugs" --add-label fix',
+                "gh pr merge --squash --delete-branch 2>&1 | tail -n 5", "gh pr merge -R other/repo 503"):
+        store, segs = _node([_bash(cmd)])
+        assert jd.goal_pr_refs(store, segs, "g1") == [], cmd
+    store, segs = _node([_bash("gh pr edit --add-label ready 503")])
+    assert jd.goal_pr_refs(store, segs, "g1") == [["", 503]]

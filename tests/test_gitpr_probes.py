@@ -201,3 +201,17 @@ def test_a_torn_pointer_file_reads_as_no_repo(tmp_path):
     assert gp.git_dirs(str(d)) is None
     assert gp.repo_of(str(d)) == ""
     assert gp.local_state(str(d)) == ("", 0, False)
+
+
+def test_repo_of_a_fork_clone_reads_upstream(tmp_path):
+    """In the fork layout `origin` is the fork; PRs live on the canonical repo `upstream` names."""
+    d = _repo(tmp_path, remote="git@github.com:someone/notes-api.git")
+    _run(d, "git", "remote", "add", "upstream", "https://github.com/notes-api-org/notes-api.git")
+    assert gp.repo_of(str(d)) == "notes-api-org/notes-api"
+
+
+def test_the_push_matcher_reads_past_wrappers_and_global_options():
+    for cmd in ("git -C notes-api push", "env FOO=1 git push", "time git push", "command git push",
+                "gh --repo a/b pr create", "gh -R a/b pr merge 5"):
+        assert gp.is_push_command(cmd), cmd
+    assert not gp.is_push_command("grep -rn 'a; git push' docs/"), "a separator inside quotes is text"

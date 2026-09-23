@@ -49,16 +49,21 @@ class SessionMeta(unittest.TestCase):
         """pushCount is the event behind re-reading a repo's PR state: a push moves the REMOTE while HEAD
         and branch stay put, so nothing else in a build pass would notice the checks restarting. A command
         that merely CONTAINS the words must not count (the user 2026-08-17)."""
+        ids = iter(range(1, 100))
+
         def bash(cmd):
-            return {"type": "assistant", "cwd": "/work/proj", "version": "1.2.3",
-                    "message": {"role": "assistant", "model": "claude-opus-4-8",
-                                "content": [{"type": "tool_use", "name": "Bash",
-                                             "input": {"command": cmd}}]}}
+            tid = "toolu_%d" % next(ids)
+            return [{"type": "assistant", "cwd": "/work/proj", "version": "1.2.3",
+                     "message": {"role": "assistant", "model": "claude-opus-4-8",
+                                 "content": [{"type": "tool_use", "id": tid, "name": "Bash",
+                                              "input": {"command": cmd}}]}},
+                    {"type": "user", "message": {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": tid, "content": "ok"}]}}]
         recs = [
-            bash("git push -u fork dev/notes-index"),
-            bash("gh pr create --draft --title x"),
-            bash("git status --porcelain"),
-            bash("grep -rn 'git push' docs/"),
+            *bash("git push -u fork dev/notes-index"),
+            *bash("gh pr create --draft --title x"),
+            *bash("git status --porcelain"),
+            *bash("grep -rn 'git push' docs/"),
             {"type": "assistant", "cwd": "/work/proj", "version": "1.2.3",
              "message": {"role": "assistant", "model": "claude-opus-4-8",
                          "content": [{"type": "tool_use", "name": "Write",
@@ -80,15 +85,18 @@ class SessionMeta(unittest.TestCase):
         rather than raise into its own guard and leave the count missing for good."""
         old = {"cwd": "/work/proj", "gitBranch": "main", "version": "1.2.3", "permissionMode": "",
                "lastEditPath": ""}
-        rec = {"type": "assistant", "message": {"content": [
-            {"type": "tool_use", "name": "Bash", "input": {"command": "git push"}}]}}
-        self.assertEqual(km._session_meta_step(old, rec)["pushCount"], 1)
-        self.assertEqual(km._session_meta_step(old, rec)["pushCount"], 2)
+        call = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "git push"}}]}}
+        result = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]}}
+        self.assertEqual(km._session_meta_step(old, call).get("pushCount", 0), 0, "still running")
+        self.assertEqual(km._session_meta_step(old, result)["pushCount"], 1, "counted when it lands")
+        self.assertEqual(km._session_meta_step(old, result)["pushCount"], 1, "once")
 
     def test_missing_file_is_empty_not_an_error(self):
         meta = km._session_meta("/no/such/transcript.jsonl")
         self.assertEqual(meta, {"cwd": "", "gitBranch": "", "version": "", "permissionMode": "",
-                                "lastEditPath": "", "pushCount": 0})
+                                "lastEditPath": "", "pushCount": 0, "pushPending": []})
 
     def test_cache_keys_on_mtime_size(self):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:

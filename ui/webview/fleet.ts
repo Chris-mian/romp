@@ -393,10 +393,26 @@ function prRollup(sid: string, nid: string, prs: PR[]): HTMLElement {
 // "we could not look" (CLAUDE.md ## Authoritative sources). A click asks the kernel to re-read now.
 function prErrChip(sid: string, reason: string): HTMLElement {
   const bad = el("span", "fl-pr err");
-  bad.textContent = "⚠ PR status";
+  bad.textContent = PR_RETRY_LABEL;
   bad.title = prErrTitle(reason);
   bad.dataset.act = "prretry"; bad.dataset.sid = sid;
   return bad;
+}
+
+const PR_RETRY_LABEL = "⚠ PR status";
+const PR_RETRYING_LABEL = "↻ Retrying…";
+const PR_RETRY_RESTORE_MS = 8000;   // a re-read that lands re-renders the chip sooner; this is the backstop
+
+// The retry posts and waits, so the chip disables and relabels itself until the answer re-renders it.
+function markPrRetrying(chip: HTMLElement): void {
+  chip.dataset.busy = "1";
+  chip.setAttribute("aria-disabled", "true");
+  chip.textContent = PR_RETRYING_LABEL;
+  setTimeout(() => {
+    delete chip.dataset.busy;
+    chip.removeAttribute("aria-disabled");
+    chip.textContent = PR_RETRY_LABEL;
+  }, PR_RETRY_RESTORE_MS);
 }
 
 // The one-click-deeper body: the same lines the hover card shows, plus the actions.
@@ -1117,7 +1133,7 @@ function confirmEndSession(sid: string): void {
       render();
     },
     propen: (el) => { if (el.dataset.url) openExternalUrl(el.dataset.url); },   // the NUMBER → the PR itself
-    prretry: (el) => { if (el.dataset.sid) vscodeApi?.postMessage({ type: "prRetry", id: el.dataset.sid }); },   // the error chip → re-read now
+    prretry: (el) => { if (el.dataset.sid && !el.dataset.busy) { markPrRetrying(el); vscodeApi?.postMessage({ type: "prRetry", id: el.dataset.sid }); } },   // the error chip → re-read now
     prcopy: (el) => { try { navigator.clipboard?.writeText("#" + el.dataset.num); } catch { /* ignore */ } },
   });
 })();

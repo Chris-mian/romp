@@ -420,3 +420,70 @@ def test_the_push_matcher_reads_command_position():
         assert gp.is_push_command(cmd), cmd
     for cmd in ("grep -rn 'git push' docs/", "gh pr view 12", "gh pr list", "echo gh pr create"):
         assert not gp.is_push_command(cmd), cmd
+
+
+def test_commit_statuses_read_their_state_and_context():
+    """A StatusContext rollup entry carries state/context, not conclusion/name."""
+    ok = {"__typename": "StatusContext", "context": "ci/circleci", "state": "SUCCESS"}
+    bad = {"__typename": "StatusContext", "context": "ci/circleci", "state": "FAILURE"}
+    pending = {"__typename": "StatusContext", "context": "vercel", "state": "PENDING"}
+    run = {"__typename": "CheckRun", "name": "pytest", "conclusion": "SUCCESS", "status": "COMPLETED"}
+    assert gp._checks([run, ok]) == ("pass", [])
+    assert gp._checks([run, bad]) == ("fail", ["ci/circleci"])
+    assert gp._checks([run, pending]) == ("running", [])
+
+
+def test_a_branch_pr_outside_the_list_window_is_fetched_by_head(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {12: _bare(OPEN_PASSING)})
+    heads = []
+    monkeypatch.setattr(gp, "hydrate_head", lambda repo, b: (heads.append(b),
+                                                             gp.normalize(dict(MERGED, number=3, headRefName=b)))[1])
+    _checks_stub(monkeypatch)
+    gp.repo_prs(REPO, branch="dev/old-work"); _drain()
+    prs, err = gp.repo_prs(REPO)
+    assert heads == ["dev/old-work"] and gp.branch_pr(prs, "dev/old-work") == 3 and err == ""
+
+
+def test_the_current_branch_outranks_old_ones_and_terminal_prs_come_last():
+    prs = {n: {"branch": "dev/n%d" % n, "state": "merged"} for n in range(100, 114)}
+    prs[50] = {"branch": "dev/now", "state": "open"}
+    prs[20] = {"branch": "dev/cited", "state": "open"}
+    order = gp._check_order(prs, ["dev/now", "dev/n113"], {20, 100})
+    assert order == [50, 113, 20, 100]
+
+
+def test_a_branch_nobody_asked_about_lately_is_not_current():
+    _reset()
+    gp._BRANCHES[REPO] = {"dev/old": 0.0, "dev/now": 1000.0}
+    assert gp._current_branches(REPO, 1000.0 + 1) == ["dev/now"]
+
+
+def test_a_transient_single_fetch_failure_is_shown_and_retried(monkeypatch):
+    """Only gh's own "no such PR" is remembered as unresolvable; anything else is an error to show."""
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {})
+    asked = []
+
+    def flaky(repo, n):
+        asked.append(n)
+        raise gp.GitPrError("HTTP 502: 502 Bad Gateway")
+
+    monkeypatch.setattr(gp, "hydrate_one", flaky)
+    gp.repo_prs(REPO, nums=[4]); _drain()
+    assert "502" in gp.repo_prs(REPO)[1] and gp.needs_poll(REPO) is True
+    gp.invalidate(REPO)
+    gp.repo_prs(REPO, nums=[4]); _drain()
+    assert asked == [4, 4], "not remembered as gone"
+
+
+def test_a_failed_checks_fetch_is_shown(monkeypatch):
+    _reset()
+    monkeypatch.setattr(gp, "hydrate", lambda repo: {12: _bare(OPEN_PASSING)})
+
+    def boom(args, what):
+        raise gp.GitPrError("HTTP 502")
+
+    monkeypatch.setattr(gp, "_gh_json", boom)
+    gp.repo_prs(REPO, nums=[12]); _drain()
+    assert "checks for #12" in gp.repo_prs(REPO)[1]

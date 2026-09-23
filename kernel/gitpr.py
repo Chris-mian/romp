@@ -15,6 +15,7 @@ import calendar
 import json
 import os
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -32,26 +33,91 @@ _REMOTE_RE = re.compile(r"^(?:https://github\.com/"
                         r"([A-Za-z0-9._-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$")
 
 _MAIN_BRANCHES = ("main", "master")
+_CANONICAL_REMOTES = ("upstream", "origin")   # the canonical repo's remote, in the fork layout first
 _HEADS_PREFIX = "refs/heads/"
 _SYMREF_PREFIX = "ref:"
 _GITDIR_PREFIX = "gitdir:"
 
-# A command that pushes or acts on a PR, at COMMAND POSITION: the start of the string or just after a
-# shell separator, past any VAR=value prefixes. The words inside an argument (`grep -rn 'git push' docs/`)
-# never count, and read-only subcommands (view / list / checks / diff / status) are absent: looking at a
-# PR is not acting on it. The judge's PR-ref mining and the kernel's push counter both read this one.
-_CMD_HEAD = r"(?:^|[\n;&|(]|&&|\|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*"
-PR_ACT_CMD_RE = re.compile(_CMD_HEAD + r"(?:gh\s+pr\s+(?:create|edit|merge|ready|close|reopen|comment"
-                                       r"|review)\b|git\s+push\b)")
+# A command that pushes or acts on a PR, read per SIMPLE COMMAND: the line is tokenized with quotes kept
+# whole, split at shell separators, and each piece is read past VAR=value prefixes, wrapper commands and
+# git/gh global options. Words inside an argument (`grep -rn 'git push' docs/`) never count, and read-only
+# subcommands (view / list / checks / diff / status) are absent: looking at a PR is not acting on it. The
+# judge's PR-ref mining and the kernel's push counter both read this one.
+PR_ACT_VERBS = frozenset(("create", "edit", "merge", "ready", "close", "reopen", "comment", "review"))
+_SEPARATORS = frozenset((";", "&", "&&", "|", "||", "(", ")", "\n"))
+_WRAPPERS = frozenset(("env", "time", "command", "sudo", "nohup", "exec"))
+_GIT_VALUE_OPTS = frozenset(("-C", "-c", "--git-dir", "--work-tree", "--namespace"))
+GH_REPO_OPTS = frozenset(("-R", "--repo"))
+_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_REDIRECT_RE = re.compile(r"(?<!\S)\d*[<>]{1,2}&?\d*(?!\S)")   # 2>&1, >, >> — never a command word
 
 
 class GitPrError(Exception):
     """A gh call that could not answer, carrying the reason verbatim so a caller can render it."""
 
 
+def simple_commands(cmd):
+    """The shell line `cmd` as a list of token lists, one per simple command; [] when it will not
+    tokenize (an unbalanced quote), so a caller infers nothing rather than something wrong."""
+    lexer = shlex.shlex(_REDIRECT_RE.sub(" ", (cmd or "").replace("\n", " ; ")), posix=True,
+                        punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    out, cur = [], []
+    for tok in tokens:
+        if tok in _SEPARATORS or set(tok) <= set(";&|()"):
+            if cur:
+                out.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _command_words(tokens):
+    """`tokens` past VAR=value prefixes and wrapper commands (`env FOO=1`, `time`, `command`)."""
+    i = 0
+    while i < len(tokens) and (_ASSIGN_RE.match(tokens[i]) or tokens[i] in _WRAPPERS):
+        i += 1
+    return tokens[i:]
+
+
+def _past_options(words, value_opts):
+    """`words` past leading options, where each of `value_opts` also consumes the word after it."""
+    i = 0
+    while i < len(words) and words[i].startswith("-"):
+        i += 2 if words[i] in value_opts else 1
+    return words[i:]
+
+
+def gh_pr_action(tokens):
+    """(verb, words after it, names another repo) when `tokens` is a PR-acting gh command, else None."""
+    words = _command_words(tokens)
+    if not words or words[0] != "gh":
+        return None
+    other_repo = any(w in GH_REPO_OPTS or w.startswith("--repo=") for w in words)
+    rest = _past_options(words[1:], GH_REPO_OPTS)
+    if len(rest) < 2 or rest[0] != "pr" or rest[1] not in PR_ACT_VERBS:
+        return None
+    return rest[1], rest[2:], other_repo
+
+
+def _is_git_push(tokens):
+    words = _command_words(tokens)
+    if not words or words[0] != "git":
+        return False
+    rest = _past_options(words[1:], _GIT_VALUE_OPTS)
+    return bool(rest) and rest[0] == "push"
+
+
 def is_push_command(cmd):
     """True when a Bash command pushed or acted on a PR: a refresh event."""
-    return bool(PR_ACT_CMD_RE.search(cmd or ""))
+    return any(_is_git_push(t) or gh_pr_action(t) for t in simple_commands(cmd))
 
 
 def _git(cwd, *args, timeout=8):
@@ -127,7 +193,8 @@ _REPO_OF = {}     # commondir → ('owner/repo' or '', config mtime)
 
 
 def repo_of(cwd):
-    """'owner/repo' when this checkout's origin is on GitHub, else ''. Memoized on the config file's
+    """'owner/repo' of the canonical GitHub repo for this checkout, else '': `upstream` when the clone
+    has one (the fork layout, where `origin` is the fork), else `origin`. Memoized on the config file's
     mtime, the file `git remote add` / `set-url` rewrites, so a remote added later is seen."""
     dirs = git_dirs(cwd)
     if not dirs:
@@ -136,9 +203,13 @@ def repo_of(cwd):
     hit = _REPO_OF.get(dirs[1])
     if hit is not None and hit[1] == config_mtime:
         return hit[0]
-    ok, url = _git(cwd, "remote", "get-url", "origin")
-    m = _REMOTE_RE.match(url) if (ok and url) else None
-    repo = m.group(1) if m else ""
+    repo = ""
+    for remote in _CANONICAL_REMOTES:
+        ok, url = _git(cwd, "remote", "get-url", remote)
+        m = _REMOTE_RE.match(url) if (ok and url) else None
+        if m:
+            repo = m.group(1)
+            break
     if len(_REPO_OF) > _MEMO_CAP:
         _REPO_OF.clear()
     _REPO_OF[dirs[1]] = (repo, config_mtime)
@@ -221,11 +292,18 @@ _CHECK_FIELDS = "number,statusCheckRollup"
 _MAX_SINGLE_FETCHES = 12   # cited PRs outside the list window, per refresh
 _MAX_CHECK_FETCHES = 12    # checks rollups per refresh
 _MAX_FAILING_NAMES = 6
+_BRANCH_CURRENT_SECS = 600   # a branch no session has asked about for this long is no longer current
+# gh's answers for a PR that does not exist; anything else is a failure to show, not a number to forget
+_GONE_MARKERS = ("no pull requests found", "could not resolve to a pullrequest")
 _PR_STATES = ("open", "merged", "closed")
 
 # Conclusions that mean a check FAILED. SKIPPED / NEUTRAL / SUCCESS are not failures.
 _CHECK_BAD = ("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE")
 _CHECK_PENDING = ("IN_PROGRESS", "QUEUED", "PENDING", "WAITING", "REQUESTED")
+# A commit status (StatusContext) carries `state` and `context` instead of `conclusion` and `name`.
+_STATUS_CONTEXT = "StatusContext"
+_STATUS_BAD = ("FAILURE", "ERROR")
+_STATUS_PENDING = ("PENDING", "EXPECTED")
 
 
 def _iso_to_epoch(s):
@@ -234,6 +312,17 @@ def _iso_to_epoch(s):
         return calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
     except Exception:
         return 0
+
+
+def _check_verdict(c):
+    """"bad", "running" or "ok" for one rollup entry, a check run or a commit status."""
+    if c.get("__typename") == _STATUS_CONTEXT or ("state" in c and "conclusion" not in c):
+        state = (c.get("state") or "").upper()
+        return "bad" if state in _STATUS_BAD else "running" if (not state or state in _STATUS_PENDING) else "ok"
+    concl = (c.get("conclusion") or "").upper()
+    if concl in _CHECK_BAD:
+        return "bad"
+    return "running" if (not concl or (c.get("status") or "").upper() in _CHECK_PENDING) else "ok"
 
 
 def _checks(rollup):
@@ -246,11 +335,10 @@ def _checks(rollup):
         if not isinstance(c, dict):
             continue
         any_check = True
-        concl = (c.get("conclusion") or "").upper()
-        status = (c.get("status") or "").upper()
-        if concl in _CHECK_BAD:
-            failing.append(c.get("name") or "check")
-        elif not concl or status in _CHECK_PENDING:
+        verdict = _check_verdict(c)
+        if verdict == "bad":
+            failing.append(c.get("name") or c.get("context") or "check")
+        elif verdict == "running":
             running = True
     if failing:
         return "fail", failing
@@ -319,6 +407,17 @@ def hydrate(repo, limit=_LIST_LIMIT):
     return out
 
 
+def hydrate_head(repo, branch):
+    """The newest PR whose head is `branch`, found even outside the list window, or None."""
+    rows = _gh_json(["pr", "list", "--repo", repo, "--head", branch, "--state", "all", "--limit", "1",
+                     "--json", _GH_FIELDS], "gh pr list --head")
+    return normalize(rows[0]) if isinstance(rows, list) and rows and isinstance(rows[0], dict) else None
+
+
+def _is_gone(err):
+    return any(m in str(err).lower() for m in _GONE_MARKERS)
+
+
 def hydrate_one(repo, num):
     """A single PR outside the list window. Same shape as hydrate's values."""
     row = _gh_json(["pr", "view", str(num), "--repo", repo, "--json", _GH_FIELDS], "gh pr view")
@@ -327,14 +426,17 @@ def hydrate_one(repo, num):
 
 def _fill_checks(repo, prs, nums):
     """Fetch statusCheckRollup for `nums` (in order, bounded) into the UNPUBLISHED dict `prs`. A failed
-    call leaves that PR "unknown"; the list read already succeeded, so there is no repo error to show."""
+    call leaves that PR "unknown" and returns the first reason, so the pane shows it and the poll retries."""
+    first_err = ""
     for n in [n for n in nums if n in prs][:_MAX_CHECK_FETCHES]:
         try:
             row = _gh_json(["pr", "view", str(n), "--repo", repo, "--json", _CHECK_FIELDS], "gh pr view")
-        except GitPrError:
+        except GitPrError as e:
+            first_err = first_err or "checks for #%d: %s" % (n, e)
             continue
         state, failing = _checks((row or {}).get("statusCheckRollup"))
         prs[n] = dict(prs[n], checksState=state, checksFailing=failing[:_MAX_FAILING_NAMES])
+    return first_err
 
 
 # ── the cache ────────────────────────────────────────────────────────────────────────────────────────
@@ -345,7 +447,7 @@ def _fill_checks(repo, prs, nums):
 _CACHE = {}
 _GEN = {}          # repo → invalidation count
 _WANTED = {}       # repo → every PR number a session has cited (cumulative, so none is later evicted)
-_BRANCHES = {}     # repo → branch names sessions are on, whose PR's checks come first
+_BRANCHES = {}     # repo → {branch: time.monotonic() a session last asked from it}; current ones come first
 _TRIED = {}        # repo → cited numbers gh could not return, so they are not re-kicked forever
 _INFLIGHT = set()  # repos with a refresh running
 _LOCK = threading.Lock()
@@ -375,35 +477,60 @@ def _want(repo, nums, branch):
         new = set(nums) - wanted
         wanted.update(new)
         if branch:
-            _BRANCHES.setdefault(repo, set()).add(branch)
+            _BRANCHES.setdefault(repo, {})[branch] = time.monotonic()
     if new:
         invalidate(repo)
 
 
+def _current_branches(repo, now):
+    """The branches sessions asked from within _BRANCH_CURRENT_SECS, most recent first; older ones go."""
+    seen = _BRANCHES.get(repo) or {}
+    for b in [b for b, t in seen.items() if now - t > _BRANCH_CURRENT_SECS]:
+        del seen[b]
+    return sorted(seen, key=seen.get, reverse=True)
+
+
 def _check_order(prs, branches, wanted):
-    """The PRs to fetch checks for: every session branch's own PR first, then the cited ones."""
-    heads = sorted({branch_pr(prs, b) for b in branches} - {None}, reverse=True)
-    return heads + sorted(n for n in wanted if n not in heads)
+    """The PRs to fetch checks for: the current branches' own PRs first, then open cited PRs newest
+    first, then the merged and closed ones."""
+    heads = list(dict.fromkeys(n for n in (branch_pr(prs, b) for b in branches) if n is not None))
+    cited = sorted((n for n in wanted if n in prs and n not in heads), reverse=True)
+    return (heads + [n for n in cited if prs[n].get("state") == "open"]
+            + [n for n in cited if prs[n].get("state") != "open"])
 
 
-def _assemble(repo, prs):
-    """Complete a fresh list read in private: fetch cited PRs outside the window, then checks."""
-    with _LOCK:
-        wanted = set(_WANTED.get(repo) or ())
-        branches = set(_BRANCHES.get(repo) or ())
-        tried = _TRIED.setdefault(repo, set())
-    for n in sorted(wanted - set(prs) - tried, reverse=True)[:_MAX_SINGLE_FETCHES]:
+def _fetch_missing(repo, prs, wanted, branches, tried):
+    """Fetch, into `prs`, cited PRs outside the list window and current branches with no PR in it.
+    What gh says does not exist is remembered in `tried`; any other failure is returned to show."""
+    asks = [("num", n) for n in sorted(wanted - set(prs) - tried, reverse=True)]
+    asks += [("head", b) for b in branches if branch_pr(prs, b) is None and ("head", b) not in tried]
+    first_err = ""
+    for kind, key in asks[:_MAX_SINGLE_FETCHES]:
         try:
-            one = hydrate_one(repo, n)
-        except GitPrError:
+            one = hydrate_one(repo, key) if kind == "num" else hydrate_head(repo, key)
+        except GitPrError as e:
+            if not _is_gone(e):
+                first_err = first_err or "PR %s: %s" % (key if kind == "head" else "#%d" % key, e)
+                continue
             one = None
         if one:
             prs[one["num"]] = one
         else:
             with _LOCK:
-                tried.add(n)
-    _fill_checks(repo, prs, _check_order(prs, branches, wanted))
-    return prs
+                tried.add(key if kind == "num" else (kind, key))
+    return first_err
+
+
+def _assemble(repo, prs):
+    """Complete a fresh list read in private: fetch what the window missed, then checks. Returns
+    (prs, the first reason something could not be read, or "")."""
+    with _LOCK:
+        wanted = set(_WANTED.get(repo) or ())
+        branches = _current_branches(repo, time.monotonic())
+        tried = _TRIED.setdefault(repo, set())
+    missing_err = _fetch_missing(repo, prs, wanted, branches, tried)
+    checks_err = _fill_checks(repo, prs, _check_order(prs, branches, wanted))
+    return prs, missing_err or checks_err
 
 
 def _refresh(repo):
@@ -411,7 +538,7 @@ def _refresh(repo):
     with _LOCK:
         gen = _GEN.get(repo, 0)
     try:
-        prs, err = _assemble(repo, hydrate(repo)), ""
+        prs, err = _assemble(repo, hydrate(repo))
     except GitPrError as e:
         prs, err = None, str(e)
     with _LOCK:

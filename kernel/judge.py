@@ -7356,15 +7356,36 @@ PR_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/p
 
 
 # A goal's PR is one it ACTED ON, not one it happened to mention: a segment contributes refs only when it
-# also holds a command that opens or changes a PR, or pushes the branch behind one (gp.PR_ACT_CMD_RE, the
-# one command-position matcher, shared with the kernel's push counter).
+# also holds a command that opens or changes a PR, or pushes the branch behind one (gp.is_push_command, the
+# one command reader, shared with the kernel's push counter).
 # Inside such a command a BARE number is unambiguous — `gh pr merge 503` names a PR the way loose prose
-# never can. Recorded with an EMPTY owner (the command targets the session's own checkout); skipped when the
-# command carries --repo, which points somewhere else entirely. Intervening tokens are allowed because flags
-# take values (`gh pr edit --add-label ready 503`), bounded so the scan cannot wander off down a long
-# command line, and the number must be a whole token so a version like "v2" never reads as one.
-_GH_PR_NUM_RE = re.compile(r"\bgh\s+pr\s+(?:edit|merge|ready|close|reopen|comment|review)\s+"
-                           r"(?:\S+\s+){0,6}?(\d{1,7})(?!\S)")
+# never can. It is the first positional word after the verb, read within that one simple command (so
+# `&& sleep 30` is another command), past flags and the values of flags that take one (`--title "Fix 3
+# bugs"`). Recorded with an EMPTY owner (the command targets the session's own checkout); skipped when the
+# command carries -R / --repo, which points somewhere else entirely.
+_GH_VALUE_FLAGS = frozenset(("-t", "--title", "-b", "--body", "-F", "--body-file", "-B", "--base", "-H", "--head",
+                             "-l", "--label", "--add-label", "--remove-label", "-a", "--assignee",
+                             "--add-assignee", "--remove-assignee", "-r", "--reviewer", "--add-reviewer",
+                             "--remove-reviewer", "-m", "--milestone", "-p", "--project", "--add-project",
+                             "--remove-project", "--subject", "--match-head-commit", "--author-email", "-c",
+                             "--comment", "-e", "--editor")) | gp.GH_REPO_OPTS
+_PR_NUM_WORD_RE = re.compile(r"^#?(\d{1,7})$")
+
+
+def _bare_pr_num(tokens):
+    """The PR number a PR-acting gh command names by a bare positional word, or None."""
+    act = gp.gh_pr_action(tokens)
+    if act is None or act[2]:
+        return None
+    words, i = act[1], 0
+    while i < len(words):
+        w = words[i]
+        if w.startswith("-"):
+            i += 2 if w in _GH_VALUE_FLAGS else 1
+            continue
+        m = _PR_NUM_WORD_RE.match(w)
+        return int(m.group(1)) if m else None
+    return None
 
 
 def _atom_parts(atom):
@@ -7419,7 +7440,7 @@ def _seg_pr_refs(seg):
         texts.extend(t)
         cmds.extend(c)
     out, got = [], set()
-    if any(gp.PR_ACT_CMD_RE.search(c) for c in cmds):
+    if any(gp.is_push_command(c) for c in cmds):
         for text in texts + cmds:
             for m in PR_URL_RE.finditer(text):
                 ref = (m.group(1), int(m.group(2)))
@@ -7427,11 +7448,10 @@ def _seg_pr_refs(seg):
                     got.add(ref)
                     out.append(ref)
         for c in cmds:
-            if "--repo" in c:
-                continue                    # names another repo; the empty-owner inference would be wrong
-            for m in _GH_PR_NUM_RE.finditer(c):
-                ref = ("", int(m.group(1)))
-                if ref not in got:
+            for tokens in gp.simple_commands(c):
+                num = _bare_pr_num(tokens)
+                ref = ("", num)
+                if num is not None and ref not in got:
                     got.add(ref)
                     out.append(ref)
     if len(_SEG_PR_CACHE) > 50000:          # runaway backstop; one entry per parsed segment size
@@ -7463,6 +7483,12 @@ def _refs_of(segs):
                 got.add(key)
                 out.append([key[0], key[1]])
     return out
+
+
+def _merged_refs(kept, mined):
+    """`kept` refs in their order, then any `mined` ref not already among them."""
+    seen = {tuple(r) for r in kept}
+    return list(kept) + [r for r in mined if tuple(r) not in seen]
 
 
 def _goal_has_recorded_work(store, nid, subtree=True):
@@ -15424,17 +15450,21 @@ def _record_pr_refs(store, seg_by_id):
 
     The contract is END-OF-TURN stamping: the walk builds `seg_by_id` (over every turn of the parse) only
     on a pass that judges a turn, so a PR opened mid-turn is stamped once a turn ends; None means no turn
-    was judged. A goal none of whose recorded segments resolve in the parse is left as it was: after a
-    /clear the parse stops at the new transcript's root, and "not in this parse" is not "has no PR"."""
+    was judged. After a /clear the parse stops at the new transcript's root, and "not in this parse" is
+    not "has no PR": a goal none of whose segments resolve is left as it was, and one only partly
+    resolved keeps its stored refs beside the ones it mined."""
     if seg_by_id is None:
         return False
     idx = seg_index(seg_by_id)
     changed = False
     for nid, nd in (store.get("nodes") or {}).items():
-        segs = _goal_pr_segs(store, seg_by_id, nid, idx)
+        ids = _goal_seg_ids(store, nid, subtree=False)
+        segs = _segs_for(seg_by_id, ids, idx)
         if not segs:
             continue
-        refs = _refs_of(segs)
+        refs = _refs_of(sorted(segs, key=lambda sg: sg.get("t", 0)))
+        if len(segs) < len(ids):              # some of its recorded work is outside this parse
+            refs = _merged_refs(nd.get("prRefs") or [], refs)
         if refs != (nd.get("prRefs") or []):
             nd["prRefs"] = refs or None
             changed = True
