@@ -3921,6 +3921,7 @@ def parsed_session(fsid, files, now, asm_mode_out=None, stats=None, states=None,
         _PARSE_HITS[0] += 1
         if stats is not None:
             stats["miss"] = False
+            stats["key"] = key                         # the key the tree is served under (the kernel's chat watermark, _chat_wm)
         if asm_mode_out is not None:
             asm_mode_out.append(hit[5] if len(hit) > 5 else "full")   # the mode of the parse that built this tree (review find)
         if fr is not None:                 # a WARM first touch pins too (review 2026-09-06): this path used to
@@ -3933,6 +3934,7 @@ def parsed_session(fsid, files, now, asm_mode_out=None, stats=None, states=None,
                                leaf_override=cut or None, asm_mode_out=(_am := asm_mode_out if asm_mode_out is not None else []))
     if stats is not None:
         stats["miss"] = True
+        stats["key"] = key                             # the key the fresh tree is stored under (None when a stat failed)
     _PARSE_MISSES[0] += 1                                  # a cold parse (T323: /perf parses)
     if key is not None:
         _parse_store(fsid, cut, key, session, leaf, human, (_am[-1] if _am else "full"))   # LRU, never a wholesale clear

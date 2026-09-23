@@ -11,6 +11,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { mergeWindow, keyOf, prependHead } from "./chat-window";
 import { OVERLAY_KINDS, insertRun, regionsFromRuns, runsOf, splitHeldAgainstFrame, turnsBeforeTail, type Region } from "./chat-regions";
+import { frameOlder, droppedLandedHuman, dropsLandedRow } from "./frame-guard";   // the frame watermark guard (2026-09-22): upsert reads it
 
 const requireCjs = createRequire(__filename);
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
@@ -74,6 +75,7 @@ function liftUpsert(sessions: Map<string, any>, pendingFullWhy: Map<string, stri
     // PR 1860's guard 3 onto 1877: the real same-transcript reading, its latch, the rows it posts directly and the full-frame asks it makes
     sharesAnyUuid, refusedFrameLatch: new Map(), clearRefusedLatch: () => {}, requestFullSession: (id: string, why: string) => asks.push([id, why]),
     vscodeApi: { postMessage: (m: any) => rows.push({ what: m.what, data: m.data }) },
+    frameOlder, droppedLandedHuman, dropsLandedRow,   // the frame watermark guard (2026-09-22): the real rules, their rows recorded like the merge guard's
   };
   const js = liftBetween("function upsert(msg: any) {", "\nfunction ");
   return liftWith(js, scope, ["upsert"]);
@@ -139,8 +141,9 @@ test("a BEHIND full frame whose tailLo moved down: the resident newest row the f
   assert.deepEqual(order(s), ["t1", "t2"], "the frame is authoritative for [tailLo, end): t3 goes; before the fix s.events read t3,t1,t2");
   assert.deepEqual(shape(s.regions), ["gap[0,320)", "run[320,tail):t1,t2"]);
   assert.equal(s.lastUuid, "t2", "the resident newest row is the kernel's last as of this frame");
-  assert.deepEqual(rows.map((r) => r.what), ["frame-behind"], "one row, through the named helper");
+  assert.deepEqual(rows.map((r) => r.what), ["frame-behind", "frame-drops-landed"], "one behind row through the named helper, and the landed human turn it took is filed too (frame-guard.ts, 2026-09-22)");
   assert.deepEqual(rowData(rows[0]), { id: "A", tailLo: 320, heldLo: 195, frameLast: "t2", heldLast: "t3", dropped: 1, afterLast: 1, rewindPending: false });
+  assert.deepEqual(rows[1].data, { id: "A", type: "session", n: 1, keys: ["t3"], wm: false, expected: null }, "the loss row names the turn's uuid tail and that the frame carried no watermark");
 });
 
 test("a BEHIND full frame with the same tailLo drops the resident newest row as before, and now says so", () => {
@@ -148,7 +151,7 @@ test("a BEHIND full frame with the same tailLo drops the resident newest row as 
   liftUpsert(sessions, new Map(), "A", rows).upsert(frame2([evU("t1"), evU("t2")], { tailLo: 195 }));
   assert.deepEqual(order(sessions.get("A")), ["t1", "t2"]);
   assert.deepEqual(shape(sessions.get("A").regions), ["gap[0,195)", "run[195,tail):t1,t2"]);
-  assert.deepEqual(rows.map((r) => r.what), ["frame-behind"], "a behind full from the kernel is countable now; it was silent");
+  assert.deepEqual(rows.map((r) => r.what), ["frame-behind", "frame-drops-landed"], "a behind full from the kernel is countable now, and the landed turn it took is filed; both were silent");
   assert.equal(rows[0].data.heldLo, 195);
 });
 
@@ -185,7 +188,10 @@ test("a tailLo-null frame for a session holding regions drops them (no regions w
   const s = sessions.get("A");
   assert.ok(!s.regions, "regions-less, as the documented rule says (the merge into a key-sharing held tail is a parked decision, not this change)");
   assert.deepEqual(order(s), ["t1", "t2", "t3", "t4"], "the frame's list, whole");
-  assert.deepEqual(rows.map((r) => [r.what, r.data.id, r.data.why, r.data.heldRuns, r.data.frameEvents]), [["regions-dropped", "A", "no-tail-lo", 2, 4]]);
+  assert.deepEqual(rows.filter((r) => r.what === "regions-dropped").map((r) => [r.what, r.data.id, r.data.why, r.data.heldRuns, r.data.frameEvents]), [["regions-dropped", "A", "no-tail-lo", 2, 4]]);
+  const lost = rows.filter((r) => r.what === "frame-drops-landed");   // the held history's landed human turns left the model: filed too (frame-guard.ts, 2026-09-22)
+  assert.equal(lost.length, 1, "one loss row beside the regions row: %s".replace("%s", JSON.stringify(rows.map((r) => r.what))));
+  assert.ok(lost[0].data.n >= 1 && lost[0].data.wm === false && lost[0].data.expected === null, JSON.stringify(lost[0].data));
 });
 
 test("a regions-less session holding prepended history that receives a numeric-tailLo full loses that history to the frame, and a regions-dropped row says so", () => {
@@ -194,7 +200,8 @@ test("a regions-less session holding prepended history that receives a numeric-t
   liftUpsert(sessions, new Map(), "A", rows).upsert(frame2([evU("t1"), evU("t2"), evU("t3")], { tailLo: 200 }));
   const s = sessions.get("A");
   assert.deepEqual(shape(s.regions), ["gap[0,200)", "run[200,tail):t1,t2,t3"], "the frame's tail run is all the page holds now: the prepended rows had no run to live in");
-  assert.deepEqual(rows.map((r) => [r.what, r.data.why, r.data.heldRuns, r.data.heldEvents, r.data.frameEvents]), [["regions-dropped", "regions-less", 0, 4, 3]]);
+  assert.deepEqual(rows.filter((r) => r.what === "regions-dropped").map((r) => [r.what, r.data.why, r.data.heldRuns, r.data.heldEvents, r.data.frameEvents]), [["regions-dropped", "regions-less", 0, 4, 3]]);
+  assert.equal(rows.filter((r) => r.what === "frame-drops-landed").length, 1, "the prepended history's landed turns leaving the model are filed too (frame-guard.ts)");
   // …but a fresh full for a session whose whole list the frame carries (the everyday re-send) files nothing
   const quiet: any[] = [];
   const s2 = new Map<string, any>([["A", { ...heldTail([evU("t1"), evU("t2")]), regions: undefined, tailLo: null }]]);

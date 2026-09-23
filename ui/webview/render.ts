@@ -62,6 +62,7 @@ import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
 import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody, refusedRestoreText } from "./send-pending";
+import { type FrameWm, frameOlder, droppedLandedHuman, dropsLandedRow } from "./frame-guard";   // the frame watermark guard (2026-09-22): an older build's frame is ignored, a vanished landed turn is filed
 import { reconcileHeld, heldAsQueued, type HeldCopy, type HeldQueued, type HeldMemory } from "./queued-held";
 import { rescindedComposerState } from "./queued-rescind";   // a queued message's edit pulls it back into the composer (T373)
 import { reloadHoldReason } from "./reload-hold";
@@ -384,7 +385,8 @@ interface BgTasks { count: number; tasks: BgTask[]; }
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; regions?: Region[]; pageTurns?: number; tailLo?: number | null; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; regions?: Region[]; pageTurns?: number; tailLo?: number | null; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo;
+                    wm?: FrameWm; }   // the watermark of the newest frame applied (kernel.py _chat_wm; frame-guard.ts): what the build that produced the resident events had read
 // A SUBAGENT VIEWER pseudo-session (plans/subagent-transcripts.md): a read-only tab whose events are one
 // agent's own transcript, fed by {type:"subagent"} frames. Client-only — the kernel never lists it in
 // tabOrder (reconcileTabOrder keeps a known, never-kernel-seen id), so it lives exactly as long as the
@@ -17573,6 +17575,14 @@ function upsert(msg: any) {
   if (typeof msg.selfHost === "string" && msg.selfHost && !hostOf(msg.id)) adoptSelfHost(msg.selfHost);
   const existed = sessions.has(msg.id);
   const prev = sessions.get(msg.id);
+  // A frame built from an OLDER reading than the one the page holds is ignored, and filed (frame-guard.ts, 2026-09-22): the
+  // kernel's senders refuse such a build to a base holder themselves (kernel.py _chat_wm_older); this is the page's own copy of
+  // the rule, so a frame that got through (a sender outside the guard, a relay replay) cannot take a landed message off the page.
+  // Nothing below runs: the ask latch stands, and the kernel's next frame, newer by construction, lands as usual.
+  if (prev && prev.wm && msg.wm && typeof msg.wm === "object" && frameOlder(prev.wm, msg.wm as FrameWm)) {
+    chatDiagRow("frame-stale", { id: msg.id, type: "session", held: prev.wm, frame: msg.wm });
+    return;
+  }
   awaitingFull.delete(msg.id);   // a full session landed → this session is re-based; a later gap may ask again
   const wasSkeleton = onFull(skeletonTabs, msg.id);   // …and the tab is loaded: it leaves the skeleton set (the kernel released it when it sent this frame)
   // A frame that would take a HELD transcript from content to nothing is status-shaped, never a wipe (T249b,
@@ -17758,6 +17768,7 @@ function upsert(msg: any) {
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
     mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record, the settings file unreadable (flags)
     notify: ("notify" in msg) ? !!msg.notify : (prev ? prev.notify : undefined),
+    wm: (msg.wm && typeof msg.wm === "object") ? (msg.wm as FrameWm) : (prev ? prev.wm : undefined),   // the newest frame's watermark (frame-guard.ts); a kept-resident refusal keeps the held one
   };
   sessions.set(msg.id, s);
   // a session frame can ride the kernel's chat build cache with a stale name/color embedded (its sig
@@ -17768,6 +17779,13 @@ function upsert(msg: any) {
   reconcileRewind(s);       // pending-rewind overlay + the editable-bubble set, from the fresh payload
   reconcileHeldCopies(s);   // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);   // re-assert (or retire) any in-flight optimistic sends across the rebuild
+  // A landed human turn the page held that this frame no longer carries is FILED, whatever the watermark said (frame-guard.ts,
+  // 2026-09-22): a rebased fork or a rewind the page asked for removes rows on purpose and the row says so; anything else is
+  // the kernel's newer list disagreeing with its older one about a record, the loss the user watched, never silent again.
+  if (prev) {
+    const gone = droppedLandedHuman(prev.events as unknown as import("./frame-guard").GuardEvent[], s.events as unknown as import("./frame-guard").GuardEvent[]);
+    if (gone.length) chatDiagRow("frame-drops-landed", dropsLandedRow(msg.id, "session", gone, !!(msg.wm && typeof msg.wm === "object"), msg.rebased ? "rebased" : pendingRewind.has(msg.id) ? "rewind" : null));
+  }
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns
   // on the SAME transcript — the common case) from a FORK (the tab re-pointed onto a NEW transcript,
   // events replaced wholesale, e.g. a /clear-style fork). Only a FORK drops the cached DOM and
@@ -18020,6 +18038,12 @@ function chatTail(msg: any) {
     requestFullSession(msg.id, "nobase");
     return;
   }
+  // a delta built from an OLDER reading than the frame the page holds is ignored and filed (frame-guard.ts, 2026-09-22): the
+  // upsert's rule, on the delta wire; the kernel's own guard (_chat_wm_older) refuses such a build first, this is the page's copy
+  if (s.wm && msg.wm && typeof msg.wm === "object" && frameOlder(s.wm, msg.wm as FrameWm)) {
+    chatDiagRow("frame-stale", { id: msg.id, type: "chatTail", held: s.wm, frame: msg.wm });
+    return;
+  }
   // msg.from is a GLOBAL transcript index; the resident events are the tail [headFrom, …) → map to local.
   // A proto-2 tail (T323 stage 4b) names the last unchanged event by uuid instead: the suffix starts after it.
   let from = (msg.from | 0) - (s.headFrom || 0);
@@ -18085,6 +18109,7 @@ function chatTail(msg: any) {
     for (const r of s.regions) if (r.kind === "run" && r.hi != null) hist += r.events.length;
     if (from < hist) { requestFullSession(msg.id, "gap"); return; }
   }
+  const heldBefore = s.events.slice();             // what the page held, for the landed-turn check below (frame-guard.ts)
   stripOptimistic(s);                              // kernel coordinates from here on (re-injected below)
   const wasLen = s.events.length;
   s.events.length = from;                          // drop the (now superseded) tail...
@@ -18093,6 +18118,11 @@ function chatTail(msg: any) {
   reconcileRewind(s, from);                        // pending-rewind overlay + the editable-bubble set, judged below the tail's start (see there)
   reconcileHeldCopies(s);                          // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);                          // re-assert (or retire) any in-flight optimistic sends
+  if (msg.wm && typeof msg.wm === "object") s.wm = msg.wm as FrameWm;   // the newest frame applied (frame-guard.ts)
+  {   // a landed human turn this delta took off the page is filed, expected (a rewind the page asked for) or not (frame-guard.ts, 2026-09-22)
+    const gone = droppedLandedHuman(heldBefore as unknown as import("./frame-guard").GuardEvent[], s.events as unknown as import("./frame-guard").GuardEvent[]);
+    if (gone.length) chatDiagRow("frame-drops-landed", dropsLandedRow(msg.id, "chatTail", gone, !!(msg.wm && typeof msg.wm === "object"), pendingRewind.has(msg.id) ? "rewind" : null));
+  }
   // A delta that SHRINKS the tail (an event retired with nothing replacing it — cancelling the last queued
   // message is the everyday case) lands on `from === new length`, so lowering v.rendered to `from` leaves it
   // EQUAL to the length and syncView's no-op fast path skips the repaint — the retired turn stayed on screen
