@@ -62,6 +62,7 @@ import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
 import { type PendingSend, type TailEvent, OPT_PREFIX, isOptimisticUuid, isKernelEchoUuid, newPending, mintQid, reconcilePending, queuedCopyToHide, dropPending, bareGroupLabel, sentAtLabel, pendingBody, refusedRestoreText } from "./send-pending";
+import { type FrameWm, frameOlder, droppedLandedHuman, dropsLandedRow, forgetHeldWm } from "./frame-guard";   // the frame watermark guard (2026-09-22): an older build's frame is ignored, a vanished landed turn is filed; a reconnect forgets the held watermarks
 import { reconcileHeld, heldAsQueued, type HeldCopy, type HeldQueued, type HeldMemory } from "./queued-held";
 import { rescindedComposerState } from "./queued-rescind";   // a queued message's edit pulls it back into the composer (T373)
 import { reloadHoldReason } from "./reload-hold";
@@ -339,7 +340,7 @@ interface ChatNotice { itemId: string; key: string; rev: number; title: string; 
                        kind?: "goal" | "notice";   // "goal": a judge's question on a goal card, Reply / Continue where offered / Clear; absent or "notice": a notice with its stored actions, Clear when it has none (plans/needs-you.md, phase three)
                        cont?: boolean;              // a goal row offers Continue (the kernel: a live session; the feed card's own rule)
                        fix?: "credential" }         // the judges' credential refused (plans/needs-you.md, the sixth floor): the row's one action is the fix, no Clear
-interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; needsYouCount?: number | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; apiNoRetry?: boolean; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you: the red tab) rather than a transient API error (amber, retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); apiNoRetry = the blocking notice is one nothing retries (a compaction that failed on the backend's side, the launch error's noRetry): the card draws no Retry, no Stop-all and no retrying-soon meta (2026-09-21); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Needs you ring widget wears a dashed magenta ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring of 2026-09-13, renamed and recoloured 2026-09-21); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; modelFallback?: ModelFallback | null; notices?: ChatNotice[] | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; needsYou?: boolean | null; needsYouCount?: number | null; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; apiNoRetry?: boolean; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions): the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you: the red tab) rather than a transient API error (amber, retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried: retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried: a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); apiNoRetry = the blocking notice is one nothing retries (the launch error's noRetry, the Codex bracket's end notices: a compaction Codex could not run, the app-server's death, or a kernel restart whose outcome the new kernel cannot learn; the ends named 2026-09-22, when the restart end outgrew a gloss of one failed compaction): the card draws no Retry, no Stop-all and no retrying-soon meta (2026-09-21); needsYou = the FEED filed a card of this session under needs-you (build_session, from the kernel's last feed build; null before the first) → the Needs you ring widget wears a dashed magenta ring on the tab in every live state, working included (tab-state.ts RING_TEST, tab-widgets.ts composeTabRing; the ask ring of 2026-09-13, renamed and recoloured 2026-09-21); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -384,7 +385,8 @@ interface BgTasks { count: number; tasks: BgTask[]; }
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; regions?: Region[]; pageTurns?: number; tailLo?: number | null; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; regions?: Region[]; pageTurns?: number; tailLo?: number | null; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo;
+                    wm?: FrameWm; }   // the watermark of the newest frame applied (kernel.py _chat_wm; frame-guard.ts): what the build that produced the resident events had read
 // A SUBAGENT VIEWER pseudo-session (plans/subagent-transcripts.md): a read-only tab whose events are one
 // agent's own transcript, fed by {type:"subagent"} frames. Client-only — the kernel never lists it in
 // tabOrder (reconcileTabOrder keeps a known, never-kernel-seen id), so it lives exactly as long as the
@@ -5155,11 +5157,13 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   const body = el("div", "notice-md");
   body.textContent = ev.text || "The session stopped on an API error.";
   const gist = ev.status ? `error ${ev.status}` : "error";
-  // A notice NOTHING retries (2026-09-21): a compaction that failed on the backend's side rides this card as a
-  // launch error, and its Retry press sent the literal word "retry" into the thread as a turn, cleared the card and
-  // compacted nothing; no auto-retry ever fires for a launch error either, so the retrying-soon meta was false and
-  // Stop-all stopped nothing. The kernel says so on the live status (apiNoRetry, from the launch error's noRetry),
-  // read off the status, not the event, as every flag above is: the same card, the words alone, no meta, no actions.
+  // A notice NOTHING retries (2026-09-21): the Codex bracket's end notices (a compaction Codex could not run, the
+  // app-server's death, or a kernel restart whose outcome the new kernel cannot learn; the ends named 2026-09-22, when
+  // the restart end outgrew a gloss of one failed compaction) ride this card as a launch error, and its Retry press
+  // sent the literal word "retry" into the thread as a turn, cleared the card and compacted nothing; no auto-retry
+  // ever fires for a launch error either, so the retrying-soon meta was false and Stop-all stopped nothing. The
+  // kernel says so on the live status (apiNoRetry, from the launch error's noRetry), read off the status, not the
+  // event, as every flag above is: the same card, the words alone, no meta, no actions.
   if (st?.apiNoRetry) {
     return notice({ src: "API", glyph: "api", sev: "err", gist, body, open: true, key: "apierr:" + (ev.uuid || (activeId || "")), cls: "turn-apierror" });
   }
@@ -16588,6 +16592,7 @@ window.addEventListener("romp:hostRelayUp", (e) => {
   refreshSettledPreviews();
   reaskWaitingSubagents(h);   // …and that host's subagent viewers still waiting ask again (T355: a remote kernel's restart; an empty host is the local one)
   reaskOutstandingGaps(Array.from(gapLoading), h);   // …and re-send every loadTurns still outstanding for that host: a relay drop fires no romp:wsdown, so gapLoading kept its keys and, with the guard now correct, the gap would stay suppressed until a reload (2026-09-15)
+  if (h) forgetHeldWm(sessions, (sid) => hostOf(sid) === h);   // …and that host's held watermarks (frame-guard.ts, 2026-09-23): the remote kernel behind the reopened relay may be a fresh process whose live-tail revision restarted at 0, and a held revision would refuse its every frame for a session whose files have not moved (the local socket's twin rides the shim's wsup FRAME)
   clearAsksForHost(h);   // …and that host's parked full asks (2026-09-19): an ask sent on the relay socket that died, or one the kernel answered with a status frame where a full was owed, is never answered on this road, and latched it would refuse every later delta for its tab until a reload (clearAsksForHost says why a flushed ask is cleared too)
   // …and the tab this pane is LOOKING AT, when that host owns it (T246, the user 2026-09-07): the relay's
   // open is the moment the remote kernel holds a FRESH client for this pane — after that kernel restarted,
@@ -17573,6 +17578,14 @@ function upsert(msg: any) {
   if (typeof msg.selfHost === "string" && msg.selfHost && !hostOf(msg.id)) adoptSelfHost(msg.selfHost);
   const existed = sessions.has(msg.id);
   const prev = sessions.get(msg.id);
+  // A frame built from an OLDER reading than the one the page holds is ignored, and filed (frame-guard.ts, 2026-09-22): the
+  // kernel's senders refuse such a build to a base holder themselves (kernel.py _chat_wm_older); this is the page's own copy of
+  // the rule, so a frame that got through (a sender outside the guard, a relay replay) cannot take a landed message off the page.
+  // Nothing below runs: the ask latch stands, and the kernel's next frame, newer by construction, lands as usual.
+  if (prev && prev.wm && msg.wm && typeof msg.wm === "object" && frameOlder(prev.wm, msg.wm as FrameWm)) {
+    chatDiagRow("frame-stale", { id: msg.id, type: "session", held: prev.wm, frame: msg.wm });
+    return;
+  }
   awaitingFull.delete(msg.id);   // a full session landed → this session is re-based; a later gap may ask again
   const wasSkeleton = onFull(skeletonTabs, msg.id);   // …and the tab is loaded: it leaves the skeleton set (the kernel released it when it sent this frame)
   // A frame that would take a HELD transcript from content to nothing is status-shaped, never a wipe (T249b,
@@ -17758,6 +17771,7 @@ function upsert(msg: any) {
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
     mailOffWhy: ("mailOffWhy" in msg) ? String(msg.mailOffWhy || "") : (prev ? prev.mailOffWhy : undefined),   // why the mail is off (T356): thread, isolation, an unreadable record, the settings file unreadable (flags)
     notify: ("notify" in msg) ? !!msg.notify : (prev ? prev.notify : undefined),
+    wm: (msg.wm && typeof msg.wm === "object") ? (msg.wm as FrameWm) : (prev ? prev.wm : undefined),   // the newest frame's watermark (frame-guard.ts); a kept-resident refusal keeps the held one
   };
   sessions.set(msg.id, s);
   // a session frame can ride the kernel's chat build cache with a stale name/color embedded (its sig
@@ -17768,6 +17782,13 @@ function upsert(msg: any) {
   reconcileRewind(s);       // pending-rewind overlay + the editable-bubble set, from the fresh payload
   reconcileHeldCopies(s);   // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);   // re-assert (or retire) any in-flight optimistic sends across the rebuild
+  // A landed human turn the page held that this frame no longer carries is FILED, whatever the watermark said (frame-guard.ts,
+  // 2026-09-22): a rebased fork or a rewind the page asked for removes rows on purpose and the row says so; anything else is
+  // the kernel's newer list disagreeing with its older one about a record, the loss the user watched, never silent again.
+  if (prev) {
+    const gone = droppedLandedHuman(prev.events as unknown as import("./frame-guard").GuardEvent[], s.events as unknown as import("./frame-guard").GuardEvent[]);
+    if (gone.length) chatDiagRow("frame-drops-landed", dropsLandedRow(msg.id, "session", gone, !!(msg.wm && typeof msg.wm === "object"), msg.rebased ? "rebased" : pendingRewind.has(msg.id) ? "rewind" : null));
+  }
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns
   // on the SAME transcript — the common case) from a FORK (the tab re-pointed onto a NEW transcript,
   // events replaced wholesale, e.g. a /clear-style fork). Only a FORK drops the cached DOM and
@@ -18020,6 +18041,12 @@ function chatTail(msg: any) {
     requestFullSession(msg.id, "nobase");
     return;
   }
+  // a delta built from an OLDER reading than the frame the page holds is ignored and filed (frame-guard.ts, 2026-09-22): the
+  // upsert's rule, on the delta wire; the kernel's own guard (_chat_wm_older) refuses such a build first, this is the page's copy
+  if (s.wm && msg.wm && typeof msg.wm === "object" && frameOlder(s.wm, msg.wm as FrameWm)) {
+    chatDiagRow("frame-stale", { id: msg.id, type: "chatTail", held: s.wm, frame: msg.wm });
+    return;
+  }
   // msg.from is a GLOBAL transcript index; the resident events are the tail [headFrom, …) → map to local.
   // A proto-2 tail (T323 stage 4b) names the last unchanged event by uuid instead: the suffix starts after it.
   let from = (msg.from | 0) - (s.headFrom || 0);
@@ -18085,6 +18112,7 @@ function chatTail(msg: any) {
     for (const r of s.regions) if (r.kind === "run" && r.hi != null) hist += r.events.length;
     if (from < hist) { requestFullSession(msg.id, "gap"); return; }
   }
+  const heldBefore = s.events.slice();             // what the page held, for the landed-turn check below (frame-guard.ts)
   stripOptimistic(s);                              // kernel coordinates from here on (re-injected below)
   const wasLen = s.events.length;
   s.events.length = from;                          // drop the (now superseded) tail...
@@ -18093,6 +18121,11 @@ function chatTail(msg: any) {
   reconcileRewind(s, from);                        // pending-rewind overlay + the editable-bubble set, judged below the tail's start (see there)
   reconcileHeldCopies(s);                          // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);                          // re-assert (or retire) any in-flight optimistic sends
+  if (msg.wm && typeof msg.wm === "object") s.wm = msg.wm as FrameWm;   // the newest frame applied (frame-guard.ts)
+  {   // a landed human turn this delta took off the page is filed, expected (a rewind the page asked for) or not (frame-guard.ts, 2026-09-22)
+    const gone = droppedLandedHuman(heldBefore as unknown as import("./frame-guard").GuardEvent[], s.events as unknown as import("./frame-guard").GuardEvent[]);
+    if (gone.length) chatDiagRow("frame-drops-landed", dropsLandedRow(msg.id, "chatTail", gone, !!(msg.wm && typeof msg.wm === "object"), pendingRewind.has(msg.id) ? "rewind" : null));
+  }
   // A delta that SHRINKS the tail (an event retired with nothing replacing it — cancelling the last queued
   // message is the everyday case) lands on `from === new length`, so lowering v.rendered to `from` leaves it
   // EQUAL to the length and syncView's no-op fast path skips the repaint — the retired turn stayed on screen
@@ -19061,6 +19094,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   }
   // the pipe's down edge is the VS Code twin of the shim's romp:wsdown: unconfirmed sends say so (markPendingLost)
   if (m.type === "pipeState" && m.up) reaskWaitingSubagents();   // the extension's reconnect-class event (it never sees romp:wsup), T355
+  if (m.type === "pipeState" && m.up) forgetHeldWm(sessions, null);   // …and the held watermarks go (frame-guard.ts, 2026-09-23): the kernel behind the pane's pipe may be a fresh process whose live-tail revision restarted at 0
   if (m.type === "pipeState") { if (!m.up) { markPendingLost("connection"); onWireDown(); } pipeBanner(!!m.up, Number(m.queued) || 0); return; }   // the pane's down edge clears the in-flight asks as the socket's does (round nine, medium 2)
   // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
   // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's
@@ -19077,6 +19111,13 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // dropFile was not delivered" toast (and tore down an in-flight provisional create) an RTT before
   // the relay's own onopen re-shipped correctly. romp:hostRelayUp IS that onopen — the one exact event.
   if (m.type === "hostUp") { refreshSettledPreviews(); healPathImgs(); }
+  // The held watermarks go on the shim's wsup FRAME (frame-guard.ts forgetHeldWm, 2026-09-23): the kernel behind the new socket
+  // may be a fresh process whose live-tail revision restarted at 0, and a held revision would refuse its every frame for a
+  // session whose files have not moved. In FRAME order for the same reason as the skeleton flip below: a reset at onopen
+  // could be re-latched by a dead-socket frame still draining. Every host's, as the kernel's own reset at this socket's
+  // ready (_client_reset_chat_base) drops every base and awaitingFull clears whole. A statement AHEAD of the chain, like
+  // the tabOrder pre-step, so the chain's wsup arm stays the one line its pins read.
+  if (m.type === "wsup") forgetHeldWm(sessions, null);
   if (m.type === "tabOrder") noteSkeletonTabOrder(m);   // BEFORE the chain's applyTabOrder below: one repaint, final skeleton set (2026-09-07)
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
