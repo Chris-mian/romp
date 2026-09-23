@@ -538,11 +538,12 @@ class StoreCas(unittest.TestCase):
                 with jd._RAW_STORE_LOCK:
                     jd._RAW_STORE.clear(); jd._RAW_HISTORY.clear(); jd._RAW_PUBLISHED.clear()   # every shared cache gone: the reference is all the holder has
         jd.record_verdict(c0, c0["nodes"][g1], "unblocker", "note", T0 + 40, why="ours")
-        b2 = jd.load_goals(SID); b2["nodes"][g1]["text"] = "moved so the holder is behind"; jd.save_goals(SID, b2)
+        b2 = jd.load_goals(SID); b2["nodes"][g1]["parentId"] = "V1b"; jd.save_goals(SID, b2)   # the SAME field moves again before the holder's save: the first
+        #                                                                                       iteration carries V1b, and only a moved reference knows V1b is not the holder's own move
         with mock.patch.object(jd, "_rebase_onto_disk", rebase_then_third):
             jd.save_goals(SID, c0)
         self.assertEqual(len(calls), 2, "premise: two rebase iterations")
-        self.assertEqual(jd.load_goals(SID)["nodes"][g1].get("parentId"), "V2", "the second iteration carries the third writer's V2 from the moved reference (a stale reference: V1 read as the holder's own move, published over V2)")
+        self.assertEqual(jd.load_goals(SID)["nodes"][g1].get("parentId"), "V2", "the second iteration carries the third writer's V2 from the moved reference (a stale reference, the load's V1 bytes: V1b reads as the holder's own move, 'both moved', V1b published over V2)")
         # the mechanism: after one rebase the reference's bytes are the version rebased onto's, under its identity
         a = jd.load_goals(SID)
         d = jd.load_goals(SID); d["nodes"][g1]["parentId"] = "V3"; jd.save_goals(SID, d)
