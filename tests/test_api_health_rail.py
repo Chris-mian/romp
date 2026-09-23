@@ -200,6 +200,13 @@ class States(_Fixture):
             f = self.frame()
             self.assertEqual((f["state"], f["waiting"]), ("ok", 0), flag + " is the session's own, not the API's")
 
+    def test_a_turn_a_restart_cut_does_not_count(self):
+        # the notice a Codex turn a kernel restart cut ends with (noRetry, 2026-09-22) rides the API-error record shape
+        # but says nothing about the API: counted, the cell read degraded over a restart while the API served fine
+        self.add(1, err={"status": None, "category": "unknown", "noRetry": True})
+        f = self.frame()
+        self.assertEqual((f["state"], f["waiting"]), ("ok", 0))
+
     def test_a_spend_limit_record_counts(self):
         self.add(0, err={"status": 400, "category": "billing_error", "spendLimit": True})
         f = self.frame()
