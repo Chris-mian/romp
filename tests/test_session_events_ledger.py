@@ -166,11 +166,13 @@ class BootReconcileRows(unittest.TestCase):
               "  %d 1 /usr/bin/python3 /x/romp/bin/romp-kernel\n"
               "  %d %d /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
               ) % (CLI, SID, TOOL, CLI, KERNEL, LIVE, KERNEL, SID)
-        listing = "romp-session-11111111-%d-1757374800.scope loaded active running claude\n" % CLI
+        T = sb.state_tag_of(d)   # this kernel's state tag, on the orphan's environment and its scope (the reap's proof)
+        listing = "romp-session-11111111-%d-1757374800.scope loaded active running romp session %s romp-state=%s\n" % (CLI, SID, T)
         def run(argv, **kw):
             return mock.Mock(stdout=ps if argv == sb.PS_ARGV else (listing if argv == sb.SCOPE_LIST_ARGV else ""), returncode=0)
         with mock.patch.object(sb.subprocess, "run", side_effect=run), \
              mock.patch.object(sb.os, "kill", side_effect=lambda p, s: None), \
+             mock.patch.object(sb, "proc_state_tag", lambda p, **k: T if p in (CLI, LIVE) else None), \
              mock.patch.object(sb.SdkBackend, "_pid_alive", lambda self, p: False), \
              mock.patch.object(sb.SdkBackend, "_ensure", lambda self, sid, **k: None):
             be._boot_reconcile([sb.read_reg(Path(d), SID)])
