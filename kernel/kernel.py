@@ -50693,6 +50693,110 @@ def _ws_accept(key):
 WS_QUEUE_BYTES = int(os.environ.get("ROMP_WS_QUEUE_BYTES", str(16 * 1024 * 1024)))
 
 
+# Per-message compression (RFC 7692 permessage-deflate, 2026-09-23). The panes' view frames are JSON, and JSON
+# deflates well: the whole feed frame of a 374-card board measured 2.53 MB plain and 0.36 MB deflated at level 6
+# (7.1x), 0.42 MB at level 3 (6.1x); the feed's steady-state deltas averaged 548 KB each over one day on the same
+# board (/perf sends.delta.feed: 20,462 frames, 11.2 GB), and every reconnect re-bases a delta client with a whole
+# frame. Over a tunnelled link (tailscale serve, an ssh -L, the phone) that traffic is what fell behind: the feed
+# client was dropped with megabytes unsent ("not acknowledging: 4183744 bytes unsent for 36s"), and until this
+# every byte crossed plain — the upgrade ignored the Sec-WebSocket-Extensions offer every browser and Node's `ws`
+# make on every dial. The kernel now takes that offer and sets RSV1 on the frames it compresses; the client
+# inflates natively, so no pane code changes. Both directions run WITHOUT context takeover (each message its own
+# deflate stream; the response says so for both sides): no compressor state per client, so the sender threads
+# share nothing and the reader inflates statelessly, at the cost of the cross-message dictionary — worth little on
+# frames far larger than the 32 KB window. Frames under _WS_DEFLATE_MIN go plain: a keepalive or a status frame
+# gains nothing from a deflate stream's header. Level 3 is the knee measured on the feed frame (17 ms per 2.5 MB;
+# level 6 took 55 ms for 14% fewer bytes), and the compress runs on the client's own sender thread with the GIL
+# released, never on the pusher's. ROMP_WS_DEFLATE=0 declines every offer; ROMP_WS_DEFLATE_LEVEL sets zlib's level.
+_WS_DEFLATE_ON = os.environ.get("ROMP_WS_DEFLATE", "1") != "0"
+_WS_DEFLATE_LEVEL = max(1, min(9, int(os.environ.get("ROMP_WS_DEFLATE_LEVEL", "3") or 3)))
+_WS_DEFLATE_MIN = 1024                     # a message shorter than this goes plain
+_WS_DEFLATE_TAIL = b"\x00\x00\xff\xff"     # the empty stored block a sync flush ends with: stripped on the wire, restored to inflate
+_WS_DEFLATE_PARAMS = ("server_no_context_takeover", "client_no_context_takeover", "server_max_window_bits", "client_max_window_bits")
+
+
+def _ws_deflate_offer(header):
+    """The first permessage-deflate offer in a Sec-WebSocket-Extensions header the kernel can take → its terms
+    ({"wbits": the deflate window the kernel must keep to, 15 unless the offer bounded it; "bounded": whether the
+    offer named a server window at all, which the response must then echo, at 15 too}), or None: no header, no
+    such offer, or every offer carried a parameter RFC 7692 §7.1 says a server must decline (an unknown name, a
+    repeated one, a value where none belongs, a window outside 8..15). A server window of 8 is declined too: zlib
+    will not build a raw deflate stream with a window that small (ValueError), so accepting the offer would
+    promise what cannot be sent; no browser or library offers one."""
+    if not header:
+        return None
+    for offer in str(header).split(","):
+        parts = [p.strip() for p in offer.split(";")]
+        if parts[0].lower() != "permessage-deflate":
+            continue
+        seen, wbits, ok = set(), 15, True
+        for p in parts[1:]:
+            if not p:
+                continue
+            name, _, val = p.partition("=")
+            name, val = name.strip().lower(), val.strip().strip('"')
+            if name not in _WS_DEFLATE_PARAMS or name in seen:
+                ok = False
+                break
+            seen.add(name)
+            if name.endswith("_no_context_takeover"):
+                ok = not val                                     # a flag: a value is malformed
+            elif name == "server_max_window_bits":
+                ok = val.isdigit() and 9 <= int(val) <= 15       # the value is required in an offer
+                wbits = int(val) if ok else wbits
+            elif val:                                            # client_max_window_bits: the value is optional
+                ok = val.isdigit() and 8 <= int(val) <= 15
+            if not ok:
+                break
+        if ok:
+            return {"wbits": wbits, "bounded": "server_max_window_bits" in seen}
+    return None
+
+
+def _ws_deflate_response(terms):
+    """The Sec-WebSocket-Extensions the kernel answers an accepted offer with: no context takeover on either side
+    (RFC 7692 §7.1.1 lets a server state both whether or not the offer did; the client MUST then reset its
+    compressor per message, which is what lets the reader inflate statelessly), and the kernel's window
+    whenever the offer named one — at 15 as well: §7.1.2.1 accepts such an offer only WITH the parameter in the
+    response, and a client that asked (Python's websockets, for one) refuses a response without it, which would
+    have left it unable to connect at all where declining the offer had let it connect plain (review find,
+    2026-09-23)."""
+    out = "permessage-deflate; server_no_context_takeover; client_no_context_takeover"
+    if terms.get("bounded"):
+        out += "; server_max_window_bits=%d" % terms.get("wbits", 15)
+    return out
+
+
+def _ws_deflate(data, wbits=15):
+    """One message's payload deflated for the wire (RFC 7692 §7.2.1): a fresh raw deflate stream, sync-flushed,
+    its trailing empty block removed. None when the result would not be smaller (or zlib refused): the frame
+    goes plain then, which the extension permits per message."""
+    try:
+        z = zlib.compressobj(_WS_DEFLATE_LEVEL, zlib.DEFLATED, -wbits)
+        out = z.compress(data) + z.flush(zlib.Z_SYNC_FLUSH)
+    except zlib.error:
+        return None
+    if not out.endswith(_WS_DEFLATE_TAIL):
+        return None
+    out = out[:-4]
+    return out if 0 < len(out) < len(data) else None
+
+
+def _ws_inflate(data, cap):
+    """A compressed message's payload restored (RFC 7692 §7.2.2): the stripped tail appended, one fresh raw
+    inflate stream (the response demanded no context takeover of the client). None when the bytes are not a
+    deflate stream or would inflate past `cap` — the reader treats either as the connection ending, as it
+    treats a fragmented message overrunning the same cap."""
+    try:
+        z = zlib.decompressobj(-15)
+        out = z.decompress(data + _WS_DEFLATE_TAIL, cap + 1)
+    except zlib.error:
+        return None
+    if len(out) > cap or z.unconsumed_tail:
+        return None
+    return out
+
+
 # Every client OWNS a queue and a sender thread, and the shared push/heartbeat loops only ever ENQUEUE.
 #
 # They used to write to the socket directly, which is the bug this fixes: a client that stops draining — a
@@ -50735,7 +50839,7 @@ def _ws_sender(q, sock, lock, client):
                 with lock:
                     sock.sendall(s)
             else:
-                _ws_send(sock, lock, s)
+                _ws_send(sock, lock, s, client.get("deflate"))   # the client's permessage-deflate terms, or None
         except OSError:
             client["alive"] = False
             return
@@ -51192,11 +51296,20 @@ def _drop_dead_ws_client(client, why):
         pass
 
 
-def _ws_send(sock, lock, text):
-    """Frame and write one text message. Called ONLY from that client's sender thread (see _ws_sender)."""
+def _ws_send(sock, lock, text, deflate=None):
+    """Frame and write one text message. Called ONLY from that client's sender thread (see _ws_sender).
+    `deflate` is the client's negotiated permessage-deflate terms (None: it offered none, or the kernel
+    declined): a message of _WS_DEFLATE_MIN bytes or more is compressed and its frame carries RSV1, the
+    extension's per-message flag (RFC 7692 §6); a shorter one, or one deflate would not shrink, goes plain
+    in the frame it always did."""
     data = text.encode("utf-8")
+    b0 = 0x81                                 # FIN + text frame
+    if deflate is not None and len(data) >= _WS_DEFLATE_MIN:
+        z = _ws_deflate(data, deflate.get("wbits", 15))
+        if z is not None:
+            data, b0 = z, 0xC1                # FIN + RSV1 (compressed) + text frame
     n = len(data)
-    hdr = bytearray([0x81])                   # FIN + text frame
+    hdr = bytearray([b0])
     if n < 126:
         hdr.append(n)
     elif n < 65536:
@@ -51221,12 +51334,15 @@ def _ws_pong(wfile, lock, payload):
 def _ws_recv(rfile):
     """Read one client (masked) frame → (opcode, payload bytes, fin), or (None, None, True) on
     close/EOF. One FRAME, not one message: data messages may span several frames (FIN clear until
-    the last) — _ws_recv_message below reassembles them."""
+    the last) — _ws_recv_message below reassembles them. `opcode` carries the frame's RSV1 bit (0x40)
+    above the four opcode bits: permessage-deflate's compressed-message flag, set on the FIRST frame of a
+    compressed message, which the reassembler reads and masks off before it compares the opcode (a plain
+    frame's opcode reads as it always did; the two other reserved bits are dropped, as before)."""
     b = rfile.read(2)
     if len(b) < 2:
         return None, None, True
     fin = bool(b[0] & 0x80)
-    opcode = b[0] & 0x0F
+    opcode = b[0] & 0x4F
     masked = b[1] & 0x80
     ln = b[1] & 0x7F
     if ln == 126:
@@ -51257,7 +51373,7 @@ def _ws_recv(rfile):
 _WS_MAX_MESSAGE = 80 * 1024 * 1024
 
 
-def _ws_recv_message(rfile, on_ping, on_pong=None):
+def _ws_recv_message(rfile, on_ping, on_pong=None, inflate=False):
     """Read frames until one COMPLETE data message is assembled → (opcode, payload), or (None, None)
     on close/EOF/overrun. Browsers FRAGMENT large sends (RFC 6455 §5.4 — Chrome splits at ~128 KB),
     and the old per-frame loop handed each fragment straight to json.loads: a phone photo's dropFile
@@ -51265,11 +51381,25 @@ def _ws_recv_message(rfile, on_ping, on_pong=None):
     dropped continuation frames, so the 📎 pick looked like it did nothing (the user 2026-08-10,
     Chrome on a phone; small desktop files sat under the threshold, which is why it never surfaced).
     Control frames may interleave between fragments: pings are answered via on_ping, pongs go to
-    on_pong (the liveness beat's answer) or are dropped without one, close ends the read."""
-    frag_op, frag = None, None
+    on_pong (the liveness beat's answer) or are dropped without one, close ends the read.
+    `inflate`: the client negotiated permessage-deflate, so a message whose first frame carries RSV1 is
+    compressed and is inflated here, once assembled, before anything parses it (RFC 7692 §7.2.2; the
+    payload cap applies to the inflated bytes). RSV1 from a client that negotiated nothing is a protocol
+    error (RFC 6455 §5.2) and ends the read like a close."""
+    frag_op, frag, frag_z = None, None, False
+
+    def message(op, data, compressed):
+        if not compressed:
+            return op, data
+        out = _ws_inflate(data, _WS_MAX_MESSAGE) if inflate else None
+        return (op, out) if out is not None else (None, None)
+
     while True:
         op, payload, fin = _ws_recv(rfile)
-        if op is None or op == 0x8:            # EOF / close
+        if op is None:                         # EOF
+            return None, None
+        rsv1, op = bool(op & 0x40), op & 0x0F  # RSV1 rides above the opcode (see _ws_recv)
+        if op == 0x8:                          # close
             return None, None
         if op == 0x9:                          # ping → pong (libraries ping by default and hang up without one)
             on_ping(payload or b"")
@@ -51285,12 +51415,11 @@ def _ws_recv_message(rfile, on_ping, on_pong=None):
             if len(frag) > _WS_MAX_MESSAGE:
                 return None, None
             if fin:
-                out = bytes(frag)
-                return frag_op, out
+                return message(frag_op, bytes(frag), frag_z)
             continue
         if fin:                                # the common case: a whole message in one frame
-            return op, payload
-        frag_op, frag = op, bytearray(payload)  # a data frame OPENING a fragmented message
+            return message(op, payload, rsv1)
+        frag_op, frag, frag_z = op, bytearray(payload), rsv1   # a data frame OPENING a fragmented message
 
 
 def _send_to_app(app, msg):
@@ -73272,10 +73401,17 @@ class Handler(BaseHTTPRequestHandler):
         provrows = (q.get("provrows") or [""])[0] == "1" and app == "fleet"   # the Outline's statement (plans/outline-pane-provisional-row.md): it renders a provisional row for a cold tab, so the cold-tab gate need not stand down for it
         col = (q.get("col") or [""])[0]         # which chat COLUMN of that dashboard (split screen, 2026-09-08) — for the logs;
         #                                         the columns arbitrate a dashboard-aimed focus among themselves (render.ts focusIsOurs)
+        # permessage-deflate (RFC 7692): every browser and Node's `ws` offer it on every dial; taken, the frames the
+        # kernel compresses carry RSV1 and the client inflates them natively (see _WS_DEFLATE_ON's comment). The
+        # header may repeat (get_all), or be a plain mapping in a test's stand-in handler (get)
+        _xh = self.headers.get_all("Sec-WebSocket-Extensions") if hasattr(self.headers, "get_all") else None
+        deflate = _ws_deflate_offer(", ".join(_xh) if _xh else self.headers.get("Sec-WebSocket-Extensions")) if _WS_DEFLATE_ON else None
         self.send_response(101)
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
         self.send_header("Sec-WebSocket-Accept", _ws_accept(key))
+        if deflate is not None:
+            self.send_header("Sec-WebSocket-Extensions", _ws_deflate_response(deflate))
         self.end_headers()
         self.close_connection = True              # hijacked socket — don't let the handler keep-alive after
         _client_seen[0] = time.time()
@@ -73287,6 +73423,8 @@ class Handler(BaseHTTPRequestHandler):
         # would block this handler forever (caught by tests/test_kernel.py's socket-error loop test)
         client, sendq, lock = _new_ws_client(app, wid, self.connection, lock=lock)
         client["kind"] = _dial_kind(self.headers, q)   # page or relay: the one tell the wsopen row reads (and a planned connect-push split)
+        if deflate is not None:
+            client["deflate"] = deflate                # permessage-deflate negotiated: _ws_sender compresses, the read loop inflates
         if active:
             client["active"] = active                  # active-tab-first streaming (the user 2026-06-24)
         if (q.get("delta") or [""])[0] == "1":
@@ -73355,7 +73493,8 @@ class Handler(BaseHTTPRequestHandler):
                 client["inRead"] = True                # parked in the read: silence here is the peer's
                 op, payload = _ws_recv_message(
                     self.rfile, lambda payload: _ws_pong(self.wfile, lock, payload or b""),
-                    on_pong=lambda payload: _note_ws_inbound(client))
+                    on_pong=lambda payload: _note_ws_inbound(client),
+                    inflate=bool(client.get("deflate")))   # a peer that negotiated permessage-deflate may send RSV1 frames
                 if op is None:                         # EOF / close / a client overran the reassembly cap
                     break
                 _note_ws_inbound(client)               # any message proves the peer alive
