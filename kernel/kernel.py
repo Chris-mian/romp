@@ -38380,6 +38380,21 @@ def _apply_pending_ops(now=None):
                             with _pending_ops_lock:
                                 _inflight_ops.pop(sid, None)
                             break
+                        if clear_why == "":
+                            # The clear happened: the verb swapped the registry row onto a fresh transcript, and this walk runs inside
+                            # a pusher cycle whose memos (_live_scope.sessions, the discover rows; _live_scope.paths, this sid's path)
+                            # the gates above filled with the OLD row before the verb ran, while the cycle's build loop reads them
+                            # after this walk. The reset lived in the Codex backend's push hook while that hook built inside the verb
+                            # (_push_session_now); the hook is _push_session_soon now and only names the sid to the cycle, so it
+                            # resets nothing, and the cleared session's first frame was built from the OLD file (2026-09-23, the
+                            # review of this change). Reset here, before the build loop reads the row: the row memo to a fresh dict
+                            # (jd.discover's own cache follows the registry's mtime, which the swap rewrote) and this sid's path
+                            # dropped; outside a cycle both memos are absent and every read is fresh already.
+                            if getattr(_live_scope, "sessions", None) is not None:
+                                _live_scope.sessions = {}
+                            _p = getattr(_live_scope, "paths", None)
+                            if _p is not None:
+                                _p.pop(sid, None)
                     elif is_compact:
                         # SessionBackend.compact: "" the bracket is up (the backend's compacting() is the cue: no stamp), "busy"
                         # a turn or a compaction already in flight, else the reason. On "busy" the head STAYS with nothing
@@ -57600,8 +57615,12 @@ def _push_session_now(sid):
     # memo to a fresh dict (the fingerprinted cache under it, jd.discover, follows the registry's mtime, which the
     # swap rewrote, so no reset there) and this sid's path dropped, so this build and every build after it in the
     # cycle resolve the row as it is now. The sessions reset carries the weight (_path_of resolves through
-    # _sessions); a reset in the drain's arm alone would come too late for this frame. Outside a cycle both memos
-    # are absent and every read is fresh already.
+    # _sessions). A reset in the drain's arm alone came too late for this frame while the Codex backend's hook was
+    # this function, building inside the verb; that hook is _push_session_soon since 2026-09-23, which only names the
+    # sid to the cycle and builds nothing, so the drain's clear arm (_apply_pending_ops) now resets the same two memos
+    # itself once the verb answers that the clear happened, in time for the cycle's build of the cleared session. The
+    # reset here stays for the callers that still build through this function (the creates, a fork, a comment's
+    # promotion) and for the SDK backend's hook. Outside a cycle both memos are absent and every read is fresh already.
     if getattr(_live_scope, "sessions", None) is not None:
         _live_scope.sessions = {}
     _paths = getattr(_live_scope, "paths", None)
