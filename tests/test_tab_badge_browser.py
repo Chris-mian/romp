@@ -124,6 +124,14 @@ out.retryProbe = {};
 for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(100);
   out.retryProbe[t] = await page.evaluate(() => { const p = document.createElement("span"); p.className = "tab-dot retrying"; document.body.appendChild(p); const cs = getComputedStyle(p); const r = { bg: cs.backgroundColor, shadow: cs.boxShadow }; p.remove(); return r; }); }
 
+// ── (the user 2026-09-23, who wanted the badge a pixel lower and further from the edge) the count badge's inset from the
+//    tab's TOP and RIGHT edges, read in DENSE chrome too (a body class, dense-chrome.ts applyDenseChrome), so the dense
+//    2px inset is pinned beside the normal 3px. The desktop context carries no keycap, so this is the clean corner
+//    geometry; the class is pure CSS, toggled on the open page, then restored before the geometry reads below. ──
+out.badgeDense = {};
+for (const t of themes) { await setTheme(page, t); await page.evaluate(() => document.body.classList.add("dense-chrome")); await page.waitForTimeout(150); out.badgeDense[t] = await readBadge(page); }
+await page.evaluate(() => document.body.classList.remove("dense-chrome"));
+
 const geomEval = (id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const lbl = t.querySelector(".tab-label, .tab-name, .tab-title"); return { w: t.getBoundingClientRect().width, labelLeft: lbl ? lbl.getBoundingClientRect().left : null }; };
 await setTheme(page, "dark"); await page.waitForTimeout(120);
 const geomOn = await page.evaluate(geomEval, cfg.one);
@@ -144,6 +152,46 @@ out.moved = { on: geomOn, off: geomOff };
 for (const t of themes) { await setTheme(off, t); await off.waitForTimeout(150);
   out.ring[t] = await off.evaluate((id) => { const tab = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const cs = getComputedStyle(tab);
     return { cls: tab.className, badge: !!tab.querySelector(".tab-badge"), outlineColor: cs.outlineColor, outlineStyle: cs.outlineStyle }; }, cfg.one); }
+
+// ── (the user 2026-09-23) THE KEYCAP + BADGE OVERLAP: a tab showing BOTH the hot-key keycap (.tab-key, a right-end
+//    in-flow flex item) AND a non-empty count badge (.tab-badge, absolute at the top-right corner) must not let the
+//    badge overpaint the keycap. Its own context seeds a hot key on the 1-, 12- and 120-card needs-you sessions
+//    (romp:tabkeys names the sid so tabHotkey looks it up; romp:keys carries the chord override effectiveChord reads)
+//    plus badge mode, and reads the keycap and badge rects in both themes and both chromes (normal + dense-chrome). ──
+out.hotkey = { normal: {}, dense: {} };
+const HKIDS = [cfg.one, cfg.many, cfg.over];
+const hkCtx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+await hkCtx.addInitScript((ids) => {
+  try {
+    localStorage.setItem("romp:settings", JSON.stringify({ tabStateBadge: true }));
+    localStorage.setItem("romp:tabkeys", JSON.stringify(Object.fromEntries(ids.map((id) => [id, true]))));
+    localStorage.setItem("romp:keys", JSON.stringify(Object.fromEntries(ids.map((id, i) => ["session.hotkey." + id, "Ctrl+Shift+" + (i + 1)]))));
+  } catch (e) {}
+}, HKIDS);
+const hk = await hkCtx.newPage(); hk.on("pageerror", (e) => errors.push("hotkey: " + String(e).slice(0, 200)));
+await hk.goto(cfg.chat);
+await hk.waitForSelector('#tabs .tab[data-id="' + cfg.one + '"] .tab-badge:not(:empty)', { timeout: 60000 }).catch(() => errors.push("hotkey: the needs-you tab never took a count badge"));
+await hk.waitForSelector('#tabs .tab[data-id="' + cfg.one + '"] .tab-key', { timeout: 60000 }).catch(async () => {
+  errors.push("hotkey: no keycap on the needs-you tab (romp:tabkeys/romp:keys seeded): " + (await hk.evaluate((id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); return t ? (t.className + " kids=" + Array.from(t.children).map((c) => c.className).join(",")) : "no tab"; }, cfg.one)));
+});
+const readHK = (ids) => hk.evaluate((ids) => {
+  const R = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { top: r.top, right: r.right, bottom: r.bottom, left: r.left, width: r.width, height: r.height }; };
+  const one = (id) => {
+    const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); if (!t) return null;
+    const key = t.querySelector(".tab-key"); const badge = t.querySelector(".tab-badge"); const close = t.querySelector(".tab-close");
+    return { tab: R(t), key: R(key), keyText: key ? key.textContent : null, badge: R(badge), badgeText: badge ? badge.textContent : null,
+             close: R(close), padRight: getComputedStyle(t).paddingRight };
+  };
+  const o = {}; for (const id of ids) o[id] = one(id); return o;
+}, ids);
+for (const t of themes) {
+  await setTheme(hk, t);
+  await hk.evaluate(() => document.body.classList.remove("dense-chrome")); await hk.waitForTimeout(150);
+  out.hotkey.normal[t] = await readHK(HKIDS);
+  await hk.evaluate(() => document.body.classList.add("dense-chrome")); await hk.waitForTimeout(150);
+  out.hotkey.dense[t] = await readHK(HKIDS);
+}
+await hkCtx.close();
 
 // ── the phone (a coarse-pointer context, its own localStorage seeded to badge mode) ──
 const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 3 });
@@ -522,6 +570,49 @@ class TabBadgeServed(unittest.TestCase):
             self.assertIn(p["bg"], ("rgba(0, 0, 0, 0)", "transparent"), "%s: the phone retrying dot is HOLLOW (a transparent fill): %r" % (t, p))
             self.assertIn(AMBER[t], p["shadow"], "%s: the amber rides the inset outline on the phone: %r" % (t, p))
             self.assertIn("inset", p["shadow"], "%s: the phone retrying dot is a hollow ring (a distinct shape): %r" % (t, p))
+
+    def test_the_count_badge_sits_a_3px_inset_from_the_tab_top_and_right_2px_in_dense_chrome(self):
+        # (the user 2026-09-23, who wanted the badge a pixel lower and further from the edge) the dot sits a 3px inset from
+        # the tab's TOP and RIGHT edges in normal chrome, 2px in dense-chrome. Measured as the gap from the tab's
+        # border-box edge to the badge's, which the tab's own 1px border adds one to (4px normal, 3px dense). RED at the
+        # base's old offsets (2px, dense 1px), where these gaps read 3px and 2px. Both themes.
+        r = self._result()
+        self.assertEqual(r["errors"], [], "the badge geometry was read in normal and dense chrome")
+        for t in ("dark", "light"):
+            for name in ("one", "few", "many"):
+                b = r["badge"][t][name]; d, tab = b["badge"]["rect"], b["tab"]
+                self.assertAlmostEqual(tab["right"] - d["right"], 4.0, delta=0.6, msg="%s/%s: the badge sits a 3px inset from the tab's right (1px border + 3px): %r" % (t, name, b["badge"]["rect"]))
+                self.assertAlmostEqual(d["top"] - tab["top"], 4.0, delta=0.6, msg="%s/%s: the badge sits a 3px inset from the tab's top (1px border + 3px): %r" % (t, name, b["badge"]["rect"]))
+            for name in ("one", "many"):
+                b = r["badgeDense"][t][name]; d, tab = b["badge"]["rect"], b["tab"]
+                self.assertAlmostEqual(tab["right"] - d["right"], 3.0, delta=0.6, msg="%s/%s dense: the badge sits a 2px inset from the tab's right (1px border + 2px): %r" % (t, name, b["badge"]["rect"]))
+                self.assertAlmostEqual(d["top"] - tab["top"], 3.0, delta=0.6, msg="%s/%s dense: the badge sits a 2px inset from the tab's top (1px border + 2px): %r" % (t, name, b["badge"]["rect"]))
+
+    def test_a_bound_hotkey_keycap_stays_left_of_the_badge_box_and_the_content_run_clears_it(self):
+        # (the user 2026-09-23, who wanted the tab widened when the keycap shows) a tab carrying BOTH the hot-key keycap
+        # (.tab-key) and a non-empty count badge reserves the badge's box at the right, so the whole in-flow run (the
+        # keycap and the rightmost ✕) sits LEFT of the badge instead of under it, in both themes AND both chromes.
+        # RED at the base (no widen rule): the 99+ badge overpaints the keycap (by 6px, 9px dense) and the min-width badge
+        # overpaints the ✕ (by 10px). The keycap and badge overlap vertically, so the left-of check IS the no-intersection
+        # test. Sizing the room off the badge's min-width box, a wider count's ✕ may still ride under the wide badge (the
+        # accepted close-over-badge overlap), but the keycap clears every count.
+        r = self._result()
+        self.assertEqual(r["errors"], [], "no page error and the keycap rendered on the needs-you tab")
+        ids = {name: SIDS[name] for name in ("one", "many", "over")}
+        for chrome in ("normal", "dense"):
+            for t in ("dark", "light"):
+                leg = r["hotkey"][chrome][t]
+                for name in ("one", "many", "over"):
+                    e = leg[ids[name]]
+                    self.assertIsNotNone(e, "%s/%s/%s: the tab is present" % (chrome, t, name))
+                    self.assertIsNotNone(e["key"], "%s/%s/%s: the hot-key keycap rendered (romp:tabkeys + romp:keys seeded): %r" % (chrome, t, name, e))
+                    self.assertTrue(e["keyText"], "%s/%s/%s: the keycap carries the chord glyphs: %r" % (chrome, t, name, e))
+                    self.assertLessEqual(e["key"]["right"], e["badge"]["left"] + 0.5,
+                                         "%s/%s/%s: the keycap sits left of the badge box, not under it: key.right=%.1f badge.left=%.1f (badge=%r)" % (chrome, t, name, e["key"]["right"], e["badge"]["left"], e["badgeText"]))
+                one = leg[ids["one"]]
+                self.assertIsNotNone(one["close"], "%s/%s: the tab has a ✕ close glyph" % (chrome, t))
+                self.assertLessEqual(one["close"]["right"], one["badge"]["left"] + 0.5,
+                                     "%s/%s: the ✕ (rightmost in flow) clears the min-width badge box, so the tab widened to reserve it: close.right=%.1f badge.left=%.1f padRight=%s" % (chrome, t, one["close"]["right"], one["badge"]["left"], one["padRight"]))
 
 
 if __name__ == "__main__":
