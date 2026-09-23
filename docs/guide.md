@@ -41,10 +41,10 @@ Tabs carry the state of their sessions. A tab wears a ring while its session
 needs you, tags group the strip into sections, and a tab can take a hot key of
 your own.
 
-What a session needs from you sits in a box above its composer, one line per
-item with a way to act: a question with **Reply**, **Continue** and **Clear**, a
-held message with its own buttons. A stop the chat shows inline is not listed;
-the ring says it.
+What a session needs from you sits in a box above its composer, folded to a
+header with the count. Click the header to see the items, again for the full
+context under each. A question offers **Reply** and **Clear**, a held message its
+own buttons. A stop the chat shows inline is not listed; the tab says it.
 
 Drag a tab to the right edge and the chat splits into columns, each a full chat
 with its own tab strip and composer, four at most.
