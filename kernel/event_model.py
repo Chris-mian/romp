@@ -6700,6 +6700,17 @@ def atom_has_work(atom):
     return _has_text(atom) or bool(atom_tool_uses(atom))
 
 
+def atom_is_bare_end(atom):
+    """Whether an assistant atom only ENDS its turn: a stop in END_STOPS with no text and no tool use. That is the shape
+    of the Codex normalizer's end record for a completion with nothing held, an empty content list (2026-09-23, the
+    post-merge review of the restart-cut fix). The chat renders no row for it, so a deep-link anchor must never name
+    it (kernel _seg_anchors), and a turn holding nothing else has no opener to arm on (kernel _turn_only_ends). Read
+    from the lazy scalars (sr, nt, tu) for a lazy atom: no hydration."""
+    if atom.get("type") != "assistant":
+        return False
+    return _stop_reason(atom) in END_STOPS and not _has_text(atom) and not atom_tool_uses(atom)
+
+
 _SETTLE_TEXT_H8 = hashlib.sha1(b"No response requested.").hexdigest()[:8]
 
 

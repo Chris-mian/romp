@@ -542,9 +542,9 @@ def _turn_ended_after(path, anchor):
     missing file is a thread with no record yet, where nothing ended.
 
     The precondition (2026-09-23, the review of this lane): a finished turn is recognized when its END RECORD landed.
-    A turn that completed with no final reply held, its last item a command say, leaves none, because
-    codex_events.ThreadNormalizer._turn_completed writes nothing when nothing is held; such a turn reads as not ended
-    here, so a lost clear on it is settled as a cut until that separate fix lands. Undecodable bytes read as
+    Every completion writes one: a turn that completed with no final reply held, its last item a command say, gets an
+    empty end record from codex_events.ThreadNormalizer._turn_completed (2026-09-23, the post-merge review of the
+    restart-cut fix), so a lost clear on it reads as ended here and is not settled as a cut. Undecodable bytes read as
     replacement characters (_tail_state says why), so a torn tail is one skipped line, never a raise."""
     found = anchor is None
     try:
