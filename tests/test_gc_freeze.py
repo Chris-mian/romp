@@ -107,7 +107,7 @@ class TriggerLogic(unittest.TestCase):
         c = gf.GcFreeze(enabled=False, gc=fake)
         self.assertIsNone(c.tick(inserts=100))
         self.assertEqual(fake.calls, [], "a disabled controller never touches the collector")
-        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        fin = _FakeThread(alive=False)   # a local for uniformity; here the DISABLED early return decides: note_ended returns before storing the pair, so the thread is never read (review PR 2049)
         c.note_ended(_Owner(), thread=fin)   # PR 1999 review: note_ended early-returns when disabled
         self.assertEqual(c._ended, [], "a disabled controller registers no ended session (else it would leak a pair per end for the process life)")
 
@@ -142,7 +142,7 @@ class EndedTruthTable(unittest.TestCase):
     def test_a_dead_ref_is_acyclic_and_owes_no_reclaim(self):     # (a) run to exit: died by refcount
         c = self._controller()
         s = _Owner()
-        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        fin = _FakeThread(alive=False)   # a local for uniformity; here the DEAD REF decides: `s` is deleted below, so the dead-ref skip takes it before the thread is read (review PR 2049)
         c.note_ended(s, thread=fin)
         del s
         self.assertFalse(c.resolve_ended(), "a ref that died by refcount owes no reclaim (acyclic)")
@@ -444,15 +444,20 @@ class RealCollector(unittest.TestCase):
         c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
         c.tick(inserts=1)                            # initial freeze
         reclaims0, foldins0 = c.reclaims, c._foldins
-        a = Cyclic(); b = Cyclic(); a.other = b; b.other = a   # allocated AFTER the freeze: unfrozen
+        a = _Owner(); b = _Owner(); a.other = b; b.other = a   # allocated AFTER the freeze: unfrozen (an _Owner so it can carry a sid)
+        a.sid = "beadfeed-1234-5678-9abc-def012345678"
         wcyc = weakref.ref(a)
-        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        fin = _FakeThread(alive=False)   # a local; here is_alive() False decides (the ref is live and the thread finished)
         c.note_ended(a, thread=fin); del a, b
         self.assertEqual(c.tick(inserts=1), "load", "the cheap collect took the released cycle whole: counted as a load pass")
         self.assertEqual(c.reclaims, reclaims0, "no full-heap reclaim ran: the backstop bound is not stretched")
         self.assertGreater(c._foldins, foldins0, "the cheap release folded in like a load")
         self.assertIsNone(wcyc(), "the cheap collect freed the unfrozen cycle")
         self.assertEqual(c.survivors, 0, "nothing survived: no wasted pause")
+        # review PR 2049: a cheap release judged `load` STILL shows the owed sid (resolve_ended gathers it before _run decides
+        # the kind), so the documented clause has a pin here; a gather conditioned on a real reclaim would red this
+        self.assertEqual(c.last_release_sids, ["beadfeed"], "the load-judged cheap release still named the owed sid: %r" % c.last_release_sids)
+        self.assertEqual(c.perf()["lastReleaseSids"], ["beadfeed"], "and the /perf value carries it: %r" % c.perf()["lastReleaseSids"])
 
     def test_a_frozen_member_of_the_released_cycle_forces_the_full_walk(self):
         """PR 2042 review (item 1), the condition pair: the cheap stage takes the cycle only when EVERY member postdates the
