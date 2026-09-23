@@ -62875,9 +62875,12 @@ var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg||s.retrying){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
 wd.classList.toggle('await',!s.working&&!!s.awaitbg&&!s.retrying);wd.classList.toggle('retrying',!!s.retrying&&!s.working&&!s.awaitbg);}
 else if(wd)wd.remove();
-var lbl=row.querySelector('.nm');fillName(lbl,s);lbl.style.color=s.bg||'';}
+var lbl=row.querySelector('.nm');fillName(lbl,s);lbl.style.color=s.bg||'';
+// the group this copy sits in ('' for the trail), as the tab carries it NOW: the key collapses a missing copy and the trail's empty one
+// (a flat strip and a sectioned one give the same key), so a row made while the strip was flat is REUSED once the strip sections, and
+// it kept the missing attribute (CI, 2026-09-23: the phone picker's first trail row read as a flat-strip row against its strip's tab)
+if(s.copy!==null)row.setAttribute('data-copy',s.copy);else row.removeAttribute('data-copy');}
 function rowMake(s){var row=document.createElement('div');row.className='mrow';row.setAttribute('data-id',s.id);row.setAttribute('data-key',s.key);
-if(s.copy!==null)row.setAttribute('data-copy',s.copy);   // the group this copy sits in ('' for the trail), as the tab carries it
 var lbl=document.createElement('span');lbl.className='nm';row.appendChild(lbl);
 var x=document.createElement('span');x.className='mclose';x.textContent='\u00d7';x.title='End session';
 row.appendChild(x);rowUpdate(row,s);return row;}
