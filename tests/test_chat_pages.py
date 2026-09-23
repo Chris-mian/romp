@@ -945,8 +945,8 @@ class Proto2Wire(Harness):
 
     def test_two_echoes_then_a_queued_overlay_keep_the_base_on_the_record(self):
         # two pending sends and then a queued card after them: the base stays on the record before the first echo, and the
-        # card's arrival re-sends the echoes on the suffix (the client truncates after the record and re-applies them; its
-        # pending reconcile re-hides the sender's own), the way an overlay card rides every later delta
+        # card's arrival is a delta carrying the card alone, anchored at the second echo, which the client holds unchanged
+        # past its base (2026-09-23, test_chat_noop_tail.py StreamedRunIsSentOnce; it re-sent both echoes before)
         whole, m = self._restored_tail()
         c, sent = _client()
         km._send_chat_locked(c, m, None, 0, False)
@@ -959,7 +959,7 @@ class Proto2Wire(Harness):
         self.assertEqual(c["echat"][SID]["last"], last_rec)
         m6 = self._with(m, [e1, e2, q])
         km._send_chat_locked(c, m6, None, km._chat_diff(m5["events"], m6["events"]), False)
-        self.assertEqual(self._frame(sent[-1]), ("chatTail", last_rec, [e1["uuid"], e2["uuid"], "queued"]))
+        self.assertEqual(self._frame(sent[-1]), ("chatTail", e2["uuid"], ["queued"]))
         self.assertEqual(c["echat"][SID]["last"], last_rec)
         # a list of nothing else falls back to its last event (a transcript-less session's first echo): the known residue,
         # one full at that first landing, once per session creation

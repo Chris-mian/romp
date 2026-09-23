@@ -11,10 +11,15 @@ the page rebuilt its window for it all the same. The per-slot dedup cannot see t
 LAST frame (the delta), not with what the page holds after it. PR 2071's anchor rule was not involved: no event of that
 list was a streamed one, so every delta began at the change itself.
 
+An at-scale lab then found the per-turn face, where PR 2071 IS the amplifier: a client's base never ends on a streamed
+atom, so every delta cut after the base re-sent the streamed reply the page already held, the status flip at the turn's end
+included (identical re-sent tails per send from 0.30 to 0.75 at that merge).
+
 This module pins the send side: the kernel records, per client and session, what the client holds once a frame lands (the
-key its tail ends on, the status, the three view flags, the watermark), and an empty-suffix tail that would leave exactly
-that is not sent, on either wire. The agent card half (the subagent's newest-record stamp off the wire) is pinned in
-tests/test_subagent_transcripts.py.
+key its tail ends on, the status, the three view flags, the watermark, and the key and digest of every event past its
+base), an empty-suffix tail that would leave exactly that is not sent, on either wire, and a delta skips the events the
+page holds unchanged past its base, while the base itself still ends on the last record. The agent card half (the
+subagent's newest-record stamp off the wire) is pinned in tests/test_subagent_transcripts.py.
 
 SYNTHETIC only: the notes-api demo world, placeholder UUIDs, TESTHOST.
 """
@@ -261,9 +266,9 @@ class NewPagesAndAsksStillGetTheFull(_Harness):
 
 
 class StreamedRunKeepsPr2071sGuarantee(_Harness):
-    """PR 2071 ends a client's base on the last RECORDED event, so a delta re-sends whatever the page holds past it. The
-    held-view rule touches only the EMPTY tail, so that guarantee stands: the page never misses an event, even when the
-    streamed atoms leave the list for records under other keys (a retried try)."""
+    """PR 2071 ends a client's base on the last RECORDED event, so a delta is cut from there. What the page holds past it
+    unchanged is skipped now (StreamedRunIsSentOnce), but the base is not moved, so the guarantee stands: the page never
+    misses an event, even when the streamed atoms leave the list for records under other keys (a retried try)."""
 
     def _streamed(self, keys):
         return [{"kind": "assistant", "uuid": k, "md": "streaming %s" % k, "streamed": True} for k in keys]
@@ -277,7 +282,9 @@ class StreamedRunKeepsPr2071sGuarantee(_Harness):
         self.world = _sess(base + self._streamed(["s12", "s13", "s14"]), live=8)
         self._push(a, 3)
         frames = self._chat(a)
-        self.assertEqual(frames[-1]["afterUuid"], "m11", "the delta re-sends the streamed run from the last record (PR 2071)")
+        self.assertEqual((frames[-1]["afterUuid"], [e["uuid"] for e in frames[-1]["events"]]), ("s13", ["s14"]),
+                         "only the new atom: the page holds s12 and s13 unchanged (StreamedRunIsSentOnce below)")
+        self.assertEqual(a["echat"][S1]["last"], "m11", "…while the base still ends on the last record (PR 2071)")
         self.assertEqual(self._page(a), self.world["events"])
         # the try is retried: its atoms never land, and the retry's records carry other keys
         self.world = _sess(base + [{"kind": "assistant", "uuid": "r12", "md": "the retry's answer"}], tx=2300, live=9)
@@ -285,6 +292,116 @@ class StreamedRunKeepsPr2071sGuarantee(_Harness):
         self.assertEqual(self._page(a), self.world["events"], "no streamed atom stranded, no record missing")
         self.assertEqual([f["type"] for f in self._chat(a)], ["session", "chatTail", "chatTail"],
                          "one frame per change, none for the quiet cycles between them")
+
+
+class StreamedRunIsSentOnce(_Harness):
+    """PR 2071 IS an amplifier per turn (an at-scale lab, 2026-09-23: identical re-sent tails per send went from 0.30 to 0.75
+    at its merge). A client's base never ends on a streamed atom, so every delta cut after the base re-sent the atoms the
+    page already held: the lab's shape was a tail anchored at the user record carrying the streamed reply while working,
+    the SAME tail again at the status flip to ready, then an empty tail after the reply. The kernel now remembers, per
+    client, the keys and contents of the events it holds after its base, and a delta skips the ones the page holds
+    unchanged: what is left is the change, or an empty tail carrying a status, flag or watermark change. The base itself
+    still ends on the last record, so a streamed atom replaced by its record under another key is still re-sent from
+    there."""
+
+    USER = {"kind": "user", "uuid": "m11", "md": "make the notes-api search page its results", "human": True}
+    REPLY = {"kind": "assistant", "uuid": "s12", "md": "Paging is in: the search returns 50 notes a page.", "ts": "2026-09-23T10:00:05Z"}
+
+    def _status(self, state):
+        return {"state": state, "sinceEpoch": 1790000000000}
+
+    def _world(self, tail, state, tx=2000, live=7):
+        return _sess(_events(n=11) + [dict(self.USER)] + [dict(e) for e in tail], status=self._status(state), tx=tx, live=live)
+
+    def _streamed(self, e):
+        return dict(e, streamed=True)
+
+    def _open_on_the_send(self, a):
+        """The page holds the session up to the user's message; the reply then streams in as a delta after it."""
+        self.world = self._world([], "working")
+        self._push(a)
+        self.world = self._world([self._streamed(self.REPLY)], "working", live=8)
+        self._push(a)
+        frames = self._chat(a)
+        self.assertEqual([(f["type"], f.get("afterUuid"), [e["uuid"] for e in f.get("events") or []]) for f in frames],
+                         [("session", None, [e["uuid"] for e in self._world([], "working")["events"]]), ("chatTail", "m11", ["s12"])])
+        self.assertEqual(a["echat"][S1]["last"], "m11", "PR 2071: the base ends on the record before the streamed reply")
+
+    def test_the_status_flip_as_the_reply_lands_is_an_empty_tail_not_the_reply_again(self):
+        """The lab's shape, kernel half: the reply's record lands under the stream's own uuid (the same content, no longer
+        marked streamed) as the turn ends. Before: the tail after the user record carrying the reply AGAIN with the new
+        status. Now: one empty tail after the reply, carrying the status."""
+        a = self._client()
+        self._open_on_the_send(a)
+        self.world = self._world([self.REPLY], "ready", tx=2100, live=9)
+        self._push(a, 3)
+        frames = self._chat(a)[2:]
+        self.assertEqual([(f["type"], f["afterUuid"], f["events"], f["status"]["state"]) for f in frames],
+                         [("chatTail", "s12", [], "ready")], "the flip alone, anchored at the reply the page holds")
+        self.assertEqual(frames[0]["baseFp"], km._chat_base_fp(self.world["events"], 0, len(self.world["events"])),
+                         "the page verifies the events up to the reply it holds, the reply included")
+        self.assertEqual(a["echat"][S1]["last"], "s12", "recorded now: the base advances onto it")
+        self.assertEqual([e["uuid"] for e in self._page(a)], [e["uuid"] for e in self.world["events"]])
+
+    def test_a_status_flip_while_the_reply_still_streams_does_not_resend_it(self):
+        """The same flip with the reply still streamed (its record not read yet) and the list otherwise as the page holds it,
+        with a baseline that lags the page (the cycle's shared baseline is a lower bound on every client, and a connect push
+        never advances it): the page gets the status, not the reply again."""
+        a = self._client()
+        self._open_on_the_send(a)
+        km._prev_chat_events[S1] = self._world([], "working")["events"]   # a baseline without the reply: the diff reads a change at it
+        self.world = self._world([self._streamed(self.REPLY)], "ready", live=9)
+        self._push(a, 3)
+        frames = self._chat(a)[2:]
+        self.assertEqual([(f["type"], f["afterUuid"], f["events"], f["status"]["state"]) for f in frames],
+                         [("chatTail", "s12", [], "ready")])
+        self.assertEqual(a["echat"][S1]["last"], "m11", "still streamed: the base still ends on the record before it")
+
+    def test_a_streamed_run_that_grows_sends_only_what_is_new(self):
+        a = self._client()
+        self._open_on_the_send(a)
+        tool = {"kind": "tool", "uuid": "s13", "name": "Bash", "desc": "run the api tests", "output": "", "streamed": True}
+        self.world = self._world([self._streamed(self.REPLY), tool], "working", live=9)
+        self._push(a, 3)
+        frames = self._chat(a)[2:]
+        self.assertEqual([(f["afterUuid"], [e["uuid"] for e in f["events"]]) for f in frames], [("s12", ["s13"])],
+                         "anchored at the streamed reply the page holds unchanged, carrying the tool call alone")
+        self.assertEqual(self._page(a), self.world["events"])
+
+    def test_a_streamed_atom_whose_content_moves_is_sent_again(self):
+        a = self._client()
+        self._open_on_the_send(a)
+        grown = dict(self._streamed(self.REPLY), md=self.REPLY["md"] + " Sorting is next.")
+        self.world = self._world([grown], "working", live=9)
+        self._push(a, 3)
+        frames = self._chat(a)[2:]
+        self.assertEqual([(f["afterUuid"], [e["md"] for e in f["events"]]) for f in frames], [("m11", [grown["md"]])])
+        self.assertEqual(self._page(a), self.world["events"])
+
+    def test_a_streamed_atom_replaced_by_a_record_under_another_key_is_re_sent_from_the_last_record(self):
+        """PR 2071's guarantee: the streamed try never lands (a retry), and the retry's record carries another uuid. The delta
+        still anchors at the last record, the user's message, and carries the record: the page keeps no stale streamed copy
+        and misses nothing. The quiet cycles after it send nothing."""
+        a = self._client()
+        self._open_on_the_send(a)
+        record = {"kind": "assistant", "uuid": "r12", "md": "Paging is in, after a retry.", "ts": "2026-09-23T10:00:09Z"}
+        self.world = self._world([record], "ready", tx=2200, live=9)
+        self._push(a, 3)
+        frames = self._chat(a)[2:]
+        self.assertEqual([(f["afterUuid"], [e["uuid"] for e in f["events"]], f["status"]["state"]) for f in frames],
+                         [("m11", ["r12"], "ready")])
+        self.assertEqual(self._page(a), self.world["events"], "the streamed copy is gone from the page and the record is on it")
+        self.assertEqual(a["echat"][S1]["last"], "r12")
+
+    def test_a_streamed_atom_that_leaves_with_nothing_after_it_is_truncated(self):
+        """The retry's atoms leave and nothing replaces them yet: an empty tail at the last record truncates the stale copy."""
+        a = self._client()
+        self._open_on_the_send(a)
+        self.world = self._world([], "working", live=9)
+        self._push(a, 3)
+        frames = self._chat(a)[2:]
+        self.assertEqual([(f["afterUuid"], f["events"]) for f in frames], [("m11", [])])
+        self.assertEqual(self._page(a), self.world["events"])
 
 
 class IndexWire(_Harness):

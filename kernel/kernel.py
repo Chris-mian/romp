@@ -51061,6 +51061,18 @@ def _chat_wm_note(client, sid, m):
 # Every other frame goes as before: a tail with events, a status, flag or watermark change, an empty tail that truncates (a
 # trailing card that left the list moves the key the tail ends on), a changed ledger, and every full. The record goes
 # wherever the base goes (a ready, a needFull, a tab leaving the strip), so a page that asked for anything gets it.
+#
+# …and the EVENTS a client holds past its base (2026-09-23, the per-turn face). PR 2071 ends a client's base on the last
+# recorded event, never on a streamed atom, so every uuid-wire delta cut after the base (a change anywhere in the streamed
+# run, a status flip whose build the shared baseline reads as changed at the reply) re-sent the atoms the page already
+# held: an at-scale lab measured identical re-sent tails per send going from 0.30 to 0.75 at that merge, the shape a tail
+# after the user's record carrying the streamed reply while working, the SAME tail again at the flip to ready, then an
+# empty tail after the reply. So the record also keeps the key and a digest of every event after the base's last edge
+# (`after`, from `anchor`), and a delta that begins right after that edge skips the leading events the page holds there
+# unchanged (_chat_skip_held): its anchor moves onto the last of them, and what it carries is the change, or nothing but the
+# status, flags or watermark. The BASE is untouched, still ending on the last record, so a streamed atom that leaves the
+# list (a retried try, a record under another key) mismatches here and the next delta is cut from that record and carries
+# its replacement, as 2071 guarantees; the page verifies every delta's anchor against the list it was cut from (baseFp).
 def _chat_view_key(m, end):
     """The view a client holds of session `m` once a frame cut from it lands: `end` (the key the list's last event carries on
     the uuid wire, the list's length on the index wire), the status, the notify / hideFromFeed / postalServiceOff flags and
@@ -51069,10 +51081,45 @@ def _chat_view_key(m, end):
                       sort_keys=True, default=str)
 
 
+def _chat_ev_digest(e):
+    """A digest of one built event as the page reads it: the whole event minus `streamed`, the kernel's own mark for an atom
+    the transcript has not recorded (read by _last_anchor, never by the page), so a record landing under its stream atom's uuid
+    with the same content is the event the page already holds."""
+    d = {k: v for k, v in e.items() if k != "streamed"} if "streamed" in e else e
+    return hashlib.blake2b(json.dumps(d, sort_keys=True, default=str).encode("utf-8"), digest_size=16).digest()
+
+
+def _chat_view_note(c, sid, m, evs, end, anchor=None):
+    """Record what client `c` holds of `sid` once the frame cut from `m` lands (the senders call this beside each echat write):
+    the view (_chat_view_key) and, on the uuid wire, `anchor` (the base's last edge, _last_anchor) with the key and digest of
+    every event after it in `evs`, the run a later delta cut from that edge would carry again (_chat_skip_held)."""
+    after = ()
+    if anchor is not None:
+        i = _uuid_positions(evs, sid).get(anchor)
+        if i is not None:
+            after = tuple((_event_key(e), _chat_ev_digest(e)) for e in evs[i + 1:])
+    c.setdefault("echatView", {})[sid] = {"view": _chat_view_key(m, end), "anchor": anchor, "after": after}
+
+
+def _chat_skip_held(c, sid, evs, start):
+    """Where a uuid-wire delta that would begin at `start` really needs to begin for client `c`: past the leading events of
+    evs[start:] the client holds unchanged right after the same edge (the record _chat_view_note keeps), else `start`. Only a
+    delta beginning right after the recorded edge is moved; one cut lower (a change in the recorded history) keeps its start."""
+    rec = (c.get("echatView") or {}).get(sid)
+    if not rec or rec.get("anchor") is None or not 0 < start < len(evs) or _event_key(evs[start - 1]) != rec["anchor"]:
+        return start
+    after = rec.get("after") or ()
+    j = 0
+    while start + j < len(evs) and j < len(after) and after[j][0] == _event_key(evs[start + j]) \
+            and after[j][1] == _chat_ev_digest(evs[start + j]):
+        j += 1
+    return start + j
+
+
 def _chat_view_held(c, sid, view):
     """True when client `c` already holds `view` of `sid` (recorded by the last frame it was handed): the empty tail the caller
     was about to send changes nothing on the page, so it is counted where a deduped frame is and not sent."""
-    if (c.get("echatView") or {}).get(sid) != view:
+    if ((c.get("echatView") or {}).get(sid) or {}).get("view") != view:
         return False
     road = getattr(_SEND_ROAD, "name", None)
     _perf("send", slot=_perf_slot(("chat", sid)), bytes=0, deduped=1, held=1)
@@ -53588,6 +53635,7 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
             else:
                 start = min(change_from, pl + 1) if change_from > 0 else 0   # from the change, or from after the held
             if start > pf:                                #  last record (the overlay cards after it ride the suffix)
+                start = _chat_skip_held(c, sid, evs, start)   # …past what the client holds unchanged there (2026-09-23)
                 view = _chat_view_key(m, _event_key(evs[-1]))
                 # an EMPTY suffix that would leave the page exactly as it is (the view it holds, no ledger riding) is not sent
                 # (2026-09-23, _chat_view_key's comment); the entries below are written as for a frame that went, since the page
@@ -53605,8 +53653,8 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                     if led_changed:
                         tail["ledger"] = m.get("ledger")
                     _send_client(c, ("chat", sid), tail, kind="delta")
-                c.setdefault("echatView", {})[sid] = view
                 st[sid] = {"first": pc["first"], "last": _last_anchor(evs)}
+                _chat_view_note(c, sid, m, evs, _event_key(evs[-1]), anchor=st[sid]["last"])
                 _chat_wm_note(c, sid, m)                  # …and the watermark of the build it now holds (2026-09-22)
                 _note_chat_handed(sid)                    # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
                 return ms
@@ -53695,7 +53743,7 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     # deliberately no delivery and records nothing.
     if total:
         st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
-        c.setdefault("echatView", {})[sid] = _chat_view_key(m, m_send["lastUuid"])   # the view it now holds (2026-09-23)
+        _chat_view_note(c, sid, m, evs, m_send["lastUuid"], anchor=st[sid]["last"])   # what it now holds (2026-09-23)
         _chat_wm_note(c, sid, m)                      # …and the watermark of the build it now holds (2026-09-22)
         _note_chat_handed(sid)                        # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     else:
@@ -53813,7 +53861,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
             if led_changed:                           # the TOC only changed on a judge pass → usually omitted
                 tail["ledger"] = m.get("ledger")
             _send_client(c, ("chat", sid), tail, kind="delta")   # the chat's delta form, for /perf's sends split
-        c.setdefault("echatView", {})[sid] = view
+        _chat_view_note(c, sid, m, evs, total)
         st[sid] = (pc[0], pc[1])                       # same tail base, now caught up through `total`
         _chat_wm_note(c, sid, m)                       # …and the watermark of the build it now holds (2026-09-22)
         _note_chat_handed(sid)                         # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
@@ -53830,7 +53878,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
         m_send = dict(m); m_send["events"] = evs[head_from:]; m_send["headFrom"] = head_from; m_send["headTotal"] = total
         _send_client(c, ("chat", sid), m_send)
     st[sid] = ((evs[head_from].get("uuid") if head_from < total else None), head_from)
-    c.setdefault("echatView", {})[sid] = _chat_view_key(m, total)   # the view it now holds (2026-09-23)
+    _chat_view_note(c, sid, m, evs, total)            # the view it now holds (2026-09-23)
     _chat_wm_note(c, sid, m)                          # …and the watermark of the build it now holds (2026-09-22)
     _note_chat_handed(sid)                            # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     return ms
