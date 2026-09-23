@@ -31,6 +31,7 @@ class _FakeSdk:
     def live_atoms(self, sid):
         return [{"uuid": "echo:1", "t": 123, "_echo_text": "an in-flight echo"},
                 {"uuid": "echo:2", "t": 123, "_echo_text": "overtaken, never delivered", "dropped": True},
+                {"uuid": "echo:3", "t": 123, "_echo_text": "delivered, not yet pruned", "_landed": True},
                 {"uuid": "w1", "t": 124}]
 
 
@@ -55,7 +56,7 @@ class SendVisDiag(unittest.TestCase):
         self.assertEqual(out["pendingQueued"], ["queued reply text"])
         self.assertEqual(out["pendingOps"], [["send", "a parked message body"]])
         echoes = [a for a in out["liveAtoms"] if a["echo"]]
-        self.assertEqual([a["echo"] for a in echoes], ["an in-flight echo", "overtaken, never delivered"])
+        self.assertEqual([a["echo"] for a in echoes], ["an in-flight echo", "overtaken, never delivered", "delivered, not yet pruned"])
         self.assertIn("compacting", out)
 
     def test_an_unowned_sid_reads_as_unowned(self):
@@ -67,11 +68,11 @@ class SendVisDiag(unittest.TestCase):
         self.assertEqual(out["liveAtoms"], [])
 
     def test_an_echo_row_says_whether_it_is_settled(self):
-        # A settled loss and an in-flight send read identically here without `dropped`: the diagnostic's
-        # job is naming the layer, and "which of these is still going out" was the one question it could
-        # not answer. The flag is the backend's own (settle_echoes / _mark_dropped_echoes), carried through.
-        rows = {a["echo"]: a["dropped"] for a in km._sendvis_diag(SID)["liveAtoms"] if a["echo"]}
-        self.assertEqual(rows, {"an in-flight echo": False, "overtaken, never delivered": True})
+        # An echo settles as lost (`dropped`) or delivered (`landed`); without both, a settled echo and a
+        # send still going out read identically. Both flags are the backend's own, carried through.
+        rows = {a["echo"]: (a["dropped"], a["landed"]) for a in km._sendvis_diag(SID)["liveAtoms"] if a["echo"]}
+        self.assertEqual(rows, {"an in-flight echo": (False, False), "overtaken, never delivered": (True, False),
+                                "delivered, not yet pruned": (False, True)})
 
     def test_route_is_wired_and_read_only(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
