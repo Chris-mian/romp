@@ -117,14 +117,18 @@ const installWatcher = () => page.evaluate(() => {
   requestAnimationFrame(tick);
 });
 // arm the watch on the last `n` landed turns resident right now (inside the tail window, so no slide counts)
-const watchTailFull = (n) => page.evaluate((k) => {
-  const w = window.__watch;
-  const all = w.landed();
-  w.watch = new Set(all.slice(-k));
-  w.prev = new Set(all);
-  w.left.length = 0; w.back.length = 0; w.mut.length = 0;
-  return all.slice(-k);                                   // in view order: the last is the newest landed turn
-}, n);
+let frameAtPress = 0;   // window.__frames at the press: `observe` records how many frames the round added, so a round the kernel never answered reads 0
+const watchTailFull = async (n) => {
+  frameAtPress = await page.evaluate(() => window.__frames);
+  return page.evaluate((k) => {
+    const w = window.__watch;
+    const all = w.landed();
+    w.watch = new Set(all.slice(-k));
+    w.prev = new Set(all);
+    w.left.length = 0; w.back.length = 0; w.mut.length = 0;
+    return all.slice(-k);                                 // in view order: the last is the newest landed turn
+  }, n);
+};
 const watchTail = async (n) => (await watchTailFull(n)).map((u) => u.slice(-12));
 const readWatch = () => page.evaluate(() => ({ paints: window.__watch.paints, left: window.__watch.left.slice(),
                                                back: window.__watch.back.slice(), mut: window.__watch.mut.slice(),
@@ -160,10 +164,11 @@ const step = () => {   // one more record on the transcript: the reply going on 
   parent = "s" + i;
   fs.appendFileSync(cfg.transcript, JSON.stringify(r) + "\n");
 };
-const rounds = [];   // one record per press: what was watched, what left a painted frame, what came back
+const rounds = [];   // one record per round: what was watched, the frames the round added, what left a painted frame, what came back
 const observe = async (variant, round, watched) => {
   const r = await readWatch();
-  rounds.push({ variant, round, watched, paints: r.paints, left: r.left, back: r.back,
+  const cur = await page.evaluate(() => window.__frames);
+  rounds.push({ variant, round, watched, frames: cur - frameAtPress, paints: r.paints, left: r.left, back: r.back,
                 mut: r.mut, missing: watched.filter((u) => !r.present.includes(u)) });
 };
 let n = 0;
@@ -302,17 +307,24 @@ class NoLandedTurnLeavesAPaintedFrame(unittest.TestCase):
         with open(line[len("RESULT-FILE:"):]) as f:
             r = json.load(f)
         rounds = r["rounds"]
-        print("SEND-FLASH: %d presses, %d sends reached the socket, %d of %d frame waits ran out"
+        print("SEND-FLASH: %d rounds, %d sends reached the socket, %d of %d frame waits ran out"
               % (len(rounds), r["sent"], r["waitTimeouts"], r["waits"]))
         for x in rounds:
-            print("  %-22s round %d: %d paints, watched %d, left %r, back %r, same-task removals %d"
-                  % (x["variant"], x["round"], x["paints"], len(x["watched"]), x["left"], x["back"],
+            print("  %-22s round %d: %d frames, %d paints, watched %d, left %r, back %r, same-task removals %d"
+                  % (x["variant"], x["round"], x["frames"], x["paints"], len(x["watched"]), x["left"], x["back"],
                      sum(1 for m in x["mut"] if m["sameTask"])))
         console = open(console_log).read()
         self.assertEqual(console.strip(), "", "the page logged errors:\n" + console[-2000:])
-        self.assertGreaterEqual(len(rounds), 9, "every variant ran: %r" % [x["variant"] for x in rounds])
-        self.assertGreater(min(x["paints"] for x in rounds), 0, "the per-paint sampler ran: %r" % rounds)
         inj = r["injected"]
+        self.assertTrue(inj.get("baseOk"), "the kernel's real frame carries a watermark: %r" % (inj,))
+        # ROUNDS rounds of each of A to D, then the injected pair (E and its control), which run once the watermark is in hand
+        self.assertEqual(len(rounds), 4 * ROUNDS + 2, "every variant ran: %r" % [x["variant"] for x in rounds])
+        self.assertGreater(min(x["paints"] for x in rounds), 0, "the per-paint sampler ran: %r" % rounds)
+        # The real rounds are not vacuous (review, 2026-09-23): waitFrames swallows its timeout into a counter, so a kernel
+        # that refused every send or never delivered a frame would have left every real round green. Five presses per
+        # round (A one, B one, C two, D one), each a sendMessage frame on the socket; and every real round added at least
+        # one frame from the kernel since its press. The wait timeouts stay a printed figure: they flake under CI load.
+        self.assertEqual(r["sent"], 5 * ROUNDS, "every press posted a sendMessage frame: %d of %d" % (r["sent"], 5 * ROUNDS))
         # The POSITIVE CONTROL first: the flash, staged (an older list no guard refuses, then the base back).
         # The instrument must convict it, or the invariant below is green for saying nothing.
         ctrl = [x for x in rounds if x["variant"] == "control-unguarded-older-frame"]
@@ -332,7 +344,8 @@ class NoLandedTurnLeavesAPaintedFrame(unittest.TestCase):
         # …and none of them is simply gone at the end either
         lost = [{k: x[k] for k in ("variant", "round", "missing")} for x in real if x["missing"]]
         self.assertEqual(lost, [], "a landed turn was gone from the page after a send:\n%s" % json.dumps(lost, indent=2))
-        self.assertTrue(inj.get("baseOk"), "the kernel's real frame carries a watermark: %r" % (inj,))
+        self.assertEqual([x["variant"] for x in real if x["frames"] == 0], [],
+                         "every real send round saw at least one new frame from the kernel")
         self.assertIn("frame-stale", [d["what"] for d in inj.get("diag") or []],
                       "the older build is refused by the page's backstop and said so: %r" % (inj.get("diag"),))
 

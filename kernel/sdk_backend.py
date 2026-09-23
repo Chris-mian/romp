@@ -10605,8 +10605,8 @@ class SdkBackend:
         self._push_session_cb = push_session   # targeted ONE-session push (kernel _push_session_now) for
         #   per-session chip events (the connect handshake): a wake alone leaves the flip riding the next
         #   full push cycle, which runs seconds on a busy fleet (the user 2026-08-10)
-        self._push_soon_cb = push_soon     # ask the ONE pusher cycle to build this sid FIRST, now (kernel
-        #   _push_session_soon, 2026-09-23): the immediacy above without a second builder of chat frames, for the
+        self._push_soon_cb = push_soon     # name this sid to the ONE pusher cycle (kernel _push_session_soon,
+        #   2026-09-23): built at the front of the cycle's next build slot, no second builder of chat frames, for the
         #   per-session events that fire WHILE that session's transcript is being written — the queue pop above all
         self.mcp_config = mcp_config
         self.append_prompt_path = append_prompt_path
@@ -16606,17 +16606,19 @@ class SdkBackend:
         threading.Thread(target=run, name="sdk-push-session", daemon=True).start()
 
     def _push_soon(self, sid: str) -> None:
-        """Ask the kernel's ONE pusher cycle to build `sid` FIRST, now (kernel _push_session_soon, 2026-09-23).
+        """Name `sid` to the kernel's ONE pusher cycle (kernel _push_session_soon, 2026-09-23).
 
         For a per-session event that fires WHILE that session's transcript is being written — the queue pop, where
         the CLI takes the message and writes its record in the same breath. _push_session above would build a whole
         chat frame here on a thread of its own, from its own transcript read, racing the cycle's: the two lists
         reached a client in either order and the older one took the just-landed row off the page (the user
         2026-09-22; the builder was added by 66486701 for the `handed` flip alone). This names the sid and wakes the
-        one cycle instead, which ranks it with the watched tabs and flushes it first, so the flip still lands at once
-        and no second list of the same session exists to be ordered. NOT threaded: the callback is a set add and an
-        Event set, so it cannot stall the session's asyncio loop. Falls back to the plain pusher wake when the kernel
-        didn't wire it (an older kernel, a test), so the frame still goes."""
+        one cycle instead. The named session builds at the front of that cycle's next build slot, an in-flight cycle
+        included (its build loop re-reads the names before every tab), so the flip waits at most one tab's build; in
+        the worst case, a name landing after the loop's last read, it waits out the feed and timeline sections and the
+        next cycle's prelude. Either way no second list of the same session exists to be ordered. NOT threaded: the
+        callback is a set add and an Event set, so it cannot stall the session's asyncio loop. Falls back to the plain
+        pusher wake when the kernel didn't wire it (an older kernel, a test), so the frame still goes."""
         if not self._push_soon_cb:
             self._wake_push()
             return

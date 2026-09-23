@@ -11,9 +11,11 @@ one small flip — the copy has left romp's queue for the CLI, so the pane drops
 it in an exact race with the cycle's own read of the same file.
 
 The flip is a state change, not a transcript. The pop now names its sid to the one cycle (_push_session_soon)
-and lets the poke it already sends wake it; the cycle ranks a named sid with the watched tabs and flushes it
-first, so the flip still lands at once and no second list of that session exists to be ordered. PR 2050's
-watermark guard stays as the loud backstop it should always have been, not the fix.
+and lets the poke it already sends wake it; the cycle ranks a named sid with the watched tabs, re-reads the
+names at the top of every build (a pop commonly lands while a cycle is in flight, since the send woke the
+pusher milliseconds before it) and flushes each build as it lands, so the flip waits at most one tab's build
+and no second list of that session exists to be ordered. PR 2050's watermark guard stays as the loud backstop
+it should always have been, not the fix.
 
 Drives the REAL _push over fake clients with build_session stubbed (the test_chat_skeleton_reconnect.py
 harness, as the stale-build guard's module does). SYNTHETIC only: the notes-api demo world, placeholder UUIDs.
@@ -72,9 +74,12 @@ class OneChatFrameBuilder(unittest.TestCase):
         km._live_map = lambda: {}
         km._cached_feed = lambda *a, **k: None
         self.built = []
+        self.on_build = None                           # a hook run inside a tab's build: the pop landing mid-cycle
 
         def build(sid, now, live_map=None, **kw):
             self.built.append(sid)
+            if self.on_build:
+                self.on_build(sid)
             return json.loads(json.dumps(self.SESS[sid]))
         km.build_session = build
         km._comments_frame = lambda sid, live_map: None
@@ -115,16 +120,18 @@ class OneChatFrameBuilder(unittest.TestCase):
         self.assertTrue(km._pusher_wake.is_set(), "…and wakes that cycle, so the flip does not wait out the backstop")
 
     def test_02_the_named_sid_is_built_first_by_the_cycle(self):
-        # S2 is the watched tab, so it ranks with the named one; S3 is neither and comes after. Before the
-        # change the named sid had no rank at all and waited its turn behind every other tab.
+        # S2 is the watched tab and ranks first either way; S3, the named one, ranks WITH it, ahead of S1, so the
+        # build order is [S2, S3, S1]. Without the ranking clause the stable sort keeps the chat list's order for
+        # the two unranked tabs, [S2, S1, S3], so the assertion pins the rank itself and not the list's order
+        # (naming S1, first in the list, was satisfied by the stable sort alone).
         a = self._client(active=S2, proto=2)
         km._clients.append(a)
         km._push([a])
         self.built[:] = []
         km._built_chat.clear()                         # every tab rebuilds, so the order below is the cycle's own
-        km._push_session_soon(S1)
+        km._push_session_soon(S3)
         km._push([a])
-        self.assertLess(self.built.index(S1), self.built.index(S3),
+        self.assertLess(self.built.index(S3), self.built.index(S1),
                         "the named session is built (and flushed) before the tabs nobody is waiting on: %r" % (self.built,))
 
     def test_03_the_cycle_drains_the_names_it_served(self):
@@ -147,6 +154,60 @@ class OneChatFrameBuilder(unittest.TestCase):
         self.assertEqual(km._push_first_drain(), {S1, S2})
         self.assertEqual(km._push_first, set(), "drained in one step: a second cycle re-orders nothing")
         self.assertEqual(km._push_first_drain(), set())
+
+    def test_06_a_name_landing_mid_loop_is_built_next_in_the_same_cycle(self):
+        # SdkBackend.send() wakes the pusher milliseconds before the queue pop, so the pop's name commonly lands while
+        # a cycle is in flight. Read once per cycle, it waited out the rest of that cycle (every other tab's build, the
+        # feed and timeline sections) and the next cycle's prelude; the loop re-reads the names at the top of every
+        # build and moves the named tab to the front of what is left, so it waits one tab's build at most.
+        a = self._client(active=S1, proto=2)
+        km._clients.append(a)
+        self.on_build = lambda sid: km._push_session_soon(S3) if sid == S1 else None   # named during the first tab's build
+        km._push([a])
+        self.assertEqual(self.built, [S1, S3, S2],
+                         "the session named during the first build is built next, ahead of the unranked tab: %r" % (self.built,))
+        self.assertEqual(km._push_first, set(), "…and the in-flight cycle took the name with it: %r" % (km._push_first,))
+
+    def test_07_a_name_landing_during_the_last_build_is_served_again_before_the_feed_section(self):
+        # The watched tab is built first, so a pop for it landing while the LAST tab builds names a session this cycle
+        # has already served, with a frame that predates the pop. The list ran dry; the loop drains once more and serves
+        # it a second time in the same cycle, before the feed and timeline sections begin, not in the next cycle.
+        a = self._client(active=S1, proto=2)
+        km._clients.append(a)
+
+        def late(sid):
+            if sid == S3:
+                km._push_session_soon(S1)
+                km._built_chat.pop(S1, None)           # the pop moved S1's signature (its queued tuple): the cached build no longer matches
+        self.on_build = late
+        km._push([a])
+        self.assertEqual(self.built, [S1, S2, S3, S1],
+                         "the named session's second pass, in the same cycle: %r" % (self.built,))
+        self.assertEqual(km._push_first, set(), "…and the name went with it: %r" % (km._push_first,))
+
+    def test_08_a_sid_is_re_queued_once_per_cycle_and_a_further_name_is_the_next_cycles(self):
+        # the cycle must end: a name for a sid this cycle has already served twice goes back into the set
+        a = self._client(active=S1, proto=2)
+        km._clients.append(a)
+
+        def late(sid):
+            if sid in (S2, S3):
+                km._push_session_soon(S1)
+                km._built_chat.pop(S1, None)
+        self.on_build = late
+        km._push([a])
+        self.assertEqual(self.built, [S1, S2, S1, S3],
+                         "S2's name earns S1 a second pass; S3's does not earn a third: %r" % (self.built,))
+        self.assertEqual(km._push_first, {S1}, "the further name is left for the next cycle: %r" % (km._push_first,))
+
+    def test_09_a_connect_push_leaves_a_mid_loop_name_for_the_cycle(self):
+        # the connect push serves one client in the standing order and drains nothing, mid-loop included
+        a = self._client(active=S1, proto=2)
+        km._clients.append(a)
+        self.on_build = lambda sid: km._push_session_soon(S3) if sid == S1 else None
+        km._push([a], connect=True)
+        self.assertEqual(self.built, [S1, S2, S3], "the standing order, the named tab not moved: %r" % (self.built,))
+        self.assertIn(S3, km._push_first, "…and the name is left for the cycle: %r" % (km._push_first,))
 
 
 class HandOffNamesTheCycle(unittest.TestCase):

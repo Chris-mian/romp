@@ -18881,7 +18881,8 @@ def _sdk_locked():
                 jd.STATE, _claude_bin(), _send_to_app,
                 poke=_wake_kernel, push=_pusher_wake.set,   # poke = the turn END: judges AND parked-op delivery
                 push_soon=_push_session_soon,   # …and the no-builder ask (2026-09-23): the SDK's queue pop names its sid to
-                #   the ONE cycle rather than building a second whole-session frame beside it (the send-flash race)
+                #   the ONE cycle rather than building a second whole-session frame beside it (a send took a landed turn
+                #   off the page for one push)
                 push_session=_stage_default("push.session")(_push_session_now),   # targeted one-session push for per-session chip
                 #   events (connect); marked at the hand-off as the thread's DEFAULT: the backend runs it on a thread of its own
                 #   (unmarked; the read boot of 2026-09-14 counted 3,312 builds and 9.4 MB under `none:` from it), while a
@@ -56557,7 +56558,38 @@ def _push(targets, connect=False, live_map=None):
             _live_scope.chat_floor0 = _chat_floor0_of(_all_chat)
             _all_active = {c.get("active") for c in _all_chat if c.get("active")}   # every connected column's watched tab,
             #                                                                          not this push's targets alone (round two, low 2)
-            for s in build_order:
+            # LATE NAMES (2026-09-23, the review of the one-builder change): `first` above is one read per cycle, and
+            # SdkBackend.send() wakes the pusher milliseconds before the queue pop, so the pop's name commonly lands while a
+            # cycle is in flight. Read once, that name waited out the rest of the cycle (every other tab's build, the feed and
+            # timeline sections, the trailing jobs) and the next cycle's prelude before its build began, and the queued bubble
+            # kept its pencil for seconds on a busy kernel, the wait the targeted push of 2026-09-19 was added to remove. So
+            # the loop below is a WORKLIST over build_order (the sorted list stands as the cycle's order): at the top of every
+            # iteration the non-connect cycle drains the set again, moves the remaining entries of the newly named sids to the
+            # front (a stable partition: the rest keep their order), and re-queues a named sid this cycle has already served,
+            # since that frame predates the pop, once per sid per cycle so the loop ends. The body serves a second pass like
+            # any tab: the signature moved with the pop (the queued tuple, the live revision), so it rebuilds and flushes a
+            # tail; unmoved, the cached hit dedups. When the list runs dry the top of the loop drains once more, so a name
+            # landing during the last tab's build is built before the feed and the timeline sections begin. The bound: a pop
+            # landing mid-cycle waits at most one tab's build; a name landing after that last drain waits out the feed and
+            # timeline sections and the next cycle's prelude (_push_session_soon's docstring says the same). A further name
+            # for a sid whose second pass this cycle has already run goes back into the set for the next cycle, which the
+            # wake it set already owes. A connect push serves one client and drains nothing here, as above.
+            _work = list(build_order)
+            _served, _repassed = set(), set()            # the sids this cycle has visited; the ones it re-queued for a second pass
+            while True:
+                if not connect:
+                    newly = _push_first_drain()
+                    if newly:
+                        first |= newly
+                        _waiting = {x["sid"] for x in _work}
+                        _again = [x for x in chat_list if x["sid"] in newly and x["sid"] in _served and x["sid"] not in _repassed]
+                        _push_first.update(newly & (_repassed - _waiting))   # a further name for a sid served twice: the next cycle's
+                        _repassed.update(x["sid"] for x in _again)
+                        _work = _again + [x for x in _work if x["sid"] in newly] + [x for x in _work if x["sid"] not in newly]
+                if not _work:
+                    break
+                s = _work.pop(0)
+                _served.add(s["sid"])
                 is_active = s["sid"] in active           # the watched tab(s): served like any tab while the key holds
                 # THE COLD-TAB GATE (2026-09-14; the user, after the boot review): on the 3:58 PM PT restart the first
                 # refresh with a browser built the chat of all 27 tabs (54.6 s of a 72.4 s refresh) before the cards
@@ -56885,6 +56917,20 @@ def _push(targets, connect=False, live_map=None):
                                   moved=",".join(l for l in _chat_sig_miss(sig, post) if l not in _CHAT_SIG_DEPS))
                 if _claimed:
                     _chat_inflight_done(s["sid"])        # stored (or not cacheable): the waiters re-read the cache now
+            if _repassed:
+                # a second pass appended its sid's row a second time: the feed's ledgers take the later row, in the first
+                # row's place, and a tab built on either pass keeps no provisional row beside its built one
+                for _rows, _key in ((chat_sessions, "id"), (_prov_rows, "sid")):
+                    _at, _out = {}, []
+                    for _r in _rows:
+                        if _r[_key] in _at:
+                            _out[_at[_r[_key]]] = _r
+                        else:
+                            _at[_r[_key]] = len(_out)
+                            _out.append(_r)
+                    _rows[:] = _out
+                _built_ids = {m["id"] for m in chat_sessions}
+                _prov_rows[:] = [_r for _r in _prov_rows if _r["sid"] not in _built_ids]
             shown_sids = {s["sid"] for s in chat_list}
             # drop cache for tabs no longer shown (closed/×-hidden): the union of the build cache, the baseline map and the
             # detector's marks (2026-09-19), since a baseline the seed established for a sid no cycle cached (a targeted
@@ -57502,14 +57548,18 @@ _pusher_wake = _CountedEvent()      # a threading.Event; set() also counts the w
 # whole-session builder firing at the instant a send lands, with its own transcript read racing the cycle's:
 # the two lists reached a client in either order and the older one took the just-landed row off the page
 # (the user 2026-09-22; the watermark guard of PR 2050 is the loud backstop, not the fix). A plain set: adds
-# and discards are atomic, the drain swaps it out, and a mark lost to a failed cycle costs order, never content.
+# and discards are atomic, the drain pops it one element at a time until it reads empty (an add landing between
+# two pops is taken by the same drain), and a mark lost to a failed cycle costs order, never content.
 _push_first: set = set()
 
 
 def _push_session_soon(sid):
-    """Ask the ONE pusher cycle to build `sid` FIRST, now (2026-09-23): the immediacy the targeted push was
-    added for, without a second builder of chat frames. Non-blocking (a set add and an Event set), so a
-    backend may call it from its own event loop thread."""
+    """Name `sid` to the ONE pusher cycle (2026-09-23): the named session builds at the front of the cycle's next
+    build slot, an in-flight cycle included (the build loop drains this set at the top of every iteration and once
+    more when its list runs dry), so a pop landing mid-cycle waits at most one tab's build. In the worst case, a
+    name landing after that last drain, it waits out the feed and timeline sections and the next cycle's prelude.
+    That is the bound in place of the targeted push's second builder of chat frames. Non-blocking (a set add and
+    an Event set), so a backend may call it from its own event loop thread."""
     _push_first.add(str(sid))
     _pusher_wake.set()
 
