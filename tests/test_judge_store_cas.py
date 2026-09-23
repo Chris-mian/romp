@@ -495,6 +495,24 @@ class StoreCas(unittest.TestCase):
         self.assertEqual((jd._GOAL_IO["carryBase"] - before["carryBase"], jd._GOAL_IO["carryNoBase"] - before["carryNoBase"]), (1, 0), "and the counters say the base was found")
         self.assertEqual(len([e for e in after.get("log") or [] if e.get("why") in ("our first move", "our second move")]), 2, "both of our events stand")
 
+    def test_a_publish_never_evicts_a_concurrent_holders_read_base(self):
+        """The round-three verifier of PR 2101: the publish's text entries took the readers' history slots, so a concurrent in-process holder
+        whose base was version V lost V's entry a cycle sooner than before the texts were kept (a judge pass runs about four publish-then-load
+        cycles), found no base at its save, carried nothing and published its copy over the other writer's edit, the loss this rule exists to
+        prevent, in a narrower window. The published texts live in a deque of their own: one holder, three publish-then-load cycles by another
+        writer in the same process, and the holder's save still finds its base and carries the other writer's field."""
+        self._seed()
+        g1 = self._nid(1)
+        holder = jd.load_goals(SID)                  # stands on V0
+        for i in range(3):                           # loop-ok: the three cycles the review executed
+            w = jd.load_goals(SID); w["nodes"][g1]["parentId"] = "V%d" % (i + 1); jd.save_goals(SID, w)   # a load (the memo rolls), then a publish (a text kept)
+        before = dict(jd._GOAL_IO)
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, holder)
+        after = json.loads((jd.GOALDIR / (SID + ".json")).read_text())["nodes"][g1]
+        self.assertEqual(after.get("parentId"), "V3", "the other writer's last move is carried: the holder's base survived three of the other's cycles (before: evicted by the published texts, nothing carried, the holder's copy published over it)")
+        self.assertEqual((jd._GOAL_IO["carryBase"] - before["carryBase"], jd._GOAL_IO["carryNoBase"] - before["carryNoBase"]), (1, 0), "and the counters say the base was found")
+        self.assertTrue(any(e.get("why") == "ours" for e in after.get("log") or []), "with the holder's own event")
+
     def test_the_retry_after_a_raised_write_stands_on_the_version_it_rebased_onto(self):
         """The second contributor's pre-merge review of PR 2101: after a raised write the finally hands the holder the identity the loop last
         rebased onto, never the load's. With the load's, the retry's carry would compare a third writer's newer value against the load's
@@ -504,7 +522,6 @@ class StoreCas(unittest.TestCase):
         a = jd.load_goals(SID)
         b = jd.load_goals(SID); b["nodes"][g1]["parentId"] = "V1"; jd.save_goals(SID, b)   # the first other writer
         jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="ours")
-        real = jd._publish_tmp
 
         def raising_write(*args, **kw):
             raise OSError(errno.EIO, "one raised write")

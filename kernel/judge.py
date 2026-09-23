@@ -226,7 +226,7 @@ def _rebind_state(path):
         _DISK_CONTENT.clear()   # save_goals' disk-side memo is keyed on full store paths, so an old root's
     #                         entries could never hit under the new one; cleared anyway so a rebind starts empty
     with _RAW_STORE_LOCK:
-        _RAW_STORE.clear(); _RAW_HISTORY.clear()      # the writer loader's parse memo: same full-path keys, same reasoning
+        _RAW_STORE.clear(); _RAW_HISTORY.clear(); _RAW_PUBLISHED.clear()   # the writer loader's parse memo: same full-path keys, same reasoning
     with _ABSENT_FLAGS_LOCK:
         _ABSENT_FLAGS.clear()   # the absent-store predicate memo: same full-path keys, same reasoning
     with _VIEW_CLEARED_LOCK:
@@ -4687,8 +4687,9 @@ class GuardedNode(dict):
 # not a field). The rebase now carries every plain field the other writer moved since the holder's base where the holder did not (a
 # per-field three-way merge); where both moved the same field, the incoming writer's own change wins. The BASE is the bytes the holder
 # stands on, found by their identity (_baseIdent) in the raw-parse memo, which keeps the last few versions per path (_RAW_HISTORY) for
-# the holders still standing on them: the pristine parse of a version a read rolled past, or the text a publish in this process wrote
-# (the writer's own next base; only a read fills the memo, and none may parse that version before the writer's next save). Nothing is
+# the holders still standing on them: the pristine parse of a version a read rolled past, and beside them (_RAW_PUBLISHED, never in the
+# readers' slots) the text a publish in this process wrote (the writer's own next base; only a read fills the memo, and none may parse
+# that version before the writer's next save). Nothing is
 # digested or copied at a load or a save, and the base is parsed only when a rebase happens (the round-one verifier of the field carry:
 # a digest per field at every load and save cost a 5000-node store 121 ms a load against 15 and 6 MB more retained). A base whose bytes
 # have rolled out of the history (more versions published meanwhile than it keeps) carries nothing, as before the rule, and the goals
@@ -4809,39 +4810,58 @@ _RAW_STORE = {}                                  # store path → ((st_ino, st_m
 _RAW_STORE_LOCK = threading.Lock()
 _RAW_STORE_STATS = {"hit": 0, "miss": 0, "compare_miss": 0, "evict": 0}
 _RAW_HISTORY_KEEP = 3
-_RAW_HISTORY = {}                                # store path → the last few versions' bytes as (identity, pickled parse, text), one of the two held: the
-#                                                  memo's own pickle when a read rolls the memo past a version (a reference, no copy), or the text a
-#                                                  publish in this process wrote (the writer's own next base: no read here may parse that version
-#                                                  before its next save; the second contributor's pre-merge review of PR 2101). The field carry's base
-#                                                  for a holder still standing on one of them; a deque of _RAW_HISTORY_KEEP per path, one entry per
-#                                                  identity; dropped with the path's memo entry (_raw_store_forget, both evictions), counted in the
-#                                                  gauge (raw_store_stats), cleared with the memo
+_RAW_HISTORY = {}                                # store path → the last few versions a READ rolled the memo past, as (identity, pickled parse): a
+#                                                  reference to the memo's own pickle, no copy. The field carry's base for a holder still standing on one
+#                                                  of them; a deque of _RAW_HISTORY_KEEP per path, dropped with the path's memo entry (_raw_store_forget,
+#                                                  both evictions), counted in the gauge (raw_store_stats), cleared with the memo
+_RAW_PUBLISHED_KEEP = 3
+_RAW_PUBLISHED = {}                              # store path → the last few versions this process PUBLISHED, as (identity, text): the writer's own next
+#                                                  base, since only a read fills the memo and none may parse that version before the writer's next save
+#                                                  (the second contributor's pre-merge review of PR 2101). BESIDE the readers' slots, never in them: in one
+#                                                  deque a publish evicted a concurrent holder's read base a cycle early, and that holder's save then
+#                                                  carried nothing and published its copy over the other writer's edit (the round-three verifier). A read
+#                                                  that rolls the memo past a published version keeps its parse in _RAW_HISTORY and drops the text here.
+#                                                  Dropped, counted and cleared with the memo, as above
 
 
-def _raw_history_push(path_s, ident, blob=None, text=None):
-    """Under _RAW_STORE_LOCK: keep a version's bytes for the holders standing on it (the field carry's base), the memo's pickled parse
-    when a read rolls the memo past the version, or the text a publish wrote. One entry per identity: the parse replaces a text entry
-    for the same version once a read fills the memo with it, so a version never holds two of the deque's slots."""
-    dq = _RAW_HISTORY.get(path_s)
+def _raw_history_push(hist, path_s, ident, payload, keep):
+    """Under _RAW_STORE_LOCK: keep a version's bytes in `hist` (one of the two deques above) for the holders standing on it, one entry per
+    identity, the deque bounded at `keep`."""
+    dq = hist.get(path_s)
     if dq is None:
-        dq = _RAW_HISTORY[path_s] = collections.deque(maxlen=_RAW_HISTORY_KEEP)
-    for ent in [e for e in dq if e[0] == ident]:     # loop-ok: at most _RAW_HISTORY_KEEP entries
+        dq = hist[path_s] = collections.deque(maxlen=keep)
+    for ent in [e for e in dq if e[0] == ident]:     # loop-ok: at most `keep` entries
         dq.remove(ent)
-    dq.append((ident, blob, text))
+    dq.append((ident, payload))
+
+
+def _raw_history_drop(hist, path_s, ident):
+    """Under _RAW_STORE_LOCK: the entry for `ident` out of `hist`, if any (a version whose parse a read now holds needs no text)."""
+    dq = hist.get(path_s)
+    if not dq:
+        return
+    for ent in [e for e in dq if e[0] == ident]:     # loop-ok: at most the deque's length
+        dq.remove(ent)
+    if not dq:
+        hist.pop(path_s, None)
 
 
 def _base_nodes(path_s, ident):
-    """The nodes as the file held them at `ident`, from the raw-parse memo or its history (a parse or a publish's text), else None
-    (the version rolled out)."""
+    """The nodes as the file held them at `ident`, from the raw-parse memo, the readers' history (a parse) or the published texts, else
+    None (the version rolled out)."""
     blob = text = None
     with _RAW_STORE_LOCK:
         ent = _RAW_STORE.get(path_s)
         if ent is not None and ent[0] == ident:
             blob = ent[2]
         else:
-            for old_ident, old_blob, old_text in reversed(_RAW_HISTORY.get(path_s) or ()):
+            for old_ident, old_blob in reversed(_RAW_HISTORY.get(path_s) or ()):
                 if old_ident == ident:
-                    blob, text = old_blob, old_text; break
+                    blob = old_blob; break
+            if blob is None:
+                for old_ident, old_text in reversed(_RAW_PUBLISHED.get(path_s) or ()):
+                    if old_ident == ident:
+                        text = old_text; break
     if blob is None and text is None:
         return None
     try:
@@ -4859,18 +4879,20 @@ def _raw_bump(key):
 def _raw_store_forget(path_s):
     with _RAW_STORE_LOCK:
         _RAW_STORE.pop(path_s, None)
-        _RAW_HISTORY.pop(path_s, None)               # the versions kept for the holders go with the path: an absent or unreadable store has no
-        #                                              writer standing on them worth a slot (a later rebase carries nothing, as before the rule)
+        _RAW_HISTORY.pop(path_s, None); _RAW_PUBLISHED.pop(path_s, None)   # the versions kept for the holders go with the path: an absent or
+        #                                              unreadable store has no writer standing on them worth a slot (a later rebase carries nothing,
+        #                                              as before the rule)
 
 
 def _raw_store_evict_absent():
     """Drop memo entries whose store file is gone (a removed session); the kernel's compaction sweep calls
     this beside _disk_memo_evict_absent."""
     with _RAW_STORE_LOCK:
-        gone = [k for k in set(_RAW_STORE) | set(_RAW_HISTORY) if not os.path.exists(k)]
+        gone = [k for k in set(_RAW_STORE) | set(_RAW_HISTORY) | set(_RAW_PUBLISHED) if not os.path.exists(k)]
         for k in gone:
-            _RAW_STORE.pop(k, None); _RAW_HISTORY.pop(k, None)   # the path's history goes with its entry (the second contributor's pre-merge
-            #                                                     review of PR 2101: a deleted store kept three versions, unseen by the gauge)
+            _RAW_STORE.pop(k, None); _RAW_HISTORY.pop(k, None); _RAW_PUBLISHED.pop(k, None)   # the path's history and published texts go with its
+            #                                                     entry (the second contributor's pre-merge review of PR 2101: a deleted store kept
+            #                                                     three versions, unseen by the gauge)
         _RAW_STORE_STATS["evict"] += len(gone)
     return len(gone)
 
@@ -4883,9 +4905,9 @@ def _raw_store_evict_unowned(owned):
     unowned eviction (review find, 2026-09-08). The kernel's compaction sweep calls this beside
     _shared_evict_unowned; a later load of an evicted store is a miss that refills it."""
     with _RAW_STORE_LOCK:
-        gone = [k for k in set(_RAW_STORE) | set(_RAW_HISTORY) if os.path.basename(k)[:-5] not in owned]
+        gone = [k for k in set(_RAW_STORE) | set(_RAW_HISTORY) | set(_RAW_PUBLISHED) if os.path.basename(k)[:-5] not in owned]
         for k in gone:
-            _RAW_STORE.pop(k, None); _RAW_HISTORY.pop(k, None)   # and the path's history, as above
+            _RAW_STORE.pop(k, None); _RAW_HISTORY.pop(k, None); _RAW_PUBLISHED.pop(k, None)   # and the path's history and published texts, as above
         _RAW_STORE_STATS["evict"] += len(gone)
     return len(gone)
 
@@ -4894,16 +4916,20 @@ def raw_store_stats():
     """The memo's counters plus its occupancy. hit: identity and text matched, a fresh copy of the earlier
     parse. miss: no entry, or its identity moved. compare_miss: identity matched and the text did not.
     evict: paths the compaction sweep dropped for removed stores and for stores no discovered session
-    owns (the entry and the path's history together). Gauges: entries; history, the versions kept for
-    the field carry's base across every path; and bytes, the text and the pickle held per entry plus
-    every history version's parse or text (the second contributor's pre-merge review of PR 2101: the
-    history stood outside the gauge, three versions of a deleted store at 0 bytes)."""
+    owns (the entry and the path's kept versions together). Gauges: entries; history, the read versions
+    kept for the field carry's base across every path; published, the versions this process published and
+    keeps as text beside them; and bytes, the text and the pickle held per entry plus every kept version's
+    parse or text (the second contributor's pre-merge review of PR 2101: the history stood outside the
+    gauge, three versions of a deleted store at 0 bytes). Read by the store tests and the memory probe;
+    no /perf line carries it (the pass and shared memos have theirs under `memos`)."""
     with _RAW_STORE_LOCK:
         out = dict(_RAW_STORE_STATS)
         out["entries"] = len(_RAW_STORE)
         out["history"] = sum(len(dq) for dq in _RAW_HISTORY.values())
+        out["published"] = sum(len(dq) for dq in _RAW_PUBLISHED.values())
         out["bytes"] = (sum(len(e[1]) + len(e[2]) for e in _RAW_STORE.values())
-                        + sum(len(b or b"") + len(t or "") for dq in _RAW_HISTORY.values() for _i, b, t in dq))
+                        + sum(len(b) for dq in _RAW_HISTORY.values() for _i, b in dq)
+                        + sum(len(t) for dq in _RAW_PUBLISHED.values() for _i, t in dq))
     return out
 
 
@@ -4967,7 +4993,8 @@ def _read_store_json(path, *, quarantine=False, _tries=3, ident_out=None):
                 with _RAW_STORE_LOCK:                # pickled BEFORE the caller can touch it: the pristine parse
                     prev = _RAW_STORE.get(path_s)
                     if prev is not None and prev[0] != ident:   # the version the memo rolls past: kept for the holders that loaded it (the field carry's base)
-                        _raw_history_push(path_s, prev[0], blob=prev[2])
+                        _raw_history_push(_RAW_HISTORY, path_s, prev[0], prev[2], _RAW_HISTORY_KEEP)
+                        _raw_history_drop(_RAW_PUBLISHED, path_s, prev[0])   # its parse stands now: the text this process published for it goes
                     _RAW_STORE[path_s] = (ident, raw, pickle.dumps(value, pickle.HIGHEST_PROTOCOL))
                 return value
             reason = "top-level JSON value is %s, not an object" % type(value).__name__
@@ -6462,12 +6489,13 @@ def save_goals(fsid, store):
         tmp.rename(GOALDIR / (fsid + ".json"))        # atomic publish
         published = True
         with _RAW_STORE_LOCK:
-            _raw_history_push(str(GOALDIR / (fsid + ".json")), written, text=text)   # the version just written, under the identity the
-            #                                                  rename carried: this holder's next field base. Only a read fills the raw memo,
-            #                                                  and no read in this process may parse this version before the holder's next
-            #                                                  save, so without this the base was missing and an editor's move after our
-            #                                                  publish was published over, as at main (the second contributor's pre-merge
-            #                                                  review of PR 2101). A reference to the text already serialized, no copy
+            _raw_history_push(_RAW_PUBLISHED, str(GOALDIR / (fsid + ".json")), written, text, _RAW_PUBLISHED_KEEP)   # the version just
+            #                                                  written, under the identity the rename carried: this holder's next field base.
+            #                                                  Only a read fills the raw memo, and no read in this process may parse this
+            #                                                  version before the holder's next save, so without this the base was missing and
+            #                                                  an editor's move after our publish was published over, as at main (the second
+            #                                                  contributor's pre-merge review of PR 2101). A reference to the text already
+            #                                                  serialized, no copy; in its own deque, so it never takes a reader's slot
         _session_file_written(fsid)
         _shared_forget(str(GOALDIR / (fsid + ".json")))   # the shared read-only view of the old version goes
         #                                               with it (its identity check would miss anyway; this frees the bytes)
