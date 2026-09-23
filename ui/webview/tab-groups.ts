@@ -859,7 +859,8 @@ export interface StripPlan {
  *      MEMBERSHIP never diverges;
  *    - `visibleIds` is arranged by the viewer's arrangement, which the kernel keeps and pushes since
  *      2026-09-23 (view-order.ts; until then each browser kept its own, and the trail read differently
- *      wherever one of them had dragged);
+ *      wherever one of them had dragged). It governs the order INSIDE each section and the order of the
+ *      trail alike;
  *    - the folds and pins in `st` are the kernel's too since the same day (TabFolds, the head of this file),
  *      on the phone as on the desktop;
  *    - `st.on`, whether the strip sections at all, stays this browser's own: the phone's picker menu carries

@@ -47,8 +47,10 @@ const errors = []; page.on("pageerror", (e) => errors.push(String(e && e.message
 // frame and its probe replaced the injected verdict while the injected rows stayed (three full-suite reds on 2026-09-13, a fourth caught
 // with this trace: a chatTail 118 ms after the idle frame). So once the roads begin, the kernel's frames for the session are HELD off the
 // pane: a capture listener registered before the pane's own runs first at the window and stops the event; every held frame is listed in
-// the RESULT. The boot's own tail delta is kept for the replay road.
-await page.addInitScript(() => { window.__held = []; window.__lastTail = null; window.addEventListener("message", (e) => { const m = e.data; if (!m || !m.type || e.source === window) return; if (m.type === "chatTail" && !window.__labHold) window.__lastTail = m; if (window.__labHold && m.id === window.__labHold) { window.__held.push({ t: Math.round(performance.now()), type: m.type }); e.stopImmediatePropagation(); } }, true); });
+// the RESULT. The replay road plays back one of the kernel's status-only tail deltas, which the lab now has to provoke: since 2026-09-23
+// the kernel sends no frame the page already holds, so a quiet boot is the full and nothing after it (that 118 ms tail was the boot's
+// own view again). The listener also notes the boot's full landing, the moment the states row below can be appended.
+await page.addInitScript((sid) => { window.__held = []; window.__lastTail = null; window.__gotFull = false; window.addEventListener("message", (e) => { const m = e.data; if (!m || !m.type || e.source === window) return; if (m.type === "session" && m.id === sid && !window.__labHold) window.__gotFull = true; if (m.type === "chatTail" && !window.__labHold) window.__lastTail = m; if (window.__labHold && m.id === window.__labHold) { window.__held.push({ t: Math.round(performance.now()), type: m.type }); e.stopImmediatePropagation(); } }, true); }, cfg.frame.id);
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
 await page.waitForSelector("#composer-input", { timeout: 20000 });
@@ -56,13 +58,22 @@ await page.waitForSelector("#composer-input", { timeout: 20000 });
 // as a window message event, so one capture listener sees both; e.source is the window for an injected one, null for the socket's)
 await page.evaluate(() => { window.__frames = []; window.__wsups = 0; window.addEventListener("romp:wsup", () => { window.__wsups++; window.__frames.push({ t: Math.round(performance.now()), type: "(wsup)", injected: false }); }); window.addEventListener("romp:wsdown", () => { window.__frames.push({ t: Math.round(performance.now()), type: "(wsdown)", injected: false }); }); window.addEventListener("message", (e) => { const m = e.data; if (!m || !m.type) return; window.__frames.push({ t: Math.round(performance.now()), type: m.type, id: m.id || null, injected: e.source === window, svc: m.status ? (m.status.bgServiceIds || null) : undefined, tasks: ("bgTasks" in m) ? ((m.bgTasks && m.bgTasks.tasks) ? m.bgTasks.tasks.length : 0) : undefined, skel: Array.isArray(m.skeleton) ? m.skeleton.length : undefined }); }, true); });
 await page.waitForTimeout(500);
-// the frame: the session working, the kernel's rows and the tracked tasks; the shim hands it to the page like a kernel push
-// the kernel's own tail delta for the session, from the boot (the replay road plays it back the shim's way); then the hold
-let bootTail = null;
-try { bootTail = await (await page.waitForFunction(() => window.__lastTail, null, { timeout: 15000 })).jsonValue(); } catch (e) { bootTail = null; }
+// the kernel's own status-only tail delta for the session (the replay road plays it back the shim's way), provoked once the page holds
+// the boot's full: an awaiting overlay row appended to the session's states log (the row test_awaiting_box_sync_served.py appends) changes
+// the status the kernel builds, the chip's awaitingBg with the row's why, and the next pusher cycle carries that status on an empty tail,
+// no event changed and no verdict in it; then the hold
+await page.waitForFunction(() => window.__gotFull, null, { timeout: 15000 });
+await page.evaluate(() => { window.__lastTail = null; });   // the tail captured is one sent after the row
+fs.appendFileSync(cfg.states, JSON.stringify({ t: Math.floor(Date.now() / 1000), awaiting: true, kind: "agents", count: 1, why: "1 background agent still working" }) + "\n");
+let kernelTail = null;
+try { kernelTail = await (await page.waitForFunction(() => window.__lastTail, null, { timeout: 30000 })).jsonValue(); } catch (e) { kernelTail = null; }   // the awaiting box lab gives the same row 30 s
 await page.evaluate((sid) => { window.__labHold = sid; }, cfg.frame.id);
+// the frame: the session working, the kernel's rows and the tracked tasks; the shim hands it to the page like a kernel push
 await page.evaluate((f) => window.postMessage(f, "*"), cfg.frame);
 await page.waitForSelector("#bg-tasks .bg-fold-head", { timeout: 15000 });
+// the kernel's awaiting status puts the box up ahead of the injection, its header the wait's words, so the click waits for the injected
+// frame's header (a whole session frame replaces the status, upsert) and never lands on a header the injected repaint is swapping out
+await page.waitForFunction(() => ((document.querySelector("#bg-tasks .bg-fold-label") || {}).textContent || "").startsWith("In the background"), null, { timeout: 15000 });
 await page.click("#bg-tasks .bg-fold-head");   // collapsed by default: open the list
 await page.waitForFunction(() => document.querySelectorAll("#bg-tasks .bg-list .bg-task").length >= 6, null, { timeout: 15000 });
 await page.waitForTimeout(200);
@@ -123,9 +134,10 @@ const placedOnly = await settle(only([task(cfg.placedId)], [], "working"), () =>
 // the verdict arrives by a BARE STATUS frame (round three, low 4): a session frame repaints the box unconditionally for the active
 // tab, a status frame only through awaitKey, so this is the executed coverage of the key carrying bgServiceIds
 const placedKept = await settle({ type: "status", id: f0.id, status: { ...f0.status, state: "working", awaitingItems: [], awaitingTaskIds: [], bgServiceIds: [cfg.placedId] } }, () => !!document.querySelector("#bg-tasks .bg-list .bg-task.bg-kept .bg-kept-word"));
-// the REPLAY road: the kernel's own tail delta (its status carries no verdict) dispatched the way the shim delivers a socket frame,
-// between the verdict and the next probe; at main it repainted the box from the kernel's status and the row lost its suffix; held now
-const replay = await page.evaluate((m) => { if (!m) return { had: false }; window.dispatchEvent(new MessageEvent("message", { data: m })); return { had: true, type: m.type, svc: m.status ? (m.status.bgServiceIds || null) : undefined }; }, bootTail);
+// the REPLAY road: the kernel's own status-only tail delta (the awaiting row's; its status carries no verdict) dispatched the way the shim
+// delivers a socket frame, between the verdict and the next probe; at main it repainted the box from the kernel's status and the row lost
+// its suffix; held now
+const replay = await page.evaluate((m) => { if (!m) return { had: false }; window.dispatchEvent(new MessageEvent("message", { data: m })); return { had: true, type: m.type, svc: m.status ? (m.status.bgServiceIds || null) : undefined }; }, kernelTail);
 await page.waitForTimeout(400);
 const afterReplay = await probe(); afterReplay.held = await page.evaluate(() => window.__held.slice());
 const doneOnly = await settle(only([task(cfg.doneId)], [], "idle"), () => document.querySelectorAll("#bg-tasks .bg-list .bg-task").length === 1 && !!document.querySelector("#bg-tasks .bg-list .bg-task.bg-completed"));
@@ -184,7 +196,7 @@ class ServedBgKinds(unittest.TestCase):
             raise unittest.SkipTest("esbuild failed here: " + (b.stderr or b.stdout)[-200:])
         dist = os.path.join(cls.lab, "dist")
         copy_dist(os.path.join(EXT, "dist"), dist)
-        state = os.path.join(cls.lab, "xdg", "romp")
+        cls.state = state = os.path.join(cls.lab, "xdg", "romp")
         cwd = os.path.join(cls.lab, "proj")
         for d in ("names", "sdk", "states"):
             os.makedirs(os.path.join(state, d), exist_ok=True)
@@ -253,6 +265,7 @@ class ServedBgKinds(unittest.TestCase):
             cfg = os.path.join(self.lab, "cfg.json")
             with open(cfg, "w") as f:
                 json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "frame": frame, "placedId": PLACED_ID, "doneId": DONE_ID, "cmdId": CMD_ID, "svcId": SVC_ID,
+                           "states": os.path.join(self.state, "states", SID + ".jsonl"),   # the session's states log: the driver appends the awaiting row to it
                            "shots": os.environ.get("BG_KINDS_SHOTS", "")}, f)
             driver = os.path.join(self.lab, "driver.mjs")
             with open(driver, "w") as f:
@@ -378,9 +391,12 @@ class ServedBgKinds(unittest.TestCase):
 
     def test_the_kernels_own_tail_delta_during_a_road_is_held_off_the_pane_and_the_verdict_stays(self):
         # the mechanism behind the full-suite reds of 2026-09-13: the kernel's tail delta carries its status for the session, with no
-        # verdict, and one landing between an injected frame and its probe repainted the box from it (the rows stayed, the suffix went)
+        # verdict, and one landing between an injected frame and its probe repainted the box from it (the rows stayed, the suffix went).
+        # The replayed tail is the one the awaiting row provoked (2026-09-23: the kernel no longer sends a frame the page already holds,
+        # so the boot alone yields no tail); its status names no service, the shape the hold guards the verdict against
         r = self._result()
-        self.assertTrue(r["replay"]["had"], "the boot's tail delta was in hand for the replay: %r" % r["replay"])
+        self.assertTrue(r["replay"]["had"], "the kernel's status-only tail delta, sent for the awaiting row, was in hand for the replay: %r" % r["replay"])
+        self.assertEqual(r["replay"]["svc"], [], "the replayed frame's status names no service, the guarded shape: %r" % r["replay"])
         self.assertEqual([x["kept"] for x in r["afterReplay"]["rows"]], [KEPT_WORD], "the row keeps the verdict through the kernel's tail delta: %r" % [(x["label"], x["kept"]) for x in r["afterReplay"]["rows"]])
         self.assertIn("chatTail", [h["type"] for h in r["afterReplay"]["held"]], "the delta was held off the pane and listed: %r" % r["afterReplay"]["held"])
         self.assertEqual(r["errors"], [], "no page error through the roads: %r" % r["errors"])

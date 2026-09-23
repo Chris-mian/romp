@@ -513,13 +513,21 @@ class HostProcess(unittest.TestCase):
         return k.recv_until(lambda f: f.get("t") == "reexec", timeout=15)
 
     def _lease_version_becomes(self, version, timeout=20):
+        # the re-executed host's lease naming `version`, its socket up, AND its adoption logged. The lease is written one line
+        # before the `reexeced` row (session_host.py: _write_lease then log("reexeced")), so waiting on the lease alone returns
+        # before that row and a caller reading the log kinds right after would race it; every caller is a re-exec handover, so
+        # the exit also waits for the `reexeced` row (PR 2081 follow-up). The row match is bound to this handover's version
+        # (session_host.py logs version=self.version, a string), so a state root that saw two handovers waits for the right
+        # one, not an earlier row. On the deadline the helper fails naming the unmet condition rather than returning a lease
+        # that would pass the caller's version check and then fail 25 s later at the kinds read (the flake PR 2081 fixed).
         deadline = time.time() + timeout
-        while time.time() < deadline:                                   # loop-ok: the event is the re-executed host's lease
+        while time.time() < deadline:                                   # loop-ok: the event is the re-executed host's lease and adoption row
             l = self._lease()
-            if l and str(l.get("version") or "") == version and (Path(self.state) / "hosts" / (SID[:8] + ".sock")).exists():
+            if l and str(l.get("version") or "") == version and (Path(self.state) / "hosts" / (SID[:8] + ".sock")).exists() \
+                    and any(r["kind"] == "reexeced" and r.get("version") == version for r in self._hostlog()):
                 return l
             time.sleep(0.05)
-        return self._lease()
+        self.fail(f"the re-executed host's lease named {version!r} with its socket up and its `reexeced` row logged within {timeout}s")
 
     def test_a_host_re_execs_into_the_kernels_code_keeping_its_cli_journal_and_pid(self):
         """The version-skew fix (2026-09-18): a host kept its code for its session's life, so a host bug outlived every kernel
@@ -637,10 +645,7 @@ class HostProcess(unittest.TestCase):
         self.assertEqual([o for o, _ in journal], list(range(len(emitted))))
         by_offset = {o: (r["type"], r.get("uuid")) for o, r in journal}
         self.assertEqual({o: by_offset.get(o) for o in seen}, seen, "every frame the kernel saw sits at its own offset")
-        # the lease flip (_lease_version_becomes above) precedes the `reexeced` row: the re-exec'd host writes the lease then
-        # logs (session_host.py: _write_lease then log("reexeced")), so wait on that row before reading the kinds, else the
-        # read races ahead of it (the CI flake read ['reexec-deferred', 'reexec'] without 'reexeced')
-        self.assertIsNotNone(self._log_row(lambda r: r["kind"] == "reexeced", timeout=20), "the reexeced row landed after the lease flip")
+        # _lease_version_becomes above waits for the `reexeced` row, so the kinds read no longer races it (PR 2081 follow-up)
         log = self._hostlog()
         self.assertEqual([r["kind"] for r in log if r["kind"] in ("reexec-deferred", "reexec", "reexeced")], ["reexec-deferred", "reexec", "reexeced"])
         self.assertTrue(any(r["kind"] == "turn-reopened" for r in log), "the bookkeeping rows re-opened a turn, which the after turn's result closed")

@@ -283,10 +283,13 @@ class ScopePath(unittest.TestCase):
         # a real child of THIS process stands in for "this kernel's live session": its unit is skipped
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(child.wait, timeout=10); self.addCleanup(child.kill)
-        listing = ("romp-session-11111111-%d-1757374800.scope loaded active running claude\n"          # our sid, CLI gone → stop
-                   "romp-session-11111111-%d-1757374801.scope loaded active running claude\n"          # our sid, our live child → keep
-                   "romp-session-22222222-%d-1757374802.scope loaded active running claude\n"          # another session → never ours
-                   ) % (CLI, child.pid, CLI + 1)
+        # each unit's Description carries this backend's state tag, as bin/romp-cli-scope writes it: the sweep stops only
+        # what it can prove it started (tests/test_reap_owned_only.py covers another kernel's tag and none)
+        T = sb.state_tag_of(be.state_dir)
+        listing = ("romp-session-11111111-%d-1757374800.scope loaded active running romp session %s romp-state=%s\n"  # our sid, CLI gone → stop
+                   "romp-session-11111111-%d-1757374801.scope loaded active running romp session %s romp-state=%s\n"  # our sid, our live child → keep
+                   "romp-session-22222222-%d-1757374802.scope loaded active running romp session %s romp-state=%s\n"  # another session → never ours
+                   ) % (CLI, SID, T, child.pid, SID, T, CLI + 1, OTHER, T)
         runs = []
         def run(argv, **kw):
             runs.append(list(argv)); return mock.Mock(stdout=listing if argv == sb.SCOPE_LIST_ARGV else "", returncode=0)
@@ -318,12 +321,14 @@ class BootReconcileEndsTheTree(unittest.TestCase):
               "  %d 1 /usr/bin/python3 /x/romp/bin/romp-kernel\n"
               "  %d %d /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
               ) % (CLI, SID, TOOL, CLI, LOOP, TOOL, TERMINAL, SID, KERNEL, LIVE, KERNEL, SID)
-        listing = "romp-session-11111111-%d-1757374800.scope loaded active running claude\n" % CLI
+        T = sb.state_tag_of(d)     # this kernel's state tag: on the orphan's environment and its scope (the proof it is ours)
+        listing = "romp-session-11111111-%d-1757374800.scope loaded active running romp session %s romp-state=%s\n" % (CLI, SID, T)
         killed, runs = [], []
         def run(argv, **kw):
             runs.append(list(argv)); return mock.Mock(stdout=ps if argv == sb.PS_ARGV else (listing if argv == sb.SCOPE_LIST_ARGV else ""), returncode=0)
         with mock.patch.object(sb.subprocess, "run", side_effect=run), \
              mock.patch.object(sb.os, "kill", side_effect=lambda p, s: killed.append((p, s))), \
+             mock.patch.object(sb, "proc_state_tag", lambda p, **k: T if p in (CLI, LIVE) else None), \
              mock.patch.object(sb.SdkBackend, "_pid_alive", lambda self, p: False):   # fake pids read as gone on every platform (no /proc on macOS → os.kill(pid, 0) would be this mock)
             be._boot_reconcile([sb.read_reg(Path(d), SID)])
         self.assertEqual([p for p, _ in killed], [TOOL, LOOP, CLI], "the orphan's tree, children first, then the CLI; the terminal CLI (no stream-json mark) and the live CLI untouched")
@@ -356,8 +361,10 @@ class BootReconcileEndsTheTree(unittest.TestCase):
         ps = ("  %d 1 /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
               "  %d 1 /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
               ) % (LEASED, SID, STALE, OTHER)
-        listing = ("romp-session-%s-%d-1757374800.scope loaded active running claude\n"
-                   "romp-session-%s-%d-1757374801.scope loaded active running claude\n") % (SID[:8], LEASED, OTHER[:8], STALE)
+        T = sb.state_tag_of(d)
+        listing = ("romp-session-%s-%d-1757374800.scope loaded active running romp session %s romp-state=%s\n"
+                   "romp-session-%s-%d-1757374801.scope loaded active running romp session %s romp-state=%s\n"
+                   ) % (SID[:8], LEASED, SID, T, OTHER[:8], STALE, OTHER, T)
         killed, runs = [], []
         def run(argv, **kw):
             runs.append(list(argv)); return mock.Mock(stdout=ps if argv == sb.PS_ARGV else (listing if argv == sb.SCOPE_LIST_ARGV else ""), returncode=0)
@@ -365,6 +372,7 @@ class BootReconcileEndsTheTree(unittest.TestCase):
         with mock.patch.object(sb.subprocess, "run", side_effect=run), \
              mock.patch.object(sb.os, "kill", side_effect=lambda p, s: killed.append((p, s))), \
              mock.patch.object(sb, "proc_start", lambda p, run=None: starts.get(p)), \
+             mock.patch.object(sb, "proc_state_tag", lambda p, **k: T if p in (LEASED, STALE) else None), \
              mock.patch.object(sb.SdkBackend, "_pid_alive", lambda self, p: False):
             be._boot_reconcile(regs)
         self.assertEqual([p for p, _ in killed], [STALE], "only the CLI whose lease did not hold is signaled")
@@ -456,16 +464,20 @@ class RealProcessTree(unittest.TestCase):
         self.assertIsNone(by.poll(), "the bystander outside the tree was never signaled")
         self.assertGreaterEqual(out["tree"], 1)
 
-    def _fake_cli(self, sid):
+    def _fake_cli(self, sid, tag=None):
         """A process that LOOKS like an SDK CLI of ours to the ps scan (the stream-json mark and the sid in its argv)
         and is a true ORPHAN shape: started by an intermediate shell that prints its pid and exits, so the fake CLI
         re-parents to the subreaper (the user manager, or pid 1), never to this test — a child of the tester would be
         the census's own-child case. Two commands in the fake CLI, so bash does not exec into the sleep and lose the
         argv; the sleep is its descendant. The intermediate leads a new process group that the fake CLI and its
-        sleep inherit, so one killpg at cleanup ends whatever the reaper left. Returns (pid, pgid)."""
+        sleep inherit, so one killpg at cleanup ends whatever the reaper left. `tag`: the state tag its environment
+        carries, as a kernel's launch sets it (none by default, whatever this test process inherited). Returns (pid, pgid)."""
+        env = {k: v for k, v in os.environ.items() if k != sb.STATE_TAG_ENV}
+        if tag:
+            env[sb.STATE_TAG_ENV] = tag
         inter = subprocess.Popen(["bash", "-c", 'bash -c "sleep 300; :" romp-t305-fake-cli --input-format stream-json --resume "$1" '
                                   '</dev/null >/dev/null 2>&1 & echo $!', "x", sid],
-                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True, env=env)
         out, _ = inter.communicate(timeout=10)
         pid = int(out.strip())
         def sweep():
@@ -492,15 +504,17 @@ class RealProcessTree(unittest.TestCase):
         sid_a, sid_b = str(uuid.uuid4()), str(uuid.uuid4())
         for sid in (sid_a, sid_b):
             _reg(d, sid)
-        (live, live_pg), (stale, stale_pg) = self._fake_cli(sid_a), self._fake_cli(sid_b)
+        # both carry this backend's state tag in their real environment, read back from /proc by the reap (the proof
+        # it asks for before it ends a CLI; tests/test_reap_owned_only.py covers another kernel's tag and none)
+        (live, live_pg), (stale, stale_pg) = self._fake_cli(sid_a, sb.state_tag_of(d)), self._fake_cli(sid_b, sb.state_tag_of(d))
         now = time.time()
         sb.write_lease(d, {"sid": sid_a, "fsid": sid_a, "pid": live, "start": sb.proc_start(live),
                            "holder": {"pid": os.getpid(), "start": sb.proc_start(os.getpid())}, "version": "", "t": now})
         sb.write_lease(d, {"sid": sid_b, "fsid": sid_b, "pid": stale, "start": sb.proc_start(stale),
                            "holder": {"pid": P + 80, "start": "1"}, "version": "", "t": now})
         real_run = subprocess.run
-        def run(argv, **kw):
-            return mock.Mock(stdout="", returncode=0) if argv == sb.SCOPE_LIST_ARGV else real_run(argv, **kw)
+        def run(argv, **kw):   # both unit listings are answered empty: no test lists the machine's real units
+            return mock.Mock(stdout="", returncode=0) if argv in (sb.SCOPE_LIST_ARGV, sb.HOST_SCOPE_LIST_ARGV) else real_run(argv, **kw)
         # the ps scan must see both before the census reads it
         deadline = time.time() + 5
         while time.time() < deadline:

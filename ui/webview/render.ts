@@ -130,6 +130,7 @@ import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey, p
 import { highlightHtml } from "./highlight-cache";
 import { wrapCodeLines, addCopyBtn } from "./code-block";   // a fence's per-line rows and Copy button, shared with the file viewer
 import { turnWorkedSecs as workedSecsOf, workedFooterPlan } from "./worked-footer";
+import { contentHash, firstReplaced, sameUnit, sameUnits, unitEvents, unitLastEvent } from "./unit-diff";   // the keyed paint: a frame repaints only the units whose inputs changed (2026-09-23)
 import { reconcileRewindPass, type RewindEvent } from "./rewind-reconcile";
 import { watchChatVisibility, browserChatVisibilityDeps } from "./chat-visibility";
 import type { PaneHiddenHost } from "./paint-gate";
@@ -490,20 +491,17 @@ function tailQueuedIdx(evs: ChatEvent[]): number {
 // Rebuild a session's optimistic tail: strip what we injected last push (kernel events are authoritative),
 // then re-add one per still-in-flight send — dropping those the kernel has now surfaced (a landed user atom
 // or a queued bubble carrying our text) or that have aged past the TTL backstop.
-// What each session's tail last SHOWED optimistically (texts, joined) — reconcileOptimistic compares
-// against it so the view repaints exactly when the visible echo set CHANGES, even though the event
-// COUNT may not: a landing frame that replaces the echo 1:1 (its user atom in, our bubble out) left
-// syncView's rendered===len fast path skipping the swap, so the dashed bubble lingered past its own
-// landing until some later push (found by the 2026-08-25 continuity harness). A map, not in-array
-// bookkeeping: upsert hands this function a FRESH events array, so the previous pass's injections
-// are only knowable from state that survives the frame.
-const echoShownSig = new Map<string, string>();
+// The view repaints what the pass changed, even when the event COUNT does not (a landing frame that replaces the echo 1:1, its
+// user atom in, our bubble out, left syncView's rendered===len fast path skipping the swap: the 2026-08-25 continuity harness):
+// the wrapper names the first event object the pass swapped (repaintFromChange) and the view compares its units from there by
+// content. A per-session signature of the shown texts marked the whole view stale instead, until 2026-09-23.
 
 function reconcileOptimistic(s: Session): void {
   // The strip and the re-inject are ONE step: an exception between them would leave the events without our
   // bubble until the next push, and the frame painted meanwhile would let the browser clamp a bottom reader by
   // the bubble's height (T262h). So the group as it was is put back on any failure, and the failure is filed.
   const prevGroup = s.events.filter((e) => isOptimistic(e));
+  const before = s.events.slice();   // what the view painted from: the pass names the first event it swapped (repaintFromChange)
   try {
     reconcileOptimisticInner(s);
   } catch (err) {
@@ -511,19 +509,24 @@ function reconcileOptimistic(s: Session): void {
     vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "reconcile-optimistic-failed",
                              data: { sid: s.id, error: String(err && (err as any).message || err).slice(0, 200) } });
   }
+  repaintFromChange(s, before);
+}
+/** A pass over a session's events names what it changed for its view (unit-diff.ts firstReplaced): the first index whose event
+ *  object it replaced, inserted or removed. The view compares its units from there by content and repaints only those that
+ *  changed (tailDiff), so a send, the kernel's echo and the landing each touch the tail units they change and nothing above
+ *  them. This replaced a STALE mark on every change of the echo set, the held copies or a label (2026-09-23), which rebuilt
+ *  the whole window under the reader on every send and every landing. The first event swapped compares the whole window. */
+function repaintFromChange(s: Session, before: readonly ChatEvent[]): void {
+  const at = firstReplaced(before, s.events);
+  if (at < 0) return;
+  const v = views.get(s.id);
+  if (!v) return;
+  if (at === 0) v.rediff = true; else v.rendered = Math.min(v.rendered, at);   // never 0: that is the first build's mark
 }
 function reconcileOptimisticInner(s: Session): void {
-  const settle = (after: string[]) => {
-    const sig = after.join("\u0000");
-    if ((echoShownSig.get(s.id) || "") !== sig) {
-      if (sig) echoShownSig.set(s.id, sig); else echoShownSig.delete(s.id);
-      const v = views.get(s.id);
-      if (v) v.stale = true;
-    }
-  };
   stripOptimistic(s, true);   // kernel truth (plus the held copies, T262i) below: our bubbles and our hide marks are re-derived from it
   const list = pendingSent.get(s.id);
-  if (!list || !list.length) { settle([]); return; }
+  if (!list || !list.length) return;
   // The decision reads KERNEL truth only (our injections are stripped above) — send-pending.ts: a
   // LANDED user atom after the send's anchor retires the entry (never the kernel's own echo, whose uuid
   // keeps the backend's "echo:" prefix into the payload — retiring on it was the 2026-08-09 flash-out:
@@ -547,7 +550,7 @@ function reconcileOptimisticInner(s: Session): void {
   // at the tail, on the same node until the landing takes its place
   for (const i of r.echoHide) { const e = s.events[i]; if (e && e.kind === "user" && !e.hiddenByPending) s.events[i] = { ...e, hiddenByPending: true }; }
   const inject = r.inject.filter((p) => !covered.has(p));
-  if (!inject.length) { settle([]); return; }
+  if (!inject.length) return;
   // cancelable from the PRESS (the user 2026-08-30, who sent mid-compaction and sat in an unlabeled,
   // uncancellable beat until the kernel's park round-tripped): the ✕ on an optimistic bubble drops our
   // re-injection and asks the kernel to cancel by body wherever the send landed (see the qx handler).
@@ -571,9 +574,6 @@ function reconcileOptimisticInner(s: Session): void {
   const texts = inject.map((p) => handedSet.has(p) ? { ...mk(p), cancelable: false, handed: true } : mk(p));
   s.events.push({ kind: "queued", bare: true, texts, uuid: OPT_PREFIX + inject[0].ts,
                   held: inject.map((p) => heldBy.get(p)).find((h) => !!h) });
-  // the signature is the texts alone: the tail slot moves with every kernel push by design, and chatTail's
-  // incremental repaint strips our group before applying a kernel index, so the slot is never trusted
-  settle(inject.map((p) => p.text));
 }
 
 // Undo our own injections wherever they sit — the bare group at the tail (T252d; T252 had spliced groups at
@@ -614,6 +614,10 @@ function noteCancelledQueued(sid: string, md: string, qid?: string): void {
   cancelledQueued.set(sid, list);
 }
 function reconcileHeldCopies(s: Session): void {
+  const before = s.events.slice();   // the view repaints from the first event this pass swaps (repaintFromChange)
+  try { reconcileHeldCopiesInner(s); } finally { repaintFromChange(s, before); }
+}
+function reconcileHeldCopiesInner(s: Session): void {
   // idempotent: a frame that kept the resident events (an empty full frame) still carries the previous pass's held
   // marks and group — cleared first, so the pass recomputes from the kernel's copies alone
   for (let i = s.events.length - 1; i >= 0; i--) {
@@ -636,10 +640,9 @@ function reconcileHeldCopies(s: Session): void {
     if (still.length) cancelledQueued.set(s.id, still); else cancelledQueued.delete(s.id);
   }
   heldQueued.set(s.id, r);
-  // the held set changed (a copy taken, a copy landed): the frame may keep its LENGTH while a held card gives way to
-  // the landed atom, and the repaint's no-op fast path reads length alone — so the view is marked stale here
-  const key = (h: HeldCopy[]) => h.map((c) => c.qid || c.md).join("\u0000");
-  if (key(mem.held) !== key(r.held)) { const v = views.get(s.id); if (v) v.stale = true; }
+  // the held set changed (a copy taken, a copy landed): the frame may keep its LENGTH while a held card gives way to the landed
+  // atom, and the repaint's no-op fast path reads length alone; the wrapper names the first event this pass swapped, so the
+  // view repaints from there (a stale mark here rebuilt the whole window, until 2026-09-23)
   if (!r.held.length) return;
   const add = r.held.map(heldAsQueued);
   if (qi >= 0) {
@@ -681,15 +684,14 @@ function registerOptimistic(id: string, text: string, imgPaths?: string[], qid?:
   // already hold this send's own echo or landing; `late` tells stampBase to read the events' own stamps,
   // so only what the kernel stamped before the press is background (send-pending.ts).
   if (!s) { p.late = true; return; }
-  reconcileOptimistic(s);
   // The reconcile can mutate the tail IN PLACE — merging into an existing queued group, or pop+push
   // on a repeat send — which leaves s.events.length unchanged, and syncView's no-op fast path
   // (rendered === len) then skipped the repaint: the bubble waited for the next kernel push instead
-  // of this keystroke (the user 2026-08-07, who saw the delay on sends into a busy session). Marking
-  // the view stale takes the same window re-render a tool-group toggle uses, so the send paints NOW
-  // in every case, not just the length-growing bare-bubble one.
-  const v = views.get(id);
-  if (v) v.stale = true;
+  // of this keystroke (the user 2026-08-07, who saw the delay on sends into a busy session). The
+  // reconcile names the first event it swapped (repaintFromChange), so the send paints NOW in every
+  // case, and only the tail units it changed (a stale mark here rebuilt the whole window under the
+  // reader on every send, until 2026-09-23).
+  reconcileOptimistic(s);
   if (id === activeId) {
     // Your own send reveals itself only from the TAIL, measured BEFORE the bubble lands (the append
     // grows scrollHeight, which would misread a tail-sitter as scrolled-up). At — or within
@@ -722,9 +724,7 @@ function markPendingLost(why: string): void {
     for (const p of list) if (!p.lost && !p.received) { p.lost = why; changed = true; }
     if (!changed) continue;
     const s = sessions.get(sid);
-    if (s) reconcileOptimistic(s);        // re-inject the bubbles with the new label
-    const v = views.get(sid);
-    if (v) v.stale = true;                 // same texts, new label: the sig alone would not repaint
+    if (s) reconcileOptimistic(s);        // re-inject the bubbles with the new label: a new group object, so the view repaints its unit
     if (sid === activeId) activeChanged = true;
   }
   if (activeChanged) appendActive();
@@ -758,7 +758,7 @@ function reconcileRewind(s: Session, bound?: number): void {
   (s as any)._editable = r.editable;
   if (!r.pending) pendingRewind.delete(s.id);
   const v = views.get(s.id);
-  if (v && r.stale) v.stale = true;   // the overlay or the editable set changed: MID-window turns repaint (the tail path never reaches them)
+  if (v && r.stale) v.rediff = true;   // the overlay or the editable set changed: MID-window turns repaint (the pass flags events in place, so every unit is compared by content)
 }
 // Tab name+color from the kernel's tabOrder push (the user 2026-06-26): lets renderTabs paint the WHOLE
 // strip as placeholders BEFORE each session's build_session arrives, so tabs don't pop in one-by-one.
@@ -1421,7 +1421,14 @@ let landTrail: string[] = [];
 // count is NOT len − winStart + spacer: a unit may own more than one node (the day
 // divider that opens a new day precedes its turn), so anything mapping DOM back to
 // units reads data-unit off the node rather than counting children.
-interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; pxPerTurn?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; gapUnits?: Map<number, number>; edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
+// `painted` is what the DOM shows, per unit (unit-diff.ts, 2026-09-23): the unit list it was painted from, each painted unit's
+// signature (its inputs: shape, content, the context its paint reads) and the chain it hands the next unit (the previous timed
+// epoch and the day walk's mark). A frame repaints the units whose signature changed and leaves every other node alone
+// (tailDiff). `rediff`: every unit in the window is compared by content, none trusted by `rendered` (a full frame replaced
+// every event object; a pass edited events in place without swapping them).
+interface PaintOut { pe: number | null; mark: number | null }
+interface Painted { items: DisplayItem[]; sig: (string | undefined)[]; out: (PaintOut | undefined)[] }
+interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; rediff?: boolean; painted?: Painted; winStart: number; winEnd?: number; avgTurnH?: number; pxPerTurn?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; gapUnits?: Map<number, number>; edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
 const views = new Map<string, View>();
 
 // Pending pickers (AskUserQuestion / tool-permission) keyed by session id. These
@@ -5078,7 +5085,6 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
     const rec = own ? (own.paths && own.paths.length ? own.paths : own.imgPaths) : null;   // every attachment the press knew (the record; images alone on an older entry), before the entry goes
     if (rec && rec.length) ownPaths = rec.slice();
     if (dropPending(list, qmd, qts, qid)) { if (list.length) pendingSent.set(sidQ, list); else pendingSent.delete(sidQ); }
-    echoShownSig.delete(sidQ);
   }
   // a PROVISIONAL tab's send has never left the client (T244): forget it from the queue adoption would
   // re-send, and post no kernel cancel — the kernel has no such session yet, and a miss there would
@@ -6905,7 +6911,7 @@ function renderTabs() {
       tab.classList.add("colored");
     }
     if (id === peekId) tab.classList.add("tab-peek");   // ephemeral peek — ghost/dashed dress (styles.css)
-    const st = applyTabStatus(tab, s);   // the chip (status → class/dot/bar), shared with the skeleton tab (2026-09-07)
+    const st = applyTabStatus(tab, s);   // the chip (status → class/dot/bar); one of applyTabStatus's THREE sites (renderTabs here, the skeleton tab, the loading tab), shared since 2026-09-07
     const label = el("span", "tab-label");
     label.replaceChildren(...hostNameNodes(s.name, id));   // remote "host:" prefix renders as quiet metadata
     // ...and the whole tab dims when that host is unreachable, so a disconnected session reads as one at
@@ -12218,11 +12224,11 @@ function syncView(id: string, atBottom?: boolean): View {
 }
 
 function syncViewInner(id: string, atBottom?: boolean): View {
-  // atBottom (passed by appendActive): false ⇒ the user is scrolled UP reading. A compact append must then
-  // NOT evict the window top — evicting shifts the content above the viewport, and since the compact path
-  // FULL-REBUILDS (clears the DOM, resetting scrollTop), the caller can only restore the position if the
-  // content above is unchanged. true/undefined ⇒ free to evict the top (we're at the bottom, or it's a
-  // non-append sync).
+  // atBottom (passed by appendActive): false ⇒ the user is scrolled UP reading. The keyed paint (tailDiff) touches the
+  // tail units alone and never evicts the window top, so the content above the viewport stands on its own; on the
+  // REBUILD branch below (a stale view, a shape change above the window, a spacer coming or going) atBottom === false
+  // keeps winStart, so the content above the viewport is unchanged there too and the caller's anchor restore lands.
+  // true/undefined ⇒ the rebuild is free to evict the top (we're at the bottom, or it's a non-append sync).
   renderingSid = id;          // so renderSystem can key the pinned card's persisted open-state by session
   renderingOwnerSid = id;     // preview/image URLs bake THIS session's id (host prefix included), never activeId's
   const subOf = subParts(id);
@@ -12251,7 +12257,7 @@ function syncViewInner(id: string, atBottom?: boolean): View {
         onRetry: () => askSubagent(id),
       });
     }
-    v.rendered = 0; v.stale = false; v.winStart = 0; v.winEnd = 0;
+    v.rendered = 0; v.stale = false; v.winStart = 0; v.winEnd = 0; v.painted = undefined; v.rediff = false;
     return v;
   }
   const working = s.status.state === "working" || s.status.state === "compacting";
@@ -12276,68 +12282,147 @@ function syncViewInner(id: string, atBottom?: boolean): View {
   // No-op fast path — a tab SWITCH / repaint with no event change: reveal the cached DOM, re-render nothing.
   // WITHOUT this, every showActive() re-built the trailing window (markdown + highlight.js) — the big-session
   // switch lag (the user 2026-06-25). A REAL change lowers v.rendered (delta-send sets it to the change index;
-  // an append grows len past it) or sets v.stale, so this never skips an actual update.
+  // an append grows len past it; a pass that swaps an event lowers it to that index, repaintFromChange) or sets
+  // v.stale or v.rediff, so this never skips an actual update. A shrink leaves v.rendered === len with fewer units
+  // than were painted, so the painted list's length is read too.
   // …except the "worked …" footer on a status-only tail: nothing re-rendered, and the footer follows the flip.
-  // (The patch marks the view stale when the reply's unit is not addressable — a folded run — so the fast
-  // path stands down and the window path below re-renders it.)
-  if (workFlip && v.rendered === len && !v.stale && v.el.childNodes.length > 0) {
-    patchWorkedFooters(v, s, len, working, settings.compact ? items : null);
-  }
-  if (v.rendered === len && !v.stale && v.el.childNodes.length > 0) return v;
+  // (The patch finds the reply's row itself, an expanded run's member row included, and patches it in this call:
+  // `current` is read once, so a mark set by the patch would ride no frame of an idle session. Only a run outside
+  // the painted window is left as a repaint mark for the paint that brings it in.)
+  const current = v.rendered === len && !v.stale && !v.rediff && v.el.childNodes.length > 0 && !!v.painted && v.painted.items.length === total;
+  if (workFlip && current) patchWorkedFooters(v, s, len, working, items);
+  if (current) return v;
   const wasAtTail = (v.winEnd ?? total) >= (v.unitTotal ?? total);   // window was covering the OLD end
-  // An in-place change (tool-group toggle, off-screen update) OR compact mode → re-render the CURRENT window
-  // (so the change shows wherever the user is), extending to the new tail if it was at the tail.
-  if (settings.compact || v.stale) {
-    const span = Math.max(WINDOW_TAIL, (v.winEnd ?? total) - (v.winStart ?? 0));
-    // Scrolled-up append (atBottom === false): KEEP winStart so the content above the viewport is unchanged
-    // and the caller's scrollTop restore lands exactly. Otherwise extend the tail window, evicting the top.
-    const keepTop = wasAtTail && atBottom === false;
-    const ws = keepTop ? (v.winStart ?? 0)
-                       : wasAtTail ? Math.max(0, total - span) : Math.min(v.winStart ?? 0, Math.max(0, total - 1));
-    const we = (wasAtTail || keepTop) ? total : Math.min(v.winEnd ?? total, total);
-    renderWindowItems(v, s, items, ws, we, working); v.stale = false; return v;
+  // THE KEYED PAINT (2026-09-23, unit-diff.ts), in both modes: the units whose inputs changed are repainted in place, the new
+  // ones appended when the window covers the tail, the ones that left removed; the top spacer and every unchanged unit are never
+  // touched. It replaced three paths. Compact mode re-rendered the whole window on every frame, and every send and landing marked
+  // the view stale for the same rebuild: each replaced every unit and re-estimated the top spacer, so the reader and the scroll
+  // height moved by thousands of pixels per frame on a long transcript. And normal mode's exact tail trimmed by EVENT index
+  // (`unitOf(node) >= from`) while the window build tags nodes by UNIT index, which the history gap unit shifts by one (T386
+  // stage 2, d3ed2170): the first tail frame after a window build removed the node just above the change and never put it back,
+  // the landed message at the first frame of its reply, until a later send rebuilt the window. The "worked …" footer, the one
+  // paint that reads LATER events, is patched on its node (patchWorkedFooters), never a reason to repaint a unit.
+  if (!v.stale && tailDiff(v, s, items, working, wasAtTail)) return v;
+  // A REBUILD of the current window: a tool-group toggle, a view whose units above the window changed shape (their numbering is
+  // the window's), a bottom spacer coming or going, a refused cancel putting a bubble back. The window extends to the new tail
+  // if it covered the old one.
+  const span = Math.max(WINDOW_TAIL, (v.winEnd ?? total) - (v.winStart ?? 0));
+  // Scrolled-up append (atBottom === false): KEEP winStart so the content above the viewport is unchanged
+  // and the caller's scrollTop restore lands exactly. Otherwise extend the tail window, evicting the top.
+  const keepTop = wasAtTail && atBottom === false;
+  const ws = keepTop ? (v.winStart ?? 0)
+                     : wasAtTail ? Math.max(0, total - span) : Math.min(v.winStart ?? 0, Math.max(0, total - 1));
+  const we = (wasAtTail || keepTop) ? total : Math.min(v.winEnd ?? total, total);
+  renderWindowItems(v, s, items, ws, we, working); v.stale = false; return v;
+}
+
+/** The keyed paint (unit-diff.ts, 2026-09-23): the painted window brought up to date by repainting IN PLACE only the units whose
+ *  signature changed, appending the new units when the window covers the tail, and removing the units that left. The top spacer
+ *  and every unchanged unit are never touched: a frame that changed nothing mutates nothing (a kernel repeating the same tail
+ *  included), and a frame that changed one event moves the scroll height by that unit's change alone. Units whose events all lie
+ *  below v.rendered (the first changed event) are trusted without a content read until the first repaint. False, touching
+ *  nothing, when the window cannot be diffed and is rebuilt instead: nothing was painted from a unit list, the units ABOVE the
+ *  window changed shape (the window's data-unit numbers would name other units), or the bottom spacer would come or go.
+ *  THE INVARIANT this keeps, by construction: a node leaves the thread only when its unit leaves the unit list or the window (the
+ *  units at or past `we`), or when its own unit is repainted, in the same task that inserts the unit's new nodes in its place. So a
+ *  unit whose event is resident is never left without its nodes: a landed message stays painted through every later frame, the
+ *  first frame of its reply included (the drop this replaced), and no frame needs a later send or a reload to restore it. */
+function tailDiff(v: View, s: Session, items: DisplayItem[], working: boolean, atTail: boolean): boolean {
+  const P = v.painted;
+  if (!P) return false;
+  const total = items.length, len = s.events.length;
+  const ws = v.winStart ?? 0;
+  const oldEnd = Math.min(v.winEnd ?? P.items.length, P.items.length);
+  const we = atTail ? total : Math.min(v.winEnd ?? total, total);
+  if (ws > we || (ws === we && ws > 0)) return false;           // nothing of the window is left to diff
+  if (!sameUnits(P.items, items, 0, ws)) return false;           // the units above the window moved: rebuild
+  const top = v.el.querySelector(":scope > .tx-spacer-top") as HTMLElement | null;
+  const bot = v.el.querySelector(":scope > .tx-spacer-bot") as HTMLElement | null;
+  if (!!top !== ws > 0 || !!bot !== we < total) return false;    // a spacer would come or go: rebuild
+  const nodesOf = new Map<number, HTMLElement[]>();              // every painted unit's nodes, in DOM order (a day divider leads its unit)
+  for (const c of Array.from(v.el.children) as HTMLElement[]) {
+    const d = c.dataset.unit;
+    if (d == null || d === "") continue;
+    const u = Number(d), list = nodesOf.get(u);
+    if (list) list.push(c); else nodesOf.set(u, [c]);
   }
-  // Normal mode, pure append. While BROWSING history (window not at the tail), the new events land below the
-  // rendered window → just grow the bottom spacer (no DOM churn); the user sees them on scroll-down.
-  if (!wasAtTail) {
-    v.spacerCountBot = total - (v.winEnd ?? total); v.unitTotal = total; v.rendered = len; sizeSpacers(v); return v;
-  }
-  // Normal mode, append AT the tail (unit === event, top spacer only): the cheap incremental hot path —
-  // re-render EXACTLY from the first changed event, tagging data-unit so the scroll↔unit map stays valid.
-  // v.rendered is exact: the kernel's chatTail names the first changed index (its _chat_diff compares by
-  // identity first, then equality, and the fold never writes an event in place), and every client pass that
-  // touches a prefix event marks the view stale instead — reconcileRewind (the editable set, the rewind dim),
-  // reconcileOptimistic (the echo set), a full session frame (upsert) — which takes the window rebuild above.
-  // A trailing window of 25 events re-rendered on every tail used to stand in for those signals, and was
-  // most of a tail's render. The one render that depends on LATER events, the "worked …" footer of a turn's
-  // last reply, is patched by unit after the loop (patchWorkedFooters).
-  const from = Math.max(v.rendered, v.winStart ?? 0);
-  // Drop every node from unit `from` onward, then re-render that span. Trim by DATA-UNIT, never by
-  // child COUNT: a unit can put more than one node in the thread (a day divider precedes the turn
-  // that opens a new day), so `keep = spacer + (from - winStart)` counted one node per unit and the
-  // extra dividers made it delete that many live turns off the tail, which then never came back.
-  // Reading the unit off the node is exact however many nodes a unit owns; the top spacer carries no
-  // data-unit, so it stops the walk on its own.
-  const unitOf = (n: ChildNode): number =>
-    n instanceof HTMLElement && n.dataset.unit != null ? Number(n.dataset.unit) : -1;
-  while (v.el.lastChild && unitOf(v.el.lastChild) >= from) v.el.removeChild(v.el.lastChild);
-  const walk = dayWalkBeforeEvent(s.events, from);   // the day walk's high-water mark up to here (T339)
-  for (let i = from; i < len; i++) {
-    const prev = prevTimedEpoch(s.events, i);   // the rail's raw previous epoch (the same-minute rule)
-    const ep = eventEpoch(s.events[i]);
-    if (ep != null) {   // a day boundary opens with its divider here too, or the tail append would drop it
-      const dv = dayDividerFor(ep, walk);
-      if (dv) { dv.dataset.unit = String(i); v.el.appendChild(dv); }
+  // where a unit with no painted nodes goes: before the first painted unit after it, else before the bottom spacer, else last
+  const before = (u: number): Node | null => {
+    let at: HTMLElement | null = null, au = Infinity;
+    for (const [k, list] of nodesOf) if (k > u && k < au && list[0].parentNode === v.el) { au = k; at = list[0]; }
+    return at ?? bot;
+  };
+  const turns = s.regions ? turnOfEvents(s) : null;
+  const sig: (string | undefined)[] = new Array(total), out: (PaintOut | undefined)[] = new Array(total);
+  for (let u = ws; u < Math.min(oldEnd, total); u++) { sig[u] = P.sig[u]; out[u] = P.out[u]; }
+  // the chain into the window's first unit, exactly as the window build seeds it (renderWindowItems)
+  let pe: number | null = ws > 0 && ws < total ? prevTimedEpoch(s.events, itemFirstEvent(items[ws])) : null;
+  let mark = dayWalkBefore(s, items, ws).mark;
+  const trustBelow = v.rediff ? -1 : v.rendered;
+  let lowest = -1;   // the lowest unit repainted, appended or removed: the footer patch reads from its first event
+  for (let u = ws; u < we; u++) {
+    const it = items[u];
+    const painted = u < oldEnd && sig[u] !== undefined && out[u] !== undefined && nodesOf.has(u);
+    if (painted && lowest < 0 && it.kind !== "gap" && unitLastEvent(it) < trustBelow && sameUnit(P.items[u], it)) {
+      const o = out[u]!; pe = o.pe; mark = o.mark; continue;   // wholly below the first changed event, nothing repainted above it: as painted
     }
-    const node = renderEvent(s.events[i], prev, turnWorkedSecs(s.events, i, working));
-    node.dataset.unit = String(i);   // unit === event in normal mode
-    v.el.appendChild(node);
-    walk.pass(ep);
-    stampWalkDay(node, walk);
+    const now = unitSig(v, s, it, pe, mark, turns);
+    if (painted && now === sig[u]) { const o = out[u]!; pe = o.pe; mark = o.mark; continue; }   // the same inputs paint the same nodes
+    if (lowest < 0) lowest = u;
+    const old = nodesOf.get(u) || [];
+    const ref = old.length ? old[old.length - 1].nextSibling : before(u);   // read before the paint, which may move a cached node
+    const frag = document.createDocumentFragment();
+    const walk = new DayWalk(); walk.mark = mark;
+    pe = appendItem(v, s, items, u, pe, walk, working, turns, frag);
+    mark = walk.mark;
+    for (const n of old) if (n.parentNode === v.el) v.el.removeChild(n);
+    v.el.insertBefore(frag, ref && ref.parentNode === v.el ? ref : bot);
+    sig[u] = now; out[u] = { pe, mark };
   }
-  patchWorkedFooters(v, s, from, working);
-  v.winEnd = total; v.spacerCount = v.winStart ?? 0; v.spacerCountBot = 0; v.unitTotal = total; v.rendered = len;
-  return v;
+  for (const [u, list] of nodesOf) {   // the units past the window's new end: the tail shrank, or the window's end moved in
+    if (u < we) continue;
+    if (lowest < 0 || u < lowest) lowest = u;
+    for (const n of list) if (n.parentNode === v.el) v.el.removeChild(n);
+  }
+  const botCount = v.spacerCountBot ?? 0;
+  v.painted = { items, sig, out };
+  v.winEnd = we; v.unitTotal = total; v.spacerCount = ws; v.spacerCountBot = total - we; v.rendered = len; v.rediff = false;
+  if (total !== P.items.length) v.gapUnits = gapUnitsOf(items, v.pxPerTurn);
+  if (bot && v.spacerCountBot !== botCount) sizeBottomSpacer(v, bot, top);   // the hidden tail's estimate below the reader; the top spacer stands
+  patchWorkedFooters(v, s, lowest >= 0 && lowest < total ? itemFirstEvent(items[lowest]) : len, working, items);
+  return true;
+}
+
+/** A unit's signature (unit-diff.ts): everything its paint reads, so equal signatures paint equal nodes. Its shape and the content
+ *  of its events; the previous timed epoch its time marker compares against and the day walk's mark its divider reads; its turn;
+ *  a folded run's open state; a user bubble's edit affordance; a gap's span, px-per-turn and loading glyph. The "worked …" footer
+ *  is not in it: it is patched on the node (patchWorkedFooters), so a prompt landing never repaints the reply above it. */
+function unitSig(v: View, s: Session, it: DisplayItem, prevEpoch: number | null, mark: number | null, turns: number[] | null): string {
+  if (it.kind === "gap") return "gap|" + it.lo + "|" + it.hi + "|" + it.before + "|" + (v.pxPerTurn ?? "") + "|" + (gapHasAsk(s.id, it) ? "ask" : "");
+  const f0 = itemFirstEvent(it);
+  let sig = it.kind + "|" + (prevEpoch ?? "") + "|" + (mark ?? "") + "|" + (turns && f0 < turns.length ? turns[f0] : "");
+  if (it.kind === "toolgroup") sig += openFolds.has(toolGroupKey(s.events[f0])) ? "|open" : "|shut";
+  else if (it.kind === "noticegroup") sig += openFolds.has(noticeGroupKey(s.events[f0])) ? "|open" : "|shut";
+  const editable = (s as any)._editable as Set<string> | undefined;
+  for (const i of unitEvents(it)) {
+    const e = s.events[i];
+    sig += "|" + contentHash(e) + (e && e.kind === "user" && e.uuid && editable && editable.has(e.uuid) ? "+edit" : "");
+  }
+  return sig;
+}
+
+/** The bottom spacer re-sized to the units below the window, the top spacer left exactly as it is (tailDiff). */
+function sizeBottomSpacer(v: View, bot: HTMLElement, top: HTMLElement | null): void {
+  const total = v.unitTotal ?? 0;
+  const before = parseFloat(bot.style.height) || 0;
+  const after = hiddenHeight(v, total - (v.spacerCountBot ?? 0), total, v.avgTurnH ?? 60);
+  if (after === before) return;
+  bot.style.height = after + "px";
+  if (activeId && views.get(activeId) === v) {
+    const content = document.getElementById("content");
+    const t = top ? (parseFloat(top.style.height) || 0) : 0;
+    scrollDiagRow("spacer", spacerRow(activeId, t, t, before, after, content ? content.scrollHeight : 0, content ? content.clientHeight : 0));
+  }
 }
 
 // The "worked …" footer is the one render on a turn that depends on LATER events and on the session's state:
@@ -12348,18 +12433,41 @@ function syncViewInner(id: string, atBottom?: boolean): View {
 // postal push) changes it with no event at all, which syncViewInner's fast path hands here with from = len.
 // worked-footer.ts names the reply and the seconds; the footer goes on or comes off by unit. applyForkSpots
 // homes a turn's fork spot inside its elapsed row when the turn has one, so the spot moves with the footer
-// either way. `items` is compact mode's unit list: there a unit is a display item (a folded run, or one event),
-// so the window's start maps to its first event and the reply's event index back to the unit whose node carries
-// it; a reply folded into a run has no node of its own, and the view goes stale for the window path instead.
+// either way. `items` is the view's unit list (both modes since 2026-09-23: a history gap is a unit too, so an event's
+// index is not its unit's number in normal mode either, and reading it as one patched the row above the reply):
+// the window's start maps to its first event and the reply's event index back to the unit whose node carries it.
+// A reply with no node of its own shows no footer: a thinking row compact mode hides, or a member of a COLLAPSED
+// run (its head carries no footer), so there is nothing to patch. An EXPANDED run's member row carries one, and that
+// row is patched here like any other node (found by the run's unit and the reply's place in the run): both callers
+// return on the state they read before the patch, so a repaint mark set here would wait for a frame an idle session
+// never gets (review find, 2026-09-23). Only a run outside the painted window keeps the mark, for the paint that brings
+// it in. Both node-less cases used to mark the whole view stale, a window rebuild for a footer no rebuild could show
+// (compact mode hit it whenever a reply followed a hidden thinking row).
 function patchWorkedFooters(v: View, s: Session, from: number, working: boolean, items: DisplayItem[] | null = null): void {
   const winStart = v.winStart ?? 0;
   const winEv = items ? (items[winStart] ? itemFirstEvent(items[winStart]) : s.events.length) : winStart;
   const unitOfEvent = (i: number): number => items ? items.findIndex((it) => it.kind === "event" && it.index === i) : i;
   for (const { unit: ev, secs } of workedFooterPlan(s.events, from, winEv, working, eventEpoch)) {
     const unit = unitOfEvent(ev);
-    if (unit < 0) { v.stale = true; continue; }
-    const node = v.el.querySelector(`:scope > [data-unit="${unit}"]:not(.day-divider)`) as HTMLElement | null;
-    if (!node) continue;
+    let node: HTMLElement | null = null;
+    if (unit < 0) {
+      // the reply is a member of a run (or a row compact mode hides): a collapsed run's head carries no footer; an expanded
+      // run's rows follow its head in it.indices order, each tagged with the run's unit and tg-child (appendItem)
+      const run = items ? items.findIndex((it) => (it.kind === "toolgroup" || it.kind === "noticegroup") && it.indices.includes(ev)) : -1;
+      const it = run >= 0 ? items![run] : null;
+      if (!it || (it.kind !== "toolgroup" && it.kind !== "noticegroup")) continue;
+      if (!openFolds.has(it.kind === "toolgroup" ? toolGroupKey(s.events[it.indices[0]]) : noticeGroupKey(s.events[it.indices[0]]))) continue;
+      const rows = v.el.querySelectorAll(`:scope > [data-unit="${run}"].tg-child`);
+      const at = it.indices.indexOf(ev);
+      node = at < rows.length ? (rows[at] as HTMLElement) : null;
+      // The row is patched in this call, never left to a repaint: both callers return on the state they read before the
+      // patch, and an idle session gets no next frame for it to ride (review find, 2026-09-23). Only a run outside the painted
+      // window takes the mark, for the paint that brings it in.
+      if (!node) { if (v.painted) { v.painted.sig[run] = undefined; v.rediff = true; } continue; }
+    } else {
+      node = v.el.querySelector(`:scope > [data-unit="${unit}"]:not(.day-divider)`) as HTMLElement | null;
+      if (!node) continue;
+    }
     const have = node.querySelector(":scope > .turn-elapsed") as HTMLElement | null;
     if (secs != null && !have) {
       const f = elapsedFooter(secs);
@@ -12411,12 +12519,6 @@ function stampWalkDay(node: HTMLElement, walk: DayWalk): void {
 function dayWalkBefore(s: Session, items: DisplayItem[], unitStart: number): DayWalk {
   const w = new DayWalk();
   for (let u = 0; u < unitStart && u < items.length; u++) w.pass(unitExit(s, items[u]));
-  return w;
-}
-// … and before event `i` in normal mode, where every unit is one event
-function dayWalkBeforeEvent(events: ChatEvent[], i: number): DayWalk {
-  const w = new DayWalk();
-  for (let j = 0; j < i && j < events.length; j++) w.pass(eventEpoch(events[j]));
   return w;
 }
 
@@ -12501,8 +12603,9 @@ function lastCompactUnit(s: Session, items: DisplayItem[]): number {
 // Append one display unit's DOM to v.el (a turn, or a folded toolgroup + its expansion), tagging every node
 // with data-unit = u for the scroll↔unit map. Returns the advanced prevEpoch (the rail's raw chain, for the same-minute
 // rule); `walk` is the day walk's high-water mark, advanced over the unit's exit (unitExit) and never rewound (T339).
-function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEpoch: number | null, walk: DayWalk, working: boolean, turns: number[] | null = null): number | null {
+function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEpoch: number | null, walk: DayWalk, working: boolean, turns: number[] | null = null, into: Node | null = null): number | null {
   const it = items[u];
+  const host: Node = into ?? v.el;   // the thread, or the fragment a keyed repaint builds the unit in (tailDiff) before it takes the unit's place
   const nodes: HTMLElement[] = [];   // every node this unit appends: stamped with the walk's day on the way out (T342)
   const stamped = new Set<HTMLElement>();   // …unless stamped mid-unit: an expanded tool run's rows, each in its own day
   // …and with the unit's absolute TURN (T386 stage 2, round six): a row names its own place in the transcript, so the fill's
@@ -12516,12 +12619,12 @@ function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEp
   // data-unit so the scroll↔unit map still resolves every node it walks). The unit is placed and timed by its ANCHOR
   // member (compact.ts itemAnchor, T339): a run's latest member, the one in sequence with its neighbours, never a member
   // stamped earlier than the rows around it.
-  if (it.kind === "gap") { v.el.appendChild(tag(gapElement(s, it, v))); return prevEpoch; }   // empty space: no divider, no epoch (T386 stage 2)
+  if (it.kind === "gap") { host.appendChild(tag(gapElement(s, it, v))); return prevEpoch; }   // empty space: no divider, no epoch (T386 stage 2)
   const anchor = itemAnchor(it, (i) => eventEpoch(s.events[i]));
   const dayOpen = eventEpoch(s.events[anchor]);
   if (dayOpen != null) {
     const dv = dayDividerFor(dayOpen, walk);
-    if (dv) v.el.appendChild(tag(dv));
+    if (dv) host.appendChild(tag(dv));
   }
   if (it.kind === "toolgroup") {
     const first = s.events[it.indices[0]];
@@ -12529,7 +12632,7 @@ function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEp
     const tools = it.indices.map((i) => s.events[i]) as Extract<ChatEvent, { kind: "tool" }>[];
     const open = openFolds.has(key);
     const head = tag(renderToolGroup(tools, prevEpoch, key, open));
-    v.el.appendChild(head);
+    host.appendChild(head);
     adv(it.indices[0]);
     if (open) {   // expanded → the GROUPED TOOLS, each as its normal turn. Compact mode hides thinking
       // everywhere, so the expansion must too: iterate it.indices (the tools only), NOT the contiguous
@@ -12542,7 +12645,7 @@ function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEp
       it.indices.forEach((i, j) => {
         const child = renderEvent(s.events[i], prevEpoch, turnWorkedSecs(s.events, i, working));
         child.classList.add("tg-child"); if (j === it.indices.length - 1) child.classList.add("tg-last");
-        v.el.appendChild(tag(child)); adv(i);
+        host.appendChild(tag(child)); adv(i);
         walk.pass(eventEpoch(s.events[i])); stampWalkDay(child, walk); stamped.add(child);
       });
     }
@@ -12550,18 +12653,18 @@ function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEp
     const notes = it.indices.map((i) => s.events[i]);
     const key = noticeGroupKey(notes[0]);
     const open = openFolds.has(key);
-    v.el.appendChild(tag(renderNoticeGroup(notes, s.events[anchor], prevEpoch, key, open)));   // timed by the anchor member (T339)
+    host.appendChild(tag(renderNoticeGroup(notes, s.events[anchor], prevEpoch, key, open)));   // timed by the anchor member (T339)
     adv(anchor);
     if (open) {
       it.indices.forEach((i, j) => {
         const child = renderEvent(s.events[i], prevEpoch, turnWorkedSecs(s.events, i, working));
         child.classList.add("tg-child"); if (j === it.indices.length - 1) child.classList.add("tg-last");
-        v.el.appendChild(tag(child)); adv(i);
+        host.appendChild(tag(child)); adv(i);
       });
       adv(anchor);   // the walk leaves the run on its latest member, whatever order its members came in
     }
   } else {
-    v.el.appendChild(tag(renderEvent(s.events[it.index], prevEpoch, turnWorkedSecs(s.events, it.index, working))));
+    host.appendChild(tag(renderEvent(s.events[it.index], prevEpoch, turnWorkedSecs(s.events, it.index, working))));
     adv(it.index);
   }
   walk.pass(unitExit(s, it));   // a no-op for an expanded tool run (every row already passed): one rule with dayWalkBefore
@@ -12580,16 +12683,30 @@ function renderWindowItems(v: View, s: Session, items: DisplayItem[], unitStart:
   let prevEpoch = unitStart > 0 && unitStart < total ? prevTimedEpoch(s.events, itemFirstEvent(items[unitStart])) : null;
   const walk = dayWalkBefore(s, items, unitStart);   // the mark a walk from the top would hold here (T339)
   const turns = s.regions ? turnOfEvents(s) : null;   // once per paint: every row it appends names its turn (round six)
-  for (let u = unitStart; u < unitEnd; u++) prevEpoch = appendItem(v, s, items, u, prevEpoch, walk, working, turns);
+  const sig: (string | undefined)[] = new Array(total), out: (PaintOut | undefined)[] = new Array(total);   // what each unit was painted from (unit-diff.ts)
+  for (let u = unitStart; u < unitEnd; u++) {
+    sig[u] = unitSig(v, s, items[u], prevEpoch, walk.mark, turns);
+    prevEpoch = appendItem(v, s, items, u, prevEpoch, walk, working, turns);
+    out[u] = { pe: prevEpoch, mark: walk.mark };
+  }
   if (unitEnd < total) v.el.appendChild(el("div", "tx-spacer tx-spacer-bot"));
   v.winStart = unitStart; v.winEnd = unitEnd;
   v.spacerCount = unitStart; v.spacerCountBot = total - unitEnd; v.unitTotal = total;
   v.rendered = s.events.length;
-  // a gap unit's height is its own estimate, not the average row (T386 stage 2): the spacers and the scroll→unit map read it
-  const gu = new Map<number, number>();
-  for (let u = 0; u < total; u++) { const it = items[u]; if (it.kind === "gap") gu.set(u, gapHeight(it, v.pxPerTurn)); }   // per TURN, not per display unit (medium 2)
-  v.gapUnits = gu.size ? gu : undefined;
+  v.painted = { items, sig, out }; v.rediff = false;
+  // a gap unit's height is its own estimate, not the average row (T386 stage 2): the spacers and the scroll→unit map read it.
+  // Measured FIRST (2026-09-23): the estimate read px-per-turn before the paint that measures it, so a view's first build sized
+  // its gaps at the default and its next rebuild at the measured figure, a jump of the gap's turns times the difference (the
+  // top spacer grew by 180,000 px on a send on a long transcript)
+  measureRows(v);
+  v.gapUnits = gapUnitsOf(items, v.pxPerTurn);
   sizeSpacers(v);
+}
+/** The gap units' heights, by unit: each its own estimate (turns x px-per-turn), not the average row (T386 stage 2). */
+function gapUnitsOf(items: DisplayItem[], pxPerTurn: number | undefined): Map<number, number> | undefined {
+  const gu = new Map<number, number>();
+  for (let u = 0; u < items.length; u++) { const it = items[u]; if (it.kind === "gap") gu.set(u, gapHeight(it, pxPerTurn)); }   // per TURN, not per display unit (medium 2)
+  return gu.size ? gu : undefined;
 }
 /** The estimated height of the units [from, to): a gap its own, every other unit the measured average. */
 function hiddenHeight(v: View, from: number, to: number, avg: number): number {
@@ -12606,6 +12723,27 @@ function sizeSpacers(v: View): void {
   const top = v.el.querySelector(".tx-spacer-top") as HTMLElement | null;
   const bot = v.el.querySelector(".tx-spacer-bot") as HTMLElement | null;
   if (!top && !bot) return;
+  const hadPerTurn = v.pxPerTurn != null;
+  measureRows(v);
+  // the first measure of px-per-turn (a view built hidden measures nothing; its first visible sizing does): the gaps take the
+  // measured figure NOW, so no later rebuild re-sizes them by the difference under the reader (2026-09-23)
+  if (!hadPerTurn && v.pxPerTurn != null && v.painted) v.gapUnits = gapUnitsOf(v.painted.items, v.pxPerTurn);
+  const avg = v.avgTurnH ?? 60;
+  const topBefore = top ? (parseFloat(top.style.height) || 0) : 0, botBefore = bot ? (parseFloat(bot.style.height) || 0) : 0;
+  const total = v.unitTotal ?? ((v.spacerCount ?? 0) + (v.spacerCountBot ?? 0));
+  const topAfter = top ? hiddenHeight(v, 0, v.spacerCount ?? 0, avg) : 0, botAfter = bot ? hiddenHeight(v, total - (v.spacerCountBot ?? 0), total, avg) : 0;
+  if (top) top.style.height = topAfter + "px";
+  if (bot) bot.style.height = botAfter + "px";
+  // a spacer re-size is a layout change above or below the reader that no pane write accompanies; the browser's
+  // anchoring answers it on its own, so the journal names it (T262j) — for the ACTIVE view only
+  if ((topAfter !== topBefore || botAfter !== botBefore) && activeId && views.get(activeId) === v) {
+    const content = document.getElementById("content");
+    scrollDiagRow("spacer", spacerRow(activeId, topBefore, topAfter, botBefore, botAfter, content ? content.scrollHeight : 0, content ? content.clientHeight : 0));
+  }
+}
+/** The rows' measured heights, once per view and only while it is visible (a display:none view reports 0): the average unit
+ *  the spacers size hidden units by, and the px per TURN a gap is sized by. */
+function measureRows(v: View): void {
   if (v.avgTurnH == null) {
     let h = 0, n = 0;
     for (const c of Array.from(v.el.children) as HTMLElement[]) {
@@ -12622,18 +12760,6 @@ function sizeSpacers(v: View): void {
       if (c.classList.contains("turn-user")) turns++;
     }
     if (h > 0 && turns > 0) v.pxPerTurn = h / turns;
-  }
-  const avg = v.avgTurnH ?? 60;
-  const topBefore = top ? (parseFloat(top.style.height) || 0) : 0, botBefore = bot ? (parseFloat(bot.style.height) || 0) : 0;
-  const total = v.unitTotal ?? ((v.spacerCount ?? 0) + (v.spacerCountBot ?? 0));
-  const topAfter = top ? hiddenHeight(v, 0, v.spacerCount ?? 0, avg) : 0, botAfter = bot ? hiddenHeight(v, total - (v.spacerCountBot ?? 0), total, avg) : 0;
-  if (top) top.style.height = topAfter + "px";
-  if (bot) bot.style.height = botAfter + "px";
-  // a spacer re-size is a layout change above or below the reader that no pane write accompanies; the browser's
-  // anchoring answers it on its own, so the journal names it (T262j) — for the ACTIVE view only
-  if ((topAfter !== topBefore || botAfter !== botBefore) && activeId && views.get(activeId) === v) {
-    const content = document.getElementById("content");
-    scrollDiagRow("spacer", spacerRow(activeId, topBefore, topAfter, botBefore, botAfter, content ? content.scrollHeight : 0, content ? content.clientHeight : 0));
   }
 }
 
@@ -12989,7 +13115,7 @@ function runPrebuild(deadline: IdleDeadline): void {
     return {
       events: s.events.length,
       hasDom: !!v && v.el.childNodes.length > 0,
-      stale: !!v && v.stale,
+      stale: !!v && (v.stale || !!v.rediff),   // a view the keyed paint must compare is not current either
       rendered: v ? v.rendered : 0,
     };
   };
@@ -13791,9 +13917,11 @@ function restoreScrollAnchor(content: HTMLElement, v: View, a: { uuid: string; y
 
 // Live tail-append to the ACTIVE view. At the bottom → follow it. Scrolled UP reading → keep the viewport
 // exactly where it is: a new message must NOT move what you're looking at (the user 2026-06-25 — incoming
-// messages were jumping the view "backwards"; the compact path FULL-REBUILDS on append, clearing the DOM and
-// resetting scrollTop). Pass atBottom=false so the rebuild keeps winStart, then restore ANCHOR-relative
-// (captureScrollAnchor) — the raw scrollTop only as the eviction fallback.
+// messages were jumping the view "backwards"; the compact path at the time rebuilt the window on every append,
+// clearing the DOM and resetting scrollTop). The keyed paint (tailDiff) touches the tail units alone and never
+// evicts the top; atBottom=false keeps winStart on the rebuild branch only (a stale view, a shape change above
+// the window, a spacer coming or going), so the content above the viewport is unchanged either way. Then restore
+// ANCHOR-relative (captureScrollAnchor), the raw scrollTop only as the eviction fallback.
 // A disconnected host's transcript SAYS SO where it ends (the user 2026-07-30). The tab mark is
 // peripheral once you are reading — you notice it after the fact, if at all — so the note goes at the
 // bottom of the conversation, which is where the eye already lands and where "nothing more is coming"
@@ -17972,13 +18100,16 @@ function upsert(msg: any) {
     if (v) { v.uo?.disconnect(); v.ro?.disconnect(); v.mo?.disconnect(); v.el.remove(); views.delete(msg.id); tailBackEnd(msg.id, "teardown"); }
   } else if (existed && !keepResident) {
     // A full frame replaces every event object and can differ from what this view rendered ANYWHERE (it is
-    // what the kernel sends a client it believes is behind): the tail path trusts v.rendered as the exact
-    // first changed index, so the whole window rebuilds here instead. Full frames for a held session are the
-    // reconnect and the repair, not the steady state; deltas (chatTail) are. Not when the frame carried no
-    // events for a session with content (`kept`, frame-merge.ts): the resident events stand, nothing was
-    // replaced, and a status-shaped frame must leave the view as it is.
+    // what the kernel sends a client it believes is behind), so no unit is trusted by v.rendered: the keyed
+    // paint compares every unit of the window by content and repaints only those that differ (2026-09-23). A
+    // full frame carrying what the page already shows mutates nothing; one whose units ABOVE the window changed
+    // shape rebuilds the window (tailDiff). This marked the view stale, and every full frame rebuilt the whole
+    // window under the reader. Full frames for a held session are the reconnect and the repair, not the steady
+    // state; deltas (chatTail) are. Not when the frame carried no events for a session with content (`kept`,
+    // frame-merge.ts): the resident events stand, nothing was replaced, and a status-shaped frame must leave the
+    // view as it is.
     const v = views.get(msg.id);
-    if (v) v.stale = true;
+    if (v) { v.rediff = true; v.rendered = Math.min(v.rendered, s.events.length); }   // a shorter list is the keyed paint's too, never the rewind path's tail rebuild
   }
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
   adoptArrival(order, msg.id, existed);   // once: its tabOrder frame usually carried it already (tab-order.ts)
@@ -18043,7 +18174,7 @@ function update(msg: any) {
   s.events = msg.events || s.events;
   const before = awaitKey(s.status);
   s.status = msg.status || s.status;
-  if (msg.events) { const v0 = views.get(msg.id); if (v0) v0.stale = true; }   // events replaced wholesale: the window rebuilds (the tail path trusts v.rendered)
+  if (msg.events) { const v0 = views.get(msg.id); if (v0) { v0.rediff = true; v0.rendered = Math.min(v0.rendered, s.events.length); } }   // events replaced wholesale: the keyed paint compares every unit (the tail path trusts v.rendered, so nothing is trusted)
   reconcileRewind(s);                    // pending-rewind overlay + the editable-bubble set, from the fresh payload
   reconcileHeldCopies(s);                // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);                // re-assert (or retire) any in-flight optimistic sends on this push
@@ -18053,8 +18184,8 @@ function update(msg: any) {
     renderLedger(); // refresh the summary box (ages + any new items) as the active session works
   } else {
     const v = views.get(msg.id);
-    if (v) v.stale = true; // re-render its current turn when it's next shown
-    schedulePrebuild(); // rebuild the now-stale off-screen view in idle, before the user switches to it
+    if (v) v.rediff = true; // compare its units when it's next shown (or pre-built)
+    schedulePrebuild(); // rebuild the now-stale off-screen view in idle, before the user switches to it (the keyed paint: its changed units only)
   }
   if (awaitKey(s.status) !== before) awaitChanged(msg.id);   // the box rides the chip's own frame (T225; see chatTail)
 }
@@ -18290,13 +18421,13 @@ function chatTail(msg: any) {
   }
   const heldBefore = s.events.slice();             // what the page held, for the landed-turn check below (frame-guard.ts)
   stripOptimistic(s);                              // kernel coordinates from here on (re-injected below)
-  const wasLen = s.events.length;
   s.events.length = from;                          // drop the (now superseded) tail...
   for (const e of (msg.events || [])) s.events.push(e);   // ...and append the freshly-changed suffix
   clearRefusedLatch(s.id);                         // a delta applied: the session is progressing, so a later refused full frame may ask again
   reconcileRewind(s, from);                        // pending-rewind overlay + the editable-bubble set, judged below the tail's start (see there)
   reconcileHeldCopies(s);                          // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);                          // re-assert (or retire) any in-flight optimistic sends
+  repaintFromChange(s, heldBefore);                // …and the view compares from the first event the frame or the passes swapped, the strip's un-hide included
   if (msg.wm && typeof msg.wm === "object") s.wm = msg.wm as FrameWm;   // the newest frame applied (frame-guard.ts)
   {   // a landed human turn this delta took off the page is filed, expected (a rewind the page asked for) or not (frame-guard.ts, 2026-09-22)
     const gone = droppedLandedHuman(heldBefore as unknown as import("./frame-guard").GuardEvent[], s.events as unknown as import("./frame-guard").GuardEvent[]);
@@ -18304,11 +18435,11 @@ function chatTail(msg: any) {
   }
   // A delta that SHRINKS the tail (an event retired with nothing replacing it — cancelling the last queued
   // message is the everyday case) lands on `from === new length`, so lowering v.rendered to `from` leaves it
-  // EQUAL to the length and syncView's no-op fast path skips the repaint — the retired turn stayed on screen
-  // for good (the user 2026-07-24: a ✕'d queued message left its "1 queued message" element behind). Mark the
-  // view stale so the window is rebuilt from the events that actually remain.
+  // EQUAL to the length, and syncView's no-op fast path skipped the repaint — the retired turn stayed on screen
+  // for good (the user 2026-07-24: a ✕'d queued message left its "1 queued message" element behind). The fast
+  // path now reads the painted unit count too, so the keyed paint removes the retired units and touches nothing
+  // else (a stale mark here rebuilt the whole window, until 2026-09-23).
   if (!regionsAbsorbTail(s)) requestFullSession(s.id, "gap");   // a delta ate into held history: re-base rather than relabel a short tail over it (the dropped-history fix, 2026-09-19)
-  const shrank = s.events.length < wasLen;
   if (typeof msg.total === "number") s.headTotal = msg.total;
   if (s.proto === 2 && s.headKnown && !(s.regions && s.regions.some((r) => r.kind === "gap"))) s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);   // the WHOLE is resident (no gap): its count (T386 stage 2, low 7: a mid-transcript gap holds older history, so the resident count is not the total)
   const before = awaitKey(s.status);
@@ -18320,10 +18451,7 @@ function chatTail(msg: any) {
   scheduleRenderTabs();   // once per animation frame however many tails a cycle lands (2026-09-04)
   if (msg.id === activeId) {
     const v = views.get(msg.id);
-    if (v) {
-      v.rendered = Math.min(v.rendered, from);        // repaint from the exact changed point (catches a tool fill)
-      if (shrank) v.stale = true;                     // …but a pure truncation needs the window rebuilt, see above
-    }
+    if (v) v.rendered = Math.min(v.rendered, from);   // compare from the exact changed point (catches a tool fill); a shrink is read off the unit count
     scheduleAppendActive();   // one paint per animation frame however many tails land (2026-09-07); the ledger rides it
     // THIS is the frame that flips the chip (T225): a status-only change reaches a caught-up client as a
     // chatTail with an empty suffix and the full status — awaitingWhy/Kind/Count/Tasks included. The box
@@ -18334,16 +18462,11 @@ function chatTail(msg: any) {
     // The SAME rule as the active tab: repaint from the exact changed point. Marking the view stale routed
     // the idle rebuild — and, when idle never came, the click itself — through a full 80-unit window
     // rebuild for every background tab that had merely appended a turn (2026-09-04; on a seventeen-session
-    // board that was most tabs, most of the time).
+    // board that was most tabs, most of the time). A shrink, and a change inside a window the user scrolled
+    // away from the tail, are the keyed paint's too: it compares every unit of the window from here (2026-09-23).
     const v = views.get(msg.id);
-    if (v) {
-      v.rendered = Math.min(v.rendered, from);
-      // Still a full window rebuild when the tail shrank, or when the change landed INSIDE a window the user
-      // had scrolled away from the tail: the incremental path assumes new events lie below such a window.
-      const atTail = (v.winEnd ?? Infinity) >= (v.unitTotal ?? 0);
-      if (shrank || (!atTail && from < (v.winEnd ?? 0))) v.stale = true;
-    }
-    schedulePrebuild(); // rebuild the now-stale off-screen view in idle, before the user switches to it (an incremental repaint now)
+    if (v) v.rendered = Math.min(v.rendered, from);
+    schedulePrebuild(); // rebuild the now-stale off-screen view in idle, before the user switches to it (the keyed paint: its changed units only)
   }
   if (awaitKey(s.status) !== before) awaitChanged(msg.id);   // (see the comment above: the box, keyed on the awaited fields changing)
 }
@@ -19427,8 +19550,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
         const dropped = dropPending(list, "", undefined, m.qid);   // by id alone: the text argument is inert
         if (dropped) {
           if (list.length) pendingSent.set(m.sid, list); else pendingSent.delete(m.sid);
-          const s = sessions.get(m.sid); if (s) reconcileOptimistic(s);
-          const v = views.get(m.sid); if (v) v.stale = true;
+          const s = sessions.get(m.sid); if (s) reconcileOptimistic(s);   // the view repaints the units the reconcile changed
           if (m.sid === activeId) appendActive();
         }
         const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;

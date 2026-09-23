@@ -1580,6 +1580,27 @@ restart monitors read. Two CLIs on one conversation is the boot sweep's own row
 there. The CLI takes no lock on a transcript it resumes, so the one writer per
 conversation is entirely the lease's to keep.
 
+A boot reaps only what the booting kernel can prove it started. The unit list
+and the process table are machine-wide, and a session id is not a kernel's: two
+kernels with state directories of their own can hold the same session (a lab
+copy of a live one), and until 2026-09-23 every boot of the second stopped the
+first one's host and ended its CLI. Each kernel now tags what it starts with its
+state tag, the first 16 hex digits of the SHA-256 of its resolved state
+directory: a session CLI carries it as `ROMP_STATE_TAG` in its environment, and
+a session scope or host scope carries `romp-state=<tag>` in its description.
+The orphan reap, the leftover session-scope sweep and the host-scope sweep act
+only on what carries the kernel's own tag. Anything with another kernel's tag,
+or with none (a unit or CLI started by a build from before the tag, or a process
+whose environment cannot be read), is left alone along with its CLI's scope,
+and the kernel log names all of it on one `boot reconcile: left alone` line. A
+kernel's own leftovers from before the upgrade carry no tag either, so every
+boot on the new build leaves them in place and names them, until they exit or
+are stopped by hand (`systemctl --user stop <unit>` for a scope, `kill` for an
+orphaned CLI). A session whose conversation one of those spared processes still
+holds is not resumed by that boot either, since a second CLI on the transcript
+would be two writers on one conversation; the log says the session stays down,
+and once the process is gone the next boot resumes it as usual.
+
 A session can outlive the kernel that started it. By default, on every machine
 on this version, a new session's CLI runs under a small per-session host
 process, `bin/romp-session-host`, instead of as the kernel's child. The
@@ -1627,7 +1648,8 @@ session from the transcript, so a conversation never has two writers. On
 Linux the host runs in a transient scope of its own (`romp-host-<sid8>-<t>`)
 outside the service cgroup and starts the CLI through `bin/romp-cli-scope` as
 before, so the CLI's own scope and its memory limits are unchanged; the boot
-sweep stops a dead host's scope by its lease. On macOS the host is a plain
+sweep stops a dead host's scope by its lease and the kernel's state tag in the
+scope's description. On macOS the host is a plain
 detached process and everything else is the same.
 
 A host upgrades itself in place when the kernel that attaches runs newer code.
@@ -1781,7 +1803,8 @@ same drain. A scoped CLI outlives a service restart only when the drain does not
 reach it: a kernel killed before its drain finishes (SIGKILL at the service's
 stop timeout), or a CLI the drain could not find. The reaper handles that case:
 at the next kernel boot, an SDK-driven CLI holding one of the kernel's sessions
-whose parent is not a live romp kernel is treated as orphaned and terminated.
+whose parent is not a live romp kernel, and whose environment carries the
+kernel's state tag, is treated as orphaned and terminated.
 Under `systemd --user` an orphan re-parents to the user manager, not to pid 1,
 so a ppid check alone would miss it and did, before 2026-09-05.
 
@@ -2225,7 +2248,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   and the cycle itself as the sender that read the baseline absent with a
   seed landing inside its build, a race the detector does not mark (nothing
   marked, no strand), one full and one row per base holder where a tail went
-  before, and tails with no new row at the next cycle; in the
+  before, and at the next cycle tails with no new row, or nothing at all
+  where the seed's list already matched the cycle's (2026-09-23); in the
   `chatFull` row below every change-0 face has `changeFrom` 0 with both edges
   held, the floor's has `firstHeld` false);
   `changeBelowFirst` for a change at or before the held first edge;
@@ -3438,6 +3462,13 @@ over the preview route's 2 MB read ceiling is not read; the parsed cache holds
 sixteen files, least recently read out first. Slugs come from the file's headings in order
 through the viewer's own rule, the Not-coinages heading included, so a card opens
 the viewer on the heading the viewer gave that id.
+
+The comments frame follows the same own-slot model. The `{type: "comments"}` frame carries a
+thread's anchorUuid, which the chat page joins with the anchored reply turn (`data-uuid`) to draw
+the reply's mark, and it reaches a page on four roads: the pusher's full cycle, the targeted
+per-session push (`_push_session_now`, so a mark lands with its turn when a page connects before
+the session is built), the create handler's direct send when a comment is written, and the ready
+reset's re-send once a reconnecting page's listeners are up.
 
 The chat page compiles one matcher per index (`glossary-links.ts`): every form
 (the term, its aliases, and their plurals by the everyday rule; nothing shorter
@@ -4918,31 +4949,33 @@ before, and a click that lands while text is selected inside a link opens nothin
 A tab wears a dashed red ring, **Blocked**, while its session is stopped: on a permission or
 picker prompt, or on an API error only you can clear. When the feed shows one of the session's
 cards under Needs you (it asked you something, it is waiting on a decision, a peer's message is
-waiting for your say, or a stalled task needs a look), the tab wears a dashed magenta ring
-instead, **Needs you**, whether the session is idle, waiting on background work or still working,
-so the sessions that need you stand out in the strip without a click through each of them; a
-working session keeps its gold dot inside the ring. The ring follows the feed, one refresh behind
-it at most, and goes when the card does: answer it, resolve it or clear it and the tab is plain
-again. A red ring outranks the magenta one; the amber ring of a session retrying an API error on
-its own gives way to it. The three rings are rows of **Settings**, **Chat**, **Tab widgets**
+waiting for your say, or a stalled task needs a look), a small **magenta dot** sits at the tab's
+top-right corner, **Needs you**, carrying a count of what needs you in the session (a number, "99+"
+past ninety-nine), whether the session is idle, waiting on background work or still working, so the
+sessions that need you stand out in the strip without a click through each of them; a working
+session keeps its gold dot at the left. The count follows the feed, one refresh behind it at most,
+and goes when the card does: answer it, resolve it or clear it and the tab is plain again. A session
+**retrying** an API error on its own shows a hollow **amber left dot**, a ring around the dot's slot
+whose distinct shape tells it from the filled working gold and awaiting green without relying on
+colour. Blocked outranks Needs you, and Needs you outranks retrying. The three rings are rows of **Settings**, **Chat**, **Tab widgets**
 (**Blocked**, **Needs you**, **Retrying**), each with its own switch, listed in that order because
-a tab wears one ring at a time and the first that applies wins: red over magenta over amber. A
-ring switched off leaves the tab with its dot; the small dot on a folded group's header and the
+a tab wears one cue at a time and the first that applies wins: Blocked over Needs you over retrying. A
+cue switched off leaves the tab with its dot; the small dot on a folded group's header and the
 phone's picker follow the same switches. With notifications on, the card entering Needs you is
 also what notifies you (see [Notifications on your phone](guide.md#notifications-on-your-phone)):
-the ring is that card, shown in the strip, and it stays as long as the card does, including across
+the cue is that card, shown in the strip (the count dot, or the dashed ring with the badge off), and it stays as long as the card does, including across
 a kernel restart, which announces nothing. On a phone, the session picker marks the same sessions
-with a magenta bar at the row's left edge, and the button that names the current session wears the
-dashed magenta border. One colour, the Needs you colour, marks the category everywhere: the column's
-chip, a card's question mark, the ring, the picker's bar.
+with the magenta count dot, on each picker row and on the button that names the current session. One colour, the Needs you colour, marks the category everywhere: the column's
+chip, a card's question mark, the tab's count dot (its dashed ring with the badge off) and the phone picker's dot (its left bar off).
 
 A per-browser setting, **State badge instead of the outline ring** (a checkbox in the gear's
-**Chat** tab, beside the tab lock), swaps two of these cues for dots. Needs you becomes a small
-magenta dot at the tab's top-right corner carrying a count of what needs you in the session (a
-number, "99+" past ninety-nine); retrying moves to the amber **left status dot**, but only while
-the **Status dot** widget is on, since that is the dot it moves to, so with the Status dot widget
-off retrying keeps its amber ring. Blocked keeps its red ring and fill either way, and the dashed
-rings are what shows when the setting is off (the default). On a phone the count dot replaces the current-session chip's dashed magenta border and each picker row's magenta left bar. The setting is off by default.
+**Chat** tab, beside the tab lock), is **on by default** and is what the paragraph above describes:
+Needs you a small magenta dot with its count, retrying a hollow amber left dot. Turn it OFF to swap
+those two back to the outline shapes: Needs you the dashed magenta ring, retrying the dashed amber
+ring, and on a phone the picker row's magenta left bar and the current-session chip's dashed magenta
+border in place of the count dot. Blocked keeps its red ring and fill either way. The retrying left
+dot needs the **Status dot** widget on, since that is the slot it moves to; with the Status dot
+widget off, retrying keeps its amber ring even under the badge.
 
 ### Tags and groups in the tab strip
 
@@ -4981,12 +5014,14 @@ heading alone, except the tabs set to show when folded. The session you are read
 desktop's rule: its group folds like any other and the heading stands in for it, while the chip at the
 top of the phone still names it. Until 2026-09-23 the phone never folded, since the picker is its only
 switcher; a folded group's sessions are now one tap away instead. A fold made while a page is still
-connecting is kept and applied over the folds the kernel serves, so neither is lost. The order you have DRAGGED your tabs into follows
+connecting is kept and applied over the folds the kernel serves, so neither is lost. Until you drag,
+every browser, the phone included, reads the tabs in the order romp has kept for them. The order you
+have DRAGGED your tabs into follows
 you: your kernel keeps it, so the phone picker and every other browser you open read the sessions in
 the order you arranged them on the desktop, and a drag on one device moves them on the others while you
 watch, without a reload. The last drag wins — two devices dragging at the same moment settle on whichever
 landed second. The phone shows the arrangement but cannot change it: the picker has no drag. The groups,
-their order, and which sessions sit in each of them are the same everywhere too. The Sessions pane has the same
+their order, and which sessions sit in each of them are the same everywhere the tabs are grouped. The Sessions pane has the same
 sections: **Group by tag** in its Filter menu (off until you turn it on, per browser) lays the
 lanes out one section per tag in the same order, each session under every tag it carries and
 the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row

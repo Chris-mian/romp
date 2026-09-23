@@ -4221,10 +4221,11 @@ _POSTAL_BUS_SCOPE_RE = re.compile(re.escape(POSTAL_BUS_SCOPE_PREFIX) + r"\d+-\d+
 # (tests/test_postal_bus_scope.py derives the links from it) and with postal_service.ensure's serve argv.
 POSTAL_BUS_SERVE_NAMES = ("romp-postal-service", "romp-postal", "postal_service.py")
 _SESSION_SCOPE_RE = re.compile(r"romp-session-([0-9a-fA-F]{1,8})-(\d+)-\d+\.scope\Z")
-SCOPE_LIST_ARGV = ["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager",
+# --full: the line's description carries the state tag (state_tag_of), which a truncated column would cut
+SCOPE_LIST_ARGV = ["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager", "--full",
                    SESSION_SCOPE_PREFIX + "*.scope"]
 SCOPE_STOP_TIMEOUT = 15.0     # systemd's own stop: SIGTERM to the cgroup, SIGKILL at its TimeoutStopSec
-HOST_SCOPE_LIST_ARGV = ["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager",
+HOST_SCOPE_LIST_ARGV = ["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager", "--full",
                         "romp-host-*.scope"]   # the per-session hosts' own scopes (T315)
 TREE_KILL_GRACE = 1.0         # seconds for SIGTERM to land on the tree before SIGKILL
 
@@ -4337,6 +4338,78 @@ def _read_ppid(pid: int) -> int | None:
         return int(tail[1])
     except (OSError, IndexError, ValueError):
         return None
+
+
+# WHICH KERNEL STARTED IT: the state tag (2026-09-23). systemd user units and processes are machine-wide, and a session
+# id is not a kernel's. A lab kernel with a state directory of its own held a session under the same id as a live session
+# of the machine's real kernel, and each of its boots stopped that session's host, because all three boot reapers decided
+# ownership from the session id plus the booting kernel's own state directory: the orphan CLI reap (lease_census, then
+# _end_cli_tree) took any stream-json `claude` on the machine resuming one of its ids with no lease in its directory and
+# no kernel for a parent, which a host-held CLI of another kernel always is; the leftover session-scope sweep took every
+# `romp-session-<sid8>-*` unit whose CLI it did not own; the host-scope sweep took every `romp-host-<sid8>-*` unit with no
+# valid lease in its directory. So a kernel now reaps only what it can PROVE it started: every session CLI carries
+# STATE_TAG_ENV in its environment (options.env, which a hosted CLI's spawn spec carries too), and every session scope and
+# host scope carries `romp-state=<tag>` in its Description (bin/romp-cli-scope, _spawn_host), which the list-units line the
+# sweeps already read shows. The tag is a hash of the resolved state directory, so a copied state directory at another
+# path is another kernel, and a copied lease proves nothing. At a reap, this kernel's tag is judged by the rules as they
+# were; another kernel's tag is left alone; no readable tag (an older build's unit or CLI, an environment this process
+# cannot read) is left alone too, and the boot names everything it left on one log line. The tag's formula is a contract
+# across kernel versions (a kernel must know its previous build's units): tests/test_reap_owned_only.py pins it by hand.
+STATE_TAG_ENV = "ROMP_STATE_TAG"     # KEEP IN SYNC with bin/romp-cli-scope, which writes it into the scope's Description
+STATE_TAG_WORD = "romp-state="
+_STATE_TAG_SHAPE = re.compile(r"[0-9a-f]{16}\Z")
+_STATE_TAG_IN_DESC = re.compile(r"(?:^|\s)" + re.escape(STATE_TAG_WORD) + r"([0-9a-f]{16})(?=\s|$)")
+
+
+def state_tag_of(state_dir) -> str:
+    """The state tag of the kernel over `state_dir`: the first 16 hex digits of the SHA-256 of the resolved path."""
+    return hashlib.sha256(os.path.realpath(os.fspath(state_dir)).encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
+def unit_state_tag(list_line: str) -> str | None:
+    """The state tag a `systemctl --user list-units --plain` line's description carries, or None when it carries none
+    (an older build's unit) or one of another shape. The unit name is the line's first word and never read here."""
+    head = list_line.strip().split(None, 1)
+    if len(head) < 2:
+        return None
+    m = _STATE_TAG_IN_DESC.search(head[1])
+    return m.group(1) if m else None
+
+
+def unit_state_tags(list_lines) -> dict:
+    """{unit: its state tag or None} for every line of a list-units listing."""
+    out = {}
+    for ln in list_lines:
+        head = ln.strip().split(None, 1)
+        if head:
+            out[head[0]] = unit_state_tag(ln)
+    return out
+
+
+def proc_state_tag(pid: int, run=None, procfs=None) -> str | None:
+    """The state tag in a process's environment as it was exec'd: /proc/<pid>/environ where there is a procfs (readable for
+    this user's own processes), else `ps -E` (macOS prints the environment after the command). None when the process is
+    gone, its environment cannot be read, or it carries no tag of the tag's shape. `run` and `procfs` are the test seams."""
+    procfs = os.path.isdir("/proc") if procfs is None else procfs
+    key = STATE_TAG_ENV + "="
+    if procfs:
+        try:
+            with open("/proc/%d/environ" % int(pid), "rb") as f:
+                data = f.read()
+        except (OSError, ValueError):
+            return None
+        for kv in data.split(b"\0"):
+            if kv.startswith(key.encode()):
+                v = kv[len(key):].decode("ascii", "replace")
+                return v if _STATE_TAG_SHAPE.match(v) else None
+        return None
+    run = run or subprocess.run
+    try:
+        out = run(["ps", "-E", "-ww", "-o", "command=", "-p", str(int(pid))], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return None
+    vals = [tok[len(key):] for tok in (out or "").split() if tok.startswith(key)]
+    return vals[-1] if vals and _STATE_TAG_SHAPE.match(vals[-1]) else None   # the environment follows the argv
 
 
 def find_session_cli(ps_lines: list[str], sids: list[str], parent_pid: int, lease: dict | None = None,
@@ -11421,13 +11494,14 @@ class SdkBackend:
 
     def _spawn_host(self, sess, spec_path):
         """Start bin/romp-session-host detached: in a transient scope of its own on Linux when scopes are on
-        (outside the service cgroup, like the CLI's), a plain new-session child elsewhere."""
+        (outside the service cgroup, like the CLI's), a plain new-session child elsewhere. The scope's Description carries
+        this kernel's state tag, the proof the boot's host-scope sweep asks for before it stops the unit (state_tag_of)."""
         ht = _ht()
         launcher = str(Path(__file__).resolve().parent.parent / "bin" / "romp-session-host")
         argv = [sys.executable, launcher, str(spec_path)]
         if self.cli_scope and shutil.which("systemd-run"):
             argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit=" + ht.host_scope_unit(sess.sid),
-                    "--description=romp session host %s" % sess.sid] + argv
+                    "--description=romp session host %s %s%s" % (sess.sid, STATE_TAG_WORD, state_tag_of(self.state_dir))] + argv
         errlog = open(str(Path(spec_path).parent / "host.stderr"), "ab")
         return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errlog,
                                 start_new_session=True, close_fds=True)
@@ -11799,7 +11873,19 @@ class SdkBackend:
         return {"scope": unit if stopped else None, "signaled": signaled, "forced": forced, "tree": len(targets) - 1,
                 "spared": len(spared)}
 
-    def _stop_leftover_scopes(self, lastsids: list[str], run=None, owned=()) -> int:
+    def _log_left_alone(self, items) -> None:
+        """ONE log line naming everything a boot reap left alone because this kernel cannot prove it started it
+        (state_tag_of): `items` are (name, tag) pairs, tag None for no tag at all. Nothing to name, no line."""
+        if not items:
+            return
+        said = ", ".join("%s (%s)" % (name, ("state tag %s, another kernel's" % tag) if tag else "no state tag")
+                         for name, tag in items)
+        self._log("boot reconcile: left alone %d process(es) and unit(s) on this kernel's session ids that it cannot "
+                  "prove it started (its own state tag is %s): %s; each stays until it exits or is stopped by hand "
+                  "(systemctl --user stop <unit> for a scope, kill <pid> for a claude process)"
+                  % (len(items), state_tag_of(self.state_dir), said))
+
+    def _stop_leftover_scopes(self, lastsids: list[str], run=None, owned=(), left=None) -> int:
         """Stop the session scopes of OUR sessions whose CLI is not OWNED — `owned` is lease_census's
         set of owned pids (a valid lease, or a live kernel's child; T305) — and not a live child of this
         kernel (T276):
@@ -11807,7 +11893,11 @@ class SdkBackend:
         pid-only reap left behind once their shells had died and re-parented. Every process in the
         scope belongs to that session by construction. A unit whose pid is this kernel's own child
         (a session already started before this sweep) is left alone. No systemctl (macOS, a box without
-        the user manager) → nothing to sweep. `run` is the test seam, resolved at call time."""
+        the user manager) → nothing to sweep. `run` is the test seam, resolved at call time.
+        A unit is stopped only when its Description carries THIS kernel's state tag (state_tag_of, 2026-09-23): the
+        listing is machine-wide and a session id is not a kernel's, so a unit with another kernel's tag, or none, is
+        left alone and named, on the caller's line when `left` is a list (the boot's, which names spared CLIs on the
+        same line), else on one line of this sweep's own."""
         run = run or subprocess.run
         try:
             listing = run(SCOPE_LIST_ARGV, capture_output=True, text=True, timeout=10).stdout or ""
@@ -11816,12 +11906,18 @@ class SdkBackend:
         except Exception as e:
             self._log("cut-turn reap: listing session scopes failed: %s" % e)
             return 0
+        own = state_tag_of(self.state_dir)
+        spared = [] if left is None else left
+        tags = unit_state_tags(listing.splitlines())
         stopped = 0
         for unit in session_scope_units(listing.splitlines(), lastsids):
             sp = scope_pid(unit)
             if sp is not None and (sp in owned or sp == os.getpid()
                                    or (self._pid_alive(sp) and _read_ppid(sp) == os.getpid())):
                 continue            # an owned CLI's scope, or this kernel's live session
+            if tags.get(unit) != own:
+                spared.append((unit, tags.get(unit)))   # not provably this kernel's: another kernel's, or an older build's
+                continue
             try:
                 run(["systemctl", "--user", "stop", unit], capture_output=True, text=True, timeout=SCOPE_STOP_TIMEOUT)
                 stopped += 1
@@ -11834,7 +11930,8 @@ class SdkBackend:
             except Exception as e:
                 self._log("cut-turn reap: stopping leftover %s failed: %s" % (unit, e))
         # T315: a host's own scope (romp-host-<sid8>-<t>) outlives its host when the host died; stop those
-        # whose session has no VALID lease (a live host's lease is valid, so its scope stays)
+        # whose session has no VALID lease (a live host's lease is valid, so its scope stays) and that carry this
+        # kernel's state tag (a lease in this directory says nothing about another kernel's host of the same id)
         try:
             hl = run(HOST_SCOPE_LIST_ARGV, capture_output=True, text=True, timeout=10).stdout
         except Exception:
@@ -11842,15 +11939,21 @@ class SdkBackend:
         if isinstance(hl, str) and hl.strip():
             now = time.time()
             leases = {str(l.get("sid")): l for l in list_leases(self.state_dir)}
+            htags = unit_state_tags(hl.splitlines())
             for unit, sid8 in _ht().host_scope_units(hl.splitlines(), list(lastsids) + list(leases)).items():
                 lease = next((l for s, l in leases.items() if s[:8].lower() == sid8), None)
                 if lease is not None and lease_state(lease, now) == "valid":
+                    continue
+                if htags.get(unit) != own:
+                    spared.append((unit, htags.get(unit)))
                     continue
                 try:
                     run(["systemctl", "--user", "stop", unit], capture_output=True, text=True, timeout=SCOPE_STOP_TIMEOUT)
                     stopped += 1
                 except Exception as e:
                     self._log("cut-turn reap: stopping leftover host scope %s failed: %s" % (unit, e))
+        if left is None:
+            self._log_left_alone(spared)
         return stopped
 
     def _boot_reconcile(self, regs: list[dict]) -> None:
@@ -11858,7 +11961,9 @@ class SdkBackend:
         on the boot itself plus each session's state tail, never on ages or timers:
           * REAP orphaned SDK CLIs still resuming our sessions: a dead kernel's children re-parent
             (to launchd on macOS, to the `systemd --user` subreaper on Linux) and keep writing the
-            transcript, so a resume would give the conversation two writers.
+            transcript, so a resume would give the conversation two writers. Only an orphan carrying
+            this kernel's state tag is ended; one the tag check spares keeps its conversation, and
+            that session is not resumed by this boot (the guard in the per-session loop below).
           * A session whose state tail is 'working' had its turn CUT by the kernel death — a user
             interrupt writes 'idle', a finished turn 'waiting'; only a kill leaves 'working' — so resume
             it with a visible continuation nudge (BOOT_RESUME_NUDGE) ahead of its restored queue. The
@@ -11883,6 +11988,10 @@ class SdkBackend:
             scopes_stopped = 0
             lastsids = [str(r.get("lastSid") or "") for r in alive if r.get("lastSid")]
             by_fsid = {str(r.get("lastSid")): r for r in alive if r.get("lastSid")}   # conversation id -> its reg
+            # conversation ids a SPARED orphan still holds (the tag check below): their sessions are not resumed by
+            # this boot, whatever their state tail says, or the resume would put a second CLI on a transcript a process
+            # of another kernel's is still writing, two writers on one conversation. Empty when nothing is spared
+            spared_fsids: set[str] = set()
             if lastsids:
                 try:
                     ps = subprocess.run(PS_ARGV, capture_output=True, text=True, timeout=10).stdout
@@ -11898,16 +12007,35 @@ class SdkBackend:
                         r0 = by_fsid.get(fsid) or {}
                         problem_row(self.state_dir,
                                     "boot: %d claude processes were holding session %s's conversation at once "
-                                    "(pids %s); the orphans are being ended" % (len(pids), r0.get("name") or fsid[:8],
-                                                                                 ", ".join(str(p) for p in pids)),
+                                    "(pids %s); the orphans this kernel started are being ended, any other kernel's "
+                                    "stays and is named below" % (len(pids), r0.get("name") or fsid[:8],
+                                                                       ", ".join(str(p) for p in pids)),
                                     "reconcile.duplicate-cli", log=self._log, sid=r0.get("sid"), name=r0.get("name"),
                                     fsid=fsid, pids=",".join(str(p) for p in pids), n=len(pids))
                     # Ownership by lease (T305): a CLI with a valid lease is owned whatever its parent; every
                     # anomaly is a problem row (lease_census documents the rules and the kinds)
                     leases = list_leases(self.state_dir)
                     census = lease_census(ps_lines, lastsids, os.getpid(), leases, version=self.code_version)
+                    # Only what this kernel can PROVE it started is reaped (state_tag_of, 2026-09-23): the listing is
+                    # machine-wide and a session id is not a kernel's, so an orphan by the census's rules whose
+                    # environment carries another kernel's tag, or none, is left alone, its scope with it, and named on
+                    # the boot's one left-alone line; the census's rows saying it was reaped are not filed, since it was not
+                    own_tag = state_tag_of(self.state_dir)
+                    left: list = []
+                    orphans = []
+                    for pid in census["orphans"]:
+                        if pid == os.getpid():
+                            continue
+                        tag = proc_state_tag(pid)
+                        if tag == own_tag:
+                            orphans.append(pid)
+                        else:
+                            left.append(("claude pid %d" % pid, tag))
+                    spared = {pid for pid in census["orphans"] if pid not in orphans and pid != os.getpid()}
+                    spared_fsids.update(s for s in (cli_sid_of(cmd_of.get(pid, ""), lastsids) for pid in spared) if s)
+                    problems = [p for p in census["problems"] if p.get("cliPid") not in spared]
                     sid_of = {str(r.get("lastSid")): str(r.get("sid")) for r in alive if r.get("lastSid")}
-                    for prob in census["problems"]:
+                    for prob in problems:
                         self._lease_problem(prob, sid_of)
                     lease_by_pid = {}
                     for lease in leases:
@@ -11915,9 +12043,7 @@ class SdkBackend:
                             lease_by_pid.setdefault(int(lease.get("pid")), lease)
                         except (TypeError, ValueError):
                             pass
-                    for pid in census["orphans"]:
-                        if pid == os.getpid():
-                            continue
+                    for pid in orphans:
                         # the CLI AND its tree (T276): its scope unit, then every process still under it
                         try:
                             res = self._end_cli_tree(pid, ps_lines)
@@ -11939,12 +12065,14 @@ class SdkBackend:
                             remove_lease(self.state_dir, lease_by_pid[pid]["sid"])
                     for sid in census["dead_leases"]:      # a lease naming no live CLI is nobody's claim
                         remove_lease(self.state_dir, sid)
-                    # …and the scopes whose CLI already died but whose children live on (an owned CLI's stays)
-                    scopes_stopped = self._stop_leftover_scopes(lastsids, owned=set(census["owned"]))
-                    if census["owned"] or census["problems"]:
+                    # …and the scopes whose CLI already died but whose children live on (an owned CLI's stays, and so
+                    # does a spared one's: left alone means its whole cgroup)
+                    scopes_stopped = self._stop_leftover_scopes(lastsids, owned=set(census["owned"]) | spared, left=left)
+                    self._log_left_alone(left)
+                    if census["owned"] or problems:
                         by_lease = sum(1 for why in census["owned"].values() if why == "lease")
                         self._log("boot reconcile: %d CLI(s) owned (%d by lease), %d lease anomaly(ies) filed"
-                                  % (len(census["owned"]), by_lease, len(census["problems"])))
+                                  % (len(census["owned"]), by_lease, len(problems)))
                 except Exception:
                     self._log("boot reconcile: orphan reap failed: %s" % traceback.format_exc())
             resumed, restored, notified = 0, 0, 0
@@ -11978,6 +12106,17 @@ class SdkBackend:
                     # heals the same way for ones that respawn.
                     if r.get("effortPending") or r.get("modelPending"):
                         self._update_reg(sid, effortPending=False, modelPending=False)
+                    if str(r.get("lastSid") or "") in spared_fsids:
+                        # A claude process this kernel did not start (another kernel's state tag, or none) still holds
+                        # this session's conversation: the reap above spared it and named it on its left-alone line.
+                        # Before the state tag the orphan was ended first, so the resume below was safe; now a resume
+                        # would spawn a second CLI with --resume on the same transcript, two writers on one
+                        # conversation, the hazard the reap exists to prevent. So the session stays down: no resume
+                        # nudge, no machine-cut stamp, no spawn. Its cut tail, queue, dead tasks and pending ask stay on
+                        # disk for the boot that finds the conversation free.
+                        self._log("boot reconcile: %s stays down: a claude process this kernel did not start still holds "
+                                  "its conversation (the process is named above)" % (r.get("name") or sid[:8]))
+                        continue
                     queued = [t for t in (r.get("queue") or []) if isinstance(t, str) and t]
                     if _ht().host_lease_state(read_lease(self.state_dir, sid), time.time()) == "attach":
                         if self._attach_stand_down_holds(sid, r):
@@ -13418,8 +13557,11 @@ class SdkBackend:
             # a generic identity surface, deliberately coupled to no consumer. Env is spawn-frozen, so
             # a rename after spawn is NOT reflected here — the sid stays the stable identity; the name
             # is a spawn-time label, right for attribution and logging, wrong for addressing.
+            # STATE_TAG_ENV names the kernel that started the CLI, so a boot reaps only its own (state_tag_of); set
+            # here, over whatever the kernel inherited, since a kernel started from a session's shell carries that
+            # session's kernel's tag in its own environment.
             env={**_bin_on_path_env(os.environ), "ROMP_SID": str(sess.sid),
-                 "ROMP_SESSION_NAME": str(sess.name)},
+                 "ROMP_SESSION_NAME": str(sess.name), STATE_TAG_ENV: state_tag_of(self.state_dir)},
             # Registering this is what makes the CLI's stderr EXIST for romp at all: the SDK transport
             # pipes the child's stderr only when options.stderr is set (otherwise it hands the child
             # our own stderr and reports SDK_STDERR_PLACEHOLDER on failure). Without it, a CLI that

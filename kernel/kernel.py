@@ -32026,7 +32026,7 @@ def _agent_steps(agent_path):
     append-incrementally over the file (em.fold_records: a growing file steps only its new records; a
     finished file costs one read, then a stat per build). None when unreadable or empty. Shipped on the
     event as agentSteps + stepsTotal whether the agent runs or has finished (the fold shows the list
-    either way); the running preview's clock (agentGist: calls/since/last) rides only while it runs."""
+    either way); the running preview's clock (agentGist: calls/since, _gist_of) rides only while it runs."""
     _chat_dep_note_taskout(str(agent_path), _chat_stat_key(str(agent_path)))   # a growing agent file moves the key
     try:
         st = em.fold_records(_AGENT_GIST_CACHE, str(agent_path), _gist_fresh, _gist_step, ckpt="agentGist", drop_after="quiescent")
@@ -32043,7 +32043,12 @@ def _stamp_steps(ev, st):
 
 
 def _gist_of(st):
-    return {"calls": st["calls"], "since": st["since"], "last": st["last"]}
+    """The running preview's clock as the chat ships it: the call count and the first record's stamp, the two fields the
+    page reads (subagent-view.ts clockMeta: the count and the time since `since`). The fold's `last`, the newest record's
+    stamp, stays off the wire (2026-09-23): it moved on every record the agent wrote, and no page reads it, so every move
+    was a card that differed from what the clients held, which a delta can only send as the card and every event after it
+    (a chatTail truncates after its anchor). A session idle while its agents worked took a frame every few seconds for it."""
+    return {"calls": st["calls"], "since": st["since"]}
 
 
 def _launch_fresh():
@@ -34588,7 +34593,8 @@ def _seed_chat_baseline(sid, m, seen):
     outside both, a race the detector does not mark (nothing marked, no strand): the cycle has no seed step, so every
     base holder gets a change-0 full of the cycle's older list with a changeAt0 row where the kernel before sent that
     list by a tail, the cycle's write puts its older list over the seed (correctly: that list is what every client then
-    holds), and the next cycle repairs by tails with no new row; cost, and a changeAt0 reading on pusher.chatFullWhy
+    holds), and the next cycle repairs by tails with no new row, or sends nothing where the seed's list already matched
+    (2026-09-23); cost, and a changeAt0 reading on pusher.chatFullWhy
     with no strand behind it (test 42). The baseline had one
     writer, the pusher's non-connect cycle, so a sid whose first whole frame since the boot came from the connect push
     (the redial's watched tab, then every tab the page's idle prefetch releases) or from the targeted push (a create's,
@@ -51192,6 +51198,85 @@ def _chat_wm_note(client, sid, m):
         client.setdefault("echatWm", {})[sid] = wm
 
 
+# WHAT A CLIENT HOLDS (2026-09-23). The slot dedup (_send_client) compares a frame with the client's LAST frame, which is
+# right for a whole frame and wrong for a delta: after a tail that carried events, the empty tail the next quiet cycle builds
+# (the list unchanged against the baseline, the suffix empty, anchored at the list's last event) differs from that tail
+# byte for byte and went, though applying it changes nothing on the page: the same status, flags and watermark over a list
+# the page already holds to its last event. An observer page on a session idle in awaitingBg while its background agents
+# worked took one after every agent-progress delta, half its chat frames, and rebuilt its window for each (the empty tail
+# dates from the proto-2 wire, a6c57f42; the index wire's empty `from == total` tail is the same frame). So beside every
+# echat write the senders record the VIEW the client holds once the frame lands (_chat_view_key: the key its tail ends on,
+# the status, the three per-session view flags, the watermark), and an empty-suffix tail whose view equals it is not sent.
+# Every other frame goes as before: a tail with events, a status, flag or watermark change, an empty tail that truncates (a
+# trailing card that left the list moves the key the tail ends on), a changed ledger, and every full. The record goes
+# wherever the base goes (a ready, a needFull, a tab leaving the strip): hygiene, since the full those roads send is the
+# base reset's and never reads the record.
+#
+# …and the EVENTS a client holds past its base (2026-09-23, the per-turn face). PR 2071 ends a client's base on the last
+# recorded event, never on a streamed atom, so every uuid-wire delta cut after the base (a change anywhere in the streamed
+# run, a status flip whose build the shared baseline reads as changed at the reply) re-sent the atoms the page already
+# held: an at-scale lab measured identical re-sent tails per send going from 0.30 to 0.75 at that merge, the shape a tail
+# after the user's record carrying the streamed reply while working, the SAME tail again at the flip to ready, then an
+# empty tail after the reply. So the record also keeps the key and a digest of every event after the base's last edge
+# (`after`, from `anchor`), and a delta that begins right after that edge skips the leading events the page holds there
+# unchanged (_chat_skip_held): its anchor moves onto the last of them, and what it carries is the change, or nothing but the
+# status, flags or watermark. The BASE is untouched, still ending on the last record, so a streamed atom that leaves the
+# list (a retried try, a record under another key) mismatches here and the next delta is cut from that record and carries
+# its replacement, as 2071 guarantees; the page verifies every delta's anchor against the list it was cut from (baseFp).
+def _chat_view_key(m, end):
+    """The view a client holds of session `m` once a frame cut from it lands: `end` (the key the list's last event carries on
+    the uuid wire, the list's length on the index wire), the status, the notify / hideFromFeed / postalServiceOff flags and
+    the build's watermark, every field an empty-suffix tail carries besides its anchor. A string, compared whole."""
+    return json.dumps([end, m.get("status"), m.get("notify"), m.get("hideFromFeed"), m.get("postalServiceOff"), m.get("wm")],
+                      sort_keys=True, default=str)
+
+
+def _chat_ev_digest(e):
+    """A digest of one built event as the page reads it: the whole event minus `streamed`, the kernel's own mark for an atom
+    the transcript has not recorded (read by _last_anchor, never by the page), so a record landing under its stream atom's uuid
+    with the same content is the event the page already holds."""
+    d = {k: v for k, v in e.items() if k != "streamed"} if "streamed" in e else e
+    return hashlib.blake2b(json.dumps(d, sort_keys=True, default=str).encode("utf-8"), digest_size=16).digest()
+
+
+def _chat_view_note(c, sid, m, evs, end, anchor=None):
+    """Record what client `c` holds of `sid` once the frame cut from `m` lands (the senders call this beside each echat write):
+    the view (_chat_view_key) and, on the uuid wire, `anchor` (the base's last edge, _last_anchor) with the key and digest of
+    every event after it in `evs`, the run a later delta cut from that edge would carry again (_chat_skip_held)."""
+    after = ()
+    if anchor is not None:
+        i = _uuid_positions(evs, sid).get(anchor)
+        if i is not None:
+            after = tuple((_event_key(e), _chat_ev_digest(e)) for e in evs[i + 1:])
+    c.setdefault("echatView", {})[sid] = {"view": _chat_view_key(m, end), "anchor": anchor, "after": after}
+
+
+def _chat_skip_held(c, sid, evs, start):
+    """Where a uuid-wire delta that would begin at `start` really needs to begin for client `c`: past the leading events of
+    evs[start:] the client holds unchanged right after the same edge (the record _chat_view_note keeps), else `start`. Only a
+    delta beginning right after the recorded edge is moved; one cut lower (a change in the recorded history) keeps its start."""
+    rec = (c.get("echatView") or {}).get(sid)
+    if not rec or rec.get("anchor") is None or not 0 < start < len(evs) or _event_key(evs[start - 1]) != rec["anchor"]:
+        return start
+    after = rec.get("after") or ()
+    j = 0
+    while start + j < len(evs) and j < len(after) and after[j][0] == _event_key(evs[start + j]) \
+            and after[j][1] == _chat_ev_digest(evs[start + j]):
+        j += 1
+    return start + j
+
+
+def _chat_view_held(c, sid, view):
+    """True when client `c` already holds `view` of `sid` (recorded by the last frame it was handed): the empty tail the caller
+    was about to send changes nothing on the page, so it is counted where a deduped frame is and not sent."""
+    if ((c.get("echatView") or {}).get(sid) or {}).get("view") != view:
+        return False
+    road = getattr(_SEND_ROAD, "name", None)
+    _perf("send", slot=_perf_slot(("chat", sid)), bytes=0, deduped=1, held=1)
+    _PERF_STATS.send(("chat", sid), "deduped", 0, road=road)
+    return True
+
+
 def _note_chat_stale(client, sid, new, last, now=None):
     """A chat build OLDER than the one this client already holds was refused (2026-09-22): one stderr line per sid per kernel
     life, and one client-diag row per refusal (surface kernel, what chatStale: the client, the session, both watermarks'
@@ -51934,6 +52019,7 @@ def _client_reset_chat_sid(client, sid):
     skeleton before the full that answers the ask goes out (the mark below)."""
     with _client_lock(client):
         client.get("echat", {}).pop(sid, None)
+        client.get("echatView", {}).pop(sid, None)   # …and the view it held (2026-09-23): hygiene, the reset sends the full
         client.get("sent", {}).pop(("chat", sid), None)
         # the watermark floor (echatWm) STAYS (2026-09-23): the page still holds its frames and refuses an older one, so the
         # ask's answer must not be older (_send_chat_locked refuses one once, and the cycle builds afresh); `ready` drops it
@@ -51973,6 +52059,7 @@ def _client_reset_chat_base(client):
     with _client_lock(client):
         client.get("echat", {}).clear()
         client.get("echatWm", {}).clear()   # the watermark floors go with the bases (2026-09-22)
+        client.get("echatView", {}).clear()   # …and the views they held (2026-09-23)
         # …and the reconnect skeleton set (2026-09-07): a renderer that just evaluated holds NOTHING, so there
         # is nothing it could lazily reload — every tab must arrive whole, and the status slots go with the set;
         # and the asked-whole marks (2026-09-19): it asked nothing either, and the connect push below serves the set
@@ -51993,7 +52080,13 @@ def _client_reset_chat_base(client):
         # slot remembers that frame, so the ready arm's re-send would be deduped for _DEDUP_REPOST_S and the
         # section would read "no session is focused" until the next tab click. A renderer that just
         # evaluated holds nothing: the slot goes with the others.
-        for k in [k for k in snt if isinstance(k, tuple) and k and k[0] in ("chat", "status", "taborder", "activeChat")]:
+        # …and the ("comments", sid) and ("glossary", sid) slots (2026-09-23, the PR 2074 post-merge measurement):
+        # the pusher fires from ACCEPT, so under a CPU quota it delivered the comments frame (1.9-2.1s after navigation)
+        # BEFORE the bundle registered its message listeners (2.6-2.8s); the page never acted on it, and with the slot
+        # kept the ready arm's connect push re-sent an IDENTICAL comments frame that deduped for _DEDUP_REPOST_S, so a
+        # comment's mark attached only at the 60s repost. The glossary frame rides its own per-sid slot the same way.
+        # A renderer that just evaluated holds neither, so both go with the others (one duplicate frame per ready).
+        for k in [k for k in snt if isinstance(k, tuple) and k and k[0] in ("chat", "status", "taborder", "activeChat", "comments", "glossary")]:
             snt.pop(k, None)
 
 
@@ -53567,17 +53660,21 @@ def _last_anchor(evs):
     a queued or api-error notice comes and goes between builds), nor one of the kernel's transient live-tail keys (an input
     echo, the command chip: _transient_key, 2026-09-19), nor a STREAMED event (a stream atom the transcript has not recorded
     yet, marked by build_session, 2026-09-23). Anchoring on an overlay or a transient key left the next push unable to map
-    the base and sent a full frame; all three ride every later delta's suffix instead, so the landing that replaces an echo
-    with the CLI's record is a chatTail after the record before the echo, the road proto-1 clients take.
+    the base and sent a full frame; all three ride a later delta's suffix instead (where they changed, since 2026-09-23:
+    _chat_skip_held), so the landing that replaces an echo with the CLI's record is a chatTail after the record before the
+    echo, the road proto-1 clients take.
 
-    The streamed exclusion is what makes every delta re-send the page's whole undurable tail. A stream atom's key is its
+    The streamed exclusion is what cuts every delta from the last RECORD, not from the live tail. A stream atom's key is its
     future record's uuid, so fa92e8a4's rule took it for a record and a base could end on it; the atom then left the next
     list before its record joined it (a retried try's atoms never land, and a settle could retire them before the build's
     parse had read the record), and the send that followed was a full frame for a base the list no longer held, or, with
     the shared baseline describing a list this client never took, a delta anchored past a turn it never received. Ending
-    on the last recorded event, the next delta starts at or before the first event the transcript has not recorded, so
-    whatever the page holds past that point is replaced by the kernel's current view every time. The cost is the live
-    suffix riding each delta while the stream leads the disk, a few events.
+    on the last recorded event, the next delta starts at or before the first event the transcript has not recorded.
+    _chat_skip_held (2026-09-23) then moves that start past the events the client holds unchanged right after the edge
+    (the record _chat_view_note keeps: key and content digest per event), so the live suffix rides a delta again only
+    from the first event in it that changed (the skip stops at the first mismatch and the rest rides whole); a delta cut
+    below the edge still replaces everything after it, and a page holding a different run there gets the view from the
+    edge.
 
     Known, accepted residue: a list of nothing but such events (a transcript-less session whose only events are its first
     echo and the stream answering it) anchors on its last non-overlay, non-transient event, else its last event, and sends
@@ -53757,20 +53854,27 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                     #                                       answers with a full ask, the frame the targeted push stopped sending
             else:
                 start = min(change_from, pl + 1) if change_from > 0 else 0   # from the change, or from after the held
-            if start > pf:                                #  last record (the overlay cards after it ride the suffix)
-                tail = {"type": "chatTail", "id": sid, "afterUuid": _event_key(evs[start - 1]),
-                        "events": evs[start:], "status": m.get("status"),
-                        # the per-session view flags ride this delta as they ride the index client's (2026-09-11, the bell
-                        # on a key): the empty-suffix tail a flag-only change sends is how another window learns the flip
-                        "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
-                tail["wm"] = m.get("wm")              # what the build read (_chat_wm), for the page's own stale-build rule (2026-09-22)
-                # …and the base it assumes (2026-09-23): the keys of the events ending at the anchor, from the client's own first
-                # edge at most, so a page that holds anything else before the anchor refuses the delta and asks for the full
-                tail["baseFp"] = _chat_base_fp(evs, max(pf, start - CHAT_BASE_FP_K), start)
-                if led_changed:
-                    tail["ledger"] = m.get("ledger")
-                _send_client(c, ("chat", sid), tail, kind="delta")
+            if start > pf:                                #  last record (overlay cards past it ride from the first change)
+                start = _chat_skip_held(c, sid, evs, start)   # …past what the client holds unchanged there (2026-09-23)
+                view = _chat_view_key(m, _event_key(evs[-1]))
+                # an EMPTY suffix that would leave the page exactly as it is (the view it holds, no ledger riding) is not sent
+                # (2026-09-23, _chat_view_key's comment); the entries below are written as for a frame that went, since the page
+                # already holds what this one would have left it holding
+                if not (start == total and not led_changed and _chat_view_held(c, sid, view)):
+                    tail = {"type": "chatTail", "id": sid, "afterUuid": _event_key(evs[start - 1]),
+                            "events": evs[start:], "status": m.get("status"),
+                            # the per-session view flags ride this delta as they ride the index client's (2026-09-11, the bell
+                            # on a key): the empty-suffix tail a flag-only change sends is how another window learns the flip
+                            "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
+                    tail["wm"] = m.get("wm")          # what the build read (_chat_wm), for the page's own stale-build rule (2026-09-22)
+                    # …and the base it assumes (2026-09-23): the keys of the events ending at the anchor, from the client's own
+                    # first edge at most, so a page that holds anything else before the anchor refuses the delta and asks for the full
+                    tail["baseFp"] = _chat_base_fp(evs, max(pf, start - CHAT_BASE_FP_K), start)
+                    if led_changed:
+                        tail["ledger"] = m.get("ledger")
+                    _send_client(c, ("chat", sid), tail, kind="delta")
                 st[sid] = {"first": pc["first"], "last": _last_anchor(evs)}
+                _chat_view_note(c, sid, m, evs, _event_key(evs[-1]), anchor=st[sid]["last"])
                 _chat_wm_note(c, sid, m)                  # …and the watermark of the build it now holds (2026-09-22)
                 _note_chat_handed(sid)                    # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
                 return ms
@@ -53859,10 +53963,12 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     # deliberately no delivery and records nothing.
     if total:
         st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
+        _chat_view_note(c, sid, m, evs, m_send["lastUuid"], anchor=st[sid]["last"])   # what it now holds (2026-09-23)
         _chat_wm_note(c, sid, m)                      # …and the watermark of the build it now holds (2026-09-22)
         _note_chat_handed(sid)                        # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     else:
         st.pop(sid, None)
+        c.get("echatView", {}).pop(sid, None)
     return ms
 
 
@@ -53959,18 +54065,23 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
         pc = None                                     # a proto-2 base cannot serve an index client (a reconnect resets anyway)
     if (pc is not None and change_from > 0 and pc[1] <= change_from <= total
             and pc[0] == (evs[pc[1]].get("uuid") if pc[1] < total else None)):
-        tail = {"type": "chatTail", "id": sid, "from": change_from,
-                "events": evs[change_from:], "total": total, "status": m.get("status"),
-                # the per-session view flags ride the delta as the status does (2026-09-11): a flag flipped in one
-                # window — the bell, the feed mute, the mail mute — reached a caught-up client only with its next FULL
-                # frame, so the other column of a split, or another browser, showed the old bell until something else
-                # changed. An empty suffix with the new flags is the frame a flag-only change rides (the dedup
-                # signature reads them, so the flip alone sends it)
-                "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
-        tail["wm"] = m.get("wm")                      # what the build read (_chat_wm): the page's own copy of the stale-build rule reads it (2026-09-22)
-        if led_changed:                               # the TOC only changed on a judge pass → usually omitted
-            tail["ledger"] = m.get("ledger")
-        _send_client(c, ("chat", sid), tail, kind="delta")   # the chat's delta form, for /perf's sends split
+        view = _chat_view_key(m, total)
+        # the index wire's empty suffix that leaves the page as it is (the view it holds, no ledger riding) is not sent either
+        # (2026-09-23, _chat_view_key's comment)
+        if not (change_from == total and not led_changed and _chat_view_held(c, sid, view)):
+            tail = {"type": "chatTail", "id": sid, "from": change_from,
+                    "events": evs[change_from:], "total": total, "status": m.get("status"),
+                    # the per-session view flags ride the delta as the status does (2026-09-11): a flag flipped in one
+                    # window — the bell, the feed mute, the mail mute — reached a caught-up client only with its next FULL
+                    # frame, so the other column of a split, or another browser, showed the old bell until something else
+                    # changed. An empty suffix with the new flags is the frame a flag-only change rides (the dedup
+                    # signature reads them, so the flip alone sends it)
+                    "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
+            tail["wm"] = m.get("wm")                  # what the build read (_chat_wm): the page's own copy of the stale-build rule reads it (2026-09-22)
+            if led_changed:                           # the TOC only changed on a judge pass → usually omitted
+                tail["ledger"] = m.get("ledger")
+            _send_client(c, ("chat", sid), tail, kind="delta")   # the chat's delta form, for /perf's sends split
+        _chat_view_note(c, sid, m, evs, total)
         st[sid] = (pc[0], pc[1])                       # same tail base, now caught up through `total`
         _chat_wm_note(c, sid, m)                       # …and the watermark of the build it now holds (2026-09-22)
         _note_chat_handed(sid)                         # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
@@ -53987,6 +54098,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
         m_send = dict(m); m_send["events"] = evs[head_from:]; m_send["headFrom"] = head_from; m_send["headTotal"] = total
         _send_client(c, ("chat", sid), m_send)
     st[sid] = ((evs[head_from].get("uuid") if head_from < total else None), head_from)
+    _chat_view_note(c, sid, m, evs, total)            # the view it now holds (2026-09-23)
     _chat_wm_note(c, sid, m)                          # …and the watermark of the build it now holds (2026-09-22)
     _note_chat_handed(sid)                            # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     return ms
@@ -57413,6 +57525,7 @@ def _push(targets, connect=False, live_map=None):
                         for sid in gone:
                             c.get("echat", {}).pop(sid, None)
                             c.get("echatWm", {}).pop(sid, None)   # the watermark floor goes with the base (2026-09-22)
+                            c.get("echatView", {}).pop(sid, None)   # …and the view it held (2026-09-23)
                             c.get("sent", {}).pop(("chat", sid), None)
             # …and every fold entry for a sid no longer shown (loadOlder / connect-push builds) — EXCEPT the
             # comment THREADS the loop below is about to rebuild (2026-09-08): evicting their prefixes here
@@ -57792,9 +57905,10 @@ def _push_session_now(sid):
     held as a skeleton was force-loaded, on every SDK connect handshake, every Codex stream event, every create
     and fork (measured live 2026-09-18: 426 targeted builds in 20 h across 22 sessions; 973 full chat frames
     against 68,377 deltas, 133 of the fulls connect pushes). Now a caught-up client gets a chatTail whose
-    suffix begins at the change against the baseline, or right after what it holds, and is empty when nothing
-    moved (the status flip this push exists for rides it; an identical tail is deduped on its slot within the
-    repost window, _DEDUP_REPOST_S, and re-sent as a no-op after it); a client holding the tab as a skeleton
+    suffix begins at the change against the baseline, or right after what it holds, and is empty when only the
+    status, a flag, the watermark or the ledger moved (the status flip this push exists for rides it); a caught-up
+    client whose view is unchanged gets no chat frame at all, withheld at its first occurrence and not only within
+    the repost window (_chat_view_key; WHAT A CLIENT HOLDS, 2026-09-23); a client holding the tab as a skeleton
     gets its status on the status slot and keeps the skeleton (the click or the prefetch releases it, as with
     the pusher); a client with no base (a fresh socket, a redial's watched tab, a needFull reset) gets the full
     as before; a client armed for the ready arm's connect push gets nothing here, the pusher's rule. The tail
@@ -57833,7 +57947,8 @@ def _push_session_now(sid):
     forced full: for proto 2 the next tail starts at min(change_from, held last + 1), the no-change tail
     included (anchored at the client's held last when that lies before the list's last transcript event, so a
     client behind this build gets the events it lacks rather than a tail past what it holds; a caught-up client's
-    stays the empty suffix), so a client ahead of the baseline is never skipped, only re-sent the overlap since
+    stays the empty suffix, withheld when its view is unchanged), so a client ahead of the baseline is never skipped,
+    only re-sent the overlap since
     the LAST PUSHER CYCLE, which it applies idempotently (truncate at the anchor, re-append), the state every
     ready-arm connect push already leaves; the pusher advances that baseline only AFTER its cycle has delivered
     to every client, so a push landing mid-cycle reads the older baseline and re-sends the overlap, never a
@@ -57972,6 +58087,20 @@ def _push_session_now(sid):
             _seed_chat_baseline(sid, m, _seen)       # loop's own writes, not the bases after it, where a racing sender's write
         #                                              on a target read as this loop's (test 38); established when absent, never
         #                                              advanced, declined while the detector's mark stands (the docstring)
+        # THE COMMENTS FRAME rides this targeted push too (2026-09-23): before, it rode ONLY the full pusher cycle, so a
+        # page that connected before the session was alive got the chat frame here but the comments frame a full cycle
+        # later (tens of seconds under a CPU quota), and a comment's highlight trailed its turn by that much. Emit it now
+        # on the SAME per-sid dedup slot the cycle uses, so a mark lands WITH its turn. `_comments_frame` is None for a
+        # session that never had a thread (a bare stat, the common case) and an unchanged frame dedups on the slot and
+        # costs nothing on the wire: the "changed since its last frame" guard, the cycle's own.
+        try:
+            _cfr = _comments_frame(sid, live_map)
+        except Exception:
+            _cfr = None
+            sys.stderr.write("comments frame failed for %s (targeted): %s\n" % (sid, traceback.format_exc()))
+        if _cfr:
+            for c in targets:
+                _send_client(c, ("comments", sid), _cfr)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
     finally:
@@ -62955,7 +63084,7 @@ _CHAT_MOBILE_CSS = (
     # a count instead of the ring, and the phone (which scrapes the tabs) follows. On the phone the dot is an in-flow flex
     # item in the chip's/row's own line, before the chevron and the close (both order:1), not the desktop's absolute
     # corner; retrying moves to the leading dot in amber.
-    "#mcur .wd.retrying{background:var(--st-retrying-bg,#e67e22)}"
+    "#mcur .wd.retrying{background:transparent;box-shadow:inset 0 0 0 1.5px var(--st-retrying-bg,#e67e22)}"
     ".m-badge{position:static;flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--st-needs-bg,#d946ef)}"   # RESERVE room, do not stack: an inline flex item so the pill never covers the chevron or the close glyph (the second contributor on PR 2017, 2026-09-22); the chevron and close get order:1 so they stay at the right edge
     ".m-badge:not(:empty){width:auto;min-width:14px;height:14px;border-radius:7px;padding:0 3px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;font-size:9px;line-height:1}"
     "#mtag-slot{flex:0 0 auto;display:flex;align-items:center;gap:5px}"   # T161: the tag control's slot, sized by the shared button's own inline metrics
@@ -62995,7 +63124,7 @@ _CHAT_MOBILE_CSS = (
     # a row whose session has a card that needs you: a magenta bar at its left edge, the desktop tab's
     # dashed ring (ring-waiting-on-you), in the one Needs you token, on a list row where a ring would fight the hairlines
     ".mrow.ask{border-left:3px solid var(--st-needs-bg,#d946ef);padding-left:9px}"
-    ".mrow .workdot.retrying{background:var(--st-retrying-bg,#e67e22)}"   # badge mode: retrying on the leading dot
+    ".mrow .workdot.retrying{background:transparent;box-shadow:inset 0 0 0 1.5px var(--st-retrying-bg,#e67e22)}"   # badge mode: retrying on the leading dot, a HOLLOW amber ring (a shape cue matching desktop .tab-dot.retrying) so form not colour tells it from the filled working/awaiting dots
     # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
     # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
     # (cloned), the caret and the count, and folded, the header's member-state pip (cloned, styles.css
