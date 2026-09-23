@@ -38,9 +38,9 @@ has finished is therefore held by a DIFFERENT surviving cycle (a traceback frame
 reclaim's target. An UNSTARTED thread reads as finished (`is_alive()` False) and still holds the session
 (the Thread keeps `_target`, since `run`'s finally never fires for it), so the ref is alive on a cycle;
 judging it a reclaim is correct precisely because ONLY the collector can take that cycle (refcounting never
-will), which is what a reclaim does. A ref a live ROOT keeps (a never-joined helper thread's `_target`, a
-strong reference, not a cycle) reads the same, alive with a finished worker, and is TREATED as a surviving
-cycle: the reclaim frees nothing, so it costs exactly ONE full-heap pause, is counted a `survivor` on /perf,
+will), which is what a reclaim does. A ref a live ROOT keeps (a helper thread still running when the tick
+judges it, its frame and its target, not a cycle) reads the same, alive with a finished worker, and is TREATED
+as a surviving cycle: the reclaim frees nothing, so it costs ONE reclaim, is counted a `survivor` on /perf,
 and is dropped (never re-registered), never a pass per tick.
 
 A request that arrives during a reconcile waits that one collection; the idle boundary is the best
@@ -101,6 +101,10 @@ class GcFreeze:
         self.reclaims = 0            # unfreeze/collect/re-freeze passes (a cyclic ended ref, or the backstop)
         self.survivors = 0           # owed refs still alive after a reclaim's collect: kept by a LIVE ROOT, not a cycle (a wasted pause), counted once and dropped
         self.last_release_sids = []  # first 8 chars of each sid a reclaim was owed for, set under the ended lock, cleared per judgement
+        self.last_release_survivors = 0   # of the LAST RUN's owed refs, how many a live root kept through it (0 when the reclaim freed
+        #                                   them, and 0 on any run that owed none, e.g. a load after a live-root release: read right after a release)
+        self.last_kept_sids = []     # the sids of those survivors, likewise rebound each run (cleared to [] by a run that owed none); named kept-by-a-live-root in the release line
+        self.collections = 0         # gc.collect() calls the RUN STEP issued (a full release issues two): /perf, so organic = gen2 collections less this, exactly
         self.last_ms = 0.0           # the last reconcile's collection pause
         self.total_ms = 0.0          # every reconcile's collection pause, summed
         self.last_kind = None        # "initial" | "load" | "release" | "backstop", for /perf
@@ -171,25 +175,30 @@ class GcFreeze:
         t0 = self._clock()
         reclaimed = False
         if kind == "release":
-            self._gc.collect()                       # cheap: the freeze stays in place, so this walks only the unfrozen
+            self._gc.collect(); self.collections += 1    # cheap: the freeze stays in place, so this walks only the unfrozen
             if any(sref() is not None for sref, _ in owed):
                 self._gc.unfreeze()                  # a survivor: the released cycle is in the frozen set, lift it and walk
-                self._gc.collect()
+                self._gc.collect(); self.collections += 1
                 reclaimed = True
             # else the cheap collect took the released cycle whole: no full pause, counted as a load pass below
         elif kind == "backstop":
             self._gc.unfreeze()                      # blind periodic reclaim: nothing owed to re-read, walk everything
-            self._gc.collect()
+            self._gc.collect(); self.collections += 1
             reclaimed = True
         else:
-            self._gc.collect()                       # initial / load fold-in: walk only the unfrozen
+            self._gc.collect(); self.collections += 1    # initial / load fold-in: walk only the unfrozen
         self.last_ms = (self._clock() - t0) * 1000.0
         self.total_ms += self.last_ms
         self._gc.freeze()                            # (re)freeze: the survivors leave the collector's walk again
         was_frozen = self.frozen
         self.frozen = True
         self._ins_mark = inserts
-        self.survivors += sum(1 for sref, _ in owed if sref() is not None)   # a live root kept it through the reclaim: wasted, counted, dropped
+        # the owed refs still alive after the re-freeze are kept by a LIVE ROOT, not a cycle: the reclaim freed nothing. Record
+        # this release's survivor count and their sids (the release line names them kept, not "reclaimed"), and total them.
+        kept = [(getattr(sref(), "sid", "") or "")[:8] for sref, _ in owed if sref() is not None]
+        self.last_release_survivors = len(kept)
+        self.last_kept_sids = kept
+        self.survivors += len(kept)
         if reclaimed:
             self.last_kind = kind
             self.reclaims += 1
@@ -207,7 +216,8 @@ class GcFreeze:
         integer `gc.frozen`); `frozenCount` (gc.get_freeze_count) is added by the caller."""
         return {"enabled": self.enabled, "active": self.frozen, "loadTrees": self.load_trees,
                 "backstopFoldins": self.backstop_foldins, "freezes": self.freezes, "reclaims": self.reclaims,
-                "survivors": self.survivors, "lastReleaseSids": list(self.last_release_sids),
+                "collections": self.collections, "survivors": self.survivors, "lastReleaseSurvivors": self.last_release_survivors,
+                "lastReleaseSids": list(self.last_release_sids),
                 "endedPending": len(self._ended), "lastReconcileMs": round(self.last_ms, 1),
                 "lastReconcileKind": self.last_kind, "totalReconcileMs": round(self.total_ms, 1)}
 

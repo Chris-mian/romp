@@ -22,6 +22,7 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 jd = load_source("romp_judge", os.path.join(BIN, "romp-judge"))
 km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
+cx = load_source("romp_codex_events_tokens", os.path.join(os.path.dirname(__file__), "..", "kernel", "codex_events.py"))
 
 NOW = 1781100000
 
@@ -204,6 +205,65 @@ class SessionTokens(unittest.TestCase):
             os.symlink(other, sid_dir / "subagents")
             self.assertEqual(km._subagent_transcripts(p), [])
             self.assertEqual(km._session_tokens(p, NOW - 3600), {"in": 10, "out": 5, "cache_w": 0, "cache_r": 0})
+
+
+class CodexEndRecordTokens(unittest.TestCase):
+    """A Codex turn that completes with nothing held (here its last item is a command) now writes an empty end record
+    that carries the turn's usage (2026-09-23, the post-merge review of the restart-cut fix); before it, that usage
+    was dropped. The transcript's two token readers, the analytics sum (_session_tokens) and the spend guard's window
+    rows (_spend_file_rows), must count it ONCE: Codex records carry no message id, so each record counts on its own,
+    and a turn has at most one usage-bearing record: a completed turn's final reply or its end record (interrupted,
+    failed and abandoned turns carry none). A completion delivered twice writes nothing the second time. The
+    transcript is written by the real normalizer. Red on stock: the command-last turn's usage was missing from both
+    readers."""
+
+    TID = "01911111-2222-7333-8444-555555555555"
+
+    def _frame(self, turn, inp, out, cached):
+        return ("thread/tokenUsage/updated",
+                {"threadId": self.TID, "turnId": turn,
+                 "tokenUsage": {"last": {"inputTokens": inp, "outputTokens": out, "cachedInputTokens": cached,
+                                         "reasoningOutputTokens": 0, "totalTokens": inp + out},
+                                "modelContextWindow": 272000}})
+
+    def test_each_turns_usage_counts_once_whether_it_ends_on_a_reply_or_on_a_command(self):
+        n = cx.ThreadNormalizer(self.TID, cwd="/TESTDIR", model="gpt-5-test", clock=lambda: NOW)
+        ms = NOW * 1000
+
+        def item(turn, t, it, done=True):
+            return ("item/completed" if done else "item/started",
+                    {"threadId": self.TID, "turnId": turn, ("completedAtMs" if done else "startedAtMs"): t,
+                     "item": it})
+        cmd = {"type": "commandExecution", "id": "c1", "command": "make test"}
+        done = {"id": "t1", "items": [], "status": "completed"}
+        events = [("turn/started", {"threadId": self.TID, "turn": {"id": "t1", "items": []}}),
+                  item("t1", ms - 120000, {"type": "userMessage", "id": "u1",
+                                           "content": [{"type": "text", "text": "run the tests"}]}),
+                  item("t1", ms - 119000, cmd, done=False),
+                  item("t1", ms - 118000, dict(cmd, aggregatedOutput="ok", exitCode=0, status="completed")),
+                  self._frame("t1", 1000, 50, 800),
+                  ("turn/completed", {"threadId": self.TID, "turn": done}),
+                  ("turn/completed", {"threadId": self.TID, "turn": done}),       # delivered twice
+                  ("turn/started", {"threadId": self.TID, "turn": {"id": "t2", "items": []}}),
+                  item("t2", ms + 1000, {"type": "userMessage", "id": "u2",
+                                         "content": [{"type": "text", "text": "now lint"}]}),
+                  item("t2", ms + 2000, {"type": "agentMessage", "id": "a2", "text": "Lint is clean."}),
+                  self._frame("t2", 300, 20, 100),
+                  ("turn/completed", {"threadId": self.TID, "turn": {"id": "t2", "items": [], "status": "completed"}})]
+        recs = []
+        for method, params in events:
+            recs.extend(n.handle(method, params))
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "%s.jsonl" % self.TID)
+            with open(p, "w") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in recs))
+            self.assertEqual(km._session_tokens(p, NOW - 3600),
+                             {"in": 1300, "out": 70, "cache_w": 0, "cache_r": 900},
+                             "both turns' usage, each once")
+            prices = {"gpt-5-test": {"in": 1e-6, "out": 1e-5, "cache_w": 0.0, "cache_r": 1e-7}}
+            rows = km._spend_file_rows(p, NOW - 3600, prices, None)
+            self.assertEqual(len(rows), 2, "one priced row per turn: %r" % rows)
+            self.assertAlmostEqual(sum(c for _t, c in rows), 1300 * 1e-6 + 70 * 1e-5 + 900 * 1e-7, places=12)
 
 
 class SubagentDirectoryMemo(unittest.TestCase):

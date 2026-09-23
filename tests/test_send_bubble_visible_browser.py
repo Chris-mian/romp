@@ -266,19 +266,32 @@ if (on("G")) {
   injected.baseOk = !!(base && base.wm && Array.isArray(base.wm.tx) && base.wm.leaf);
   injected.seen = await page.evaluate(() => ({ last: window.__last ? { type: window.__last.type, keys: Object.keys(window.__last).sort(), wm: window.__last.wm } : null, sockets: window.__sockets.length, types: window.__types.slice(-30) }));
   if (injected.baseOk) {
-    const strip = (evs) => evs.filter((e) => !(e && e.kind === "queued") && !(e && e.kind === "user" && typeof e.uuid === "string" && e.uuid.startsWith("echo:")));
-    const bump = (wm, dSize, dLive) => ({ leaf: wm.leaf, tx: wm.tx.map((r, i) => (i === 0 ? [r[0] + (dSize > 0 ? 1 : 0), r[1] + dSize] : r)), live: (typeof wm.live === "number" ? wm.live : 0) + dLive });
     const landedRow = { kind: "user", uuid: "11111111-2222-3333-4444-aaaaaaaaaaaa", md: text, qid, human: true, ts: new Date().toISOString().replace(/\.\d{3}Z$/, ".000Z") };
-    const newer = { ...base, events: [...strip(base.events), landedRow], wm: bump(base.wm, 400, 1) };
-    const older = { ...base, events: [...strip(base.events), { kind: "user", uuid: qid, md: text, ts: landedRow.ts }], wm: bump(base.wm, 0, 3) };   // the older parse, the echo still in, a newer live tail
-    const bare = { ...older }; delete bare.wm;                                                                                                   // an older kernel: no watermark at all
-    const inject = (f) => page.evaluate((x) => { window.postMessage(x, "*"); }, f);
-    await inject(newer); await check("inject-landed", 0, "landed", text);
+    const olderRow = { kind: "user", uuid: qid, md: text, ts: landedRow.ts };
+    // Build and inject each frame in ONE page.evaluate that reads window.__last AT THAT INSTANT and derives the bumped
+    // watermark from it, so the injected frame is always ahead of the page's CURRENT watermark. Deriving newer's
+    // watermark from a base captured round-trips earlier let a real kernel frame for the send arrive in that gap and
+    // advance the page past it, which the page refused as stale, so the landed row never appeared (PR 2050 variant G).
+    // The landed injection snapshots window.__last as window.__injBase; the stale and bare frames reuse that SAME
+    // snapshot, so they stay BEHIND the landed frame as the guard test needs. Then assert the landed row APPLIED (an
+    // event-based wait) before the checkpoint reads the text.
+    const injectFrame = (which, row) => page.evaluate(({ which, row }) => {
+      const strip = (evs) => evs.filter((e) => !(e && e.kind === "queued") && !(e && e.kind === "user" && typeof e.uuid === "string" && e.uuid.startsWith("echo:")));
+      const bump = (wm, dSize, dLive) => ({ leaf: wm.leaf, tx: wm.tx.map((r, i) => (i === 0 ? [r[0] + (dSize > 0 ? 1 : 0), r[1] + dSize] : r)), live: (typeof wm.live === "number" ? wm.live : 0) + dLive });
+      if (which === "newer") window.__injBase = window.__last;   // snapshot the page's CURRENT frame, atomic with the landed injection
+      const b = window.__injBase;
+      const f = { ...b, events: [...strip(b.events), row], wm: bump(b.wm, which === "newer" ? 400 : 0, which === "newer" ? 1 : 3) };
+      if (which === "bare") delete f.wm;
+      window.postMessage(f, "*");
+    }, { which, row });
+    await injectFrame("newer", landedRow);
+    await page.waitForFunction((u) => { const el = document.querySelector('#content .turn[data-uuid="' + u + '"]'); return !!el && el.getClientRects().length > 0; }, landedRow.uuid, { timeout: 5000 }).catch(() => {});   // the landed row applied (event, not wall-clock) before the checkpoint reads
+    await check("inject-landed", 0, "landed", text);
     injected.landed = await page.evaluate((u) => { const el = document.querySelector('#content .turn[data-uuid="' + u + '"]'); return !!el && el.getClientRects().length > 0; }, landedRow.uuid);
-    await inject(older); await check("inject-stale", 0, "after-stale", text);
+    await injectFrame("older", olderRow); await check("inject-stale", 0, "after-stale", text);
     injected.afterStale = await page.evaluate((u) => { const el = document.querySelector('#content .turn[data-uuid="' + u + '"]'); return !!el && el.getClientRects().length > 0; }, landedRow.uuid);
     injected.diagAfterStale = await page.evaluate(() => window.__diag.slice());
-    await inject(bare); await painted();
+    await injectFrame("bare", olderRow); await painted();
     injected.afterBare = await page.evaluate((u) => { const el = document.querySelector('#content .turn[data-uuid="' + u + '"]'); return !!el; }, landedRow.uuid);
     injected.diagAfterBare = await page.evaluate(() => window.__diag.slice());
     injected.textVisibleAfterBare = (await measure(text)).visible;

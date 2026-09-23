@@ -7304,6 +7304,117 @@ class RestartCutNoticeIsNeverAutoRetried(unittest.TestCase):
         self.assertEqual(self.be.sent, [km.RETRY_MSG])
 
 
+class CodexEndRecordAnchors(unittest.TestCase):
+    """A Codex turn's timeline bar lands on a row the chat renders, or on the prompt, or by time (2026-09-23, the
+    post-merge review of the restart-cut fix). A completion with nothing held ends on an EMPTY assistant record, and
+    the chat renders no row for it. _seg_anchors took a segment's first assistant atom as the bar's work anchor, so a
+    turn whose only assistant atom was that record (the prompt alone, or no item at all) handed the bar its uuid, and
+    the click said "couldn't locate". The view's click target is replyUuid || workId || promptId
+    (ui/romp-timeline-view.js workAnchorOf); with none of them the bar lands by time. The transcript is written by the
+    real normalizer. Red before the fix on "prompt only" and "no item at all": the work anchor was 't1-end'. The
+    command-last and tool-call-last shapes anchored on the call before and after; they pin that the skip is narrow."""
+
+    CXSID = "11111111-2222-3333-4444-00000000e0d0"
+    TID = "01911111-2222-7333-8444-00000000e0d0"
+
+    def _ev(self, kind, item, k):
+        at = "startedAtMs" if kind == "item/started" else "completedAtMs"
+        return (kind, {"threadId": self.TID, "turnId": "t1", at: T0 * 1000 + k * 1000, "item": item})
+
+    def _shapes(self):
+        cmd = {"type": "commandExecution", "id": "c1", "command": "make synthetic", "cwd": "/TESTDIR"}
+        mcp = {"type": "mcpToolCall", "id": "m1", "server": "notes", "tool": "lookup", "arguments": {"q": "retry"}}
+        prompt = [self._ev("item/completed", {"type": "userMessage", "id": "u1",
+                                              "content": [{"type": "text", "text": "run the synthetic build"}]}, 0)]
+        return {
+            "prompt only": (prompt, "u1"),
+            "no item at all": ([], None),
+            "command last": (prompt + [self._ev("item/started", dict(cmd, status="inProgress"), 1),
+                                       self._ev("item/completed", dict(cmd, status="completed", exitCode=0,
+                                                                       aggregatedOutput="ok"), 2)], "c1"),
+            "tool call last": (prompt + [self._ev("item/started", dict(mcp, status="inProgress"), 1),
+                                         self._ev("item/completed", dict(mcp, status="completed", result={
+                                             "content": [{"type": "text", "text": "3 tries"}]}), 2)], "m1"),
+            "empty final reply": (prompt + [self._ev("item/started", dict(cmd, status="inProgress"), 1),
+                                            self._ev("item/completed", dict(cmd, status="completed", exitCode=0,
+                                                                            aggregatedOutput="ok"), 2),
+                                            self._ev("item/completed", {"type": "agentMessage", "id": "a1",
+                                                                        "text": ""}, 3)], "c1"),
+        }
+
+    def _one_bar(self, td, items):
+        """Turn t1 as the real normalizer writes it (the items between its start and its completion, then the turn's
+        usage), parsed and segmented as the kernel reads it: (the transcript's path, the turn's one segment)."""
+        usage = ("thread/tokenUsage/updated",
+                 {"threadId": self.TID, "turnId": "t1",
+                  "tokenUsage": {"last": {"inputTokens": 100, "outputTokens": 10, "cachedInputTokens": 0,
+                                          "reasoningOutputTokens": 0, "totalTokens": 110},
+                                 "modelContextWindow": 272000}})
+        norm = CX_EVENTS.ThreadNormalizer(self.TID, cwd="/TESTDIR", version="codex", model="gpt-5-test",
+                                          clock=lambda: T0 + 30)
+        recs = []
+        for m, p in [("turn/started", {"threadId": self.TID, "turn": {"id": "t1", "items": []}})] + items + [
+                usage, ("turn/completed", {"threadId": self.TID,
+                                           "turn": {"id": "t1", "items": [], "status": "completed"}})]:
+            recs.extend(norm.handle(m, p))
+        self.assertEqual(recs[-1]["uuid"], "t1-end", "fixture: the turn ends on the empty end record")
+        path = Path(td) / (self.TID + ".jsonl")
+        path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        parsed = em.parse_session(str(path), rompuuid=self.CXSID, candidate_files=[str(path)], now=NOW,
+                                  sdk_human=True)
+        segs = [seg for t in parsed["turns"] for seg in km._segs_seam(t, {})]
+        self.assertEqual(len(segs), 1, "one turn, one bar")
+        return path, segs[0]
+
+    def test_the_bar_click_names_a_row_the_chat_renders(self):
+        for label, (items, want) in self._shapes().items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                path, seg = self._one_bar(td, items)
+                work, reply = km._seg_anchors(seg["atoms"])
+                self.assertNotEqual(work, "t1-end", "the empty end record is no work anchor")
+                click = reply or work or seg.get("trigger")
+                self.assertEqual(click, want, "the bar click's target")
+                m = km.build_session(self.CXSID, NOW, live_map={self.CXSID: {}}, path_override=str(path))
+                rows = {e.get("uuid") for e in (m or {}).get("events", [])}
+                self.assertNotIn("t1-end", rows, "fixture: the chat renders no row for the end record")
+                if click is not None:
+                    self.assertIn(click, rows, "the chat has a row to land on")
+
+    def test_a_reasoning_first_turn_keeps_its_work_anchor(self):
+        """The skip is for an atom whose stop ENDS the turn (2026-09-23, the fold's verify pass of this lane):
+        em.atom_is_bare_end asks for a stop in END_STOPS as well as no text and no tool use. A Codex reasoning item is
+        an assistant thinking atom with no stop, no text and no tool use, so without the stop clause it reads as a bare
+        end. The command-last and tool-call-last shapes above pin the tool clause only. Here the reasoning atom stays
+        the bar's work anchor, today's anchor: "reasoning then command" moves it to 'c1' when the stop clause is
+        dropped, and "reasoning only" loses it (None, so the click falls to the prompt). Whether the chat has a row
+        for bare thinking is _seg_jump's separate question, so this pins the anchor, not a landing."""
+        cmd = {"type": "commandExecution", "id": "c1", "command": "make synthetic", "cwd": "/TESTDIR"}
+        prompt = self._ev("item/completed", {"type": "userMessage", "id": "u1",
+                                             "content": [{"type": "text", "text": "run the synthetic build"}]}, 0)
+        reasoning = self._ev("item/completed", {"type": "reasoning", "id": "r1",
+                                                "content": ["The fixture is stale."], "summary": []}, 1)
+        shapes = {
+            "reasoning then command": ([prompt, reasoning,
+                                        self._ev("item/started", dict(cmd, status="inProgress"), 2),
+                                        self._ev("item/completed", dict(cmd, status="completed", exitCode=0,
+                                                                        aggregatedOutput="ok"), 3)],
+                                       ["u1", "r1", "c1", "c1-r", "t1-end"]),
+            "reasoning only": ([prompt, reasoning], ["u1", "r1", "t1-end"]),
+        }
+        for label, (items, atoms) in shapes.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                _path, seg = self._one_bar(td, items)
+                self.assertEqual([a.get("uuid") for a in seg["atoms"]], atoms, "fixture: the turn's atoms")
+                r1 = next(a for a in seg["atoms"] if a.get("uuid") == "r1")
+                self.assertFalse(em.atom_has_text(r1) or em.atom_tool_uses(r1),
+                                 "fixture: the reasoning atom has no text and no tool use")
+                self.assertNotIn(em._stop_reason(r1), em.END_STOPS,
+                                 "fixture: the reasoning atom's stop does not end the turn")
+                self.assertFalse(em.atom_is_bare_end(r1), "a reasoning atom is no bare end")
+                self.assertEqual(km._seg_anchors(seg["atoms"]), ("r1", None),
+                                 "the reasoning atom is the bar's work anchor, and the turn has no reply")
+
+
 class ApiRetryAndTabOrderRoutes(unittest.TestCase):
     """WS handlers hard to drive through the socket — assert the routing is wired in source (mirrors
     CompactSessionRoute): the Retry button pastes "retry"; the kernel pushes the saved tab order on connect."""

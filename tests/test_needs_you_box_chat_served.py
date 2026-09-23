@@ -9,7 +9,9 @@ wears the Needs you token on its edge, and lists no row for the hard stop. Clear
 takes its row off the box with the next frame; Continue posts the card's own Continue wire and its row leaves once the kernel
 files the reply; Reply points the composer at the card (the chip with the card's title) and the row leaves once the typed reply
 is filed. The gear's Needs you box switch (a romp:settings save) hides the box and leaves the ring; back on, the box returns.
-Synthetic only: placeholder ids, invented text, hostname TESTHOST."""
+Synthetic only: placeholder ids, invented text, hostname TESTHOST.
+
+After the 2026-09-23 default flip the badge is the default; this lab opts into RING mode (it seeds tabStateBadge:false) because its subject is the ring, and the dot's default is covered by the badge lab (test_tab_badge_browser) and the gear-preview test (test 5)."""
 import json
 import os
 import re
@@ -53,6 +55,7 @@ let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
 const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
 const out = { errors };
 const mark = () => process.stdout.write("PARTIAL:" + JSON.stringify(out) + "\n");   // the record so far, after every scene: what a run that hits the driver's budget still reports
@@ -110,10 +113,18 @@ const feedBuiltPast = async (floor, id, brief, ms) => {   // the kernel's feed b
   return null;
 };
 const writeStore = async (mutate) => {   // the feed build id before the write (null when that read fails: its own miss, never a floor of -1), the write (seq bumped), the order touch
-  const b0 = ((await kernelFeed()) || {}).buildId; const st = JSON.parse(fs.readFileSync(cfg.store, "utf8")); mutate(st); st.seq = (st.seq || 0) + 1; fs.writeFileSync(cfg.store, JSON.stringify(st));
+  // The write is a PUBLICATION the kernel's own writers must see: `rev` advances as save_goals advances it, so a judge pass whose store predates
+  // this write rebases onto it (the kernel's compare-and-swap keys on rev and, since the CI red of 2026-09-23, on the file's identity; before,
+  // an in-place rewrite that left rev alone was invisible to a save holding an older base, and the pass's save erased the node just written)
+  const b0 = ((await kernelFeed()) || {}).buildId; const st = JSON.parse(fs.readFileSync(cfg.store, "utf8")); mutate(st); st.seq = (st.seq || 0) + 1; st.rev = (st.rev || 0) + 1;
+  fs.writeFileSync(cfg.store, JSON.stringify(st));
   fs.utimesSync(cfg.order, new Date(), new Date()); return typeof b0 === "number" ? b0 : null;
 };
-const onMiss = async (o) => { o.perf = await kernelPerf(); o.kernelBrief = briefOf(await kernelFeed(), o.id); return o; };
+const onMiss = async (o) => {   // the counters, the kernel's own view of the card, and the FILE: a write the kernel published over reads as a node gone and rev moved
+  o.perf = await kernelPerf(); o.kernelBrief = briefOf(await kernelFeed(), o.id);
+  try { const st = JSON.parse(fs.readFileSync(cfg.store, "utf8")); o.store = { rev: st.rev, seq: st.seq, hasNode: !!(st.nodes || {})[o.id], brief: ((st.nodes || {})[o.id] || {}).blockSummary }; } catch (e) { o.store = String(e); }
+  return o;
+};
 const builtRecord = async (id, floor, brief) => { const o = { id, floor, built: await feedBuiltPast(floor, id, brief, 90000) }; if (o.built === null) await onMiss(o); return o; };   // { id, floor, built }, the counters on a miss
 const w1 = await writeStore((st) => { st.nodes[cfg.g1].blockSummary = cfg.brief; });
 out.brief = await builtRecord(cfg.g1, w1, cfg.brief);

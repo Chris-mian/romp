@@ -310,7 +310,7 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-switch.on::after { left: 18px; background: var(--accent-fg, #0c1a2e); }
 #rsettings .rs-widget-opts { display: inline-flex; gap: 6px; min-width: 0; }
 #rsettings .rs-widget-opt { display: inline-block; min-width: 140px; }
-/* the demo's miniature tab wears the STRIP's vocabulary (styles.css .tab, .tab-dot, .tab-ctx, .tab-key), in this sheet's
+/* the demo's miniature tab wears the STRIP's vocabulary (styles.css .tab, .tab-dot, .tab-ctx, .tab-key, .tab-badge), in this sheet's
    fallbacks: the gear's hosts load feed.css and gear.css, not the chat's sheet */
 #rsettings .rs-widget-demo .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg, #ccc); position: relative; border-radius: 6px; }   /* the radius the strip's tab has: a ring's outline follows it */
 #rsettings .rs-widget-demo .tab-dot, #rsettings .rs-preview .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg, #e0b020); }
@@ -329,6 +329,13 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-widget-demo .tab.ring-needs-you, #rsettings .rs-preview .tab.ring-needs-you { outline: 2px dashed var(--st-awaiting-bg, #c0392b); outline-offset: -2px; }
 #rsettings .rs-widget-demo .tab.ring-waiting-on-you, #rsettings .rs-preview .tab.ring-waiting-on-you { outline: 2px dashed var(--st-needs-bg, #d946ef); outline-offset: -2px; }
 #rsettings .rs-widget-demo .tab.ring-retrying, #rsettings .rs-preview .tab.ring-retrying { outline: 2px dashed var(--st-retrying-bg, #e67e22); outline-offset: -2px; }
+/* BADGE mode (the tabStateBadge default flip, 2026-09-23): a ring row's demo run through applyTabBadgeMode drops the
+   Needs-you/retrying ring for the top-right dot and the amber left dot; mirror styles.css's rules here, since the
+   gear's hosts load feed.css and gear.css, not the chat's sheet. The Blocked (ring-needs-you) ring stays, above. */
+#rsettings .rs-widget-demo .tab-dot.retrying, #rsettings .rs-preview .tab-dot.retrying { background: var(--st-retrying-bg, #e67e22); visibility: visible; }
+#rsettings .rs-widget-demo .tab-badge, #rsettings .rs-preview .tab-badge { position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg, #d946ef); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); pointer-events: none; z-index: 3; }
+#rsettings .rs-widget-demo .tab-badge:not(:empty), #rsettings .rs-preview .tab-badge:not(:empty) { width: auto; min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #000; font-weight: 700; font-size: 9px; line-height: 1; }
+body.theme-light #rsettings .rs-widget-demo .tab-badge:not(:empty), body.theme-light #rsettings .rs-preview .tab-badge:not(:empty) { color: var(--st-needs-fg, #ffffff); }
 
 /* A control that depends on the Task tracking switch while it is off (T404): the row greys by token (the fast-mode box's
    dress), keeps its hover so the title says what to enable, and its inputs are inert (disabled, and no pointer on them or

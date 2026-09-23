@@ -5,7 +5,20 @@ its own. The hub's dashboard shows both tabs; the pane's picker lists both (the 
 remote row wearing the strip's quiet host prefix and the name bold in its identity colour, in the menu tokens' card; picking
 the remote lists its files, answered by the kernel that owns it (federation routes the listing by the sid, the answer comes
 back under the host prefix), and its thumbnail loads through the hub's /remote/TESTHOST/file relay with the bare sid. Picking
-the local session lists its own file. Synthetic throughout: placeholder sids, TESTHOST, invented file names."""
+the local session lists its own file. Synthetic throughout: placeholder sids, TESTHOST, invented file names.
+
+The picker's mark (2026-09-23, a flake on main twice, the PR 2013 and PR 2061 merges): the card is a SNAPSHOT of the pane's
+selection at the moment it opens, and the selection follows the chat's active tab over two roads that land in their own time,
+the kernel's activeChat frame answering the pane's ready and the shell's relay of a switch; and at boot the chat's active tab is
+itself a race: the chat ADOPTS the first session frame that lands (render.ts, the arrival adoption when nothing is active), the
+hub's own over its socket or the remote's over the host relay, whichever comes first (both failing payloads read the REMOTE row
+current, the hub's own row not).
+The old read opened the card once the remote row was listed and read the mark at once, so it raced the selection's arrival and
+the boot's adoption. Now the driver makes the hub's own tab the chat's active tab by a real switch (or confirms it), holds on
+the pane's render of that selection (its button wearing the name, the page's own paint), opens the card and holds on the mark
+(a synchronous predicate polled by the driver on a bounded cadence), and pins the holds' outcomes beside the read, never a
+longer wall-clock cap. The race is reproduced on purpose: the pane's activeChat frames are held for a second in the artifacts
+frame (an init-script shim), so a read that does not hold reads no mark or the wrong one every time."""
 import json
 import os
 import re
@@ -52,9 +65,16 @@ page.on("pageerror", (e) => out.errors.push(String(e).slice(0, 200)));
 await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.panes = Object.assign({}, s.panes || {}, { artifacts: true }); localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });
 // every frame records its outbound frames by type and sid (the pane's watch and listing on the host relay: the frame-order pin of the
 // reload leg) and counts the relay's opens; installed before any navigation, so the reload's boot is read whole
-await page.addInitScript(() => { window.__sends = []; window.__relayUps = 0;
+await page.addInitScript((delay) => { window.__sends = []; window.__relayUps = 0;
   window.addEventListener("romp:hostRelayUp", () => { window.__relayUps++; });
-  const orig = WebSocket.prototype.send; WebSocket.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type) window.__sends.push({ type: m.type, sid: m.sid || null }); } catch (e) {} return orig.call(this, d); }; });
+  // the delayed frame (the reproduction of the picker-mark race, see the module docstring): in the artifacts frame alone, a kernel
+  // activeChat frame reaches the page's listener a second late, so the pane's selection lands after a card opened at once
+  if (/\/artifacts(\?|$)/.test(location.pathname + location.search) && delay > 0) {
+    const desc = Object.getOwnPropertyDescriptor(WebSocket.prototype, "onmessage");
+    if (desc && desc.set) Object.defineProperty(WebSocket.prototype, "onmessage", { configurable: true, get() { return desc.get.call(this); },
+      set(fn) { desc.set.call(this, (ev) => { let m = null; try { m = JSON.parse(ev.data); } catch (e) {} if (m && m.type === "activeChat") { setTimeout(() => fn.call(this, ev), delay); return; } return fn.call(this, ev); }); } });
+  }
+  const orig = WebSocket.prototype.send; WebSocket.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type) window.__sends.push({ type: m.type, sid: m.sid || null }); } catch (e) {} return orig.call(this, d); }; }, cfg.delayActiveChat || 0);
 const waitFile = async (p, ms) => { for (let i = 0; i < ms / 250; i++) { if (fs.existsSync(p)) return true; await page.waitForTimeout(250); } return false; };
 await page.goto(cfg.landing);
 await page.waitForSelector("#f-chat", { timeout: 30000 });
@@ -66,11 +86,19 @@ out.tabs = cf ? await cf.evaluate(() => Array.from(document.querySelectorAll("#t
 await page.click('.rail-btn[data-pane="artifacts"]');
 let fr = await findFrame(/\/artifacts(\?|$)/);
 out.frame = !!fr;
+// a SWITCH is a click on a tab that is not the column's active one; the wait confirms the strip's own state
+const switchTo = async (col, sid) => { await col.click('#tabs .tab[data-id="' + sid + '"] .tab-label', { timeout: 15000 }).catch(() => {}); return col.waitForFunction((t) => { const a = document.querySelector("#tabs .tab.active"); return !!a && a.getAttribute("data-id") === t; }, sid, { timeout: 15000 }).then(() => true).catch(() => false); };
 if (fr) {
   await fr.waitForSelector("#art-pick", { timeout: 30000 }).catch(() => {});
+  // the mark follows the pane's selection, the chat's active tab: make it the hub's own by a real switch (or confirm it), hold on
+  // the pane's render of that selection (the button wearing the name), then open the card and hold on the mark (the module docstring)
+  const t0 = Date.now();
+  const switched = cf ? await switchTo(cf, cfg.lsid) : false;
+  const buttonOk = await fr.waitForFunction(() => { const n = document.querySelector("#art-pick .session-name"); return !!n && n.textContent === "web"; }, null, { timeout: 30000 }).then(() => true).catch(() => false);
   await fr.click("#art-pick", { timeout: 15000 }).catch(() => {});
-  // the picker's rows are the shell's union of the open tabs: wait for the remote row to be among them
-  await fr.waitForFunction((rid) => !!document.querySelector('#art-picker .ctx-item[data-sid="TESTHOST:' + rid + '"]'), cfg.rsid, { timeout: 60000 }).catch(() => {});
+  // the picker's rows are the shell's union of the open tabs, the shown one marked: hold for the remote row AND the mark on the hub's own
+  const markOk = await fr.waitForFunction((a) => !!document.querySelector('#art-picker .ctx-item[data-sid="TESTHOST:' + a.rsid + '"]') && !!document.querySelector('#art-picker .ctx-item.current[data-sid="' + a.lsid + '"]'), { rsid: cfg.rsid, lsid: cfg.lsid }, { timeout: 30000 }).then(() => true).catch(() => false);
+  out.cardHolds = { switched, buttonOk, markOk, ms: Date.now() - t0 };
   out.card = await fr.evaluate(() => {
     const card = document.getElementById("art-picker"); if (!card) return null;
     const probe = document.createElement("div"); probe.style.background = "var(--menu-bg)"; probe.style.position = "absolute"; document.body.appendChild(probe);
@@ -260,7 +288,8 @@ class ArtifactsRemoteServed(unittest.TestCase):
             cfg = os.path.join(self.lab, "cfg.json")
             stage = os.path.join(self.lab, "stage"); os.makedirs(stage, exist_ok=True)
             with open(cfg, "w") as f:
-                json.dump({"landing": "http://127.0.0.1:%d/?token=%s" % (self.hport, self.htoken), "rsid": SID_R, "lsid": SID_L, "stage": stage}, f)
+                json.dump({"landing": "http://127.0.0.1:%d/?token=%s" % (self.hport, self.htoken), "rsid": SID_R, "lsid": SID_L, "stage": stage,
+                           "delayActiveChat": 1000}, f)   # the reproduction of the picker-mark race (the module docstring): the pane's activeChat frames land a second late
             driver = os.path.join(self.lab, "driver.mjs")
             Path(driver).write_text(DRIVER)
             # the driver and this test meet on stage files: at stage-1 the remote kernel is stopped (the host down), at stage-2 it is
@@ -313,7 +342,10 @@ class ArtifactsRemoteServed(unittest.TestCase):
         self.assertEqual(set(by), {SID_L, "TESTHOST:" + SID_R}, "exactly the open tabs, the remote under its host id: %r" % card["rows"])
         self.assertEqual((by["TESTHOST:" + SID_R]["prefix"], by["TESTHOST:" + SID_R]["name"]), ("TESTHOST:", "api"), "the remote row: the quiet prefix, then the name")
         self.assertEqual((by[SID_L]["prefix"], by[SID_L]["name"]), (None, "web"), "the local row: no prefix")
+        h = r.get("cardHolds") or {}
+        self.assertTrue(h.get("switched") and h.get("buttonOk") and h.get("markOk"), "the holds fired: the chat switched to the hub's own tab, the pane's button wore its name, the card's mark rendered on it (never a longer wall-clock cap): %r" % h)
         self.assertTrue(by[SID_L]["current"], "the shown session (the chat's active tab, the hub's own) wears the mark")
+        self.assertFalse(by["TESTHOST:" + SID_R]["current"], "and the remote row does not")
 
     def test_the_picker_wears_the_strips_dress_in_the_menu_tokens(self):
         card = self._result()["card"]

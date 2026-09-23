@@ -137,6 +137,7 @@ machinery on such boxes without it.
 | `item/*` webSearch | `tool_use` `WebSearch` {query} + result |
 | `item/completed` contextCompaction | `system`/`compact_boundary`, uuid = the item id, `logicalParentUuid` = the pre-compaction leaf (the stitch the FileAdapter follows), `compactMetadata.trigger` `"auto"` (every compaction inside a turn romp started is automatic). The item completes only after the runtime replaced the history, so a failed compaction writes nothing; `item/started` writes nothing (no content yet). The read side's replay window arms on the summary record, never on this boundary (the event-model change this row depends on), so the prompt that directly follows a pre-turn boundary survives even when it repeats earlier text. `thread/compacted` (deprecated on Codex 0.153.3 and never sent; turn-scoped in the pinned client, so it could only ever arrive on a registered turn's queue, never the global pump) → the same record when no item wrote it for that turn: boundaries per turn = max(items, notifications) |
 | `thread/compacted` | `system`/`compact_boundary` with `logicalParentUuid` = pre-compaction leaf (the stitch the FileAdapter follows). Runtime 0.153.3 does NOT emit it for a `thread/compact/start` (live probe, 2026-09-19): that compaction runs as its own turn the pinned client never registers, so the backend feeds this writer itself when the thread's status goes active and then idle (`CodexBackend._compact_status`), with `compactMetadata.trigger: "manual"`; a notification off the wire keeps `"auto"` |
+| `turn/completed` completed, nothing held | an assistant record with EMPTY content, `stop_reason:"end_turn"`, uuid `<turn id>-end`, the clock stamp floored at the newest record, carrying the turn's summed usage (2026-09-23): the turn's last item was anything other than a non-empty reply (a command, a tool call, a file change, reasoning, a steer, a compaction), its final reply was empty, or it had no item, and without an end the file's turn stayed open. Once per turn: a repeat, or a late completion for an earlier turn, writes nothing (keyed on the normalizer's own record of the turns it settled and of its current turn, never a uuid in the file). It renders nothing, counts as no work, and is never a deep-link anchor (`event_model.atom_is_bare_end`) |
 | turn failed / terminal `error` | assistant record flagged `isApiErrorMessage` (the error-card tag) |
 | `thread/tokenUsage/updated` | not a record — feeds `live_sessions().context` |
 | `plan`, `subAgentActivity`, `collabAgentToolCall` | **phase 2** (skipped, logged once) |
@@ -216,9 +217,21 @@ reason given there.)
   deliberate. (A boot version check against a tested floor was considered and
   is NOT implemented — the pin alone bounds drift while the SDK and its
   bundled binary move together.)
-- A turn that ends with no final agentMessage (interrupt mid-tool) leaves the
-  file turn unterminated; state stays correct (it comes from notifications).
-  Revisit if it confuses the judges.
+- Every turn must END in the file: the chat chip, the timeline lane and the
+  judges read working from the transcript, not from notifications, and an
+  open file turn also absorbs the next prompt as mid-turn input. So every
+  settle writes an end: the held final reply lands `end_turn`, an interrupt
+  writes the CLI's interrupt record, a failure or an abandoned stream writes an
+  error card, and a completion with nothing held writes an empty `end_turn`
+  record (2026-09-23; the premise that state comes from notifications was
+  stale, and such turns read Working for good). Residuals: a transcript written
+  before that keeps those turns open until a later turn ends; the empty
+  record is a shape the Claude CLI never writes (an assistant record with no
+  content blocks), so a reader that indexes `content[0]` would break on it
+  (none does today); and a turn with no item at all, not even the prompt (not
+  known to happen), is its end record alone at a thread's start, a triggerless
+  turn that anchors no bar and arms no nudge, while after an ended turn the
+  record joins that turn.
 - Codex compaction exposes no summary text — the card's "what compaction kept"
   tab stays empty for Codex sessions (absent, not faked).
 - A standalone compaction (`thread/compact/start`) is bracketed by the thread's

@@ -1232,8 +1232,8 @@ _PERF_STATS = _PerfStats()
 # decoded heap out of the cycle collector's walk (a warm full collection over 5.6M loaded objects fell from
 # 2.83 s to 0.1 ms once frozen; plans/gc-full-collection-pause.md); it reconciles at the idle boundary. A LOAD
 # fold-in keys on the record cache's insert counter; a RELEASE reclaim is owed when an ended session, registered
-# by weakref at its pop, is observed still alive with its worker thread finished (a surviving cycle), or by a
-# bounded fold-in backstop. The reconcile's pause is paid with no browser waiting. Default on; ROMP_GC_FREEZE=off.
+# by weakref at its pop, is observed still alive with its worker thread finished (a surviving cycle, or a ref a live root keeps,
+# which reads the same, costs one reclaim and is counted a survivor), or by a bounded fold-in backstop. The reconcile's pause is paid with no browser waiting. Default on; ROMP_GC_FREEZE=off.
 _GC_FREEZE_ERRORS = [0]
 _GC_FREEZE_SAID = [False]
 _GC_FREEZE_LOAD_TREES, _gc_freeze_bad_knob = gcf.load_trees_from_env()   # parsed with a fallback, never a bare int() at import (#1735 high)
@@ -1261,10 +1261,16 @@ def _gc_freeze_tick(idle, first):
             except Exception:
                 pass
     kind = gcf.pusher_tick(_GC_FREEZE, idle, first, em.record_cache_stats, on_error)
-    if kind == "release":    # #1735: a release means a session ended with a surviving cycle and a full-heap pause; name it (one line per release, none per load tick)
+    if kind == "release":    # #1735: a release means a session ended and the collector took (or was owed) a full-heap pause; name it (one per release, none per load)
         try:
-            sys.stderr.write("gc-freeze: a release reclaimed a surviving cycle for ended session(s) %s in %.1f ms\n"
-                             % (",".join(_GC_FREEZE.last_release_sids) or "?", _GC_FREEZE.last_ms))
+            survivors = getattr(_GC_FREEZE, "last_release_survivors", 0)
+            if survivors:    # nothing was freed: a LIVE ROOT keeps the ref (not a cycle); name it kept, never "reclaimed"
+                sys.stderr.write("gc-freeze: a release walked the frozen heap for ended session(s) %s in %.1f ms and freed nothing "
+                                 "(kept alive by a live root, one wasted reclaim)\n"
+                                 % (",".join(getattr(_GC_FREEZE, "last_kept_sids", [])) or "?", _GC_FREEZE.last_ms))
+            else:            # the reclaim freed the released cycle
+                sys.stderr.write("gc-freeze: a release reclaimed a surviving cycle for ended session(s) %s in %.1f ms\n"
+                                 % (",".join(_GC_FREEZE.last_release_sids) or "?", _GC_FREEZE.last_ms))
         except Exception:
             pass
 
@@ -1553,6 +1559,16 @@ def _turn_romp_injected(turn):
     tuid = trig.get("uuid") if isinstance(trig, dict) else trig
     a = next((x for x in atoms if x.get("uuid") == tuid), None) or (atoms[0] if atoms else None)
     return bool(a and a.get("author") == "romp")
+
+
+def _turn_only_ends(turn):
+    """True for a turn holding nothing but bare END records (em.atom_is_bare_end): a Codex turn whose app-server
+    output had no item at all, not even the prompt, ends on an empty end record, and at a thread's start that record
+    is the whole turn (2026-09-23, the post-merge review of the restart-cut fix). _turn_romp_injected's first-atom
+    fallback reads that record as the opener and, finding no romp author on it, calls the turn genuine, so it became
+    the nudge's arm. Nothing was asked or done in it: it arms nothing, as when the turn wrote no record at all."""
+    atoms = turn.get("atoms") or []
+    return bool(atoms) and all(em.atom_is_bare_end(a) for a in atoms)
 
 
 # The discriminating phrases in the resume notices romp injects to CONTINUE a machine-cut turn
@@ -5560,9 +5576,10 @@ def _note_state_fault(exc):
         remedy = getattr(exc, "remedy", None) or ("showing the last-known value; changes to it are refused until the file can be "
                                                    "read again")   # the file's own clause when it has one, else the sentence every other file keeps (round three of PR 2032)
         text = "%s \u2014 %s" % (exc, remedy)                  # the same dash as before, the sentence byte-identical for every other file
-    if table.get(key) == text:
+    seen = getattr(exc, "dedupe_key", None) or text      # a row whose display text is cut carries the whole text as its key (_cleared_fault_row)
+    if table.get(key) == seen:
         return
-    table[key] = text
+    table[key] = seen
     sys.stderr.write("romp-kernel: %s\n" % text)
     try:
         _sync_notice(text, ok=False, kind="refused")   # the shell bell / feed sync-notice row (resolved at call time)
@@ -10312,14 +10329,29 @@ def _parked_quiet_deploy(checkout, now=None):
 
 
 def _deploy_would_cut():
-    """The turns a deploy restart NOW would cut, as the drain would record them (SdkBackend.would_cut), or None when
-    that is unknown (no backend built yet, or one without the method). The gates that spare in-flight turns apply to
-    an unknown answer exactly as to a non-empty one (T352): only a KNOWN empty list waives them."""
+    """The turns a deploy restart NOW would cut, or None when that is unknown (no backend built yet, or one without
+    the method). The Claude half is the drain's own predicate (SdkBackend.would_cut), so it answers as the drain
+    records its cuts. The gates that spare in-flight turns apply to an unknown answer exactly as to a non-empty one
+    (T352): only a KNOWN empty list waives them.
+
+    The Codex backend's open turns are cuts too (CodexBackend.would_cut; 2026-09-22, the review that found /busy and
+    this gate blind to Codex): its app-server is this kernel's child and ends with it. Without them a box whose Claude
+    sessions were all hosted read "would cut no turn" over an open Codex turn, and the converge waived the cool-down
+    and pre-empted the quiet window that /busy now holds for that turn. Read only when already built, never built
+    here; a built one that cannot answer makes the whole answer unknown, as the SDK side does. Like the Claude half,
+    the Codex half is the drain's own predicate, minus the dead (2026-09-23, the promise in #2055's body): the gates
+    read what the restart's cut row names (CodexBackend.inflight_turns, through _codex_cut_turns: an open turn, or a
+    compaction once its active status was seen) less the ended sessions, whose open turn the row names because the
+    next load still settles it, but which is not work a quiet window should wait for."""
     be = _sdk_backend or None
     if be is None or not hasattr(be, "would_cut"):
         return None
     try:
-        return list(be.would_cut())
+        cut = list(be.would_cut())
+        cx = _codex_backend or None
+        if cx is not None:
+            cut += list(cx.would_cut())
+        return cut
     except Exception:
         return None
 
@@ -10427,8 +10459,10 @@ def _main_drift_check():
         # end, the cool-down spaces the cuts. A restart that would cut none (every working session under a host,
         # T315; the default since T348) has nothing to spare, so neither wait applies to it (T352, the manager's
         # find: a merged fix waited 23 minutes behind the cool-down on a box where every session was hosted). The
-        # answer comes from the drain's own predicate (SdkBackend.would_cut), and only a KNOWN empty list waives a
-        # wait: unknown (no backend yet) keeps both, as before. Every held pass says so, each time.
+        # answer comes from the drain's own predicate (SdkBackend.would_cut) plus the Codex backend's open turns and
+        # running compactions (CodexBackend.would_cut, through _deploy_would_cut; 2026-09-22, the compactions named
+        # 2026-09-23 by the review of this lane), and only a KNOWN empty list waives a wait: unknown (no backend yet)
+        # keeps both, as before. Every held pass says so, each time.
         try:
             since_crash = time.time() - _CONVERGE_CRASH_T[0]
             if _CONVERGE_CRASH_T[0] and since_crash < _CONVERGE_COOLDOWN_S:
@@ -15614,8 +15648,10 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
     # banner, any romp injection — neither RE-ARMS a nudge (the 2026-07-01 runaway) nor BLOCKS a first
     # one: the old `_turn_romp_injected(lt)` gate keyed on the LATEST turn, so a restart banner opening
     # a session's last turn suppressed every future first-nudge until some genuine turn ended — a
-    # working card that could never be nudged (business, found idle+working with nudged=None).
-    arm = next((tn for tn in reversed(turns) if tn.get("ended") and not _turn_romp_injected(tn)), None)
+    # working card that could never be nudged (business, found idle+working with nudged=None). A turn that is
+    # nothing but a Codex end record has no opener at all and arms nothing either (_turn_only_ends, 2026-09-23).
+    arm = next((tn for tn in reversed(turns)
+                if tn.get("ended") and not _turn_romp_injected(tn) and not _turn_only_ends(tn)), None)
     arm_id = arm.get("id") if arm else None          # None (romp-only history) → never FIRE; an already-
     #                                                  nudged goal still takes its nudge-failed stamp below
     # The newest turn romp has SEEN END — the yardstick the fire list judges "newer evidence" against, and
@@ -18962,6 +18998,9 @@ def _sdk_locked():
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,
                 poke=_wake_kernel, push=_pusher_wake.set,   # poke = the turn END: judges AND parked-op delivery
+                push_soon=_push_session_soon,   # …and the no-builder ask (2026-09-23): the SDK's queue pop names its sid to
+                #   the ONE cycle rather than building a second whole-session frame beside it (a send took a landed turn
+                #   off the page for one push)
                 push_session=_stage_default("push.session")(_push_session_now),   # targeted one-session push for per-session chip
                 #   events (connect); marked at the hand-off as the thread's DEFAULT: the backend runs it on a thread of its own
                 #   (unmarked; the read boot of 2026-09-14 counted 3,312 builds and 9.4 MB under `none:` from it), while a
@@ -19099,9 +19138,11 @@ def _codex():
                 _codex_backend = cxmod.CodexBackend(
                     jd.STATE, notify=_send_to_app,
                     poke=_wake_kernel, push=_pusher_wake.set,
-                    push_session=_stage_default("push.session")(_push_session_now),   # the thread's default mark, as the SDK's
-                    #   above: this backend calls it synchronously under a request's route at set_mode and kill (the route
-                    #   stands) and from its own event loop elsewhere (unmarked: takes push.session)
+                    push_session=_push_session_soon,   # ONE builder of chat frames (2026-09-23): each of this backend's per-event
+                    #   pushes (a turn start, a stream item, a mode flip, a clear) NAMES its sid to the pusher cycle, which builds it
+                    #   at the front of its next build slot. It used to run _push_session_now, a whole-session build beside the
+                    #   cycle's, on every Codex stream event, synchronously under a request's route or on this backend's own event
+                    #   loop; two builds of one session raced to the page. Now a set add and an Event set: nothing builds here.
                     # Let the backend choose ROMP's managed runtime and helpers.
                     # A separately installed CLI on PATH may use a different protocol.
                     # …but honour the one EXPLICIT knob romp already has — ROMP_CODEX_BIN, which the judges read
@@ -38433,6 +38474,21 @@ def _apply_pending_ops(now=None):
                             with _pending_ops_lock:
                                 _inflight_ops.pop(sid, None)
                             break
+                        if clear_why == "":
+                            # The clear happened: the verb swapped the registry row onto a fresh transcript, and this walk runs inside
+                            # a pusher cycle whose memos (_live_scope.sessions, the discover rows; _live_scope.paths, this sid's path)
+                            # the gates above filled with the OLD row before the verb ran, while the cycle's build loop reads them
+                            # after this walk. The reset lived in the Codex backend's push hook while that hook built inside the verb
+                            # (_push_session_now); the hook is _push_session_soon now and only names the sid to the cycle, so it
+                            # resets nothing, and the cleared session's first frame was built from the OLD file (2026-09-23, the
+                            # review of this change). Reset here, before the build loop reads the row: the row memo to a fresh dict
+                            # (jd.discover's own cache follows the registry's mtime, which the swap rewrote) and this sid's path
+                            # dropped; outside a cycle both memos are absent and every read is fresh already.
+                            if getattr(_live_scope, "sessions", None) is not None:
+                                _live_scope.sessions = {}
+                            _p = getattr(_live_scope, "paths", None)
+                            if _p is not None:
+                                _p.pop(sid, None)
                     elif is_compact:
                         # SessionBackend.compact: "" the bracket is up (the backend's compacting() is the cue: no stamp), "busy"
                         # a turn or a compaction already in flight, else the reason. On "busy" the head STAYS with nothing
@@ -39349,7 +39405,7 @@ def _merge_tx_sets(session, sid, t_floor=None):
     return sets
 
 
-def _merge_live_atoms(session, sid, shown_texts=()):
+def _merge_live_atoms(session, sid, shown_texts=(), live=None):
     """Merge in-memory LIVE-TAIL atoms into the parsed session, AHEAD of the transcript on disk, so messages
     appear instantly (the stream / a composer send leads the disk write). NON-MUTATING — `session` is the
     _parse cache, so this returns a shallow copy: the last turn's atoms extended by the fresh tail, and a
@@ -39365,9 +39421,17 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     the event-based queued indicator owns that case. The echo is only HIDDEN, not pruned — once the message
     leaves the queue and its real user atom lands, the normal text-prune retires the echo. So the echo only
     ever shows a NON-queued send: the brief gap before an idle send's real atom lands, and a DROPPED send
-    that never reached the queue or the transcript (the visibility win — the user 2026-06-25)."""
+    that never reached the queue or the transcript (the visibility win — the user 2026-06-25).
+
+    `live`: the tail as the caller snapshotted it BEFORE reading `session` (build_session, 2026-09-23: a tail read after
+    the parse could miss an atom whose record the parse had not read yet); None reads it here, after the parse, the
+    order the other surfaces keep (they send no chat frame).
+
+    The returned copy carries `_streamed`: the uuids of the stream atoms it merged (no echo, no command line), whose
+    events build_session marks `streamed` so the chat wire never anchors a client's base on one (_last_anchor)."""
     be = Sessions.backend_for(sid)             # the owning backend — its live store + prune
-    live = be.live_atoms(sid)
+    if live is None:
+        live = be.live_atoms(sid)
     if not live:
         return session
     # The transcript-side sets come from the per-sid memo (_merge_tx_sets): a function of the parsed
@@ -39486,7 +39550,8 @@ def _merge_live_atoms(session, sid, shown_texts=()):
         turns[-1]["end"] = max(turns[-1].get("end") or 0, max(a.get("t", 0) for a in fresh))
         if live_work:
             turns[-1]["ended"] = False
-    return {**session, "turns": turns, "_placed": placed}
+    streamed = frozenset(a.get("uuid") for a in fresh if a.get("uuid") and not a.get("_echo_text") and not a.get("command"))
+    return {**session, "turns": turns, "_placed": placed, "_streamed": streamed}
 
 
 def _turn_activity_end(turn):
@@ -40129,13 +40194,26 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     _chat_dep_scope.deps = None if path_override else {"task_outs": [], "postal_any": False}
     be = Sessions.backend_for(sid)
     queued = [] if path_override else be.pending_queued(sid)   # override = a closed episode; nothing is live
+    _wm_live = None if path_override else Sessions.live_rev(sid, be)   # read BEFORE the tail is read (the watermark, _chat_wm): _touch_live
+    #                                                                   writes the atoms first and bumps after, so this is a lower bound on the tail the merge folds
+    # THE LIVE TAIL IS READ BEFORE THE TRANSCRIPT (2026-09-23). An atom leaves the shared live tail on exactly two roads: a
+    # prune justified by a parse that holds its record (prune_live, every live merge), and the turn-boundary retire
+    # (SdkBackend.retire_live_work), which runs once the CLI has written what the turn keeps. Either way its record is on
+    # disk BEFORE it leaves the tail. Read in the other order (the parse first, the tail after, as this build did until
+    # today), a build could parse the transcript just before the CLI wrote the turn's last records and read the tail just
+    # after the settle retired their live atoms: the agent's message was then in neither store, and the frame built from
+    # them omitted it. At a turn boundary that frame went out as a full (its base's last edge had gone with the atom), the
+    # page rebuilt its window without the message, and the next delta put it back 120-200 ms later: the blink the live
+    # reproduction caught on both the regression build and the one before it. In this order every atom the snapshot
+    # misses left the tail before the snapshot, so its record was on disk before the parse below read the file (the
+    # parse's key is taken at its read, and the file only grows): the build holds each event in one store or the other.
+    # Another builder's prune can no longer starve this one, whatever parse that builder read.
+    _live_snap = None if path_override else be.live_atoms(sid)
     parsed = _parse(sess["path"], sid, now)
     tm0 = live_map.get(sid)
     compacting_now = (False if path_override else
                       _compacting(sid, (tm0 or {}).get("state", ""), parsed, now, (tm0 or {}).get("since")))
-    _wm_live = None if path_override else Sessions.live_rev(sid, be)   # read BEFORE the tail is read (the watermark, _chat_wm): _touch_live
-    #                                                                   writes the atoms first and bumps after, so this is a lower bound on the tail the merge folds
-    session = parsed if path_override else _merge_live_atoms(parsed, sid, shown_texts=queued)
+    session = parsed if path_override else _merge_live_atoms(parsed, sid, shown_texts=queued, live=_live_snap)
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     uuid2seg, seg_anchors = {}, {}            # atom uuid → seg id; seg id → (promptId, workId) for the dot/bar split
     seg_trig, seg_work = {}, {}               # goal-node DEEP-LINK anchors: prompt = the segment's trigger
@@ -40865,6 +40943,17 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
             _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")
     events = _prefix + events                           # the sealed prefix (same dicts) + this build's tail
     _pref_ids = {id(_e) for _e in _prefix}              # the sealed dicts: read by the uuid pass below, never written
+    # STREAMED events (2026-09-23): an event built from a stream atom the transcript has not recorded yet (the live tail's
+    # merge names them, _merge_live_atoms `_streamed`) wears `streamed`, so the chat wire never ends a client's base on one
+    # (_last_anchor): such an event can leave the kernel's next list before its record joins it (a retry discards a try,
+    # a turn boundary retires the atom), and a base ending on it made the next send a full frame, or a delta anchored past
+    # what the page held. Only this build's own part is walked and written (stream atoms merge into the last turn, which
+    # the fold never seals, and the sealed prefix's dicts are never written in place).
+    _streamed_uuids = session.get("_streamed") if isinstance(session, dict) else None
+    if _streamed_uuids:
+        for _e in events[len(_prefix):]:
+            if _e.get("uuid") in _streamed_uuids:
+                _e["streamed"] = True
     if not path_override and page is None and _n_pref > 0:
         # ── COMMIT the prefix: whole ENDED turns, sealed at a turn boundary the tail cannot reach back
         # across. Recorded from the events as built (a scan of the NEW part only), so the loop body above
@@ -41661,7 +41750,7 @@ def build_episode(sid, now):
 
 # ───────────────────────── feed clear / undo (inbox-zero) ─────────────────────────
 _CLEARED_MEMO = {"slot": None,     # (key, parsed set, the read's fault copy) or None: the clear log's stat taken BEFORE the read, the set read under it, and "" for a landed read (an undecodable log's empty set is served with its fault; round three of PR 2025)
-                 "landed": None}   # (key, parsed set) of the LAST LANDED read, for the display readers while the log cannot be read (_cleared_ids_display; the second contributor's post-merge note on PR 2025);
+                 "landed": None}   # (key, parsed set, parsed byte length) of the LAST LANDED read, for the display readers while the log cannot be read (_cleared_ids_display; the second contributor's post-merge note on PR 2025);
 #                                    an absent read counts as landed under a path-only key, the display checking the path alone (the FileNotFoundError arm; the first contributor's round one on PR 2032)
 _cleared_read_fault = [""]         # the fault copy filed for a STANDING unreadable or undecodable clears log: one stderr line and one judge-errors row per
 #                                    episode (the note read's shape), ended by a landed read, an absent log or a different fault (the served branch writes the slot's fault whole, so a
@@ -41725,13 +41814,28 @@ def _cleared_ids_read():
 
     Returns the set AND the read's fault copy ("" when the read landed or the log is absent), taken in one read, so an account describes
     the caller's own read and not a module flag another thread's read may have moved between two statements (the round-one verifier of PR
-    2025: a lost account when a pusher read landed in the window, a false one when it faulted there). _cleared_ids returns the set alone."""
+    2025: a lost account when a pusher read landed in the window, a false one when it faulted there). _cleared_ids returns the set alone.
+
+    The episodes (the reader's flag, the bell's table) end on three arms: a landed parse whose post-parse stat and pre-read flag both stand
+    where the read found them, a served landed hit, and an absent log. A landed parse takes the SLOT only on that first arm; a set parsed from
+    bytes that left the disk before a fault, or while a fault was filed (an EIO on the read moves no stat), ends nothing, since the fault's
+    episode is the newer state, and is kept as the last landed set only when its parsed byte length is at least the standing set's: the log is
+    append-only within an episode (an undo appends a row; a shorter file arrives only through the absent arm, which records length zero), so
+    the longer parse is the newer state, whichever of two racing reads writes first. A served hit whose memoized fault differs from the flag
+    files the judge row (the third episode ending, a different fault, through the memo hit too). The first contributor's post-merge note on PR
+    2041; the second contributor's post-merge review of PR 2056; the round-one verifier of PR 2070."""
     path = jd.STATE / "cleared.jsonl"
     st = _stat_key(path)
     key = (str(path),) + st if st is not None else None
     slot = _CLEARED_MEMO["slot"]
     if key is not None and slot is not None and slot[0] == key:
         _CLEARED_STATS["served"] += 1
+        if slot[2] and slot[2] != _cleared_read_fault[0]:
+            _clears_log_fault_note("the read", slot[2], kind="cleared-unreadable")   # the memoized fault returning through a memo hit after a DIFFERENT fault is a new episode
+            #                                                                          and files its judge row like the derive arm (the first contributor's post-merge note on PR
+            #                                                                          2041: undecodable, stat fault, served, stat fault, served filed judge rows 1, 2, 2, 3, 3
+            #                                                                          while the bell filed 1 to 5, against the docs' one row per episode ended by a different
+            #                                                                          fault); one string compare per hit, the note only on the alternation
         _cleared_read_fault[0] = slot[2]                 # the served state's fault IS the episode's: a served landed set ends an episode a stat-level fault opened (the second
         #                                                  contributor's post-merge note on PR 2025: a permission flap on the log's directory set the flag, the lift was served from
         #                                                  the memo with the flag still holding the copy, and the same fault before the next append filed no second row or line)
@@ -41739,9 +41843,12 @@ def _cleared_ids_read():
             _clear_state_fault(path)                     # and the bell's episode with it (the first contributor's round one on PR 2032: only the display read's own clean call ended
         #                                                  the bell's, so a repair the nudge walk alone saw with the dashboard closed left it standing and the same bytes filed no second row)
         return slot[1], slot[2]                          # the slot holds the fault beside the set: a served undecodable state still names it (round three of PR 2025)
-    cur = {}
+    fault0 = _cleared_read_fault[0]                    # the flag before this read: the landed arm below compares it after the parse
+    cur, n = {}, 0
     try:
-        for line in path.read_text().splitlines():
+        text = path.read_text()
+        n = len(text)                                    # the parsed bytes' length: the landed memo's version (append-only within an episode)
+        for line in text.splitlines():
             try:
                 o = json.loads(line)
             except Exception:
@@ -41766,7 +41873,7 @@ def _cleared_ids_read():
         _CLEARED_STATS["derived"] += 1
         _cleared_read_fault[0] = ""                      # absent, or vanished after the stat: nothing cleared, a real state, said nowhere; it ends an episode too
         _clear_state_fault(path)                         # the bell's episode too
-        _CLEARED_MEMO["landed"] = ((str(path),), {})     # the absent state IS the last landed one: after an unlink the pane shows nothing cleared, and a path that comes back
+        _CLEARED_MEMO["landed"] = ((str(path),), {}, 0)  # the absent state IS the last landed one, at length zero (every later parse outranks it): after an unlink the pane shows nothing cleared, and a path that comes back
         #                                                  unreadable must not serve the set from before the removal (the first contributor's round one on PR 2032: the count jumped
         #                                                  back, Undo lit and the cards hid again with no new information about them)
         return cur, ""
@@ -41788,17 +41895,54 @@ def _cleared_ids_read():
             _clears_log_fault_note("the read", e, kind="cleared-unreadable")   # the READ's kind: the one the judge's own side-file reader files for this file (one kind per meaning; the round-one verifier of PR 2025)
         return cur, copy
     _CLEARED_STATS["derived"] += 1
+    if st is None or _stat_key(path) != st or _cleared_read_fault[0] != fault0:
+        # These bytes are not proved to be the file's current state: the file moved under the parse, or the flag moved (a fault filed by a
+        # concurrent read, an EIO among them, moves no stat), or the pre-read stat failed (a log created between the stat and the read, a
+        # permission flap on the directory lifting before the read: nothing to compare). They end no episode and take no slot (the first
+        # contributor's post-merge note on PR 2041: the nudge walk parses on the jobs thread beside the display builds, and a walk still
+        # parsing good bytes when the file went bad and a build filed the fault then ended both episodes, so the next build filed a second
+        # bell row and a second judge row for one unbroken fault). They ARE a real state of the file, and the last landed one when no longer
+        # parse stands: a first-ever read that races a fault must not leave the display on the cold arm (the round-one verifier of PR 2056),
+        # while an older parse must not overwrite the newer set another read recorded meanwhile (the second contributor's post-merge review of
+        # PR 2056: a clear appended during the walk's parse, derived by a build before the walk's post-parse stat, and the walk's write put the
+        # pane back on the older set after the next fault). The version is the PARSE itself: the log is append-only within an episode, so the
+        # longer parse is the newer state, whichever of two racing moved reads writes first (the round-one verifier of PR 2070: a rule keyed on
+        # the memo's identity let the first moved write win and dropped the newer parse); a shorter file arrives only through the absent arm,
+        # which records length zero.
+        standing = _CLEARED_MEMO["landed"]
+        if standing is None or standing[0][0] != str(path) or n >= standing[2]:
+            _CLEARED_MEMO["landed"] = (key if key is not None else (str(path),), cur, n)   # the absent arm's path-only key shape when the stat failed
+        return cur, ""
     _cleared_read_fault[0] = ""                          # a landed read ends the episode
     _clear_state_fault(path)                             # and the bell's: every reader's clean read, not the display read's alone (the first contributor's round one on PR 2032)
     if key is not None:
         _CLEARED_MEMO["slot"] = (key, cur, "")
-        _CLEARED_MEMO["landed"] = (key, cur)             # the last landed set, for the display readers while the log cannot be read
+        _CLEARED_MEMO["landed"] = (key, cur, n)          # the last landed set and its parsed length, for the display readers while the log cannot be read
     return cur, ""
 
 
 def _cleared_ids():
     """The set of currently-cleared feed itemIds (_cleared_ids_read), the read's fault set aside: for the readers that answer for nothing."""
     return _cleared_ids_read()[0]
+
+
+def _cleared_fault_row(p, fault, remedy, cold=False):
+    """The bell row's exception for the clears log, its fault text cut to the budget the remedy leaves under SYNC_NOTICE_FIT so the row's
+    point (the remedy, its closing clause included) always survives the bell's cut: a multi-byte decode error at a seven-digit offset ran
+    the cold row to 242 and the bell cut the closing parenthetical (the first contributor's post-merge note on PR 2041: a 1.3 MB log ending
+    in a broken four-byte sequence, cold build). The row is composed by _note_state_fault as str(exc), a dash and the remedy; the bell's
+    episode key is the whole fault text (`dedupe_key`), so the cut never merges two faults into one episode; the COLD row's key carries a
+    cold marker as well, so the warm row files exactly once when a landed set arrives under a standing fault (a first-ever read racing the
+    fault: the cold row's two clauses, nothing reads as cleared and no earlier read, were both false once the pane served the landed set) and
+    an ordinary standing cold fault gains no row (the second contributor's post-merge review of PR 2056)."""
+    text = str(fault)
+    budget = SYNC_NOTICE_FIT - len("%s could not be read () \u2014 %s" % (p.name, remedy))
+    if len(text) > budget:
+        text = text[:max(0, budget - 3)] + "..."
+    exc = _StateUnreadable(p, text, remedy=remedy)
+    exc.dedupe_key = ("cold|" if cold else "") + str(fault)   # the bell's episode compares the WHOLE fault text, not the cut one, so two faults agreeing through the cut and
+    return exc                                           # differing after it are two episodes (the round-one verifier of PR 2056); the row's text stays cut. The cold marker: the
+    #                                                      warm row after a cold one is a real change of the pane's state and files once; a warm row's remedy change alone never does
 
 
 def _cleared_ids_display():
@@ -41811,22 +41955,25 @@ def _cleared_ids_display():
     set, and the row says so. Never for a gesture: an Undo answers for its OWN read (_undo_clear) and an account's stack for the read
     behind it (_ledger_batches), which is why this is not the shared set-only reader. The bell's line comes with its row: _note_state_fault
     writes the stderr line and the bell row together, beside the reader's own stderr line and judge row, each under its own episode memo: the
-    reader's flag holds the fault's copy and the bell's table holds the row's text for the path, so a different fault's text files the bell again on
-    every change and the reader again through the derive arm alone (a served memo hit re-arms the reader's flag from the slot without filing),
-    and every clean read ends both (the second contributor's post-merge comment on PR 2032; the round-one verifier of PR 2041: the bell's table
-    was described as keyed by the path alone, where it compares the text under it; the second contributor's post-merge review of PR 2041)."""
+    reader's flag holds the fault's copy and the bell's table holds the row's key for the path. The bell re-files on every change of the fault's
+    text; the reader re-files through the derive arm and through a memo hit returning a fault that differs from the flag; a clean read ends both
+    only on the landed arm whose post-parse stat and pre-read flag both stand where the read found them, the served landed hit and the absent
+    log being the other two endings (the second contributor's post-merge comment on PR 2032 and reviews of PRs 2041 and 2056; the round-one
+    verifiers of PRs 2041 and 2056)."""
     cur, fault = _cleared_ids_read()
     p = jd.STATE / "cleared.jsonl"
     if not fault:
-        _clear_state_fault(p)                            # a clean read ends the bell's episode
-        return cur
+        return cur                                       # the read ended the bell's episode itself when its bytes were settled (every arm; a call of its own here ended it for a
+        #                                                  set parsed from bytes before a fault too: the first contributor's post-merge note on PR 2041)
     landed = _CLEARED_MEMO["landed"]
     # the row's remedy is this file's own (round three of PR 2032): the convention's "changes to it are refused" is untrue here, since a clear
     # still appends its row and sets the card's flag while the log cannot be read; only Undo, which answers for its own read, waits
     if landed is not None and landed[0][0] == str(p):
-        _note_state_fault(_StateUnreadable(p, fault, remedy="showing the last-known value; clears still record, and Undo waits until the file can be read again"))
+        _note_state_fault(_cleared_fault_row(p, fault, "showing the last-known value; clears still record, and Undo waits until the file can be read again"))
         return landed[1]
-    _note_state_fault(_StateUnreadable(p, fault, remedy="clears still record, and Undo waits; nothing reads as cleared until then (no earlier read of it in this kernel's life)"))   # point first and short (the second contributor's post-merge comment on PR 2032): about 80 characters left for the fault text under SYNC_NOTICE_FIT
+    _note_state_fault(_cleared_fault_row(p, fault, "clears still record, and Undo waits; nothing reads as cleared until it reads again (no earlier read in this kernel's life)", cold=True))   # point first and short (the second
+    #                                                  contributor's post-merge comment on PR 2032), the condition named (the first contributor's post-merge note on PR 2041: "until then" named no
+    #                                                  moment), and short enough that the ORDINARY position-0 decode error's row stays uncut (the round-one verifier of PR 2056: 69 left against 70)
     return cur
 
 def _mark_nodes_cleared(item_ids, value, src="user", why=None):
@@ -48290,13 +48437,18 @@ def _seg_anchors(atoms):
     (isApiErrorMessage, tagged isApiError by em), so it carries text and would otherwise WIN the
     reply anchor — deep-linking a done/blocked goal to an 'API Error: …' line instead of its real
     reply. An error is a failure, not a reply, and is never a jump target (the user 2026-06-18).
-    Scalars only (em.atom_has_text, em.atom_is_settle: a lazy atom's marker holds its text flag, text hash
-    and model stamp), so no body is hydrated (T358)."""
+    A bare END record is skipped for workUuid too (em.atom_is_bare_end, 2026-09-23, the post-merge review
+    of the restart-cut fix): a Codex turn that completes with nothing held ends on an empty assistant
+    record, and when no assistant atom came before it, it became the bar's work anchor, a uuid the chat has
+    no row for, so the bar click said "couldn't locate". Skipped, the view falls back to the prompt, or to
+    the bar's time when the turn has none, as before that record existed.
+    Scalars only (em.atom_has_text, em.atom_is_settle, em.atom_is_bare_end: a lazy atom's marker holds its
+    text flag, text hash, stop reason and model stamp), so no body is hydrated (T358)."""
     work = reply = settle = None
     for a in atoms:
         if a.get("type") != "assistant" or a.get("isApiError"):
             continue
-        if work is None:
+        if work is None and not em.atom_is_bare_end(a):
             work = a.get("uuid")
         if em.atom_has_text(a):
             # the machine-cut NULL SETTLE ("No response requested." / model "<synthetic>") is an
@@ -51716,8 +51868,10 @@ def _client_reset_chat_sid(client, sid):
     skeleton before the full that answers the ask goes out (the mark below)."""
     with _client_lock(client):
         client.get("echat", {}).pop(sid, None)
-        client.get("echatWm", {}).pop(sid, None)         # the watermark floor goes with the base: a client holding nothing takes any build (2026-09-22)
         client.get("sent", {}).pop(("chat", sid), None)
+        # the watermark floor (echatWm) STAYS (2026-09-23): the page still holds its frames and refuses an older one, so the
+        # ask's answer must not be older (_send_chat_locked refuses one once, and the cycle builds afresh); `ready` drops it
+        client.get("fullRefused", set()).discard(sid)
         client.get("heldTailFirst", {}).pop(sid, None)   # a stale held-tail key for this sid goes with the base (M3, 2026-09-19)
         _release_skeleton_locked(client, sid)   # a needFull for a skeleton tab (a click, the idle prefetch) loads it
         # The client asked for this sid WHOLE (2026-09-19). A set that does not exist yet cannot be released from: on a
@@ -51756,7 +51910,7 @@ def _client_reset_chat_base(client):
         # …and the reconnect skeleton set (2026-09-07): a renderer that just evaluated holds NOTHING, so there
         # is nothing it could lazily reload — every tab must arrive whole, and the status slots go with the set;
         # and the asked-whole marks (2026-09-19): it asked nothing either, and the connect push below serves the set
-        client.pop("skeleton", None); client.pop("skeletonOrder", None); client.pop("reconnect", None); client.pop("askedFull", None); client.pop("heldTailFirst", None)
+        client.pop("skeleton", None); client.pop("skeletonOrder", None); client.pop("reconnect", None); client.pop("askedFull", None); client.pop("heldTailFirst", None); client.pop("fullRefused", None)
         # A SKELETON client (a later chat column, ?skeleton=1 at its handshake, 2026-09-11): the pop above took the
         # `reconnect` the handshake armed, with the set a pre-ready pusher cycle may have built into a document that
         # could not hear it. Re-armed HERE, from the survivor, so the ready arm's connect push serves the page the same
@@ -53330,20 +53484,65 @@ def _snap_turn_end(tix, q):
 
 
 def _last_anchor(evs):
-    """The uuid a proto-2 client's base ends on: the last event that is neither a trailing overlay card (a todo, a queued
-    or api-error notice comes and goes between builds) nor one of the kernel's transient live-tail keys (an input echo, the
-    command chip: _transient_key, 2026-09-19). Anchoring on either left the next push unable to map the base and sent a
-    full frame; both ride every later delta's suffix instead, so the landing that replaces an echo with the CLI's record is
-    a chatTail after the record before the echo, the road proto-1 clients take. Known, accepted residue: a list of nothing
-    but such events (a transcript-less session whose only event is its first echo) still anchors on its last event and
-    sends one full at that first landing, once per session creation; and the base's FIRST edge can still sit on a transient
-    key when the tail-run cut lands on a placed dropped echo, which takes the existing road for a first edge the list no
-    longer holds (the list's first event is inside what the client holds)."""
+    """The uuid a proto-2 client's base ends on: the last DURABLE event, one that is neither a trailing overlay card (a todo,
+    a queued or api-error notice comes and goes between builds), nor one of the kernel's transient live-tail keys (an input
+    echo, the command chip: _transient_key, 2026-09-19), nor a STREAMED event (a stream atom the transcript has not recorded
+    yet, marked by build_session, 2026-09-23). Anchoring on an overlay or a transient key left the next push unable to map
+    the base and sent a full frame; all three ride every later delta's suffix instead, so the landing that replaces an echo
+    with the CLI's record is a chatTail after the record before the echo, the road proto-1 clients take.
+
+    The streamed exclusion is what makes every delta re-send the page's whole undurable tail. A stream atom's key is its
+    future record's uuid, so fa92e8a4's rule took it for a record and a base could end on it; the atom then left the next
+    list before its record joined it (a retried try's atoms never land, and a settle could retire them before the build's
+    parse had read the record), and the send that followed was a full frame for a base the list no longer held, or, with
+    the shared baseline describing a list this client never took, a delta anchored past a turn it never received. Ending
+    on the last recorded event, the next delta starts at or before the first event the transcript has not recorded, so
+    whatever the page holds past that point is replaced by the kernel's current view every time. The cost is the live
+    suffix riding each delta while the stream leads the disk, a few events.
+
+    Known, accepted residue: a list of nothing but such events (a transcript-less session whose only events are its first
+    echo and the stream answering it) anchors on its last non-overlay, non-transient event, else its last event, and sends
+    one full at that first landing, once per session creation; and the base's FIRST edge can still sit on a transient key
+    when the tail-run cut lands on a placed dropped echo, which takes the existing road for a first edge the list no longer
+    holds (the list's first event is inside what the client holds)."""
+    fallback = None
     for e in reversed(evs):
         if e.get("kind") in _OVERLAY_KINDS or _transient_key(_event_key(e)):
             continue
+        if e.get("streamed"):
+            if fallback is None:
+                fallback = _event_key(e)
+            continue
         return _event_key(e)
+    if fallback is not None:
+        return fallback
     return _event_key(evs[-1]) if evs else None
+
+
+# THE DELTA'S BASE FINGERPRINT (2026-09-23). A proto-2 chatTail says "truncate after afterUuid and append", which is right
+# only if the page's events up to that anchor are the ones the kernel computed the delta against. The kernel cannot know
+# that: a client's base advances when a frame is SENT, not when the page applies it, and the change point is diffed
+# against the SHARED baseline, a lower bound on every base holder that may describe a list this client never took (a
+# frame its own watermark guard refused, a racing builder's list). When the two disagreed before the anchor, the delta
+# applied cleanly onto a page missing a turn, every later delta anchored past the hole, and only a reload repaired it.
+# So every proto-2 delta carries `baseFp`: [n, crc32] over the keys of the n events ending at the anchor, in the list
+# the delta was cut from; the page recomputes it over its own resident tail run and, on any difference (or when it holds
+# fewer than n events there), applies nothing and asks for the full (render.ts chatTail, chat-resync.ts). One integer
+# pair, a few bytes on every delta, and agreeing deltas (the steady state) cost the page one crc and no frame.
+# n is min(K, the events from the client's own first edge to the anchor): the window never reaches above the tail run the
+# client holds, so a page that is in sync can always check it. K = 64: a disagreement sits where two builds of different
+# ages differ, the newest turn (the human message that opened it and the records streamed since), and 64 events cover a
+# reply of some thirty tool round trips behind the anchor. The key list is hashed, not sent, so K costs the wire nothing
+# and each side a join and a crc over at most 64 short keys.
+CHAT_BASE_FP_K = 64
+
+
+def _chat_base_fp(evs, lo, start):
+    """[n, crc32] over the wire keys of evs[lo:start] joined by newlines (UTF-8): the fingerprint of the base a proto-2 delta
+    that appends after evs[start - 1] assumes (CHAT_BASE_FP_K's comment; the page's twin is chat-resync.ts baseFingerprint)."""
+    lo = max(0, min(lo, start))
+    keys = [str(_event_key(e) or "") for e in evs[lo:start]]
+    return [len(keys), zlib.crc32("\n".join(keys).encode("utf-8")) & 0xFFFFFFFF]
 
 
 def _gone_key_label(key):
@@ -53486,6 +53685,9 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                         # on a key): the empty-suffix tail a flag-only change sends is how another window learns the flip
                         "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
                 tail["wm"] = m.get("wm")              # what the build read (_chat_wm), for the page's own stale-build rule (2026-09-22)
+                # …and the base it assumes (2026-09-23): the keys of the events ending at the anchor, from the client's own first
+                # edge at most, so a page that holds anything else before the anchor refuses the delta and asks for the full
+                tail["baseFp"] = _chat_base_fp(evs, max(pf, start - CHAT_BASE_FP_K), start)
                 if led_changed:
                     tail["ledger"] = m.get("ledger")
                 _send_client(c, ("chat", sid), tail, kind="delta")
@@ -53534,6 +53736,7 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     # the echat entry that keeps the sid out of any later set is written; not inside the release, which a click reaches
     # too (an activeTab must not settle an ask no full has answered)
     (c.get("askedFull") or set()).discard(sid)
+    (c.get("fullRefused") or set()).discard(sid)      # …and ends its one refusal of an older build (_send_chat_locked, 2026-09-23)
     m_send = dict(m)
     m_send["events"] = evs[head_from:]
     m_send["proto"] = 2
@@ -53650,11 +53853,27 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
     #                                                    without it is a test's dict modelling a socket past its handshake, and keeps the index wire.
     # A build OLDER than the one this client holds is not sent (2026-09-22, _chat_wm): two builders (the pusher cycle and the
     # targeted push) can hand a client their lists in either order, and the older list, sent as a full or a delta, took a landed
-    # message off the page until a reload (the user 2026-09-22). Only a client that HOLDS a base is protected: one holding
-    # nothing takes any build. The watermark of the build handed is recorded beside every echat write below (_chat_wm_note).
-    if pc is not None and _chat_wm_older(m.get("wm"), (c.get("echatWm") or {}).get(sid)):
-        _note_chat_stale(c, sid, m.get("wm"), (c.get("echatWm") or {}).get(sid))
-        return ms
+    # message off the page until a reload (the user 2026-09-22). A client that HOLDS a base is refused every older build; one
+    # holding none takes any build, except the answer to its own needFull (below). The watermark of the build handed is
+    # recorded beside every echat write below (_chat_wm_note).
+    _floor = (c.get("echatWm") or {}).get(sid)
+    if _floor is not None and _chat_wm_older(m.get("wm"), _floor):
+        if pc is not None:
+            _note_chat_stale(c, sid, m.get("wm"), _floor)
+            return ms
+        # A client holding NO base but a floor asked for this session whole (a needFull keeps the floor, 2026-09-23): the page
+        # still holds what it was sent and refuses a frame older than that, so this build would answer its ask with a frame
+        # it drops, and its one ask would stay latched. Refused ONCE per ask, and the cycle is told to build the sid afresh
+        # (its cached copy dropped, the sid named to the next build slot): a fresh build reads a world at least as new as the
+        # floor, since the transcript only grows and the live revision only rises. A second older build for the same ask is
+        # sent all the same: a full always wins over a floor that no build can meet, so the ask is answered either way.
+        _refused = c.setdefault("fullRefused", set())
+        if sid not in _refused:
+            _refused.add(sid)
+            _note_chat_stale(c, sid, m.get("wm"), _floor)
+            _built_chat.pop(sid, None)
+            _push_session_soon(sid)
+            return ms
     if c.get("proto") == 2:
         return _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc)
     if isinstance(pc, dict):
@@ -53680,6 +53899,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
     head_from = max(0, total - WIRE_TAIL)
     _release_skeleton_locked(c, sid)                  # a full send loads a skeleton tab, whoever sent it (2026-09-07)
     (c.get("askedFull") or set()).discard(sid)        # …and answers a needFull (2026-09-19): the mark goes with the echat write, as in _send_chat_proto2
+    (c.get("fullRefused") or set()).discard(sid)      # …and ends its one refusal of an older build (2026-09-23)
     if head_from == 0:
         if ms is None:
             ms = json.dumps(m)                        # materialize the lazy serialization, once
@@ -56670,13 +56890,19 @@ def _push(targets, connect=False, live_map=None):
                 if redialed:                             # the redial's first strip stands in for the ready it never posts:
                     _consume_pending_reveal(c, why="the pane's redial")   # a reveal parked for its window lands behind the strip
             active = {c.get("active") for c in chat_clients if c.get("active")}
+            # …and the sids a per-session event named since the last cycle (_push_session_soon, 2026-09-23): the SDK's
+            # queue pop, which needs the pane to learn at once that the copy left romp's queue for the CLI. They rank
+            # with the watched tabs below, and the loop FLUSHES each build as it lands, so the frame goes at the front
+            # of this cycle instead of riding a builder of its own. Drained by the non-connect cycle only: a connect
+            # push serves one client and must not eat the ordering the next cycle owes everyone.
+            first = _push_first_drain() if not connect else set(_push_first)
             # Stable: active tabs first — and TRANSCRIPT-LESS sessions with them. A just-created session
             # has no transcript, so its build is near-free, and its creator is guaranteed to be staring
             # at its placeholder — yet the active-first hint can never name it: a client cannot declare
             # a tab active before that tab's first payload arrives. Ranked last, the new session's
             # payload waited out the whole fleet's builds (~22s measured), leaving "Opening session"
             # dots on a session that had been ready for all of it (the user 2026-08-08).
-            build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active
+            build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active or s["sid"] in first
                                  or not os.path.exists(s["path"]) else 1)
             # ONE key for every tab (_chat_build_sig): the watched tab and the background tabs alike are served
             # from _built_chat while the complete signature holds, and rebuilt when a component moved. The
@@ -56699,7 +56925,38 @@ def _push(targets, connect=False, live_map=None):
             _live_scope.chat_floor0 = _chat_floor0_of(_all_chat)
             _all_active = {c.get("active") for c in _all_chat if c.get("active")}   # every connected column's watched tab,
             #                                                                          not this push's targets alone (round two, low 2)
-            for s in build_order:
+            # LATE NAMES (2026-09-23, the review of the one-builder change): `first` above is one read per cycle, and
+            # SdkBackend.send() wakes the pusher milliseconds before the queue pop, so the pop's name commonly lands while a
+            # cycle is in flight. Read once, that name waited out the rest of the cycle (every other tab's build, the feed and
+            # timeline sections, the trailing jobs) and the next cycle's prelude before its build began, and the queued bubble
+            # kept its pencil for seconds on a busy kernel, the wait the targeted push of 2026-09-19 was added to remove. So
+            # the loop below is a WORKLIST over build_order (the sorted list stands as the cycle's order): at the top of every
+            # iteration the non-connect cycle drains the set again, moves the remaining entries of the newly named sids to the
+            # front (a stable partition: the rest keep their order), and re-queues a named sid this cycle has already served,
+            # since that frame predates the pop, once per sid per cycle so the loop ends. The body serves a second pass like
+            # any tab: the signature moved with the pop (the queued tuple, the live revision), so it rebuilds and flushes a
+            # tail; unmoved, the cached hit dedups. When the list runs dry the top of the loop drains once more, so a name
+            # landing during the last tab's build is built before the feed and the timeline sections begin. The bound: a pop
+            # landing mid-cycle waits at most one tab's build; a name landing after that last drain waits out the feed and
+            # timeline sections and the next cycle's prelude (_push_session_soon's docstring says the same). A further name
+            # for a sid whose second pass this cycle has already run goes back into the set for the next cycle, which the
+            # wake it set already owes. A connect push serves one client and drains nothing here, as above.
+            _work = list(build_order)
+            _served, _repassed = set(), set()            # the sids this cycle has visited; the ones it re-queued for a second pass
+            while True:
+                if not connect:
+                    newly = _push_first_drain()
+                    if newly:
+                        first |= newly
+                        _waiting = {x["sid"] for x in _work}
+                        _again = [x for x in chat_list if x["sid"] in newly and x["sid"] in _served and x["sid"] not in _repassed]
+                        _push_first.update(newly & (_repassed - _waiting))   # a further name for a sid served twice: the next cycle's
+                        _repassed.update(x["sid"] for x in _again)
+                        _work = _again + [x for x in _work if x["sid"] in newly] + [x for x in _work if x["sid"] not in newly]
+                if not _work:
+                    break
+                s = _work.pop(0)
+                _served.add(s["sid"])
                 is_active = s["sid"] in active           # the watched tab(s): served like any tab while the key holds
                 # THE COLD-TAB GATE (2026-09-14; the user, after the boot review): on the 3:58 PM PT restart the first
                 # refresh with a browser built the chat of all 27 tabs (54.6 s of a 72.4 s refresh) before the cards
@@ -57027,6 +57284,20 @@ def _push(targets, connect=False, live_map=None):
                                   moved=",".join(l for l in _chat_sig_miss(sig, post) if l not in _CHAT_SIG_DEPS))
                 if _claimed:
                     _chat_inflight_done(s["sid"])        # stored (or not cacheable): the waiters re-read the cache now
+            if _repassed:
+                # a second pass appended its sid's row a second time: the feed's ledgers take the later row, in the first
+                # row's place, and a tab built on either pass keeps no provisional row beside its built one
+                for _rows, _key in ((chat_sessions, "id"), (_prov_rows, "sid")):
+                    _at, _out = {}, []
+                    for _r in _rows:
+                        if _r[_key] in _at:
+                            _out[_at[_r[_key]]] = _r
+                        else:
+                            _at[_r[_key]] = len(_out)
+                            _out.append(_r)
+                    _rows[:] = _out
+                _built_ids = {m["id"] for m in chat_sessions}
+                _prov_rows[:] = [_r for _r in _prov_rows if _r["sid"] not in _built_ids]
             shown_sids = {s["sid"] for s in chat_list}
             # drop cache for tabs no longer shown (closed/×-hidden): the union of the build cache, the baseline map and the
             # detector's marks (2026-09-19), since a baseline the seed established for a sid no cycle cached (a targeted
@@ -57510,8 +57781,12 @@ def _push_session_now(sid):
     # memo to a fresh dict (the fingerprinted cache under it, jd.discover, follows the registry's mtime, which the
     # swap rewrote, so no reset there) and this sid's path dropped, so this build and every build after it in the
     # cycle resolve the row as it is now. The sessions reset carries the weight (_path_of resolves through
-    # _sessions); a reset in the drain's arm alone would come too late for this frame. Outside a cycle both memos
-    # are absent and every read is fresh already.
+    # _sessions). A reset in the drain's arm alone came too late for this frame while the Codex backend's hook was
+    # this function, building inside the verb; that hook is _push_session_soon since 2026-09-23, which only names the
+    # sid to the cycle and builds nothing, so the drain's clear arm (_apply_pending_ops) now resets the same two memos
+    # itself once the verb answers that the clear happened, in time for the cycle's build of the cleared session. The
+    # reset here stays for the callers that still build through this function (the creates, a fork, a comment's
+    # promotion) and for the SDK backend's hook. Outside a cycle both memos are absent and every read is fresh already.
     if getattr(_live_scope, "sessions", None) is not None:
         _live_scope.sessions = {}
     _paths = getattr(_live_scope, "paths", None)
@@ -57637,6 +57912,38 @@ _LOOPS_STOP = threading.Event()
 # instead of waiting out the 4s poll — the SDK stream leads the transcript on disk, so an immediate push
 # of the in-memory live atoms makes messages appear instantly. 4s stays as the backstop.
 _pusher_wake = _CountedEvent()      # a threading.Event; set() also counts the wake for /perf
+# The sids the next cycle must build FIRST (2026-09-23). ONE builder of chat frames: the pusher cycle. A
+# per-session event that wants its frame at once names its sid here and sets the wake above, and the cycle
+# ranks it with the watched tabs (_push_first_drain, read in _push's build_order) — it does not build a frame
+# of its own. Before this, the SDK's queue pop ran the targeted whole-session push (66486701), a SECOND
+# whole-session builder firing at the instant a send lands, with its own transcript read racing the cycle's:
+# the two lists reached a client in either order and the older one took the just-landed row off the page
+# (the user 2026-09-22; the watermark guard of PR 2050 is the loud backstop, not the fix). A plain set: adds
+# and discards are atomic, the drain pops it one element at a time until it reads empty (an add landing between
+# two pops is taken by the same drain), and a mark lost to a failed cycle costs order, never content.
+_push_first: set = set()
+
+
+def _push_session_soon(sid):
+    """Name `sid` to the ONE pusher cycle (2026-09-23): the named session builds at the front of the cycle's next
+    build slot, an in-flight cycle included (the build loop drains this set at the top of every iteration and once
+    more when its list runs dry), so a pop landing mid-cycle waits at most one tab's build. In the worst case, a
+    name landing after that last drain, it waits out the feed and timeline sections and the next cycle's prelude.
+    That is the bound in place of the targeted push's second builder of chat frames. Non-blocking (a set add and
+    an Event set), so a backend may call it from its own event loop thread."""
+    _push_first.add(str(sid))
+    _pusher_wake.set()
+
+
+def _push_first_drain():
+    """The sids named since the last cycle, taken out in one step. Read by the non-connect cycle only: a
+    connect push serves one client and must not eat another cycle's ordering."""
+    out = set()
+    while _push_first:
+        out.add(_push_first.pop())
+    return out
+
+
 # The last kernel-side OPTIMISTIC mutation (a parked-op chip, a follow-up card reopen, a model-pending
 # stamp, an interrupt click): state that lives in MEMORY or a goal store, which NO file-mtime signature
 # sees. _cached_feed/_cached_timeline must rebuild past this mark — even inside REBUILD_MIN_S and even on
@@ -62108,7 +62415,7 @@ var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
 // kernel retires this page's previous socket on a reconnect, and never another page's (a duplicated tab copies
 // sessionStorage, and with it wid; it must not copy this).
 var IID="";try{IID=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():"";}catch(e){}if(!IID)IID=String(Math.random()).slice(2)+"-"+Date.now();
-var APP="%s";var LABEL="%s";var LOADEDV=%d;var NOSTALE=%s;var LOADEDPV=%s;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
+var APP="%s";var LABEL="%s";var LOADEDV=%d;var BOOTID=%s;var NOSTALE=%s;var LOADEDPV=%s;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
 // the reload core's 'fresh' hold (invisible restarts, 2026-09-14): the chat pane alone, the pane the ruling names, armed at the drop and
 // kept through the redial; a Files or Settings page gets no resync frame, so a hold armed there would never end (the round-two review).
 // Stamped once per hold: a flapping socket or a kernel in a crash loop re-arms without moving the stamp, so the core's bound is
@@ -62362,7 +62669,13 @@ if(inWin){d=eagerDial?0:250;eagerDial=false;}   // …so the FIRST such close re
 if(restartAnnounced&&Date.now()-restartAnnounced<30000)d=Math.min(d,250);   // an announced death keeps its tight redial
 setTimeout(connect,d);};   // the blind 1.5 s stays for unannounced drops outside any return window
 ws.onerror=function(){try{ws.close();}catch(e){}};}
-function send(m){var s=JSON.stringify(m);if(m&&m.type==="ready"){bundleReady=true;readyProto=(m.proto===2?2:1);readyMsg=s;}   // the bundle's listener is installed: from here a redial may declare itself (the dial term in connect)
+// EVERY clientDiag row this page files leaves stamped with the page's build and the kernel boot it loaded against (2026-09-23):
+// LOADEDV, the dist token this page was served with (its ?v= urls), and BOOTID, the serving kernel's boot id baked in beside it.
+// The page reloads often, and a row that could not say which bundle wrote it could not be told from an older page's. Here,
+// in the one door every pane row takes (the bundle's posts, the reload core's __rompDiag, federation's own rows), so no
+// call site has to remember; a copy, so the caller's object is untouched. The kernel keeps both (the clientDiag branch).
+function diagStamp(m){var c={};for(var k in m)c[k]=m[k];c.build=LOADEDV;c.boot=BOOTID;return c;}
+function send(m){if(m&&m.type==="clientDiag")m=diagStamp(m);var s=JSON.stringify(m);if(m&&m.type==="ready"){bundleReady=true;readyProto=(m.proto===2?2:1);readyMsg=s;}   // the bundle's listener is installed: from here a redial may declare itself (the dial term in connect)
 if(ws&&ws.readyState===1){ws.send(s);return;}
 if(m&&m.type==="ready")readyQueued=true;   // ...and this one waits for the open: the redial that carries it dials as a fresh page (onopen clears the bit after the flush)
 if(m&&m.type==="clientDiag"){if(queuedDiag>=DIAG_QUEUE_MAX)return;queuedDiag++;}   // breadcrumbs waiting for a reconnect are capped; everything else queues as before
@@ -62487,7 +62800,7 @@ pendingWhy="foreground";freshPending=true;armFresh();   // the reconnect's arm r
 if(ws&&ws.readyState===1)abandon();else{try{if(ws&&ws.readyState===0)ws.close();}catch(e){}}   // OPEN-but-quiet → abandoned + redialed below, now; stuck-CONNECTING → aborted, onclose retries
 if(!ws||ws.readyState===3)connect();
 returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial so it queues for the new socket instead of vanishing into the dead one
-""" % (_reload_core(v, pvv), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, label, int(v), "true" if no_stale else "false", json.dumps(pvv), app, app)
+""" % (_reload_core(v, pvv), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, label, int(v), json.dumps(_BOOT_ID), "true" if no_stale else "false", json.dumps(pvv), app, app)
 
 
 # The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
@@ -62691,9 +63004,12 @@ var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg||s.retrying){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
 wd.classList.toggle('await',!s.working&&!!s.awaitbg&&!s.retrying);wd.classList.toggle('retrying',!!s.retrying&&!s.working&&!s.awaitbg);}
 else if(wd)wd.remove();
-var lbl=row.querySelector('.nm');fillName(lbl,s);lbl.style.color=s.bg||'';}
+var lbl=row.querySelector('.nm');fillName(lbl,s);lbl.style.color=s.bg||'';
+// the group this copy sits in ('' for the trail), as the tab carries it NOW: the key collapses a missing copy and the trail's empty one
+// (a flat strip and a sectioned one give the same key), so a row made while the strip was flat is REUSED once the strip sections, and
+// it kept the missing attribute (CI, 2026-09-23: the phone picker's first trail row read as a flat-strip row against its strip's tab)
+if(s.copy!==null)row.setAttribute('data-copy',s.copy);else row.removeAttribute('data-copy');}
 function rowMake(s){var row=document.createElement('div');row.className='mrow';row.setAttribute('data-id',s.id);row.setAttribute('data-key',s.key);
-if(s.copy!==null)row.setAttribute('data-copy',s.copy);   // the group this copy sits in ('' for the trail), as the tab carries it
 var lbl=document.createElement('span');lbl.className='nm';row.appendChild(lbl);
 var x=document.createElement('span');x.className='mclose';x.textContent='\u00d7';x.title='End session';
 row.appendChild(x);rowUpdate(row,s);return row;}
@@ -65264,7 +65580,7 @@ function feedHere(){return !(window.__rompPaneEnabled&&!window.__rompPaneEnabled
 // one waits is not queued: the page's opener toggles, so two would open and close it.
 var sPend=false;
 window.__rompOpenSettings=function(tab,section){var f=document.getElementById('f-settings');if(!f)return;
-// tab and section (T379): the chat strip's tab-widgets gear asks for the Chat tab at its Tab widgets section; the rail's gear names none (the remembered tab)
+// tab and section (T379): the chat strip's tab-widgets gear asks for the Chat tab at its Tab strip section (T415; Tab widgets until then); the rail's gear names none (the remembered tab)
 var msg={romp:'openSettings'};if(typeof tab==='string'&&tab)msg.tab=tab;if(typeof section==='string'&&section)msg.section=section;
 var open=function(){try{f.contentWindow&&f.contentWindow.postMessage(msg,'*');}catch(e){}};
 if(!f.getAttribute('src')){var u=f.getAttribute('data-src');if(!u)return;sPend=true;f.setAttribute('src',u);
@@ -66102,8 +66418,12 @@ _LANDING_MOBILE_JS = """
 // the kernel aims at a dashboard's shell by wid (_reveal_chat_for's second line) has a target at last.
 var diagQ=[],DIAGQ_MAX=20,shellSock=null;
 function shellDiag(what,data){var m={type:'clientDiag',surface:'shell',what:what,data:data};
-if(shellSock&&shellSock.readyState===1){try{shellSock.send(JSON.stringify(m));}catch(e){}}
+if(shellSock&&shellSock.readyState===1){try{shellSock.send(JSON.stringify(diagStamp(m)));}catch(e){}}
 else if(diagQ.length<DIAGQ_MAX)diagQ.push(m);}
+// …stamped as it LEAVES with the page's build and the boot it loaded against (2026-09-23), the pane shim's diagStamp twin: read
+// off the landing's reload core (window.__rompReload: loaded, boot, both baked by the kernel that served this page), which
+// parses after this script, so a row queued before it existed is stamped at the flush, never at the call
+function diagStamp(m){var R=window.__rompReload,c={};for(var k in m)c[k]=m[k];c.build=R&&typeof R.loaded==='number'?R.loaded:null;c.boot=R&&R.boot?R.boot:null;return c;}
 window.__rompShellDiag=shellDiag;
 // the bottom bar's API health detail sends its ops (the pause button's setGlobalRetryPaused, a row's openSession)
 // on the shell socket, whose wid aims a reveal at THIS dashboard; false when no socket is open, so the button can
@@ -66248,7 +66568,7 @@ var ws=new WebSocket(proto+location.host+'/ws?app=shell&wid='+encodeURIComponent
 // ready → the kernel sends the current needs-you count, so a relaunched installed app trues up
 // its icon badge immediately instead of waiting for the next change (plans/ios-app.md proposal 3)
 ws.onopen=function(){try{ws.send(JSON.stringify({type:'ready'}));}catch(e){}
-shellSock=ws;var q=diagQ;diagQ=[];q.forEach(function(m){try{ws.send(JSON.stringify(m));}catch(e){}});   // the rows that waited for this socket
+shellSock=ws;var q=diagQ;diagQ=[];q.forEach(function(m){try{ws.send(JSON.stringify(diagStamp(m)));}catch(e){}});   // the rows that waited for this socket
 if(shellOpened&&window.__rompReload)window.__rompReload.checkBoot();shellOpened=true;};
 ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data);}catch(e){return;}
 if(m&&m.type==='ka'&&m.pv&&window.__rompReload&&window.__rompReload.notePanes)window.__rompReload.notePanes(m.pv);   // the pane set's revision beside the build token (plans/panes-as-data.md): a define or remove at the kernel offers a reload
@@ -69350,7 +69670,7 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/version":                               # build/version report — exempt from auth (no paths, harmless)
                 return self._send(200, json.dumps(_version_info(authed=self._authorize(q)[0])), "application/json", cache="no-cache")
             if p == "/busy":
-                # In-flight SDK turn count — the manager's quiet-window gate for deferred deploy
+                # In-flight turn count (SDK and Codex) — the manager's quiet-window gate for deferred deploy
                 # refreshes (it polls this only while a refresh is pending). The READ is auth-exempt
                 # like /healthz: a bare count leaks nothing and healthz-style probes rely on it.
                 # ?drain=1 (T121): the PARKED poll also refreshes the kernel's drain lease — new
@@ -69368,6 +69688,24 @@ class Handler(BaseHTTPRequestHandler):
                 # busyness but asks for the drain hold only while turns are actually in flight —
                 # background work must never freeze other sessions' queued prompts
                 inflight, background = (be.busy_breakdown() if be and hasattr(be, "busy_breakdown") else (n, 0))
+                # An open Codex turn is work a restart cuts too (2026-09-22, the review that found this route blind
+                # to Codex): the app-server is this kernel's child and ends with it, and the turn's prompt already
+                # left the durable queue, so the quiet window applied over the turn and the restart lost it. Read only
+                # once built: a poll never builds the backend (_codex() would), and an unbuilt one has no turn open.
+                # In `busy` (the manager defers on it) and in its own `codex` field, never in `inflight` (2026-09-23,
+                # the review of this lane): `inflight` is what the manager asks the drain hold for, the hold pauses
+                # only Claude sessions' new turns, and the Codex worker never reads it, so asking for it over a Codex
+                # turn would pause every Claude session for the Codex turn's length and shorten nothing. An older
+                # manager reads `busy` and defers the same way; it has no `codex` field to name.
+                codex = 0
+                cx = _codex_backend or None
+                if cx is not None and hasattr(cx, "busy_breakdown"):
+                    codex = sum(cx.busy_breakdown())
+                    n += codex
+                # the park lines below report the counts this answer carries (2026-09-23, the review of this lane):
+                # recounted on the SDK side, a park held by a Codex turn alone would read "0 in-flight turn(s), 0
+                # session(s)" and ring that at 5 minutes as a problem naming nothing to wait on
+                counts = (inflight, background, codex)
                 # ?park=<since> (T240c): the manager's park identity, on EVERY parked poll — the drain
                 # episode (its "parked" line, its 5-minute ring) keys on it, not on a time window, and a
                 # park held only by background work (plain polls, no hold) still rings. Never a hold —
@@ -69377,24 +69715,24 @@ class Handler(BaseHTTPRequestHandler):
                 # poll, and an older manager sends no park at all.
                 park = (q.get("park", [""])[0] or "")[:32]
                 if park and be is not None and hasattr(be, "note_parked_poll") and self._write_token_ok(q):
-                    be.note_parked_poll(park)
+                    be.note_parked_poll(park, counts=counts)
                 draining = False
                 if be is not None and hasattr(be, "refresh_drain_hold"):
                     if q.get("drain", [""])[0] == "1":
                         if self._write_token_ok(q):
-                            # The keyword only when a park arrived: a backend without it (an older
-                            # build, a test stand-in) keeps arming the hold the old way.
+                            # The park keyword only when a park arrived: an older manager sends none,
+                            # and the backend keeps its time-window episode for that poll.
                             if park:
-                                be.refresh_drain_hold(park=park)
+                                be.refresh_drain_hold(park=park, counts=counts)
                             else:
-                                be.refresh_drain_hold()
+                                be.refresh_drain_hold(counts=counts)
                             _note_drain_armed()
                         else:
                             _note_drain_refused()    # T224: the one event the gate exists for —
                             #                          read LOUDLY, once per episode (see the helper)
                     draining = be.drain_holding()
                 return self._send(200, json.dumps({"busy": n, "inflight": inflight, "background": background,
-                                                   "draining": draining}),
+                                                   "codex": codex, "draining": draining}),
                                   "application/json", cache="no-cache")
             if p == "/manifest.webmanifest":
                 # the install manifest — auth-exempt like /healthz, and for a hard reason: the
@@ -70133,7 +70471,8 @@ class Handler(BaseHTTPRequestHandler):
                 # about to cut. {"cancel": true} releases the hold (the stop did not happen). A WRITE
                 # that holds every session's turn starts, so it needs the EXPLICIT serve token
                 # (_write_token_ok) on top of the preamble's _authorize: the /busy?drain=1 rule.
-                # No SDK backend ever built: nothing to hold or wait for, quiet at once.
+                # No SDK backend ever built: nothing to hold; quiet at once unless the Codex backend holds a
+                # turn open, which the wait below then reads as it reads the SDK's.
                 # Every 200 names this process's pid: `romp down` ends by SIGTERMing a kernel nothing
                 # above it stopped, and the pid it signals must come from a route the serve token
                 # gates. GET /version's pid is auth-exempt and vouches for nothing: a CLI aimed at
@@ -70160,21 +70499,55 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(wait, bool) or not isinstance(wait, (int, float)) or wait < 0 or wait > DOWN_WAIT_MAX_S:
                     return self._send(400, json.dumps({"ok": False, "error":
                         "wait must be a number of seconds in [0, %d]" % int(DOWN_WAIT_MAX_S)}), "application/json")
+                # An open Codex turn is a cut too (2026-09-23, the review of this lane): the SIGTERM `romp down`
+                # ends with takes the Codex app-server, this kernel's child, and the turn with it, and the turn's
+                # prompt already left the durable queue. Read the SDK backend alone, this route answered quiet at
+                # once over an open Codex turn, the CLI said no turn was in flight, and the stop cut the turn while
+                # /busy in the same kernel said busy. Read as /busy reads it: once built, never built here (an
+                # unbuilt backend has no turn open). A read that raises counts as one open turn: an unknown count
+                # is waited on as a busy one, the way _deploy_would_cut keeps its gates over an unknown answer.
+                # Codex has no hold to arm (its worker never reads the quiesce), so the count and the names are
+                # its whole part of this route.
+                cx = _codex_backend or None
+                if cx is not None and not (hasattr(cx, "busy_breakdown") and hasattr(cx, "would_cut")):
+                    cx = None
+
+                def _busy():
+                    n = be.busy_count() if be is not None and hasattr(be, "busy_count") else 0
+                    if cx is not None:
+                        try:
+                            n += sum(cx.busy_breakdown())
+                        except Exception:
+                            n += 1
+                    return n
+
+                def _inflight():
+                    names = list(be.inflight_names()) if be is not None and hasattr(be, "inflight_names") else []
+                    if cx is not None:
+                        try:
+                            names += [str(t.get("name") or t.get("sid") or "?") for t in cx.would_cut()]
+                        except Exception:
+                            pass     # counted above as one unknown turn; the CLI's line names what it has
+                    return names
+
                 if be is None or not hasattr(be, "quiesce"):
-                    return self._send(200, json.dumps({"ok": True, "quiet": True, "busy": 0,
-                                                       "inflight": [], "waited": 0, "pid": os.getpid()}),
-                                      "application/json")
-                be.quiesce(float(wait) + DOWN_HOLD_GRACE_S)
+                    # no SDK backend: nothing to hold, and quiet at once unless a Codex turn is open
+                    if _busy() == 0:
+                        return self._send(200, json.dumps({"ok": True, "quiet": True, "busy": 0,
+                                                           "inflight": [], "waited": 0, "pid": os.getpid()}),
+                                          "application/json")
+                else:
+                    be.quiesce(float(wait) + DOWN_HOLD_GRACE_S)
                 # the wait ends on the EVENT the in-flight count reaches 0 (each poll reads the
-                # backend's own counters); `wait` is only its bound
+                # backends' own counters); `wait` is only its bound
                 t0 = time.monotonic()
-                busy = be.busy_count()
+                busy = _busy()
                 while busy and time.monotonic() - t0 < wait:
                     time.sleep(min(0.25, max(0.01, wait - (time.monotonic() - t0))))
-                    busy = be.busy_count()
+                    busy = _busy()
                 return self._send(200, json.dumps({
                     "ok": True, "quiet": busy == 0, "busy": busy,
-                    "inflight": be.inflight_names() if busy else [],
+                    "inflight": _inflight() if busy else [],
                     "waited": round(time.monotonic() - t0, 1), "pid": os.getpid()}), "application/json")
             if u.path == "/update-dismiss":
                 # the banner's Not-now, PERSISTED (the user 2026-08-31): the dismissal outlives the
@@ -72345,6 +72718,12 @@ class Handler(BaseHTTPRequestHandler):
                        # every such row, could not). The wsopen row the accept files carries the same value, but it names
                        # the socket by cid and this row does not, so the two cannot be joined without the stamp.
                        "reconnect": bool(client.get("redial")),
+                       # the page's build and the kernel boot it loaded against (2026-09-23), stamped by the page's one diag door
+                       # (the pane shim's diagStamp, the shell's twin) so every surface carries them: `build` the dist token the page
+                       # was served with, `boot` the serving kernel's boot id baked into it. A row from a page that predates the
+                       # stamp (or a host that sends none, the VS Code webview) reads null for both, itself a statement of old code
+                       "build": msg.get("build") if isinstance(msg.get("build"), int) and not isinstance(msg.get("build"), bool) else None,
+                       "boot": str(msg.get("boot"))[:40] if isinstance(msg.get("boot"), str) and msg.get("boot") else None,
                        "data": msg.get("data")}
                 # past the size cap the file becomes .1 and a new one starts; the check, rename and write are one
                 # locked step, since every pane's socket posts from its own handler thread
@@ -73681,16 +74060,18 @@ def _graceful_term(signum, frame):
 
 
 def _codex_cut_turns():
-    """The Codex turns open at this exit, for its cut row (2026-09-22): [{sid, name, backend}]. The Codex app-server is
+    """The Codex work this exit cuts, for its cut row (2026-09-22): [{sid, name, backend}]. The Codex app-server is
     this process's child and ends with it, so each open turn is cut too, and a row naming only the SDK drain's cuts
-    counted a Codex cut as a clean restart (the next load settles each one, CodexBackend._settle_restart_turn). The
-    backend is read, never built: none ran if it is not. A read that raises is logged and names none, so the row
-    this exit exists to leave still lands."""
+    counted a Codex cut as a clean restart (the next load settles each one, CodexBackend._settle_restart_turn). A
+    compaction running as its own turn is one of them (2026-09-23, the promise in #2055's body): inflight_turns is
+    the one predicate the restart gates read too, through would_cut minus the ended sessions, and the next load ends
+    that compaction with its restart notice. The backend is read, never built: none ran if it is not. A read that
+    raises is logged and names none, so the row this exit exists to leave still lands."""
     try:
         cx = _codex_backend or None
         return list(cx.inflight_turns()) if cx is not None and hasattr(cx, "inflight_turns") else []
     except Exception:
-        _exit_log("romp-kernel: the Codex backend's open turns could not be read for the cut row: %s\n"
+        _exit_log("romp-kernel: the Codex work this exit cuts (open turns, running compactions) could not be read for the cut row: %s\n"
                   % traceback.format_exc().strip().splitlines()[-1][:200])
         return []
 
@@ -73793,7 +74174,7 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
             _phases["drainS"] = round(time.monotonic() - _drain_t0, 2)
             row = _restart_cut_row(res, watches_armed=len(_pr_watches) + len(_watches),
                                    audit_reason=reason, phases=_phases)
-            row["cutTurns"].extend(_codex_cut_turns())   # the Codex turns this exit cuts too (2026-09-22)
+            row["cutTurns"].extend(_codex_cut_turns())   # the Codex work this exit cuts too: open turns and running compactions (2026-09-22, 2026-09-23)
             if audit:
                 row["auditT"] = int(audit["t"])     # the audit row this cut CONSUMED (see _recent_restart_audit)
             if err:

@@ -39,19 +39,23 @@ test("OPENING covers exactly each backend's spawn window — a dormant created s
   assert.ok(KERNEL.includes('spawn_inflight = bool(tm.get("spawning"))'), "the live spawn window is the backend's own report");
 });
 
-// A per-session chip event must not ride the periodic full push cycle, which runs SECONDS on a busy
+// A per-session chip event must not wait out the periodic full push cycle, which runs SECONDS on a busy
 // fleet (measured live 2026-08-10: the tab appeared 5-6s after the create landed, the opening→ready
-// flip 12s after, while the kernel had known the session since 0.4s). The create paths and the SDK
-// connect handshake each fire the kernel's targeted one-session push, so the one tab the user is
-// guaranteed to be staring at paints first, not last.
-test("create + connect push the ONE session directly instead of waiting out a full push cycle", () => {
+// flip 12s after, while the kernel had known the session since 0.4s). The create paths fire the kernel's
+// targeted one-session push, so the one tab the user is guaranteed to be staring at paints first, not
+// last. The SDK connect handshake NAMES its session to the front of the one cycle instead (2026-09-23,
+// one builder of chat frames: a resumed session's handshake lands while its transcript is live, and a
+// second whole-session build raced the cycle's to the page); the cycle's build loop re-reads the names
+// before every tab, so the flip waits one tab's build at most (tests/test_send_one_builder.py,
+// tests/test_chat_resync_kernel.py).
+test("create pushes the ONE session directly and the connect handshake names it to the front of the cycle, neither waiting out a full push cycle", () => {
   const SDK = fs.readFileSync(path.join(ROOT, "kernel", "sdk_backend.py"), "utf8");
   assert.ok(KERNEL.includes("def _push_session_now(sid):"), "the targeted push exists");
   assert.match(KERNEL, /_mark_views_dirty\(\)\s*\n\s*_push_session_now\(sid\)/,
     "an SDK create pushes its tab at once");
   assert.ok(KERNEL.includes('push_session=_stage_default("push.session")(_push_session_now),'), "the backend is wired to it, push.session as the thread's default mark at the hand-off (the SDK backend runs it on a thread of its own; the Codex backend calls it under a request's route, T401 (5a) follow-up)");
-  assert.match(SDK, /self\.client = client\s*\n(\s*#[^\n]*\n)*\s*self\.backend\._push_session\(self\.sid\)/,
-    "the handshake — the flip the opening chip stands down on — pushes immediately");
+  assert.match(SDK, /self\.client = client\s*\n(\s*#[^\n]*\n)*\s*self\.backend\._push_soon\(self\.sid\)/,
+    "the handshake — the flip the opening chip stands down on — is built at the front of the one cycle");
 });
 
 test("the statusline shows Opening + dots for BOTH the pre-payload tab and the kernel's opening state", () => {

@@ -206,6 +206,7 @@ DOTTED = {
     "_parse_mode.get": ("memo", "the parse's own mode, written under the parse's key"),
     "_pending_ops.get": ("sig", "ops"),
     "be.owns": ("sig", "reg"),
+    "be.live_atoms": ("sig", "live", "the live tail, snapshotted BEFORE the parse since 2026-09-23 (an atom that left it had its record on disk first) and handed to the merge; the signature folds its revision (Sessions.live_rev)"),
     "be.pending_queued": ("sig", "backend", "the owning backend's queue by value"),
     "_cbe.pending_queued_meta": ("sig", "backend", "each queued copy's (qid, qts) beside its text, folded as _qmeta where the backend keeps them"),
     "be.qids_for_landing": ("sig", "live", "the queued-copy ids a landed record pairs with: a landing is a transcript record (transcript) or a live-tail change (live), and the fed ledger it reads fills with the feed that bumps live_rev"),

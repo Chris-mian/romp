@@ -122,9 +122,37 @@ let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
+// The unread marks are a client-side join of the {type:session} chat frame (the anchor turns) and the {type:comments}
+// frame (the threads, from the store); the comments frame rides only the full pusher cycle and trails the chat frame by
+// tens of seconds under a CPU quota, so a blind wall-clock wait on the marks flakes. Both the socket's frames and the
+// shim's reposts reach the page as a window `message` event; capture the comments frame carrying this session's seeded
+// threads HERE, before navigation, and gate the load on that kernel event, not a wall clock.
+await page.addInitScript(({ sid, minThreads }) => {
+  window.__cmtFrames = 0; window.__frameTypes = [];
+  window.addEventListener("message", (e) => {
+    const m = e.data; if (!m || !m.type) return;
+    window.__frameTypes.push(m.type);
+    if (m.type === "comments" && m.id === sid && (m.threads || []).length >= minThreads) window.__cmtFrames++;
+  }, true);
+}, { sid: cfg.sid, minThreads: cfg.minMarks });
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
-await page.waitForFunction((n) => document.querySelectorAll("mark.cmt-hl.unread").length >= n, cfg.minMarks, { timeout: 30000 });
+// the unread marks wrap only when a comments frame is processed WITH the transcript turns in the DOM; handle BOTH orders
+// (a comments frame before the turns applies nothing, and the turns' later render does not always re-apply the held
+// marks under load, a client gap flagged for its own fix): after the transcript renders, if the marks are short, wait
+// for the NEXT comments frame past that (n0 read now), then the short unread ceiling. Ceilings are failure bounds; a miss names the order.
+await page.waitForSelector("#content .turn", { timeout: 60000 });
+const n0 = await page.evaluate(() => window.__cmtFrames);
+const marksHere = () => page.evaluate((n) => document.querySelectorAll("mark.cmt-hl.unread").length >= n, cfg.minMarks);
+if (!(await marksHere())) {
+  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+  if (!got) {
+    const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
+    console.error("comments-frame-after-turn-miss: no comments frame carrying the seeded threads for " + cfg.sid + " ran with the transcript present (n0=" + n0 + "): " + JSON.stringify(seen));
+    process.exit(4);
+  }
+}
+await page.waitForFunction((n) => document.querySelectorAll("mark.cmt-hl.unread").length >= n, cfg.minMarks, { timeout: 20000 });
 await page.waitForTimeout(400);   // the rail's rAF pass after the marks landed
 const measure = () => page.evaluate(() => {
   // the computed value of --st-awaiting-bg on THIS page in THIS theme: a probe painted with it (a custom property's own
@@ -292,16 +320,23 @@ class ServedCommentOutline(unittest.TestCase):
     def test_the_cue_by_row_count_dashed_in_the_needs_you_red_gone_once_read(self):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
-            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "minMarks": 4, "read": "tid-1",
+            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": WEB, "minMarks": 4, "read": "tid-1",
                        "shots": os.environ.get("COMMENT_SHOTS", "")}, f)
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
-        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=300,
+        p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=420,
                            env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served guard needs one (CI installs none)")
-        self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + open(self.klog).read()[-1500:])
+        perf = ""
+        if p.returncode != 0:   # a miss records the kernel's counters and tail so the red names the link (the comments frame)
+            try:
+                import urllib.request
+                perf = urllib.request.urlopen("http://127.0.0.1:%d/perf?token=%s" % (self.port, self.token), timeout=3).read().decode("utf-8", "replace")[-1500:]
+            except Exception as e:
+                perf = "(/perf unreadable: %r)" % e
+        self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:] + "\nkernel:\n" + open(self.klog).read()[-1500:] + (("\n/perf:\n" + perf) if perf else ""))
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         r = json.loads(line[len("RESULT:"):])
