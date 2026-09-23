@@ -41668,9 +41668,10 @@ def _cleared_ids_display():
     set, and the row says so. Never for a gesture: an Undo answers for its OWN read (_undo_clear) and an account's stack for the read
     behind it (_ledger_batches), which is why this is not the shared set-only reader. The bell's line comes with its row: _note_state_fault
     writes the stderr line and the bell row together, beside the reader's own stderr line and judge row, each under its own episode memo: the
-    reader's flag holds the fault's copy and the bell's table holds the row's text for the path, so a different fault's text files each again,
+    reader's flag holds the fault's copy and the bell's table holds the row's text for the path, so a different fault's text files the bell again on
+    every change and the reader again through the derive arm alone (a served memo hit re-arms the reader's flag from the slot without filing),
     and every clean read ends both (the second contributor's post-merge comment on PR 2032; the round-one verifier of PR 2041: the bell's table
-    was described as keyed by the path alone, where it compares the text under it)."""
+    was described as keyed by the path alone, where it compares the text under it; the second contributor's post-merge review of PR 2041)."""
     cur, fault = _cleared_ids_read()
     p = jd.STATE / "cleared.jsonl"
     if not fault:

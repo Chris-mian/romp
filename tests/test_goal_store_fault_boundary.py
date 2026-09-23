@@ -1586,8 +1586,9 @@ class ActsUnderAFailedWrite(_World):
         """The second contributor's post-merge note on PR 2018 made an undecodable clears log read as the empty uncached set (a raise before);
         the first contributor's post-merge review of PR 2021: that read, and the older OSError arm, said nothing anywhere while the note reader
         files a stderr line, a judge-errors row and an account for the same bytes. An ABSENT log stays silent; a present log that cannot be
-        read, or whose bytes are not text, files ONE stderr line and ONE judge-errors row per fault episode (ended by a landed read or an absent
-        log), and an Undo over it names the fault on its account, with the floor and the sequence, where a bare ack went."""
+        read, or whose bytes are not text, files ONE stderr line and ONE judge-errors row per fault episode (ended by a landed read, an absent
+        log or a different fault, as docs/judges.md and the judge's kind list say), and an Undo over it names the fault on its account, with the
+        floor and the sequence, where a bare ack went."""
         log = jd.STATE / "cleared.jsonl"
         rows = lambda: [r for r in self._rows("cleared-unreadable") if "the read" in r.get("note", "")]   # the read's kind: the judge reader's, for the same file (the round-one verifier of PR 2025)
 
@@ -1973,7 +1974,9 @@ class ActsUnderAFailedWrite(_World):
             with mock.patch.object(os, "stat", flapping_stat), mock.patch.object(Path, "read_text", flapping_read):
                 f = km.build_feed(NOW, self.live)
             self.assertEqual((f["dismissedCount"], f["canUndoClear"], len(bellrows())), (2, True, 4), "a stat-level fault: the pane holds the last landed set and the bell files its row")
+            served0 = km._CLEARED_STATS["served"]
             self.assertEqual(set(km._cleared_ids()), {A + ":g1", nid}, "the lift, seen through a memo hit alone: the served clean set")
+            self.assertEqual(km._CLEARED_STATS["served"] - served0, 1, "premise: the lift WAS a memo hit (the served count moved by one), not a landed read of a file whose stat moved between the flap and the lift, which would end the episode on the landed road and leave this leg green for the wrong reason (the second contributor's post-merge review of PR 2041)")
             self.assertEqual(km._cleared_read_fault[0], "", "premise: the served clean set ended the reader's episode (PR 2025)")
             with mock.patch.object(os, "stat", flapping_stat), mock.patch.object(Path, "read_text", flapping_read):
                 km.build_feed(NOW, self.live)                                   # the SAME fault again: the bell's table compares the row's text under the path, so only an ended episode files it
@@ -1983,6 +1986,9 @@ class ActsUnderAFailedWrite(_World):
             log.write_bytes(b"\xff\xfe\x00 not text\n"); km.build_feed(NOW, self.live)
             self.assertEqual(len(bellrows()), 6, "premise: a decode fault's row, a different text")
             log.unlink(); self.assertEqual(km._cleared_ids(), {}, "the walk's absent read alone")
+            km._CLEARED_MEMO["slot"] = None                                    # the rewrite below is a REAL read on any file clock: a coarse clock that reuses the inode could
+            #                                                                    otherwise serve the memoized fault slot (the row count is the same either way, since the bell's
+            #                                                                    table decides, but the leg means the read; the second contributor's post-merge review of PR 2041)
             log.write_bytes(b"\xff\xfe\x00 not text\n"); f = km.build_feed(NOW, self.live)
             self.assertEqual((f["dismissedCount"], f["canUndoClear"], len(bellrows())), (0, False, 7), "the same bytes after an unlink the walk alone saw: a bell row again (the absent site's own leg; before: none), over the absent state as the last landed one")
             # a cold memo: nothing to serve, the empty set, and the row says so
@@ -2036,7 +2042,7 @@ class ActsUnderAFailedWrite(_World):
         self.assertRegex(ds, r'"clears-log" \(a clears-log write refused')
         self.assertRegex(ds.replace("\n", " "), r'"cleared-unreadable" is also the kernel\'s own reader\'s\s+kind for the clears log[^)]*holding the last landed set[^)]*one row per fault episode\s+ended by a landed read, an absent log or a different fault', "the kind list mirrors the docs: the display reader serves the last landed set, the read still files the row (the second contributor's post-merge comment on PR 2032: it still said the build read the log as nothing cleared)")
         self.assertIn('"owed-note"', ds)
-        self.assertRegex(km._cleared_ids_display.__doc__.replace("\n", " "), r"each under its own episode memo: the\s+reader's flag holds the fault's copy and the bell's table holds the row's text for the path, so a different fault's text files each again,\s+and every clean read ends both", "the display reader's docstring names the two episode keys (the round-one verifier of PR 2041)")
+        self.assertRegex(km._cleared_ids_display.__doc__.replace("\n", " "), r"each under its own episode memo: the\s+reader's flag holds the fault's copy and the bell's table holds the row's text for the path, so a different fault's text files the bell again on\s+every change and the reader again through the derive arm alone \(a served memo hit re-arms the reader's flag from the slot without filing\),\s+and every clean read ends both", "the display reader's docstring names the two episode memos and how each re-files (the round-one verifier of PR 2041; the second contributor's post-merge review of it)")
         # the note helper's and the refusal sender's own docstrings (the round-two verifier of PR 2025: the helper's sentence was pinned by nothing)
         self.assertRegex(km._clears_log_fault_note.__doc__.replace("\n", " "), r"the kernel's own READ of the log files under `cleared-unreadable`,\s+the kind the judge's side-file reader files for the same file, one row per fault episode", "the helper names the read as the kind's second writer")
         self.assertIn("`cleared-unreadable` for the read-fault account's read of it", km._gesture_store_refusal.__doc__, "the sender names the read-fault account's kind")
