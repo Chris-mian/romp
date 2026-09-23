@@ -51,6 +51,18 @@ test("(3) the demo tab reads the demo record's name in its identity colour, the 
   assert.match(fs.readFileSync(path.join(UI, "status-widgets.ts"), "utf8"), /export const DEMO_RECORD: StatusRecord = \{\s*\n\s*id: "demo", name: "session_name", color: \{ bg: "#9cd2ff" \}/, "the one demo record: the placeholder session_name (the user's copy), in the accent; the demo sid kept");
 });
 
+// (5) the gear preview shows the BADGE when the state badge is on (plans/tab-state-badge.md test 5): the ring section's demo
+// composes the left status-dot slot and runs applyTabBadgeMode over the ring row's demo status, so the Needs-you ring becomes
+// the top-right dot and retrying the amber left dot while the red Blocked ring stays; off, the ring alone. applyTabBadgeMode's
+// own dot/ring behaviour executes in tab-widgets.test.ts; here the demo is pinned to call it, gated on the setting.
+test("(5) the ring rows' preview reflects the state badge: the demo runs applyTabBadgeMode over the ring row's demo status when on, the ring alone when off", () => {
+  const RING_SECTION = GEAR.slice(GEAR.indexOf("var ringSection = widgetSection({"), GEAR.indexOf("function statusPrefs(s)"));
+  assert.match(RING_SECTION, /var badge = load\(\)\.tabStateBadge !== false, st = w\.demo \|\| TW\.DEMO_STATUS, sid = w\.demoSid \|\| TW\.DEMO_SID;/, "the demo reads the badge setting (default on) and the ring row's demo status");
+  assert.match(RING_SECTION, /if \(badge\) TW\.composeTabWidgets\(tab, 'before', sid, st, prefs\);/, "badge on: the left status-dot slot, so retrying can re-ink it");
+  assert.match(RING_SECTION, /var cls = TW\.ringDemoClass\(w, prefs\); if \(cls\) tab\.classList\.add\(cls\);/, "the ring its predicate lights (kept for the off case and for Blocked)");
+  assert.match(RING_SECTION, /if \(badge\) TW\.applyTabBadgeMode\(tab, sid, st, prefs\);/, "badge on: Needs you becomes the top-right dot, retrying the amber left dot, the red Blocked ring stays");
+});
+
 test("(5) the status line preview draws its controls and battery through the line's own renderer over a demo status", () => {
   assert.match(GEAR, /var SC = require\('\.\/status-controls\.ts'\);/, "the shared module rides the card");
   assert.match(STATUS_SECTION, /var st = SC\.demoStatus\(cmStops\(load\(\)\.colormap\)\);/, "the demo status on the SELECTED colormap");

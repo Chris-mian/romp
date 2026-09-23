@@ -36,7 +36,10 @@ const EXACT: Record<string, number> = {
   // gear.css: 14 until 2026-09-18, when the section labels' grey #6f747c left with the all-caps dress (they wear var(--accent) now)
   // +1 (T379): the widget rows' demo draws the strip's unknown ring in the strip's own literal #8a8a8a (styles.css .tab-dot.unknown, the network strip's down-host gray), byte-equal so the demo and the strip agree; +1 (T290): .rs-log-n's #ff6b6b, the Log cue's red, a STATUS colour, byte-equal to the shell's #merr.has, deliberately a literal (no sheet defines that red as a token). Before it: T226's shadows-onto-var(--shadow-menu), the .ra-li legend joining --text-soft, and the .ra-openbtn slab joining --btn-bg (2026-09-02: it sat black with dark text in light)
   // 12 since 2026-09-19: the section heads' hard-coded #333 top rule left with the titled-divider dress (the segments wear var(--hairline))
-  "gear.css": 12,
+  // +1 = 13 (2026-09-23, the tab-state-badge default flip): the badge-mode demo's counted dot wears the strip's digit ink,
+  // a literal #000 (black on the magenta needs dot) mirroring styles.css .tab-badge:not(:empty); no sheet defines that ink
+  // as a token (the light override resolves through var(--st-needs-fg)), so it stays a literal like styles.css keeps it.
+  "gear.css": 13,
   "strip.css": 8,
   "fleet-pane.css": 8,   // 9 until 2026-09-21: the hover card's Needs you mark resolved its red through --st-needs-bg (plans/needs-you.md), the literal now its var() fallback
   "timeline-pane.css": 10,

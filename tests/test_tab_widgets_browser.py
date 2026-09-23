@@ -11,7 +11,9 @@ TAB_WIDGETS_DIST=<dir> serves another tree's UI bundle (the red run's before); T
 <prefix>-strip-<theme>.png and <prefix>-settings-<theme>.png; TAB_WIDGETS_DUMP=<path> writes the whole measurement. Skips LOUDLY
 without the extension deps or a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1 and installs both, so a skip
 there is a failure). Synthetic throughout: placeholder sids, TESTHOST, invented text.
-"""
+
+
+After the 2026-09-23 default flip the badge is the default; this lab opts into RING mode (it seeds tabStateBadge:false) because its subject is the ring, and the dot's default is covered by the badge lab (test_tab_badge_browser) and the gear-preview test (test 5)."""
 import json
 import os
 import re
@@ -64,7 +66,7 @@ catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
 // the tab hot-key store shape (the hot key widget reads it): web is in the set, its chord Ctrl+Shift+1
 await ctx.addInitScript(([sid]) => {
-  try { localStorage.setItem("romp:tabkeys", JSON.stringify({ [sid]: "web" })); localStorage.setItem("romp:keys", JSON.stringify({ ["session.hotkey." + sid]: "Ctrl+Shift+1" })); } catch (e) {}
+  try { localStorage.setItem("romp:tabkeys", JSON.stringify({ [sid]: "web" })); localStorage.setItem("romp:keys", JSON.stringify({ ["session.hotkey." + sid]: "Ctrl+Shift+1" })); localStorage.setItem("romp:settings", JSON.stringify({ tabStateBadge: false })); } catch (e) {}   // RING mode: the ring rows are this lab's subject (the 2026-09-23 flip; the badge default is the badge lab's + test 5's)
 }, [cfg.sidWeb]);
 const page = await ctx.newPage();
 await page.goto(cfg.url);
@@ -94,7 +96,7 @@ const readStrip = () => chatF.evaluate(([sidWeb]) => {
 }, [cfg.sidWeb]);
 const out = {};
 out.strip0 = await readStrip();
-// the glyph opens the settings frame on the Chat tab, scrolled to its Tab widgets section, through the shell
+// the glyph opens the settings frame on the Chat tab, scrolled to its Tab strip section (T415; Tab widgets until then), through the shell
 const settingsOpen = () => page.evaluate(() => document.body.classList.contains("settings-open"));
 if (out.strip0.gear) {   // T415: one click on the gear opens the settings at the strip's own section; Tab widgets follows it in the card
   await chatF.click("#tabs .tab-strip-end .tab-widgets-gear");
@@ -240,7 +242,7 @@ await page.close(); await ctx.close();
 out.legacy = {};
 for (const mode of ["always", "never"]) {
   const c2 = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-  await c2.addInitScript(([m]) => { try { localStorage.setItem("romp:settings", JSON.stringify({ compact: true, tabCtx: m })); } catch (e) {} }, [mode]);
+  await c2.addInitScript(([m]) => { try { localStorage.setItem("romp:settings", JSON.stringify({ compact: true, tabCtx: m, tabStateBadge: false })); } catch (e) {} }, [mode]);
   const p2 = await c2.newPage();
   await p2.goto(cfg.url);
   await p2.waitForSelector("#rail-gear", { timeout: 20000 });
@@ -273,6 +275,7 @@ for (const mode of ["always", "never"]) {
 // short (152px off at 1200px); the room is sized to the cap now. The glyph's open and a re-ask, measured at 1200 by 1200.
 {
   const c3 = await browser.newContext({ viewport: { width: 1200, height: 1200 } });
+  await c3.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
   const p3 = await c3.newPage(); await p3.goto(cfg.url); await p3.waitForSelector("#rail-gear", { timeout: 20000 });
   let cf3 = p3.frames().find((f) => f.url().includes("/chat"));
   for (let i = 0; i < 100 && !cf3; i++) { await p3.waitForTimeout(100); cf3 = p3.frames().find((f) => f.url().includes("/chat")); }

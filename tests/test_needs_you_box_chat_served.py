@@ -9,7 +9,9 @@ wears the Needs you token on its edge, and lists no row for the hard stop. Clear
 takes its row off the box with the next frame; Continue posts the card's own Continue wire and its row leaves once the kernel
 files the reply; Reply points the composer at the card (the chip with the card's title) and the row leaves once the typed reply
 is filed. The gear's Needs you box switch (a romp:settings save) hides the box and leaves the ring; back on, the box returns.
-Synthetic only: placeholder ids, invented text, hostname TESTHOST."""
+Synthetic only: placeholder ids, invented text, hostname TESTHOST.
+
+After the 2026-09-23 default flip the badge is the default; this lab opts into RING mode (it seeds tabStateBadge:false) because its subject is the ring, and the dot's default is covered by the badge lab (test_tab_badge_browser) and the gear-preview test (test 5)."""
 import json
 import os
 import re
@@ -53,6 +55,7 @@ let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
 const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
 const out = { errors };
 const mark = () => process.stdout.write("PARTIAL:" + JSON.stringify(out) + "\n");   // the record so far, after every scene: what a run that hits the driver's budget still reports
