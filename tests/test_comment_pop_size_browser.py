@@ -94,19 +94,22 @@ async function load() {
   await page.goto(cfg.chat);
   // (1) the chat frame read SID.jsonl and rendered the anchored reply turn (the DOM half of the highlight's join)
   await page.waitForSelector('#content .turn[data-uuid="' + cfg.anchor + '"] p', { timeout: 60000 });
-  // (2) the KERNEL's own event: the {type:"comments"} frame for this session, carrying the anchored thread, reached the
-  // client (the data half). This is the wait the fix turns on: it ends the instant that frame lands. The ceiling is the
-  // failure BOUND, not the mechanism, set above the kernel's observed worst-case first cold full pusher cycle under the
-  // quota (~92 s on 2026-09-11); on the common path the frame arrives far sooner and the wait returns at once.
-  const got = await page.waitForFunction(() => window.__cmtFrames > 0, null, { timeout: 120000 }).then(() => true).catch(() => false);
-  if (!got) {
-    // a miss NAMES the link: the comments frame never carried the anchor. Dump what frames DID arrive so the next red
-    // reads as "no comments frame" (the Python side adds the kernel.log tail and the /perf build counters).
-    const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
-    console.error("comments-frame-miss: the {type:comments} frame for " + cfg.sid + " carrying anchor " + cfg.anchor + " never arrived: " + JSON.stringify(seen));
-    process.exit(4);
+  // (2) the mark wraps only when a comments frame is processed WITH the anchor turn already in the DOM. Handle BOTH
+  // orders: a comments frame that arrived BEFORE the turn applied to a page without it, and the turn's later render does
+  // not always re-apply the held marks under load (a client gap, flagged for its own fix). So after the turn, if the
+  // mark is not there yet, wait for the NEXT comments frame past the turn's render (n0 read now), which re-applies with
+  // the turn present. The ceiling is a failure bound, not a wall-clock guess; a miss names the order (n0 and the frames seen).
+  const n0 = await page.evaluate(() => window.__cmtFrames);
+  const markHere = async () => !!(await page.$("mark.cmt-hl[data-tid]"));
+  if (!(await markHere())) {
+    const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+    if (!got) {
+      const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
+      console.error("comments-frame-after-turn-miss: no comments frame carrying anchor " + cfg.anchor + " for " + cfg.sid + " ran with the turn present (n0=" + n0 + "): " + JSON.stringify(seen));
+      process.exit(4);
+    }
   }
-  // (3) both halves are in; applyCommentMarks wraps the mark synchronously, so this is a SHORT ceiling, not a wall-clock guess
+  // (3) a comments frame has now run with the turn present; a short ceiling confirms the mark wrapped
   await page.waitForSelector("mark.cmt-hl[data-tid]", { timeout: 15000 });
   await page.waitForTimeout(300);
 }

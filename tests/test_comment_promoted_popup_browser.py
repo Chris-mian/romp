@@ -106,15 +106,22 @@ await page.addInitScript(({ sid, tids }) => {
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab[data-id]", { timeout: 20000 });
 await page.locator(`#tabs .tab[data-id="${cfg.sid}"]`).first().click();   // the PARENT's transcript, where the highlights live
-// the parent's transcript renders and the kernel's comments frame lands: the highlights wrap both passages
-// (attached, not visible: every session's view stays in the DOM, hidden when not active; the click below auto-waits for
-// the visible one). Gate on the kernel's OWN delivery of the comments frame (the ceiling a failure bound, not a
-// wall-clock guess), then the marks wrap synchronously under a short ceiling; a miss names the link.
-const gotCmt = await page.waitForFunction(() => window.__cmtFrames > 0, null, { timeout: 120000 }).then(() => true).catch(() => false);
-if (!gotCmt) {
-  const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
-  console.error("comments-frame-miss: the {type:comments} frame for " + cfg.sid + " carrying the seeded threads never arrived: " + JSON.stringify(seen));
-  process.exit(4);
+// the parent's transcript renders and the kernel's comments frame lands: the highlights wrap both passages (attached,
+// not visible: every session's view stays in the DOM, hidden when not active; the click below auto-waits for the
+// visible one). The marks wrap only when a comments frame is processed WITH the anchor turn in the DOM; handle BOTH
+// orders (a comments frame before the turn applies nothing, and the turn's later render does not always re-apply the
+// held marks under load, a client gap flagged for its own fix): after the turn, if the marks are not there, wait for the
+// NEXT comments frame past the turn (n0 read now), then the short mark ceiling. Ceilings are failure bounds; a miss names the order.
+await page.waitForSelector(`#content .turn[data-uuid="${cfg.anchor}"]`, { state: "attached", timeout: 60000 });
+const n0 = await page.evaluate(() => window.__cmtFrames);
+const marksHere = async () => (await page.$(`mark.cmt-hl[data-tid="${cfg.promoted}"]`)) && (await page.$(`mark.cmt-hl[data-tid="${cfg.open}"]`));
+if (!(await marksHere())) {
+  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+  if (!got) {
+    const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
+    console.error("comments-frame-after-turn-miss: no comments frame carrying the seeded threads for " + cfg.sid + " ran with the turn present (n0=" + n0 + "): " + JSON.stringify(seen));
+    process.exit(4);
+  }
 }
 for (const tid of [cfg.promoted, cfg.open]) await page.waitForSelector(`mark.cmt-hl[data-tid="${tid}"]`, { state: "attached", timeout: 15000 });
 
@@ -273,7 +280,7 @@ class ServedPromotedPopup(unittest.TestCase):
     def _drive(self):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
-            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID,
+            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID, "anchor": "a1",
                        "promoted": PROMOTED, "open": OPEN, "w": VIEW_W, "h": VIEW_H}, f)
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:

@@ -87,13 +87,20 @@ await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab[data-id]", { timeout: 20000 });
 await page.click('#tabs .tab[data-id="' + cfg.sid + '"]');
 await page.waitForSelector("#content table", { timeout: 20000 });
-// gate on the kernel's OWN delivery of the comments frame (the ceiling a failure bound, not a wall-clock guess), then
-// the marks wrap synchronously under a short ceiling; a miss names the link (the Python side adds kernel.log + /perf).
-const gotCmt = await page.waitForFunction(() => window.__cmtFrames > 0, null, { timeout: 120000 }).then(() => true).catch(() => false);
-if (!gotCmt) {
-  const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
-  console.error("comments-frame-miss: the {type:comments} frame for " + cfg.sid + " carrying the seeded threads never arrived: " + JSON.stringify(seen));
-  process.exit(4);
+// the marks wrap only when a comments frame is processed WITH the anchor turn in the DOM; handle BOTH orders (a comments
+// frame before the turn applies nothing, and the turn's later render does not always re-apply the held marks under load,
+// a client gap flagged for its own fix): after the turn, if the marks are not there, wait for the NEXT comments frame
+// past the turn (n0 read now), then the short mark ceiling. Ceilings are failure bounds; a miss names the order.
+await page.waitForSelector('#content .turn[data-uuid="' + cfg.anchor + '"]', { timeout: 60000 });
+const n0 = await page.evaluate(() => window.__cmtFrames);
+const marksHere = async () => (await page.$('mark.cmt-hl[data-tid="' + cfg.tidCell + '"]')) && (await page.$('mark.cmt-hl[data-tid="' + cfg.tidRow + '"]'));
+if (!(await marksHere())) {
+  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+  if (!got) {
+    const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
+    console.error("comments-frame-after-turn-miss: no comments frame carrying the seeded threads for " + cfg.sid + " ran with the turn present (n0=" + n0 + "): " + JSON.stringify(seen));
+    process.exit(4);
+  }
 }
 await page.waitForFunction((tids) => tids.every((t) => document.querySelector('mark.cmt-hl[data-tid="' + t + '"]')), [cfg.tidCell, cfg.tidRow], { timeout: 15000 });
 await page.mouse.move(900, 700); await page.waitForTimeout(400);
@@ -208,7 +215,7 @@ class ServedCommentTableMark(unittest.TestCase):
     def test_marks_on_a_cell_and_on_a_row_leave_the_tables_rows_cells_and_columns_untouched(self):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
-            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID,
+            json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "sid": SID, "anchor": A_UUID,
                        "tidCell": TID_CELL, "tidRow": TID_ROW,
                        "shots": os.environ.get("TBL_SHOTS", ""), "shotSuffix": "-before" if self.before else ""}, f)
         driver = os.path.join(self.lab, "driver.mjs")

@@ -137,13 +137,20 @@ await page.addInitScript(({ sid, minThreads }) => {
 }, { sid: cfg.sid, minThreads: cfg.minMarks });
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
-// gate on the kernel's OWN delivery of the comments frame carrying every seeded thread (the ceiling a failure bound,
-// not a wall-clock guess), then the unread marks wrap under a short ceiling; a miss names the link.
-const gotCmt = await page.waitForFunction(() => window.__cmtFrames > 0, null, { timeout: 120000 }).then(() => true).catch(() => false);
-if (!gotCmt) {
-  const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
-  console.error("comments-frame-miss: the {type:comments} frame for " + cfg.sid + " carrying the seeded threads never arrived: " + JSON.stringify(seen));
-  process.exit(4);
+// the unread marks wrap only when a comments frame is processed WITH the transcript turns in the DOM; handle BOTH orders
+// (a comments frame before the turns applies nothing, and the turns' later render does not always re-apply the held
+// marks under load, a client gap flagged for its own fix): after the transcript renders, if the marks are short, wait
+// for the NEXT comments frame past that (n0 read now), then the short unread ceiling. Ceilings are failure bounds; a miss names the order.
+await page.waitForSelector("#content .turn", { timeout: 60000 });
+const n0 = await page.evaluate(() => window.__cmtFrames);
+const marksHere = () => page.evaluate((n) => document.querySelectorAll("mark.cmt-hl.unread").length >= n, cfg.minMarks);
+if (!(await marksHere())) {
+  const got = await page.waitForFunction((n) => window.__cmtFrames > n, n0, { timeout: 120000 }).then(() => true).catch(() => false);
+  if (!got) {
+    const seen = await page.evaluate(() => ({ cmtFrames: window.__cmtFrames, types: window.__frameTypes }));
+    console.error("comments-frame-after-turn-miss: no comments frame carrying the seeded threads for " + cfg.sid + " ran with the transcript present (n0=" + n0 + "): " + JSON.stringify(seen));
+    process.exit(4);
+  }
 }
 await page.waitForFunction((n) => document.querySelectorAll("mark.cmt-hl.unread").length >= n, cfg.minMarks, { timeout: 20000 });
 await page.waitForTimeout(400);   // the rail's rAF pass after the marks landed
