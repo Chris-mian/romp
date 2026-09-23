@@ -67,13 +67,15 @@ CALL_ATTEMPTS = 3
 HARNESS_ALARM_S = 240
 REPORTED_JUDGES = ("planner", "placer", "closer", "unblocker")   # the arm judges the measures read; the per-judge call counts
 #   join the table for all four, so a reader sees exactly what ran.
-MEASURED_JUDGES = ("planner", "closer")                          # the subset whose ZERO-call count marks an arm NOT comparable,
-#   however clean its failure count: the planner and the closer are invoked for EVERY judged ending, so a zero is a silent
-#   judge (the 2026-09-23 PLACEMENTS_V bump sealed every old-version seed and a re-pilot read comparable with the planner
-#   silent; this precondition makes that impossible). The `placer` and `unblocker` are reported but EXCLUDED from the hard
-#   precondition because both are CONDITIONAL: place_llm is the card-first second call (a sub-step's parent inside an already-
-#   chosen card) and the unblocker runs only over goals a pass blocked, so a legitimate arm with no sub-step placement or no
-#   blocks makes zero of those calls; requiring them would false-refuse such a run. See seal_pre_cut_adopt.
+MEASURED_JUDGES = ("planner", "closer")                          # the subset whose ZERO-call count over the WHOLE arm marks it
+#   NOT comparable, however clean its failure count: the planner and the closer run for NEARLY every judged ending (the closer
+#   returns before any model call on an empty menu, and the harness calls it only when a turn closed), so over 60+ endings a
+#   ZERO aggregate is a silent judge, not "nothing to do" (the 2026-09-23 PLACEMENTS_V bump sealed every old-version seed and a
+#   re-pilot read comparable with the planner silent; the precondition rests on the aggregate and makes that impossible). The
+#   `placer` and `unblocker` are reported but EXCLUDED from the hard precondition because both are CONDITIONAL: place_llm is the
+#   card-first second call (a sub-step's parent inside an already-chosen card) and the unblocker runs only over goals a pass
+#   blocked, so a legitimate arm with no sub-step placement or no blocks makes zero of those; requiring them would false-refuse
+#   such a run. See seal_pre_cut_adopt.
 ID_EPOCH_RE = re.compile(r"^[0-9a-f-]{36}:(\d{9,11})(?::|$)")   # a turn id or segment id carries its epoch second after the fsid
 
 
@@ -655,7 +657,7 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
                 (dest / "state" / "romp" / "overrides" / (eid + ".jsonl")).write_text("".join(x + "\n" for x in kept))
             manifest["endings"].append({"id": eid, "session": hashlib.sha256(sid.encode()).hexdigest()[:12],
                                         "lane": hashlib.sha256(store_key.encode()).hexdigest()[:12], "turn": k,
-                                        "class": cls, "cutT": cut_t, "startT": start_t, "tierOneEligible": bool(eligible),
+                                        "class": cls, "cutT": cut_t, "startT": start_t, "seedStart": seed_start, "tierOneEligible": bool(eligible),
                                         # the store's own identity, fixed AT BUILD so a later move of the live session cannot change which
                                         # store the measures read (this cache is never the repo, a mail or a body); the guard keys on the
                                         # node's own unblocker verdict, so no cwd or transcript leaves are needed
@@ -925,6 +927,8 @@ def calls_by_judge(usage_path):
                 r = json.loads(line)
             except ValueError:
                 continue
+            if r.get("err"):
+                continue                                          # a failed call (error envelope) is not the judge running: an all-failed judge stays silent
             j = r.get("judge")
             if j:
                 c[j] += 1
@@ -994,7 +998,10 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
             path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % eid)), None)
             if path is None:
                 continue
-            lo = e.get("startT")
+            lo = e.get("seedStart", e.get("startT"))         # the seed's own cut: the module's rule (build_corpus line ~644): the ending's
+            if lo is None:                                    # turn start, else the previous turn's end for an OPENER-LESS continuation. An
+                lo = e.get("cutT")                           # older manifest carries no seedStart; its startT is the same value. Falls to cutT
+            #                                                   only for a degenerate opener-less FIRST turn, so every ending is sealed and adopted.
             seed_path = corpus / "state" / "romp" / "goals" / (eid + ".json")
             seed = seed_path.read_text() if seed_path.is_file() else None
             builds_out = []
@@ -1010,8 +1017,7 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                     session = jd.parsed_session(eid, [str(path)], now)
                     turns = session.get("turns") or []
                     store = jd.load_goals(eid)
-                    if lo is not None:
-                        seal_pre_cut_adopt(jd, eid, session, store, lo)   # plan the ending's own turn only, independent of the seed's placementsV (2026-09-23)
+                    seal_pre_cut_adopt(jd, eid, session, store, lo)   # every ending (opener-less included): plan its own turn, independent of the seed's placementsV (2026-09-23)
                     closed = jd._session_settled(eid, str(path), session, store, now=now)   # the settled gate over the ending's own transcript
                     jd.rollup_status(store, closed, now=now)                            # the flags from the seed's diary, before the first menu
                     jd.save_goals(eid, store)
@@ -1322,15 +1328,16 @@ def measure(manifest, results, live_state, labels=None, labels_state="absent"):
         else:
             unresolved += 1                                     # the manifest carries no live identity (an old or synthetic manifest): unresolvable
     failures = int(results.get("failures") or 0)
-    calls_by_j = results.get("callsByJudge")                                # None on an old/synthetic results record: the precondition is skipped
-    silent_judges = [j for j in MEASURED_JUDGES if not calls_by_j.get(j)] if calls_by_j is not None else []   # a measured judge with ZERO calls: not comparable
+    calls_by_j = results.get("callsByJudge")
+    no_record = calls_by_j is None                                          # an old/withdrawn results record: no per-judge record, cannot be read comparable
+    silent_judges = [j for j in MEASURED_JUDGES if not calls_by_j.get(j)] if not no_record else []   # a measured judge with ZERO calls: not comparable
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
             "answeredThenCleared": answered_then_cleared, "flaps": flaps, "gesturedEndings": gestured,
             "untouchedEndings": untouched, "unplacedEndings": unplaced, "unresolvedEndings": unresolved,
             "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
             "stopped": results.get("stopped"), "failures": failures, "nonArmFailures": int(results.get("nonArmFailures") or 0),
-            "comparable": failures == 0 and not silent_judges, "buildsPerCard": builds_n,
-            "callsByJudge": calls_by_j or {}, "silentJudges": silent_judges,
+            "comparable": failures == 0 and not silent_judges and not no_record, "buildsPerCard": builds_n,
+            "callsByJudge": calls_by_j or {}, "silentJudges": silent_judges, "noPerJudgeRecord": no_record,
             "retry": results.get("retry") or {}, "failuresByKind": results.get("failuresByKind") or {},
             "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
             "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
@@ -1369,6 +1376,8 @@ def report(corpus, run_root, live_state, figure=None):
                 parts.append(", ".join("%s %d" % (k, v) for k, v in sorted(fbk.items())))
             if r.get("silentJudges"):
                 parts.append("; ".join("%s 0 calls" % j for j in r["silentJudges"]))   # a silent measured judge names the arm not comparable (manager 2026-09-23)
+            if r.get("noPerJudgeRecord"):
+                parts.append("no per-judge record")            # an old/withdrawn results record has no callsByJudge: cannot be read comparable
             cell = "%s, not comparable" % ("; ".join(parts) or ("%d" % r["failures"]))
         if r.get("nonArmFailures"):
             cell += " (%d non-arm)" % r["nonArmFailures"]       # an excluded failure is surfaced, never invisible (review 2026-09-22 PR 2022)
@@ -1395,13 +1404,16 @@ def report(corpus, run_root, live_state, figure=None):
             "recovered the kills a later attempt then served; only a call that failed EVERY attempt is a failure, named by "
             "kind in the failures cell (a `parse` the re-sample does not touch stays its own row). Each arm seeds every ending "
             "at the current placements version, sealing the pre-cut history by time so the arm plans the ending's OWN turn "
-            "regardless of the seed's recorded version (the 2026-09-23 method change: a PLACEMENTS_V bump otherwise sealed "
-            "every old-version seed whole, and the planner planned nothing). An arm is comparable only when the failures cell "
-            "is 0 AND every measured judge (%s) made at least one call: a run in which any measured judge was silent is named "
-            "not comparable, so a silent planner can never read comparable again. The measured-calls column shows the per-judge "
-            "counts. The 2026-09-22 clean run's 44/45 flap figure is WITHDRAWN as a baseline: it planned only the ~30 seeds "
+            "regardless of the seed's recorded version, opener-less continuations included (the 2026-09-23 method change: a "
+            "PLACEMENTS_V bump otherwise sealed every old-version seed whole, and the planner planned nothing). An arm is "
+            "comparable only when the failures cell is 0 AND every REQUIRED judge (%s, each run for nearly every judged ending) "
+            "made at least one call over the whole arm: a run in which a required judge was silent, or one with no per-judge "
+            "record at all, is named not comparable, so a silent planner can never read comparable again. The measured-calls "
+            "column reports all four (%s); the `placer` and `unblocker` are REPORTED but NOT required (both conditional: the "
+            "placer is a sub-step's second call, the unblocker runs only over a pass's blocks), so a 0 in either is a reading, "
+            "not a fault. The 2026-09-22 clean run's 44/45 flap figure is WITHDRAWN as a baseline: it planned only the ~30 seeds "
             "then at the current version and replayed some history; these figures stand alone."
-            % (scope, ", ".join(NON_ARM_JUDGES), CALL_ATTEMPTS, "/".join(MEASURED_JUDGES)))
+            % (scope, ", ".join(NON_ARM_JUDGES), CALL_ATTEMPTS, "/".join(MEASURED_JUDGES), "/".join(REPORTED_JUDGES)))
     (run_root / "table.md").write_text("\n".join(lines) + "\n\n" + note + "\n")
     (run_root / "measures.json").write_text(json.dumps(rows, indent=1))
     if figure:

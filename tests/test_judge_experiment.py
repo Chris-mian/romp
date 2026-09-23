@@ -506,6 +506,43 @@ class Harness(unittest.TestCase):
         table = (Path(run_root) / "table.md").read_text()
         self.assertIn("planner 0 calls", table, "the table names the silent measured judge: %s" % table)
         self.assertIn("not comparable", table)
+        # an old/withdrawn results record with NO per-judge record cannot read comparable on an empty cell
+        base.pop("callsByJudge", None)
+        m2 = self.je.measure(m, base, self.state)
+        self.assertFalse(m2["comparable"]); self.assertTrue(m2["noPerJudgeRecord"], "no callsByJudge -> not comparable, not a silent pass")
+
+    def test_an_old_version_seed_is_planned_through_the_real_road_and_an_opener_less_ending_is_not_skipped(self):
+        """End-to-end (manager round-one medium 1 + 2): a corpus seed at an OLD placements version is driven through the real
+        _plan_session road the harness uses (the fake as the model), and the seal_pre_cut_adopt wiring makes its turn plan the
+        SAME as at the current version, version-independently (a mutant removing the call would seal it whole and red this). An
+        OPENER-LESS ending (startT None, seedStart set) is sealed and adopted by seedStart, not skipped."""
+        self._judge_written_stores()                       # populate the live 2-turn stores so the corpus carries pre-cut seeds
+        dest, m = self._corpus(name="seeded")
+        self.assertTrue(all("seedStart" in e for e in m["endings"]), "build_corpus records seedStart for the run-time seal (opener-less endings included)")
+        seeds = list(Path(dest, "state", "romp", "goals").glob("*.json"))
+        self.assertTrue(seeds, "a turn-1 ending carries a pre-cut seed store from its turn 0")
+        def set_all(version):
+            for f in seeds:
+                d = json.loads(f.read_text()); d["placementsV"] = version; f.write_text(json.dumps(d))
+        def planner_of(rr):
+            res = self.je.run_arm(dest, "current", None, os.path.join(self.td, rr), None, self.fake, now=T0 + 10**6)
+            self.assertTrue(self.je.measure(m, res, self.state)["comparable"], "comparable: %r" % res.get("callsByJudge"))
+            return (res.get("callsByJudge") or {}).get("planner", 0)
+        set_all(PV)
+        base = planner_of("r-cur")
+        self.assertGreater(base, 0, "the turn is planned at the current version")
+        for v in (PV - 1, 9):
+            set_all(v)
+            self.assertEqual(planner_of("r-v%d" % v), base,
+                             "an old-version (%d) seed plans the SAME turn (seal_pre_cut_adopt normalizes; the whole-store seal did not fire)" % v)
+        # opener-less: startT None but seedStart set -> sealed and adopted by seedStart, not skipped
+        mp = Path(dest, "manifest.json"); mm = json.loads(mp.read_text())
+        for me in mm["endings"]:
+            me["startT"] = None                            # a continuation; seedStart stays as the seed's cut
+        mp.write_text(json.dumps(mm))
+        set_all(9)
+        self.assertEqual(planner_of("r-openerless"), base,
+                         "an opener-less ending (startT None, seedStart set) is sealed, adopted and its turn planned via seedStart, not skipped")
 
     def _add_node_log(self, sid, suffix, ev):
         """Append an event to a live top-level node's log (a helper for the unblocker-ruling pins)."""
@@ -2298,7 +2335,7 @@ class Harness(unittest.TestCase):
         e = self._ending(m, SIDS[0], 0)
         manifest = {"endings": [e]}
         results = {"arm": "baseline", "failures": 0, "nonArmFailures": 2, "buildsPerCard": 3,
-                   "endings": {e["id"]: {"builds": [{}] * 3}}}
+                   "callsByJudge": {"planner": 3, "closer": 3}, "endings": {e["id"]: {"builds": [{}] * 3}}}
         mm = self.je.measure(manifest, results, self.state)
         self.assertEqual((mm["failures"], mm.get("nonArmFailures"), mm["comparable"]), (0, 2, True),
                          "the excluded failures ride the record beside the comparable count: %r" % mm)
