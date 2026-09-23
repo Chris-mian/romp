@@ -41606,7 +41606,7 @@ def build_episode(sid, now):
 
 # ───────────────────────── feed clear / undo (inbox-zero) ─────────────────────────
 _CLEARED_MEMO = {"slot": None,     # (key, parsed set, the read's fault copy) or None: the clear log's stat taken BEFORE the read, the set read under it, and "" for a landed read (an undecodable log's empty set is served with its fault; round three of PR 2025)
-                 "landed": None}   # (key, parsed set) of the LAST LANDED read, for the display readers while the log cannot be read (_cleared_ids_display; the second contributor's post-merge note on PR 2025);
+                 "landed": None}   # (key, parsed set, parsed byte length) of the LAST LANDED read, for the display readers while the log cannot be read (_cleared_ids_display; the second contributor's post-merge note on PR 2025);
 #                                    an absent read counts as landed under a path-only key, the display checking the path alone (the FileNotFoundError arm; the first contributor's round one on PR 2032)
 _cleared_read_fault = [""]         # the fault copy filed for a STANDING unreadable or undecodable clears log: one stderr line and one judge-errors row per
 #                                    episode (the note read's shape), ended by a landed read, an absent log or a different fault (the served branch writes the slot's fault whole, so a
@@ -41672,10 +41672,14 @@ def _cleared_ids_read():
     the caller's own read and not a module flag another thread's read may have moved between two statements (the round-one verifier of PR
     2025: a lost account when a pusher read landed in the window, a false one when it faulted there). _cleared_ids returns the set alone.
 
-    A landed read ends the episodes (the reader's flag, the bell's table) and takes the memo only when a stat taken AFTER the parse still
-    equals the key taken before the read; a set parsed from bytes that left the disk before a fault ends nothing, since the fault's episode is
-    the newer state. A served hit whose memoized fault differs from the flag files the judge row (the third episode ending, a different fault,
-    through the memo hit too). Both the first contributor's post-merge note on PR 2041."""
+    The episodes (the reader's flag, the bell's table) end on three arms: a landed parse whose post-parse stat and pre-read flag both stand
+    where the read found them, a served landed hit, and an absent log. A landed parse takes the SLOT only on that first arm; a set parsed from
+    bytes that left the disk before a fault, or while a fault was filed (an EIO on the read moves no stat), ends nothing, since the fault's
+    episode is the newer state, and is kept as the last landed set only when its parsed byte length is at least the standing set's: the log is
+    append-only within an episode (an undo appends a row; a shorter file arrives only through the absent arm, which records length zero), so
+    the longer parse is the newer state, whichever of two racing reads writes first. A served hit whose memoized fault differs from the flag
+    files the judge row (the third episode ending, a different fault, through the memo hit too). The first contributor's post-merge note on PR
+    2041; the second contributor's post-merge review of PR 2056; the round-one verifier of PR 2070."""
     path = jd.STATE / "cleared.jsonl"
     st = _stat_key(path)
     key = (str(path),) + st if st is not None else None
@@ -41695,9 +41699,12 @@ def _cleared_ids_read():
             _clear_state_fault(path)                     # and the bell's episode with it (the first contributor's round one on PR 2032: only the display read's own clean call ended
         #                                                  the bell's, so a repair the nudge walk alone saw with the dashboard closed left it standing and the same bytes filed no second row)
         return slot[1], slot[2]                          # the slot holds the fault beside the set: a served undecodable state still names it (round three of PR 2025)
-    cur = {}
+    fault0 = _cleared_read_fault[0]                    # the flag before this read: the landed arm below compares it after the parse
+    cur, n = {}, 0
     try:
-        for line in path.read_text().splitlines():
+        text = path.read_text()
+        n = len(text)                                    # the parsed bytes' length: the landed memo's version (append-only within an episode)
+        for line in text.splitlines():
             try:
                 o = json.loads(line)
             except Exception:
@@ -41722,7 +41729,7 @@ def _cleared_ids_read():
         _CLEARED_STATS["derived"] += 1
         _cleared_read_fault[0] = ""                      # absent, or vanished after the stat: nothing cleared, a real state, said nowhere; it ends an episode too
         _clear_state_fault(path)                         # the bell's episode too
-        _CLEARED_MEMO["landed"] = ((str(path),), {})     # the absent state IS the last landed one: after an unlink the pane shows nothing cleared, and a path that comes back
+        _CLEARED_MEMO["landed"] = ((str(path),), {}, 0)  # the absent state IS the last landed one, at length zero (every later parse outranks it): after an unlink the pane shows nothing cleared, and a path that comes back
         #                                                  unreadable must not serve the set from before the removal (the first contributor's round one on PR 2032: the count jumped
         #                                                  back, Undo lit and the cards hid again with no new information about them)
         return cur, ""
@@ -41744,19 +41751,29 @@ def _cleared_ids_read():
             _clears_log_fault_note("the read", e, kind="cleared-unreadable")   # the READ's kind: the one the judge's own side-file reader files for this file (one kind per meaning; the round-one verifier of PR 2025)
         return cur, copy
     _CLEARED_STATS["derived"] += 1
-    if st is not None and _stat_key(path) != st:
-        if key is not None:
-            _CLEARED_MEMO["landed"] = (key, cur)         # a real state of the file, the last landed one: a FIRST-EVER read that races a fault must not leave the display on the cold
-            #                                              arm (the round-one verifier of PR 2056: the pane served the empty set under a row saying no read ever landed)
-        return cur, ""                                   # but the file moved under the parse: these bytes left the disk before whatever moved it, so they end no episode and take
-        #                                                  no slot (the first contributor's post-merge note on PR 2041: the nudge walk parses on the jobs thread beside the display
-        #                                                  builds, and a walk still parsing good bytes when the file went bad and a build filed the fault then ended both episodes,
-        #                                                  so the next build filed a second bell row and a second judge row for one unbroken fault)
+    if st is None or _stat_key(path) != st or _cleared_read_fault[0] != fault0:
+        # These bytes are not proved to be the file's current state: the file moved under the parse, or the flag moved (a fault filed by a
+        # concurrent read, an EIO among them, moves no stat), or the pre-read stat failed (a log created between the stat and the read, a
+        # permission flap on the directory lifting before the read: nothing to compare). They end no episode and take no slot (the first
+        # contributor's post-merge note on PR 2041: the nudge walk parses on the jobs thread beside the display builds, and a walk still
+        # parsing good bytes when the file went bad and a build filed the fault then ended both episodes, so the next build filed a second
+        # bell row and a second judge row for one unbroken fault). They ARE a real state of the file, and the last landed one when no longer
+        # parse stands: a first-ever read that races a fault must not leave the display on the cold arm (the round-one verifier of PR 2056),
+        # while an older parse must not overwrite the newer set another read recorded meanwhile (the second contributor's post-merge review of
+        # PR 2056: a clear appended during the walk's parse, derived by a build before the walk's post-parse stat, and the walk's write put the
+        # pane back on the older set after the next fault). The version is the PARSE itself: the log is append-only within an episode, so the
+        # longer parse is the newer state, whichever of two racing moved reads writes first (the round-one verifier of PR 2070: a rule keyed on
+        # the memo's identity let the first moved write win and dropped the newer parse); a shorter file arrives only through the absent arm,
+        # which records length zero.
+        standing = _CLEARED_MEMO["landed"]
+        if standing is None or standing[0][0] != str(path) or n >= standing[2]:
+            _CLEARED_MEMO["landed"] = (key if key is not None else (str(path),), cur, n)   # the absent arm's path-only key shape when the stat failed
+        return cur, ""
     _cleared_read_fault[0] = ""                          # a landed read ends the episode
     _clear_state_fault(path)                             # and the bell's: every reader's clean read, not the display read's alone (the first contributor's round one on PR 2032)
     if key is not None:
         _CLEARED_MEMO["slot"] = (key, cur, "")
-        _CLEARED_MEMO["landed"] = (key, cur)             # the last landed set, for the display readers while the log cannot be read
+        _CLEARED_MEMO["landed"] = (key, cur, n)          # the last landed set and its parsed length, for the display readers while the log cannot be read
     return cur, ""
 
 
@@ -41765,21 +41782,23 @@ def _cleared_ids():
     return _cleared_ids_read()[0]
 
 
-def _cleared_fault_row(p, fault, remedy):
+def _cleared_fault_row(p, fault, remedy, cold=False):
     """The bell row's exception for the clears log, its fault text cut to the budget the remedy leaves under SYNC_NOTICE_FIT so the row's
     point (the remedy, its closing clause included) always survives the bell's cut: a multi-byte decode error at a seven-digit offset ran
     the cold row to 242 and the bell cut the closing parenthetical (the first contributor's post-merge note on PR 2041: a 1.3 MB log ending
     in a broken four-byte sequence, cold build). The row is composed by _note_state_fault as str(exc), a dash and the remedy; the bell's
-    episode key is the whole fault text (`dedupe_key`), so the cut never merges two faults into one episode and a remedy change alone never
-    splits one."""
+    episode key is the whole fault text (`dedupe_key`), so the cut never merges two faults into one episode; the COLD row's key carries a
+    cold marker as well, so the warm row files exactly once when a landed set arrives under a standing fault (a first-ever read racing the
+    fault: the cold row's two clauses, nothing reads as cleared and no earlier read, were both false once the pane served the landed set) and
+    an ordinary standing cold fault gains no row (the second contributor's post-merge review of PR 2056)."""
     text = str(fault)
     budget = SYNC_NOTICE_FIT - len("%s could not be read () \u2014 %s" % (p.name, remedy))
     if len(text) > budget:
         text = text[:max(0, budget - 3)] + "..."
     exc = _StateUnreadable(p, text, remedy=remedy)
-    exc.dedupe_key = str(fault)                          # the bell's episode compares the WHOLE fault text, not the cut one, so two faults agreeing through the cut and differing
-    return exc                                           # after it are two episodes (the round-one verifier of PR 2056); the row's text stays cut. The fault alone, not the remedy:
-    #                                                      the remedy follows the display state (cold, then warm once a landed set is memoized), and one unbroken fault is one episode
+    exc.dedupe_key = ("cold|" if cold else "") + str(fault)   # the bell's episode compares the WHOLE fault text, not the cut one, so two faults agreeing through the cut and
+    return exc                                           # differing after it are two episodes (the round-one verifier of PR 2056); the row's text stays cut. The cold marker: the
+    #                                                      warm row after a cold one is a real change of the pane's state and files once; a warm row's remedy change alone never does
 
 
 def _cleared_ids_display():
@@ -41794,8 +41813,9 @@ def _cleared_ids_display():
     writes the stderr line and the bell row together, beside the reader's own stderr line and judge row, each under its own episode memo: the
     reader's flag holds the fault's copy and the bell's table holds the row's key for the path. The bell re-files on every change of the fault's
     text; the reader re-files through the derive arm and through a memo hit returning a fault that differs from the flag; a clean read ends both
-    only when a stat taken after its parse equals the key taken before its read (the second contributor's post-merge comment on PR 2032 and
-    review of PR 2041; the round-one verifiers of PRs 2041 and 2056)."""
+    only on the landed arm whose post-parse stat and pre-read flag both stand where the read found them, the served landed hit and the absent
+    log being the other two endings (the second contributor's post-merge comment on PR 2032 and reviews of PRs 2041 and 2056; the round-one
+    verifiers of PRs 2041 and 2056)."""
     cur, fault = _cleared_ids_read()
     p = jd.STATE / "cleared.jsonl"
     if not fault:
@@ -41807,7 +41827,7 @@ def _cleared_ids_display():
     if landed is not None and landed[0][0] == str(p):
         _note_state_fault(_cleared_fault_row(p, fault, "showing the last-known value; clears still record, and Undo waits until the file can be read again"))
         return landed[1]
-    _note_state_fault(_cleared_fault_row(p, fault, "clears still record, and Undo waits; nothing reads as cleared until it reads again (no earlier read in this kernel's life)"))   # point first and short (the second
+    _note_state_fault(_cleared_fault_row(p, fault, "clears still record, and Undo waits; nothing reads as cleared until it reads again (no earlier read in this kernel's life)", cold=True))   # point first and short (the second
     #                                                  contributor's post-merge comment on PR 2032), the condition named (the first contributor's post-merge note on PR 2041: "until then" named no
     #                                                  moment), and short enough that the ORDINARY position-0 decode error's row stays uncut (the round-one verifier of PR 2056: 69 left against 70)
     return cur
