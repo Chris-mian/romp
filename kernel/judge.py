@@ -506,10 +506,12 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 #                                          3 genuine parse rejects on the SAME work item → a loud "give-up" row,
 #                                          then quiet until the item's own event re-arms it (a turn gaining atoms,
 #                                          a top set changing). Call-level failures never count — only replies the
-#                                          model actually wrote — with ONE exception: the closer strikes a KILLED
-#                                          call (the timer ending it; never an API error or a process that ended
-#                                          another way) against the turn it died on, _call_fail_kill /
-#                                          _close_strike. Closer / grouper /
+#                                          model actually wrote — except calls the same item would fail again
+#                                          identically: the closer strikes a KILLED call (the timer ending it;
+#                                          never an API error or a process that ended another way) against the
+#                                          turn it died on, _call_fail_kill / _close_strike, and a safeguards
+#                                          refusal of the turn; the planner's work run strikes a content refusal
+#                                          of the segment (_REFUSAL_ENVELOPE_RE, 2026-09-23). Closer / grouper /
 #                                          consolidator / courier; the
 #                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
 #                                          already had their own.
@@ -1924,7 +1926,8 @@ _USAGE_REFRESH_FN = None   # the kernel wires this to SdkBackend.refresh_usage: 
 _LIMIT_ENVELOPE_RE = re.compile(r"usage limit|rate.?limit|limit reached", re.I)
 # A CONTENT REFUSAL: the filter ruling on what THIS call carried, deterministic per prompt — the same
 # prompt gets the same envelope every time, so no retry can ever serve it. Two envelopes carry that
-# ruling today, and one matcher names both so every reader agrees on the class (the user 2026-09-23):
+# ruling today, and one matcher names both for the health latch and the planner's strike (the user
+# 2026-09-23; the closer's tombstone arm still keeps its own safeguards substring test):
 #   - the safeguards refusal ("the model's safeguards flagged this message"), exempted from the
 #     model-health latch since 2026-08-18 (the 2,955-flag closer storm), by a bare substring test only
 #     _judge_run knew about;
