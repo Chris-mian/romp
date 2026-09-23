@@ -609,12 +609,13 @@ class Harness(unittest.TestCase):
         km = load_source("romp_kernel_whys", os.path.join(BIN, "romp-kernel"))
         self.assertEqual(self.je.MUTE_CLEAR_WHY, km._HIDDEN_FROM_FEED_WHY, "the harness excludes exactly the kernel's mute why")
 
-    def test_install_call_retry_resamples_a_transient_call_and_drops_its_recovered_rows(self):
-        """A transiently-failed arm-judge call (a 120s-alarm kill, an empty reply) is re-sampled and, once a later attempt
-        serves, its failure rows are dropped from the errors ledger so count_failure_rows counts only a call that failed
-        every attempt. A pause/stand-down "" is not a failure and is never retried."""
+    def test_install_call_retry_tags_recovered_rows_counts_the_kills_and_leaves_the_parse(self):
+        """A transiently-failed arm-judge call is re-sampled; a recovered attempt's rows are KEPT but tagged (so first-attempt
+        kills stay auditable) and count_failure_rows skips them, so only a call that failed every attempt counts. The counters
+        tally first-attempt kills, re-samples and recoveries for the ARM judges only; a non-arm judge is retried but not
+        counted; a pause is never retried."""
         ep = Path(self.td) / "judge-errors.jsonl"
-        def fake_jd(script):
+        def fake_jd(script, judge="planner"):
             calls = {"n": 0}
             ctx = types.SimpleNamespace(paused=False, last_call_fail=None)
             jd = types.SimpleNamespace(_judge_ctx=ctx)
@@ -626,29 +627,39 @@ class Harness(unittest.TestCase):
                 if verdict == "pause":
                     ctx.paused = True; ctx.last_call_fail = None; return ""
                 with ep.open("a", encoding="utf-8") as f:                 # a real transient call failure files one `call` row
-                    f.write(json.dumps({"judge": "planner", "err": "call", "note": "timeout"}) + "\n")
+                    f.write(json.dumps({"judge": judge, "err": "call", "note": "timeout"}) + "\n")
                 ctx.last_call_fail = {"note": "timeout"}; return ""
             jd._judge_run_impl = impl
             return jd
-        # fails once, then serves: with no retry the row stays (not comparable); with retries it is recovered (comparable)
-        ep.write_text("")
+        # fails once, then serves: with no retry the row stays a failure; with retries it recovers, the row kept but tagged out
+        ep.write_text(""); c1 = {}
         jd = fake_jd(lambda n: "fail" if n == 0 else "serve")
-        self.je.install_call_retry(jd, ep, attempts=1)
-        self.assertEqual((jd._judge_run_impl(), self.je.count_failure_rows(ep)), ("", 1), "no retry: the failed call stays a failure")
-        ep.write_text("")
+        self.je.install_call_retry(jd, ep, c1, attempts=1)
+        self.assertEqual((jd._judge_run_impl(k="v") or "", self.je.count_failure_rows(ep)), ("", 1), "no retry: the failed call stays a failure")
+        ep.write_text(""); c2 = {}
         jd = fake_jd(lambda n: "fail" if n == 0 else "serve")
-        self.je.install_call_retry(jd, ep, attempts=3)
-        self.assertEqual((jd._judge_run_impl(), self.je.count_failure_rows(ep)), ("ok", 0), "retry re-samples and drops the recovered row")
-        # fails every attempt: exactly one row survives (the last attempt's), the call still counts
-        ep.write_text("")
+        self.je.install_call_retry(jd, ep, c2, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="planner"), self.je.count_failure_rows(ep)), ("ok", 0), "retry recovers: not comparable becomes comparable")
+        self.assertEqual(len(ep.read_text().splitlines()), 1, "the kill row is KEPT (tagged), never deleted, so it stays auditable")
+        self.assertEqual((c2["firstAttemptKills"], c2["recoveredCalls"]), (1, 1), "one first-attempt kill, one recovery")
+        # fails every attempt: exactly one row counts, three rows on disk, the re-samples counted
+        ep.write_text(""); c3 = {}
         jd = fake_jd(lambda n: "fail")
-        self.je.install_call_retry(jd, ep, attempts=3)
-        self.assertEqual((jd._judge_run_impl(), self.je.count_failure_rows(ep)), ("", 1), "a call that fails every attempt still counts once")
-        # a pause/stand-down is not retried and files no failure row
-        ep.write_text("")
+        self.je.install_call_retry(jd, ep, c3, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="closer"), self.je.count_failure_rows(ep)), ("", 1), "a call that fails every attempt counts once")
+        self.assertEqual((len(ep.read_text().splitlines()), c3["firstAttemptKills"], c3["retryAttempts"], c3["recoveredCalls"]), (3, 1, 2, 0))
+        # a downstream parse failure (not a call kill) is left untouched and named by kind
+        ep.write_text(json.dumps({"judge": "planner", "err": "parse", "note": "bad reply"}) + "\n")
+        self.assertEqual(self.je.failure_rows_by_kind(ep), {"parse": 1}, "a parse the re-sample does not touch stays its own row")
+        # a non-arm judge is retried but not tallied into the arm counters; a pause is never retried
+        ep.write_text(""); c4 = {}
+        jd = fake_jd(lambda n: "fail" if n == 0 else "serve", judge="gister")
+        self.je.install_call_retry(jd, ep, c4, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="gister"), c4["firstAttemptKills"]), ("ok", 0), "a non-arm recovery is not an arm kill")
+        ep.write_text(""); c5 = {}
         jd = fake_jd(lambda n: "pause")
-        self.je.install_call_retry(jd, ep, attempts=3)
-        self.assertEqual((jd._judge_run_impl(), self.je.count_failure_rows(ep)), ("", 0), "a pause is a skip, not a failure to retry")
+        self.je.install_call_retry(jd, ep, c5, attempts=3)
+        self.assertEqual((jd._judge_run_impl(judge="planner"), self.je.count_failure_rows(ep), c5["firstAttemptKills"]), ("", 0, 0), "a pause is a skip, not a failure to retry")
 
     def test_a_plainly_cleared_completed_top_is_no_leak_and_a_reopened_needs_input_is_no_false_interrupt(self):
         """The plan's negatives (round three): a completed top the user plainly cleared (no re-open) is NOT a leak; a
