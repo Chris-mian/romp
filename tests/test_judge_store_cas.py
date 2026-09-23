@@ -321,6 +321,75 @@ class StoreCas(unittest.TestCase):
         self.assertIn(g7, after["nodes"], "the node the editor created survives the fresh store's first save (before: 0 against 0 passed the CAS)")
         self.assertEqual(sorted(after["nodes"]), sorted([self._nid(1), g7]), "both writers' nodes: %r" % sorted(after["nodes"]))
 
+    def test_a_field_the_other_writer_changed_is_carried_onto_a_stale_save(self):
+        """The manager's ruling of 2026-09-23 on the box lab's long-brief miss: two writers hold one node; the second changes a plain field
+        (a brief edited without its family's stamp) and publishes; the first, holding the older base, adds a node and saves. The rebase
+        adopted the new node but kept the first writer's copy of the field, so the second's edit was published over (live: a brief edited
+        in place lost to a judge pass's save). The load records a digest per field as the file held it, and the rebase carries every field
+        the other writer moved where this writer did not."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID)                       # the pass's copy, loaded before the edit
+        b = jd.load_goals(SID)                       # the editor: a field changed, no family stamp
+        b["nodes"][g1]["blockSummary"] = "the long brief the editor wrote"
+        jd.save_goals(SID, b)
+        jd.apply_plan(a, "s2", T0 + 20, [{"do": "mint", "why": "x", "text": "The pass's new goal"}], jd.open_menu(a))
+        jd.save_goals(SID, a)                        # a's base is behind: the rebase folds b's publish in
+        after = jd.load_goals(SID)
+        self.assertEqual(after["nodes"][g1].get("blockSummary"), "the long brief the editor wrote", "the field the other writer changed rides the stale save (before: the holder's copy won and the edit was lost)")
+        self.assertIn(self._nid(2), after["nodes"], "and the new node is there, as before")
+
+    def test_where_both_writers_changed_one_field_the_incoming_writers_change_wins(self):
+        """The per-field rule's tie: both moved the same field since the base; the writer publishing now keeps its own change (said in the
+        design line), and the fields only the other moved still carry."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID); b = jd.load_goals(SID)
+        b["nodes"][g1]["text"] = "theirs"; b["nodes"][g1]["blockSummary"] = "their brief"
+        jd.save_goals(SID, b)
+        a["nodes"][g1]["text"] = "ours"
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="an event of ours")
+        jd.save_goals(SID, a)
+        after = jd.load_goals(SID)["nodes"][g1]
+        self.assertEqual(after.get("text"), "ours", "both moved text: the incoming writer's change wins")
+        self.assertEqual(after.get("blockSummary"), "their brief", "the field only they moved is carried beside it")
+
+    def test_a_field_the_other_writer_removed_goes_on_a_stale_save(self):
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID); b = jd.load_goals(SID)
+        b["nodes"][g1]["blockSummary"] = "a brief to remove later"; jd.save_goals(SID, b)
+        a2 = jd.load_goals(SID)                      # a fresh holder at the revision with the brief
+        b2 = jd.load_goals(SID); b2["nodes"][g1].pop("blockSummary", None); jd.save_goals(SID, b2)   # the other writer removes it
+        jd.record_verdict(a2, a2["nodes"][g1], "unblocker", "note", T0 + 50, why="ours"); jd.save_goals(SID, a2)
+        self.assertNotIn("blockSummary", jd.load_goals(SID)["nodes"][g1], "the removal the other writer made rides the stale save")
+
+    def test_the_field_base_is_transient_and_re_stamped_after_a_publish(self):
+        """Never serialized; after a publish the base is the fields as written, so the holder's next save carries only what moves after."""
+        self._seed()
+        g1 = self._nid(1)
+        a = jd.load_goals(SID)
+        self.assertIn(g1, a["_baseFields"]); self.assertIn("text", a["_baseFields"][g1])
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 40, why="one"); jd.save_goals(SID, a)
+        raw = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
+        self.assertNotIn("_baseFields", raw, "transient, never serialized"); self.assertIn("_baseFields", a, "re-stamped on the holder after the publish")
+        b = jd.load_goals(SID); b["nodes"][g1]["blockSummary"] = "later brief"; jd.save_goals(SID, b)   # the other writer moves a field after our publish
+        jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 60, why="two"); jd.save_goals(SID, a)
+        self.assertEqual(jd.load_goals(SID)["nodes"][g1].get("blockSummary"), "later brief", "the re-stamped base sees the move after our publish and carries it")
+        shared, writer = jd.load_goals_shared(SID), jd.load_goals(SID)
+        self.assertEqual(shared["_baseFields"], writer["_baseFields"], "the shared view carries the same field base as the writer loader")
+
+    def test_an_in_place_editor_that_changes_a_field_is_carried_too(self):
+        """The box lab's own shape: the file rewritten in place with rev and seq bumped and a brief changed, while a holder's base predates it."""
+        self._seed()
+        g1 = self._nid(1)
+        holder = jd.load_goals(SID)
+        path = jd.GOALDIR / (SID + ".json"); st = json.loads(path.read_text())
+        st["nodes"][g1]["blockSummary"] = "the editor's long brief"; st["seq"] = (st.get("seq") or 0) + 1; st["rev"] = (st.get("rev") or 0) + 1
+        path.write_text(json.dumps(st))
+        jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="the pass ends with a save"); jd.save_goals(SID, holder)
+        self.assertEqual(json.loads(path.read_text())["nodes"][g1].get("blockSummary"), "the editor's long brief", "the in-place edit survives the holder's save (before: the holder's copy won)")
+
     def test_rebase_folds_a_duplicate_verdict_instead_of_doubling_it(self):
         # verdict identity is (ev_t, src, kind) - the same triple _replay_overrides dedups on
         self._seed()
