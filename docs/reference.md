@@ -2059,10 +2059,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   judges each by observation. A ref that died went by reference counting
   (acyclic, no reclaim); a ref still alive whose worker thread has finished is a
   cycle the collector must take (a reclaim); a ref alive whose thread still runs
-  is not garbage yet (judged again next tick). A ref a live ROOT keeps (a
-  never-joined helper thread's `_target`), not a cycle, reads the same and is
-  treated as a surviving cycle: the reclaim frees nothing, so it costs one pause,
-  is counted a `survivor`, and is dropped (never re-registered). A record-cache pop is never a
+  is not garbage yet (judged again next tick). A ref a live ROOT keeps (a helper
+  thread still running when the tick judges it, its frame and its target), not a
+  cycle, reads the same and is treated as a surviving cycle: the reclaim frees
+  nothing, so it costs one reclaim, is counted a `survivor`, and is dropped (never
+  re-registered). A record-cache pop is never a
   trigger: its decoded json is acyclic and dies by reference counting, so
   `recordCache.released` is a statistic. A BACKSTOP reclaim runs after `backstopFoldins`
   load fold-ins since the last reclaim (default 1000, about ten hours at the
@@ -2073,17 +2074,21 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `loadTrees` and `backstopFoldins` (the two thresholds), `freezes` and
   `reclaims` (a freeze ran one collection and a reclaim ran one, EXCEPT a full
   release that unfroze runs TWO generation-2 collections for its one reclaim, so
-  the organic full collections are `gen."2".collections` less `freezes`, less
-  `reclaims`, less one more per full release; the exact residue needs that count,
-  and the served lab keeps the inequality rather than the equality), `endedPending` (ended sessions
+  `reclaims` alone cannot derive the organic count), `collections` (every
+  `gc.collect()` the run step issued, so the organic full collections are
+  `gen."2".collections` less `collections`, an EQUALITY: a full release's two
+  collects are both counted here), `endedPending` (ended sessions
   registered by weakref and not yet judged, awaiting their worker thread to
   finish), `lastReconcileMs` and
   `lastReconcileKind` (`initial`, `load`, `release` or `backstop`), `survivors`
   (owed refs a live root kept through a reclaim, a wasted pause each),
+  `lastReleaseSurvivors` (of the last release's owed refs, how many a live root
+  kept through it: 0 when the reclaim freed them, so the release line reads
+  "reclaimed", else the count the line names as kept by a live root),
   `lastReleaseSids` (the first eight characters of the sids the LAST JUDGEMENT
   owed a reclaim for, cleared each judgement, so a tick that owed nothing clears
   it and a cheap-collect release judged `load` shows them too; a full release also
-  writes one stderr line naming the sessions),
+  writes one stderr line, "reclaimed" when nothing survived and otherwise naming the kept sids),
   `totalReconcileMs` and `errors` (a reconcile that raised is counted here and
   said once on stderr, never ending the pusher). The reconcile's own collection
   pause lands after the cycle closed its ring row, so the pusher and jobs rings
