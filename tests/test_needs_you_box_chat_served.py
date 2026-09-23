@@ -309,6 +309,26 @@ if (fr) {
   await openNeedsBox(fr, 2);   // to the full context; a page without the levels (the base) shows everything already
   out.hiddenPane.rowsShown = await fr.waitForSelector("#notices .ntc-row", { timeout: 15000 }).then(() => true).catch(() => false);   // the rows visible at the full context
   out.hiddenPane.g5MoreBefore = await fr.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);   // the long-brief row's button stands before the hide
+  // 6b. THE KEYBOARD ORDER WHERE THE GEAR IS DRAWN (the round-one verifier of PR 2105: the order pin ran only on the standalone page, and the gear
+  // nested in the header's button was folded into its accessible name): Shift+Tab from the frame's composer enters the box on the gear, the last
+  // control in the header; one more lands on the header, named by its label alone (aria-labelledby); Enter opens the items; Tab goes to the gear,
+  // then to the first row's Reply
+  await openNeedsBox(fr, 0);
+  const frActive = () => fr.evaluate(() => { const a = document.activeElement; return a ? { inBox: !!a.closest("#notices"), head: a.classList.contains("ntc-head"), act: a.dataset ? a.dataset.act || null : null, text: (a.textContent || "").trim().slice(0, 40), labelledby: a.getAttribute("aria-labelledby"), labelText: (document.getElementById(a.getAttribute("aria-labelledby") || "") || {}).textContent || null } : null; });
+  await fr.focus("#composer-input");
+  out.shellKeys = { entered: false, presses: 0 };
+  for (let i = 0; i < 40; i++) {   // loop-ok: bounded; the walk stops when focus enters the box
+    await shell.keyboard.press("Shift+Tab"); out.shellKeys.presses = i + 1;
+    const a = await frActive(); if (a && a.inBox) { out.shellKeys.entered = true; out.shellKeys.first = a; break; }
+  }
+  if (out.shellKeys.entered) {
+    await shell.keyboard.press("Shift+Tab"); out.shellKeys.second = await frActive();
+    await shell.keyboard.press("Enter");
+    out.shellKeys.opened = await fr.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l1"), null, { timeout: 5000 }).then(() => true).catch(() => false);
+    await shell.keyboard.press("Tab"); out.shellKeys.afterTab1 = await frActive();
+    await shell.keyboard.press("Tab"); out.shellKeys.afterTab2 = await frActive();
+  }
+  await openNeedsBox(fr, 2);
   // 6a. THE HEADER'S OWN GEAR, in the shell where a settings card can open (the second contributor's post-merge review of PR 2093: the strip's
   // gear lands on Tab strip with the box's section out of view): its click opens the settings' Chat tab with the Boxes section in the card's
   // view, and the box's level does not move
@@ -357,9 +377,9 @@ await browser.close();
 """
 
 
-# the driver's budget. Its bounded waits sum to about 1275 s serially (every helper counted per call: the kernel's four 90 s deadlines, the
-# 60 s row and card waits of the first scenes and the credential row's, the 30 s row waits that follow the kernel's word, the shorter button,
-# dialog, level, settings-card and frame waits, the 30 s frame loop), more than any per-test ceiling the runner gives (CI's served-page step runs pytest with --timeout=600, thread method), so
+# the driver's budget. Its bounded waits sum to about 1700 s serially (every helper counted PER CALL, the round-one verifier of PR 2105: the
+# kernel's four 90 s deadlines, the 60 s row, card and credential-row waits, the 30 s and 15 s waits of the brief helpers per call, the fold
+# helper's three 5 s waits per call, the shorter button, dialog, level, settings-card and frame waits, the frame loops), more than any per-test ceiling the runner gives (CI's served-page step runs pytest with --timeout=600, thread method), so
 # the cap cannot be the sum: it is the ceiling less the SETUP the same per-test timer wraps (pytest-timeout's thread method times the first
 # test's setUpClass too: the esbuild run and the healthz boot loop, bounded at about 60 to 120 s here), so a kernel that boots late and then
 # stalls still hits this cap before the runner's, with the record below and the kernel's tail in hand rather than a bare per-test timeout
@@ -700,6 +720,20 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(f["down"], "the next comes back to the items, not the header line: %r" % f["after"])
         self.assertEqual((f["after"]["level"], f["after"]["head2"]["expanded"]), (1, "true"))
         self.assertEqual(f["web"]["level"], 2, "web's box stands where it was: %r" % f["web"])
+
+    def test_where_the_gear_is_drawn_the_keyboard_meets_it_then_the_header_named_by_its_label(self):
+        """The round-one verifier of PR 2105: the order pin ran only on the standalone page, where no gear is drawn, and the gear nested in the
+        header's button was folded into the header's accessible name. In the shell: Shift+Tab from the composer enters the box on the gear, one
+        more lands on the header, whose name is its label alone through aria-labelledby; Enter opens the items; Tab goes to the gear, then Reply."""
+        r = self._result(); k = r["shellKeys"]
+        self.assertTrue(k["entered"], "Shift+Tab from the composer enters the box within the walk: %r" % k)
+        self.assertEqual(k["first"]["act"], "ntc-gear", "the gear, the header's last control, is the first stop backwards: %r" % k["first"])
+        self.assertEqual((k["second"]["head"], k["second"]["labelledby"]), (True, "ntc-label"), "then the header, named by its label alone (before: the gear's name folded into it): %r" % k["second"])
+        self.assertRegex(k["second"]["labelText"] or "", r"^Needs you · \d+$", "the name is the label's text, the title with the count and nothing of the gear: %r" % k["second"])
+        self.assertNotIn("settings", k["second"]["labelText"] or "", "the gear's label is not in the name")
+        self.assertTrue(k["opened"], "Enter opens the items")
+        self.assertEqual(k["afterTab1"]["act"], "ntc-gear", "Tab from the header: the gear: %r" % k["afterTab1"])
+        self.assertEqual((k["afterTab2"]["inBox"], k["afterTab2"]["text"], k["afterTab2"]["act"]), (True, "Reply", "ntc-reply"), "then the first row's Reply: %r" % k["afterTab2"])
 
     def test_the_headers_gear_opens_the_settings_at_the_boxes_section_in_the_shell(self):
         """The second contributor's post-merge review of PR 2093: the strip's gear, the only section-targeted opener, lands on Tab strip

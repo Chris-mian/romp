@@ -170,6 +170,7 @@ test("the keyboard reaches both box headers (the second contributor's post-merge
   assert.match(h, /head\.addEventListener\("keydown", \(e\) => \{ if \(e\.target !== head\) return; if \(e\.key === "Enter" \|\| e\.key === " "\) \{ e\.preventDefault\(\); head\.click\(\); \} \}\);/, "Enter or Space press the header through its click (the delegate's path), focus kept; a key on the gear inside is the gear's own");
   assert.match(h, /const caret = el\("span", "ntc-caret"\); caret\.setAttribute\("aria-hidden", "true"\); head\.appendChild\(caret\);/, "the caret is decoration");
   assert.doesNotMatch(h, /head\.setAttribute\("aria-label"/, "no aria-label: it would drop 'Needs you · N' from the name");
+  assert.match(h, /const label = el\("span", "ntc-label"\); label\.id = "ntc-label"; head\.appendChild\(label\);\s*\n\s*head\.setAttribute\("aria-labelledby", "ntc-label"\);/, "the name is the label alone: the gear nested in the button is not folded into it (the round-one verifier of PR 2105)");
   const a = fn("applyNoticeBoxLevel");
   assert.match(a, /head\.setAttribute\("aria-expanded", level > 0 \? "true" : "false"\); head\.title = level === 0 \? "Show the items" : level === 1 \? "Show the full context" : "Collapse";/, "the expanded state and the next step as the title move with the level");
   assert.doesNotMatch(a, /caret\.title/, "the title is the header's, not the hidden caret's");
