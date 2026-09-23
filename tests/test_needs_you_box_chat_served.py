@@ -62,7 +62,7 @@ const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
 await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
 await page.addInitScript((sid) => { window.__frameN = 0; window.__injN = 0; window.__lastStatus = null; window.addEventListener("message", (e) => { const m = e.data; if (!m || typeof m !== "object" || typeof m.type !== "string") return; if (e.source === window) { window.__injN++; return; } window.__frameN++;
   const rows = m.status && Array.isArray(m.status.notices) ? m.status.notices : null;   // only a frame that carries the box's rows: an early frame without them would empty the box when posted back
-  if (m.id === sid && rows && rows.length && (m.type === "status" || m.type === "session" || m.type === "chatTail")) window.__lastStatus = { type: "status", id: sid, status: m.status }; }, true); }, cfg.sid);   // the kernel's frames counted and the session's latest status (the box's rows ride the chatTail frames' status here) kept, so a scene can post a status frame of its own that differs in one field and wait for the page to handle it, never on a delay   // the kernel's frames counted and the session's latest status kept, so a scene can post a frame of its own that differs in one field and wait for the page to handle it, never on a delay
+  if (m.id === sid && rows && rows.length && (m.type === "status" || m.type === "session" || m.type === "chatTail")) window.__lastStatus = { type: "status", id: sid, status: m.status }; }, true); }, cfg.sid);   // the kernel's frames counted and the session's latest status (the box's rows ride the chatTail frames' status here) kept, so a scene can post a status frame of its own that differs in one field and wait for the page to handle it, never on a delay
 const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
 const out = { errors };
 const mark = () => process.stdout.write("PARTIAL:" + JSON.stringify(out) + "\n");   // the record so far, after every scene: what a run that hits the driver's budget still reports
@@ -78,7 +78,7 @@ const readBox = () => page.evaluate(() => {
            head: box ? ((box.querySelector(".ntc-head .ntc-label") || {}).textContent || null) : null,
            dot: box && box.querySelector(".ntc-head .ntc-dot") ? getComputedStyle(box.querySelector(".ntc-head .ntc-dot")).backgroundColor : null,
            level, caret: box && box.querySelector(".ntc-head .ntc-caret") ? box.querySelector(".ntc-head .ntc-caret").textContent : null,
-           head2: (() => { const h = box && box.querySelector(".ntc-head"); return h ? { role: h.getAttribute("role"), tabIndex: h.tabIndex, expanded: h.getAttribute("aria-expanded"), title: h.title, border: getComputedStyle(h.closest(".ntc-bar") || h).borderBottomColor, focusable: h.querySelectorAll("button, [tabindex], a[href], input, select, textarea").length, caretHidden: (h.querySelector(".ntc-caret") || {}).getAttribute ? h.querySelector(".ntc-caret").getAttribute("aria-hidden") : null, gear: !!(h.closest(".ntc-bar") || h).querySelector(".ntc-gear") } : null; })(),   // the header as a control: its role, its tab stop, its expanded state and title, its rule's colour, the caret's aria, the gear
+           head2: (() => { const h = box && box.querySelector(".ntc-head"); return h ? { role: h.getAttribute("role"), tabIndex: h.tabIndex, expanded: h.getAttribute("aria-expanded"), title: h.title, border: getComputedStyle(h.closest(".ntc-bar") || h).borderBottomColor, caretHidden: (h.querySelector(".ntc-caret") || {}).getAttribute ? h.querySelector(".ntc-caret").getAttribute("aria-hidden") : null, gear: !!(h.closest(".ntc-bar") || h).querySelector(".ntc-gear") } : null; })(),   // the header as a control: its role, its tab stop, its expanded state and title, its rule's colour, the caret's aria, the gear
            laidTitles: rows.map((r) => { const t = r.querySelector(".ntc-title"); return !!t && t.getBoundingClientRect().height > 0; }),   // LAID OUT, by rect: a hidden ancestor keeps a child's computed display and its textContent (the second contributor's post-merge review of PR 2093)
            laidButtons: rows.map((r) => Array.from(r.querySelectorAll(".ntc-actions button")).filter((b) => b.getBoundingClientRect().height > 0).length),
            headVisible: box ? vis(box.querySelector(".ntc-head")) : null, rowsVisible: rows.map((r) => vis(r)), bodiesVisible: rows.map((r) => vis(r.querySelector(".ntc-body"))),
@@ -143,6 +143,7 @@ await page.click('#tabs .tab[data-id="' + cfg.api + '"]');
 out.floor = { row: await page.waitForSelector('#notices .ntc-row button[data-act="ntc-fix"]', { state: "attached", timeout: 60000 }).then(() => true).catch(() => false) };
 out.floor.shown = await readBox();
 await page.click("#notices .ntc-head"); out.floor.up = await page.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l2"), null, { timeout: 5000 }).then(() => true).catch(() => false);
+out.floor.atTwo = await readBox();   // the full context at the floor: the next click descends to the items, and the title must say so
 await page.click("#notices .ntc-head"); out.floor.down = await page.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l1"), null, { timeout: 5000 }).then(() => true).catch(() => false);
 out.floor.after = await readBox();
 // the floor's RELEASE (the box arc's round three): the seed removed, the credential row leaves, and the level stays at the items (the click stores
@@ -371,7 +372,7 @@ if (fr) {
     out.shellKeys.levelAfterGearEnter = await fr.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c)));
     await shell.keyboard.press("Escape");
     await shell.waitForFunction(() => !document.body.classList.contains("settings-open"), null, { timeout: 10000 }).catch(() => {});
-    await fr.focus("#notices .ntc-bar .ntc-gear", { timeout: 5000 }).catch(() => {});   // fail-soft: a page without the bar (the base) reads whatever it shows
+    await fr.focus("#notices .ntc-bar .ntc-gear", { timeout: 5000 }).catch((e) => { if (e.name !== "TimeoutError") throw e; });   // fail-soft on the wait alone: a page without the bar (the base) reads whatever it shows
     await shell.keyboard.press("Tab"); out.shellKeys.afterTab2 = await frActive();
     out.shellKeys.headFocusable = await fr.evaluate(() => document.querySelector("#notices .ntc-head").querySelectorAll("button, [tabindex], a[href], input, select, textarea").length);   // no focusable descendant: the gear is a sibling (axe nested-interactive)
   }
@@ -788,6 +789,14 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertEqual(f["shown"]["head2"]["title"], "Show the full context", "the title names the next step at the floor")
         self.assertEqual(f["after"]["head2"]["title"], "Show the full context", "and after the round trip too: 'Collapse' is never said where the next click cannot fold to the header line")
         self.assertEqual(f["web"]["level"], 2, "web's box stands where it was: %r" % f["web"])
+
+    def test_the_title_at_the_floored_full_context_says_hide_the_full_context(self):
+        """The round-one verifier of PR 2120: at the floor from the full context the next click descends to the items, and the title read 'Show
+        the items' while the items already showed. The title is named by the transition: descending it says 'Collapse' only where the next
+        level is the header line, else 'Hide the full context'."""
+        r = self._result(); f = r["floor"]
+        self.assertTrue(f["up"], "premise: the click to the full context at the floor ran")
+        self.assertEqual((f["atTwo"]["level"], f["atTwo"]["head2"]["title"]), (2, "Hide the full context"), "the next click descends to the items, not the header line: %r" % f["atTwo"]["head2"])
 
     def test_the_floor_releases_to_the_items_when_the_credential_row_leaves(self):
         """The box arc's round three: a click at the floor stored the level after the SHOWN one, so two clicks from the items stored 0 and the

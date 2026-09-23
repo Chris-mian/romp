@@ -1127,15 +1127,15 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
   display: flex; flex-direction: column; }
 .ntc-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 7px 11px;
   border-bottom: 1px solid var(--box-border); position: sticky; top: 0; z-index: 1;
-  background: linear-gradient(var(--box-bg), var(--box-bg)), var(--bg); }   /* the BAR (the box arc's round three): the header and the gear side by side, never a button inside the role=button header; the bar carries what the header carried: the sticky place, the opaque ground, the rule */
-.ntc-head { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 0.92em; user-select: none; }   /* an opaque ground under the box's wash, above the rows: a row scrolled under the header no longer prints through it (the second contributor's review, 2026-09-22) */
+  background: linear-gradient(var(--box-bg), var(--box-bg)), var(--bg); }   /* the BAR (the box arc's round three): the header and the gear side by side, never a button inside the role=button header; the bar carries what the header carried: the sticky place, the rule, and an opaque ground under the box's wash, above the rows: a row scrolled under the header no longer prints through it (the second contributor's review, 2026-09-22) */
+.ntc-head { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 0.92em; user-select: none; }
 .ntc-head { cursor: pointer; }   /* the header line is the fold control (the user 2026-09-23): the box opens in steps, collapsed by default like the awaiting box */
 .ntc-head:focus-visible, .bg-fold-head:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }   /* the keyboard's focus on either header (the box arc's round three): the boxes' overflow clips the browser's ring, and the accent reads 9.54:1 dark and 4.06:1 light; -2px keeps it off the rule below */
 .ntc-head .ntc-caret { flex: 0 0 auto; color: var(--dim); font-size: 0.72em; width: 10px; opacity: 0.7; }   /* the awaiting box's caret (.bg-caret): closed points right, the last level down */
 #notices.ntc-l0 .ntc-bar { border-bottom-color: transparent; }   /* collapsed: the header line alone, no rule under it */
 #notices.ntc-l0 .ntc-row { display: none; }   /* level 0: the items hidden */
-#notices:not(.ntc-l2) .ntc-body, #notices:not(.ntc-l2) .ntc-attach, #notices:not(.ntc-l2) .ntc-more { display: none; }
-#notices:not(.ntc-l2) .ntc-row.ntc-fault .ntc-body { display: -webkit-box; }   /* the credential row's body, the fault's explanation, shows at the items too (the box arc's round three: it hid with every body) */   /* below level 2: the background paragraph, its disclosure and the attachment hidden; the title and the buttons stand */
+#notices:not(.ntc-l2) .ntc-body, #notices:not(.ntc-l2) .ntc-attach, #notices:not(.ntc-l2) .ntc-more { display: none; }   /* below level 2: the background paragraph, its disclosure and the attachment hidden; the title and the buttons stand */
+#notices:not(.ntc-l2) .ntc-row.ntc-fault .ntc-body { display: -webkit-box; }   /* the credential row's body, the fault's explanation, shows at the items too (the box arc's round three: it hid with every body) */
 .ntc-head .ntc-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg); }
 .ntc-head .ntc-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 .ntc-bar .ntc-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin: -4px 0 -4px 4px; padding: 2px 4px; cursor: pointer;

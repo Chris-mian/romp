@@ -15171,12 +15171,19 @@ function noticeBoxShownLevel(sid: string, rows: ChatNotice[]): number { return M
 // from the items stored 0, so the box dropped to its header line when the credential row left). One helper for the click and the header's
 // title, so "Collapse" is said only where the next click folds the box to its header line
 function noticeBoxNextLevel(sid: string, rows: ChatNotice[]): number { return Math.max((noticeBoxShownLevel(sid, rows) + 1) % 3, noticeBoxFloor(rows)); }
-const NOTICE_BOX_STEP_TITLES = ["Collapse", "Show the items", "Show the full context"];   // by the level the next click reaches
+// the header's title names the step the next click takes, BY THE TRANSITION (the round-one verifier of PR 2120: at the floor from the full
+// context the next click reaches the items, and "Show the items" read wrong while the items already showed): ascending, "Show the items" or
+// "Show the full context"; descending, "Collapse" where the next level is the header line, else "Hide the full context"
+function noticeBoxStepTitle(sid: string, rows: ChatNotice[]): string {
+  const shown = noticeBoxShownLevel(sid, rows), next = noticeBoxNextLevel(sid, rows);
+  if (next > shown) return next === 1 ? "Show the items" : "Show the full context";
+  return next === 0 ? "Collapse" : "Hide the full context";
+}
 function applyNoticeBoxLevel(host: HTMLElement, sid: string, rows: ChatNotice[]): void {
   const level = noticeBoxShownLevel(sid, rows);
   host.classList.toggle("ntc-l0", level === 0); host.classList.toggle("ntc-l1", level === 1); host.classList.toggle("ntc-l2", level === 2);
   const head = host.querySelector<HTMLElement>(".ntc-head");
-  if (head) { head.setAttribute("aria-expanded", level > 0 ? "true" : "false"); head.title = NOTICE_BOX_STEP_TITLES[noticeBoxNextLevel(sid, rows)]; }
+  if (head) { head.setAttribute("aria-expanded", level > 0 ? "true" : "false"); head.title = noticeBoxStepTitle(sid, rows); }
   const caret = host.querySelector<HTMLElement>(".ntc-head .ntc-caret");
   if (caret) caret.textContent = level === 2 ? "\u25be" : "\u25b8";
 }

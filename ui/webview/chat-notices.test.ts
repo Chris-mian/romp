@@ -173,8 +173,9 @@ test("the keyboard reaches both box headers (the second contributor's post-merge
   assert.doesNotMatch(h, /head\.setAttribute\("aria-label"/, "no aria-label: it would drop 'Needs you · N' from the name");
   assert.match(h, /const label = el\("span", "ntc-label"\); label\.id = "ntc-label"; head\.appendChild\(label\);\s*\n\s*head\.setAttribute\("aria-labelledby", "ntc-label"\);/, "the name is the label alone: the gear nested in the button is not folded into it (the round-one verifier of PR 2105)");
   const a = fn("applyNoticeBoxLevel");
-  assert.match(a, /head\.setAttribute\("aria-expanded", level > 0 \? "true" : "false"\); head\.title = NOTICE_BOX_STEP_TITLES\[noticeBoxNextLevel\(sid, rows\)\];/, "the expanded state and the next step as the title move with the level, the title from the level the next click reaches");
-  assert.match(RENDER, /const NOTICE_BOX_STEP_TITLES = \["Collapse", "Show the items", "Show the full context"\];/, "'Collapse' only where the next click folds the box to its header line (at the floor the next click shows the items)");
+  assert.match(a, /head\.setAttribute\("aria-expanded", level > 0 \? "true" : "false"\); head\.title = noticeBoxStepTitle\(sid, rows\);/, "the expanded state and the next step as the title move with the level, the title by the transition the next click makes");
+  const st = fn("noticeBoxStepTitle");
+  assert.match(st, /if \(next > shown\) return next === 1 \? "Show the items" : "Show the full context";\s*\n\s*return next === 0 \? "Collapse" : "Hide the full context";/, "ascending names what shows next; descending says 'Collapse' only where the next level is the header line, else 'Hide the full context' (the round-one verifier of PR 2120: at the floor from the full context 'Show the items' read while the items already showed)");
   assert.doesNotMatch(a, /caret\.title/, "the title is the header's, not the hidden caret's");
   const bg = RENDER.split("function renderBgTasks(")[1].split("\nfunction ")[0];
   assert.match(bg, /head\.setAttribute\("role", "button"\); head\.tabIndex = 0; head\.setAttribute\("aria-expanded", open \? "true" : "false"\);/, "the background box's header, the same gap at the base, has the same route");
