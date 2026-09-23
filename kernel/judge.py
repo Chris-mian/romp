@@ -513,7 +513,15 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 #                                          consolidator / courier; the
 #                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
 #                                          already had their own.
-PLACEMENTS_V = 14                        # placements-identity schema version (plan P2, the user 2026-07-06).
+PLACEMENTS_V = 15                        # placements-identity schema version (plan P2, the user 2026-07-06).
+#                                          v15 (2026-09-23): a parallel tool batch's branch beside the spine is kept
+#                                          (em.FileAdapter._batch_head). The CLI parents each call's result at the record
+#                                          carrying that call, so once the reply chains off the last result, the results of
+#                                          the batch's other calls hung off the spine and were filed as rewound: on every
+#                                          transcript with a parallel batch those results now parse out. v3's shape, a GROWN
+#                                          atom set; tool_result atoms open no segment, but a settle seam whose split falls
+#                                          inside a batch's result window now starts its tail at a result it never saw,
+#                                          which moves that tail's anchor and so its id. Same seal.
 #                                          v14 (T333, 2026-09-11): the harness's own skill-load wrapper (the bare-named
 #                                          <skill-format> command wrapper with no arguments slot that the orchestration
 #                                          mode writes right after the prompt) no longer parses to a command atom, so on
@@ -3972,7 +3980,8 @@ def tasks_for(fsid, leaf, files, now, done=None):
     cf = PCACHE / (fsid + ".json")
     try:
         o = json.loads(cf.read_text())
-        if o.get("key") == key and o.get("capKey") == cap_key and o.get("v") == 9:    # v8 = the harness skill-load wrapper no longer emits a command atom, so the prompt segment grows (T333, 2026-09-11; with PLACEMENTS_V 14);
+        if o.get("key") == key and o.get("capKey") == cap_key and o.get("v") == 10:   # v10 = a parallel tool batch's results parse out, so the segments holding one grow (2026-09-23; with PLACEMENTS_V 15);
+            #                                             v8 = the harness skill-load wrapper no longer emits a command atom, so the prompt segment grows (T333, 2026-09-11; with PLACEMENTS_V 14);
             #                                             v7 = machine-written triggers key their segment on the anchor uuid, so those seg ids moved (T318, 2026-09-10; with PLACEMENTS_V 13);
             #                                             v6 = absorbed atoms placed at their landing time, so their seg ids moved (T252d, 2026-09-08);
             #                                             v5 = absorbed SDK-injection atoms carry real text (2026-07-06); older caches regenerate
@@ -3996,7 +4005,7 @@ def tasks_for(fsid, leaf, files, now, done=None):
     try:
         PCACHE.mkdir(parents=True, exist_ok=True)
         tmp = cf.with_suffix(".tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps({"key": key, "capKey": cap_key, "v": 9, "tasks": tasks}))
+        tmp.write_text(json.dumps({"key": key, "capKey": cap_key, "v": 10, "tasks": tasks}))
         tmp.rename(cf)
     except Exception:
         pass

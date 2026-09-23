@@ -186,10 +186,10 @@ class StringRowsAndRestoreSplit(Harness):
         self.assertTrue(self.doc(path), em.asm_checkpoint_stats())
         return path
 
-    def test_a_written_document_is_version_7_with_string_rows_and_restores_equal(self):
+    def test_a_written_document_is_version_8_with_string_rows_and_restores_equal(self):
         path = self._compacting()
         d = _doc(path)
-        self.assertEqual(d["av"], 7, "version 7: the settled-turn cut (stage one b)")
+        self.assertEqual(d["av"], 8, "version 8: the parallel tool batch keep (version 7: the settled-turn cut, stage one b)")
         self.assertGreater(len(d["atoms"]), 0)
         self.assertTrue(all(isinstance(r, str) for r in d["atoms"]), "every atom row is a JSON string")
         self.assertTrue(all(isinstance(json.loads(r), dict) for r in d["atoms"]), "each decodes to the row it was")
@@ -209,18 +209,19 @@ class StringRowsAndRestoreSplit(Harness):
         self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "counted once under `rows`: %s" % em.asm_checkpoint_stats()["fallbacks"])
         self.assertEqual(_strip(tree), self.cold(path))
 
-    def test_the_previous_version_is_refused_once_and_the_next_settle_writes_version_7(self):
-        # the deploy boot of stage one b: every version 6 document (the compaction cut) is refused ONCE under `version` and the
-        # settle that follows the whole parse writes the version 7 document (the settled-turn cut); the boot after restores
+    def test_the_previous_version_is_refused_once_and_the_next_settle_writes_version_8(self):
+        # the deploy boot of the parallel tool batch keep (2026-09-23; stage one b's was the same road): every version 7
+        # document (stored verdicts that filed a batch's branch as rewound) is refused ONCE under `version` and the settle
+        # that follows the whole parse writes the version 8 document; the boot after restores
         path = self._compacting()
         d = _doc(path)
-        d["av"] = 6                                                # the previous version's document: string rows, the old cut rule
+        d["av"] = 7                                                # the previous version's document: the old verdicts
         _write_doc(path, d)
         em._ASM_CKPT_STATS["fallbacks"] = {}
         self.fresh(); modes = []; self.parse(path, modes)
         self.assertEqual(modes, ["full"]); self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("version"), 1, "the migration boot's road")
         self.assertTrue(self.doc(path), "the settle rewrites it")
-        self.assertEqual(_doc(path)["av"], 7)
+        self.assertEqual(_doc(path)["av"], 8)
         got, modes, n_lazy = self.restored(path)
         self.assertEqual(modes, ["restore"])
         self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("version"), 1, "refused once, never again")
