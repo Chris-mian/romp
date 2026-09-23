@@ -6,6 +6,7 @@ The split under test: the judge records every PR ref it saw (it has the atoms, n
 KERNEL filters to the session's own repo and stamps `live` (it has the cwd, and therefore the remote).
 """
 import os
+import subprocess
 import tempfile
 from romp_load import load_source
 from pathlib import Path
@@ -99,11 +100,28 @@ def test_a_referenced_pr_missing_from_the_hydration_is_simply_absent():
     assert out["prs"] is None and out["prNum"] is None
 
 
-def test_an_error_is_carried_and_no_prs_are_served():
-    """Never yesterday's state as today's: the pane shows the reason instead."""
+def test_an_error_rides_beside_the_last_snapshot():
+    """A failed gh read keeps what was known and says why it is not current; the pane renders both."""
+    prs = {12: _pr(12, "dev/x")}
+    out = km._session_pr_slice(repo=REPO, branch="dev/x", ahead=0, prs=prs, err="gh auth login",
+                               node_nums=set())
+    assert out["prError"] == "gh auth login"
+    assert sorted(out["prs"]) == ["12"] and out["prNum"] == 12
+
+
+def test_a_first_failed_read_carries_only_the_reason():
     out = km._session_pr_slice(repo=REPO, branch="dev/x", ahead=0, prs={}, err="gh auth login",
                                node_nums=set())
     assert out["prError"] == "gh auth login" and out["prs"] is None
+
+
+def test_a_reused_branch_shows_its_open_pr_and_only_that_one_is_live():
+    """A branch name reused after a closed PR: the open one is the branch's PR, and `live` marks it alone."""
+    prs = {4: _pr(4, "dev/x", state="closed"), 9: _pr(9, "dev/x")}
+    out = km._session_pr_slice(repo=REPO, branch="dev/x", ahead=1, prs=prs, err="", node_nums={4})
+    assert out["prNum"] == 9
+    assert out["prs"]["9"]["live"] is True
+    assert out["prs"]["4"]["live"] is False
 
 
 def test_no_repo_yields_an_empty_slice():
@@ -186,3 +204,75 @@ def test_an_empty_owner_ref_still_needs_a_repo():
 
 def test_an_empty_owner_ref_dedupes_against_the_explicit_one():
     assert km._node_pr_nums({"prRefs": [[REPO, 503], ["", 503]]}, REPO) == [503]
+
+
+# ── the payload through a real checkout ──────────────────────────────────────────────────────────────
+
+def _git(cwd, *args):
+    subprocess.run(["git"] + list(args), cwd=str(cwd), check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _checkout(tmp_path):
+    """A synthetic GitHub-origin repo on a feature branch with one commit ahead of its upstream."""
+    up = tmp_path / "up"
+    up.mkdir()
+    _git(up, "init", "-q", "-b", "main")
+    for d in (up,):
+        _git(d, "config", "user.email", "dev@example.invalid")
+        _git(d, "config", "user.name", "Dev")
+    (up / "README.md").write_text("notes-api\n")
+    _git(up, "add", "README.md")
+    _git(up, "commit", "-qm", "init")
+    _git(up, "branch", "dev/notes-index")
+    work = tmp_path / "notes-api"
+    _git(tmp_path, "clone", "-q", "-b", "dev/notes-index", str(up), str(work))
+    _git(work, "config", "user.email", "dev@example.invalid")
+    _git(work, "config", "user.name", "Dev")
+    (work / "a.py").write_text("x = 1\n")
+    _git(work, "add", "a.py")
+    _git(work, "commit", "-qm", "a")
+    _git(work, "remote", "set-url", "origin", "https://github.com/%s.git" % REPO)
+    return work
+
+
+def test_session_pr_payload_reads_a_real_checkout(tmp_path, monkeypatch):
+    """The local half runs for real (repo, branch, ahead); only the gh read is stubbed, since the real one
+    starts a background thread."""
+    work = _checkout(tmp_path)
+    asked = []
+    prs = {7: _pr(7, "dev/notes-index"), 12: _pr(12, "dev/other")}
+    monkeypatch.setattr(km.gp, "repo_prs", lambda repo, nums=(), branch="": (asked.append((repo, set(nums), branch)),
+                                                                           (prs, ""))[1])
+    monkeypatch.setattr(km, "_cwd_of", lambda sid: str(work))
+    ledger = {"tree": [{"prNums": [12]}, {"prNums": None}]}
+    out = km._session_pr_payload("s-real", ledger, None)
+    assert asked == [(REPO, {12}, "dev/notes-index")]
+    assert out["branch"] == "dev/notes-index" and out["prNum"] == 7
+    assert out["prs"]["7"]["live"] is True, "one commit ahead of its upstream"
+    assert out["prs"]["12"]["live"] is False
+    assert km._pr_repo_seen["s-real"] == REPO
+
+
+def test_the_off_switch_skips_every_read(monkeypatch):
+    monkeypatch.setattr(km.gp, "PR_STATUS_OFF", True)
+    monkeypatch.setattr(km.gp, "repo_of", lambda cwd: (_ for _ in ()).throw(AssertionError("read")))
+    assert km._session_pr_payload("s1", None, None) == km._NO_PR_PAYLOAD
+
+
+def test_one_session_s_failure_costs_only_its_chips(monkeypatch):
+    """The pusher attaches a payload per session; a raise there must not abort the whole push."""
+    def boom(*a, **k):
+        raise RuntimeError("dictionary changed size during iteration")
+
+    monkeypatch.setattr(km, "_session_pr_payload", boom)
+    assert km._safe_pr_payload("s1", None, None) == km._NO_PR_PAYLOAD
+
+
+def test_the_error_chip_retries_the_session_s_repo(monkeypatch):
+    retried = []
+    monkeypatch.setattr(km.gp, "retry", lambda repo: retried.append(repo))
+    km._pr_repo_seen["s-retry"] = REPO
+    assert km._pr_retry("s-retry") is True
+    assert retried == [REPO]
+    assert km._pr_retry("s-unknown") is False, "a session with no repo has nothing to retry"

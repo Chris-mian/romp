@@ -100,6 +100,7 @@ _cred = sys.modules.get("romp_credentials") or load_source("romp_credentials", H
 # the stored Claude logins' registry (T346): a judge call for a session billed to one names that login's helper,
 # and never runs as a login the registry holds refused
 _logins = sys.modules.get("romp_logins") or load_source("romp_logins", HERE / "logins.py")
+gp = sys.modules.get("romp_gitpr") or load_source("romp_gitpr", HERE / "gitpr.py")   # the PR-acting command matcher
 
 HOME     = Path.home()
 STATE    = Path(os.environ.get("ROMP_STATE_DIR")   # per-kernel state root override (plans/multi-kernel.md)
@@ -7354,18 +7355,9 @@ def _goal_seg_ids(store, nid, subtree=True):
 PR_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(\d+)(?!\w)")
 
 
-# A goal's PR is one it ACTED ON, not one it happened to mention (the user 2026-08-18). Mining every url in
-# a goal's segments attributed PRs to every goal that merely sat in a conversation where a number came up —
-# on live data, a goal that had only rotated a stale API token carried someone else's PR, and a goal that
-# only read a design note carried two. So a segment contributes refs only when it also holds the RECEIPT of
-# having acted: a command that opens or changes a PR, or pushes the branch behind one.
-# Anchored to COMMAND POSITION — the start of the string or just after a shell separator — so the words
-# appearing inside an argument never count. `grep -rn 'git push' docs/` is a search, not a push, and an
-# unanchored match read it as one. Read-only subcommands (view / list / checks / diff / status) are
-# deliberately absent: looking at a PR is not acting on it.
-_CMD_HEAD = r"(?:^|[\n;&|(]|&&|\|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*"
-_PR_RECEIPT_CMD_RE = re.compile(_CMD_HEAD + r"(?:gh\s+pr\s+(?:create|edit|merge|ready|close|reopen|comment"
-                                            r"|review)\b|git\s+push\b)")
+# A goal's PR is one it ACTED ON, not one it happened to mention: a segment contributes refs only when it
+# also holds a command that opens or changes a PR, or pushes the branch behind one (gp.PR_ACT_CMD_RE, the
+# one command-position matcher, shared with the kernel's push counter).
 # Inside such a command a BARE number is unambiguous — `gh pr merge 503` names a PR the way loose prose
 # never can. Recorded with an EMPTY owner (the command targets the session's own checkout); skipped when the
 # command carries --repo, which points somewhere else entirely. Intervening tokens are allowed because flags
@@ -7427,7 +7419,7 @@ def _seg_pr_refs(seg):
         texts.extend(t)
         cmds.extend(c)
     out, got = [], set()
-    if any(_PR_RECEIPT_CMD_RE.search(c) for c in cmds):
+    if any(gp.PR_ACT_CMD_RE.search(c) for c in cmds):
         for text in texts + cmds:
             for m in PR_URL_RE.finditer(text):
                 ref = (m.group(1), int(m.group(2)))
@@ -7448,18 +7440,24 @@ def _seg_pr_refs(seg):
     return hit
 
 
-def goal_pr_refs(store, seg_by_id, nid):
-    """[[owner/repo, number]] mined from goal `nid`'s own segments and its subtree's, oldest-first and
-    deduped. Deliberately UNFILTERED by repo: this side has the atoms but not the session's checkout, so
-    it records everything it saw and the kernel — which has the cwd, and therefore the remote — keeps only
-    the refs belonging to the session's own repo. Lists, not tuples: this is written to the goal store as
-    JSON."""
+def _goal_pr_segs(store, seg_by_id, nid, idx=None):
+    """Goal `nid`'s OWN resolved segments, oldest first. Own trail only: the pane rolls a parent's PRs up
+    from the tree it already draws, so mining the subtree here would list every descendant's on every
+    ancestor."""
+    return sorted(_segs_for(seg_by_id, _goal_seg_ids(store, nid, subtree=False), idx),
+                  key=lambda sg: sg.get("t", 0))
+
+
+def goal_pr_refs(store, seg_by_id, nid, idx=None):
+    """[[owner/repo, number]] mined from goal `nid`'s own segments, oldest-first and deduped. Unfiltered
+    by repo: this side has the atoms but not the checkout, so the kernel keeps only the session's own."""
+    return _refs_of(_goal_pr_segs(store, seg_by_id, nid, idx))
+
+
+def _refs_of(segs):
+    """The deduped PR refs of these segments, in order, as JSON-ready lists."""
     out, got = [], set()
-    # OWN trail only, not the subtree. A parent's PRs are rolled up by the pane, which walks the tree it is
-    # already drawing; mining the subtree here as well meant every ancestor accumulated every descendant's
-    # PRs, so a top goal listed five unrelated numbers (seen on live data 2026-08-18). One mechanism.
-    for sg in sorted(_segs_for(seg_by_id, _goal_seg_ids(store, nid, subtree=False)),
-                     key=lambda s: s.get("t", 0)):
+    for sg in segs:
         for key in _seg_pr_refs(sg):
             if key not in got:
                 got.add(key)
@@ -11541,13 +11539,19 @@ def _placement_of(placements, seg_id, live=None):
     return None
 
 
-def _segs_for(seg_by_id, seg_ids):
-    """Resolve recorded trail seg ids against a parse's seg_by_id, timestamp-invariant, preserving order.
-    A trail id written by an earlier pass can carry a different middle t than this parse's id for the same
-    segment (see _seg_key) — a raw `in` silently dropped that segment from the goal's gathered history."""
+def seg_index(seg_by_id):
+    """_seg_key → segment over a parse, built once and passed to _segs_for by a caller resolving many goals."""
     idx = {}
     for k, v in seg_by_id.items():
         idx.setdefault(_seg_key(k), v)
+    return idx
+
+
+def _segs_for(seg_by_id, seg_ids, idx=None):
+    """Resolve recorded trail seg ids against a parse's seg_by_id, timestamp-invariant, preserving order.
+    A trail id written by an earlier pass can carry a different middle t than this parse's id for the same
+    segment (see _seg_key) — a raw `in` silently dropped that segment from the goal's gathered history."""
+    idx = seg_index(seg_by_id) if idx is None else idx
     out = []
     for s in seg_ids:
         seg = seg_by_id.get(s)
@@ -15416,25 +15420,21 @@ def _closed_turns(store):
 
 
 def _record_pr_refs(store, seg_by_id):
-    """Stamp every goal's PR refs onto the store, so the read side can serve them without rebuilding a
-    parse (the user 2026-08-17). This side is where the atoms live; build_session is a pure assembler and
-    has no seg_by_id, so — exactly like `summary` and the brief parts — the fact is produced here and
-    merely read there.
+    """Stamp every goal's PR refs onto the store for the read side, writing only on a change.
 
-    Runs every judge pass, not only at distill: a draft PR opened mid-goal has to show on the goal that is
-    still OPEN, which is the whole point of the pane's live mark. Per-segment memoization (_seg_pr_refs)
-    keeps that to one scan per segment for the life of the process.
-
-    Only writes on a CHANGE, so an unchanged session's store stays byte-identical and the save is a no-op
-    for every consumer watching it.
-
-    `seg_by_id` None means the walk judged no turn this pass, so it never built the segment index: there is
-    nothing whose refs could have moved, and building the index here would undo the walk's own laziness."""
+    The contract is END-OF-TURN stamping: the walk builds `seg_by_id` (over every turn of the parse) only
+    on a pass that judges a turn, so a PR opened mid-turn is stamped once a turn ends; None means no turn
+    was judged. A goal none of whose recorded segments resolve in the parse is left as it was: after a
+    /clear the parse stops at the new transcript's root, and "not in this parse" is not "has no PR"."""
     if seg_by_id is None:
         return False
+    idx = seg_index(seg_by_id)
     changed = False
     for nid, nd in (store.get("nodes") or {}).items():
-        refs = goal_pr_refs(store, seg_by_id, nid)
+        segs = _goal_pr_segs(store, seg_by_id, nid, idx)
+        if not segs:
+            continue
+        refs = _refs_of(segs)
         if refs != (nd.get("prRefs") or []):
             nd["prRefs"] = refs or None
             changed = True
@@ -15631,7 +15631,7 @@ def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
         swept.add(tid); sig[tid] = fp; did += 1        # remember the size we judged at → detect later growth
     store["closedTurns"] = sorted(swept)
     store["closedSig"] = sig
-    _record_pr_refs(store, seg_by_id)                 # goal → PR refs, for the Outline pane's chip (no index, no scan)
+    _record_pr_refs(store, seg_by_id)                 # goal → PR refs for the Outline pane's chip, at end of turn
     settled = _session_settled(fsid, path, session, store, now)
     rollup_status(store, settled)
     save_goals(fsid, store)

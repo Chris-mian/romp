@@ -2,7 +2,8 @@
 // body (the user 2026-08-17). Synthetic PRs only — invented numbers, the neutral notes-api demo repo.
 import { test } from "node:test";
 import assert from "node:assert";
-import { prChipParts, worstOf, rollupParts, prDetailLines, prMatches, PR } from "./pr-chip";
+import { prChipParts, worstOf, rollupParts, prDetailLines, prMatches, sessionPrs, subtreePrs, goalChip, headChip,
+  prErrTitle, PR, PrNode } from "./pr-chip";
 
 const base: PR = {
   num: 12, url: "https://github.com/notes-api-org/notes-api/pull/12", title: "notes: index rebuild",
@@ -147,4 +148,61 @@ test("unknown checks add no claim to the detail body either", () => {
 test("unknown checks do not count toward the rollup's failures", () => {
   assert.equal(rollupParts([{ ...base, checksState: "unknown" }]).fails, 0);
   assert.equal(worstOf([{ ...base, checksState: "unknown" }]), "open");
+});
+
+// ── placement ──────────────────────────────────────────────────────────────────────────────────────
+
+const pr = (num: number, over: Partial<PR> = {}): PR => ({ ...base, num, url: base.url.replace("/12", "/" + num), ...over });
+const tree = (nodes: PrNode[]) => new Map(nodes.map((n) => [n.id, n]));
+
+test("a goal's PRs resolve against the session map, in the goal's order, skipping unanswered numbers", () => {
+  const prs = { "12": pr(12), "15": pr(15) };
+  assert.deepEqual(sessionPrs(prs, [15, 99, 12]).map((p) => p.num), [15, 12]);
+  assert.deepEqual(sessionPrs(null, [12]), []);
+});
+
+test("a goal with one PR of its own wears that PR's chip", () => {
+  const prs = { "12": pr(12) };
+  const g: PrNode = { id: "g1", prNums: [12] };
+  const c = goalChip(prs, tree([g]), g);
+  assert.equal(c.kind, "one");
+  assert.deepEqual(c.prs.map((p) => p.num), [12]);
+});
+
+test("several own PRs, or a parent with none of its own, wear the rollup", () => {
+  const prs = { "12": pr(12), "15": pr(15), "21": pr(21) };
+  const kid: PrNode = { id: "g2", prNums: [15], children: ["g3"] };
+  const grand: PrNode = { id: "g3", prNums: [21, 15] };
+  const parent: PrNode = { id: "g1", prNums: [], children: ["g2"] };
+  const byId = tree([parent, kid, grand]);
+  assert.equal(goalChip(prs, byId, { id: "x", prNums: [12, 15] }).kind, "rollup");
+  const up = goalChip(prs, byId, parent);
+  assert.equal(up.kind, "rollup");
+  assert.deepEqual(up.prs.map((p) => p.num).sort(), [15, 21], "descendants' PRs, deduped");
+  assert.deepEqual(subtreePrs(prs, byId, grand), []);
+});
+
+test("a goal whose own PR exists shows it, not its subtree's", () => {
+  const prs = { "12": pr(12), "15": pr(15) };
+  const kid: PrNode = { id: "g2", prNums: [15] };
+  const g: PrNode = { id: "g1", prNums: [12], children: ["g2"] };
+  assert.deepEqual(goalChip(prs, tree([g, kid]), g).prs.map((p) => p.num), [12]);
+});
+
+test("no PR anywhere: no chip", () => {
+  assert.deepEqual(goalChip({}, tree([]), { id: "g1" }), { kind: "none", prs: [] });
+});
+
+test("the session head carries its branch's PR and, independently, the failed read's reason", () => {
+  const prs = { "12": pr(12) };
+  assert.deepEqual(headChip({ prNum: 12, prs, prError: null }), { pr: prs["12"], err: "" });
+  assert.deepEqual(headChip({ prNum: 12, prs, prError: "HTTP 502" }), { pr: prs["12"], err: "HTTP 502" },
+    "a failed re-read keeps the snapshot beside the error");
+  assert.deepEqual(headChip({ prNum: null, prs: null, prError: "gh auth login" }), { pr: null, err: "gh auth login" });
+  assert.deepEqual(headChip({}), { pr: null, err: "" });
+});
+
+test("the error chip's title names the reason and the click", () => {
+  const t = prErrTitle("gh auth login");
+  assert.ok(t.includes("gh auth login") && t.includes("click to retry"));
 });

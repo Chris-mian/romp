@@ -55,7 +55,7 @@ cm = load_source("romp_colormap", HERE / "colormap.py")  # age → recency tint
 pal = load_source("romp_palette", HERE / "palette.py")  # session-identity palettes (selectable)
 sb = load_source("romp_session_backend", HERE / "session_backend.py")  # the SessionBackend ABC
 lg = load_source("romp_logins", HERE / "logins.py")  # stored Claude logins (T346): the registry beside the machine's own login
-gp = load_source("romp_gitpr", HERE / "gitpr.py")  # git/gh reads behind the per-goal PR chip
+gp = sys.modules.get("romp_gitpr") or load_source("romp_gitpr", HERE / "gitpr.py")  # git/gh reads behind the per-goal PR chip (the judge loads it first)
 gcf = load_source("romp_gc_freeze", HERE / "gc_freeze.py")  # Road B for #1735: freeze the loaded decoded heap out of the collector's walk
 CHAT_VIEW = ROOT / "vscode-extension"               # the tuned UI, current in this worktree via `git merge main`
 # ROMP_DIST_DIR: test seam (romp-lab serves a COPY of the built bundles, so its rebuild simulations —
@@ -3738,53 +3738,85 @@ def _pr_note_push(sid, repo, count):
     return True
 
 
+_NO_PR_PAYLOAD = {"branch": "", "prNum": None, "prs": None, "prError": None}
+_pr_repo_seen = {}   # sid → the repo its last PR payload was read from: the error chip's retry target
+_pr_payload_failed = set()   # sids whose payload raised, already reported
+
+
 def _session_pr_slice(repo, branch, ahead, prs, err, node_nums):
     """The session-level PR payload the Outline pane reads: its branch, that branch's PR, and only the PRs
-    this session actually references (a repo can hold a hundred; the pane needs this session's).
-
-    `live` is stamped HERE, off the AHEAD COUNT — an event (a commit, a completed push), never the
-    open-turn bit, which toggles at every turn boundary and would flap the chip between builds with no new
-    information.
-
-    A non-empty `err` means we could not look: `prs` goes None so the pane renders the reason rather than
-    an authoritative-looking blank that would read as "no PR"."""
+    this session references. `live` marks the branch's own PR while HEAD is ahead of its upstream (an
+    event, never the open-turn bit, which would flap the chip at every turn boundary). A failed gh read
+    keeps the last snapshot beside `prError`, so the pane shows what it knew and why it is not current."""
     if not repo:
-        return {"branch": "", "prNum": None, "prs": None, "prError": None}
-    if err:
-        return {"branch": branch, "prNum": None, "prs": None, "prError": err}
-    cur = next((n for n, pr in sorted(prs.items()) if branch and pr.get("branch") == branch), None)
+        return dict(_NO_PR_PAYLOAD)
+    cur = gp.branch_pr(prs, branch)
     out = {}
     for n in set(node_nums) | ({cur} if cur else set()):
         pr = prs.get(n)
         if pr:
-            out[str(n)] = {**pr, "live": bool(branch and pr.get("branch") == branch and ahead > 0)}
-    return {"branch": branch, "prNum": cur, "prs": out or None, "prError": None}
+            out[str(n)] = {**pr, "live": bool(n == cur and ahead > 0)}
+    return {"branch": branch, "prNum": cur, "prs": out or None, "prError": err or None}
 
 
 def _session_pr_payload(sid, ledger, work_tree=None):
-    """The session's PR slice, assembled from its own checkout: one local git probe trio (~3ms) plus a
-    per-REPO gh read that is cached and invalidated by event, never by age (see gitpr).
+    """The session's PR slice from its own checkout: statted local state (a fork only when a ref moved)
+    plus a per-repo gh read that is cached, refreshed in the background, and invalidated by event.
 
-    `work_tree` is the session payload's own detected worktree (None when it matches the registered dir),
-    reused here rather than re-derived so the chips describe the SAME tree the session's worktree row
-    names. Without it a session working in a per-session worktree beside a detached clone would report no
-    branch at all — the live case on this machine (the user 2026-08-18)."""
+    `work_tree` is the session payload's detected worktree, reused so the chips describe the same tree
+    the session's worktree row names. ROMP_PR_STATUS=off skips every git and gh read."""
+    if gp.PR_STATUS_OFF:
+        return dict(_NO_PR_PAYLOAD)
     wt = (work_tree or {}).get("dir") or ""
     cwd = os.path.expanduser(wt) if wt else _cwd_of(sid)
     repo = gp.repo_of(cwd)
     if not repo:
-        return {"branch": "", "prNum": None, "prs": None, "prError": None}
-    gp.note_local_state(cwd, repo)              # a new HEAD sha or a branch change → re-read this repo
-    gp.poll_due(repo, time.monotonic())         # checks still running → paced re-read; stops when terminal
+        _pr_repo_seen.pop(sid, None)
+        return dict(_NO_PR_PAYLOAD)
+    _pr_repo_seen[sid] = repo
+    branch, ahead = gp.note_local_state(cwd, repo)
+    gp.poll_due(repo, time.monotonic())
     nums = set()
     for n in ((ledger or {}).get("tree") or []):
         nums.update(n.get("prNums") or [])
-    # Non-blocking by contract: serves the cache and refreshes behind. Anything gh-shaped — the list, the
-    # per-PR checks, a mined PR older than the list window — happens on that background pass, because this
-    # function runs inside the per-push build and a 5s network call here stalls every pane.
-    prs, err = gp.repo_prs(repo, nums)
-    return _session_pr_slice(repo=repo, branch=gp.branch_of(cwd), ahead=gp.ahead_of(cwd),
-                             prs=prs, err=err, node_nums=nums)
+    prs, err = gp.repo_prs(repo, nums, branch)
+    return _session_pr_slice(repo=repo, branch=branch, ahead=ahead, prs=prs, err=err, node_nums=nums)
+
+
+def _safe_pr_payload(sid, ledger, work_tree=None):
+    """_session_pr_payload for the pusher: one session's failure costs that session its chips, never the
+    whole push."""
+    try:
+        return _session_pr_payload(sid, ledger, work_tree)
+    except Exception as e:
+        if sid not in _pr_payload_failed:          # said once per session, not once per push
+            _pr_payload_failed.add(sid)
+            print("pr payload for %s failed: %s: %s" % (sid, type(e).__name__, str(e)[:160]), file=sys.stderr)
+        return dict(_NO_PR_PAYLOAD)
+
+
+def _fleet_ledger_row(m):
+    """One built session's row in the feed payload's `ledgers`, which the Outline pane draws."""
+    return {"sid": m["id"], "name": m["name"], "color": m.get("color"),
+            "status": m.get("status"),
+            # this session's branch, that branch's PR and the live state of every PR its goals opened
+            **_safe_pr_payload(m["id"], m.get("ledger"), m.get("workTree")),
+            **_mail_off_fields(m["id"]),   # the Sessions pane shows a mail-off session and why (T356), from one derivation
+            # attach the archived-completed TOP tasks so the Fleet's "Show completed"
+            # can surface a finished+archived session (the user 2026-06-27); cached, so
+            # ~free. The client renders them only when the toggle is on.
+            "ledger": ({**m["ledger"], "archivedTops": _fleet_archived_tops(m["id"])}
+                       if isinstance(m.get("ledger"), dict)
+                       else m.get("ledger"))}
+
+
+def _pr_retry(sid):
+    """The error chip's click: re-read the repo this session's chips came from, now."""
+    repo = _pr_repo_seen.get(sid)
+    if not repo:
+        return False
+    gp.retry(repo)
+    return True
 
 
 def _identity_of(sid):
@@ -39180,7 +39212,7 @@ def _session_meta_step(meta, o):
                         meta["lastEditPath"] = fp
                 elif blk.get("name") == "Bash" and \
                         gp.is_push_command((blk.get("input") or {}).get("command") or ""):
-                    meta["pushCount"] += 1
+                    meta["pushCount"] = meta.get("pushCount", 0) + 1
     except Exception:
         pass
     return meta
@@ -57526,18 +57558,7 @@ def _push(targets, connect=False, live_map=None):
             # from "no data yet, still loading" and keep its loader up until real data lands (the user
             # 2026-06-29). Without this, an empty/ledger-less push looked identical to a not-yet-built one.
             if (chat_sessions or want_fleet) and not feed.get("off"):   # off (T404 round two, low 4): the outline shows its notice; no ledgers, no archived tops
-                feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
-                                    "status": m.get("status"),
-                                    # this session's branch, that branch's PR and the live state of every
-                                    # PR its goals opened — the Outline pane's chips (the user 2026-08-17)
-                                    **_session_pr_payload(m["id"], m.get("ledger"), m.get("workTree")),
-                                    **_mail_off_fields(m["id"]),   # the Sessions pane shows a mail-off session and why (T356), from one derivation
-                                    # attach the archived-completed TOP tasks so the Fleet's "Show completed"
-                                    # can surface a finished+archived session (the user 2026-06-27); cached, so
-                                    # ~free. The client renders them only when the toggle is on.
-                                    "ledger": ({**m["ledger"], "archivedTops": _fleet_archived_tops(m["id"])}
-                                               if isinstance(m.get("ledger"), dict)
-                                               else m.get("ledger"))} for m in chat_sessions]
+                feed["ledgers"] = [_fleet_ledger_row(m) for m in chat_sessions]
                 _bo = {s["sid"]: i for i, s in enumerate(build_order)}
                 if _prov_rows:   # the skipped tabs' provisional rows join in build order (plans/outline-pane-provisional-row.md)
                     feed["ledgers"] = sorted(feed["ledgers"] + _prov_rows, key=lambda r: _bo.get(r["sid"], len(_bo)))
@@ -73023,6 +73044,9 @@ class Handler(BaseHTTPRequestHandler):
             _kept_open.discard(msg["id"])
             _send_to_app("chat", {"type": "closed", "id": msg["id"]})
             _push_soon()   # ack-fast (the 2026-08-30 wedge: inline fleet builds piled 53 POST handlers; the pusher coalesces)
+        elif msg and msg.get("type") == "prRetry" and msg.get("id"):
+            if _pr_retry(str(msg["id"])):                 # the Outline's PR error chip → re-read that repo now
+                _push_soon()
         elif msg and msg.get("type") == "openSession" and msg.get("id"):
             # live → focus its (always-shown) tab; dead → the chat's confirmRevive modal. `live` lands on
             # the chat's LIVE TAIL (a blocked card's picker chip → right on the prompt, the user 2026-07-08).

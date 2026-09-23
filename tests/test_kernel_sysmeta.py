@@ -75,6 +75,16 @@ class SessionMeta(unittest.TestCase):
         self.assertEqual(meta["pushCount"], 2, "the push and the gh pr call, not the status or the grep")
         self.assertEqual(meta["lastEditPath"], "/work/proj/a.py", "the edit scan still works alongside it")
 
+    def test_a_meta_restored_from_an_older_checkpoint_still_counts_pushes(self):
+        """A checkpoint written before pushCount existed restores a five-key meta; the step must add the key
+        rather than raise into its own guard and leave the count missing for good."""
+        old = {"cwd": "/work/proj", "gitBranch": "main", "version": "1.2.3", "permissionMode": "",
+               "lastEditPath": ""}
+        rec = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "git push"}}]}}
+        self.assertEqual(km._session_meta_step(old, rec)["pushCount"], 1)
+        self.assertEqual(km._session_meta_step(old, rec)["pushCount"], 2)
+
     def test_missing_file_is_empty_not_an_error(self):
         meta = km._session_meta("/no/such/transcript.jsonl")
         self.assertEqual(meta, {"cwd": "", "gitBranch": "", "version": "", "permissionMode": "",

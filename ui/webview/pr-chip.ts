@@ -1,8 +1,8 @@
-// The Outline pane's per-goal PR chip (the user 2026-08-17): one glanceable chip on the goal row that
-// shipped a PR, carrying that PR's live state, and marking the one being pushed to right now.
+// The Outline pane's per-goal PR chip: one glanceable chip on the goal row that shipped a PR, carrying
+// that PR's live state, and marking the one being pushed to right now.
 //
-// Pure part-builders live here so every state is unit-testable without a DOM, and so the detail row and
-// the hover card share ONE body and cannot drift apart.
+// Pure builders live here so every state and every placement decision is unit-testable without a DOM,
+// and so the detail row and the hover card share ONE body and cannot drift apart.
 //
 // Content order is FIXED — #number · state · checks · review — so the eye lands in the same place on
 // every row. The chip never shrinks; the goal TITLE ellipsizes instead, because a truncated title is
@@ -106,4 +106,59 @@ export function prMatches(pr: PR, q: string): boolean {
   if (!s) return false;
   return String(pr.num).includes(s) || (pr.title || "").toLowerCase().includes(s)
     || (pr.branch || "").toLowerCase().includes(s);
+}
+
+// ── placement: which chip a row or a session head carries ──────────────────────────────────────────
+
+export type PrMap = Record<string, PR> | null | undefined;
+
+export interface PrNode { id: string; prNums?: number[] | null; children?: string[] }
+
+// The PRs a goal cites, in its order, resolved against the session's map (a number the map lacks is a
+// PR gh has not answered for yet, so it is left out rather than drawn blank).
+export function sessionPrs(prs: PrMap, nums: number[] | null | undefined): PR[] {
+  const out: PR[] = [];
+  for (const num of nums || []) {
+    const pr = prs?.[String(num)];
+    if (pr) out.push(pr);
+  }
+  return out;
+}
+
+// A parent's rollup covers its DESCENDANTS' PRs, deduped. Only consulted when the node has none of its own.
+export function subtreePrs(prs: PrMap, byId: Map<string, PrNode>, n: PrNode): PR[] {
+  const out: PR[] = [], seen = new Set<number>(), stack = [...(n.children || [])];
+  while (stack.length) {
+    const c = byId.get(stack.pop()!);
+    if (!c) continue;
+    for (const pr of sessionPrs(prs, c.prNums)) if (!seen.has(pr.num)) { seen.add(pr.num); out.push(pr); }
+    stack.push(...(c.children || []));
+  }
+  return out;
+}
+
+export interface GoalChip { kind: "none" | "one" | "rollup"; prs: PR[] }
+
+// A goal with its own PR shows that PR; several show as a rollup; a parent with none of its own rolls up
+// its subtree's. `prs` is also what the goal's detail row lists.
+export function goalChip(prs: PrMap, byId: Map<string, PrNode>, n: PrNode): GoalChip {
+  const own = sessionPrs(prs, n.prNums);
+  if (own.length === 1) return { kind: "one", prs: own };
+  if (own.length > 1) return { kind: "rollup", prs: own };
+  const roll = subtreePrs(prs, byId, n);
+  return roll.length ? { kind: "rollup", prs: roll } : { kind: "none", prs: [] };
+}
+
+export interface HeadChip { pr: PR | null; err: string }
+
+// The session head: the PR on its current branch, and, independently, the reason the last read failed.
+// Both can show at once: a failed re-read keeps the last snapshot beside the error.
+export function headChip(s: { prNum?: number | null; prs?: PrMap; prError?: string | null }): HeadChip {
+  const pr = s.prNum ? s.prs?.[String(s.prNum)] || null : null;
+  return { pr, err: s.prError || "" };
+}
+
+// The error chip's hover text: the reason, and what the click does.
+export function prErrTitle(reason: string): string {
+  return "Could not read PR status: " + reason + ". Showing the last known state; click to retry now.";
 }

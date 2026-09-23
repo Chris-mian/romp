@@ -16,7 +16,7 @@ import { fleetVisibleRoots } from "./fleet-roots";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostPrefix } from "./host-prefix";
 import { ageColorReadable } from "./age-color";
-import { prChipParts, rollupParts, prDetailLines, prMatches, PR } from "./pr-chip";
+import { prChipParts, rollupParts, prDetailLines, prMatches, sessionPrs, goalChip, headChip, prErrTitle, PR } from "./pr-chip";
 import { liveNow } from "./feed-age";
 import { TIP_GRACE_MS } from "./tip";
 import { perfFrameHandler } from "./perf-telemetry";
@@ -346,29 +346,8 @@ function nameInto(elm: HTMLElement, name: string, sid: string, q: string): void 
 // PR detail rows are their own keyed fold, so opening one survives every kernel push exactly like the
 // tree's own folds do.
 const prOpen = new Set<string>();
+const HEAD_DETAIL_INDENT_PX = 22;   // the session head's detail row sits under its name, past the caret
 const prKey = (sid: string, nid: string) => fkey(sid, nid) + ":pr";
-
-function sessionPrs(s: FleetSession, nums: number[] | null | undefined): PR[] {
-  const out: PR[] = [];
-  for (const num of nums || []) {
-    const pr = s.prs?.[String(num)];
-    if (pr) out.push(pr);
-  }
-  return out;
-}
-
-// A parent's rollup covers its DESCENDANTS' PRs. Only consulted when the node has none of its own, so a
-// goal that shipped its own PR shows that PR rather than a count.
-function subtreePrs(ctx: SessCtx, n: LedgerNode): PR[] {
-  const out: PR[] = [], seen = new Set<number>(), stack = [...(n.children || [])];
-  while (stack.length) {
-    const c = ctx.byId.get(stack.pop()!);
-    if (!c) continue;
-    for (const pr of sessionPrs(ctx.s, c.prNums)) if (!seen.has(pr.num)) { seen.add(pr.num); out.push(pr); }
-    stack.push(...(c.children || []));
-  }
-  return out;
-}
 
 // One PR: #number · state · checks · review. The NUMBER carries its own data-act so a click on it opens
 // the browser, while a click anywhere else on the chip toggles the detail row (innermost data-act wins,
@@ -411,11 +390,12 @@ function prRollup(sid: string, nid: string, prs: PR[]): HTMLElement {
 }
 
 // gh could not answer. Rendered rather than swallowed: a blank chip would claim "no PR" when the truth is
-// "we could not look" (CLAUDE.md ## Authoritative sources).
-function prErrChip(reason: string): HTMLElement {
+// "we could not look" (CLAUDE.md ## Authoritative sources). A click asks the kernel to re-read now.
+function prErrChip(sid: string, reason: string): HTMLElement {
   const bad = el("span", "fl-pr err");
   bad.textContent = "⚠ PR status";
-  bad.title = reason;
+  bad.title = prErrTitle(reason);
+  bad.dataset.act = "prretry"; bad.dataset.sid = sid;
   return bad;
 }
 
@@ -509,11 +489,9 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   // The PR chip sits LEFT of the age, so the age column stays where the eye already expects it. A goal
   // with its own PR shows that PR; a parent with none of its own rolls up its subtree's (the user
   // 2026-08-17).
-  const ownPrs = sessionPrs(ctx.s, n.prNums);
-  const rollPrs = ownPrs.length ? [] : subtreePrs(ctx, n);
-  if (ownPrs.length === 1) row.appendChild(prChip(s.sid, n.id, ownPrs[0]));
-  else if (ownPrs.length > 1) row.appendChild(prRollup(s.sid, n.id, ownPrs));
-  else if (rollPrs.length) row.appendChild(prRollup(s.sid, n.id, rollPrs));
+  const chipPlan = goalChip(s.prs, byId, n);
+  if (chipPlan.kind === "one") row.appendChild(prChip(s.sid, n.id, chipPlan.prs[0]));
+  else if (chipPlan.kind === "rollup") row.appendChild(prRollup(s.sid, n.id, chipPlan.prs));
   row.appendChild(time);
   // FLAT view: tag each top-level goal with the session it belongs to, on the row's RIGHT (the user 2026-06-29).
   // It's a label, not its own action — a click bubbles to the row's data-act="open" and jumps into the session.
@@ -529,9 +507,8 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   row.dataset.act = "open"; row.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
   row.dataset.nid = n.id;                              // the hover card keys off the row (sid, nid)
   container.appendChild(row);
-  const shownPrs = ownPrs.length ? ownPrs : rollPrs;
-  if (shownPrs.length && prOpen.has(prKey(s.sid, n.id)))
-    container.appendChild(prDetail(shownPrs, now, 4 + depth * 15 + 34));
+  if (chipPlan.prs.length && prOpen.has(prKey(s.sid, n.id)))
+    container.appendChild(prDetail(chipPlan.prs, now, 4 + depth * 15 + 34));
   if (expandable && !isFolded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderFleetNode(ctx, c, depth + 1, container, now, flat); }
 }
 
@@ -708,7 +685,7 @@ function render() {
       // A goal matches on its text OR on a PR it shipped, so typing a PR number (or its branch) reveals
       // the task that produced it (the user 2026-08-17).
       let h = !!node && (node.text.toLowerCase().includes(sq)
-                         || sessionPrs(s, node.prNums).some((pr) => prMatches(pr, sq)));
+                         || sessionPrs(s.prs, node.prNums).some((pr) => prMatches(pr, sq)));
       if (!h && node) for (const cid of node.children || []) if (subtreeHit(cid)) { h = true; break; }
       hitMemo.set(id, h);
       return h;
@@ -780,11 +757,12 @@ function render() {
       // The session's own chip: the PR on its CURRENT BRANCH — "what is this session shipping right now",
       // readable with the tree collapsed. It deliberately repeats the live goal's chip, which is the point
       // (the user 2026-08-17). Nothing when the branch has no PR.
-      const curPr = s.prNum ? s.prs?.[String(s.prNum)] : null;
-      if (curPr) head.appendChild(prChip(s.sid, "", curPr));
-      else if (s.prError) head.appendChild(prErrChip(s.prError));
+      const hc = headChip(s);
+      if (hc.pr) head.appendChild(prChip(s.sid, "", hc.pr));
+      if (hc.err) head.appendChild(prErrChip(s.sid, hc.err));
       head.tabIndex = 0; head.setAttribute("role", "button");   // focusable: Enter opens, the menu key or Shift+F10 opens the row's menu (2026-09-16)
       sec.appendChild(head);
+      if (hc.pr && prOpen.has(prKey(s.sid, ""))) sec.appendChild(prDetail([hc.pr], now, HEAD_DETAIL_INDENT_PX));   // the head chip's own detail row
 
       const treeBox = el("div", "ledger-tree");
       if (!sfolded) {
@@ -1139,6 +1117,7 @@ function confirmEndSession(sid: string): void {
       render();
     },
     propen: (el) => { if (el.dataset.url) openExternalUrl(el.dataset.url); },   // the NUMBER → the PR itself
+    prretry: (el) => { if (el.dataset.sid) vscodeApi?.postMessage({ type: "prRetry", id: el.dataset.sid }); },   // the error chip → re-read now
     prcopy: (el) => { try { navigator.clipboard?.writeText("#" + el.dataset.num); } catch { /* ignore */ } },
   });
 })();
@@ -1209,7 +1188,7 @@ function buildHoverCard(s: FleetSession, n: LedgerNode, byId: Map<string, Ledger
   };
   // The goal's PRs, same body the detail row shows (one source, so the two can never disagree). Here the
   // untruncated title is already above, which is why the row is free to ellipsize it (the user 2026-08-17).
-  for (const pr of sessionPrs(s, n.prNums))
+  for (const pr of sessionPrs(s.prs, n.prNums))
     section("PR #" + pr.num, prDetailLines(pr, now).slice(1).join(" · "));
   const ask = asksById.get(n.id);   // top goals with a live feed card carry the distiller BACKGROUND
   if (ask?.background && ask.background.trim()) section("Background", ask.background);

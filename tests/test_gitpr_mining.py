@@ -205,9 +205,37 @@ def test_record_pr_refs_writes_no_key_for_a_prless_goal():
 
 
 def test_record_pr_refs_clears_refs_that_went_away():
-    """A rewind can drop the segment that carried the receipt; the stamp must not outlive its evidence."""
+    """A rewind can drop the segment that carried the receipt; the stamp must not outlive its evidence
+    while the goal's other segments are still in the parse."""
     store, segs = _node([_bash(CREATE), _out(URL % 8)])
+    kept = "s%d" % next(_seg_n)
+    store["nodes"]["g1"]["trail"].append(kept)
+    segs[kept] = {"id": kept, "t": 200, "atoms": [_text("follow-up with no PR")]}
     jd._record_pr_refs(store, segs)
     assert store["nodes"]["g1"]["prRefs"] == [[REPO, 8]]
-    assert jd._record_pr_refs(store, {}) is True
+    assert jd._record_pr_refs(store, {kept: segs[kept]}) is True
     assert store["nodes"]["g1"]["prRefs"] is None
+
+
+def test_record_pr_refs_keeps_a_goal_whose_segments_are_not_in_this_parse():
+    """After a /clear the walk stops at the new transcript's root, so no earlier goal's segment resolves:
+    that is "not in this parse", not "has no PR", and the stamp stays."""
+    store, segs = _node([_bash(CREATE), _out(URL % 8)])
+    jd._record_pr_refs(store, segs)
+    assert jd._record_pr_refs(store, {}) is False
+    assert store["nodes"]["g1"]["prRefs"] == [[REPO, 8]]
+
+
+def test_record_pr_refs_indexes_the_parse_once_per_pass(monkeypatch):
+    """Each goal resolved its segments through a fresh index over the whole parse, nodes x segments key
+    computations per pass. The index is now built once, so the count grows with nodes + segments."""
+    nodes, segs = {}, {}
+    for i in range(40):
+        sid = "s%d" % next(_seg_n)
+        nodes["g%d" % i] = {"trail": [sid], "text": "goal %d" % i}
+        segs[sid] = {"id": sid, "t": i, "atoms": [_text("no links")]}
+    calls = []
+    real = jd._seg_key
+    monkeypatch.setattr(jd, "_seg_key", lambda k: (calls.append(k), real(k))[1])
+    jd._record_pr_refs({"nodes": nodes, "placements": {}}, segs)
+    assert len(calls) <= 2 * (len(nodes) + len(segs)), len(calls)
