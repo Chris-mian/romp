@@ -4695,9 +4695,10 @@ class GuardedNode(dict):
 # histories are the CACHE for the common case; the GUARANTEE is the holder's own transient reference to its base's bytes (`_baseSrc`: the
 # memo's pickle for the version the load read, moved to the version each rebase read and to the text each publish wrote), which no
 # eviction reaches, so a holder's save always finds its base however many versions others published meanwhile (the post-merge review of
-# PR 2108: a bounded history lost it after five). Only a holder without its reference (a store rebuilt from JSON carries none) falls back
-# to the caches, and one whose version rolled out of them carries nothing, as before the rule, the goals counters saying so
-# (carryNoBase). The diary-owned keys (PROTECTED) are
+# PR 2108: a bounded history lost it after five). The reference is BYTES, never live node objects (a node table aliases the holder's nodes
+# through a deep copy: the round-one verifier of PR 2115). Only a holder without its reference (a store rebuilt from JSON, or a copy of the
+# shared read-only view, which carries none) falls back to the caches, and one whose version rolled out of them carries nothing, as before
+# the rule, the goals counters saying so (carryNoBase). The diary-owned keys (PROTECTED) are
 # re-derived from the merged log, and every FAMILY-managed key (the distill families' stamps and fields, _DISTILL_FAMILIES) is left
 # to the family merge, which adopts a family as a unit when the other side's stamp is newer: an in-place edit of a family field
 # therefore stamps its family (briefedMt for a brief), as every kernel writer of a brief does, or the family merge keeps the holder's.
@@ -4856,10 +4857,13 @@ def _raw_history_drop(hist, path_s, ident):
 
 
 class _BaseRef(dict):
-    """A loaded store's own reference to its field base's bytes (`_baseSrc`): `kind` "pickle" (the memo's pickled parse of the version a
-    read returned, shared, not copied), "text" (the text this holder's publish wrote) or "nodes" (the shared read-only view's frozen
-    nodes, the view's own parse). A dict subclass with the payload in attributes, so json.dumps of a loaded store still serializes
-    (as an empty object) and a store rebuilt from JSON simply carries no reference, falling back to the memo and its histories."""
+    """A loaded store's own reference to its field base's BYTES (`_baseSrc`): `kind` "pickle" (the memo's pickled parse of the version a
+    read returned, shared, not copied) or "text" (the text this holder's publish wrote). Bytes only, never live node objects: a
+    reference to a node table aliases the holder's own nodes after a deep copy (copy.deepcopy's memo maps a node shared by the table
+    and the store to ONE copied object), and then the base equals the holder for every field and the carry overwrites the holder's own
+    edits with the disk's (the round-one verifier of PR 2115, on the shared view's node reference this PR first carried). A dict
+    subclass with the payload in attributes, so json.dumps of a loaded store still serializes (as an empty object) and a store rebuilt
+    from JSON simply carries no reference, falling back to the memo and its histories."""
     __slots__ = ("kind", "payload")
 
     def __init__(self, kind, payload):
@@ -4873,8 +4877,8 @@ class _BaseRef(dict):
 def _base_nodes(path_s, ident, src=None):
     """The nodes as the file held them at `ident`: from the raw-parse memo, the readers' history (a parse) or the published texts, the
     shared caches for the common case; else from `src`, the holder's own reference to the version's bytes (`_baseSrc`, a _BaseRef: the
-    memo's pickle from a read, the text of its own publish, or the shared view's frozen nodes), the guarantee no eviction reaches; else
-    None (a holder without its reference, a store rebuilt from JSON, whose version rolled out of the caches)."""
+    memo's pickle from a read or the text of its own publish), the guarantee no eviction reaches; else None (a holder without its
+    reference, a store rebuilt from JSON or a copy of the shared read-only view, whose version rolled out of the caches)."""
     blob = text = None
     with _RAW_STORE_LOCK:
         ent = _RAW_STORE.get(path_s)
@@ -4893,8 +4897,6 @@ def _base_nodes(path_s, ident, src=None):
             blob = src.payload
         elif src.kind == "text" and isinstance(src.payload, str):
             text = src.payload
-        elif src.kind == "nodes" and isinstance(src.payload, dict):
-            return src.payload                       # the shared view's own parse: read, never written (the carry reads bnd.get)
     if blob is None and text is None:
         return None
     try:
@@ -6398,8 +6400,10 @@ def load_goals_shared(fsid):
     store["_baseIdent"] = skey                       # the identity of the bytes this view was built from, as load_goals stamps its own: the two views agree by
     #                                                  construction, and a copy taken from this view and saved passes the same CAS (the round-one lane red of
     #                                                  PR 2064: the writer's view carried the key and the shared view did not)
-    store["_baseSrc"] = _BaseRef("nodes", store.get("nodes") or {})   # and its field base is this view's own frozen nodes (read, never written by the
-    #                                                  carry), so a copy taken from it and saved finds its base whatever the raw-parse memo holds
+    # No base reference here (the round-one verifier of PR 2115): this view is read-only by contract and save_goals refuses a frozen
+    # store, so a saved deep copy of it is not a product road; the one the PR first carried (a reference to the view's node table) aliased
+    # the copy's own nodes through copy.deepcopy's memo and made the base equal the holder for every field. A copy that is saved anyway
+    # falls to the memo and its histories for its base, and past them carries nothing (carryNoBase), the disclosed fallback.
     if store.get("_unread"):
         # the replay marked the store (its journal did not read): not the files' content, so not shared.
         # Unreachable while the journal's rows arrive as `lines` (the only marker left is the lines-is-None

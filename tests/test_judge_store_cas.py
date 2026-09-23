@@ -15,6 +15,7 @@ import copy
 import errno
 import json
 import os
+import pickle
 import subprocess
 import sys
 import tempfile
@@ -388,7 +389,8 @@ class StoreCas(unittest.TestCase):
         jd.record_verdict(a, a["nodes"][g1], "unblocker", "note", T0 + 60, why="two"); jd.save_goals(SID, a)
         self.assertEqual(jd.load_goals(SID)["nodes"][g1].get("parentId"), "later parent", "the re-stamped base sees the move after our publish and carries it")
         shared, writer = jd.load_goals_shared(SID), jd.load_goals(SID)
-        self.assertEqual(json.dumps(shared), json.dumps(writer), "the shared view and the writer loader still agree key for key")
+        plain = lambda st: json.dumps({k: v for k, v in st.items() if k not in jd._NONCONTENT_KEYS})   # the writer alone carries its base reference (transient)
+        self.assertEqual(plain(shared), plain(writer), "the shared view and the writer loader still agree key for key on the content")
 
     def test_a_second_rebase_iteration_stands_on_the_first_iterations_disk(self):
         """The round-one verifier: the field base was the load's for every iteration of the CAS loop, so when a third writer published
@@ -483,12 +485,13 @@ class StoreCas(unittest.TestCase):
         self.assertEqual(jd.load_goals(SID)["_baseSrc"].kind, "pickle", "a fresh load's reference is the memo's pickle")
         self.assertNotIn("_baseSrc", json.loads((jd.GOALDIR / (SID + ".json")).read_text()), "transient, never serialized")
 
-    def test_a_deep_copy_of_the_shared_view_saved_carries_the_other_writers_field_from_the_views_own_nodes(self):
-        """The shared read-only view's parse is not the raw-parse memo's, so a copy taken from it and saved found a field base only when a
-        writer load or publish in this process had put the same version in the memo or its histories. Here nothing in this process reads
-        or publishes the version the view is built from (another process writes it), so the memo has nothing for it; the view stamps its
-        own frozen nodes as its base reference, a deep copy carries it, and its save after the other process's next edit carries that
-        edit's field."""
+    def test_a_copy_of_the_shared_view_carries_no_reference_and_past_the_caches_carries_nothing(self):
+        """The round-one verifier of PR 2115: the shared view's reference to its node table ALIASED a deep copy's own nodes (copy.deepcopy's
+        memo maps a node shared by the table and the store to one copied object), so the base equalled the holder for every field and the
+        carry overwrote the copy's own edits with the disk's. The view is read-only by contract and save_goals refuses a frozen store, so a
+        saved deep copy is not a product road: the view carries no reference, a copy saved anyway falls to the caches, and past them carries
+        nothing with the counter saying so (the disclosed fallback). Another process writes the versions, so no in-process read fills the
+        memo, and the copy's own plain-field edit and removal stand (before this round: overwritten by the disk's, undone)."""
         self._seed()
         g1 = self._nid(1)
         path = jd.GOALDIR / (SID + ".json")
@@ -498,16 +501,55 @@ class StoreCas(unittest.TestCase):
                             "import json, sys\np = sys.argv[1]; d = json.loads(open(p).read())\n"
                             "d['nodes'][sys.argv[2]][sys.argv[3]] = sys.argv[4]; d['rev'] += 1\nopen(p, 'w').write(json.dumps(d))",
                             str(path), g1, key, value], check=True, timeout=60)
-        edit_from_another_process("label", "V1 written by another process")   # the version the view will be built from: no read or publish of it in this process
+        edit_from_another_process("label", "V1 written by another process")
+        edit_from_another_process("summaryQuote", "a value the copy will remove")
         view = jd.load_goals_shared(SID)
         c = copy.deepcopy(view)
+        self.assertIsNot(c["nodes"][g1], view["nodes"][g1], "premise: a real copy of the node")
+        c["nodes"][g1]["label"] = "the copy's own edit"; c["nodes"][g1].pop("summaryQuote", None)   # the copy's own move and removal
         edit_from_another_process("parentId", "theirs")   # the other writer's move after the copy was taken
         before = dict(jd._GOAL_IO)
         jd.record_verdict(c, c["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, c)
         after = json.loads(path.read_text())["nodes"][g1]
-        self.assertEqual((after.get("parentId"), jd._GOAL_IO["carryBase"] - before["carryBase"]), ("theirs", 1), "carried from the view's own nodes (before: no base for a version this process never read through the writer's loader, nothing carried)")
-        self.assertEqual(after.get("label"), "V1 written by another process", "the earlier edit stands too")
-        self.assertEqual(getattr(view.get("_baseSrc"), "kind", None), "nodes", "the mechanism: the view's reference is its own nodes")
+        self.assertEqual((jd._GOAL_IO["carryNoBase"] - before["carryNoBase"], after.get("parentId")), (1, None), "no base: nothing carried, the counter says so (the disclosed fallback)")
+        self.assertEqual(after.get("label"), "the copy's own edit", "the copy's own edit stands (the aliased base published the disk's over it)")
+        self.assertNotIn("summaryQuote", after, "and its removal stands (the aliased base undid it)")
+        self.assertIsNone(view.get("_baseSrc"), "the mechanism: the view carries no base reference (the one it carried aliased the copy's nodes)")
+
+    def test_the_rebase_moves_the_holders_reference_to_the_bytes_of_the_version_it_rebased_onto(self):
+        """The round-one verifier of PR 2115: with the rebase's move of the reference deleted every CAS pin stayed green, while past the
+        caches a stale reference is a WRONG base (the load's bytes while the identity names the rebased version, counted as a success). The
+        reference's payload after a rebase is the memo's pickle of the version rebased onto, and a second iteration with every cache wiped
+        still carries a third writer's newer value from it."""
+        self._seed()
+        g1 = self._nid(1)
+        b = jd.load_goals(SID); b["nodes"][g1]["parentId"] = "V1"; jd.save_goals(SID, b)
+        # the behaviour past the caches: a third writer between the first rebase and the re-check, the caches wiped, the second iteration's
+        # base must be V1 (the reference), never the load's V0
+        c0 = jd.load_goals(SID)
+        real = jd._rebase_onto_disk
+        calls = []
+
+        def rebase_then_third(fsid, store):
+            real(fsid, store)
+            calls.append(1)
+            if len(calls) == 1:
+                c = jd.load_goals(SID); c["nodes"][g1]["parentId"] = "V2"; jd.save_goals(SID, c)
+                with jd._RAW_STORE_LOCK:
+                    jd._RAW_STORE.clear(); jd._RAW_HISTORY.clear(); jd._RAW_PUBLISHED.clear()   # every shared cache gone: the reference is all the holder has
+        jd.record_verdict(c0, c0["nodes"][g1], "unblocker", "note", T0 + 40, why="ours")
+        b2 = jd.load_goals(SID); b2["nodes"][g1]["text"] = "moved so the holder is behind"; jd.save_goals(SID, b2)
+        with mock.patch.object(jd, "_rebase_onto_disk", rebase_then_third):
+            jd.save_goals(SID, c0)
+        self.assertEqual(len(calls), 2, "premise: two rebase iterations")
+        self.assertEqual(jd.load_goals(SID)["nodes"][g1].get("parentId"), "V2", "the second iteration carries the third writer's V2 from the moved reference (a stale reference: V1 read as the holder's own move, published over V2)")
+        # the mechanism: after one rebase the reference's bytes are the version rebased onto's, under its identity
+        a = jd.load_goals(SID)
+        d = jd.load_goals(SID); d["nodes"][g1]["parentId"] = "V3"; jd.save_goals(SID, d)
+        v3 = self._ident(jd.GOALDIR / (SID + ".json"))
+        jd._rebase_onto_disk(SID, a)
+        self.assertEqual(a["_baseIdent"], v3, "the identity moved to the version rebased onto")
+        self.assertEqual(pickle.loads(a["_baseSrc"].payload)["nodes"][g1].get("parentId"), "V3", "and the reference's bytes are that version's (with the move deleted: the load's bytes under the new identity)")
 
     def test_an_in_place_editor_that_changes_a_field_is_carried_too(self):
         """The box lab's own shape: the file rewritten in place with rev and seq bumped, a brief changed WITH its family stamped (briefedMt, as
