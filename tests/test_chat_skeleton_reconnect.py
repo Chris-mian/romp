@@ -1116,11 +1116,18 @@ class SkeletonReconnect(unittest.TestCase):
         # empty-suffix tail asserted right after it is the first red one, that kernel having no tail road for this push;
         # the status flip below is the user-visible symptom: a whole session frame as soon as anything differed)
         self.assertEqual(self._sessions(c), [], "a client that holds the tab whole gets no full frame")
-        self.assertEqual([(t["id"], t["afterUuid"], t["events"]) for t in self._frames(c, "chatTail")], [(S1, "u4", [])],
-                         "one empty-suffix tail: nothing changed against the baseline")
-        self.assertNotIn("ledger", self._frames(c, "chatTail")[0], "a ledger unchanged against the shared baseline does not ride the tail")
+        self.assertEqual(self._frames(c, "chatTail"), [],
+                         "nor a tail: nothing changed against the baseline, and the empty suffix would leave the page holding "
+                         "what it holds (2026-09-23, test_chat_noop_tail.py)")
         self.assertIsNone(getattr(km._SEND_ROAD, "name", None),
                           "the road mark is reset when the push returns (2026-09-19 review: the dispatch thread runs other pushes)")
+        # a status flip alone rides one empty-suffix tail, and a ledger unchanged against the shared baseline does not ride it
+        self.SESS[S1]["status"]["state"] = "waiting"
+        c["_frames"].clear()
+        km._push_session_now(S1)
+        self.assertEqual([(t["id"], t["afterUuid"], t["events"], t["status"]["state"]) for t in self._frames(c, "chatTail")],
+                         [(S1, "u4", [], "waiting")], "one empty-suffix tail carrying the flip")
+        self.assertNotIn("ledger", self._frames(c, "chatTail")[0], "a ledger unchanged against the shared baseline does not ride the tail")
         # the flip the push exists for still lands: the status rides the tail, and so does a ledger that changed against the
         # baseline (the 2026-09-19 review: led_changed forced either way left every module driving this push green). The
         # targeted push never advances that baseline, so changed means changed against the map the pusher's cycle left

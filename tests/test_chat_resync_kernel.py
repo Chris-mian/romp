@@ -11,7 +11,8 @@ had already cleared of its atoms. This module pins the kernel's side of the fix:
   1. build_session reads the live tail BEFORE the transcript, so an atom that left the tail (a prune, the settle's
      retire) had its record on disk before the parse read the file: no build holds a message in neither store.
   2. _last_anchor ends a client's base on a recorded event only, never on a streamed atom (marked `streamed` by the
-     build), an echo or an overlay card, so every delta re-sends whatever the page holds past the last record.
+     build), an echo or an overlay card, so every delta is cut from the last record; since 2026-09-23 _chat_skip_held
+     then skips the events the page holds unchanged past it (tests/test_chat_noop_tail.py, StreamedRunIsSentOnce).
   3. Every proto-2 delta carries `baseFp`, [n, crc32] over the keys of the n events ending at its anchor (from the
      client's own first edge at most), for the page to verify before it applies anything (chat-resync.ts).
   4. A needFull keeps the page's watermark as the floor: its answer is never an older build than the page holds (refused
