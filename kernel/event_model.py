@@ -2890,36 +2890,59 @@ class FileAdapter:
         back-link is never overridden — and a /clear records no lineage, so its history keeps
         dropping by design.
 
-        Every root in the to-file's OPENING run is stitched, not just the first: a fork can open with
-        several roots (an `attachment` root ahead of the `user` record), and the chain the walk follows
-        may hang off any of them. The run ends at the file's first parented record, so a later root in
-        the same file (an in-file /clear) stays a fresh root and its history keeps dropping. Sidechain
-        roots are skipped; a sub-agent branch is its own thread."""
+        Only the root the conversation CONTINUES from is stitched: the walk climbs parent_of from the
+        leaf, and at each fresh root of a linked file re-points it at the from-file's tail and climbs on
+        (a chain of restarts crosses every file). Another root of the same fork (a queued-note
+        attachment beside the restart notice) stays a root, so it reads "clear", never "rewind", and
+        no goal anchored on it is archived. A root counts only ahead of its file's first parented
+        user or assistant record, so a later in-file /clear keeps its history dropping. Sidechain
+        roots are skipped; a sub-agent branch is its own thread. A seeded file's pre-cut first uuid
+        is stitched outright: the checkpoint carries no leaf or child information to walk."""
         if not self.resume_links:
             return
-        roots_of, last_of, opened = {}, {}, set()   # opened: files whose opening run of roots has ended
+        last_of, openers, seeded = self._resume_fork_ends()
+        for to, head in seeded.items():
+            self._stitch_head(head, last_of.get(self.resume_links.get(to)))
+        u, seen = self.leaf_uuid, set()
+        while u and u not in seen:
+            seen.add(u)
+            parent = self.parent_of.get(u)
+            if parent is None:
+                frm = self.resume_links.get(self.fsid_of.get(u))
+                if frm is None or u not in openers or not self._stitch_head(u, last_of.get(frm)):
+                    return
+                parent = self.parent_of[u]
+            u = parent
+
+    def _resume_fork_ends(self):
+        """(last uuid of each file, the fresh roots ahead of each file's first parented user or
+        assistant record, the seed's pre-cut first uuid of each linked file)."""
+        last_of, openers, seeded, opened = {}, set(), {}, set()
         for fs, ends in ((self.seed or {}).get("file_ends") or {}).items():   # files (or file heads) before the cut
             if ends[0]:
-                roots_of.setdefault(fs, []).append(ends[0])
                 opened.add(fs)
+                if fs in self.resume_links:
+                    seeded[fs] = ends[0]
             if ends[1]:
                 last_of[fs] = ends[1]
-        for u in self.by_uuid:               # insertion order = file read order
+        for u, rec in self.by_uuid.items():  # insertion order = file read order
             fs = self.fsid_of.get(u)
             last_of[fs] = u
             if fs in opened:
                 continue
-            if self.parent_of.get(u) is not None:
+            if self.parent_of.get(u) is None:
+                if not (rec or {}).get("isSidechain"):
+                    openers.add(u)
+            elif (rec or {}).get("type") in ("user", "assistant"):
                 opened.add(fs)
-            elif not (self.by_uuid.get(u) or {}).get("isSidechain"):
-                roots_of.setdefault(fs, []).append(u)
-        for to, frm in self.resume_links.items():
-            tail = last_of.get(frm)
-            if not tail:
-                continue
-            for head in roots_of.get(to, ()):
-                if head != tail and self.parent_of.get(head) is None:
-                    self.parent_of[head] = tail
+        return last_of, openers, seeded
+
+    def _stitch_head(self, head, tail):
+        """Point the fresh root `head` at `tail`; False when there is nothing to stitch."""
+        if not tail or head == tail or self.parent_of.get(head) is not None:
+            return False
+        self.parent_of[head] = tail
+        return True
 
     def _repair_compaction_stitches(self):
         """Claude Code sometimes writes a compact_boundary whose logicalParentUuid points
