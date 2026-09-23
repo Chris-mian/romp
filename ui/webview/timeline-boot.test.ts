@@ -11,7 +11,8 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { installDomHelpers, dispatchFrame, openExternalMessage, bridgeFunctions } from "./timeline-boot";
+import { installDomHelpers, dispatchFrame, openExternalMessage, bridgeFunctions, writeTabGroupsBlob } from "./timeline-boot";
+import { setFoldsPublisher } from "./tab-groups";
 
 const ROOT = path.resolve(process.cwd(), "..");
 const KERNEL = fs.readFileSync(path.join(ROOT, "bin", "romp-kernel"), "utf8");
@@ -126,6 +127,30 @@ test("a lane drag posts the WHOLE arrangement to the local kernel, never a per-k
   assert.deepEqual(sent, [{ type: "setViewOrder", order: ["a", "TESTHOST:b"] }]);
   assert.ok(!sent.some((m: any) => m.type === "writeOrder" || m.type === "reorderTabs"),
     "a kernel is never asked to order sids it does not know about");
+});
+
+test("the VS Code timeline hears the kernel's FOLDS and, from then on, publishes a fold through its host pipe (2026-09-23)", () => {
+  // the Sessions pane honours the tag groups' folds; in VS Code it has no federation manager, so the viewOrder frame's folds half
+  // reaches dispatchFrame, and the view's own fold write (romp-timeline-view.js writeTabGroupsBlob → window.__rompWriteTabGroups,
+  // which timeline-main.ts sets to writeTabGroupsBlob) publishes through `post` once the kernel's folds were heard
+  const g: any = globalThis;
+  const store = new Map<string, string>();
+  const saved = [g.localStorage, g.window];
+  g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } };
+  g.window = new EventTarget();
+  try {
+    const { sent, post } = posts();
+    bridgeFunctions(post);
+    assert.equal(dispatchFrame({}, { type: "viewOrder", order: [], stored: false, folds: { collapsed: ["api"], expanded: [], pinned: [] } }), true, "the frame is the timeline's to take");
+    assert.deepEqual(JSON.parse(store.get("romp:tabgroups:shared")!).collapsed, ["api"], "the kernel's folds adopted into this webview's store");
+    assert.deepEqual(sent, [], "adopting publishes nothing");
+    writeTabGroupsBlob({ on: true, collapsed: ["api", "web"], expanded: [], pinned: [], timeline: true });
+    assert.deepEqual(sent, [{ type: "setViewFolds", folds: { collapsed: ["api", "web"], expanded: [], pinned: [] } }], "heard: the view's fold goes to the kernel");
+    assert.equal(dispatchFrame({}, { type: "viewOrder", order: [], stored: true }), true, "a frame with no folds half (an older kernel): taken, nothing adopted");
+  } finally {
+    [g.localStorage, g.window] = saved;
+    setFoldsPublisher(null);
+  }
 });
 
 test("installDomHelpers supplies the 3 Obsidian helpers", () => {

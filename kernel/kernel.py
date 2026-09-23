@@ -5897,6 +5897,72 @@ def _write_view_order(order):
     return True
 
 
+# ── …and the viewer's FOLDS, kept beside it the same way (the user 2026-09-23) ─────────────────────────
+# Which tag groups are folded, which default-folded ones were opened, and which members show through a fold
+# lived in each browser's romp:tabgroups, so a group folded on the desktop was open on the phone (where,
+# until that day, nothing folded at all). The user asked for folding on the phone with the state synced
+# like the arrangement, so it rides this store's frame and push: the viewOrder frame carries `folds` beside
+# `order`, one push serves both, and view-folds.json sits beside view-order.json. A sibling FILE rather
+# than a reshaped one so view-order.json keeps the shape its readers (and a revert) expect.
+#
+# The same opaque-data contract. The object is the browser's (tab-groups.ts TabFolds: collapsed, expanded,
+# pinned, and the rename memory the pins rest on); this kernel checks that it IS an object and that it is
+# bounded, and reads nothing inside it. Tag names, session ids and host prefixes are all the viewer's to
+# interpret, exactly as the arrangement's are. Last write wins, as there.
+_VIEW_FOLDS_CAP = 256 * 1024             # bytes of JSON: the browser's own state is a few hundred; this only stops a
+#                                          client bug growing the file without limit, and it REFUSES rather than trims
+#                                          (a cut object is not a smaller fold state, it is a different one)
+_view_folds_lkg = [None]                 # last known good, as _view_order_lkg
+_VIEW_FOLDS_UNKNOWN = object()           # _view_folds_served's "cannot say": the frame then carries no folds half
+
+
+def _view_folds_path():
+    return jd.STATE / "view-folds.json"
+
+
+def _view_folds_served():
+    """The fold state to serve: the stored object, None when this kernel has NONE (absent file -- the
+    browser's migration publishes its own against exactly that, tab-groups.ts foldsToPublish), or
+    _VIEW_FOLDS_UNKNOWN when the file could not be read and nothing is known-good. The same reasoning as
+    _view_order_served: a fault over a store we have read serves the last known good, since answering "none"
+    under an EIO would invite a browser to publish its folds over the ones sitting there, and a fault with
+    nothing known-good says nothing at all rather than a guess."""
+    p = _view_folds_path()
+    try:
+        raw = _read_state_json(p, expect=dict)
+    except _StateUnreadable as e:
+        _note_state_fault(e)
+        lkg = _view_folds_lkg[0]
+        return dict(lkg) if lkg is not None else _VIEW_FOLDS_UNKNOWN
+    _clear_state_fault(p)
+    if raw is None:
+        return None
+    _view_folds_lkg[0] = dict(raw)
+    return raw
+
+
+def _write_view_folds(folds):
+    """Publish the viewer's fold state. Raises _StateUnwritable on a failed publish (and on an object over the
+    cap, which is refused whole rather than cut), so the gesture is refused loudly. Returns whether anything
+    CHANGED: every browser of this kernel republishes the state it was just served when a rename moves a pin
+    the same way on each, and an unchanged state is not worth a push."""
+    if not isinstance(folds, dict):
+        raise _StateUnwritable(_view_folds_path(), "not an object")
+    text = json.dumps(folds, sort_keys=True)
+    if len(text) > _VIEW_FOLDS_CAP:
+        raise _StateUnwritable(_view_folds_path(), "%d bytes, over the %d cap" % (len(text), _VIEW_FOLDS_CAP))
+    with _view_order_lock:                           # one lock for the viewer's store, both files
+        try:
+            raw = _read_state_json(_view_folds_path(), expect=dict)
+        except _StateUnreadable:
+            raw = _VIEW_ORDER_NO_PROOF               # cannot prove it unchanged -> publish (a whole replace, as the order's)
+        if raw is not _VIEW_ORDER_NO_PROOF and raw == folds:
+            return False
+        _write_state_json(_view_folds_path(), text)
+        _view_folds_lkg[0] = json.loads(text)
+    return True
+
+
 def _merge_session_order(incoming):
     """Splice a drag's order into the persisted one WITHOUT disturbing lanes the drag didn't touch. A drag
     publishes the order of the sids on ONE surface (chat tabs, or timeline lanes) — usually a SUBSET of all
@@ -52708,8 +52774,9 @@ def _send_slot_delta(c, key, ftype, payload, pre, sig, parts=None):
 #   tagEdit — the targeted `tagEdit` op (create / rename / recolor / addMember / removeMember /
 #             delete / move, by tag id), the `tagEditAck` / `viewsAck` answers on the poster's socket,
 #             and the write sequence (`seq`) on every views blob.
-KERNEL_WS_CAPS = ("tagEdit", "chatProto2", "viewOrder")   # chatProto2: the uuid-anchored chat wire (T323 stage 4b);
-#                                              viewOrder: this kernel keeps the viewer's arrangement (2026-09-23)
+KERNEL_WS_CAPS = ("tagEdit", "chatProto2", "viewOrder", "viewFolds")   # chatProto2: the uuid-anchored chat wire (T323 stage 4b);
+#                                              viewOrder: this kernel keeps the viewer's arrangement (2026-09-23);
+#                                              viewFolds: …and its folded groups, on the same frame (2026-09-23)
 # The caps frame: {type: "caps", caps: [...], viewsSeq: int|null}. `viewsSeq` (the 2026-09-05
 # review) is the write seq of the views blob the READY HANDLER'S OWN connect push served this client — the
 # tabOrder frame's for a chat page, the timeline skeleton's (`data.views`), the feed frame's — read from
@@ -52753,13 +52820,25 @@ def _view_order_frame():
     its `ready` -- the connect push -- and to every client the moment a setViewOrder CHANGES the store,
     which is the event the viewer's other devices converge on. Nothing periodic reads it.
 
-    None when the store could not be read and nothing is known-good (_view_order_served): no frame goes,
-    and every page keeps the arrangement it is showing rather than adopting a guess."""
+    `folds` rides beside them (2026-09-23): the viewer's fold state (_view_folds_served), an object, or null
+    when this kernel has none, which is what a browser carrying folds of its own publishes against
+    (tab-groups.ts foldsToPublish). A change to either half is a change to this one frame, pushed on the
+    same slot, so the folds converge on the same event the arrangement does (a setViewFolds that CHANGES
+    the store).
+
+    Each half is left OUT when its store could not be read and nothing is known-good, and the page keeps
+    what it is showing for that half rather than adopting a guess (federation.ts reads a half only when it
+    is present); None, no frame at all, when neither half can be said."""
     served = _view_order_served()
-    if served is None:
+    folds = _view_folds_served()
+    if served is None and folds is _VIEW_FOLDS_UNKNOWN:
         return None
-    order, stored = served
-    return {"type": "viewOrder", "order": order, "stored": stored}
+    fr = {"type": "viewOrder"}
+    if served is not None:
+        fr["order"], fr["stored"] = served
+    if folds is not _VIEW_FOLDS_UNKNOWN:
+        fr["folds"] = folds
+    return fr
 
 
 def _send_view_order(c, fr=None):
@@ -62842,6 +62921,9 @@ def _shim_core_js(app="test", v=0):
 # own element). The list, the current button, and each row carry the session's color.
 _CHAT_MOBILE_CSS = (
     "#mhdr,#mlist{display:none}"    # both hidden on desktop (#mlist is a #tabbar sibling, not inside #mhdr)
+    # the phone's folded-away active tab (render.ts markAway, tab-groups.ts phoneStandIns, 2026-09-23): the node the
+    # current-session chip mirrors while its group is folded, never displayed anywhere (the phone hides the strip besides)
+    "#tabs .tab.tab-away{display:none}"
     # Gate the picker on a TOUCH device, not pane width: the chat iframe is one of three desktop panes, so
     # it's always narrow — a bare max-width would swap in the mobile picker on desktop too (the user wants
     # the real tab strip on desktop). pointer:coarse is true on the phone, false on a mouse/trackpad desktop.
@@ -62916,10 +62998,16 @@ _CHAT_MOBILE_CSS = (
     ".mrow .workdot.retrying{background:var(--st-retrying-bg,#e67e22)}"   # badge mode: retrying on the leading dot
     # a GROUP HEADING (2026-09-16: the picker mirrors the strip's sections): the strip header's dress — the
     # label size and letter-spacing .tab-group-head wears, the dim ink — around the header's own chip
-    # (cloned) and the count; no caret and no pointer, since the phone folds nothing
-    ".mhead{display:flex;align-items:center;gap:6px;padding:9px 12px 3px;font-size:.82em;letter-spacing:.04em;"
-    "color:var(--dim,#8a8a8a);user-select:none;-webkit-user-select:none}"
+    # (cloned), the caret and the count, and folded, the header's member-state pip (cloned, styles.css
+    # .tab-group-pip). Since 2026-09-23 it is the FOLD CONTROL, as the desktop header is (the user asked to
+    # fold groups on the phone): a tap target a finger lands on (40px, a row's height and a little more), the
+    # pointer, and the caret turned down while open (.tab-group-caret's idiom)
+    ".mhead{display:flex;align-items:center;gap:6px;min-height:40px;box-sizing:border-box;padding:8px 12px;font-size:.82em;letter-spacing:.04em;"
+    "color:var(--dim,#8a8a8a);cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}"
     ".mhead .mcount{opacity:.7}"
+    ".mhead .mcaret{display:inline-block;flex:0 0 auto;width:.9em;text-align:center;transition:transform .12s ease}"
+    ".mhead:not(.folded) .mcaret{transform:rotate(90deg)}"
+    ".mhead:focus-visible{outline:1px solid var(--accent,#9cd2ff);outline-offset:-1px}"
     # the untagged trail's divider (the strip's makeTrailSep, turned for a list): a 1px line in 6px gutters
     ".msep{height:13px;box-sizing:border-box;padding:6px 12px;background:var(--box-border,#3a3a3a);background-clip:content-box}"
     # The page must never grow WIDER than the phone (the user 2026-07-11, who reported the whole chat screen taking up
@@ -62947,8 +63035,18 @@ _CHAT_MOBILE_CSS = (
 # (.mhead — the tag's chip and the count, cloned from the header, so the tag wears its one treatment), a
 # row per tab COPY (a session under two tags is a row under each, as it is a tab under each), and a
 # divider where the untagged trail begins (.msep, the strip's .tab-group-sep). The plan sections the
-# phone's strip like the desktop's (tab-groups.ts planStrip) and folds nothing there, so a heading is a
-# label, never a control: the list is the phone's only switcher and every session stays a tap away.
+# phone's strip like the desktop's (tab-groups.ts planStrip), and since 2026-09-23 it FOLDS it like the
+# desktop's too, from the same folds the kernel keeps for every device: the user asked to fold groups on
+# the phone, with the state shared with the desktop like the tab order. That supersedes this list's old
+# rule that a heading is a label and nothing folds, whose reason was that the list is the phone's only
+# switcher and a folded group would hide its sessions; the reach is kept by making the heading the fold
+# control, so a folded group's sessions are one tap away, as on the desktop. A tap on a heading clicks the
+# strip's own (hidden) header, the one fold path (render.ts toggle-group, which on the phone folds and
+# nothing else), and the list stays open. A folded group lists its heading alone, with the count and the
+# member-state pip cloned from the header, and a member set to show through the fold (the desktop's "Show
+# when folded") keeps its row. The ACTIVE session follows the desktop's rule: its group folds like any
+# other, the heading standing in for it (aria-current), and the current-session chip still names it,
+# mirrored from the folded-away tab render.ts paints for exactly that (.tab-away: read, never listed).
 _CHAT_MOBILE_JS = """
 (function(){var tabbar=document.getElementById('tabbar'),tabs=document.getElementById('tabs');
 if(!tabbar||!tabs)return;
@@ -62970,14 +63068,15 @@ function hide(){list.classList.remove('open');}
 // else in the bar (the + tab, the controls, a row break between groups) is not a row.
 function read(){var out=[];[].forEach.call(tabs.children,function(t){
 if(t.classList.contains('tab-group-head')&&t.hasAttribute('data-group')){var g=t.getAttribute('data-group'),cnt=t.querySelector('.tab-group-count');
-out.push({key:'g:'+g,group:g,chip:t.querySelector('.tab-group-chip'),count:cnt?cnt.textContent:''});return;}
+out.push({key:'g:'+g,group:g,chip:t.querySelector('.tab-group-chip'),count:cnt?cnt.textContent:'',folded:t.getAttribute('data-folded')==='1',
+pip:t.querySelector('.tab-group-pip'),holds:t.classList.contains('holds-active'),label:t.getAttribute('aria-label')||g});return;}
 if(t.classList.contains('tab-group-sep')){out.push({key:'sep'});return;}
 if(!t.classList.contains('tab')||!t.hasAttribute('data-id'))return;
 var lab=t.querySelector('.tab-label'),id=t.getAttribute('data-id'),copy=t.getAttribute('data-copy');
 out.push({key:'t:'+id+'/'+(copy===null?'':copy),id:id,copy:copy,name:(lab?lab.textContent:id),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
 working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),retrying:!!t.querySelector('.tab-dot.retrying'),ask:t.classList.contains('ring-waiting-on-you'),badgeNeeds:!!t.querySelector('.tab-badge'),needsCount:(function(){var b=t.querySelector('.tab-badge');return b?b.textContent:'';})(),needsLabel:(function(){var b=t.querySelector('.tab-badge');return b?(b.getAttribute('aria-label')||''):'';})(),active:t.classList.contains('active'),
-ph:t.classList.contains('tab-placeholder')});});return out;}
+ph:t.classList.contains('tab-placeholder'),away:t.classList.contains('tab-away')});});return out;}
 // A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
 // federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
 // metadata (host-prefix.ts: dim, italic, never bold, a step smaller), and textContent threw that span
@@ -63013,15 +63112,27 @@ function rowMake(s){var row=document.createElement('div');row.className='mrow';r
 var lbl=document.createElement('span');lbl.className='nm';row.appendChild(lbl);
 var x=document.createElement('span');x.className='mclose';x.textContent='\u00d7';x.title='End session';
 row.appendChild(x);rowUpdate(row,s);return row;}
-// a GROUP HEADING: the header's own chip (tag-menu.ts tagChip, cloned — the one tag treatment, T251) and its
-// count. No caret, since the phone folds nothing (a chevron would promise a fold this row cannot do), and no
-// data-id, so the delegated tap below passes it by: a label, not a pick.
+// a GROUP HEADING: the header's own chip (tag-menu.ts tagChip, cloned — the one tag treatment, T251), the caret,
+// the count (folded: the members the fold hides, as the header counts them) and, folded, the header's member-state
+// pip (cloned, so a fold hides no "needs you" here either). The FOLD CONTROL since 2026-09-23: a button to the
+// keyboard and assistive tech, its state in aria-expanded and its words the header's own label; the header holding
+// the active session is aria-current, as on the desktop. No data-id, so the tap is the fold's, never a pick.
 function headUpdate(row,s){row.textContent='';if(s.chip)row.appendChild(s.chip.cloneNode(true));
-var c=document.createElement('span');c.className='mcount';c.textContent=s.count;row.appendChild(c);}
-function headMake(s){var row=document.createElement('div');row.className='mhead';row.setAttribute('data-key',s.key);row.setAttribute('data-group',s.group);headUpdate(row,s);return row;}
+var cv=document.createElement('span');cv.className='mcaret';cv.textContent='\u25b8';cv.setAttribute('aria-hidden','true');row.appendChild(cv);
+var c=document.createElement('span');c.className='mcount';c.textContent=s.count;row.appendChild(c);
+if(s.folded&&s.pip)row.appendChild(s.pip.cloneNode(true));
+row.classList.toggle('folded',!!s.folded);row.setAttribute('aria-expanded',s.folded?'false':'true');row.setAttribute('aria-label',s.label);
+if(s.holds)row.setAttribute('aria-current','true');else row.removeAttribute('aria-current');}
+function headMake(s){var row=document.createElement('div');row.className='mhead';row.setAttribute('role','button');row.tabIndex=0;
+row.setAttribute('data-key',s.key);row.setAttribute('data-group',s.group);headUpdate(row,s);return row;}
+// the strip's own header for a group, found by walking the strip (no selector: a tag name needs no escaping)
+function realHead(g){var hs=tabs.children;for(var i=0;i<hs.length;i++){if(hs[i].classList.contains('tab-group-head')&&hs[i].getAttribute('data-group')===g)return hs[i];}return null;}
+// the acknowledgement a tap gets at once (ui/CLAUDE.md): the shared .romp-acted pulse (styles.css), cleared on its own end
+function acted(el){el.classList.remove('romp-acted');void el.offsetWidth;el.classList.add('romp-acted');
+el.addEventListener('animationend',function f(){el.classList.remove('romp-acted');el.removeEventListener('animationend',f);});}
 // the untagged trail's divider (the strip's makeTrailSep, turned for a list)
 function sepMake(){var d=document.createElement('div');d.className='msep';d.setAttribute('data-key','sep');d.title='sessions in no tag';return d;}
-var pendingId=null,held=false,dirty=false;
+var pendingId=null,held=false,dirty=false,forwarding=false;
 function sync(){
 // pointer-held defer (the timeline draw()'s pattern, CLAUDE.md click-safety): a push landing while a
 // finger is DOWN must not move or destroy the row under it — flush on release instead. The old
@@ -63052,9 +63163,11 @@ else if(!prt){pendingId=null;}}
 // and the list keeps its scroll position because nothing detaches unchanged rows
 // keyed by the strip's own key (data-key: a tab's id + the group of its copy, a heading's tag, the
 // divider), read back from the rows themselves — no selector, so a tag name needs no escaping
-var want={};ts.forEach(function(s){want[s.key]=1;});
+// (the folded-away active tab is read for the chip above and is never a row: its group lists its heading alone)
+var rows=ts.filter(function(s){return !s.away;});
+var want={};rows.forEach(function(s){want[s.key]=1;});
 var have={};[].slice.call(list.children).forEach(function(r){var k=r.getAttribute('data-key');if(!want[k])r.remove();else have[k]=r;});
-ts.forEach(function(s,i){var row=have[s.key];
+rows.forEach(function(s,i){var row=have[s.key];
 if(s.id){if(!row)row=rowMake(s);else rowUpdate(row,s);}
 else if(s.group!==undefined){if(!row)row=headMake(s);else headUpdate(row,s);}
 else if(!row)row=sepMake();
@@ -63062,6 +63175,14 @@ var at=list.children[i];if(at!==row)list.insertBefore(row,at||null);});}
 // ONE delegated listener on the STABLE list (rows are swapped by sync; the parent survives) — the
 // same delegation rule the desktop strip follows, so a mid-press row swap can still land its tap
 list.addEventListener('click',function(e){
+// a HEADING folds or opens its group through the strip's own header (render.ts toggle-group: the next state is the
+// opposite of the one that header rendered), and the list stays open for the pick. Two clicks must not reach the
+// document's outside-click check, which would close it: this tap's own (propagation stops here, since the sync
+// the fold triggers rebuilds this heading's contents and the check would find the tapped node detached), and the
+// forwarded click on the hidden header, which bubbles from the strip, outside the list (`forwarding`, set for
+// exactly that synchronous dispatch).
+var hd=e.target&&e.target.closest?e.target.closest('.mhead'):null;
+if(hd){e.stopPropagation();acted(hd);var rh=realHead(hd.getAttribute('data-group'));if(rh){forwarding=true;try{rh.click();}finally{forwarding=false;}}return;}
 var row=e.target&&e.target.closest?e.target.closest('.mrow'):null;
 if(!row)return;
 var id=row.getAttribute('data-id');
@@ -63076,12 +63197,15 @@ if(rt&&!rt.classList.contains('tab-placeholder')){rt.click();hide();return;}
 // Classes only — refilling the name here would flatten the host-prefix span (the 2026-07-30 bug).
 pendingId=id;row.classList.add('pending');row.classList.remove('ph');});
 list.addEventListener('pointerdown',function(){held=true;});
+// a heading is a button to the keyboard too: Enter and Space press it, through the same click
+list.addEventListener('keydown',function(e){var hd=e.target&&e.target.closest?e.target.closest('.mhead'):null;
+if(hd&&(e.key==='Enter'||e.key===' ')){e.preventDefault();hd.click();}});
 function release(){if(held){held=false;if(dirty){dirty=false;sync();}}}
 document.addEventListener('pointerup',release);
 document.addEventListener('pointercancel',release);
 cur.addEventListener('click',function(e){e.stopPropagation();list.classList.toggle('open');});
 add.addEventListener('click',function(e){e.stopPropagation();var a=tabs.querySelector('.tab-add');if(a)a.click();});
-document.addEventListener('click',function(e){if(!hdr.contains(e.target)&&!list.contains(e.target))hide();});
+document.addEventListener('click',function(e){if(forwarding)return;if(!hdr.contains(e.target)&&!list.contains(e.target))hide();});
 new MutationObserver(sync).observe(tabs,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style']});
 sync();})();
 """
@@ -72756,6 +72880,21 @@ class Handler(BaseHTTPRequestHandler):
                 # unchanged republish (every viewer writes the same list when a host reports a new session)
                 # pushes nothing at all.
                 if changed:
+                    _broadcast_view_order()
+        elif msg and msg.get("type") == "setViewFolds" and isinstance(msg.get("folds"), dict):
+            # A group folded or opened, or a member set to show through a fold, on ANY viewer of this kernel
+            # (the user 2026-09-23, who wanted the phone to fold too and the folds shared like the order).
+            # Kept WHOLE and OPAQUE beside the arrangement, and pushed on the same frame, so the phone and
+            # the desktop fold together. Last write wins.
+            try:
+                changed = _write_view_folds(msg["folds"])
+            except (_StateUnreadable, _StateUnwritable) as e:
+                # refused out loud: the group sits folded on this page and would silently spring back on
+                # the next reload, and no other device would ever hear of it
+                sys.stderr.write("romp-kernel: setViewFolds refused: %s\n" % e)
+                _reply(client, {"type": "warn", "text": "Couldn't save the folded groups: %s" % e})
+            else:
+                if changed:                          # the change is the event; an unchanged republish pushes nothing
                     _broadcast_view_order()
         elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
             # tab-drag or lane-drag → reorder BOTH surfaces. MERGE the dragged surface's order into the

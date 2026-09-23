@@ -15,6 +15,7 @@ import { adoptArrivals, adoptSharedOrder, applyViewOrder, applyViewOrderTo, chur
          pruneViewOrder, readViewOrder, viewOrderToPublish, writeViewOrder,
          VIEW_ORDER_KEY, VIEW_ORDER_SHARED_KEY, VIEW_ORDER_EVENT } from "./view-order";
 import { adoptViews, capsAdopts, announcedSeq, announcedAfter } from "./views-writes";
+import { hearSharedFolds, parseTabGroups, writeTabGroups } from "./tab-groups";
 import { hostOf, bareId, hostDialLive } from "./host-prefix";
 import { installPerfTelemetry, classifyFrame, type RompPerf } from "./perf-telemetry";
 
@@ -385,6 +386,9 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
   // which the `order[]` rule right below would do, is exactly the shape the 2026-07-31 ruling ruled out:
   // each kernel would get a fragment of its own sids and the interleaving would be gone.
   if (msg.type === "setViewOrder") return [{ host: LOCAL, msg }];
+  // …and so do its FOLDS (2026-09-23): tag names and pinned ids as this viewer sees them, kept by the kernel it
+  // talks to beside the arrangement. No field of it is a per-host order to split.
+  if (msg.type === "setViewFolds") return [{ host: LOCAL, msg }];
 
   // order[] (reorderTabs / the timeline's writeOrder): split across the hosts it touches.
   if (Array.isArray(msg.order) && msg.order.some((x: any) => typeof x === "string")) {
@@ -1126,6 +1130,12 @@ export class FederationManager {
     // them; routeOutbound sends setViewOrder to the local kernel whole rather than splitting it by host,
     // because this list is one viewer's arrangement over every host, not a per-kernel order.
     w.__rompPublishViewOrder = (order: readonly string[]) => this.outbound({ type: "setViewOrder", order: order.slice() });
+    // The tab-groups store's ONE write, for the kernel-served timeline page's inline view (romp-timeline-view.js, served
+    // raw, imports nothing — the __rompWriteOrder precedent above): a fold there splits into this browser's switches and
+    // the shared folds, caches, publishes and tells every pane exactly as the strip's own fold does (2026-09-23).
+    w.__rompWriteTabGroups = (blob: unknown) => writeTabGroups(parseTabGroups(JSON.stringify(blob ?? {})));
+    // The FOLDS' publisher (w.__rompPublishViewFolds) is NOT installed here: a page speaks for the folds only once the
+    // kernel's have reached it (tab-groups.ts FoldsPublisher; installed by the viewOrder frame below).
     this.poll();
     setInterval(() => this.poll(), 4000); // converge on attach/detach made from the shell's network panel
     // the remote sockets' liveness watchdog (socketVerdict above) — the shim's 5s tick, for the relay side
@@ -1243,12 +1253,24 @@ export class FederationManager {
     // this kernel adopts) or the kernel's wins; adoptSharedOrder is silent when it changes nothing, so a
     // viewer seeing its own publish come back does not re-announce it. Never handed on to the panes: they
     // read the arrangement through the merged re-emits below, as they always have.
+    // Each half is read only when the frame carries it: the kernel leaves out a half whose store it could not read,
+    // and this page then keeps what it shows for that half rather than adopting a guess.
     if (m && m.type === "viewOrder") {
       if (host !== LOCAL) return;
-      const served = Array.isArray(m.order) ? m.order.filter((x: unknown): x is string => typeof x === "string") : [];
-      const mine = viewOrderToPublish(m.stored === true, readViewOrder());
-      if (mine) writeViewOrder(mine);   // …which caches, publishes and announces in one step
-      else adoptSharedOrder(served);    // …which announces only when it CHANGED; the announce is what re-emits all three
+      if (Array.isArray(m.order)) {
+        const served = m.order.filter((x: unknown): x is string => typeof x === "string");
+        const mine = viewOrderToPublish(m.stored === true, readViewOrder());
+        if (mine) writeViewOrder(mine);   // …which caches, publishes and announces in one step
+        else adoptSharedOrder(served);    // …which announces only when it CHANGED; the announce is what re-emits all three
+      }
+      // The FOLDS beside it (2026-09-23, the user: fold groups on the phone too, synced like the order). The same
+      // migration and adoption (tab-groups.ts hearSharedFolds), and the adoption's announce is what repaints the strip
+      // and the Sessions pane of this document; its cache write is what repaints the other panes (`storage`). From
+      // here on this page publishes its folds, the slot every bundle on it reads (the view-order slot's pattern).
+      if ("folds" in m) {
+        const w = window as any;
+        hearSharedFolds(m.folds, (f) => this.outbound({ type: "setViewFolds", folds: f }), (fn) => { w.__rompPublishViewFolds = fn; });
+      }
       return;
     }
     // The local kernel's caps frame is the reconnect event: each replayed views store adopts the blob its

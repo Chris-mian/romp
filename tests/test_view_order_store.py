@@ -48,10 +48,12 @@ class ViewOrderStore(unittest.TestCase):
         # and this test starts no backend, so it pins the switch off rather than leaving a host to spawn.
         (km.jd.STATE / "session-hosts").write_text("off")
         km._view_order_lkg[0] = None
+        km._view_folds_lkg[0] = None
 
     def tearDown(self):
         km.jd.STATE = self._state
         km._view_order_lkg[0] = None
+        km._view_folds_lkg[0] = None
         self.td.cleanup()
 
     def stored_file(self):
@@ -88,14 +90,14 @@ class ViewOrderStore(unittest.TestCase):
     def test_a_kernel_with_no_arrangement_says_so_and_one_with_an_empty_one_says_otherwise(self):
         # the browser's migration turns on exactly this: with no arrangement here, a browser carrying one
         # publishes it; with an EMPTY arrangement here, it does not (the emptiness is somebody's answer)
-        self.assertEqual(km._view_order_frame(), {"type": "viewOrder", "order": [], "stored": False})
+        self.assertEqual(km._view_order_frame(), {"type": "viewOrder", "order": [], "stored": False, "folds": None})
         km._write_view_order([])
-        self.assertEqual(km._view_order_frame(), {"type": "viewOrder", "order": [], "stored": True})
+        self.assertEqual(km._view_order_frame(), {"type": "viewOrder", "order": [], "stored": True, "folds": None})
 
     def test_the_frame_serves_what_was_written(self):
         km._write_view_order([FAR_WEB, LOCAL_A])
         self.assertEqual(km._view_order_frame(),
-                         {"type": "viewOrder", "order": [FAR_WEB, LOCAL_A], "stored": True})
+                         {"type": "viewOrder", "order": [FAR_WEB, LOCAL_A], "stored": True, "folds": None})
 
     # ── the change event ──────────────────────────────────────────────────────────────────────────
     def test_a_write_reports_whether_it_changed_anything(self):
@@ -116,7 +118,7 @@ class ViewOrderStore(unittest.TestCase):
             km._broadcast_view_order()
         finally:
             km._send_client, km._clients[:] = saved_send, saved_clients
-        frame = {"type": "viewOrder", "order": [FAR_WEB, LOCAL_A], "stored": True}
+        frame = {"type": "viewOrder", "order": [FAR_WEB, LOCAL_A], "stored": True, "folds": None}
         self.assertEqual(seen, [("phone", ("vieworder",), frame), ("desktop", ("vieworder",), frame)],
                          "every viewer of this kernel hears the change, on the one slot")
 
@@ -133,6 +135,7 @@ class ViewOrderStore(unittest.TestCase):
         km._write_view_order([LOCAL_A, FAR_WEB])
         self._raise_on_read()
         self.assertEqual(km._view_order_served(), ([LOCAL_A, FAR_WEB], True))
+        # (the folds half reads through the same patched reader and has no known-good copy: it is left out)
         self.assertEqual(km._view_order_frame(), {"type": "viewOrder", "order": [LOCAL_A, FAR_WEB], "stored": True})
 
     def test_an_unreadable_store_with_nothing_known_good_says_NOTHING_rather_than_a_guess(self):
@@ -160,6 +163,108 @@ class ViewOrderStore(unittest.TestCase):
         km._view_order_lkg[0] = None                 # a kernel that restarted onto the bad file
         (km.jd.STATE / "view-order.json").write_text("{ not json")
         self.assertEqual(km._view_order_served(), ([], False))
+
+
+# The fold state the browser keeps beside the arrangement (tab-groups.ts TabFolds): tag names folded, a
+# default-folded one opened, a member pinned through its fold, and the rename memory those pins rest on.
+FOLDS = {"collapsed": ["api"], "expanded": ["archived"],
+         "pinned": [{"sid": FAR_WEB, "name": "api", "id": "g2"}], "followed": {"g2": "api"}}
+
+
+class ViewFoldsStore(ViewOrderStore):
+    """The viewer's FOLDS, kept beside the arrangement (the user 2026-09-23, who wanted the phone to fold too
+    and the folded groups shared across devices like the order). Same store, same frame, same push: the
+    viewOrder frame carries `folds` beside `order`, and a change to either is a push of that one frame. The
+    object is opaque here as the list is: a round trip returns it as written, with nothing inside it read.
+
+    Inherits the store's setUp (a private state root, session-hosts off) and so reruns its tests too, which
+    is the point: the arrangement's behaviour is unchanged by the half riding beside it."""
+
+    def stored_folds(self):
+        return json.loads((km.jd.STATE / "view-folds.json").read_text())
+
+    def test_folds_round_trip_verbatim_and_ride_the_arrangements_frame(self):
+        self.assertTrue(km._write_view_folds(FOLDS))
+        self.assertEqual(self.stored_folds(), FOLDS, "written whole")
+        self.assertEqual(km._view_folds_served(), FOLDS)
+        km._write_view_order([FAR_WEB, LOCAL_A])
+        self.assertEqual(km._view_order_frame(),
+                         {"type": "viewOrder", "order": [FAR_WEB, LOCAL_A], "stored": True, "folds": FOLDS},
+                         "one frame: the arrangement and the folds side by side")
+
+    def test_no_folds_is_null_and_an_empty_fold_state_is_not(self):
+        # the browser's migration turns on this, as it does on `stored`: with nothing here, a browser that
+        # has folds of its own publishes them; with an emptied state here (every group opened), it must not
+        # refill it from its own old key
+        self.assertIsNone(km._view_order_frame()["folds"])
+        empty = {"collapsed": [], "expanded": [], "pinned": []}
+        km._write_view_folds(empty)
+        self.assertEqual(km._view_order_frame()["folds"], empty)
+
+    def test_a_fold_write_reports_whether_it_changed(self):
+        self.assertTrue(km._write_view_folds(FOLDS), "a first fold state is a change")
+        self.assertFalse(km._write_view_folds(json.loads(json.dumps(FOLDS))),
+                         "a viewer republishing the state it was served pushes nothing")
+        self.assertTrue(km._write_view_folds(dict(FOLDS, collapsed=[])), "opening a group is a change")
+
+    def test_a_non_object_or_an_oversized_one_is_refused_whole(self):
+        with self.assertRaises(km._StateUnwritable):
+            km._write_view_folds(["api"])
+        with self.assertRaises(km._StateUnwritable):
+            km._write_view_folds({"collapsed": ["x" * 64] * (km._VIEW_FOLDS_CAP // 64)})
+        self.assertFalse((km.jd.STATE / "view-folds.json").exists(), "nothing written: a cut object is a different state")
+
+    def test_the_socket_message_writes_and_pushes_one_frame_to_every_viewer(self):
+        # through the real dispatcher: setViewFolds stores the object and pushes the one viewOrder frame on
+        # its slot to every connected client; an unchanged republish pushes nothing
+        seen = []
+        saved_send, saved_clients = km._send_client, list(km._clients)
+        km._send_client = lambda c, key, msg, *a, **kw: seen.append((c["cid"], key, msg))
+        km._clients[:] = [{"cid": "phone"}, {"cid": "desktop"}]
+        handler = object.__new__(km.Handler)
+        poster = {"cid": "desktop", "app": "chat", "alive": True, "send": lambda s: seen.append(("reply", json.loads(s)))}
+        try:
+            km.Handler._dispatch_ws(handler, {"type": "setViewFolds", "folds": FOLDS}, poster)
+            first = list(seen)
+            del seen[:]
+            km.Handler._dispatch_ws(handler, {"type": "setViewFolds", "folds": FOLDS}, poster)
+            again = list(seen)
+        finally:
+            km._send_client, km._clients[:] = saved_send, saved_clients
+        frame = {"type": "viewOrder", "order": [], "stored": False, "folds": FOLDS}
+        self.assertEqual(first, [("phone", ("vieworder",), frame), ("desktop", ("vieworder",), frame)])
+        self.assertEqual(again, [], "the same folds again: no change, no push")
+        self.assertEqual(self.stored_folds(), FOLDS)
+
+    def test_a_refused_fold_write_is_said_to_the_viewer_who_folded(self):
+        seen = []
+        handler = object.__new__(km.Handler)
+        poster = {"cid": "desktop", "app": "chat", "alive": True, "send": lambda s: seen.append(json.loads(s))}
+        saved = km._write_state_json
+        km._write_state_json = lambda *a, **kw: (_ for _ in ()).throw(km._StateUnwritable(km._view_folds_path(), "[Errno 28] No space left on device"))
+        try:
+            km.Handler._dispatch_ws(handler, {"type": "setViewFolds", "folds": FOLDS}, poster)
+        finally:
+            km._write_state_json = saved
+        self.assertEqual([m["type"] for m in seen], ["warn"])
+        self.assertIn("folded groups", seen[0]["text"])
+
+    def test_an_unreadable_fold_store_serves_its_last_known_good_else_leaves_the_half_out(self):
+        km._write_view_folds(FOLDS)
+        km._write_view_order([LOCAL_A])
+        saved = km._read_state_json
+
+        def flaky(path, *a, **kw):
+            if Path(path).name == "view-folds.json":
+                raise km._StateUnreadable(path, "read failed: EIO")
+            return saved(path, *a, **kw)
+        km._read_state_json = flaky
+        self.addCleanup(lambda: setattr(km, "_read_state_json", saved))
+        self.assertEqual(km._view_order_frame()["folds"], FOLDS, "a file we could not read is not a missing one")
+        km._view_folds_lkg[0] = None                 # a kernel that has never read it
+        self.assertEqual(km._view_order_frame(), {"type": "viewOrder", "order": [LOCAL_A], "stored": True},
+                         "no folds half at all: every page keeps the folds it shows rather than adopting a guess, "
+                         "and the arrangement still goes")
 
 
 if __name__ == "__main__":

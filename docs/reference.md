@@ -4971,8 +4971,17 @@ a tab into another group, right-click it and pick **Move to <tag>** under **Tags
 adds that tag and drops the tag of the group you right-clicked it in, leaving its other tags alone. The row's
 **+** adds the tag without moving the tab. **Group tabs by tag**, at the foot of the tag
 button's menu, turns the sections off for this browser. On a phone the session picker, which stands in
-for the strip, lists the sessions the same way: each under its tag's heading, in the same order, and
-nothing folded (its tag menu has the same switch). The order you have DRAGGED your tabs into follows
+for the strip, lists the sessions the same way: each under its tag's heading, in the same order (its tag
+menu has the same switch). The folds follow you: your kernel keeps which groups are folded, which of the
+ones that start folded you opened, and which tabs are set to show when folded, so a group folded on one
+device is folded on every other while you watch, without a reload, and the last fold wins. On the phone
+the picker's group heading is the fold control, with the header's chevron and count and, folded, its
+dot: tap it to fold or open the group, and the list stays open for the pick. A folded group lists its
+heading alone, except the tabs set to show when folded. The session you are reading follows the
+desktop's rule: its group folds like any other and the heading stands in for it, while the chip at the
+top of the phone still names it. Until 2026-09-23 the phone never folded, since the picker is its only
+switcher; a folded group's sessions are now one tap away instead. A fold made while a page is still
+connecting is kept and applied over the folds the kernel serves, so neither is lost. The order you have DRAGGED your tabs into follows
 you: your kernel keeps it, so the phone picker and every other browser you open read the sessions in
 the order you arranged them on the desktop, and a drag on one device moves them on the others while you
 watch, without a reload. The last drag wins — two devices dragging at the same moment settle on whichever
@@ -5178,6 +5187,15 @@ running on attached machines are arranged in with the rest, and the kernel keeps
 the list without reading it: it can neither order nor prune sessions belonging to
 a machine it has never heard of, which is why the arranging itself stays in the
 browser, where every machine is visible at once.
+
+The folded tag groups travel the same way, on the same kernel store and the same
+push: which groups are folded, the ones that start folded you opened, and the
+tabs set to show when folded, for the tab strip, the phone's session picker and
+the Sessions pane at once. Whether the strip and the Sessions pane group by tag
+at all stays with the browser. A browser that folded groups before its kernel
+kept them hands its folds over the first time it connects to a kernel that has
+none; a kernel that already has folds keeps them, and the browser's own are left
+where they were, so going back to an older romp returns them.
 
 What the kernel acts on is kept by the kernel, and most of those rows say
 **Follows to every connected machine's kernel.** under them: one click there

@@ -136,6 +136,7 @@ type Hooks = {
   homeSectionOf: typeof homeSectionOf; neighborOfFolded: typeof neighborOfFolded; setSectionCollapsed: typeof setSectionCollapsed;
   headWords: typeof headWords; sectionPip: typeof sectionPip; sectionPipMembers: typeof sectionPipMembers; sectionPipTitle: typeof sectionPipTitle;
   groups: ReturnType<typeof parseTabGroups>;
+  phone?: boolean;   // render.ts phoneLayout(): the kernel's phone page, whose picker folds through the header's own act (2026-09-23)
   navDeps: { now: () => { sid: string; top: number } | null } | null;   // what render.ts hands NavHistory (the stub constructor keeps it)
 };
 type Api = {
@@ -187,6 +188,7 @@ function lift(): (H: Hooks) => Api {
     const rowStillOpen = H.rowStillOpen, installSnapshotEscape = H.installSnapshotEscape, reconcileRows = H.reconcileRows;
     const homeSectionOf = H.homeSectionOf, neighborOfFolded = H.neighborOfFolded, setSectionCollapsed = H.setSectionCollapsed;
     const tabGroups = () => H.groups;
+    const phoneLayout = () => H.phone === true;
     const writeTabGroups = (st) => { H.writes.push(st); };
     // the header's parts and gestures: the pure words and pip rules for real, the tag chip and the drag helpers stubs
     const headWords = H.headWords, sectionPip = H.sectionPip, sectionPipMembers = H.sectionPipMembers, sectionPipTitle = H.sectionPipTitle;
@@ -579,6 +581,28 @@ test("executed: a header click folds or opens the section AND shows it at a glan
   H.writes.length = 0; api.set({ snapView: null });
   api.acts["toggle-group"](nameless);
   assert.deepEqual([H.writes.length, api.get().snapView], [0, null], "no group name: nothing");
+});
+
+test("executed: on the PHONE the header's act folds and does nothing else — the picker's heading clicks it (2026-09-23), and the transcript under the picker stays put", () => {
+  // the user asked to fold groups on the phone too; the picker's heading (kernel.py _CHAT_MOBILE_JS) clicks the strip's
+  // hidden header, the one fold path. The desktop's click also shows the section at a glance in the pane, which on the
+  // phone would swap the transcript the person is reading for a view they never asked for: the picker is a list over
+  // the pane, not a strip beside it
+  const { api, H, bar } = world("web");
+  H.phone = true;
+  const plan = planStrip(["web", "api", "tests"], unions, H.groups, "web", true);
+  const head = realHead(api, bar, headOf(plan.items, "infra"));
+  H.calls.length = 0;
+  api.acts["toggle-group"](head);
+  assert.deepEqual([H.writes.length, H.writes[0].collapsed], [1, ["infra"]], "the fold write, from the state the header rendered, as on the desktop");
+  assert.equal(api.get().snapView, null, "no section at a glance on the phone");
+  assert.deepEqual(H.calls, [], "and no showActive: the pane is left exactly as it was (the write's event re-renders the strip, and the picker from it)");
+  // …and opening it again is the same single write
+  H.groups = H.writes[0];
+  const folded = planStrip(["web", "api", "tests"], unions, H.groups, "web", true);
+  api.set({ lastStripItems: folded.items, collapsedTabIds: folded.folded });
+  api.acts["toggle-group"](realHead(api, bar, headOf(folded.items, "infra")));
+  assert.deepEqual([H.writes.length, H.writes[1].collapsed, api.get().snapView, H.calls], [2, [], null, []]);
 });
 
 test("executed: the nav trail records the reader's spot while the view shows: the spot the view holds for the tab being read (snapKeep), not the list's scroll that #content carries under the view", () => {

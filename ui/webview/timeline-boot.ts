@@ -13,6 +13,7 @@
 // window.
 
 import { setViewOrderPublisher, writeViewOrder } from "./view-order";
+import { hearSharedFolds, parseTabGroups, setFoldsPublisher, writeTabGroups, type TabFolds } from "./tab-groups";
 
 export type Post = (m: Record<string, unknown>) => void;
 
@@ -56,7 +57,25 @@ export function dispatchFrame(panel: any, m: any): boolean {
   // kernel's answer to an op it does not know — a refusal of that write, and the cap is withdrawn
   if (m.type === "caps" && panel.setCaps) { panel.setCaps(m); return true; }
   if (m.type === "unknownOp" && panel.unknownOp) { panel.unknownOp(m); return true; }
+  // the viewer's FOLDS the kernel keeps (2026-09-23), the viewOrder frame's `folds` half: adopted into this webview's
+  // store (the view repaints on the store's event), or this webview's own published when the kernel keeps none, and
+  // from then on a fold here is published through the host pipe (tab-groups.ts hearSharedFolds). A browser page never
+  // gets here: its federation manager consumes the frame. The arrangement half is not the timeline's to adopt here.
+  if (m.type === "viewOrder") {
+    if ("folds" in m && foldsPost) hearSharedFolds(m.folds, foldsPost, setFoldsPublisher);
+    return true;
+  }
   return false;
+}
+
+// the host pipe a fold is published through, set by bridgeFunctions (which holds `post`); null before the bridge exists
+let foldsPost: ((f: TabFolds) => void) | null = null;
+
+/** The tab-groups store's one write, for the view's folds (romp-timeline-view.js writeTabGroupsBlob reads it off
+ *  `window.__rompWriteTabGroups`, which timeline-main.ts sets to this; a browser page's federation.ts publishes the
+ *  same): split into this webview's switches and the shared folds, cached, published once heard, announced. */
+export function writeTabGroupsBlob(blob: unknown): void {
+  writeTabGroups(parseTabGroups(JSON.stringify(blob ?? {})));
 }
 
 // A lane's open-external URL → the message to post. A vscode:// deep link is
@@ -91,6 +110,9 @@ export function bridgeFunctions(post: Post): Record<string, (...a: any[]) => voi
   // bridge's own `post` is the channel (2026-09-23). Without it a lane drag here would move this webview's
   // lanes and nobody else's.
   setViewOrderPublisher((order) => post({ type: "setViewOrder", order: order.slice() }));
+  // …and the folds' channel, installed as their publisher only once the kernel's folds have reached this page
+  // (dispatchFrame's viewOrder arm; tab-groups.ts FoldsPublisher says why)
+  foldsPost = (f) => post({ type: "setViewFolds", folds: f });
   return {
     __rompTimelineOpenExternal: (url: string) => post(openExternalMessage(String(url))),
     // A lane drag writes the VIEWER's arrangement, the same store the chat strip writes — not the kernel's

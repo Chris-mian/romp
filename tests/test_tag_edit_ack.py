@@ -890,10 +890,11 @@ class Capability(_Wire):
         # every other part of it — its own frame, on its own dedup slot
         self.assertLess(types.index("viewOrder"), types.index("caps"))
         self.assertEqual(next(m for m in self.sent if m["type"] == "viewOrder"),
-                         {"type": "viewOrder", "order": [], "stored": False},
-                         "no arrangement stored here yet, which is what a browser carrying one publishes against")
+                         {"type": "viewOrder", "order": [], "stored": False, "folds": None},
+                         "no arrangement stored here yet, nor any folds (2026-09-23), which is what a browser "
+                         "carrying either publishes against")
         caps = next(m for m in self.sent if m["type"] == "caps")
-        self.assertEqual(caps, {"type": "caps", "caps": ["tagEdit", "chatProto2", "viewOrder"], "viewsSeq": None},
+        self.assertEqual(caps, {"type": "caps", "caps": ["tagEdit", "chatProto2", "viewOrder", "viewFolds"], "viewsSeq": None},
                          "no store exists yet: the stubbed push carried no seq and the store has none; viewsSeq is null, "
                          "the key always present")
         # a RE-SENT ready (the shim, on a reconnected socket) gets the caps again — the event a page

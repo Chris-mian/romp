@@ -361,6 +361,10 @@ browser, so it follows you: arrange the strip on the desktop and your phone
 lists them the same way, with no reload. The last drag wins, and a phone shows
 the arrangement but cannot change it.
 
+Folded tag groups are kept the same way: a group folded on one device is folded
+on the others, and a tap on a group's heading in the phone's session list folds
+or opens it.
+
 A machine that was set differently while you were apart asks rather than
 changes: a line under the row, and a card on the feed, each offering **Apply**
 or **Keep mine**. A picker above the settings tabs says which machine you are
