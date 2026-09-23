@@ -271,6 +271,8 @@ const lastSeenBuild = new Map<string, number>();   // per kernel: the build of t
 // entry leaves once judged, or when the absence rule ends the suppression
 const restoreChecks = new Map<string, { host: string; sentBuild: number; floor?: number; seq?: number }>();   // `seq`: the undo the check was written for (the per-undo sequence this page mints); an account's floor lands on that undo's checks alone; `floor` (round fifteen): the kernel's build counter when it processed the undo, from its account; until it lands a check on an accounting kernel releases nothing
 let undoSeq = 0;   // the per-undo sequence (the post-merge review of PR 1967, M2): minted on each undoClear, carried by federation's routing frame and echoed by the kernel on the ack and every undo err frame
+const undoPopped = new Map<number, AskItem[]>();   // per undo sequence: the batch the click restored optimistically, until the kernel's account for that undo comes (the second contributor's post-merge review of PR 2021): an account that carries no stack and names no ids says the kernel restored nothing, and the click's restore is taken back from this record; bounded
+const UNDO_POPPED_CAP = 8;
 let ackHosts = new Set<string>();   // the kernels whose last payload says they account for every undo with a build floor (`undoAck`; `ackHosts` on a merged payload): their checks wait for the account; an older kernel's take the build seen at the send, as before
 let payloadHosts: string[] = [];   // the kernels whose builds the last merged payload carried (its per-host map, the local key aside): federation's word on the attachment, with pendingHosts and pendingDead (attachedHosts)
 // The inverse of pendingCleared: ids we've optimistically RESTORED, kept (with their cached card) until a
@@ -282,7 +284,7 @@ const pendingRestored = new Map<string, AskItem>();
 // their rows first, so they are the newest batch) over the clears log's batches by stamp; this page's stack must read the same, press
 // after press, for the optimistic Undo to restore what the kernel restores. Two rules keep it so, proven by enumeration in
 // feed-render-incremental.test.ts over tests/fixtures/undo-stack-transitions.json: a batch this page makes goes UNDER the owed entries
-// (pushClearedEntry), and every gesture account the kernel sends carries its stack (`batches`, `owedBatch`, and `batchesTotal`, the count of
+// (pushClearedEntry), and every gesture account the kernel sends carries its stack except any sent while its clears log cannot be read (a refused clear alone ships none too; the branches below take those) (`batches`, `owedBatch`, and `batchesTotal`, the count of
 // log batches before the wire's bound, so a truncated stack reads as truncated), which this page takes as its
 // own (reconcileClearedStack): a refusal leaves the kernel's stack as it was, so the entry the click popped comes back; ids that came back
 // leave; ids this page never held stand in an entry of their own (empty, so the Undo on it is the round trip).
@@ -367,7 +369,7 @@ export function _clearedStackItemsForTests(): AskItem[][] { return clearedStack.
 export function _clearedStackFrameIdsForTests(): (string[] | null)[] {
   return clearedStack.map((e) => ((e as any)._ids as string[] | undefined) ?? null).reverse();
 }
-export function _resetClearGestureStateForTests(): void { clearedStack.length = 0; clearedItems.clear(); pendingCleared.clear(); pendingRestored.clear(); lastUndoHosts = new Set([""]); undoSentBuild.clear(); lastSeenBuild.clear(); restoreChecks.clear(); payloadHosts = []; ackHosts = new Set(); undoSeq = 0; }
+export function _resetClearGestureStateForTests(): void { clearedStack.length = 0; clearedItems.clear(); pendingCleared.clear(); pendingRestored.clear(); lastUndoHosts = new Set([""]); undoSentBuild.clear(); lastSeenBuild.clear(); restoreChecks.clear(); payloadHosts = []; ackHosts = new Set(); undoSeq = 0; undoPopped.clear(); }
 // Finish an optimistic dismiss: the 180ms fade just removed the card element, so drop the item(s) from the
 // LOCAL model and re-render NOW — in grouped mode a run whose last card left takes its session-name header
 // with it, and the column count follows, instead of both lingering until the next kernel push (the user
@@ -796,13 +798,21 @@ function releaseRestoredByEvidence(incomingAsks: AskItem[], m: any): void {
 function setUndoFloor(host: string, seq: unknown, floor: unknown): void {
   if (typeof floor !== "number") return;
   for (const c of restoreChecks.values()) if (c.host === host && (typeof seq !== "number" || c.seq === seq)) c.floor = floor;
+  // an account for undo N on a LIVE socket says every earlier undo's account from this kernel has come or never will (in-order delivery on the
+  // pressing socket): this kernel's FLOORLESS checks with a lower sequence lost theirs, so they take the click-time release now, or the card
+  // would stay off while every build listed it (the second contributor's post-merge note on PR 2018); a floored check keeps waiting for evidence
+  if (typeof seq === "number") for (const [id, c] of Array.from(restoreChecks)) if (c.host === host && c.floor === undefined && typeof c.seq === "number" && c.seq < seq) { restoreChecks.delete(id); pendingCleared.delete(id); }
 }
-// a kernel's socket came back (the shim's `wsup` for the local kernel, federation's `hostUp` for a remote): the undo's account rides the
+// a kernel's socket came back (the shim's `wsup` frame for the local kernel; for a remote one the relay socket's own reopen, federation's
+// `romp:hostRelayUp` event, listened for below, and the tunnel poll's `hostUp` frame as a second trigger): the undo's account rides the
 // pressing client's queue alone, which the redial may have abandoned, so a check still waiting for it would hold a restored card off the
 // board for good (the absence rule never covers a listed card); its suppressions take the click-time release instead (the post-merge review)
 function dropChecksOnReconnect(host: string): void {
   for (const [id, c] of Array.from(restoreChecks)) if (c.host === host) { restoreChecks.delete(id); pendingCleared.delete(id); }
 }
+// a remote kernel's relay socket reopened: federation's own event on its onopen, the exact event a redial fires (the artifacts pane's pattern;
+// the post-merge note on PR 2018: the tunnel poll's hostUp is a proxy, silent on a watchdog redial and loud on an upSeq bump with the socket intact)
+window.addEventListener("romp:hostRelayUp", (ev) => { const h = String((ev as CustomEvent).detail?.host || ""); if (h) dropChecksOnReconnect(h); });
 
 // the kernels attached, by federation's own account and never by sessions or cards (rounds twelve and thirteen of PR 1967: a remote card's coming
 // and going flipped the reading, then a remote card whose kernel had no session row on the strip read as a single-kernel pane and took the
@@ -4240,7 +4250,10 @@ function makeUndoClearBtn(): HTMLElement {
     // so that push can't re-suppress them.
     if (federatedPane()) clearedStack.length = 0;         // entries cached before a second kernel attached are one kernel's guesses: the round trip below
     const batch = clearedStack.pop();
+    const seq = ++undoSeq;                                // the per-undo sequence: the kernel echoes it on the undo's account, so its floor lands on this undo's checks alone
     if (batch && batch.length) {
+      undoPopped.set(seq, batch);                         // the click's restore, kept by the undo's sequence until the kernel accounts for it: an account that restored nothing takes it back
+      for (const k of Array.from(undoPopped.keys())) { if (undoPopped.size <= UNDO_POPPED_CAP) break; undoPopped.delete(k); }
       for (const it of batch) {
         pendingCleared.delete(it.itemId);
         pendingRestored.set(it.itemId, it);                                  // stay sticky until the kernel push carries it
@@ -4272,7 +4285,7 @@ function makeUndoClearBtn(): HTMLElement {
       window.clearTimeout(undoBusyBackstop);
       undoBusyBackstop = window.setTimeout(clearUndoBusy, 6000);
     }
-    vscodeApi?.postMessage({ type: "undoClear", seq: ++undoSeq });   // the per-undo sequence: the kernel echoes it on the undo's account, so its floor lands on this undo's checks alone
+    vscodeApi?.postMessage({ type: "undoClear", seq });
   };
   return b;
 }
@@ -6870,10 +6883,16 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     // a landed undo's account (round fifteen of PR 1967): nothing to say but the build floor, the kernel's counter when it processed the undo;
     // the checks on that kernel judge their payloads by it from here on. Federation stamps a remote kernel's ack with its host
     setUndoFloor(typeof m.host === "string" ? m.host : "", m.seq, m.buildId);
+    if (typeof m.seq === "number") undoPopped.delete(m.seq);   // the undo landed: the click's record of what it restored is spent
   } else if (m.type === "wsup") {
     dropChecksOnReconnect("");                                   // the local kernel's socket reopened (the shim's frame): a lost account holds nothing off the board
   } else if (m.type === "hostUp" && Array.isArray(m.hosts)) {
-    for (const h of m.hosts) if (typeof h === "string" && h) dropChecksOnReconnect(h);   // a remote kernel's link recovered (federation's frame): the same
+    // the tunnel poll's word that a remote kernel came back (a down-to-up transition): a SECOND trigger beside the relay socket's own reopen
+    // (the romp:hostRelayUp listener above), kept for the one case that event never covers: a relay socket that never opens again on this
+    // page while the poll's row reads up, so no reopen fires here and the account it lost would hold the card off until a reload (the
+    // post-merge note on PR 2018: this frame alone missed the watchdog redial that loses the account, and fired on an upSeq bump with the
+    // socket intact; the second contributor's post-merge review of PR 2021 asked for the case by name)
+    for (const h of m.hosts) if (typeof h === "string" && h) dropChecksOnReconnect(h);
   } else if (m.type === "retryRefused" && typeof m.sid === "string" && m.sid) {
     // the backend could not take the manual retry's send: the Retry this page latched lets go, and says why
     if (rearmLatches({ kind: "retry", sid: m.sid })) feedToast(String(m.text || "Couldn't retry: the kernel refused it."));
@@ -6934,10 +6953,11 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     const fromHost = typeof m.host === "string" ? m.host : "";   // federation stamps a remote kernel's account with its host (prefixInbound); the local kernel's has none
     if (op === "undoClear") setUndoFloor(fromHost, m.seq, m.buildId);   // the refusal's and the reorder's frames carry the undo's build floor (round fifteen) and its sequence
     if (storeOp && Array.isArray(m.batches) && !fromHost && !federatedPane()) {
-      // the kernel's stack rides every gesture account (round eight of PR 1967): this page takes it as its own, which covers a refused clear (its
+      // the kernel's stack rides every gesture account sent while its clears log reads (round eight of PR 1967; none while it cannot be read): this page takes it as its own, which covers a refused clear (its
       // ids are not in the batches: back where they were), a refused undo (the batch the click popped is still the newest: back on top), a
       // reorder (the owed batch restored, the last clear's entry back on top) and ids this page never held (an entry standing for them). The
-      // branches below are the road for an older kernel's frame, which carries no stack, and for every frame on a FEDERATED pane, which keeps
+      // branches below are the road for an older kernel's frame, which carries no stack, for the current kernel's stack-less frames (the read-fault
+      // account and any account beside it while the log cannot be read), and for every frame on a FEDERATED pane, which keeps
       // no stack (federatedPane): there a refused clear's cards come back by their ids and nothing else moves
       const owedB: string[] = Array.isArray(m.owedBatch) ? m.owedBatch.map(String) : [];
       const bats: string[][] = m.batches.map((b: any) => (Array.isArray(b) ? b.map(String) : []));
@@ -6945,6 +6965,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       // nothing about their cards, so the reconcile keeps their entries and suppressions
       const truncated = typeof m.batchesTotal === "number" && m.batchesTotal > bats.length - (owedB.length ? 1 : 0);
       reconcileClearedStack(bats, owedB, truncated, refusedIds);
+      if (op === "undoClear" && typeof m.seq === "number") undoPopped.delete(m.seq);   // the stack reconciled the click's restore: its record is spent
     } else if ((op === "askClear" || op === "askClearMany" || op === "nodeOverride" || op === "clearAll") && refusedIds.length) {
       for (const id of refusedIds) pendingCleared.delete(id);
       // the card comes back NOW, in either window (the third review of PR 1967): inside the 180 ms collapse the per-card identity gate
@@ -6970,9 +6991,41 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       // a reorder whose owed cards did not come back (`owedIds`; the sixth executed review of PR 1967): their re-journal is the kernel's newest
       // batch, so the NEXT Undo is theirs; an empty entry above the last clear's stands for them (that pop restores nothing optimistically and
       // takes the round-trip cue, the payload bringing them), and the pop after matches the kernel's: the last clear
-      if (Array.isArray(m.owedIds) && m.owedIds.length) clearedStack.push([]);
+      // unless the top entry already stands for those cards (the first contributor's round-four comment on PR 2025, 2026-09-22): under a STANDING
+      // read fault the kernel's reorder frame ships no stack, so this branch runs after the marked read-fault account took the click's restore
+      // back, and when the click had popped the owed entry itself (this page held the owed card's copy, so it restored it optimistically) that
+      // entry is back on top already; a second stand-in above it left the pane's stack one entry longer than the kernel's, and its last lit
+      // Undo restored nothing and drew a bare ack
+      if (Array.isArray(m.owedIds) && m.owedIds.length) {
+        const owedNow = m.owedIds.map(String);
+        const top = clearedStack[clearedStack.length - 1];
+        const topIds: string[] = top ? (((top as any)._ids as string[] | undefined) ?? top.map((it) => it.itemId)) : [];
+        if (!(topIds.length && topIds.every((id) => owedNow.includes(id)))) clearedStack.push([]);
+      }
+      if (op === "undoClear" && typeof m.seq === "number") undoPopped.delete(m.seq);   // the refusal named the click's batch: its record is spent
+      render();
+    } else if (op === "undoClear" && m.readFault === true && !fromHost && !federatedPane() && !Array.isArray(m.batches) && typeof m.seq === "number" && undoPopped.has(m.seq)) {
+      // the kernel's read-fault account by its POSITIVE marker (`readFault`; round six of PR 2025, the first contributor's round-two comment): keyed on
+      // what an account lacked, the take-back fired on an owed-note refusal whose ledger read faulted after the undo rows landed, took back a batch
+      // the kernel had restored, and the next Undo popped a phantom; an account without the marker settles nothing about the click, so the record
+      // stands for the one that does (this marker, the ack, a stack).
+      // the local kernel's frame on a single-kernel pane alone, as the stack branch above (the round-three verifier of PR 2025: a federated click
+      // keeps no record, so the guard is a belt; a remote kernel's account names no click of this page).
+      // an undo account that carries no stack and names no ids: the kernel restored NOTHING (its clears log could not be read, the read-fault
+      // account; the second contributor's post-merge review of PR 2021): the click's optimistic restore stood as cards the kernel never restored
+      // beside a dialog saying the cards stay as they are, since the revert above runs on the ids an account names. The batch this click popped,
+      // kept by the undo's sequence, leaves the board and pendingRestored, is suppressed again and goes back on top of the stack: the kernel's
+      // newest batch is still that clear's, so the next Undo, once the log reads, is its
+      const popped = undoPopped.get(m.seq)!;
+      const ids = popped.map((it) => it.itemId);
+      for (const id of ids) { pendingRestored.delete(id); pendingCleared.add(id); }
+      asks = asks.filter((a) => !ids.includes(a.itemId));
+      clearedStack.push(popped);
+      if (op === "undoClear" && typeof m.seq === "number") undoPopped.delete(m.seq);   // the marked account settled the click: its record is spent
       render();
     }
+    // an undo account with neither a stack nor ids nor the marker (an owed-note refusal beside a landed undo) says nothing about the click's
+    // restore, so the click's record stands for the account that does (round six); UNDO_POPPED_CAP bounds a record no account ever settles
     if (op === "undoClear" && (!federatedPane() || lastUndoHosts.has(fromHost))) clearUndoBusy();   // an undo's account from a kernel the undo went to is the event the round trip's cue waits for: a refusal sends no payload (rounds eleven and twelve of PR 1967)
     if (op === "apiRetry" && sid) rearmLatches({ kind: "retry", sid });
     else if (op === "askFollowUp" && itemId) {

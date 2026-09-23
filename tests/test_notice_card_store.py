@@ -1084,6 +1084,10 @@ class Boards(unittest.TestCase):
         self.assertEqual([km._card_needs_you(x) for x in (ca, cb, cc, cd)], [True, True, False, False], "the one rule")
         self.assertEqual(km._needs_you_count(feed), 2, "the badge counts both needs-you cards")
         self.assertEqual(km._needs_input_sids(feed), frozenset({SID, SID2}), "the ring lights for both sessions, by the same rule")
+        # the count's key set equals the membership set on the REAL store feed (these ARE notice cards), so a tally that
+        # skipped notice cards would miss both sids here and red, where the plain hand-built feed did not (the PR 2023 post-merge review)
+        self.assertEqual(set(km._needs_input_counts(feed)), set(km._needs_input_sids(feed)), "the numbered count keys exactly the membership set on the real feed")
+        self.assertEqual(km._needs_input_counts(feed), {SID: 1, SID2: 1}, "one needs-you card each, notice cards tallied")
         # the contradiction is refused by name: --needs-you beside a category that is not the board's needs-you one
         row, err = km.post_notice(SID, "e", "t", producer="cli", now=104, category="completed", needs_you=True)
         self.assertIsNone(row); self.assertRegex(err, r"--needs-you files the card under 'needs_input' on board 'feed'; the category 'completed' is another")
@@ -1251,6 +1255,44 @@ class TheDoors(unittest.TestCase):
         self.assertIn('asks.extend(_notice_cards(now, cleared, {s["sid"] for s in alive}))', KSRC, "the feed attaches the family with the build's alive roster (a card's live is its owner's)")
         self.assertIn('("notices", _notice_memo_report)', KSRC, "/perf reports the memo")
         self.assertIn('_nmoved = _compact_notices()', KSRC, "the retention pass runs beside the goal-store sweep")
+
+
+class NeedsYouTallies(unittest.TestCase):
+    """The three needs-you tallies agree where they must and differ where they must (plans/tab-state-badge.md, the second
+    contributor on PR 2017): the COLUMN tally (_needs_input_counts, the numbered badge's value) keys exactly the membership
+    set (_needs_input_sids, needsYou) with every value at least 1; the app-ICON count (_needs_you_count) skips provisional
+    cards. Pure over a synthetic feed, so no state root is needed."""
+
+    def _card(self, sid, i, prov=False, notice=False, blocked=None):
+        nb = km._board_needs_you("feed")
+        c = {"sid": sid, "board": "feed", "category": nb, "provisional": prov, "itemId": "%s:g%d" % (sid, i)}
+        if notice:
+            c["notice"] = {"key": "k", "rev": 1}                 # a NOTICE card, not a goal: the count rule must still tally it (a notice-skipping drift would miss its sid)
+        if blocked is not None:
+            c["blocked"] = blocked                               # a HARD-STOP live-block: counted here too (the box header drops it, but this tally is not the header)
+        return c
+
+    def _feed(self):
+        # goals, a placeholder, a notice card and a hard-stop card, so a count rule that skips the notice or hard-stop
+        # fields (which the plain hand-built cards lacked, the post-merge review of PR 2023) breaks the key-set equality below
+        return {"asks": [self._card("s1", 1), self._card("s1", 2), self._card("s2", 1), self._card("s3", 1, prov=True),
+                         self._card("s4", 1, notice=True), self._card("s5", 1, blocked={"state": "blocked"})]}
+
+    def test_the_column_tally_keys_the_membership_set_with_every_value_at_least_one(self):
+        nb = km._board_needs_you("feed")
+        self.assertIsNotNone(nb, "the feed board names a needs-you category")
+        feed = self._feed()
+        counts = km._needs_input_counts(feed)
+        sids = km._needs_input_sids(feed)
+        self.assertEqual(set(counts.keys()), set(sids), "the count's key set is exactly the membership set (a notice- or hard-stop-skipping count would break this)")
+        self.assertTrue(all(isinstance(v, int) and v >= 1 for v in counts.values()), "every needs-you session's count is at least 1: %r" % counts)
+        self.assertEqual(counts, {"s1": 2, "s2": 1, "s3": 1, "s4": 1, "s5": 1}, "the column tally counts every needs-you card: goals, a placeholder, a notice and a hard stop")
+
+    def test_the_app_icon_count_skips_provisional_cards(self):
+        feed = self._feed()
+        # the column tally counts the placeholder; the icon count (a third tally) drops it, so the two differ by exactly it
+        self.assertEqual(km._needs_you_count(feed), 5, "the app-icon count skips the provisional s3: 5 real cards (s1 x2, s2, s4 notice, s5 hard stop), not 6")
+        self.assertEqual(sum(km._needs_input_counts(feed).values()), 6, "the column tally includes the placeholder")
 
 
 if __name__ == "__main__":

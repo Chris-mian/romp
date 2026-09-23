@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
-"""THE TAB LOCK (T395, the user 2026-09-12; T405, the user 2026-09-13: the lock moved off the strip into the strip's gear) on
-the served chat page and, for the Sessions pane, the landing: a hermetic kernel serves six synthetic notes-api sessions
-(TESTHOST, one flat row of tabs, the chat lens narrowed to no tags). The strip's chrome (T405): a gear at the strip's
-FARTHEST right in a box of the tags box's height, wearing the shell's own settings glyph (the rail's character, one
-source); its menu holds "Lock the tabs in place", the toggle row with the button's two titles, and "Tab widgets…"; no lock
-button anywhere in the strip; the tag control displays no chips (narrowed to no tags, it still wears the accent). A REAL
-mouse drag (page.mouse down, a run of moves across the strip, up over the target) with the lock OFF moves the tab; the
-lock row pressed, the same drag moves nothing, the tabs are not draggable, the row wears the ✓, the setting persists across
-a reload; pressed again, the drag moves the tab once more. Round one: a keyboard press (Enter on the gear, Enter on the
-row) keeps the focus on the row across the strip's rebuild, Escape hands it back to the gear; and the Sessions pane (the
-landing's timeline, which shares the order) refuses a lane drag while locked, its lanes without the grab cursor and saying
-why, and moves the lane once unlocked. The phone layout (a coarse pointer under 1024 px) hides the strip and its gear with it.
+"""THE IDENTITY RING on a two-row tab strip, served: a hermetic kernel serves six synthetic notes-api sessions
+(TESTHOST, one flat row of tabs, the chat lens narrowed to no tags) into a narrow viewport, so the six tabs wrap onto
+TWO rows. The test measures that a SECOND-ROW active tab keeps its own top edge and its identity ring whole, in both
+themes: the strip wraps to at least two rows, a tab sits on the second row and is the active one, it wears the
+`colored` identity ring as an INSET box shadow, and the T134 hairline (`--box-border`) runs directly above it, one css
+pixel over the tab's own top edge, so the 1px row gap the hairlines need never cuts the tab's edge or its ring (the
+ring is inset 1.5px and begins one pixel below the edge).
 
-TAB_LOCK_DIST=<dir> serves another tree's UI bundle (the red run's before); TAB_LOCK_SHOTS=<prefix> writes
-<prefix>-strip-<theme>.png (the strip with the gear's menu open); TAB_LOCK_DUMP=<path> writes the whole measurement. Skips LOUDLY without the extension deps or
-a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1 and installs both, so a skip there is a failure). Synthetic
-throughout: placeholder sids, TESTHOST, invented text.
+TAB_RING_DIST=<dir> serves another tree's UI bundle (the red run's before); TAB_RING_SHOTS=<prefix> writes
+<prefix>-strip-<theme>.png (the wrapped strip per theme); TAB_RING_DUMP=<path> writes the whole measurement. Skips
+LOUDLY without the extension deps or a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1 and installs both, so a
+skip there is a failure). Synthetic throughout: placeholder sids, TESTHOST, invented text.
 """
 import json
 import os

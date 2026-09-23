@@ -232,23 +232,45 @@ test("the bubble's inner-markdown overrides OUTRANK .md — the doubled-selector
   assert.match(CHAT, /\.user-bubble strong, \.user-bubble\.md strong \{ color: #fff; \}/);
 });
 
-test("the Needs you box's rules (.ntc-, #notices) draw their colours from the tokens: the accent and its color-mix, the box and state tokens, transparent; the one literal is the destructive red (the box review of PR 1967, the round-thirteen verifier's low)", () => {
+test("the Needs you box's rules (.ntc-, #notices) draw their colours from the tokens: the accent and its color-mix, the box, state and deny tokens, transparent; no colour literal, the destructive red and the filled deny's text being per-theme tokens since the second contributor's post-merge note on PR 2014 (the box review of PR 1967, the round-thirteen verifier's low)", () => {
   // whole rule blocks wherever they start (a line's start or the previous block's close: the first contributor's note on PR 2014), continuation
   // lines included (the round-fourteen verifier's low: a colour on a continuation line passed), comments stripped first
-  const boxRules = (css: string) => Array.from(css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(?<=^|\})\s*((?:\.ntc-|#notices|body\.dense-chrome \.ntc-)[^{]*?)\{([^}]*)\}/g), (m) => m[1].trim() + " {" + m[2].replace(/\n/g, " ") + "}");
-  const decls = (rule: string) => Array.from(rule.matchAll(/(?:^|[\s;{])(color|background(?:-color)?|border(?:-(?:color|top|bottom|left|right))?)\s*:\s*([^;}]+)[;}]/g), (m) => [m[1], m[2].trim()] as [string, string]);
+  const boxRules = (css: string) => Array.from(css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(?<=^|[{};,\n])\s*((?:\.ntc-|#notices|body\.dense-chrome \.ntc-|body\.dense-chrome #notices)[^{]*?)\{([^}]*)\}/g), (m) => m[1].trim() + " {" + m[2].replace(/\n/g, " ") + "}");   // a line start too: without the m flag ^ is the string's start (the post-merge note on PR 2018)
+  // the colour-bearing properties this pin reads (a named list, not every property: the post-merge review of PR 2021): color, background and
+  // background-color, border and its sides with their colours, outline and outline-color, the two shadows, text-decoration and its colour,
+  // caret-color, accent-color, column-rule-color
+  const decls = (rule: string) => Array.from(rule.matchAll(/(?:^|[\s;{])(color|background(?:-color)?|border(?:-(?:top|bottom|left|right))?(?:-color)?|outline(?:-color)?|box-shadow|text-shadow|text-decoration(?:-color)?|caret-color|accent-color|column-rule-color)\s*:\s*([^;}]+)[;}]/g), (m) => [m[1], m[2].trim()] as [string, string]);
   // the scanner's own self-checks: a second rule on the same line is read, and a border-bottom literal on a continuation line is seen
   assert.deepEqual(boxRules(".x { color: red } .ntc-a { color: var(--fg) } .ntc-b { background: #123456 }").map((r) => r.split(" {")[0]), [".ntc-a", ".ntc-b"], "two box rules on one line are both read");
   assert.deepEqual(decls(".ntc-head { padding: 7px;\n  border-bottom: 1px solid #123456; }"), [["border-bottom", "1px solid #123456"]], "a border-bottom on a continuation line is a colour declaration");
+  assert.deepEqual(boxRules(".x,\n.ntc-a { color: #123456 }").map((r) => r.split(" {")[0]), [".ntc-a"], "a box selector opening a selector-list continuation line is read");
+  assert.deepEqual(boxRules("@media (max-width: 600px) { .ntc-a { color: #123456 } } @import url(x.css); .ntc-b { color: red }").map((r) => r.split(" {")[0]), [".ntc-a", ".ntc-b"], "the first box rule inside an at-rule block, and one after a semicolon-terminated at-rule, are read");
+  assert.deepEqual(boxRules(".x, .ntc-a { color: #123456 }").map((r) => r.split(" {")[0]), [".ntc-a"], "a box selector after a same-line comma is read (the post-merge review of PR 2021)");
+  assert.deepEqual(decls(".ntc-a { text-decoration: underline #123456; accent-color: #fff; column-rule-color: #000 }").map((d) => d[0]), ["text-decoration", "accent-color", "column-rule-color"], "text-decoration, accent-color and column-rule-color are read");
+  assert.deepEqual(decls(".ntc-a { outline: 1px solid #123456; box-shadow: 0 0 0 1px #000; border-left-color: #fff }").map((d) => d[0]), ["outline", "box-shadow", "border-left-color"], "outline, the shadows and a side colour are colour declarations");
+  // the seven mutants the second contributor's post-merge note on PR 2014 names, and the whitespace case, each read by the scanner: the lookbehind
+  // admits a block after `}` (any whitespace after it consumed by the \s* that follows the lookbehind, so the ruled `(?<=^|\}\s*)` is subsumed), a
+  // line start, a semicolon or a comma, and the declaration list names every colour-bearing side
+  const flagged = (css: string) => boxRules(css).flatMap((r) => decls(r).map((d) => d[1]));
+  assert.deepEqual(flagged(".ntc-title { color: var(--fg) } .ntc-title.x { color: #ff0000; }"), ["var(--fg)", "#ff0000"], "a second rule on the same line is read (mutant one)");
+  assert.deepEqual(flagged(".ntc-head { padding: 7px;\n  border-bottom: 1px solid #abcdef; }"), ["1px solid #abcdef"], "a border-bottom literal (mutant two)");
+  assert.deepEqual(flagged(".ntc-a { background-color: #123456; }"), ["#123456"], "a background-color literal (mutant three)");
+  assert.deepEqual(flagged(".ntc-a { padding: 1px; color: #123456 }"), ["#123456"], "an unterminated last declaration (mutant four)");
+  assert.deepEqual(flagged("#notices { margin: 0;\n  color: #123456; }"), ["#123456"], "a colour on a continuation line (mutant five)");
+  assert.deepEqual(flagged(".ntc-a { border-left: 1px solid #123456 }"), ["1px solid #123456"], "a border-left literal (mutant six)");
+  assert.deepEqual(flagged(".ntc-a { border-right: 1px solid #123456 }"), ["1px solid #123456"], "a border-right literal (mutant seven)");
+  assert.deepEqual(flagged(".x { color: red }   .ntc-a { color: #123456 }"), ["#123456"], "a same-line rule with whitespace after the brace is read (the whitespace case)");
+  assert.deepEqual(flagged("body.dense-chrome #notices { margin: 4px 10px 0; color: #123456; }"), ["#123456"], "the dense-chrome box selector is read (the one selector naming the box outside the three prefixes)");
   const rules = boxRules(CHAT);
-  assert.ok(rules.length >= 20, "the box's rules are present: " + rules.length);
+  assert.ok(rules.length >= 25, "the box's rules are present, the dense-chrome box rule among them: " + rules.length);
+  assert.ok(rules.some((r) => r.startsWith("body.dense-chrome #notices {")), "the dense-chrome box rule is among them");
   assert.ok(rules.some((r) => r.startsWith("#notices {") && r.includes("border-radius")), "the multi-line rules are read whole: " + rules.filter((r) => r.startsWith("#notices")).join(" | ").slice(0, 200));
   const vocab = (v: string) => /^var\(--[a-z-]+\)$/.test(v) || /^color-mix\(in srgb, var\(--[a-z-]+\) \d+%, transparent\)$/.test(v) || v === "transparent"
     || /^1px solid var\(--[a-z-]+\)$/.test(v) || /^linear-gradient\(var\(--[a-z-]+\), var\(--[a-z-]+\)\), var\(--[a-z-]+\)$/.test(v)   // the header's opaque ground, in tokens
-    || v === "#e5484d" || v === "rgba(229, 72, 77, 0.6)" || v === "#fff";
+    || v === "none";   // no colour literal: the destructive red is the per-theme --deny token and the filled deny's text its --deny-fg (the manager's read of PR 2039)
   for (const rule of rules) for (const [, v] of decls(rule)) assert.ok(vocab(v), "a box colour outside the vocabulary: " + rule.trim());
   assert.match(CHAT, /\.ntc-head \{[^}]*background: linear-gradient\(var\(--box-bg\), var\(--box-bg\)\), var\(--bg\); \}/, "the header's opaque ground is the box wash over the page, in tokens");
-  for (const [name, css, sel] of [["styles.css", CHAT, ".ntc-btn.ntc-ok"], ["feed.css", FEED, ".fdismiss.fq-ok"]] as const) {
+  for (const [name, css, sel] of [["styles.css", CHAT, ".ntc-btn.ntc-ok"]] as const) {   // the feed's fq-ok twin left with the rule no element wore (the second contributor's post-merge note on PR 2014)
     const rule = css.split("\n").find((l) => l.startsWith(sel + " {")) || "";
     assert.ok(rule.includes("border-color: color-mix(in srgb, var(--accent) 90%, transparent)"), name + ": the ok button's border is the accent's own on both themes, at the share that clears the 3:1 non-text floor on the light theme: " + rule);
     assert.doesNotMatch(rule, /rgba\(156, 210, 255/, name + ": never the dark accent's rgba");

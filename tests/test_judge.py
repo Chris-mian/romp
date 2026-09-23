@@ -7807,6 +7807,37 @@ class LiveReplan(unittest.TestCase):
         other = jd._cleared_context("99999999-8888-7777-6666-555555555555", store)
         self.assertEqual(other, "", "another session's clears are not this session's context")
 
+    def test_cleared_context_skips_a_row_that_is_not_an_object_and_says_bytes_that_are_not_text(self):
+        """The second contributor's post-merge review of PR 2021: the context read's id lookup ran on whatever the parse returned (a `[]` row
+        raised AttributeError) and its bare `except OSError: pass` let a log whose bytes are not text raise UnicodeDecodeError out of the
+        planner's pass. Such rows are skipped; undecodable bytes read as no context, routed through the cleared-unreadable arm (one row per
+        episode, the stage incomplete) instead of a silent pass."""
+        g2 = SID + ":g2"
+        log = Path(self.td.name) / "cleared.jsonl"
+        g3, g4 = SID + ":g3", SID + ":g4"
+        log.write_text("[]\n" + json.dumps({"id": 5, "t": 100, "op": "clear"}) + "\n" + json.dumps({"id": g2, "t": 200, "op": "clear"}) + "\n"
+                       + json.dumps({"id": g3, "t": "yesterday", "op": "clear"}) + "\n"   # a stamp that is not a number: skipped (the sort below would raise on it)
+                       + json.dumps({"id": g4, "t": True, "op": "clear"}) + "\n"   # a bool stamp, its own id (the first contributor's round one on PR 2032)
+                       + json.dumps({"id": g2, "t": "x", "op": "undo"}) + "\n" + json.dumps({"id": g2, "t": None, "op": "undo"}) + "\n")   # undo rows stamped "x" and null are skipped too: g2's clear stands (every malformed row; the second contributor's post-merge comment on PR 2032)
+        store = {"nodes": {g2: {"id": g2, "text": "Ship the exporter", "parentId": None, "cleared": True},
+                           g3: {"id": g3, "text": "Retire the importer", "parentId": None, "cleared": True},
+                           g4: {"id": g4, "text": "Rename the fixtures", "parentId": None, "cleared": True}}}
+        try:
+            ctx = jd._cleared_context(SID, store)
+        except AttributeError as e:
+            self.fail("the read raised on a row that is not an object: %r" % e)
+        self.assertEqual(ctx.splitlines(), ["- Ship the exporter"], "the array row, the non-string id, the string- and bool-stamped rows and the undo rows stamped \"x\" and null are skipped, the row beside them loads and stands")
+        log.write_bytes(b"\xff\xfe\x00 not text\n")
+        jd._judge_ctx.stage_incomplete = False
+        try:
+            self.assertEqual(jd._cleared_context(SID, store), "", "bytes that are not text read as no context")
+        except ValueError as e:
+            self.fail("the decode error raised out of the read: %r" % e)
+        self.assertTrue(jd._judge_ctx.stage_incomplete, "said through the gate's arm: the stage is incomplete, not a silent pass")
+        rows = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()] if jd.ERRORS.exists() else []
+        self.assertEqual([r["err"] for r in rows if r["err"] == "cleared-unreadable"], ["cleared-unreadable"], "one cleared-unreadable row: %r" % rows)
+        jd._judge_ctx.stage_incomplete = False
+
 
 class DistillerStoresFullTextTest(unittest.TestCase):
     """The distiller's key takeaway (summary) and decision brief (blockSummary) are stored in FULL — never

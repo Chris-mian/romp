@@ -1824,6 +1824,48 @@ class StoreCompleteness(_Gate):
         finally:
             os.chmod(cp, 0o644)
 
+    def test_an_undecodable_cleared_file_never_stamps_and_the_store_loader_still_answers(self):
+        """The second contributor's post-merge review of PR 2021: the grouper's scan caught OSError alone, so a clears log whose bytes are not
+        text raised UnicodeDecodeError out of every pass with no cleared-unreadable row, and the store loaders raised the same way for a session
+        whose override journal carries a move row (the reopen gate reads the log). The undecodable log reads as nothing cleared, said once per
+        episode, the run incomplete and unstamped; the loaders answer the store, since the reader answers empty; the store boundary itself keeps
+        its OSError-only contract (a ValueError out of a loader is a bug and propagates; the round-three verifier of PR 2025 reverted a
+        widening there); a log of text again stamps."""
+        self._session(SID)
+        self._converge()
+        cp = jd.STATE / "cleared.jsonl"
+        cp.write_bytes(b"\xff\xfe\x00 not text\n")                       # a new file state: the grouper re-arms and reads it
+        self._reset()
+        try:
+            self._pass(tiers=("group",))
+        except ValueError as e:
+            self.fail("the pass raised on the undecodable log: %r" % e)
+        s = self._st("group")
+        self.assertEqual((s["ran"], s["incomplete"], s["stamped"]), (1, 1, 0), "a decode failure after a good stat marks the run incomplete")
+        self.assertEqual(len(self._rows("cleared-unreadable")), 1, "one loud row (before: none, the decode error raised out of the pass)")
+        self.assertEqual(len(self._rows("pass-crash")), 0, "and no pass-crash row beside it: the decode fault is the reader's, not a crash of the tier (the second contributor's post-merge note on PR 2025)")
+        self._reset()
+        self._pass(tiers=("group",))
+        self.assertEqual(len(self._rows("cleared-unreadable")), 1, "one row per failure episode, not per pass")
+        # the store loaders over the same log, for a session whose journal carries a move row: the reopen gate reads the log through the same arm
+        top = self._tops()[0]
+        jd.append_override(SID, top["id"], "move", NOW + 1)
+        try:
+            store, err = jd.load_goals_or_fault(SID)
+            shared, err2 = jd.load_goals_shared_or_fault(SID)
+        except ValueError as e:
+            self.fail("the loader raised past its boundary: %r" % e)
+        self.assertTrue(store is not None and err is None and shared is not None and err2 is None, "the loaders answer the store over an undecodable log: %r %r" % (err, err2))
+
+        def bad(fsid):                                                   # a ValueError out of a loader is a BUG, not a read fault: the boundary keeps its OSError-only
+            raise ValueError("a decode failure inside a reader")         # contract (tests/test_backref_memo.py) and lets it reach the caller's own catch
+        with self.assertRaises(ValueError):
+            jd._or_fault(SID, bad)
+        cp.write_text(json.dumps({"id": SID2 + ":g1", "op": "clear", "t": NOW}) + "\n")
+        self._reset()
+        self._pass(tiers=("group",))
+        self.assertEqual((self._st("group")["ran"], self._st("group")["stamped"]), (1, 1), "text again: the run stamps")
+
     @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 file")
     def test_an_unreadable_stall_file_never_stamps(self):
         # the by-value input: the signature's own read fails too, and an empty slice would EQUAL the last

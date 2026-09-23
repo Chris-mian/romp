@@ -414,8 +414,8 @@ class OneFedTextAtATime(unittest.TestCase):
         self.assertEqual(len(c.writes), 2, "a frame of the running turn does not release the hold")
         c.phase = "after-result-1"
         self._result_frame(c)
-        self._wait(lambda: s.inflight == 0, "the turn's result settles it")
-        self._settle()
+        self._wait(lambda: s.inflight == 0 and s._untaken and s._untaken.get("settled"),
+                   "the turn's result settles it and marks the untaken hold settled")
         self.assertEqual(len(c.writes), 2, "the result alone does not release it: the CLI drains AFTER it")
         self.assertTrue(s._untaken and s._untaken.get("settled"), "the hold now waits for the next turn's frame")
         c.phase = "turn-2"
@@ -892,6 +892,7 @@ class OneFedTextAtATime(unittest.TestCase):
         self.assertEqual(len(c.writes), 2)
         self._fault_the_transcript()
         self._assistant(c)                              # the scan raises here
+        self._wait(lambda: len(self._fault_lines()) == 1, "the scan faulted and was logged")
         self._settle()
         self.assertEqual(len(c.writes), 2, "the frame that met the fault is not yet the escape")
         self.assertTrue(s._untaken and s._untaken.get("fault"), "the hold knows")
@@ -1143,8 +1144,7 @@ class OneFedTextAtATime(unittest.TestCase):
         self._result_frame(c)
         self._wait(lambda: s.inflight == 0, "idle")
         s.loop.call_soon_threadsafe(setattr, s, "_move_settle_expected", True)
-        self._settle()
-        self.assertTrue(s._move_settle_expected)
+        self._wait(lambda: s._move_settle_expected, "the move arm set on the loop thread")   # wait on the loop's OWN event (the arm landed), not a wall-clock settle: the assertTrue after a fixed 0.15s _settle raced the scheduled setattr and flaked under load (the manager, 2026-09-22)
         s.request_reconnect()                            # idle: fires at once
         self._wait(lambda: len(self._Client.instances) == 2 and self._Client.instances[1] is s.client,
                    "the reconnect")

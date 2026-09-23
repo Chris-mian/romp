@@ -115,10 +115,10 @@ test("one Undo send is ONE undoRouted frame to the panes, naming every kernel it
     const routed: any[] = [];
     (globalThis as any).window.dispatchEvent = (e: any) => { routed.push(e && e.data); };
     fm.outbound({ type: "clearAll" });
-    fm.outbound({ type: "undoClear" });
-    assert.deepEqual(routed.filter((m) => m && m.type === "undoRouted").map((m) => m.hosts), [["", "box2", "box3"]], "one frame, every kernel the undo went to");
-    assert.equal(localSent.filter((m) => m.type === "undoClear").length, 1, "one send to the local kernel");
-    assert.deepEqual(remoteSent.filter(([, m]) => m.type === "undoClear").map(([h]) => h), ["box2", "box3"], "one send per remote kernel");
+    fm.outbound({ type: "undoClear", seq: 5 });
+    assert.deepEqual(routed.filter((m) => m && m.type === "undoRouted").map((m) => [m.hosts, m.seq]), [[["", "box2", "box3"], 5]], "one frame, every kernel the undo went to, the click's sequence on it (the second contributor's post-merge note on PR 2018: pinned by source text alone before)");
+    assert.deepEqual(localSent.filter((m) => m.type === "undoClear").map((m) => m.seq), [5], "one send to the local kernel, the sequence on it");
+    assert.deepEqual(remoteSent.filter(([, m]) => m.type === "undoClear").map(([h, m]) => [h, m.seq]), [["box2", 5], ["box3", 5]], "one send per remote kernel, the sequence on each");
   });
 });
 

@@ -129,6 +129,34 @@ class ProvisionalCommand(unittest.TestCase):
         card = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
         self.assertIsNone(card, "a follow-up reopens its target goal — no separate provisional flash")
 
+    def test_a_followups_clear_evidence_is_read_from_the_display_set_so_the_placeholder_stands_while_the_log_cannot_be_read(self):
+        """The second contributor's post-merge comment on PR 2032: the clear-evidence read was pinned by source text alone. A follow-up whose
+        target is absent from the store and listed in cleared.jsonl gets a placeholder (the target is gone by evidence); when the log's bytes
+        stop reading as text the display reader serves the last landed set, so the placeholder stands as the landed read left it (a set-only
+        read has no evidence during the fault and drops the card)."""
+        import contextlib, io
+        now = int(time.time())
+        log = km.jd.STATE / "cleared.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: log.unlink(missing_ok=True))
+        def reset():
+            km._CLEARED_MEMO["slot"] = None; km._CLEARED_MEMO["landed"] = None; km._cleared_read_fault[0] = ""   # a cold memo, no standing episode
+            km._state_fault_seen.clear(); del km._SYNC_NOTICES[:]
+        reset(); self.addCleanup(reset)
+        fu = SID + ":g7"
+        log.write_text(json.dumps({"id": fu, "t": now - 60, "op": "clear"}) + "\n")
+        body = "does the context look right?\n\n<!-- romp-goal-id: %s -->" % fu
+        s = self._session([{"type": "user", "timestamp": _iso(now - 5), "uuid": "u1", "parentUuid": None,
+                            "promptSource": "typed",
+                            "message": {"role": "user", "content": body}}])
+        card = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
+        self.assertIsNotNone(card, "premise: the target is absent from the store and the log lists its clear, so the follow-up gets a placeholder")
+        with contextlib.redirect_stderr(io.StringIO()):
+            log.write_bytes(b"\xff\xfe\x00 not text\n"); km._CLEARED_MEMO["slot"] = None
+            card2 = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
+        self.assertIsNotNone(card2, "the log unreadable: the placeholder stands as the landed read left it (a set-only read: no evidence, no card)")
+        self.assertEqual(card2["text"], card["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

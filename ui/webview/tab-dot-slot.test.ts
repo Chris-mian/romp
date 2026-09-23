@@ -26,7 +26,7 @@ test("every state maps to a dot class; the ones without a visible dot get the hi
   assert.equal(tabDotClass(""), "tab-dot unknown");
   assert.equal(tabDotClass("opening"), "tab-dot opening");
   assert.equal(tabDotClass("compacting"), null);
-  for (const st of ["waiting", "idle", "blocked", "closed", "dead", "needsYou"]) assert.equal(tabDotClass(st), "tab-dot none", st);
+  for (const st of ["waiting", "idle", "blocked", "closed", "dead", "needsYou", "retrying"]) assert.equal(tabDotClass(st), "tab-dot none", st);   // retrying too: hidden in ring mode (its amber ring shows); badge mode re-inks the slot via applyTabBadgeMode (tab-widgets.test.ts)
 });
 
 const TW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-widgets.ts"), "utf8");   // the dot is a WIDGET since T379 (the user 2026-09-12): its render is the rule's one site
@@ -59,9 +59,9 @@ test("every visible dot explains itself on hover in the feed's words; the hidden
   const sep = /^working(\s\S\s)/.exec(tip.work)![1];
   assert.equal(tabDotTitle("opening"), "opening" + sep + "this session is still starting up", "opening: the state word, the feed's separator, an explanation");
   assert.equal(tabDotTitle("compacting"), null, "compacting: no dot, and the bar carries its own title");
-  for (const st of ["waiting", "idle", "blocked", "closed", "dead", "needsYou"]) assert.equal(tabDotTitle(st), null, st + ": the hidden slot says nothing");
+  for (const st of ["waiting", "idle", "blocked", "closed", "dead", "needsYou", "retrying"]) assert.equal(tabDotTitle(st), null, st + ": the hidden slot says nothing");   // retrying: no title in ring mode (its slot is hidden); the amber left dot and its title come from applyTabBadgeMode under badge mode only
   // the two rules agree: a state has a title exactly when the class rule gives it a visible dot
-  for (const st of ["working", "awaitingBg", undefined, "", "opening", "compacting", "waiting", "idle", "blocked", "closed", "dead", "needsYou"]) {
+  for (const st of ["working", "awaitingBg", undefined, "", "opening", "compacting", "waiting", "idle", "blocked", "closed", "dead", "needsYou", "retrying"]) {   // retrying in RING mode: neither titled nor visibly dotted (badge mode is pinned through applyTabBadgeMode in tab-widgets.test.ts)
     const cls = tabDotClass(st);
     assert.equal(tabDotTitle(st) !== null, cls !== null && cls !== "tab-dot none", String(st) + ": titled iff visibly dotted");
   }

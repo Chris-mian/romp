@@ -646,6 +646,10 @@ permission/API-error floors: one interrupt at a time, the present event first.
   frozen-store-write: a read-only site wrote to the shared store view, naming
   the site, after which the shared cache is off for the process,
   frozen-store-save: a shared store view was handed to `save_goals`, refused,
+  clears-log: a write to the clears log refused (a clear's or an undo's rows, the
+  mute's, the episode boundary's), one row per refusal, owed-note: the note of owed
+  cards beside the log could not be written or read, one row per gesture and one
+  per episode on the feed's own read,
   unroll-heal: a top left rolled up with settle rows and no done in its
   diary, given one reopen row so it can be judged again, gate-stamp: the
   evidence gate could not write a tier's stamp after a complete run, so the
@@ -655,7 +659,12 @@ permission/API-error floors: one interrupt at a time, the present event first.
   archive-unreadable and reg-unreadable: a file the gate stat'd or read by
   value into a tier's signature exists and could not be read or parsed, so
   the gate runs the stage without a stamp (or the stage's own read marks the
-  run incomplete), one row per failure episode).
+  run incomplete), one row per failure episode; cleared-unreadable is filed by
+  the kernel's own reader of the clears log as well, the Undo reading a present
+  log that cannot be read or is not text as nothing to bring back and the feed
+  build holding the last landed set meanwhile with one refused bell row per
+  episode, one row per fault episode ended by a landed read, an absent log or a
+  different fault).
   A file that does not parse is never deleted: it is moved beside its path as
   `<file>.corrupt-<utc stamp>` (a `-n` suffix when two land in the same second)
   before a fresh one is written, so the bytes survive for inspection, and the

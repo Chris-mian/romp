@@ -60,6 +60,7 @@ const ledgers = new Map(); let draggedId = null; let tabTipEl = null; const sess
 const setTip = (a: any, text: string) => { a._tipText = text; }; const toggleMetaMenu = () => {}; const modeIconSvg = () => ""; const riskyMode = () => false;
 const prettyFast = (f) => f; const metaCurrent = (kind, st) => kind === "model" ? st.model : effortBadgeText(st); const fastAvailable = () => false;   // effortBadgeText is lifted from the module below (2026-09-16)
 const metaDots = () => el("span", "meta-dots"); const isMetaPending = () => false;
+const needsYouPhrase = (n) => n > 1 ? n + " things need you" : n === 1 ? "1 thing needs you" : "needs you";
 `;
 const SRC = PRELUDE + liftMod("metaColor") + liftMod("effortBadgeText") + lift("showTabTip") + liftMod("metaButton") + liftMod("syncMetaControls")
   + "\nreturn { showTabTip, metaButton, metaColor, syncMetaControls };";
@@ -119,10 +120,15 @@ test("the light theme re-encodes the kernel's dark-tuned RGB on BOTH surfaces al
 
 test("a status without colours (an older kernel) leaves the values plain, as the footer leaves its chips", () => {
   bodyClasses.clear();
-  const bare = { ...status, modelColor: undefined, effortColor: undefined, modelTone: undefined, effortTone: undefined };
+  const bare = { ...status, needsYou: true, needsYouCount: 3, modelColor: undefined, effortColor: undefined, modelTone: undefined, effortTone: undefined };
   mod.showTabTip(new El("div"), { ...session, status: bare });
   const tip = body.children[body.children.length - 1];
   for (const r of tip.children) if (r.className === "tab-tip-row" && r.children[0].textContent !== "Mail" && r.children[0].textContent !== "") assert.equal(r.children[1].style.color ?? "", "", r.children[0].textContent);   // the Mail check wears the accent and its held sub-line the dim by design (2026-09-16), not a footer tone
+  // the Needs-you row is now among the plain values, not exempt: its magenta value tone was dropped (under the 4.5:1
+  // floor on the raised surface, PR 2023), so the loop above covers it; assert it explicitly beside Mail's exemption.
+  const nyRow = tip.children.find((r) => r.className === "tab-tip-row" && r.children[0].textContent === "Needs you");
+  assert.ok(nyRow, "the Needs-you row is present in the fixture");
+  assert.equal(nyRow!.children[1].style.color ?? "", "", "the Needs-you value inherits the foreground, no tone");
   const meta = new El("div"); mod.syncMetaControls(meta, bare, null, {});
   for (const b of meta.querySelectorAll(".meta-btn")) assert.equal(b.querySelector(".meta-label")!.style.color ?? "", "");
 });
@@ -130,6 +136,7 @@ test("a status without colours (an older kernel) leaves the values plain, as the
 test("at source: the rows carry the colour as a third member, the value span takes it inline, and metaColor is the footer's helper", () => {
   const stt = RENDER.slice(RENDER.indexOf("function showTabTip("), RENDER.indexOf("\n}\n", RENDER.indexOf("function showTabTip(")));
   assert.match(stt, /const rows: Array<\[string, string, string\?\]> = \[\];/);
+  assert.doesNotMatch(stt, /ve\.setAttribute\("aria-label"/, "no inert aria-label on the role-less value span (PR 2033 review)");
   assert.match(stt, /rows\.push\(\["Model", s\.status\.model, metaColor\("model", s\.status\)\]\);/);
   assert.match(stt, /rows\.push\(\["Effort", s\.status\.effort, metaColor\("effort", s\.status\)\]\);/);
   assert.match(stt, /if \(color\) ve\.style\.color = color;/);
@@ -164,4 +171,32 @@ test("the Mail row is a glance: an accent check mark when mail is on, the bare w
   assert.equal(mailOf(unread).textContent, "held"); assert.equal(subOf(unread)!.textContent, "its record cannot be read; mail waits until it is repaired");
   const thread = rowsOf({ postalServiceOff: true, mailOffWhy: "thread" });
   assert.equal(mailOf(thread).textContent, "off"); assert.equal(subOf(thread), null);
+});
+
+// The Needs-you row (PR 2017; the first contributor's post-merge review of PR 2023, 2026-09-22, MEDIUM): showTabTip's only pointer route to the count phrase, the
+// dot's own title being inert under pointer-events:none. Red-first: with the `if (s.status.needsYou)` block deleted from
+// showTabTip, rowFor returns null, so the PRESENCE assertions below fail (the absence assertion expects that null and stays green).
+test("the Needs-you row: showTabTip carries the count as a short untinted value with no inert aria-label, and is absent when the session does not need you", () => {
+  bodyClasses.clear();
+  const rowFor = (st: any): El | null => {
+    mod.showTabTip(new El("div"), { id: "s", name: "web", cwd: "/tmp/notes-api", status: st } as any);
+    const tip = body.children[body.children.length - 1];
+    for (const r of tip.children) if (r.className === "tab-tip-row" && r.children[0].textContent === "Needs you") return r.children[1];
+    return null;
+  };
+  assert.equal(rowFor({ state: "ready", sinceEpoch: null }), null, "no Needs-you row when the session does not need you");
+  assert.equal(rowFor({ state: "ready", sinceEpoch: null, needsYou: false }), null, "an explicit false (the feed ruled it not needs-you): no row");
+  assert.equal(rowFor({ state: "ready", sinceEpoch: null, needsYou: null }), null, "an explicit null (before the first feed build, render.ts Status types it boolean|null): no row");
+  for (const [n, short] of [[1, "1 thing"], [3, "3 things"]] as const) {
+    const v = rowFor({ state: "working", sinceEpoch: null, needsYou: true, needsYouCount: n });
+    assert.ok(v, n + ": the Needs-you row is present");
+    assert.equal(v!.textContent, short, n + ": the value drops the redundant 'need you' (the key already says the state)");
+    assert.equal(v!.style.color ?? "", "", n + ": the value inherits the foreground, no magenta tone (under the 4.5:1 floor on the raised surface, PR 2023)");
+    assert.equal(v!.getAttribute("aria-label"), null, n + ": no inert aria-label on the role-less value span (the phrase lives on the badge dot and the cold title)");
+  }
+  const v0 = rowFor({ state: "working", sinceEpoch: null, needsYou: true });
+  assert.ok(v0, "needsYou with no count: still a row");
+  assert.equal(v0!.textContent, "", "no count: the value is empty (the key says the state)");
+  assert.equal(v0!.style.color ?? "", "", "…untinted");
+  assert.equal(v0!.getAttribute("aria-label"), null, "…and no inert aria-label");
 });

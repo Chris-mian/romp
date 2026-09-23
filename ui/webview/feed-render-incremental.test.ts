@@ -2126,7 +2126,7 @@ test("a kernel's restart on the accounting road: a build below the last seen re-
   await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
 });
 
-test("a kernel's socket coming back drops its waiting checks and their suppressions, so a lost undo account never holds a restored card off the board: federation's hostUp for a remote kernel, the shim's wsup for the local one, each its own kernel's alone (the post-merge review of PR 1967, low 2)", async (t) => {
+test("a kernel's socket coming back drops its waiting checks and their suppressions, so a lost undo account never holds a restored card off the board: the remote relay socket's own reopen (romp:hostRelayUp, the event a redial fires) and the tunnel poll's hostUp as a second trigger for a remote kernel, the shim's wsup for the local one, each its own kernel's alone (the post-merge review of PR 1967, low 2; the post-merge note on PR 2018)", async (t) => {
   t.after(() => mock.timers.reset());
   mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
   const hooks = (await import("./feed")) as any;
@@ -2140,8 +2140,19 @@ test("a kernel's socket coming back drops its waiting checks and their suppressi
   card("g3")._clr.onclick(ev); mock.timers.tick(700);
   undo.onclick!(ev); await dispatch({ type: "undoRouted", hosts: [""], seq: lastSeq() });          // the local kernel's check; its account never comes
   assert.deepEqual(floors(), [[R + ":g1", null], ["g3", null]]);
-  await dispatch({ type: "hostUp", hosts: ["TESTHOST"] });                                       // the remote link recovered: its redial may have abandoned the account
-  assert.deepEqual(floors(), [["g3", null]], "the remote kernel's check is dropped, the local one stands");
+  win.dispatchEvent(new Event("romp:hostRelayUp"));                                              // a detail-less event names no kernel: nothing drops (the second contributor's post-merge note on PR 2018)
+  assert.deepEqual(floors(), [[R + ":g1", null], ["g3", null]], "an event without a host drops nothing, the local kernel's check included");
+  win.dispatchEvent(Object.assign(new Event("romp:hostRelayUp"), { detail: { host: "TESTHOST" } }));   // the remote relay socket reopened (federation's own event on its onopen): the redial abandoned the account
+  assert.deepEqual(floors(), [["g3", null]], "the remote kernel's check is dropped on its socket's own reopen, the local one stands (before: only the tunnel poll's frame, silent on a watchdog redial)");
+  await dispatch({ type: "undoRouted", hosts: ["TESTHOST"], seq: 99 });                          // (nothing pending on the remote now: no new check)
+  card(R + ":g1"); hooks._resetClearGestureStateForTests();
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(1, 1) })); mock.timers.tick(700);
+  card(R + ":g1")._clr.onclick(ev); card("g3")._clr.onclick(ev); mock.timers.tick(700);
+  undo.onclick!(ev); await dispatch({ type: "undoRouted", hosts: ["TESTHOST"], seq: lastSeq() });
+  undo.onclick!(ev); await dispatch({ type: "undoRouted", hosts: [""], seq: lastSeq() });
+  assert.deepEqual(floors(), [[R + ":g1", null], ["g3", null]]);
+  await dispatch({ type: "hostUp", hosts: ["TESTHOST"] });                                       // the tunnel poll's word, the second trigger
+  assert.deepEqual(floors(), [["g3", null]], "the poll's frame drops it too, the local one stands");
   await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(1, 1) })); mock.timers.tick(700);
   assert.ok(card(R + ":g1"), "the remote card shows on the next payload listing it (before: held off until a reload)"); assert.ok(!card("g3"), "the local card still waits");
   await dispatch({ type: "wsup" });                                                                // the local socket reopened (the shim's frame)
@@ -2195,6 +2206,151 @@ test("the truncation read's OWED adjustment: an account whose list is an owed id
   mock.timers.tick(700);
   assert.ok(!card("c1"), "the oldest clear stays off: the frame is truncated once the owed entry is set aside (under the mutant 21 > 21 reads whole, and c1 shows again)");
   assert.deepEqual(stackIds(), [[], ...window, ["c1"]], "twenty-two entries: the owed entry (no card of this page's), the window, and c1's kept below (under the mutant c1's drops)");
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+});
+
+test("a lost undo account on a LIVE socket: a later undo's account from that kernel drops its older floorless checks, so the card shows on the next frame listing it instead of staying off while every build lists it (the second contributor's post-merge note on PR 2018)", async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const floors = hooks._restoreFloorsForTests as () => [string, number | null][];
+  const sent0 = posted.length;
+  const { g2it, remote } = await remoteWorld(hooks);
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(1, 1) })); mock.timers.tick(700);
+  card("g3")._clr.onclick(ev); mock.timers.tick(700);
+  const undo = body.byId("feed-undoclear")!;
+  undo.onclick!(ev); const s1 = lastSeq(); await dispatch({ type: "undoRouted", hosts: [""], seq: s1 });   // undo 1: its account is lost
+  card("g1")._clr.onclick(ev); mock.timers.tick(700);
+  undo.onclick!(ev); const s2 = lastSeq(); await dispatch({ type: "undoRouted", hosts: [""], seq: s2 });   // undo 2
+  assert.deepEqual(floors(), [["g3", null], ["g1", null]]);
+  await dispatch({ type: "undoAck", op: "undoClear", seq: s2, buildId: 3 });                  // undo 2's account: undo 1's will never come (in-order delivery)
+  assert.deepEqual(floors(), [["g1", 3]], "the older floorless check is dropped, the acked one keeps its floor");
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(4, 1) })); mock.timers.tick(700);
+  assert.ok(card("g3"), "the card of the lost account shows on the next frame listing it (before: off while every build listed it)"); assert.ok(card("g1"), "the acked undo's card shows past its floor");
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+});
+
+test("an undo account without a stack (the kernel's clears log could not be read) leaves the feed's stack and its suppressions as they are and takes back the click's restore: the popped card goes back off and its entry back on top, the other clear stays off, the dialog says why (the round-one verifier of PR 2025; round three, the second contributor's post-merge review of PR 2021: an empty stack on that frame emptied the stack and released every suppression)", async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const sent0 = posted.length;
+  hooks._resetClearGestureStateForTests();
+  const g2it = card("g2")?._it ?? cardOf("g2", API, "api", "#cc6633", "a second card of api's", "working", { live: true, tree: [] });
+  await dispatch(frame([g1, g2it, g3], { working: ["web"], buildId: 1 })); mock.timers.tick(700);
+  card("g3")._clr.onclick(ev); card("g1")._clr.onclick(ev); mock.timers.tick(700);
+  body.byId("feed-undoclear")!.onclick!(ev);                                                  // pops g1's entry optimistically
+  assert.deepEqual(stackIds(), [["g3"]]); assert.ok(card("g1") && !card("g3"));
+  await dispatch({ type: "err", op: "undoClear", title: "romp could not read its record of cleared cards", text: "This Undo found nothing to bring back: romp could not read the record it keeps of cleared cards (a stand-in fault). The cards stay as they are. Once the record can be read again, press Undo again.", itemId: "", itemIds: [], buildId: 1, seq: lastSeq(), readFault: true });
+  mock.timers.tick(700);
+  assert.deepEqual(stackIds(), [["g1"], ["g3"]], "the frame carried no stack, so the feed's stands (before round two: an empty one emptied it), and the popped entry is back on top, newest first (before round three: it stayed popped): the kernel restored nothing");
+  assert.ok(!card("g3"), "the other clear stays off (before: released, the card repainted beside a dialog saying the cards stay)");
+  assert.ok(!card("g1"), "the click's restore is taken back: the kernel never restored the card (before round three: it stood on the board beside the dialog saying the cards stay as they are)");
+  assert.ok(body.querySelector("#err-dialog"), "and the dialog says why");
+  for (const d of body.querySelectorAll("#err-dialog")) d.remove();
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+});
+
+test("the read-fault account takes back the click's optimistic restore by the undo's sequence and its positive marker (the second contributor's post-merge review of PR 2021; round six: the first contributor's round-two comment): an owed-note refusal with no stack and no ids takes nothing back and leaves the record standing, a two-card batch goes back off and back on the stack on the marked account, an account for another sequence moves nothing, a second account for the same one moves nothing, a payload omitting the cards shows none, and Undo once the log reads restores them again", async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const sent0 = posted.length;
+  hooks._resetClearGestureStateForTests();
+  const g2it = card("g2")?._it ?? cardOf("g2", API, "api", "#cc6633", "a second card of api's", "working", { live: true, tree: [] });
+  await dispatch(frame([g1, g2it, g3], { working: ["web"], buildId: 1 })); mock.timers.tick(700);
+  card("g2")._clr.onclick(ev); mock.timers.tick(700);                                          // one clear, then Clear all over the two left: a two-card batch
+  body.byId("feed-clearall")!.onclick!(ev); mock.timers.tick(700);
+  assert.deepEqual(stackIds(), [["g1", "g3"], ["g2"]], "newest first: Clear all's batch on top");
+  body.byId("feed-undoclear")!.onclick!(ev); const s1 = lastSeq();                            // pops the two-card batch optimistically
+  assert.ok(card("g1") && card("g3") && !card("g2")); assert.deepEqual(stackIds(), [["g2"]]);
+  const readFault = (seq: number, buildId: number) => ({ type: "err", op: "undoClear", title: "romp could not read its record of cleared cards", text: "This Undo found nothing to bring back: romp could not read the record it keeps of cleared cards (a stand-in fault). The cards stay as they are. Once the record can be read again, press Undo again.", itemId: "", itemIds: [], buildId, seq, readFault: true });
+  const owedRead = (seq: number) => ({ type: "err", op: "undoClear", title: "romp could not read its note of earlier owed cards", text: "The undo went ahead, but romp could not read the note it keeps of cards an earlier undo left owed (a stand-in fault). If some cards stay hidden after this, press Undo again once romp can read it.", itemId: "", itemIds: [], buildId: 1, seq });
+  await dispatch(owedRead(s1)); mock.timers.tick(700);
+  assert.ok(card("g1") && card("g3"), "an owed-note refusal with no stack and no ids says nothing about the click's restore: nothing is taken back (before round six: keyed on what the account lacked, the batch went back off and the next Undo popped a phantom)"); assert.deepEqual(stackIds(), [["g2"]]);
+  for (const d of body.querySelectorAll("#err-dialog")) d.remove();
+  await dispatch(readFault(s1 - 1, 1)); mock.timers.tick(700);
+  assert.ok(card("g1") && card("g3"), "an account for another undo's sequence takes nothing back"); assert.deepEqual(stackIds(), [["g2"]]);
+  for (const d of body.querySelectorAll("#err-dialog")) d.remove();
+  await dispatch(readFault(s1, 1)); mock.timers.tick(700);
+  assert.ok(!card("g1") && !card("g3") && !card("g2"), "the click's two cards go back off: the kernel restored nothing (before: both stood on the board beside the dialog)");
+  assert.deepEqual(stackIds(), [["g1", "g3"], ["g2"]], "the popped entry is back on top: the kernel's newest batch is still that clear's");
+  for (const d of body.querySelectorAll("#err-dialog")) d.remove();
+  await dispatch(frame([], { working: [], buildId: 2 })); mock.timers.tick(700);                 // the kernel's board: every card cleared
+  assert.ok(!card("g1") && !card("g3"), "the payload shows none");
+  await dispatch(readFault(s1, 2)); mock.timers.tick(700);
+  assert.deepEqual(stackIds(), [["g1", "g3"], ["g2"]], "a second account for the same sequence moves nothing: the click's record was spent");
+  for (const d of body.querySelectorAll("#err-dialog")) d.remove();
+  body.byId("feed-undoclear")!.onclick!(ev); const s2 = lastSeq();                            // the log reads again: Undo restores the batch optimistically
+  assert.ok(card("g1") && card("g3"), "restored optimistically"); assert.deepEqual(stackIds(), [["g2"]]);
+  await dispatch({ type: "undoAck", op: "undoClear", seq: s2, buildId: 3 });                    // the landed undo's account: the record is spent
+  await dispatch(frame([g1, g3], { working: ["web"], buildId: 4 })); mock.timers.tick(700);
+  assert.ok(card("g1") && card("g3"), "the kernel's payload lists them");
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+});
+
+test("a floored check survives a later undo's account from its kernel: the first undo's ack lands its floor before the second clear, the second undo's ack drops no floored check, and a frame at the first floor listing the card leaves it off while one past it shows it (the second contributor's post-merge review of PR 2021: the floor-undefined half of the release, pinned by behaviour)", async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const floors = hooks._restoreFloorsForTests as () => [string, number | null][];
+  const sent0 = posted.length;
+  const { g2it, remote } = await remoteWorld(hooks);
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(1, 1) })); mock.timers.tick(700);
+  card("g3")._clr.onclick(ev); mock.timers.tick(700);
+  const undo = body.byId("feed-undoclear")!;
+  undo.onclick!(ev); const s1 = lastSeq(); await dispatch({ type: "undoRouted", hosts: [""], seq: s1 });
+  await dispatch({ type: "undoAck", op: "undoClear", seq: s1, buildId: 3 });                  // undo 1's account lands first
+  assert.deepEqual(floors(), [["g3", 3]]);
+  card("g1")._clr.onclick(ev); mock.timers.tick(700);
+  undo.onclick!(ev); const s2 = lastSeq(); await dispatch({ type: "undoRouted", hosts: [""], seq: s2 });
+  await dispatch({ type: "undoAck", op: "undoClear", seq: s2, buildId: 5 });
+  assert.deepEqual(floors(), [["g3", 3], ["g1", 5]], "the floored older check stands: only a FLOORLESS older check is released by a later account (a mutant dropping the condition drops g3's)");
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(3, 1) })); mock.timers.tick(700);   // at the first floor: no evidence
+  assert.ok(!card("g3"), "a frame at the floor listing the card leaves it off"); assert.ok(!card("g1"));
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(4, 1) })); mock.timers.tick(700);   // past it
+  assert.ok(card("g3"), "past the floor the listed card shows"); assert.ok(!card("g1"), "the second undo's card waits for its own floor");
+  await dispatch(frame([g1, g2it, g3, remote], { working: ["web"], ...BA(6, 1) })); mock.timers.tick(700);
+  assert.ok(card("g1"), "and shows past it");
+  hooks._resetClearGestureStateForTests(); posted.splice(sent0);
+  await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
+});
+
+test("a standing read fault after the re-journal-first rows landed: the marked read-fault account puts the owed entry the click popped back, and the stack-less reorder frame adds no second stand-in for the same owed card, so the pane's stack equals the kernel's ([owed], [last clear]) and the next Undo restores the owed card optimistically (the first contributor's round-four comment on PR 2025: the extra entry left the pane one longer than the kernel and its last lit Undo drew a bare ack)", async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: T0 * 1000 });
+  const hooks = (await import("./feed")) as any;
+  const stackIds = hooks._clearedStackIdsForTests as () => string[][];
+  const sent0 = posted.length;
+  hooks._resetClearGestureStateForTests();
+  const g2it = card("g2")?._it ?? cardOf("g2", API, "api", "#cc6633", "a second card of api's", "working", { live: true, tree: [] });
+  await dispatch(frame([g1, g2it, g3], { working: ["web"], buildId: 1 })); mock.timers.tick(700);
+  card("g3")._clr.onclick(ev); card("g1")._clr.onclick(ev); mock.timers.tick(700);              // g3 then g1 cleared on this page: their copies are the page's
+  // the kernel's stack as an earlier press left it: g3 OWED (its re-journal refused) on top, then g1's clear; the pane takes it from an account's stack
+  await dispatch({ type: "err", op: "clearAll", title: "That clear did not land", text: "a stand-in refusal", itemId: "", itemIds: [], batches: [["g3"], ["g1"]], owedBatch: ["g3"], batchesTotal: 1, buildId: 1 });
+  mock.timers.tick(700);
+  await dispatch(frame([g2it], { working: ["web"], buildId: 2 })); mock.timers.tick(700);                  // the kernel's board: both hidden by their flags
+  assert.deepEqual(stackIds(), [["g3"], ["g1"]], "premise: the pane's stack equals the kernel's, the owed entry with g3's copy on top");
+  for (const d of body.querySelectorAll("#err-dialog")) d.remove();
+  body.byId("feed-undoclear")!.onclick!(ev); const s1 = lastSeq();                                          // pops the owed entry: g3 restored optimistically
+  assert.ok(card("g3") && !card("g1")); assert.deepEqual(stackIds(), [["g1"]]);
+  // the kernel's pair under a STANDING read fault after the re-journal-first rows landed (the boundary module's pin holds these shapes)
+  await dispatch({ type: "err", op: "undoClear", title: "romp could not read its record of cleared cards", text: "This Undo found nothing to bring back: romp could not read the record it keeps of cleared cards (a stand-in fault). The cards stay as they are. Once the record can be read again, press Undo again.", itemId: "", itemIds: [], readFault: true, buildId: 3, seq: s1 });
+  mock.timers.tick(700);
+  assert.ok(!card("g3"), "the marked account takes the click's restore back"); assert.deepEqual(stackIds(), [["g3"], ["g1"]], "and puts the owed entry back on top");
+  await dispatch({ type: "err", op: "undoClear", title: "Undo went to earlier cards first", text: "Some cards were still owed from an earlier undo, so Undo went to them first, and that did not fully land (the other message says which). Once the clears log can be read and written again, one Undo brings them back and the next the last clear.", itemId: "g1", itemIds: ["g1"], ok: true, owedIds: ["g3"], buildId: 3, seq: s1 });
+  mock.timers.tick(700);
+  assert.deepEqual(stackIds(), [["g3"], ["g1"]], "the stack-less reorder frame adds no second stand-in: the pane's stack equals the kernel's, the owed card's re-journal row its newest batch (before: [[], [g3], [g1]], one entry longer)");
+  assert.ok(!card("g1") && !card("g3"), "both stay off");
+  for (const d of body.querySelectorAll("#err-dialog")) d.remove();
+  body.byId("feed-undoclear")!.onclick!(ev);                                                                // the next Undo: the owed card, optimistically, as the kernel restores it
+  assert.ok(card("g3"), "the next click restores the owed card from the pane's copy (before: an empty entry's pop restored nothing and drew a bare ack)"); assert.deepEqual(stackIds(), [["g1"]]);
   hooks._resetClearGestureStateForTests(); posted.splice(sent0);
   await dispatch(frame([g1, g2it, g3], { working: ["web"] })); mock.timers.tick(700);
 });

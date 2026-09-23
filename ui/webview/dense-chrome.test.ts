@@ -117,6 +117,10 @@ test("the dense rules exist under the class, with these exact values", () => {
   assert.match(row, /gap: 6px;/); assert.match(row, /padding: 3px 9px;/); assert.match(row, /line-height: 1\.3;/);
   assert.match(denseRule(".bg-sum"), /font-size: 11px;/);
   assert.match(denseRule(".bg-since"), /font-size: 10px;/);
+  const badge = denseRule(".tab-badge");
+  assert.match(badge, /top: 1px;/); assert.match(badge, /right: 1px;/);
+  const badgeFull = denseRule(".tab-badge:not(:empty)");
+  assert.match(badgeFull, /min-width: 12px;/); assert.match(badgeFull, /height: 12px;/); assert.match(badgeFull, /border-radius: 6px;/);
 });
 
 test("the dense list cap lifts while a row's details are open, so a command's output is never read through two nested scrolls", () => {
@@ -193,9 +197,11 @@ test("every dense rule is scoped to the body class, and the sheet's defaults are
   assert.match(defaultRule(".bg-head"), /gap: 8px; padding: 5px 9px;/);
   assert.match(defaultRule(".bg-sum"), /font-size: 0\.92em;/);
   assert.match(defaultRule(".bg-since"), /font-size: 0\.82em;/);
+  assert.match(defaultRule(".tab-badge"), /top: 2px; right: 2px;/);
+  assert.match(defaultRule(".tab-badge:not(:empty)"), /min-width: 14px; height: 14px; border-radius: 7px;/);
   // the defaults come first, so the tests that read a selector's first rule keep reading the default
   // (tag-mounts.test.ts: .tab-add, .tab-tagbox; bg-tasks-layout.test.ts: #bg-tasks, .bg-fold-head, .bg-sum, .bg-head)
-  for (const sel of [".tab", ".tab-add", ".tab-tagbox", ".tab-strip-end", ".tab-widgets-gear", ".tab-group-head", ".tab-group-sep:not(.tab-group-break)", "#bg-tasks", ".bg-fold-head", ".ntc-head", ".bg-list", ".bg-group-head", ".bg-head", ".bg-sum", ".bg-since"]) {
+  for (const sel of [".tab", ".tab-add", ".tab-tagbox", ".tab-strip-end", ".tab-widgets-gear", ".tab-group-head", ".tab-group-sep:not(.tab-group-break)", "#bg-tasks", ".bg-fold-head", ".ntc-head", ".bg-list", ".bg-group-head", ".bg-head", ".bg-sum", ".bg-since", ".tab-badge", ".tab-badge:not(:empty)"]) {
     assert.ok(CSS.indexOf("\n" + sel + " {") < CSS.indexOf("\nbody." + DENSE_CHROME_CLASS + " " + sel + " {"), sel + ": default before dense");
   }
   assert.ok(CSS.indexOf("\n.host-prefix {") < CSS.indexOf("\nbody." + DENSE_CHROME_CLASS + " .tab .host-prefix {"), ".host-prefix: default before dense");

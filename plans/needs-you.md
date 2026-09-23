@@ -209,7 +209,8 @@ hides it; with the box off the tab ring and the feed still say it.
 
 Every clear or undo account the kernel sends carries its Undo stack (`batches`: the ids an earlier undo left owed first, then the
 clears log's batches by stamp, newest first; `owedBatch`: the owed ids alone; `batchesTotal`: the count of log batches before the
-wire's bound, so a truncated stack reads as truncated), and the feed takes it as its own stack, so the
+wire's bound, so a truncated stack reads as truncated), except any sent while the clears log cannot be read (a refused clear alone
+ships none too), and the feed takes it as its own stack, so the
 optimistic Undo restores what the kernel restores; the two are proven equal by enumeration over every press sequence of a
 two-card world under every fault (tests/fixtures/undo-stack-transitions.json). The stack on the wire is bounded to the newest
 20 log batches (`LEDGER_BATCHES_ON_WIRE`); the frame says how many there are. Past them, a page that did not make those clears (a
@@ -235,9 +236,12 @@ sends carries a sequence of its own, which the kernel echoes on that account, so
 undo alone (two undos to one kernel with a clear between them keep their floors apart). A build past the floor
 read the store after every clear that socket sent before the undo had applied and after the undo's batch was restored, so a card
 it lists is restored; a build claimed before it, however it is stamped, is no evidence, and until the account lands the check
-releases nothing (the card stays off, and the absence rule stands). The account rides the pressing client's own socket, which a
-redial can abandon, so a kernel's socket coming back (the local shim's reopen, a remote link's recovery) drops that kernel's
-waiting checks and their suppressions: a listed card is never covered by the absence rule, and a lost account must not hold a
+releases nothing (the card stays off, and the absence rule stands). A later undo's account from the same kernel releases that
+kernel's older checks that have no floor, since the pressing socket delivers in order and their accounts will never come, while a
+check with a floor keeps waiting for evidence. The account rides the pressing client's own socket, which a
+redial can abandon, so a kernel's socket coming back drops that kernel's waiting checks and their suppressions, on the socket's
+own reopen (the local shim's `wsup`; a remote relay socket's `romp:hostRelayUp`, the exact event a redial fires) and, as a second
+trigger, on the tunnel poll's word that a remote kernel came back (`hostUp`): a listed card is never covered by the absence rule, and a lost account must not hold a
 restored card off the board until a reload. An older kernel sends no account, which its payloads say
 (`undoAck` on a kernel's frame, `ackHosts` on the merge), and its checks take the build seen at the send as their floor, as
 before. A stale held frame cannot release a suppression; a kernel the undo never reached never lists a restored card past its
@@ -250,6 +254,25 @@ from one of them, or on the backstop; an account from one kernel of a fanned-out
 is still in flight, an accepted residual. The reason for the round trip: stamps across kernels do not order, so a merged stack
 cannot say which kernel's batch the next Undo reaches, and an optimistic pop would restore one kernel's card while another
 restored its own.
+
+Every writer of the clears log says an append it refuses, one stderr line and one judge-errors row (`clears-log`) per refusal, and
+the kernel's own reader says a present log it cannot read or decode, once per fault episode (`cleared-unreadable`, the kind the
+judges' readers of the same file use); an Undo over such a log restores nothing and its account says so, marked as the read's fault
+(`readFault`), and the page takes back the restore the click made on that marked account alone, by the undo's sequence; an account
+without the marker (an owed-note refusal beside a landed undo) settles nothing about the click. The episode boundary's settle is the one writer without a retry: its head is
+recorded before its clear rows, so a refused append leaves the pre-clear open cards in the fresh conversation, and that settle is
+lost; the row and the line name the session.
+
+While the clears log cannot be read, the pane holds. The feed build, the off frame and the chat box's notice rows take the last
+landed set the reader memoized, so the dismissed count, the Undo button, the foreign clears and the log-only seals stand as the last
+landed read left them until a read lands (a press of that held Undo is refused with the dialog, the read-fault account, since an
+undo answers for its own read), and the bell carries one refused row per fault episode naming the file: the display
+readers' convention (the last-known value shown, one row, a clean read ends the episode). A cold memo has nothing to serve: the pane
+shows nothing cleared and the row says so. The gestures never take the memo's set: an Undo answers for its own read, and an
+account's stack for the read behind it. Every clear or undo account carries its stack except any sent while the clears log cannot be
+read, a refused clear alone shipping none too, so a stack-less frame from the current kernel is that road beside an older kernel's
+frame and a federated pane's. A served read carries its state's fault into the episode: a set served from the memo after a fault
+that lifted with the file unmoved ends the episode, so the same fault before the next append is a new one and is said again.
 
 ### Completed is safe to clear unread
 

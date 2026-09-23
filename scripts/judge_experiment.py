@@ -43,6 +43,13 @@ BUDGET_OVERRUN = 1.2          # a run stops once its ledger passes this multiple
 COLUMN_OF = {"blocked": "needs_input", "completed": "completed", "cleared": "cleared"}   # the store-derivable part of the feed's rule
 STABILITY_GATE_PCT = 90.0     # the labeller's OWN gate: the fraction that get the same class in both shuffled orders (road (b): the
 #                               class is a stratification frame, not a truth, so its agreement with the user's actions is reported, not gated)
+NON_ARM_JUDGES = ("grouper", "consolidator", "distiller", "gister")   # the reshaping/summarizing/titling judges an arm's
+#   _plan_session drives but the measure does not read: a failure of one (a stuck grouper call, the pilot's 120s-alarm
+#   timeouts; a gister call `_followup_title` makes to `gist_llm` when no gist is cached, whose failure leaves label and
+#   column unchanged) must NOT mark the arm not comparable. Every OTHER failure row IS counted, an EXCLUSION list not an
+#   allowlist: the arm also runs the opener and the placer (neither would be in an allowlist), and three failure kinds never
+#   carry judge None (a rate-limited row carries the TIER "triage", a store-quarantined or history-unreadable row carries
+#   "romp"), so an allowlist let those through. A row naming a non-arm judge above is the only kind excluded.
 FAILURE_KINDS = ("parse", "give-up", "pass-crash", "call", "auth", "rate-limited", "fast-refused", "scratch",
                  "unregistered-caller", "history-unreadable", "store-quarantined")   # judge-errors rows that mean the ending was not judged:
 #   a rejected reply, a crashed or refused call, the two pause kinds (`auth`, `rate-limited`), the call-level stand-downs (`fast-refused`,
@@ -139,6 +146,19 @@ def _ts(rec):
 # theirs by construction. A copy of the opener rule drifted (round three of the review: it reproduced three of the fold's
 # refusals and none of the command-twin, local-command, skill-content or restore-replay handling), so the copy is gone.
 _EM = [None]
+_CRED = [None]
+
+
+def _credentials():
+    """kernel/credentials.py, loaded once (the judge module loads the same file under this name). The corpus builder
+    resolves Claude Code's apiKeyHelper through it, in the CLI's own precedence (managed settings outrank the user
+    file), rather than reading a settings file directly: a managed helper is read by the child from the system path and
+    must not be mistaken for a missing one (the 2026-09-22 pre-flight review)."""
+    if _CRED[0] is None:
+        sys.path.insert(0, str(ROOT / "tests"))
+        from romp_load import load_source
+        _CRED[0] = sys.modules.get("romp_credentials") or load_source("romp_credentials", str(ROOT / "kernel" / "credentials.py"))
+    return _CRED[0]
 
 
 def _event_model():
@@ -462,6 +482,22 @@ def top_done_times(store):
     return out
 
 
+def _corpus_helper(claude_root):
+    """(the apiKeyHelper command the corpus should carry, its source) for `claude_root`, resolved through the credentials
+    module in Claude Code's own precedence. The source is "user", "managed" or None; only a "user" helper is copied into the
+    corpus (see build_corpus). CLAUDE_CONFIG_DIR is pointed at the live claude root for the resolution and restored after."""
+    cred = _credentials()
+    saved = os.environ.get("CLAUDE_CONFIG_DIR")
+    os.environ["CLAUDE_CONFIG_DIR"] = str(claude_root)
+    try:
+        return cred.api_key_helper(None, operator_only=True), cred.helper_source()
+    finally:
+        if saved is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = saved
+
+
 def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turns=2):
     """Read the live roots as files, write the corpus under `dest`: per ending a truncated transcript under
     dest/claude/projects/<munged cwd>/<ending id>.jsonl, a names entry, the store before the cut and the override journal
@@ -559,15 +595,16 @@ def build_corpus(state_root, claude_root, dest, per_class=75, now=None, min_turn
         (dest / "state" / "romp" / sub).mkdir(parents=True, exist_ok=True)
     (dest / "state" / "romp" / "session-hosts").write_text("off")
     # an arm runs the real judges with CLAUDE_CONFIG_DIR pointed at this claude root (load_judge), so the CLI resolves the key
-    # from HERE: carry the live root's apiKeyHelper (a command reference, never the key itself) or the CLI reports "Not logged
-    # in" and every arm's table is a silent zero. Only the helper key is copied, no other setting or secret.
+    # from HERE. The helper is resolved through the credentials module, in Claude Code's own precedence, not by reading a
+    # settings file directly (the 2026-09-22 pre-flight review). A USER helper (the operator's ~/.claude settings) is copied so the arm's
+    # CLI on the KEY road resolves the key from the corpus root; only the helper key is copied, no other setting or secret. A
+    # MANAGED helper is read by the child from the system path and needs no copy, and the LOGIN road needs no helper at all,
+    # so both write nothing: reading claude_root/settings.json directly used to copy a user helper a managed one outranks, and
+    # to false-refuse a login-road operator whose managed helper it never saw.
     (dest / "claude").mkdir(parents=True, exist_ok=True)
-    try:
-        live_settings = json.loads((Path(claude_root) / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        live_settings = {}
-    if live_settings.get("apiKeyHelper"):
-        (dest / "claude" / "settings.json").write_text(json.dumps({"apiKeyHelper": live_settings["apiKeyHelper"]}))
+    helper, helper_source = _corpus_helper(claude_root)
+    if helper_source == "user" and helper:
+        (dest / "claude" / "settings.json").write_text(json.dumps({"apiKeyHelper": helper}))
     manifest = {"built": now, "classes": list(CLASSES), "endings": [], "skipped": skipped}
     for c in CLASSES:
         for sid, name, cwd, color, k, i, cut_t, cls, transcript, eligible, start_t, fsid, store_key, seed_start in picked[c]:
@@ -645,31 +682,48 @@ def apply_prompts(jd, prompts):
     return saved
 
 
-def preflight_auth(claude_bin, claude_root):
-    """Before a paid arm walks a single ending: refuse if the corpus claude root carries no apiKeyHelper (an arm runs the CLI
-    with CLAUDE_CONFIG_DIR pointed here, so without it every call reads 'Not logged in' and the table is a silent zero), and
-    stop at once on a cheap probe whose envelope reads 'Not logged in'. The storm is loud and free, but it should also be
-    SHORT (one refusal, not one per ending). The fake validator does NOT exercise auth, so this is the arm's own gate."""
-    settings = Path(claude_root) / "settings.json"
-    has_helper = False
-    if settings.is_file():
-        try:
-            has_helper = bool(json.loads(settings.read_text(encoding="utf-8")).get("apiKeyHelper"))
-        except (OSError, ValueError):
-            has_helper = False
-    if not has_helper:
-        raise SystemExit("refused: the corpus claude root (%s) carries no apiKeyHelper; the judges cannot authenticate. "
-                         "Rebuild the corpus so its claude root has one." % claude_root)
+HELP_REMEDY = ("hand-place an apiKeyHelper into the existing corpus's claude root (do NOT rebuild it: a rebuild re-picks "
+               "the endings and orphans the labeller's id-keyed labels), or export a login token into the environment the "
+               "run inherits (ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN, e.g. from `claude setup-token`; a file-based "
+               "`claude login` does not reach the probe's child, whose config dir is the corpus root), then re-run the arm")
+
+
+def preflight_auth(jd, model):
+    """Before a paid arm walks a single ending: run the judges' OWN auth road once and be the SOLE gate, so a login-road
+    operator with no helper is not false-refused (the 2026-09-22 pre-flight review). The probe is built from `jd._judge_cmd`
+    and `jd._judge_env` with the resolved billing (`jd._judge_auth(None)`), so `_judge_env` strips the ambient credential and
+    the 1Password names and injects only the resolved login tokens, exactly as every judge call does: an environment-only
+    credential that would pass a bare `claude -p` fails here as the judges do. It runs the judges' own binary
+    (`jd._judge_claude_bin`, from ROMP_CLAUDE_BIN as load_judge exported it), so it takes no `claude_bin`: a caller's would be
+    ignored (the 2026-09-22 PR 2022 review, low e). Refuse (SystemExit) when the envelope is an error, reads 'Not logged in', or carries no
+    session_id. The storm the gate replaces is loud and free, but it should be SHORT (one refusal, not one per ending).
+    Returns a {"cost", "ms", "sessionId"} note the arm ledgers in results.json.
+
+    The refusal QUOTES the CLI's own words (the envelope's `result`, else truncated stdout and stderr, else the exception
+    name), never empty braces: a decode failure keeps the process object and quotes it (the 2026-09-22 PR 2022 review, low 3). It names the
+    hand-placed-helper remedy, never a rebuild (the 2026-09-22 PR 2022 review, low 4). The probe's timeout tracks the judge module's own alarm at
+    `jd.CALL_ALARM_S`, backstopped by five seconds, so raising the alarm does not kill a slow, healthy probe (the 2026-09-22 PR 2022 review, low f)."""
+    auth = jd._judge_auth(None)
+    cmd = jd._judge_cmd(model, "Reply with the word ok.", auth=auth)
+    env = jd._judge_env("triage", auth=auth)
+    scratch = jd._ensure_judge_scratch()                        # the same romp-owned scratch cwd every judge call runs in, so the
+    #                                                             CLI's per-invocation files do not land in the checkout (the 2026-09-22 PR 2022 review, low 1)
     try:
-        p = subprocess.run([str(claude_bin), "-p", "--safe-mode", "--model", "sonnet", "--output-format", "json"],
-                           input="ok", capture_output=True, text=True, timeout=120)
-        env = json.loads(p.stdout or "{}")
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        p, env = None, {}
-    blob = json.dumps(env) + ((p.stderr or "") if p is not None else "")
-    if env.get("is_error") or not env.get("session_id") or "Not logged in" in blob:
-        raise SystemExit("refused: the claude binary did not authenticate on a probe (%s); fix the apiKeyHelper before the "
-                         "paid arms" % ((env.get("result") or blob or "no envelope")[:200]))
+        p = subprocess.run(cmd, input="ok", env=env, cwd=scratch, capture_output=True, text=True, timeout=jd.CALL_ALARM_S + 5)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise SystemExit("refused: the judges' auth probe could not run (%s); %s" % (type(e).__name__, HELP_REMEDY))
+    try:
+        envelope = json.loads(p.stdout or "")
+        envelope = envelope if isinstance(envelope, dict) else None
+    except ValueError:
+        envelope = None                                          # a decode failure: p is kept, its stdout/stderr quoted below
+    blob = (json.dumps(envelope) if envelope is not None else "") + (p.stderr or "")
+    if envelope is None or envelope.get("is_error") or not envelope.get("session_id") or "Not logged in" in blob:
+        detail = (envelope.get("result") if isinstance(envelope, dict) else None) or \
+                 ("stdout %r stderr %r" % ((p.stdout or "")[:200], (p.stderr or "")[:200]))
+        raise SystemExit("refused: the judges' auth probe did not authenticate (%s); %s" % (detail, HELP_REMEDY))
+    return {"cost": float(envelope.get("total_cost_usd") or 0), "ms": int(envelope.get("duration_ms") or 0),
+            "sessionId": envelope.get("session_id")}
 
 
 def restore_prompts(jd, saved):
@@ -682,16 +736,40 @@ def column_of(status):
 
 
 def count_failure_rows(errors_path):
-    """Rows on an arm's judge-errors ledger that mean a call failed, was skipped or its reply was rejected (FAILURE_KINDS); the
-    other rows there are the judges' anomaly notes (a stale close, a workless done), which are verdict facts, not failures."""
+    """Rows on an arm's judge-errors ledger that mean an ARM judge's call failed, was skipped or its reply was rejected
+    (`err` in FAILURE_KINDS); the other rows there are the judges' anomaly notes (a stale close, a workless done), which
+    are verdict facts, not failures. Every failure row is counted EXCEPT one whose judge is named in `NON_ARM_JUDGES`: those
+    reshaping and summarizing judges are not read by the measure, so a stuck one (a grouper timeout) must not mark the arm
+    not comparable. This is an exclusion list, not an allowlist of arm judges: the arm also runs the opener and the placer,
+    and some failure kinds carry a tier or "romp" rather than the judge name (a rate-limited row carries "triage", a
+    history-unreadable row "romp"), all of which an allowlist would wrongly drop; those still mark the row not comparable."""
     n = 0
     try:
         for line in Path(errors_path).open(encoding="utf-8"):
             try:
-                if json.loads(line).get("err") in FAILURE_KINDS:
-                    n += 1
+                r = json.loads(line)
             except ValueError:
                 continue
+            if r.get("err") in FAILURE_KINDS and r.get("judge") not in NON_ARM_JUDGES:
+                n += 1
+    except OSError:
+        return 0
+    return n
+
+
+def count_non_arm_failure_rows(errors_path):
+    """Failure rows the comparability filter EXCLUDES: `err` in FAILURE_KINDS AND `judge` in `NON_ARM_JUDGES`. Counted
+    nowhere else (the results record carries only the comparable count), so an excluded fault would be invisible; the measure
+    carries this beside the comparable count and the report prints it in the failures cell (the 2026-09-22 PR 2022 review)."""
+    n = 0
+    try:
+        for line in Path(errors_path).open(encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("err") in FAILURE_KINDS and r.get("judge") in NON_ARM_JUDGES:
+                n += 1
     except OSError:
         return 0
     return n
@@ -711,11 +789,13 @@ def ledger_cost(usage_path):
     return cost, n, (ms / n if n else 0.0)
 
 
-def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bin, now=None, builds=2):
+def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bin, now=None, builds=3):
     """One arm over the corpus, in this process: the corpus state copied under run_root/<arm>/state, the judge module
     loaded against it, the arm's prompts swapped in, and per ending and per build the planner, the closer over the last
-    closed turn and the unblocker, the tops' columns recorded. Two builds from the same store copy give the flaps. The
-    arm's ledger is read after every ending and the run stops past BUDGET_OVERRUN times the budget."""
+    closed turn and the unblocker, the tops' columns recorded. THREE builds from the same store copy give the majority
+    column per card and the residual flaps (the pilot's flaps are model sampling; a card's column is the majority of the
+    three, the flap figure the disagreement that remains). The arm's ledger is read after every ending and the run stops
+    past BUDGET_OVERRUN times the budget."""
     corpus, run_root = Path(corpus), Path(run_root)
     refuse_inside_repo(run_root)
     manifest = json.loads((corpus / "manifest.json").read_text())
@@ -725,11 +805,20 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
         shutil.rmtree(state)
     shutil.copytree(corpus / "state", state)
     jd = load_judge(state, corpus / "claude", claude_bin)
-    preflight_auth(claude_bin, corpus / "claude")               # refuse before the first ending if the arm cannot authenticate
     prompts = json.loads(Path(prompts_file).read_text()) if prompts_file else {}
-    saved = apply_prompts(jd, prompts)
     now = int(time.time()) if now is None else int(now)
-    results = {"arm": arm, "prompts": sorted(prompts), "endings": {}, "stopped": None, "failures": 0, "closerNone": 0}
+    results = {"arm": arm, "prompts": sorted(prompts), "endings": {}, "stopped": None, "failures": 0, "closerNone": 0,
+               "buildsPerCard": builds}     # stamp the per-card build count so a reader knows a card's column is the majority of N (the 2026-09-22 PR 2022 review, MED 1)
+    results["preflightProbe"] = preflight_auth(jd, jd.TRIAGE_MODEL)   # refuse before the first ending if the arm
+    #                            cannot authenticate; the probe's own cost is noted here, outside the arm's judge ledger
+    saved = apply_prompts(jd, prompts)
+    # arm runs compare WITHOUT regrouping/consolidation: the grouper and consolidator are not measured judges, their
+    # non-deterministic reshaping of the top set is the largest flap component, and the grouper's stuck model calls are the
+    # 120s-alarm timeouts. _plan_session calls _group_store as a module global after every placement, so patching it here
+    # no-ops the grouper; _consolidate_store is patched too though the harness never runs the consolidator pass.
+    saved_group, saved_consolidate = jd._group_store, jd._consolidate_store   # restored in the finally with the prompts
+    jd._group_store = lambda *a, **k: 0
+    jd._consolidate_store = lambda *a, **k: 0
     usage = jd.USAGE
     errors_path = Path(jd.ERRORS)
     def error_rows():
@@ -806,11 +895,13 @@ def run_arm_inprocess(corpus, arm, prompts_file, run_root, budget_usd, claude_bi
                 break
     finally:
         restore_prompts(jd, saved)
+        jd._group_store, jd._consolidate_store = saved_group, saved_consolidate   # restore the grouper/consolidator (in-process safety)
         try:
             cost, n, mean_ms = ledger_cost(usage)
             results["cost"] = round(cost, 4); results["calls"] = n; results["callMsMean"] = round(mean_ms)
         except Exception as e:
             results["costError"] = type(e).__name__    # a ledger read that raises is RECORDED, not swallowed: a reader tells a free arm from a broken tally
+        results["nonArmFailures"] = count_non_arm_failure_rows(errors_path)   # excluded from comparability, surfaced beside it (review 2026-09-22 PR 2022)
         flush()                                      # results.json is written in the finally, whatever raised in the loop or after it
     return results
 
@@ -840,6 +931,29 @@ def _scored(build):
         else:
             out[nid] = v                                 # an older results file: every card counted
     return out
+
+
+_UNSCORED = object()   # a card's per-build value when THAT build did not score it: the measure gives every card a value per
+#                        build (the scored column or this sentinel), so the majority is over ALL builds and a card scored in a
+#                        minority of builds does not win one (review 2026-09-22 MED 1)
+
+
+def _majority(cols):
+    """The card's column across ALL builds: a real column ONLY on a STRICT majority of the builds (its count more than half),
+    else no column (the `_UNSCORED` sentinel). No single build decides, so the result is order-independent: an all-different
+    set, a real tie (two builds one each, three builds three columns) and a card scored in a minority of builds all read no
+    column; a real 2-of-3 wins. The caller passes a value per build, an unscored build as the sentinel. The scored column
+    decides leaks / false interrupts / answered-then-cleared; a build disagreement (the sentinel included) is the flap figure
+    (the 2026-09-22 PR 2035 review: the earlier first-seen tie rule let the first build decide)."""
+    if not cols:
+        return None                                             # a card scored in no build has no column
+    counts = {}
+    for c in cols:
+        counts[c] = counts.get(c, 0) + 1
+    for c in cols:                                              # at most one column can hold a strict majority; the sentinel is never a scored column
+        if c is not _UNSCORED and counts[c] * 2 > len(cols):
+            return c
+    return _UNSCORED                                            # no strict majority: no column (no leak / no false interrupt); the flap still counts
 
 
 PLACEMENT_KINDS = ("done", "block", "awaiting")   # a top-level verdict the live judges filed in the ending's turn: the placement
@@ -897,12 +1011,13 @@ def _read_ops(live_state, store_key, faults):
 
 def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
     """The user's OWN later actions on each top the live judges placed in the ending's turn, from the live store and journal
-    only. Per top-level node with a verdict in the turn's window, the placement time is that verdict's own ev_t/at (never the
-    arm's clock); a `followup`/`unclear`/`restore` after it re-opened the card; a user `clear`/`resolve` after it (a
-    cross-off, by the shared `_is_user_crossoff`: a src-user clear whose why is not the mute's exact why) crossed it off. A
-    cross-off is a false interrupt UNLESS the unblocker JUDGE (src "unblocker") lifted the block, having ruled it ANSWERED or
-    MOOT, strictly after the placement and before the first cross-off (a same-second lift is not counted as after, so a
-    ruling at the placement's own second reads conservatively as a false interrupt): that lift is answered-then-cleared, the
+    only. Per top-level node with a verdict in the turn's window, the gesture boundary is the ending's CUT (never the
+    placement's own ev_t, which for a closer done is the turn's start, nor the arm's clock: review item 2); a
+    `followup`/`unclear`/`restore` after the cut re-opened the card; a user `clear`/`resolve` after the cut (a cross-off, by
+    the shared `_is_user_crossoff`: a src-user clear whose why is not the mute's exact why) crossed it off. A cross-off is a
+    false interrupt UNLESS the unblocker JUDGE (src "unblocker") lifted the block, having ruled it ANSWERED or MOOT, strictly
+    after the cut and before the first cross-off (a same-second lift is not counted as after, so a ruling at the cut's own
+    second reads conservatively as a false interrupt): that lift is answered-then-cleared, the
     card having done its job. Returns None when the live store is absent/corrupt or its journal cannot be read (a fault is
     recorded for the readable-but-broken cases; a single torn journal row is a fault and skipped, not a return); {} when the
     store is present but the live judges placed no top in the turn; else {suffix: {...}}. The suffix (`gN`) is the join key:
@@ -936,7 +1051,10 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
                   if ev.get("kind") in PLACEMENT_KINDS and event_time(ev) is not None and in_turn_window(event_time(ev), start_t, cut_t)]
         if not placed:
             continue                                            # the live judges placed this top outside the turn: no placement time to bound gestures
-        t_place = max(placed)
+        # the gesture boundary is the ending's CUT, not the placement's own ev_t (the 2026-09-22 PR 1960 note, item 2): a closer done's ev_t is the
+        # turn's START, so keying on it counted a mid-turn gesture (made before the card was placed) as answering it. Every
+        # arm verdict uses evidence up to the cut, so a user gesture is "later" only when it lands after the cut.
+        t_place = cut_t
 
         def on_node(o):
             if o.get("node") == nid:
@@ -948,9 +1066,9 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
         clear_times = [float(o.get("t") or 0) for o in later if _is_user_crossoff(o)]   # the mute's clears are excluded by the shared predicate
         crossed_off = bool(clear_times)
         first_clear = min(clear_times) if clear_times else None
-        # the unblocker JUDGE lifted the block (ruling it answered or moot), STRICTLY after the placement and before the
-        # first cross-off (an unblock at or before the placement's second is not the reply this clear crossed off unanswered;
-        # a lift after the clear is not it either)
+        # the unblocker JUDGE lifted the block (ruling it answered or moot), STRICTLY after the cut and before the first
+        # cross-off (an unblock at or before the cut's second is not the reply this clear crossed off unanswered; a lift
+        # after the clear is not it either)
         unblock_answered = any(_answered_unblock(ev) and event_time(ev) is not None and t_place < event_time(ev)
                                and (first_clear is None or event_time(ev) < first_clear) for ev in log)
         cleared_no_reply = crossed_off and not reopened and not unblock_answered
@@ -961,25 +1079,43 @@ def placement_gestures(live_state, store_key, start_t, cut_t, faults=None):
     return out
 
 
-def measure(manifest, results, live_state):
+def measure(manifest, results, live_state, labels=None, labels_state="absent"):
     """Per arm, scored against the user's OWN later actions on the live cards (road (b): NOT the labeller's class, which the
     pilot showed is not a truth about an ending's shape). Leaks into Completed: the arm placed a top completed that the user
     then re-opened. False interrupts: the arm left a top needs_input that the user plainly crossed off, with no re-open and
     no unblocker ruling that a reply answered the block (a topic-blind later turn does NOT suppress). answeredThenCleared: a
-    needs_input top the kernel ruled answered before the user cleared it (the card did its job), a separate count. Flaps: a
-    scored top whose column differs between the two builds. Failures: a row with any is not comparable. The live root is read
-    only, and the store identity comes from the manifest (fixed at build). Every ending falls in exactly one column so they
-    partition: unresolved (live store gone or unreadable), unplaced (resolved, no card placed in the turn), gestured (a
-    placed card the user acted on, a re-open or a cross-off) or untouched (a placed card the user did nothing to). Every
-    ending contributes flaps and cost."""
+    needs_input top the kernel ruled answered before the user cleared it (the card did its job), a separate count. A card's
+    column for scoring is the MAJORITY of the (three) builds of the same store copy, over a value per build (the scored
+    column or the `_UNSCORED` sentinel, so a card scored in a minority of builds wins no column, review MED 1); the FLAP
+    figure is the residual disagreement, a card whose per-build values are not all equal (the sentinel included). Failures: a
+    row with any is not comparable. The live root is read only, and the store identity comes from the manifest (fixed at
+    build). Every ending falls in exactly one column so they partition: unresolved (live store gone or unreadable), unplaced
+    (resolved, no card placed in the turn), gestured (a placed card the user acted on, a re-open or a cross-off) or untouched
+    (a placed card the user did nothing to). Every ending contributes flaps and cost."""
     by_id = {e["id"]: e for e in manifest["endings"]}
     leaks = false_interrupts = answered_then_cleared = flaps = gestured = untouched = unresolved = unplaced = 0
+    leaks_by_class = {c: 0 for c in CLASSES}                     # leaks and false interrupts split by the ending's heuristic
+    fi_by_class = {c: 0 for c in CLASSES}                        # class: the loose-ended strata (offer/question/undone) vs finished
+    labels = labels or {}                                        # {ending id: labeller class} when labels.json exists (the 2026-09-22 PR 2022 round-two review, low 4)
+    leaks_by_labeller = {}                                       # the same splits keyed on the LABELLER's class, so the landing bar's
+    fi_by_labeller = {}                                          # strata sentence (read from the labeller) is derivable from the outputs
+    attribution = []                                             # per-ending: id, arm, leak, false interrupt, both class keyings
     faults = []
+    builds_n = results.get("buildsPerCard") or max((len(r.get("builds") or []) for r in results["endings"].values()), default=0)
     for eid, r in results["endings"].items():
         e = by_id.get(eid, {})
         store_key = e.get("storeKey")
         builds = [_scored(b) for b in r["builds"]]
-        final = builds[-1] if builds else {}
+        if len(builds) < builds_n:                              # a crashed ending finished fewer builds: pad to buildsPerCard with the
+            builds += [{}] * (builds_n - len(builds))           # sentinel (the 2026-09-22 PR 2035 review, low 4), or one surviving build would decide the column
+        # a value per build for EVERY card: the scored column where the build scored it, else the _UNSCORED sentinel (review
+        # MED 1). The column is a STRICT majority over ALL builds, so a card scored in a minority of builds wins no column;
+        # a flap is any disagreement across the builds, the sentinel included (a done in one build of three against none is a
+        # flap the base missed by reading only the scored builds).
+        cards = set().union(*[set(b) for b in builds]) if builds else set()
+        vals_of = {nid: [b.get(nid, _UNSCORED) for b in builds] for nid in cards}
+        majority = {nid: mv for nid, mv in ((nid, _majority(vals)) for nid, vals in vals_of.items()) if mv is not _UNSCORED}
+        flaps += sum(1 for vals in vals_of.values() if len(set(vals)) > 1)
         if store_key:
             g = placement_gestures(live_state, store_key, e.get("startT"), float(e.get("cutT") or 0), faults=faults)
             if g is None:
@@ -993,24 +1129,39 @@ def measure(manifest, results, live_state):
                     untouched += 1                              # a placed card the user did nothing to: so the columns partition the endings
                 # the join is by the node suffix (gN): the results carry the ending id prefix, the live store the store key,
                 # so the full keys never coincide by construction, and a store's top-level suffixes are distinct (safe)
-                if any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in final.items()):
+                cls = e.get("class")                            # the ending's heuristic class, for the by-class strata (the 2026-09-22 PR 2016/2022 fold)
+                raw_lbl = labels.get(eid)                       # the labeller's class, None when unlabelled (torn/missing/unstable): the attribution keeps None
+                lbl = raw_lbl or "unlabeled"                    # the bucket key: an unlabeled bucket so the buckets sum to the totals (the 2026-09-22 PR 2035 review, MED)
+                ending_leak = any(col == "completed" and g.get(nid.split(":")[-1], {}).get("reopened") for nid, col in majority.items())
+                ending_fi = any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in majority.items())
+                if ending_leak:
                     leaks += 1
-                if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("clearedNoReply") for nid, col in final.items()):
+                    if cls in leaks_by_class:
+                        leaks_by_class[cls] += 1
+                    leaks_by_labeller[lbl] = leaks_by_labeller.get(lbl, 0) + 1
+                if ending_fi:
                     false_interrupts += 1
-                if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("answeredThenCleared") for nid, col in final.items()):
+                    if cls in fi_by_class:
+                        fi_by_class[cls] += 1
+                    fi_by_labeller[lbl] = fi_by_labeller.get(lbl, 0) + 1
+                if any(col == "needs_input" and g.get(nid.split(":")[-1], {}).get("answeredThenCleared") for nid, col in majority.items()):
                     answered_then_cleared += 1
+                # per-ending attribution, so the landing bar's sentence (leaks per loose-ended stratum, false interrupts in
+                # the finished stratum) is derivable from the outputs under either keying
+                attribution.append({"id": eid, "arm": results["arm"], "leak": ending_leak, "falseInterrupt": ending_fi,
+                                    "heuristicClass": cls, "labellerClass": raw_lbl})
         else:
             unresolved += 1                                     # the manifest carries no live identity (an old or synthetic manifest): unresolvable
-        if len(builds) >= 2:
-            for nid in set(builds[0]) | set(builds[1]):
-                if builds[0].get(nid) != builds[1].get(nid):
-                    flaps += 1
     failures = int(results.get("failures") or 0)
     return {"arm": results["arm"], "endings": len(results["endings"]), "leaks": leaks, "falseInterrupts": false_interrupts,
             "answeredThenCleared": answered_then_cleared, "flaps": flaps, "gesturedEndings": gestured,
             "untouchedEndings": untouched, "unplacedEndings": unplaced, "unresolvedEndings": unresolved,
             "costUsd": results.get("cost", 0.0), "calls": results.get("calls", 0), "callMsMean": results.get("callMsMean", 0),
-            "stopped": results.get("stopped"), "failures": failures, "comparable": failures == 0,
+            "stopped": results.get("stopped"), "failures": failures, "nonArmFailures": int(results.get("nonArmFailures") or 0),
+            "comparable": failures == 0, "buildsPerCard": builds_n,
+            "leaksByClass": leaks_by_class, "falseInterruptsByClass": fi_by_class,
+            "leaksByLabellerClass": leaks_by_labeller, "falseInterruptsByLabellerClass": fi_by_labeller,
+            "labellerKeying": labels_state, "attribution": attribution,   # the labeller-keying source: present / absent / unreadable (the 2026-09-22 PR 2035 review, MED)
             "liveReadErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
 
 
@@ -1020,17 +1171,41 @@ def report(corpus, run_root, live_state, figure=None):
     user's later gestures and the kernel's rulings per placed card; it exists only while the live root still lists the session."""
     corpus, run_root = Path(corpus), Path(run_root)
     manifest = json.loads((corpus / "manifest.json").read_text())
+    labels, labels_state = {}, "absent"                         # {ending id: labeller class} from labels.json + the keying source stamp (the 2026-09-22 PR 2035 review, MED)
+    labels_f = run_root / "labels.json"
+    if labels_f.is_file():
+        try:
+            labels = {r["id"]: r.get("label") for r in json.loads(labels_f.read_text()) if r.get("id")}
+            labels_state = "present"
+        except (OSError, ValueError, AttributeError, TypeError, KeyError):
+            labels, labels_state = {}, "unreadable"             # a torn OR wrong-shape labels.json (a top-level object, a list of
+            #                                                     strings, a number) is RECORDED (labellerKeying), never a silent
+            #                                                     empty pass that reads as zero leaks per stratum (the 2026-09-22 PR 2035 review)
     rows = []
     for d in sorted(p for p in run_root.iterdir() if (p / "results.json").is_file()):
-        rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state))
+        rows.append(measure(manifest, json.loads((d / "results.json").read_text()), live_state, labels=labels, labels_state=labels_state))
     lines = ["| arm | endings | gestured | untouched | unplaced | unresolved | leaks into Completed | false interrupts | answered then cleared | flaps | cost (USD) | calls | mean call ms | stopped | failures |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
+        cell = "0" if r["comparable"] else "%d, not comparable" % r["failures"]
+        if r.get("nonArmFailures"):
+            cell += " (%d non-arm)" % r["nonArmFailures"]       # an excluded failure is surfaced, never invisible (review 2026-09-22 PR 2022)
         lines.append("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %.2f | %d | %d | %s | %s |" % (
             r["arm"], r["endings"], r["gesturedEndings"], r["untouchedEndings"], r["unplacedEndings"], r["unresolvedEndings"],
             r["leaks"], r["falseInterrupts"], r["answeredThenCleared"], r["flaps"], r["costUsd"], r["calls"], r["callMsMean"],
-            "yes" if r["stopped"] else "no", "0" if r["comparable"] else "%d, not comparable" % r["failures"]))
-    (run_root / "table.md").write_text("\n".join(lines) + "\n")
+            "yes" if r["stopped"] else "no", cell))
+    counts = sorted({r.get("buildsPerCard") or 0 for r in rows})
+    scope = ("%d builds" % counts[0]) if (len(counts) == 1 and counts[0]) else \
+            ("builds per arm (" + ", ".join("%s %d" % (r["arm"], r.get("buildsPerCard") or 0) for r in rows) + ")" if rows else "the builds")
+    note = ("Scoring: each card's column is the STRICT MAJORITY of %s per arm (a value per build, an unscored build as a "
+            "sentinel; no strict majority means no column); a flap is a card whose per-build columns disagree. Comparability "
+            "EXCLUDES only the non-arm reshaping and summarizing judges (%s); every other failure row counts (the failures "
+            "cell shows the non-arm count beside it). Leaks and false interrupts are split by class in measures.json under "
+            "TWO keyings: leaksByClass / falseInterruptsByClass on the manifest's heuristic class, and leaksByLabellerClass / "
+            "falseInterruptsByLabellerClass on the labeller's class (labellerKeying names the source; an unlabeled bucket "
+            "carries the rest so both sum to the totals). Offer, question and undone are the loose-ended strata, finished the "
+            "tier-one stratum." % (scope, ", ".join(NON_ARM_JUDGES)))
+    (run_root / "table.md").write_text("\n".join(lines) + "\n\n" + note + "\n")
     (run_root / "measures.json").write_text(json.dumps(rows, indent=1))
     if figure:
         try:
@@ -1075,9 +1250,11 @@ FINISHED_OPS = ("clear", "resolve")
 
 def tier_one_label(live_state, sid, cut_t, start_t=None, faults=None):
     """The user's own recorded verdict on the cards the judges completed at this ending, keyed on events: a top-level closer
-    or planner `done` within the turn's window (the turn's start to the cut) names the card; the user's later
-    gestures on that node in the override journal decide (a followup, an unclear or a restore says not finished; a hand clear
-    or a resolve with no later one of those, at build time, says finished). None when the journals record nothing that
+    or planner `done` within the turn's window (the turn's start to the cut) names the card; the user's gestures on that node
+    AFTER THE CUT in the override journal decide (a followup, an unclear or a restore says not finished; a hand clear or a
+    resolve with no later one of those, at build time, says finished). The gestures key on the cut, not the done's own ev_t
+    (a closer done's ev_t is the turn's start, review item 2), so a mid-turn gesture does not decide. None when the journals
+    record nothing that
     applies. The caller records the observation span, so labels can be read by how long the user had to act."""
     live_state = Path(live_state)
     live_path = live_state / "goals" / (sid + ".json")
@@ -1110,7 +1287,7 @@ def tier_one_label(live_state, sid, cut_t, start_t=None, faults=None):
                     return True
                 nn = o.get("nodes")                      # the restore row carries `nodes`, a dict, not `node`
                 return isinstance(nn, dict) and nid in nn
-            later = [o for o in ops if on_node(o) and float(o.get("t") or 0) > t]
+            later = [o for o in ops if on_node(o) and float(o.get("t") or 0) > cut_t]   # after the CUT, not the done's ev_t (item 2)
             if any(o.get("op") in NOT_FINISHED_OPS for o in later):
                 labels.append("not finished")
             elif any(_is_user_crossoff(o) for o in later):       # the shared cross-off predicate: a mute's clear is not the user's finish
@@ -1122,18 +1299,37 @@ def tier_one_label(live_state, sid, cut_t, start_t=None, faults=None):
 
 def _last_assistant_text(path, cap=6000):
     last = ""
-    first_ask = ""
     for r in _records(path):
         if r.get("type") == "assistant":
             t = _text_of(r)
             if t.strip():
                 last = t
-        elif r.get("type") == "user" and not r.get("isMeta") and not first_ask:
-            t = _text_of(r)
-            if t.strip():
-                first_ask = t
-    ask = ("\nThe user's ask that opened the last turn: %s" % first_ask[:1500]) if first_ask else ""
-    return (last[-cap:] + ask)
+    return last[-cap:]
+
+
+def _ending_ask(path, faults=None):
+    """The ending turn's OWN opening ask (the user's ask that opened the last turn), for the labeller. build_corpus writes
+    the session truncated at the ending's last atom (records[:end+1] in build_corpus), so the LAST worked, ended turn of
+    that transcript IS the ending; its opener is that turn's first non-command user atom. Read from the event model's own
+    segmentation (never a copy of the opener rule, which drifted, review round three). Empty when the ending has no typed
+    opener (a continuation), matching the manifest's None startT. The base scanned the whole transcript for its FIRST
+    non-meta user text, so every ending past a session's first turn got an earlier turn's ask (review 2026-09-22 item 1). A
+    parse EXCEPTION fails LOUD like the corpus builder: it records the exception name in `faults` (the caller marks the row
+    and totals it in the summary) and returns "" so the labeller still runs on the final text, the degradation on the record
+    (the 2026-09-22 PR 2022 round-two review, low 2)."""
+    records = _records(path)
+    fsid = next((r.get("sessionId") for r in records if r.get("sessionId")), "s")
+    try:
+        sess = _event_model().parse_session(str(path), rompuuid=fsid)
+    except Exception as e:
+        if faults is not None:
+            faults.append(type(e).__name__)
+        return ""
+    worked = [t for t in (sess.get("turns") or []) if t.get("ended") and _worked_assistant_atom(t)]
+    if not worked or not worked[-1].get("trigger"):
+        return ""                                     # an opener-less ending (a continuation): no ask, matching a None startT
+    opener = next((a for a in (worked[-1].get("atoms") or []) if a.get("type") == "user" and not a.get("command")), None)
+    return _atom_text(opener) if opener else ""
 
 
 def ask_class(claude_bin, model, text, order, ledger_path):
@@ -1191,13 +1387,21 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         row_faults = []
         if key:
             t1 = tier_one_label(live_state, key, float(e["cutT"] or 0), e.get("startT"), faults=row_faults)
-            row_err = row_faults[0][1] if row_faults else None
+            # a tierOneError marks a GENUINE read fault, when tier one could not be read AT ALL (t1 is None); a torn journal
+            # row that still yields a label leaves that label standing with NO error beside it, the fault recorded at the run
+            # level (tierOneErrors in the summary), not on the labeled row (the 2026-09-22 PR 2022 review, low 7)
+            row_err = (row_faults[0][1] if row_faults else None) if t1 is None else None
         else:
             t1 = None
             row_err = "unresolved-key"                # the manifest hash resolves to no live session: told apart from a store-less session's genuine null
         faults.extend(row_faults)
         path = next(iter((corpus / "claude" / "projects").glob("*/%s.jsonl" % e["id"])), None)
         text = _last_assistant_text(path) if path else ""
+        ask_faults = []
+        ask = _ending_ask(path, faults=ask_faults) if path else ""    # the ENDING turn's own opener, not the session's first (the 2026-09-22 PR 1960 note, item 1)
+        ask_err = ask_faults[0] if ask_faults else None               # a parse fault on the ask, recorded loud (the 2026-09-22 PR 2022 round-two review, low 2)
+        if ask:
+            text = text + "\nThe user's ask that opened the last turn: %s" % ask[:1500]
         a, c1 = ask_class(claude_bin, model, text, list(CLASSES), ledger)
         order = list(CLASSES); rng.shuffle(order)
         if order == list(CLASSES):
@@ -1206,7 +1410,8 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
         spent += c1 + c2
         rows.append({"id": e["id"], "class": e["class"], "tierOne": t1, "labelA": a, "labelB": b, "label": a if a == b else None,
                      "spanS": int(time.time() - float(e["cutT"] or 0)),
-                     "tierOneError": row_err})   # a faulted read or an unresolved key, told apart from a genuine tierOne null
+                     "tierOneError": row_err,   # a faulted read or an unresolved key, told apart from a genuine tierOne null
+                     "askError": ask_err})      # the ending turn's ask could not be parsed; the labeller ran on the final text alone
     (run_root / "labels.json").write_text(json.dumps(rows, indent=1))
     stable = sum(1 for r in rows if r["label"])
     stable_pct = round(100.0 * stable / len(rows), 1) if rows else None
@@ -1218,7 +1423,8 @@ def label(corpus, run_root, live_state, claude_bin, model="fable", seed=20260921
                "gatePassed": stable_pct is not None and stable_pct >= STABILITY_GATE_PCT,
                "both": len(both), "agree": agree, "agreementPct": agree_pct,
                "heuristicMatchesLabel": sum(1 for r in rows if r["label"] and r["label"] == r["class"]), "spentUsd": round(spent, 4),
-               "tierOneErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))]}
+               "tierOneErrors": [{"session": h, "error": ex} for h, ex in sorted(set(faults))],
+               "askParseErrors": sum(1 for r in rows if r.get("askError"))}   # endings whose ask could not be parsed (the 2026-09-22 PR 2022 round-two review, low 2)
     (run_root / "labels-summary.json").write_text(json.dumps(summary, indent=1))
     return summary
 

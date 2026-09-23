@@ -15,8 +15,10 @@ browser waiting:
   - a LOAD fold-in (cheap): `gc.collect(); gc.freeze()`. The collect walks only the unfrozen objects
     loaded since the last freeze, so it costs milliseconds; the freeze folds their survivors in.
     Keyed on the record cache's insert counter growing by a material number of trees.
-  - a RELEASE reclaim (up to the full pause): `gc.unfreeze(); gc.collect(); gc.freeze()`. The unfreeze
-    brings the frozen set back into the walk so a released reference CYCLE is collected.
+  - a RELEASE reclaim (up to the full pause), STAGED: `gc.collect()` with the freeze IN PLACE first (cheap,
+    it takes a released cycle allocated since the last freeze), then the owed refs are re-read and only a
+    survivor drives `gc.unfreeze(); gc.collect()` (the frozen-heap walk); a `gc.freeze()` re-holds either
+    way. A release the cheap walk took whole counts as a LOAD pass, so the backstop's bound does not stretch.
 
 WHEN to reclaim is MEASURED, not guessed. Three review rounds each guessed cyclicity from a state flag
 (a session's `client`, its thread) and each found a new path the guess missed (a teardown exception
@@ -36,7 +38,10 @@ has finished is therefore held by a DIFFERENT surviving cycle (a traceback frame
 reclaim's target. An UNSTARTED thread reads as finished (`is_alive()` False) and still holds the session
 (the Thread keeps `_target`, since `run`'s finally never fires for it), so the ref is alive on a cycle;
 judging it a reclaim is correct precisely because ONLY the collector can take that cycle (refcounting never
-will), which is what a reclaim does.
+will), which is what a reclaim does. A ref a live ROOT keeps (a never-joined helper thread's `_target`, a
+strong reference, not a cycle) reads the same, alive with a finished worker, and is TREATED as a surviving
+cycle: the reclaim frees nothing, so it costs exactly ONE full-heap pause, is counted a `survivor` on /perf,
+and is dropped (never re-registered), never a pass per tick.
 
 A request that arrives during a reconcile waits that one collection; the idle boundary is the best
 moment for it, not a guarantee none arrives. Default on; `ROMP_GC_FREEZE=off` (or `0`/`false`) off.
@@ -94,6 +99,8 @@ class GcFreeze:
         self._ended_lock = threading.Lock()   # note_ended runs on other threads than the tick; guard the list
         self.freezes = 0             # initial freeze plus load fold-ins
         self.reclaims = 0            # unfreeze/collect/re-freeze passes (a cyclic ended ref, or the backstop)
+        self.survivors = 0           # owed refs still alive after a reclaim's collect: kept by a LIVE ROOT, not a cycle (a wasted pause), counted once and dropped
+        self.last_release_sids = []  # first 8 chars of each sid a reclaim was owed for, set under the ended lock, cleared per judgement
         self.last_ms = 0.0           # the last reconcile's collection pause
         self.total_ms = 0.0          # every reconcile's collection pause, summed
         self.last_kind = None        # "initial" | "load" | "release" | "backstop", for /perf
@@ -112,12 +119,15 @@ class GcFreeze:
             self._ended.append(pair)
 
     def resolve_ended(self):
-        """Judge the registered ended sessions by OBSERVATION and return whether a reclaim is owed. A dead ref died
-        by reference counting (acyclic, dropped, no reclaim); a live ref whose thread still runs is not garbage yet
-        (kept); a live ref whose thread has finished is a cycle the collector must take (a reclaim, dropped). Never
-        reclaims for a dead ref: that is the whole point of measuring instead of guessing. Judges IN PLACE under the
-        ended lock, so a registration landing on another thread mid-judgement is never dropped."""
-        keep, reclaim = [], False
+        """Judge the registered ended sessions by OBSERVATION and return the list of refs a reclaim is OWED for (empty
+        when none, so it reads as a boolean too). A dead ref died by reference counting (acyclic, dropped, no reclaim);
+        a live ref whose thread still runs is not garbage yet (kept); a live ref whose thread has finished is a cycle the
+        collector must take (owed, and dropped: one reclaim then gone, never re-registered, so a live ROOT that keeps it
+        costs exactly one wasted pause). Never reclaims for a dead ref: that is the whole point of measuring instead of
+        guessing. Judges IN PLACE under the ended lock, so a registration landing on another thread mid-judgement is never
+        dropped. The owed sids' first 8 characters are set on `last_release_sids` under the lock, cleared each judgement, so
+        a release names the sessions it was owed for (the 2026-09-22 PR 1999 review, attribution)."""
+        keep, owed = [], []
         with self._ended_lock:
             ended = self._ended
             self._ended = keep                       # new registrations land in `keep` while we judge the old list
@@ -128,8 +138,9 @@ class GcFreeze:
                 if t is not None and t.is_alive():
                     keep.append((sref, tref))        # the worker thread still runs: not garbage yet, judge again next tick
                 else:
-                    reclaim = True                   # alive with its thread finished: a surviving cycle
-        return reclaim                               # `keep` is already self._ended (set under the lock); no racy rebind here
+                    owed.append((sref, tref))        # alive with its thread finished: a surviving cycle the reclaim must take
+            self.last_release_sids = [(getattr(sref(), "sid", "") or "")[:8] for sref, _ in owed if sref() is not None]
+        return owed                                  # `keep` is already self._ended (set under the lock); no racy rebind here
 
     def tick(self, inserts):
         """One idle-boundary pass: judge the ended sessions, then run the owed operation. Returns the kind run, or
@@ -137,38 +148,58 @@ class GcFreeze:
         load; the first freeze once anything is loaded."""
         if not self.enabled:
             return None
-        ended_cyclic = self.resolve_ended()
+        owed = self.resolve_ended()
         if not self.frozen:
-            return self._run("initial", inserts) if inserts > 0 else None
-        if ended_cyclic:
-            return self._run("release", inserts)
+            return self._run("initial", inserts, []) if inserts > 0 else None
+        if owed:
+            return self._run("release", inserts, owed)
         if self._foldins >= self.backstop_foldins:
-            return self._run("backstop", inserts)
+            return self._run("backstop", inserts, [])
         if (inserts - self._ins_mark) >= self.load_trees:
-            return self._run("load", inserts)
+            return self._run("load", inserts, [])
         return None
 
-    def _run(self, kind, inserts):
-        need_reclaim = kind in ("release", "backstop")
+    def _run(self, kind, inserts, owed):
+        """Run the owed collector operation and return the kind actually run. A RELEASE is STAGED (the 2026-09-22 PR 1999
+        review): a plain collect with the freeze IN PLACE first (cheap, it takes a cycle allocated since the last freeze),
+        then the owed refs are re-read; only when one survived does it unfreeze and walk the frozen heap (the up-to-full
+        pause). A release the cheap walk took whole counts as a LOAD pass, so the backstop's bound does not stretch. A
+        BACKSTOP is blind (no owed refs) and unfreezes straight away. After the collect and the re-freeze, an owed ref still
+        alive is kept by a LIVE ROOT, not a cycle: a wasted pause, counted as a survivor and dropped (never re-registered).
+        The re-read runs after the re-freeze, which is harmless: a freeze collects nothing, so a ref alive after the collect
+        is alive after the freeze too."""
         t0 = self._clock()
-        if need_reclaim:
-            self._gc.unfreeze()                      # lift the frozen set back into the walk so a released cycle collects
-        self._gc.collect()                           # a fold-in walks only the unfrozen; a reclaim walks everything
+        reclaimed = False
+        if kind == "release":
+            self._gc.collect()                       # cheap: the freeze stays in place, so this walks only the unfrozen
+            if any(sref() is not None for sref, _ in owed):
+                self._gc.unfreeze()                  # a survivor: the released cycle is in the frozen set, lift it and walk
+                self._gc.collect()
+                reclaimed = True
+            # else the cheap collect took the released cycle whole: no full pause, counted as a load pass below
+        elif kind == "backstop":
+            self._gc.unfreeze()                      # blind periodic reclaim: nothing owed to re-read, walk everything
+            self._gc.collect()
+            reclaimed = True
+        else:
+            self._gc.collect()                       # initial / load fold-in: walk only the unfrozen
         self.last_ms = (self._clock() - t0) * 1000.0
         self.total_ms += self.last_ms
         self._gc.freeze()                            # (re)freeze: the survivors leave the collector's walk again
         was_frozen = self.frozen
         self.frozen = True
         self._ins_mark = inserts
-        self.last_kind = kind
-        if need_reclaim:
+        self.survivors += sum(1 for sref, _ in owed if sref() is not None)   # a live root kept it through the reclaim: wasted, counted, dropped
+        if reclaimed:
+            self.last_kind = kind
             self.reclaims += 1
             self._foldins = 0
         else:
+            self.last_kind = "initial" if not was_frozen else "load"   # a cheap-collect release folds in like a load
             self.freezes += 1
             if was_frozen:
                 self._foldins += 1                   # a load fold-in; the initial freeze is not one
-        return kind
+        return self.last_kind
 
     def perf(self):
         """The /perf gc block's freeze sub-block: the state and the reconcile trade, so a reconcile collection is
@@ -176,6 +207,7 @@ class GcFreeze:
         integer `gc.frozen`); `frozenCount` (gc.get_freeze_count) is added by the caller."""
         return {"enabled": self.enabled, "active": self.frozen, "loadTrees": self.load_trees,
                 "backstopFoldins": self.backstop_foldins, "freezes": self.freezes, "reclaims": self.reclaims,
+                "survivors": self.survivors, "lastReleaseSids": list(self.last_release_sids),
                 "endedPending": len(self._ended), "lastReconcileMs": round(self.last_ms, 1),
                 "lastReconcileKind": self.last_kind, "totalReconcileMs": round(self.total_ms, 1)}
 

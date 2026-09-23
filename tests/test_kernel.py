@@ -1061,21 +1061,27 @@ class ViewBuilder(unittest.TestCase):
     def test_the_status_reconciles_the_count_with_needs_you_so_no_reader_ships_a_bare_dot(self):
         """The set and the count are published in two steps in the feed build (plans/tab-state-badge.md); a status read that
         straddles them could pair needsYou TRUE (new set) with count 0 (old count) and draw a bare dot, or needsYou FALSE
-        with a stale count. build_session (and _light_status) reconcile the count with the SAME needsYou they ship: true
-        carries at least 1, false carries 0 whatever the count global holds. Pinned by forcing each raced pair directly."""
+        with a stale count. build_session AND _light_status (the cold tab) reconcile the count with the SAME needsYou they
+        ship: true carries at least 1, false carries 0 whatever the count global holds. Pinned by forcing each raced pair
+        directly through both builders (the second contributor on PR 2017: run the pairs through _light_status too)."""
         saved = (km._feed_needs_input[0], km._feed_needs_input_count[0])
+        path = str(jd.GOALDIR / (SID + ".json"))   # any path; the reconcile reads the feed globals, not the transcript
+        tm = {"state": "idle"}                      # a non-empty live row, so _light_status builds rather than returning None
+        cases = [
+            (frozenset([SID]), {}, True, 1, "entering: in the set, count not yet updated -> at least 1, never a bare dot"),
+            (frozenset(), {SID: 2}, False, 0, "leaving: out of the set, count not yet cleared -> 0, no stale number"),
+            (frozenset([SID]), {SID: 5}, True, 5, "the consistent pair: the real number rides"),
+        ]
         try:
-            km._feed_needs_input[0] = frozenset([SID]); km._feed_needs_input_count[0] = {}          # entering window: in the set, count not yet updated
-            m = km.build_session(SID, NOW)
-            self.assertIs(m["status"]["needsYou"], True, "in the set: needs you")
-            self.assertEqual(m["status"]["needsYouCount"], 1, "needsYou true with a raced 0 count ships at least 1, never a bare dot")
-            km._feed_needs_input[0] = frozenset(); km._feed_needs_input_count[0] = {SID: 2}         # leaving window: out of the set, count not yet cleared
-            m = km.build_session(SID, NOW)
-            self.assertIs(m["status"]["needsYou"], False, "out of the set: no ring")
-            self.assertEqual(m["status"]["needsYouCount"], 0, "needsYou false ships 0 whatever the count global still holds: no dot, no stale number")
-            km._feed_needs_input[0] = frozenset([SID]); km._feed_needs_input_count[0] = {SID: 5}    # the consistent case: the real number rides
-            m = km.build_session(SID, NOW)
-            self.assertEqual(m["status"]["needsYouCount"], 5, "a consistent pair ships the real count")
+            for sids, counts, exp_ny, exp_ct, why in cases:
+                km._feed_needs_input[0] = sids; km._feed_needs_input_count[0] = counts
+                b = km.build_session(SID, NOW)["status"]
+                self.assertIs(b["needsYou"], exp_ny, "build_session needsYou: " + why)
+                self.assertEqual(b["needsYouCount"], exp_ct, "build_session needsYouCount: " + why)
+                lt = km._light_status(SID, path, tm, NOW)
+                self.assertIsNotNone(lt, "the cold status builds for " + why)
+                self.assertEqual(bool(lt["needsYou"]), exp_ny, "_light_status needsYou beside its count: " + why)
+                self.assertEqual(lt["needsYouCount"], exp_ct, "_light_status needsYouCount reconciled the same way: " + why)
         finally:
             km._feed_needs_input[0], km._feed_needs_input_count[0] = saved
 

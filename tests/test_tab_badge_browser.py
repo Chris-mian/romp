@@ -43,10 +43,11 @@ sys.path.insert(0, HERE)
 import test_ship_reship_served as _lab  # noqa: E402  the lab kernel's environment
 
 # the four synthetic sessions: three in the Needs-you state with 1/3/12 cards, one idle control with none
-SESS = [("one", 1), ("few", 3), ("many", 12), ("calm", 0)]
+SESS = [("one", 1), ("few", 3), ("many", 12), ("calm", 0), ("over", 120)]
 SIDS = {n: "%s-1111-2222-3333-444444444444" % (chr(ord("a") + i) * 8) for i, (n, _) in enumerate(SESS)}
-PALETTE = {"one": ("#9cd2ff", "#0c1a2e"), "few": ("#1EA1EB", "#ffffff"), "many": ("#54B204", "#ffffff"), "calm": ("#c98cff", "#1a0c2e")}
+PALETTE = {"one": ("#9cd2ff", "#0c1a2e"), "few": ("#1EA1EB", "#ffffff"), "many": ("#54B204", "#ffffff"), "calm": ("#c98cff", "#1a0c2e"), "over": ("#e08020", "#1a0c00")}
 TOKEN = {"dark": "rgb(217, 70, 239)", "light": "rgb(162, 28, 175)"}   # --st-needs-bg: #d946ef and #a21caf
+AMBER = {"dark": "rgb(230, 126, 34)", "light": "rgb(156, 74, 12)"}   # --st-retrying-bg: #e67e22 and #9C4A0C, the retrying left dot
 
 
 def _free_port():
@@ -102,6 +103,7 @@ await page.waitForSelector('#tabs .tab[data-id="' + cfg.one + '"] .tab-badge', {
   errors.push("badge: no dot on the needs-you tab: " + (await page.evaluate(() => Array.from(document.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.dataset.id.slice(0, 8) + ":" + t.className).join(" | "))));
 });
 await page.waitForTimeout(400);
+await page.waitForFunction((id) => { const b = document.querySelector('#tabs .tab[data-id="' + id + '"] .tab-badge'); return !!b && b.textContent === "99+"; }, cfg.over, { timeout: 60000 }).catch(() => errors.push("badge: the over-99 desktop tab never showed 99+"));
 const readBadge = (p) => p.evaluate((ids) => {
   const one = (id) => {
     const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); if (!t) return null;
@@ -109,12 +111,17 @@ const readBadge = (p) => p.evaluate((ids) => {
     const lbl = t.querySelector(".tab-label, .tab-name, .tab-title");
     const R = (e) => { const r = e.getBoundingClientRect(); return { top: r.top, right: r.right, bottom: r.bottom, left: r.left, width: r.width, height: r.height }; };
     return { cls: t.className, tab: R(t), labelLeft: lbl ? lbl.getBoundingClientRect().left : null,
-             badge: b ? { text: b.textContent, rect: R(b), bg: getComputedStyle(b).backgroundColor, color: getComputedStyle(b).color,
+             badge: b ? { text: b.textContent, label: b.getAttribute("aria-label"), rect: R(b), bg: getComputedStyle(b).backgroundColor, color: getComputedStyle(b).color,
                           radius: getComputedStyle(b).borderRadius } : null };
   };
   const o = {}; for (const [k, id] of Object.entries(ids)) o[k] = one(id); return o;
 }, cfg.ids);
 for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(150); out.badge[t] = await readBadge(page); }
+// (item 10, the second contributor on PR 2017) a probe: a bare `.tab-dot retrying` span's COMPUTED background is the
+// retrying amber token, so the left-dot amber is exercised without seeding a hard-to-mint retrying session.
+out.retryProbe = {};
+for (const t of themes) { await setTheme(page, t); await page.waitForTimeout(100);
+  out.retryProbe[t] = await page.evaluate(() => { const p = document.createElement("span"); p.className = "tab-dot retrying"; document.body.appendChild(p); const bg = getComputedStyle(p).backgroundColor; p.remove(); return bg; }); }
 
 const geomEval = (id) => { const t = document.querySelector('#tabs .tab[data-id="' + id + '"]'); const lbl = t.querySelector(".tab-label, .tab-name, .tab-title"); return { w: t.getBoundingClientRect().width, labelLeft: lbl ? lbl.getBoundingClientRect().left : null }; };
 await setTheme(page, "dark"); await page.waitForTimeout(120);
@@ -147,6 +154,7 @@ await phone.waitForFunction((id) => { const t = document.querySelector('#tabs .t
 await phone.tap("#mcur");
 await phone.waitForSelector("#mlist.open", { timeout: 10000 }).catch(() => errors.push("phone: the picker never opened"));
 await phone.waitForFunction((id) => !!document.querySelector('#mlist .mrow[data-id="' + id + '"] .m-badge'), cfg.few, { timeout: 10000 }).catch(() => errors.push("phone: a needs-you row never took the .m-badge"));
+await phone.waitForFunction((id) => !!document.querySelector('#mlist .mrow[data-id="' + id + '"] .m-badge'), cfg.over, { timeout: 10000 }).catch(() => errors.push("phone: the over-99 row never took the .m-badge"));
 await phone.tap('#mlist .mrow[data-id="' + cfg.few + '"]');   // make a needs-you session the current one
 await phone.waitForFunction(() => { const c = document.getElementById("mcur"); return !!c && !!c.querySelector(".m-badge"); }, null, { timeout: 10000 }).catch(() => errors.push("phone: #mcur never took the .m-badge after picking a needs-you session"));
 await phone.tap("#mcur");
@@ -156,8 +164,17 @@ for (const t of themes) {
   out.phone[t] = await phone.evaluate((ids) => {
     const cur = document.getElementById("mcur"); const cb = cur ? cur.querySelector(".m-badge") : null;
     const row = document.querySelector('#mlist .mrow[data-id="' + ids.few + '"]'); const rb = row ? row.querySelector(".m-badge") : null;
+    const rowOne = document.querySelector('#mlist .mrow[data-id="' + ids.one + '"]'); const rbOne = rowOne ? rowOne.querySelector(".m-badge") : null;
+    const rowOver = document.querySelector('#mlist .mrow[data-id="' + ids.over + '"]'); const rbOver = rowOver ? rowOver.querySelector(".m-badge") : null;
+    const R = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width }; };
+    const cv = cur ? cur.querySelector(".cv") : null; const mclose = row ? row.querySelector(".mclose") : null;   // item 2: the chevron and the close must sit to the RIGHT of the pill, never under it
     return { curBadge: cb ? cb.textContent : null, curBg: cb ? getComputedStyle(cb).backgroundColor : null, curAsk: !!cur && cur.classList.contains("ask"),
-             rowBadge: rb ? rb.textContent : null, rowBg: rb ? getComputedStyle(rb).backgroundColor : null, rowAsk: !!row && row.classList.contains("ask") };
+             curRole: cb ? cb.getAttribute("role") : null, curLabel: cb ? cb.getAttribute("aria-label") : null,
+             rowBadge: rb ? rb.textContent : null, rowBg: rb ? getComputedStyle(rb).backgroundColor : null, rowAsk: !!row && row.classList.contains("ask"),
+             rowRole: rb ? rb.getAttribute("role") : null, rowLabel: rb ? rb.getAttribute("aria-label") : null,
+             oneRowBadge: rbOne ? rbOne.textContent : null, oneRowLabel: rbOne ? rbOne.getAttribute("aria-label") : null,
+             overRowBadge: rbOver ? rbOver.textContent : null, overRowLabel: rbOver ? rbOver.getAttribute("aria-label") : null,
+             curPill: R(cb), curChevron: R(cv), rowPill: R(rb), rowClose: R(mclose) };
   }, cfg.ids);
 }
 // ── (M) the count moves LIVE without a reload (plans/tab-state-badge.md, test 7): a needs-you card added climbs the
@@ -263,7 +280,7 @@ class TabBadgeServed(unittest.TestCase):
             ids = {name: SIDS[name] for name, _ in SESS}
             with open(cfg, "w") as f:
                 json.dump({"chat": base + "/chat?token=" + self.token, "token": self.token,
-                           "one": SIDS["one"], "few": SIDS["few"], "many": SIDS["many"], "calm": SIDS["calm"], "ids": ids,
+                           "one": SIDS["one"], "few": SIDS["few"], "many": SIDS["many"], "calm": SIDS["calm"], "over": SIDS["over"], "ids": ids,
                            "oneGoalPath": os.path.join(self.lab, "xdg", "romp", "goals", SIDS["one"] + ".json"),
                            "oneStore1": json.dumps(blocked_store(SIDS["one"], 1, self.t0)),
                            "oneStore2": json.dumps(blocked_store(SIDS["one"], 2, self.t0))}, f)
@@ -336,6 +353,32 @@ class TabBadgeServed(unittest.TestCase):
             self.assertEqual(p["curBadge"], "3", "%s: the current-session chip wears the .m-badge with its count: %r" % (t, p))
             self.assertEqual(p["curBg"], TOKEN[t], "%s: the chip's dot is the Needs-you token: %r" % (t, p))
             self.assertFalse(p["curAsk"], "%s: the chip's dashed .ask border gave way to the dot" % t)
+            self.assertEqual(p["curRole"], "img", "%s: the chip's dot is an image to a screen reader" % t)
+            self.assertEqual(p["rowRole"], "img", "%s: the row's dot is an image" % t)
+            self.assertEqual(p["curLabel"], "3 things need you", "%s: the chip dot's aria-label carries the full phrase: %r" % (t, p))
+            self.assertEqual(p["rowLabel"], "3 things need you", "%s: the row dot's aria-label carries the full phrase: %r" % (t, p))
+            self.assertEqual(p["oneRowBadge"], "1", "%s: a one-card session's row shows the count 1: %r" % (t, p))
+            self.assertEqual(p["oneRowLabel"], "1 thing needs you", "%s: ...and its aria-label is the SINGULAR phrase (the arm no test executed before): %r" % (t, p))
+            # item 2 (the second contributor, PR 2017): the pill RESERVES room, so the chevron and the close x sit to its
+            # RIGHT, never stacked over it; their x-ranges are disjoint from the pill's (red at the merge, where it was absolute).
+            self.assertIsNotNone(p["curChevron"], "%s: the chip has a chevron" % t)
+            self.assertLessEqual(p["curPill"]["right"], p["curChevron"]["left"] + 0.5, "%s: the chip's count pill is left of the chevron, not over it: %r" % (t, p))
+            self.assertIsNotNone(p["rowClose"], "%s: the row has a close x" % t)
+            self.assertLessEqual(p["rowPill"]["right"], p["rowClose"]["left"] + 0.5, "%s: the row's count pill is left of the close x, not over it: %r" % (t, p))
+
+    def test_above_99_the_phone_announces_the_exact_count_not_the_capped_text_equal_to_the_desktop(self):
+        # item 1 (PR 2023 review): the phone scrapes the desktop dot's aria-label (uncapped), not its capped textContent,
+        # so a session with more than 99 cards announces the exact number on the phone, equal to the desktop label, even
+        # though both visible dots read "99+".
+        r = self._result()
+        for t in ("dark", "light"):
+            desk = r["badge"][t]["over"]["badge"]
+            self.assertEqual(desk["text"], "99+", "%s: the desktop dot's visible text caps at 99+: %r" % (t, desk))
+            self.assertEqual(desk["label"], "120 things need you", "%s: ...but its aria-label carries the exact count: %r" % (t, desk))
+            p = r["phone"][t]
+            self.assertEqual(p["overRowBadge"], "99+", "%s: the phone row's visible dot caps at 99+ too: %r" % (t, p))
+            self.assertEqual(p["overRowLabel"], "120 things need you", "%s: ...and its aria-label is the EXACT count, never '99+ things need you': %r" % (t, p))
+            self.assertEqual(p["overRowLabel"], desk["label"], "%s: the phone and desktop labels are equal (the phone reads the desktop's): %r vs %r" % (t, p["overRowLabel"], desk["label"]))
 
 
     def test_the_count_moves_live_when_a_needs_you_card_is_added_and_cleared_without_a_reload(self):
@@ -343,8 +386,17 @@ class TabBadgeServed(unittest.TestCase):
         self.assertEqual(r["errors"], [], "no page error and every live wait resolved")
         live = r["live"]
         self.assertEqual(live["start"], "1", "the needs-you tab starts at one card")
-        self.assertEqual(live["added"], "2", "a second needs-you card climbs the number to 2 on the open page, no reload (the count's own chat-signature component and compare-and-wake)")
-        self.assertEqual(live["cleared"], "1", "clearing the card drops the number back to 1, live")
+        # this leg SHOWS only that the number moves on the open page with no reload; it cannot tell the chat-signature
+        # component from the compare-and-wake. Those two mechanisms are pinned separately in test_kernel.py
+        # (test_the_needs_you_count_wakes_the_pusher_on_a_count_only_change, the wake) and test_chat_build_sig_inputs.py
+        # (test_the_needs_you_count_keys_the_signature_so_a_stale_badge_never_survives_a_judge_pass, the signature differential).
+        self.assertEqual(live["added"], "2", "a second needs-you card climbs the number to 2 on the open page, no reload")
+        self.assertEqual(live["cleared"], "1", "clearing the card drops the number back to 1, live, no reload")
+
+    def test_the_retrying_left_dot_paints_the_amber_token(self):
+        r = self._result()
+        for t in ("dark", "light"):
+            self.assertEqual(r["retryProbe"][t], AMBER[t], "%s: a .tab-dot.retrying span (the retrying left dot under badge mode) computes to the amber token" % t)
 
 
 if __name__ == "__main__":

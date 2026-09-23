@@ -70,6 +70,9 @@ const PAIRS: Array<[string, string, number]> = [
   ["--cmt-hl-outline", "--bg", 3],   // the comment notch (the rail tick's fill): a LINE, so it must read against the page (T310)
   ["--st-awaiting-bg", "--bg", 3],   // the unread passage's dashed box and ring, and the tick's halo (2026-09-12): a line in the needs-you red
   ["--accent-fg", "--accent", 3],
+  ["--accent-ink", "--box-bg", 4.5],   // accent-coloured LABELS on the Needs you box's wash (the second contributor's post-merge note on PR 2014: the accent read 4.07:1 there)
+  ["--deny", "--box-bg", 4.5],         // the deny button's label on the wash (the same note: #e5484d read 3.08:1 on the light wash)
+  ["--deny-fg", "--deny", 4.5],        // the deny button's hover text on its own fill (the manager's read of PR 2039: white read 3.19:1 on the dark fill)
   ["--warn", "--bg", 3],
   ["--err", "--bg", 3],
   ["--green", "--bg", 3],
@@ -85,7 +88,7 @@ const PAIRS: Array<[string, string, number]> = [
   ["--st-ready-fg", "--st-ready-bg", 3],
   ["--st-blocked-fg", "--st-blocked-bg", 3],
   ["--st-retrying-fg", "--st-retrying-bg", 3],       // 2026-09-08: the retrying amber tokenised (#e67e22/#2a1500 dark, #9C4A0C/#fff light)
-  ["--st-needs-fg", "--st-needs-bg", 3],             // 2026-09-20: the Needs you magenta (#d946ef/#2a0a2a dark, #a21caf/#fff light; plans/needs-you.md)
+  ["--st-needs-fg", "--st-needs-bg", 4.5],           // 2026-09-20: the Needs you magenta (#d946ef/#2a0a2a dark, #a21caf/#fff light; plans/needs-you.md). 4.5 (text) not 3: the fg IS the numbered badge's digit ink (5.17 dark, 6.32 light), so the token pair carries the floor the digit-ink parse pins (PR 2017 review)
   ["--st-needs-bg", "--bg", 3],                      // …and the Needs you RING is a line on the page (the tab's dashed outline, the folded header's pip)
   // (--st-compacting-fg on --st-compacting-bg is deliberately NOT paired: the dark teal + white pairing predates
   // this file and sits at 2.49:1, and decision 3 of the 2026-09-08 notice audit keeps dark byte-identical; the
@@ -239,6 +242,11 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     for (const [g, ground] of [["hovered tab", hover], ["selected tab", active], ["Needs you box wash", box]] as const) {
       assert.ok(contrast(rings.ask, ground) >= 3, `${name}: the Needs you ring on the ${g} = ${contrast(rings.ask, ground).toFixed(2)} < 3`);
     }
+    // the RETRYING amber is a filled LEFT DOT under badge mode (plans/tab-state-badge.md), so it sits on the tab face like
+    // the Needs-you dot: 3:1 (large chrome, not text) on the page, the hovered tab and the selected tab's fill, both themes.
+    for (const [g, ground] of [["page", page], ["hovered tab", hover], ["selected tab", active]] as const) {
+      assert.ok(contrast(rings.retrying, ground) >= 3, `${name}: the retrying amber dot on the ${g} = ${contrast(rings.retrying, ground).toFixed(2)} < 3`);
+    }
     // the box's ok button rests in a border of the accent at 90% over the wash (color-mix in srgb): a non-text edge, so the 3:1 floor on its ground
     // in both themes (the round-fourteen verifier of PR 1967 measured 60% at 2.33:1 on the light theme)
     const accent = rgbOf(theme.get("--accent")!, page)!;
@@ -247,13 +255,39 @@ test("the ring hues stay apart in BOTH themes, every pair: rings against rings f
     const share = Number(shareM![1]) / 100;   // the share the sheet carries, mixed as the sheet mixes it (the first contributor's note on PR 2014: a fixed 0.9 beside a literal pin let a lockstep re-ink pass)
     const okBorder = [0, 1, 2].map((i) => Math.round(accent[i] * share + box[i] * (1 - share))) as [number, number, number];
     assert.ok(contrast(okBorder, box) >= 3, `${name}: the ok button's resting border (the accent at ${shareM![1]}%) on the box wash = ${contrast(okBorder, box).toFixed(2)} < 3`);
+    // the deny button's resting border: the per-theme deny token at the share the sheet carries, mixed as the sheet mixes it, 3:1 on the wash in
+    // both themes (the second contributor's post-merge note on PR 2014: rgba(229, 72, 77, 0.6) read 2.20:1 dark and 2.03:1 light)
+    const deny = rgbOf(theme.get("--deny")!, page)!;
+    const denyM = css.match(/\.ntc-btn\.ntc-deny \{[^}]*color-mix\(in srgb, var\(--deny\) (\d+)%, transparent\)/);
+    assert.ok(denyM, "the deny button's border is the deny token's color-mix over its ground");
+    const denyShare = Number(denyM![1]) / 100;
+    const denyBorder = [0, 1, 2].map((i) => Math.round(deny[i] * denyShare + box[i] * (1 - denyShare))) as [number, number, number];
+    assert.ok(contrast(denyBorder, box) >= 3, `${name}: the deny button's resting border (the deny token at ${denyM![1]}%) on the box wash = ${contrast(denyBorder, box).toFixed(2)} < 3`);
+    // the deny button's HOVER text on its own fill: text, so 4.5:1, read from the hover rule as the sheet inks it (a token or a literal; the manager's
+    // read of PR 2039: a white literal read 3.19:1 on the dark fill, a regression stated in the body and not to be shipped)
+    const hoverM = css.match(/\.ntc-btn\.ntc-deny:hover:not\(:disabled\) \{ color: ([^;]+); background: var\(--deny\);/);
+    assert.ok(hoverM, "the deny button's hover rule inks its text and fills with the deny token");
+    const inkV = hoverM![1].trim(); const inkTok = inkV.match(/^var\((--[a-z-]+)\)$/);
+    const expand = (v: string) => v.replace(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i, "#$1$1$2$2$3$3");   // a three-digit literal (the old #fff) measures too
+    const ink = inkTok ? rgbOf(expand(theme.get(inkTok[1]) || ""), deny) : rgbOf(expand(inkV), deny);
+    assert.ok(ink, `${name}: the deny hover ink resolves (${inkV})`);
+    assert.ok(contrast(ink!, deny) >= 4.5, `${name}: the deny button's hover text (${inkV}) on its fill = ${contrast(ink!, deny).toFixed(2)} < 4.5`);
     // the state badge's digit is 9px bold TEXT (plans/tab-state-badge.md), so the 4.5:1 text floor, NOT the 3:1 chrome
     // floor. Black on the dark magenta reads ~6.07:1 and clears; on the lighter light-theme magenta (#a21caf) black is
     // only 3.32:1, short of 4.5, so the light theme inks the digit in the state's own foreground token (--st-needs-fg,
     // white: ~6.32:1). The CSS is `color:#000` with a `body.theme-light` override to var(--st-needs-fg). The user chose
     // black in the dark theme; this is the user's call to veto (the manager relayed the light-theme swap, 2026-09-22).
-    const digit: [number, number, number] = name === "light" ? tok("--st-needs-fg") : [0, 0, 0];
-    assert.ok(contrast(digit, rings.ask) >= 4.5, `${name}: the badge's digit ink on the magenta = ${contrast(digit, rings.ask).toFixed(2)} < 4.5`);
+    // PARSE the ink from the sheet, never restate the constant (the second contributor on PR 2017): the base rule's
+    // color (a 3-digit hex, expanded), and for light the `body.theme-light` override resolved by cascade through the token.
+    const colorIn = (re: RegExp) => { const m = css.match(re); const c = m && m[1].match(/color:\s*([^;]+);/); return c ? c[1].trim() : ""; };
+    const rawInk = name === "light"
+      ? colorIn(/body\.theme-light \.tab-badge:not\(:empty\) \{([^}]*)\}/)
+      : colorIn(/\n\.tab-badge:not\(:empty\) \{([^}]*)\}/);
+    const varInk = rawInk.match(/^var\((--[a-z0-9-]+)\)$/i);
+    const hex3 = /^#[0-9a-f]{3}$/i.test(rawInk) ? "#" + rawInk.slice(1).split("").map((c) => c + c).join("") : rawInk;
+    const digit = varInk ? tok(varInk[1]) : rgbOf(hex3, page)!;   // the token by cascade, or the (expanded) literal
+    assert.ok(digit, `${name}: the badge digit ink parses from the sheet (read ${JSON.stringify(rawInk)})`);
+    assert.ok(contrast(digit, rings.ask) >= 4.5, `${name}: the badge's digit ink ${JSON.stringify(rawInk)} on the magenta = ${contrast(digit, rings.ask).toFixed(2)} < 4.5`);
   }
   // the light value itself, so a re-ink is a deliberate change here and in feed.css (tab-rings.test.ts pins the two sheets equal)
   assert.match(block(css, "body.theme-light {"), /--st-needs-bg: #a21caf; --st-needs-fg: #ffffff;/);

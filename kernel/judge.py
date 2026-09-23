@@ -1072,12 +1072,19 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
              "unroll-heal" (a top left the rolled-up state with settle rows and no done in its diary; a romp
              reopen row ended that settled episode so the node can be judged again — _heal_settle_without_done),
              "gate-stamp" (the evidence gate could not write a tier's stamp after a complete run; the run
-             counts bypassed and the session stays due: _gated), "states-unreadable", "cleared-unreadable",
+             counts bypassed and the session stays due: _gated), "clears-log" (a clears-log write refused under a
+             gesture, the mute or the episode boundary: one row per refusal, kernel.py _clears_log_fault_note),
+             "owed-note" (the note of owed cards beside the log could not be written or read: one row per gesture,
+             one per episode on the feed's once-per-life read; kernel.py _owed_fault_note), "states-unreadable", "cleared-unreadable",
              "stall-unreadable", "captions-unreadable", "episodes-unreadable", "marker-unreadable",
              "archive-unreadable", "reg-unreadable" (the eight side-file kinds: a file the evidence gate
              stat'd or read by value into a tier's signature exists and could not be read or parsed: the
              gate runs the stage without a stamp, or the stage's own read marks the run incomplete, one
-             row per failure episode: _read_failed)
+             row per failure episode: _read_failed; "cleared-unreadable" is also the kernel's own reader's
+             kind for the clears log, the Undo reading a present log that cannot be read or is not text as
+             nothing to bring back and the feed build holding the last landed set meanwhile, served by
+             kernel.py _cleared_ids_display, with one refused bell row per episode, one row per fault episode
+             ended by a landed read, an absent log or a different fault: kernel.py _cleared_ids_read)
       note   the evidence — reply tail, error message, exception name, or the give-up scope + re-arm
              event. Callers must pass it; an empty note means the caller has nothing at all to show.
       goal   the node id (or list of node ids) the judge was ruling on, when one exists — the feed's
@@ -4979,7 +4986,10 @@ def _or_fault(fsid, loader):
     itself there, load_goals_shared for the pusher's read-only sites, and a pass's shared per-store read
     elsewhere (run_propagate's _get, so a recipient read through the boundary is still the one read that
     pass takes of the store). Same episode table, same `store-unreadable` row once per fault episode, same
-    `(store, None)` / `(None, exc)` answer."""
+    `(store, None)` / `(None, exc)` answer. OSError ONLY, the contract every reader boundary keeps (tests/test_backref_memo.py): a
+    ValueError out of a loader is a bug, not a read fault, and reaches the caller's own catch; a widening to ValueError here (round three
+    of PR 2025, reverted by its verifier) swallowed such a bug into a misattributing store-unreadable row, and was dead code for the road it
+    was added for, since the two clears-log readers answer empty on undecodable bytes themselves."""
     try:
         store = loader(fsid)
     except OSError as e:
@@ -10251,22 +10261,37 @@ def _cleared_context(fsid, store, cap=6):
     recency comes from cleared.jsonl (a node's mt is its last WORK, not the clear); nodes resolve from the
     live store (flagged, pre-sweep) or the archive (post-sweep). Strictly read-only: the archive stays
     sealed — nothing here regroups, revives, or re-mints archived nodes."""
+    # a present log that cannot be read or is not text answers no context and is said (_read_failed, cleared-unreadable, one row per episode
+    # shared with _view_cleared's read of the same file), where a bare pass hid it (the second contributor's post-merge review of PR 2021)
     times = {}
+    path_s = str(STATE / "cleared.jsonl")
     try:
-        for line in (STATE / "cleared.jsonl").read_text().splitlines():
+        for line in Path(path_s).read_text().splitlines():
             try:
                 o = json.loads(line)
             except Exception:
                 continue
+            if not isinstance(o, dict):
+                continue                               # a row that is not an object, or whose id is not a string: skipped per row (the second contributor's post-merge review of PR 2021)
             iid = o.get("id")
-            if not iid:
+            if not isinstance(iid, str) or not iid:
                 continue
+            t = o.get("t", 0)
+            if isinstance(t, bool) or not isinstance(t, (int, float)):
+                continue                               # a stamp that is not a number: skipped (every malformed row, an undo row too, not the max and the sort alone; the second contributor's post-merge comment on PR 2032), as the kernel's reader skips it (the sort below would raise on it); an undo row stamped so is skipped too, its clear standing (2026-09-22, the first contributor's round one on PR 2032)
             if o.get("op") == "undo":
                 times.pop(iid, None)                   # undone → not cleared context (its card is back)
             else:
-                times[iid] = o.get("t", 0)
-    except OSError:
-        pass
+                times[iid] = t
+    except FileNotFoundError:
+        _read_ok(path_s)                               # absent: nothing cleared, a real state
+    except (OSError, ValueError) as e:
+        # a present log that cannot be read, or whose bytes are not text: the cleared-unreadable arm _view_cleared takes for the same file (one
+        # episode per file across the two readers), the stage marked incomplete, where a bare pass hid the fault and the decode error raised out
+        # of the planner's pass (the second contributor's post-merge review of PR 2021)
+        _read_failed(path_s, "cleared-unreadable", fsid, e)
+    else:
+        _read_ok(path_s)
     mine = [iid for iid in times if iid.startswith(fsid + ":")]
     if not mine:
         return ""
@@ -12653,8 +12678,9 @@ def _view_cleared():
     mute-seal paths and the judge's echo clears all open it "a"), so no two versions share a size; the one
     write an identity memo cannot see, a rewrite in place of equal size within one mtime tick, is a pattern
     nothing uses on this file. Stat before read, so a row landing between the two costs one extra replay,
-    never a stale answer. A file that exists and cannot be read answers empty, is not memoized, marks the
-    running stage incomplete and logs a `cleared-unreadable` row (_read_failed): the evidence gate stat'd
+    never a stale answer. A file that exists and cannot be read, or whose bytes are not text (the kernel's own reader
+    reads the same bytes as nothing cleared and files the same kind; the second contributor's post-merge review of PR 2021), answers empty, is
+    not memoized, marks the running stage incomplete and logs a `cleared-unreadable` row (_read_failed): the evidence gate stat'd
     this file into the signature, and a stamp over an answer that never read it would skip the session
     until the file moved. Returns a frozenset: every caller tests membership, and a mutation of the shared
     memo would be a silent corruption, so it raises instead."""
@@ -12676,7 +12702,8 @@ def _view_cleared():
     except FileNotFoundError:
         _read_ok(path_s)
         return frozenset()                         # gone between the stat and the read: absent is a real state
-    except OSError as e:
+    except (OSError, ValueError) as e:                # a file that cannot be read, or one whose bytes are not text (UnicodeDecodeError): the kernel's reader reads the
+        #                                              same bytes as nothing cleared, and this raised out of every pass instead (the second contributor's post-merge review of PR 2021)
         _read_failed(path_s, "cleared-unreadable", getattr(_judge_ctx, "fsid", ""), e)
         return frozenset()
     _read_ok(path_s)
@@ -12691,16 +12718,23 @@ _VIEW_CLEARED_LOCK = threading.Lock()
 
 def _view_cleared_scan(path):
     """The unmemoized replay behind _view_cleared over the log at `path`: a 'clear' row adds its id, an
-    'undo' row removes it, newest wins. Raises OSError when the file cannot be read."""
+    'undo' row removes it, newest wins. Raises OSError when the file cannot be read and ValueError (UnicodeDecodeError) when its bytes are
+    not text; a row that is not an object, or whose id is not a string, is skipped like a row that is not JSON (a `[]` row raised
+    AttributeError from the id lookup; the second contributor's post-merge review of PR 2021)."""
     cur = set()
     for line in Path(path).read_text().splitlines():
         try:
             o = json.loads(line)
         except Exception:
             continue
-        iid = o.get("id")
-        if not iid:
+        if not isinstance(o, dict):
             continue
+        iid = o.get("id")
+        if not isinstance(iid, str) or not iid:
+            continue
+        t = o.get("t", 0)
+        if isinstance(t, bool) or not isinstance(t, (int, float)):
+            continue                                   # a stamp that is not a number: skipped (every malformed row, an undo row too, not the max and the sort alone; the second contributor's post-merge comment on PR 2032) like an unparseable line, as the kernel's reader skips it (the second contributor's post-merge note on PR 2025); an undo row stamped so is skipped too, its clear standing (2026-09-22, the first contributor's round one on PR 2032)
         cur.discard(iid) if o.get("op") == "undo" else cur.add(iid)
     return cur
 

@@ -113,6 +113,13 @@ body.scheme-solarized-dark {
      ONE exception (the user 2026-09-12, T394): the background box's command rows wear it as their KIND hue
      (--kind-command, below), a kind and not a status; the status still overrides it for failed and completed rows. */
   --accent: #9cd2ff; --accent-fg: #0c1a2e;
+  --accent-ink: #9cd2ff;   /* accent-coloured LABELS (the Needs you box's ok button): the accent itself here (9.54:1 on the box wash); the light block
+                              inks its own darker clay, since the light accent reads 4.07:1 as text on the cream wash, under the 4.5 text floor
+                              (the second contributor's post-merge note on PR 2014); the accent stays the one clay, this is its text form */
+  --deny: #ee6266;   /* the destructive DENY of the Needs you box and the held-mail dialog, per theme: text at 4.80:1 on the dark wash, its border a
+                        color-mix at the share theme-parity reads back (the old rgba(229, 72, 77, 0.6) border read 2.20:1 dark, 2.03:1 light); the light
+                        block inks the hard stop's red (the same note) */
+  --deny-fg: #000000;   /* the filled deny's text: black on the dark deny reads 6.57:1 (white read 3.19:1); the light block inks white on its darker red */
   --kind-command: var(--accent);   /* a command row's hue in the background box (T394): the accent blue the timeline lane icons wear;
                                       the light block sets its own, its accent being the burnt orange that would read as an error */
   /* THE faint accent wash — the one alpha behind every selected/hovered accent chrome (0.10 and 0.14
@@ -281,6 +288,9 @@ body.theme-light {
                                                        a cool one's distance from the ground (T337c, the review of 2026-09-11) */
   --err: #B02A1C;
   --accent: #C2410C; --accent-fg: #FFF8F2;
+  --accent-ink: #A83808;   /* accent-coloured labels on the cream: 5.10:1 on the box wash where the accent reads 4.07:1 (the 4.5 text floor); the accent stays #C2410C */
+  --deny: #B02A1C;   /* the deny label and border on the cream: the hard stop's red, 5.17:1 as text on the box wash (the old #e5484d read 3.08:1) */
+  --deny-fg: #ffffff;   /* the filled deny's text on the cream theme's red: 6.57:1 */
   --kind-command: #356890;   /* the dark accent's hue and chroma at OKLCH lightness 0.50 (T394): 4.67:1 as text on the cream box */
   --accent-wash: rgba(194, 65, 12, 0.10);
   --chip-wash: rgba(0, 0, 0, 0.07);   /* a hovered tag chip's ground (T343): on a light card the visible step is darker, and it stays distinct from the card's surface */
@@ -606,7 +616,7 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 /* the STATE BADGE: a contained top-right dot for the Needs-you state under badge mode, drawn on top and moving nothing
    (.tab is position:relative already), in the magenta token the Needs-you ring reads. It carries a count later. */
 .tab-badge { position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); pointer-events: none; z-index: 3; }
-/* the numbered form: a black count on the magenta, the dot sized for the digits, widening into a short pill for two or
+/* the numbered form: a count on the magenta (black on the dark theme, the --st-needs-fg token on the light), the dot sized for the digits, widening into a short pill for two or
    more (plans/tab-state-badge.md, the user's pick). Empty (an older kernel with no count) stays the bare dot above. */
 .tab-badge:not(:empty) { width: auto; min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #000; font-weight: 700; font-size: 9px; line-height: 1; }
 /* the digit is 9px bold TEXT, so the 4.5:1 floor: black clears on the dark magenta (~6.07:1); on the lighter light-theme magenta (#a21caf) black is 3.32:1, short, so the state's own light-theme foreground (white) rides there (~6.32:1). The user chose black in dark; theme-parity.test.ts pins 4.5:1 in BOTH themes (plans/tab-state-badge.md). */
@@ -1114,14 +1124,14 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .ntc-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .ntc-btn { font: inherit; font-size: 0.86em; cursor: pointer; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--box-border); background: transparent; color: var(--fg); }
 .ntc-btn:disabled { opacity: 0.55; cursor: default; }
-.ntc-btn.ntc-ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 90%, transparent); }   /* the accent's own 90%: the dark accent's rgba drew a blue border round orange text on the light theme (the second contributor's review); 60% read 2.33:1 on the light wash, under the 3:1 non-text floor (the round-fourteen verifier) */
+.ntc-btn.ntc-ok { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 90%, transparent); }   /* the accent's own 90%: the dark accent's rgba drew a blue border round orange text on the light theme (the second contributor's review); 60% read 2.33:1 on the light wash, under the 3:1 non-text floor (the round-fourteen verifier) */
 .ntc-btn.ntc-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
-.ntc-btn.ntc-deny { color: #e5484d; border-color: rgba(229, 72, 77, 0.6); }
-.ntc-btn.ntc-deny:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
+.ntc-btn.ntc-deny { color: var(--deny); border-color: color-mix(in srgb, var(--deny) 90%, transparent); }   /* the deny token per theme at the share theme-parity reads back: 4.15:1 dark, 4.49:1 light on the wash, where rgba(229, 72, 77, 0.6) sat under the 3:1 floor in both (the second contributor's post-merge note on PR 2014) */
+.ntc-btn.ntc-deny:hover:not(:disabled) { color: var(--deny-fg); background: var(--deny); border-color: var(--deny); }   /* the text per theme on the fill: 4.5 (theme-parity pairs it) */
 .ntc-btn.ntc-back { border-color: transparent; opacity: 0.7; }
 .ntc-btn.ntc-clear { opacity: 0.8; }   /* a goal row's Clear, and the one way to act on a notice with no stored action */
 .ntc-note { font: inherit; font-size: 0.86em; min-height: 44px; resize: vertical; border: 1px solid var(--box-border); border-radius: 6px; background: transparent; color: var(--fg); padding: 4px 6px; }
-.ntc-err { font-size: 0.82em; color: #e5484d; }
+.ntc-err { font-size: 0.82em; color: var(--deny); }   /* the row's refusal line: the per-theme destructive red, 4.80:1 dark and 5.17:1 light on the wash (the literal read 3.92:1 and 3.08:1) */
 .ntc-attach .fask-nimg { display: block; max-width: 100%; max-height: 160px; border-radius: 6px; }   /* the pinned picture, the feed card's face */
 .ntc-attach .fask-nfile { font-size: 0.86em; opacity: 0.85; }
 /* level 1: the header BAR at the top of the box ("Awaiting 3 · 2 agents · 1 command" idle, "In the background ·
@@ -4616,6 +4626,10 @@ body.filebrowse-open { overflow: hidden; }
    (kernel.py _CHAT_MOBILE_CSS) the bar holds the session picker, not the strip, so on a phone only the panel
    tightens. */
 body.dense-chrome .tab { gap: 3px; padding: 3px 5px; font-size: 0.86em; }              /* 4px; 6px 7px; 0.92em */
+/* the Needs-you count pill on a dense ~25px tab sits a hair smaller and higher into the corner, so the hover-lifted
+   close glyph (z 4, above the badge) overpaints less of the digits (the second contributor on PR 2017, 2026-09-22). */
+body.dense-chrome .tab-badge { top: 1px; right: 1px; }                                 /* 2px; 2px */
+body.dense-chrome .tab-badge:not(:empty) { min-width: 12px; height: 12px; border-radius: 6px; }   /* 14px; 14px; 7px */
 /* a federated tab's host prefix is a 0.86em child of the label (host-prefix.ts hostNameNodes), so under the 0.86em tab
    it would compound to 9.6px (0.86 x 0.86 x 13), under the 10px floor; 0.92em (on the ladder) puts it back at the
    default's rendered 10.3px. The tab's other em child, .tab-close at 1.1em, stays above the floor on its own. */

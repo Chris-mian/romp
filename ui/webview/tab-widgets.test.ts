@@ -175,7 +175,7 @@ test("source: the strip and the gear draw from this ONE module; the dot rule has
   assert.equal((SRC.match(/tabDotClass\(status\.state\)/g) || []).length, 1, "the dot slot's one site (tab-dot-slot.test.ts's rule)");
   assert.match(SRC, /^export function tabCtxGauge\(ctxStr: string, ctxColor\?: number\[\]\): HTMLElement \{/m, "the gauge builder lives here now (the ctx widget calls it)");
   const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
-  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the rings compose from here too (2026-09-14); badge mode via applyTabBadgeMode (the state badge)");
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, applyTabBadgeMode, needsYouPhrase, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the rings compose from here too (2026-09-14); badge mode via applyTabBadgeMode (the state badge)");
   assert.doesNotMatch(RENDER, /^function tabCtxGauge\(/m, "one builder, not two");
   assert.equal((RENDER.match(/const dotCls = tabDotClass\(st\);/g) || []).length, 0, "render.ts no longer appends the dot itself");
   const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
@@ -377,7 +377,8 @@ test("state badge: the Needs-you dot is a black numbered magenta dot, per state 
     assert.ok(dot, n + ": a Needs-you dot is drawn");
     assert.deepEqual(classes(dot!), ["tab-badge", "badge-needs"], n + ": the dot's classes");
     assert.equal(dot!.textContent, text, n + ": the black number");
-    assert.equal(dot!.title, title, n + ": the hover count");
+    assert.equal(dot!.attrs["role"], "img", n + ": the dot is an image to a screen reader (not a bare digit)");
+    assert.equal(dot!.attrs["aria-label"], title, n + ": the count phrase is the aria-label (the native title is inert under pointer-events:none)");
     assert.equal(badgeOf(t)!.textContent, text, n + ": the one dot lives on the tab");
     assert.deepEqual(classes(t).filter((c) => c.startsWith("ring-")), [], n + ": the run-state ring gave way to the dot");
     assert.deepEqual(classes(leftDot(t)), ["tab-dot", "none"], n + ": the left status dot is untouched (Needs you rides the run state, it is not one)");
@@ -386,7 +387,7 @@ test("state badge: the Needs-you dot is a black numbered magenta dot, per state 
     const t = badgeTab(); const dot = W.applyTabBadgeMode(t as unknown as HTMLElement, "s", st, P()) as unknown as El | null;
     assert.ok(dot, JSON.stringify(st) + ": still a dot");
     assert.equal(dot!.textContent, "", JSON.stringify(st) + ": no number, a bare dot (an older kernel, or nothing pending)");
-    assert.equal(dot!.title, "needs you", JSON.stringify(st) + ": the plain title");
+    assert.equal(dot!.attrs["aria-label"], "needs you", JSON.stringify(st) + ": the plain aria-label");
   }
 });
 
@@ -411,6 +412,15 @@ test("state badge: the close glyph outranks the count pill (z 4 > z 3) so a wide
   assert.match(STRIP_CSS, /\.tab:hover \.tab-close, \.tab\.active \.tab-close \{ position: relative; z-index: 4; \}/, "the close glyph rises above the badge on hover and active, so its click target stays clickable over the pill");
 });
 
+test("state badge: a dense-chrome tab shrinks the count pill and tucks it into the corner, its INTENDED smaller footprint pinned by rule text (low, the second contributor PR 2017)", () => {
+  // no served-lab pixel ink measure (RULED, the lean lane stands, the PR 2023 post-merge review): the smaller, corner-tucked
+  // dense pill is the INTENDED effect, pinned by the rule's text so a re-cut cannot silently drop it; whether that
+  // reduces the hover-lifted close's overpaint is not asserted as a measured fact here. dense-chrome-layout.test.ts
+  // covers the dense tab box the pill sits in.
+  assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge \{ top: 1px; right: 1px; \}/, "the dense badge sits higher and tighter into the corner");
+  assert.match(STRIP_CSS, /body\.dense-chrome \.tab-badge:not\(:empty\) \{ min-width: 12px; height: 12px; border-radius: 6px; \}/, "the dense pill is a smaller box (not a smaller digit: the dense block carries no sub-10px font-size), tucked into the corner");
+});
+
 test("state badge: with the Status dot widget off there is no slot, so retrying KEEPS its amber ring rather than vanishing; the re-ink toggles the slot's class, never overwriting it", () => {
   // no ".tab-dot" child (the dot widget is switched off): the amber ring has nowhere to move, so it stays
   const noSlot = mkEl("div"); noSlot.className = "tab ring-retrying";
@@ -424,6 +434,32 @@ test("state badge: with the Status dot widget off there is no slot, so retrying 
   W.applyTabBadgeMode(t as unknown as HTMLElement, "s", { state: "retrying" }, P());
   assert.deepEqual(classes(leftDot(t)), ["tab-dot", "extra-opt", "retrying"], "the slot keeps its other classes: none removed, retrying added, extra-opt untouched");
   assert.deepEqual(classes(t).filter((c) => c.startsWith("ring-")), [], "with a slot, the ring moved to the dot");
+});
+
+test("state badge: the amber left dot beats the 'grey dot when idle' option for both retrying and flagless Blocked, composed through the REAL dot widget (none AND idle come off before retrying)", () => {
+  // both retrying and a flagless Blocked read as tab-retrying, and tabDotClass gives them `tab-dot none`, which the dot
+  // widget's grey option renders as `tab-dot idle`; the idle rule follows the retrying rule at equal specificity, so a
+  // leftover `idle` would dim the amber. applyTabBadgeMode must drop BOTH before adding retrying (the second contributor, PR 2017).
+  for (const st of [{ state: "retrying" }, { state: "blocked" }] as WidgetStatus[]) {
+    const t = mkEl("div"); t.className = "tab ring-retrying";
+    W.composeTabWidgets(t as unknown as HTMLElement, "before", "s", st, P({ opts: { dot: { idle: "grey" } } }));   // the real dot widget, grey option → the slot starts as `tab-dot idle`
+    // RING mode is byte-identical under the grey-idle option: applyTabBadgeMode never runs, so the slot stays the quiet
+    // grey idle dot titled "idle" (not the amber, not "retrying"), exactly as any other hidden-slot state under the option.
+    assert.deepEqual(classes(leftDot(t)), ["tab-dot", "idle"], JSON.stringify(st) + ": under the grey option a none-state slot renders idle");
+    assert.equal(leftDot(t).title, "idle", JSON.stringify(st) + ": ring mode leaves the grey idle dot's title, no amber");
+    W.applyTabBadgeMode(t as unknown as HTMLElement, "s", st, P({ opts: { dot: { idle: "grey" } } }));
+    assert.deepEqual(classes(leftDot(t)), ["tab-dot", "retrying"], JSON.stringify(st) + ": none and idle both come off, so the amber is not painted at idle's dim opacity");
+    // BADGE mode: retrying is titled IFF visibly dotted: here it is both (the amber dot carries its hover title).
+    assert.equal(leftDot(t).title, "retrying an API error on its own", JSON.stringify(st) + ": the amber dot is titled (titled iff visibly dotted, badge mode)");
+  }
+});
+
+test("state badge: the badge call runs AFTER both sides' widgets compose (in appendTabAfterWidgets), so a dot dragged past the name is found (the second contributor, PR 2017)", () => {
+  const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+  const after = RENDER.slice(RENDER.indexOf("function appendTabAfterWidgets"), RENDER.indexOf("\nfunction ", RENDER.indexOf("function appendTabAfterWidgets") + 1));
+  assert.match(after, /composeTabWidgets\(tab, "after"[\s\S]*if \(settings\.tabStateBadge\) applyTabBadgeMode\(tab,/, "appendTabAfterWidgets calls the badge AFTER composing the after-side widgets, so the slot exists wherever the dot sits");
+  const applyStatus = RENDER.slice(RENDER.indexOf("function applyTabStatus"), RENDER.indexOf("function appendTabAfterWidgets"));
+  assert.doesNotMatch(applyStatus, /applyTabBadgeMode/, "applyTabStatus no longer calls the badge: an after-side dot's slot is not composed there yet");
 });
 
 test("state badge: Blocked is untouched, its red ring and the left dot stay, no top-right dot; a blocked-and-needs-you tab keeps the red ring AND wears the dot", () => {
@@ -455,4 +491,11 @@ test("state badge: a no-op when nothing needs you and the tab is not retrying; i
   const badges = t.children.filter((c) => classes(c).includes("tab-badge"));
   assert.equal(badges.length, 1, "one dot after two paints");
   assert.equal(badges[0].textContent, "7", "the count refreshed on the reused tab");
+});
+
+test("needsYouPhrase: the ONE Needs-you phrase for the badge aria-label and a cold tab's title", () => {
+  assert.equal(W.needsYouPhrase(3), "3 things need you");
+  assert.equal(W.needsYouPhrase(1), "1 thing needs you", "the singular");
+  assert.equal(W.needsYouPhrase(0), "needs you", "no count (an older kernel with the needsYou bit): the bare phrase");
+  assert.equal(W.needsYouPhrase(150), "150 things need you", "never capped, so the phone leg and the tooltip agree with the desktop label above 99");
 });

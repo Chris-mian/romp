@@ -75,7 +75,7 @@ var GEAR_HTML =
   // THE TABS (T379, the user 2026-09-12; re-cut T400 into General, Chat, Feed, Sessions, Task tracking, Appearance, Debug): the
   // settings grouped by the surface they belong to, seven pills under the
   // title in the menu vocabulary; every row keeps its id and its key. The tab-widgets gear on the chat strip opens the
-  // Chat tab scrolled to its Tab widgets section (openSettings(tab, section)); the last tab used is remembered per
+  // Chat tab scrolled to its Tab strip section (T415; Tab widgets until then) (openSettings(tab, section)); the last tab used is remembered per
   // browser (romp:settingsTab). RS_TABS is the one list the pills, the panes and selectTab read.
   // the MACHINE SELECTOR (plans/settings-across-machines.md, phase two; the user 2026-09-19): above the tabs, only when more
   // than one kernel is connected. "All kernels" is the synchronized view; a pick scopes the four synchronized rows to the
@@ -241,7 +241,7 @@ var GEAR_HTML =
   '</span></label>' +
   "<label class='rs-row'><input type=checkbox id=rs-statebadge>" +
   '<span><b>State badge instead of the outline ring</b>' +
-  '<span class=rs-sub>A small dot at the tab top-right shows Needs you (magenta, with a count of what needs you), and retrying moves to the left status dot. Blocked keeps its red ring. The dashed rings stay when this is off.</span>' +
+  '<span class=rs-sub>A small dot at the tab top-right shows Needs you (magenta, with a count of what needs you), and retrying moves to the left status dot while the Status dot widget is on. Blocked keeps its red ring. The dashed rings stay when this is off.</span>' +
   '</span></label>' +
   // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own), following the strip's section
   "<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>" +
@@ -653,7 +653,7 @@ function initGear(post, opts) {
   }
   Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); selectTab(b.getAttribute('data-tab')); clearSectionScroll(); }); });   // a pill change starts its pane at the top with no section room left behind (the follow-up's round one, LOW 1)
   // a SECTION of the tab (the user 2026-09-12): an ask may name a section of the tab it opens (data-section on the section's
-  // head; the strip's tab-widgets gear asks for chat / tabwidgets), and the card scrolls so that head sits at its top, under
+  // head; the strip's gear asks for chat / tabstrip (T415; chat / tabwidgets until then)), and the card scrolls so that head sits at its top, under
   // the padding. Looked up in the SHOWN pane only, after the panel is displayed (rects exist only then). Set on the card,
   // the modal's one scroll box, never scrollIntoView, which would scroll the host document too.
   // the one pending section ask (round two, LOW 2): an observer registered for an unlaid-out ask is disconnected on close and
@@ -2194,7 +2194,7 @@ function initGear(post, opts) {
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
     p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; tl.checked = !!s.tabsLocked; if (tsb) tsb.checked = (s.tabStateBadge === true); jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (nb) nb.checked = s.needsBox !== false; if (fsc) fsc.checked = (s.showFilesControl === true); if (pdk) pdk.checked = (s.paneDocking === true); renderRegistryRows(s); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
-  window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
+  window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab strip (T415; Tab widgets until then))
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin
   // document and calls this synchronously): close the modal and say so, unless one of its own dialogs is up
   // (the login card, an open house dropdown), which the document's own Escape handlers close one level at a
