@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -841,28 +842,41 @@ def install_call_retry(jd, errors_path, counters=None, attempts=CALL_ATTEMPTS):
                 f.writelines(lines)
         except OSError:
             pass
+    # This wrapper tags rows by LINE RANGE and rewrites the shared errors ledger whole, and the counters are a plain dict, so
+    # it is correct ONLY when the arm reaches _judge_run_impl one call at a time. It does: run_arm_inprocess calls
+    # _plan_session / _close_turn / _unblock_session directly and in sequence (never the pooled run_plan / run_close /
+    # run_unblock orchestrators), and none of those three fans out to a ThreadPoolExecutor internally. The guard below turns
+    # that construction into an enforced invariant: a concurrent entry raises rather than silently racing the tag-and-count.
+    # If a future path pools these calls, mark rows at WRITE time (a per-call id via a wrapped _log_judge_error) instead.
+    _guard = threading.Lock()
     def _retrying(*a, **k):
-        judge = k.get("judge") if "judge" in k else (a[4] if len(a) > 4 else None)
-        arm = judge not in NON_ARM_JUDGES                                # count only the measured judges; still retry a non-arm call
-        ranges, out = [], None
-        for attempt in range(max(1, attempts)):                          # loop-ok: bounded re-sample of one failed call
-            if attempt > 0 and arm:
-                ctr["retryAttempts"] += 1
-            before = len(_lines())
-            out = saved(*a, **k)
-            if out or jd._judge_ctx.paused or not jd._judge_ctx.last_call_fail:
-                if ranges:                                               # a kill earlier, now served/skipped: recovered, tag its rows out
-                    if arm:
-                        ctr["recoveredCalls"] += 1
-                    for s, e in ranges:
-                        _tag(s, e)
-                return out
-            if not ranges and arm:
-                ctr["firstAttemptKills"] += 1
-            ranges.append((before, len(_lines())))
-        for s, e in ranges[:-1]:                                         # every attempt failed: the LAST rows are the one real failure, tag the earlier ones
-            _tag(s, e)
-        return out
+        if not _guard.acquire(blocking=False):
+            raise RuntimeError("install_call_retry: _judge_run_impl reached concurrently; the by-line-range tag-and-count "
+                               "assumes the arm's single-threaded loop (run_arm_inprocess). Mark rows at write time instead.")
+        try:
+            judge = k.get("judge") if "judge" in k else (a[4] if len(a) > 4 else None)
+            arm = judge not in NON_ARM_JUDGES                            # count only the measured judges; still retry a non-arm call
+            ranges, out = [], None
+            for attempt in range(max(1, attempts)):                      # loop-ok: bounded re-sample of one failed call
+                if attempt > 0 and arm:
+                    ctr["retryAttempts"] += 1
+                before = len(_lines())
+                out = saved(*a, **k)
+                if out or jd._judge_ctx.paused or not jd._judge_ctx.last_call_fail:
+                    if ranges:                                           # a kill earlier, now served/skipped: recovered, tag its rows out
+                        if arm:
+                            ctr["recoveredCalls"] += 1
+                        for s, e in ranges:
+                            _tag(s, e)
+                    return out
+                if not ranges and arm:
+                    ctr["firstAttemptKills"] += 1
+                ranges.append((before, len(_lines())))
+            for s, e in ranges[:-1]:                                     # every attempt failed: the LAST rows are the one real failure, tag the earlier ones
+                _tag(s, e)
+            return out
+        finally:
+            _guard.release()
     jd._judge_run_impl = _retrying
     return saved
 

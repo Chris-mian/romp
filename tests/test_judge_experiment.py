@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from datetime import datetime, timezone
@@ -660,6 +661,26 @@ class Harness(unittest.TestCase):
         jd = fake_jd(lambda n: "pause")
         self.je.install_call_retry(jd, ep, c5, attempts=3)
         self.assertEqual((jd._judge_run_impl(judge="planner"), self.je.count_failure_rows(ep), c5["firstAttemptKills"]), ("", 0, 0), "a pause is a skip, not a failure to retry")
+
+    def test_install_call_retry_refuses_a_concurrent_entry(self):
+        """The by-line-range tag-and-count is correct only single-threaded (the arm's construction); the guard makes that an
+        enforced invariant: a concurrent _judge_run_impl entry raises rather than silently racing the ledger rewrite."""
+        ep = Path(self.td) / "e.jsonl"; ep.write_text("")
+        ctx = types.SimpleNamespace(paused=False, last_call_fail=None)
+        jd = types.SimpleNamespace(_judge_ctx=ctx)
+        box = {}
+        def impl(*a, **k):
+            def reenter():
+                try:
+                    jd._judge_run_impl(judge="planner")               # a second thread enters while this call holds the guard
+                except Exception as e:
+                    box["e"] = e
+            t = threading.Thread(target=reenter); t.start(); t.join()
+            ctx.last_call_fail = None; return "ok"
+        jd._judge_run_impl = impl
+        self.je.install_call_retry(jd, ep, {}, attempts=1)
+        self.assertEqual(jd._judge_run_impl(judge="planner"), "ok")
+        self.assertIsInstance(box.get("e"), RuntimeError, "a concurrent entry is refused, not silently raced")
 
     def test_a_plainly_cleared_completed_top_is_no_leak_and_a_reopened_needs_input_is_no_false_interrupt(self):
         """The plan's negatives (round three): a completed top the user plainly cleared (no re-open) is NOT a leak; a
