@@ -3639,11 +3639,13 @@ def _router_models_boot():
         if sfault:
             sys.stderr.write("extra models (boot): the switch file could not be read (%s); the switch reads as off until it can\n"
                              % sfault)   # the fault's one log line: a create's reset names it too (review round sixteen)
-        if on:
-            with _catalog_lock:
+        with _catalog_lock:
+            _ROUTER_SEEN_ON[0] = bool(on)   # the boot assigns the flag in BOTH directions, so its starting value never decides
+            #                                 anything (review round seventeen): a kernel booted with the switch off reads a
+            #                                 fault as off, whatever the module's initial value
+            if on:
                 _ROUTER_GEN[0] += 1
                 gen = _ROUTER_GEN[0]
-                _ROUTER_SEEN_ON[0] = True   # a boot that reads the switch on, installed or not
             # no early mark here: every create door passes _sdk_ready(), which holds _sdk_lock while this boot runs, so
             # the apply's own guarded write below is in place before a create can read (review round twelve)
     if not on:

@@ -47,6 +47,7 @@ sb = load_source("romp_sdk_backend_router_picks", os.path.join(BIN, "romp_sdk_ba
 km.jd.STATE.mkdir(parents=True, exist_ok=True)
 (km.jd.STATE / "session-hosts").write_text("off")   # this root is outside conftest's belt (repo rule, 2026-09-11)
 
+SEEN_ON_AT_IMPORT = km._ROUTER_SEEN_ON[0]   # a freshly loaded kernel: no flip applied yet (pinned below)
 DECLARED = "gw-6-astra, gw-7-nova"
 REMOVED = "gw-6-astra"
 SID = "11111111-2222-4333-8444-555555555555"
@@ -764,6 +765,20 @@ class SeedInflight(_OnThenOff):
         finally:
             if path.exists():
                 path.chmod(0o644)
+
+    def test_a_fresh_kernel_starts_with_no_flip_applied_and_a_boot_that_reads_off_says_so(self):
+        # review round seventeen: the flag's starting value was unpinned, and a True there would bring back a fault
+        # holding every create on a kernel booted with the switch off
+        self.assertIs(SEEN_ON_AT_IMPORT, False, "a freshly loaded kernel has applied no flip")
+        km._ROUTER_SEEN_ON[0] = True                          # whatever the value before the boot…
+        (km.jd.STATE / km.ROUTER_MODELS_FILE).unlink(missing_ok=True)
+        with mock.patch.object(km, "_models_changed", lambda: None):
+            self.assertEqual(km._router_models_boot(), [])
+        self.assertIs(km._ROUTER_SEEN_ON[0], False, "…a boot that reads the switch off assigns it off")
+        (km.jd.STATE / km.ROUTER_MODELS_FILE).write_text(json.dumps({"enabled": True, "gt": 1}))
+        with mock.patch.object(km, "_models_changed", lambda: None):
+            km._router_models_boot()
+        self.assertIs(km._ROUTER_SEEN_ON[0], True, "and a boot that reads it on assigns it on")
 
     def test_a_fault_before_the_switch_was_ever_on_reads_as_off(self):
         # review round fifteen: a fault that persists held every create while boot and the payload read it as off; a
