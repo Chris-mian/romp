@@ -114,11 +114,25 @@ test("a refused act re-arms the row the kernel's reply names, with the reason in
   assert.ok(KERNEL.includes("if _ids and LEDGER_KEY not in _skipped:"), "...and so does the batch clear");
 });
 
-test("phase three: a goal row's Reply, Continue and Clear on the card's own wires; a no-action notice's Clear; the kind and the offer ride the row's face and its type", () => {
+test("the box is collapsed by default and opens in steps (the user 2026-09-23): three levels the page holds per session, the header's click advancing them, the sheet hiding the rows below level 1 and the background below level 2", () => {
+  assert.match(RENDER, /const noticeBoxLevel = new Map<string, number>\(\);/, "the page's state, never a timer");
+  assert.match(fn("noticeBoxLevelOf"), /return noticeBoxLevel\.get\(sid\) \|\| 0;/, "collapsed by default");
+  assert.match(fn("applyNoticeBoxLevel"), /host\.classList\.toggle\("ntc-l0", level === 0\); host\.classList\.toggle\("ntc-l1", level === 1\); host\.classList\.toggle\("ntc-l2", level === 2\);/, "one class per level on the box");
+  assert.match(fn("renderNotices"), /applyNoticeBoxLevel\(host, s\.id\);/, "applied on every render, before the rows");
+  const i = RENDER.indexOf('const host = document.getElementById("notices");\n  if (!host) return;\n  const rowOf');
+  const d = RENDER.slice(i, RENDER.indexOf("})();", i));
+  assert.match(d, /"ntc-fold": \(\) => \{ if \(!activeId\) return; noticeBoxLevel\.set\(activeId, \(noticeBoxLevelOf\(activeId\) \+ 1\) % 3\); renderNotices\(\); \},/, "the header's click: the items, then the full context, then folded back");
+  assert.match(CSS, /#notices\.ntc-l0 \.ntc-row \{ display: none; \}/, "level 0: the rows hidden");
+  assert.match(CSS, /#notices:not\(\.ntc-l2\) \.ntc-body, #notices:not\(\.ntc-l2\) \.ntc-attach, #notices:not\(\.ntc-l2\) \.ntc-more \{ display: none; \}/, "below level 2: the background paragraph, its disclosure and the attachment hidden");
+  assert.match(CSS, /\.ntc-head \.ntc-caret \{[^}]*font-size: 0\.72em; width: 10px;/, "the awaiting box's caret");
+});
+
+test("phase three: a goal row's Reply and Clear on the card's own wires (Continue stored, its button gone since 2026-09-23); a no-action notice's Clear; the kind and the offer ride the row's face and its type", () => {
   assert.match(RENDER, /kind\?: "goal" \| "notice";/, "the row says its kind"); assert.match(RENDER, /cont\?: boolean;/, "and whether Continue is offered");
   assert.match(fn("noticeActionsSig"), /JSON\.stringify\(\[n\.kind \|\| "notice", !!n\.cont, n\.fix \|\| "", \(n\.actions \|\| \[\]\)\.map/, "the face signature carries the kind, the offer and the fix: a Continue that appears rebuilds the buttons");
   const plain = fn("noticeRowPlain");
-  assert.match(plain, /if \(n\.kind === "goal"\) \{[^]*?acts\.appendChild\(noticeButton\("Reply", "ntc-ok", "ntc-reply", 0\)\);\s*\n\s*if \(n\.cont\) acts\.appendChild\(noticeButton\("Continue", "ntc-ok", "ntc-cont", 1\)\);\s*\n\s*acts\.appendChild\(noticeButton\("Clear", "ntc-clear", "ntc-clear", 2\)\);\s*\n\s*return;/, "a goal row: Reply, Continue where offered, Clear");
+  assert.match(plain, /if \(n\.kind === "goal"\) \{[^]*?acts\.appendChild\(noticeButton\("Reply", "ntc-ok", "ntc-reply", 0\)\);[^\n]*\n\s*acts\.appendChild\(noticeButton\("Clear", "ntc-clear", "ntc-clear", 1\)\);[^\n]*\n\s*return;/, "a goal row: Reply, then Clear at the next index; no Continue button (the user 2026-09-23: Reply and Clear only for now, the stored offer and its wire kept)");
+  assert.doesNotMatch(plain, /noticeButton\("Continue"/, "the Continue button is gone from every row");
   assert.match(plain, /if \(!\(n\.actions \|\| \[\]\)\.length\) \{ acts\.appendChild\(noticeButton\("Clear", "ntc-clear", "ntc-clear", 0\)\); return; \}/, "a notice with no stored action offers Clear");
   const i = RENDER.indexOf('const host = document.getElementById("notices");\n  if (!host) return;\n  const rowOf');
   const d = RENDER.slice(i, RENDER.indexOf("})();", i));
@@ -128,12 +142,13 @@ test("phase three: a goal row's Reply, Continue and Clear on the card's own wire
   assert.match(RENDER, /fix\?: "credential" \}/, "the row says when its one action is the credential fix");
   assert.match(plain, /if \(n\.kind === "goal" && n\.fix === "credential"\) \{[^]*?noticeButton\("Fix credential…", "ntc-ok", "ntc-fix", 0\)\);\s*\n\s*return;/, "the credential row: the fix alone, no Reply, no Continue, no Clear (a Clear would hide the fault while the refusals go on)");
   assert.match(d, /"ntc-fix": \(\) => openSettingsOn\("general"\),/, "the fix opens the settings' General tab, where the Billing block sits");
-  assert.match(fn("buildNoticeHead"), /head\.className = "ntc-head";[^]*?el\("span", "ntc-dot"\)[^]*?el\("span", "ntc-label"\)/, "the header: the dot and the label");
+  assert.match(fn("buildNoticeHead"), /head\.className = "ntc-head";[^]*?head\.dataset\.act = "ntc-fold";[^]*?el\("span", "ntc-caret"\)[^]*?el\("span", "ntc-dot"\)[^]*?el\("span", "ntc-label"\)/, "the header: the fold control, the caret, the dot and the label");
   assert.match(RENDER, /onExternalSettingsChange\(\(\) => renderNotices\(\)\);/, "a settings save repaints the box: the gear's switch takes effect at once");
   const SETTINGS = fs.readFileSync(path.join(UI, "settings.ts"), "utf8");
   assert.match(SETTINGS, /needsBox: boolean;/); assert.match(SETTINGS, /needsBox: true,/, "on by default");
   const GEAR = fs.readFileSync(path.join(UI, "gear.js"), "utf8");
   assert.match(GEAR, /<input type=checkbox id=rs-needsbox checked>/, "the row under Chat, on by default");
+  assert.match(GEAR, /<div class='rs-sec' data-section=boxes>Boxes below the transcript<\/div>" \+\s*\n\s*'<label class=rs-row><input type=checkbox id=rs-needsbox checked>/, "the switch heads a section of its own, named for where the box sits (the user 2026-09-23, who did not find it under Display)");
   assert.match(GEAR, /<b>Needs you box<\/b>/); assert.match(GEAR, /s\.needsBox = nb\.checked; save\(s\);/, "the save the chat page hears"); assert.match(GEAR, /if \(nb\) nb\.checked = s\.needsBox !== false;/, "a store from before the key reads as on");
   assert.match(CSS, /\.ntc-head \{[^}]*border-bottom: 1px solid var\(--box-border\);/, "the header bar in the background box's grammar");
   assert.match(CSS, /\.ntc-head \.ntc-dot \{[^}]*background: var\(--st-needs-bg\); \}/, "the dot in the token");

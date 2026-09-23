@@ -31,7 +31,7 @@ class SettingsSectionsTest(unittest.TestCase):
     def test_the_subsection_headers_are_present_in_order(self):
         h = _gear_src()
         self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=general"), "the pills come first")
-        for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Comments", "Thinking", "Chat history", "Tab strip", "Tab widgets"]),
+        for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Boxes below the transcript", "Comments", "Thinking", "Chat history", "Tab strip", "Tab widgets"]),
                             ("feed", ["Cards"]), ("sessions", ["New sessions"]), ("automation", ["Nudges", "Model"]), ("tasks", ["Task tracking", "Judges"]),   # Model: the two model switches (2026-09-17)
                             ("debug", ["Judging bands", "Diagnostics"])):
             p = _pane(h, pane)

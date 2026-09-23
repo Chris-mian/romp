@@ -4,7 +4,7 @@ The session's goal store holds three judge questions (diary block events in the 
 the transcript ends on an API error record only the user can clear (isApiErrorMessage, "prompt is too long"), so the fourth
 card is a HARD STOP the kernel floors with a live-block object (state apiError) and the tab wears the red Blocked ring; a message
 from a DIRECTED peer is held under STATE/postal/quarantine before boot and becomes a needs-you notice card at the first build.
-The box lists the three questions (Reply, Continue, Clear) and the held message (Approve, Deny) under a "Needs you · 4" header,
+The box lists the three questions (Reply, Clear) and the held message (Approve, Deny) under a "Needs you · 4" header, collapsed to that header by default and opened in steps,
 wears the Needs you token on its edge, and lists no row for the hard stop. Clear
 takes its row off the box with the next frame; Continue posts the card's own Continue wire and its row leaves once the kernel
 files the reply; Reply points the composer at the card (the chip with the card's title) and the row leaves once the typed reply
@@ -65,9 +65,14 @@ const readBox = () => page.evaluate(() => {
   const rows = box ? Array.from(box.querySelectorAll(".ntc-row")) : [];
   const tab = document.querySelector('#tabs .tab[data-id]');
   const tabs = Object.fromEntries(Array.from(document.querySelectorAll('#tabs .tab[data-id]')).map((t) => [t.getAttribute("data-id"), t.className]));   // every tab's classes by sid: the rings
+  const vis = (el) => !!el && getComputedStyle(el).display !== "none";
+  const level = box ? ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => box.classList.contains(c)) : null;   // the box's level class (-1: none)
   return { shown: !!box && box.style.display !== "none" && !!cs && cs.display !== "none", border: cs ? cs.borderTopColor : null, borderLeft: cs ? cs.borderLeftWidth : null,
            head: box ? ((box.querySelector(".ntc-head .ntc-label") || {}).textContent || null) : null,
            dot: box && box.querySelector(".ntc-head .ntc-dot") ? getComputedStyle(box.querySelector(".ntc-head .ntc-dot")).backgroundColor : null,
+           level, caret: box && box.querySelector(".ntc-head .ntc-caret") ? box.querySelector(".ntc-head .ntc-caret").textContent : null,
+           headVisible: box ? vis(box.querySelector(".ntc-head")) : null, rowsVisible: rows.map((r) => vis(r)), bodiesVisible: rows.map((r) => vis(r.querySelector(".ntc-body"))),
+           theme: document.body.classList.contains("theme-light") ? "light" : "dark",
            rows: rows.map((r) => ({ id: r.getAttribute("data-item"), title: (r.querySelector(".ntc-title") || {}).textContent, body: (r.querySelector(".ntc-body") || {}).textContent,
                                    buttons: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => b.textContent), disabled: Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => b.disabled) })),
            tabClasses: tab ? tab.className : null, tabs };
@@ -78,6 +83,22 @@ await page.waitForSelector("#tabs .tab", { timeout: 30000 }).catch(() => {});
 // 1. the box: four rows (the three questions and the held message), the header, the token edge, no row for the hard stop, the red ring on the tab
 out.fourRows = await waitRows(4, 60000);
 out.first = await readBox();
+// 0. COLLAPSED BY DEFAULT and opened in steps (the user 2026-09-23): the header line alone, one click the items (titles and buttons), a second the
+// full context (the background under each title); read in both themes at each level (the theme is the body's class, as the colour lab sets it)
+const setTheme = (t) => page.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), t);
+// fold the box to `level`: a click per step, each waited on the level class; fail-soft (the waits caught), so a page without the levels (the base)
+// reads whatever it shows and the pins say what was there, rather than the driver dying and every test losing its record
+const foldTo = async (level) => { const cur = await page.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c))); if (cur < 0) return false;
+  for (let i = cur, n = 0; i !== level && n < 3; i = (i + 1) % 3, n++) { await page.click("#notices .ntc-head"); await page.waitForFunction((l) => document.getElementById("notices").classList.contains("ntc-l" + l), (i + 1) % 3, { timeout: 5000 }).catch(() => {}); }   // loop-ok: at most three clicks, each waited on the level class
+  return true; };
+out.levels = {};
+for (const t of ["dark", "light"]) {
+  await setTheme(t); await foldTo(0); out.levels[t + "0"] = await readBox();
+  await foldTo(1); out.levels[t + "1"] = await readBox();
+  await foldTo(2); out.levels[t + "2"] = await readBox();
+}
+await setTheme("dark"); await foldTo(2);   // the rest of the scenes read the bodies and their disclosures: the full context open
+mark();
 // the hard stop as the feed pane shows it from the same kernel's pushed frame: the focus goal's card under Needs you with the on-you API error badge
 const feed = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 await feed.goto(cfg.feed);
@@ -171,8 +192,11 @@ out.clearLatched = await page.evaluate((s) => { const r = document.querySelector
 out.afterClear = { left: await page.waitForFunction((s) => !document.querySelector(s), rowSel(cfg.g3), { timeout: 60000 }).then(() => true).catch(() => false) };
 out.afterClear.box = await readBox();
 mark();
-// 3. Continue on the second question: the card's Continue wire (askFollowUp with cont); the kernel files the reply and the card leaves Needs you
-await page.click(rowSel(cfg.g2) + ' [data-act="ntc-cont"]');
+// 3. Continue is NOT offered on the row (the user 2026-09-23: Reply and Clear only for now; the stored offer and its wire stay for a later
+//    return): the second question shows Reply and Clear alone, and its Clear takes the row off like the first's
+out.contButtons = await page.evaluate((s) => { const r = document.querySelector(s); return r ? Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => b.textContent) : null; }, rowSel(cfg.g2));
+out.contAct = await page.evaluate((s) => !!document.querySelector(s + ' [data-act="ntc-cont"]'), rowSel(cfg.g2));
+await page.click(rowSel(cfg.g2) + ' [data-act="ntc-clear"]');
 out.contLatched = await page.evaluate((s) => { const r = document.querySelector(s); return r ? Array.from(r.querySelectorAll("button")).every((b) => b.disabled) : null; }, rowSel(cfg.g2));
 out.afterCont = { left: await page.waitForFunction((s) => !document.querySelector(s), rowSel(cfg.g2), { timeout: 60000 }).then(() => true).catch(() => false) };
 out.afterCont.box = await readBox();
@@ -198,12 +222,26 @@ out.fresh.landed = await landedAt(rowSel(cfg.g5), cfg.longBrief); if (!out.fresh
 out.fresh.more = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);
 out.fresh.box = await readBox();
 mark();
-// 5. the switch: a romp:settings save with the box off hides it and leaves the ring; back on, the box returns
-const setBox = (on) => page.evaluate((on) => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.needsBox = on; localStorage.setItem("romp:settings", JSON.stringify(s)); window.dispatchEvent(new Event("romp:settings")); }, on);
+// 5. the switch, through the settings card's OWN ROW (the user 2026-09-23, who did not find it): the kernel's settings page (the card the
+//    shell's gear opens; the chat page hosts none and relays) in the same browser context, its Chat tab, the row under the head named for
+//    where the box sits, visible; its click saves, the chat page hears the store change and the box hides, leaving the ring; a second click
+//    brings the box back
+const [sp] = await Promise.all([page.waitForEvent("popup"), page.evaluate((u) => { window.open(u, "_blank"); }, cfg.chat.replace("/chat?token=", "/settings?token="))]);   // a popup of the chat page: the SAME
+//   context and store, so the chat page hears the save as a storage event (a page in another context is another store, and the default context spawns none by the API)
+await sp.waitForLoadState("domcontentloaded").catch(() => {});
+await sp.waitForSelector("#rs-needsbox", { state: "attached", timeout: 30000 }).catch(() => {});
+await sp.evaluate(() => { const t = document.querySelector('#rs-tabs [data-tab="chat"]'); if (t) t.click(); });
+out.switchRow = await sp.waitForFunction(() => { const cb = document.getElementById("rs-needsbox"); const pane = cb && cb.closest(".rs-pane"); return !!cb && !!pane && !pane.hidden && getComputedStyle(cb.closest("label")).display !== "none"; }, null, { timeout: 10000 }).then(() => sp.evaluate(() => {
+  const cb = document.getElementById("rs-needsbox"); const lab = cb.closest("label"); let head = lab.previousElementSibling; while (head && !head.classList.contains("rs-sec")) head = head.previousElementSibling;   // loop-ok: walks up to the section head
+  return { present: true, checked: cb.checked, label: (lab.querySelector("b") || {}).textContent, head: head ? head.textContent : null, headSection: head ? head.getAttribute("data-section") : null, pane: cb.closest(".rs-pane").getAttribute("data-pane") };
+})).catch(() => ({ present: false }));
+const setBox = async (on) => { await sp.evaluate((on) => { const cb = document.getElementById("rs-needsbox"); if (cb && cb.checked !== on) cb.click(); }, on); };
 await setBox(false);
 out.off = { hidden: await page.waitForFunction(() => { const b = document.getElementById("notices"); return !!b && b.style.display === "none"; }, null, { timeout: 10000 }).then(() => true).catch(() => false) };
 out.off.box = await readBox();
 await setBox(true);
+await sp.close();
+await foldTo(2);   // the rebuilt box (the switch's off-then-on) keeps the page's level for the session
 out.on = { shown: await page.waitForFunction(() => { const b = document.getElementById("notices"); return !!b && b.style.display !== "none" && b.querySelectorAll(".ntc-row").length >= 1; }, null, { timeout: 10000 }).then(() => true).catch(() => false) };
 out.on.moreAfterRebuild = await page.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);   // the rebuilt row (host.replaceChildren, then the rows built anew) wears the disclosure too
 out.on.box = await readBox();
@@ -215,7 +253,10 @@ await shell.goto(cfg.landing);                                                  
 let fr = null; for (let i = 0; i < 150 && !fr; i++) { fr = shell.frames().find((f) => /\/chat(\?|$)/.test(f.url())) || null; if (!fr) await shell.waitForTimeout(200); }   // loop-ok: bounded
 out.hiddenPane = { frame: !!fr };
 if (fr) {
-  out.hiddenPane.loaded = await fr.waitForSelector("#notices .ntc-row", { timeout: 60000 }).then(() => true).catch(() => false);   // the box on screen once
+  out.hiddenPane.loaded = await fr.waitForSelector("#notices .ntc-head", { timeout: 60000 }).then(() => true).catch(() => false);   // the box on screen once, collapsed to its header line (a fresh page)
+  out.hiddenPane.collapsedFresh = await fr.evaluate(() => document.getElementById("notices").classList.contains("ntc-l0") && Array.from(document.querySelectorAll("#notices .ntc-row")).every((r) => getComputedStyle(r).display === "none"));   // collapsed by default: the rows attached and hidden
+  if (out.hiddenPane.collapsedFresh) for (let i = 0; i < 2; i++) { await fr.click("#notices .ntc-head"); await fr.waitForFunction((l) => document.getElementById("notices").classList.contains("ntc-l" + l), i + 1, { timeout: 5000 }).catch(() => {}); }   // loop-ok: two clicks to the full context, each waited on the level class; a page without the levels (the base) shows everything already
+  out.hiddenPane.rowsShown = await fr.waitForSelector("#notices .ntc-row", { timeout: 15000 }).then(() => true).catch(() => false);   // the rows visible at the full context
   out.hiddenPane.g5MoreBefore = await fr.waitForSelector(rowSel(cfg.g5) + " .ntc-more", { timeout: 15000 }).then(() => true).catch(() => false);   // the long-brief row's button stands before the hide
   await shell.evaluate(() => { window.__rompPaneToggle("chat", false); });                                                    // the rail hides the pane (display:none on its wrapper): the observer's word
   out.hiddenPane.hidden = await shell.waitForFunction(() => !document.body.classList.contains("po-chat"), null, { timeout: 10000 }).then(() => true).catch(() => false);
@@ -437,8 +478,8 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(any(x["id"] == self.g[0] for x in b["rows"]), "the questions are on the box while the hard stop is not")
         for row, q in zip(b["rows"][:3], QUESTIONS):
             self.assertEqual(row["title"], q, "the card's text is the row's title")
-            self.assertEqual(row["buttons"], ["Reply", "Continue", "Clear"], "a live session's question: Reply, Continue, Clear")
-            self.assertEqual(row["disabled"], [False, False, False])
+            self.assertEqual(row["buttons"], ["Reply", "Clear"], "a live session's question: Reply and Clear (the user 2026-09-23: no Continue button for now)")
+            self.assertEqual(row["disabled"], [False, False], "two buttons, both live")
         self.assertEqual(b["rows"][3]["buttons"], ["Approve", "Deny"], "the held message keeps its stored actions")
         self.assertIn("ring-needs-you", b["tabClasses"] or "", "the tab wears the red Blocked ring for the hard stop (it outranks the Needs you ring): %r" % b["tabClasses"])
         self.assertIn("ring-waiting-on-you", (b["tabs"] or {}).get(API) or "", "api's tab, a question and no hard stop, wears the Needs you ring: %r" % b["tabs"])
@@ -510,11 +551,32 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(r["afterClear"]["left"], "the cleared question's row left: %r (kernel: %s)" % (r["afterClear"]["box"], self._kernel_tail()))
         self.assertEqual(r["afterClear"]["box"]["head"], "Needs you · 3")
 
-    def test_continue_posts_the_cards_continue_and_its_row_leaves_once_the_kernel_files_the_reply(self):
+    def test_continue_is_not_offered_and_the_second_question_clears_like_the_first(self):
+        """The user 2026-09-23: Reply and Clear only for now. The stored offer (the row's cont) and the card's Continue wire stay for a later
+        return; the button is gone from the row, and the row's Clear works as the first question's did."""
         r = self._result()
+        self.assertEqual(r["contButtons"], ["Reply", "Clear"], "the live question offers Reply and Clear alone")
+        self.assertFalse(r["contAct"], "no Continue control on the row")
         self.assertTrue(r["contLatched"], "the row's buttons latch on the press")
-        self.assertTrue(r["afterCont"]["left"], "the continued question's row left: %r (kernel: %s)" % (r["afterCont"]["box"], self._kernel_tail()))
+        self.assertTrue(r["afterCont"]["left"], "the cleared question's row left: %r (kernel: %s)" % (r["afterCont"]["box"], self._kernel_tail()))
         self.assertEqual(r["afterCont"]["box"]["head"], "Needs you · 2")
+
+    def test_the_box_is_collapsed_by_default_and_opens_in_two_steps_in_both_themes(self):
+        """The user 2026-09-23: collapsed by default like the awaiting box, and successively expandable. Level 0: the header line alone (the label
+        with the count), the rows hidden. One click: the items (each title with its buttons), the background paragraphs hidden. A second: the
+        full context, the background under each title. The level is the page's state for the session, never a timer; a fresh page starts
+        collapsed. Read at each level in the dark theme and the light one."""
+        r = self._result()
+        for t in ("dark", "light"):
+            l0, l1, l2 = r["levels"][t + "0"], r["levels"][t + "1"], r["levels"][t + "2"]
+            self.assertEqual((l0["theme"], l1["theme"], l2["theme"]), (t, t, t))
+            self.assertEqual((l0["level"], l0["head"], l0["headVisible"]), (0, "Needs you · 4", True), "%s: collapsed, the header line alone: %r" % (t, l0))
+            self.assertEqual((set(l0["rowsVisible"]), l0["caret"]), ({False}, "\u25b8"), "%s: level 0 shows no row, the caret pointing right: %r" % (t, l0))
+            self.assertEqual((l1["level"], set(l1["rowsVisible"]), set(l1["bodiesVisible"])), (1, {True}, {False}), "%s: one click shows the items and no background: %r" % (t, l1))
+            self.assertEqual([row["buttons"] for row in l1["rows"]], [["Reply", "Clear"]] * 3 + [["Approve", "Deny"]], "%s: the buttons stand at level 1" % t)
+            self.assertEqual((l2["level"], set(l2["rowsVisible"]), l2["caret"]), (2, {True}, "\u25be"), "%s: a second click shows the full context, the caret down: %r" % (t, l2))
+            self.assertTrue(any(l2["bodiesVisible"]), "%s: at level 2 a background paragraph shows where the row has one: %r" % (t, l2))
+        self.assertTrue(r["hiddenPane"].get("collapsedFresh"), "a fresh page starts collapsed: %r" % r["hiddenPane"])
 
     def test_reply_points_the_composer_at_the_card_and_the_typed_reply_takes_the_row_off(self):
         r = self._result()
@@ -524,8 +586,13 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertEqual(r["afterReply"]["box"]["head"], "Needs you · 1", "the held message alone remains")
 
     def test_the_switch_hides_the_box_and_leaves_the_ring_and_back_on_the_box_returns(self):
+        """The user 2026-09-23, who looked for the switch and did not find it: the settings card's own row, under a head named for where the
+        box sits, on the Chat tab; its click saves and hides the box, a second brings it back."""
         r = self._result()
-        self.assertTrue(r["off"]["hidden"], "the box hides on the save: %r" % r["off"]["box"])
+        sw = r["switchRow"]
+        self.assertTrue(sw.get("present"), "the row renders on the Chat tab: %r" % sw)
+        self.assertEqual((sw["pane"], sw["label"], sw["head"], sw["headSection"], sw["checked"]), ("chat", "Needs you box", "Boxes below the transcript", "boxes", True), "a plainly labelled row under its own head, on by default: %r" % sw)
+        self.assertTrue(r["off"]["hidden"], "the box hides on the row's save: %r" % r["off"]["box"])
         self.assertIn("ring-needs-you", r["off"]["box"]["tabClasses"] or "", "the red ring stays: the switch is the box's alone")
         self.assertIn("ring-waiting-on-you", (r["off"]["box"]["tabs"] or {}).get(API) or "", "and the Needs you ring on api's tab stays too: %r" % r["off"]["box"]["tabs"])
         self.assertTrue(r["on"]["shown"], "back on, the box returns with its rows: %r" % r["on"]["box"])
