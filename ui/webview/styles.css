@@ -486,6 +486,15 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .tab-group-head.snap-shown { color: var(--fg); background: var(--tab-active-bg); box-shadow: inset 0 0 0 1.5px var(--chip-bg, transparent); }
 .tab-group-head.dragging { opacity: 0.45; }
 .tab-group-head.drop-target { box-shadow: inset 2px 0 0 var(--accent); }
+/* DRAGGING A TAB INTO THIS GROUP (the user 2026-09-23): the group a release would put the session in
+   wears the accent — the inset ring the selected row wears (.snap-shown above), in var(--accent) rather
+   than the tag's own colour, over the faint accent wash every accent-lit control uses. A class over the
+   header's existing box: no border, no padding, no size of its own, so the strip cannot shift under the
+   drag. Distinct from .drop-target above, which is a HEADER drag's insertion cue (a left edge, not a
+   target box) — the two gestures are told apart by what is being dragged, so they never both show. The
+   other half of the gesture, a tab dragged OUT to the ungrouped row, has no header to ring and says
+   which tag comes off in the floating .tab-drag-cue line (with the tooltip family below). */
+.tab-group-head.join-target { color: var(--fg); background: var(--accent-wash); box-shadow: inset 0 0 0 1.5px var(--accent); }
 /* the disclosure chevron: ▸ folded, turned down while open — the fold-caret idiom (a CSS transition on
    the flip, no timer). Right after the chip with the count after it (T284), the feed's grouped headers'
    order; the header is content-sized, so the DOM order alone places them. */
@@ -924,6 +933,16 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
   box-shadow: var(--shadow-toast); font-size: 0.86em; line-height: 1.45;
   max-width: min(440px, 92vw);
 }
+/* THE TAB DRAG's leave cue (the user 2026-09-23; render.ts paintDragCue): while a group's tab hovers the
+   ungrouped row, the line under it names the tag the release would take off and the groups the session
+   STAYS in — a session that keeps another tag never appears in the trail, so the drop would otherwise
+   look like it did nothing. It wears the shared tooltip dress above (a floating annotation IS a tip, so
+   it cannot drift from the others) plus the bits a drag cue needs: the tags as their chips on one line,
+   never a pointer target (it must not eat the drag's own events), and position:fixed from .romp-tip, so
+   it takes no space and the strip cannot shift. Shown and hidden by the gesture alone — no timer, no
+   toast. The join half wears the accent ring on the target header instead (.tab-group-head.join-target). */
+.tab-drag-cue { display: none; align-items: center; gap: 5px; white-space: nowrap; pointer-events: none;
+  padding: 4px 8px; color: var(--dim); }
 .tab-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
 .tab-add { color: var(--dim); font-size: 1.1em; padding: 6px 10px; border-radius: 6px; line-height: 18px; }
 /* the tag controls reserve the + tab's EXACT vertical box — 18px line + 12px padding + 1px border

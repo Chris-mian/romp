@@ -26,7 +26,7 @@ import { SessionViews, viewVisible, viewsKey, revealIn, viewTagUnion, viewTags, 
 import { prependHead, mergeWindow, historyLabel, indexOfUuid, keyOf, olderRequestAllowed } from "./chat-window";   // the uuid-anchored wire (T323 stage 4b)
 import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./subagent-wait";   // the viewer's wait bound and its stall (T355)
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
-import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
+import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, applyTagEdit, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
@@ -117,6 +117,7 @@ import { agentCount, replyOwed, threadsByAnchor, threadBusy, threadStuck, findAn
 import { isReplyReady, placeMark, placeWindowed, readyChips, replyLine, chipLabel, chipTip, chipAria, type Dir, type ReadyMark, type ReadyChip } from "./reply-ready";
 import { dragSlotIndex } from "./dragslot";
 import { acceptDragEnter } from "./drag-accept";
+import { resolveTabDrop, writesTag, leaveWords, type TabDrop, type LeaveWords } from "./drag-join";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, senderPrRepo, postalSenderHost } from "./pr-links";
 import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, writerIsReader, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
@@ -5977,6 +5978,108 @@ function reorderTo(dragId: string, targetId: string, after: boolean): boolean { 
   return true;
 }
 
+// ── DRAGGING A TAB INTO (and OUT OF) A TAG GROUP (the user 2026-09-23, who wanted a tab dropped on a
+// group to put that session IN it rather than only reorder it, and the ungrouped row to take it back
+// out) ──────────────────────────────────────────────────────────────────────────────────────────────
+// The strip's sections ARE tags, so the gesture is a tag edit, and the place a tab is dropped states
+// WHERE THE USER WANTS IT TO APPEAR NOW (their words, paraphrased). That one sentence gives both halves
+// and explains why they are not symmetric: a group IS a tag, so "appear in this group" is satisfied by
+// ADDING that tag, and the session's other tags may go on showing it elsewhere; the ungrouped row is not
+// a group but the set of sessions carrying NO tags, so "appear here" can only be satisfied by clearing
+// EVERY tag. drag-join.ts carries the rule, its cases and the cost of that asymmetry (a clear is not
+// undone by one drag back, so the pre-release cue naming every tag is the safety — no undo stack).
+// Both halves write through the tag path the tab menu's Tags flyout already owns — targeted `addMember` /
+// `removeMember` ops, or the `editTag` wire for a name homed on another kernel — so ONE writer owns tags
+// in both directions. Everything else about the drag is unchanged: the position is the slot the cursor
+// named (the same neighbour-anchored reorderTo the strip has always run) and a header DRAGGED still
+// reorders the groups (that branch is chosen by WHAT IS BEING DRAGGED, not by geometry).
+// WHERE THE DROP LANDED: the zone the PROVISIONAL TAB is sitting in (dropZoneOf — the row the live
+// reorder is already showing the user), so the cue below and the drop read one input and cannot disagree.
+function tabDropFor(dragged: HTMLElement, id: string, unions: readonly TagUnion[]): { drop: TabDrop; head: HTMLElement | null } {
+  const zone = dropZoneOf(dragged);
+  return { drop: resolveTabDrop(unions, { section: zone.head?.dataset.group ?? null, trail: zone.trail }, id),
+           head: zone.head };
+}
+// THE DRAG CUE: the group a release would put this session in wears the accent ring while the pointer is
+// in its row (styles.css .tab-group-head.join-target — a class over the header's existing box, so nothing
+// reflows); a release that would CLEAR the session's tags names them in a floating line under the dragged
+// tab, because the ungrouped row has no header to ring and because clearing several tags is more than
+// the tab's move says — that label is the whole safety on the gesture. Nothing shows for a drag that only
+// reorders: one rule decides the cue and the drop, so a drag inside one group, or along the ungrouped row,
+// never flashes. Cleared when the pointer leaves the strip and at dragend, whatever ended the drag.
+let dragCueEl: HTMLElement | null = null;   // the leave cue's ONE node, the hover tip's idiom: built on first use, hidden between gestures
+let dragCueKey = "";                        // the cue already on screen (see paintDragCue): a tick that would paint the same one touches nothing
+let dragUnions: readonly TagUnion[] = [];   // the unions the frozen strip was drawn from, snapshotted at dragstart beside the geometry
+function paintDragCue(strip: HTMLElement, dragged: HTMLElement, d: TabDrop, head: HTMLElement | null,
+                      unions: readonly TagUnion[]): void {
+  const ring = d.kind === "join" ? head : null;
+  const words: LeaveWords = leaveWords(d);
+  // THE TICK'S CUE AS A KEY, and nothing is read or written while it is the one already on screen. dragover fires
+  // on every pointer tick, and the drag's budget belongs to the live reorder's hit-test: a querySelectorAll and a
+  // rect read per tick cost Chromium enough ticks to change WHERE A DROP LANDS (found by the strip's own drag lab,
+  // whose slot expectations moved when this cue first painted unconditionally). The dragged tab's box joins the key
+  // only while the leave line is up, since that line is pinned under it — and the handler has just read that rect
+  // for its own guard, so the read is free.
+  const r = words.leaving.length ? dragged.getBoundingClientRect() : null;
+  const key = [ring?.dataset.group ?? "", words.leaving.join(""), words.more,
+               r ? Math.round(r.left) : 0, r ? Math.round(r.bottom) : 0].join(" ");
+  if (key === dragCueKey) return;
+  dragCueKey = key;
+  for (const h of Array.from(strip.querySelectorAll(".tab-group-head.join-target"))) if (h !== ring) h.classList.remove("join-target");
+  ring?.classList.add("join-target");
+  if (!words.leaving.length) { if (dragCueEl) dragCueEl.style.display = "none"; return; }
+  if (!dragCueEl) { dragCueEl = el("div", "romp-tip tab-drag-cue"); document.body.appendChild(dragCueEl); }   // the shared tooltip dress + the cue's own row
+  const cue = dragCueEl;
+  const color = (n: string) => unions.find((u) => u.name === n)?.color || null;
+  // the words: "out of" and the tags coming off, each as THE CHIP it wears everywhere (tagChip, sized by
+  // this line), the prose in the surface's dim ink. A bounded run (leaveWords caps it, "+N more" for the
+  // rest): the many-tags rule holds for a drag cue too.
+  cue.replaceChildren();
+  cue.appendChild(document.createTextNode("out of "));
+  words.leaving.forEach((n, i) => {
+    if (i) cue.appendChild(document.createTextNode(", "));
+    cue.appendChild(tagChip(n, color(n), { inheritSize: true }));
+  });
+  if (words.more) cue.appendChild(document.createTextNode(" +" + words.more + " more"));
+  // pinned under the dragged tab (fixed, pointer-events none), so it names THAT tab and shifts no layout
+  cue.style.display = "flex";
+  cue.style.left = Math.max(4, Math.min(Math.round(r!.left), window.innerWidth - (cue.offsetWidth || 120) - 8)) + "px";
+  cue.style.top = Math.round(r!.bottom + 4) + "px";
+}
+function clearDragCue(): void {
+  dragCueKey = "";
+  const strip = document.getElementById("tabs");
+  if (strip) for (const h of Array.from(strip.querySelectorAll(".tab-group-head.join-target"))) h.classList.remove("join-target");
+  if (dragCueEl) dragCueEl.style.display = "none";
+}
+// The tag writes themselves, through the Tags flyout's own writers: each route's local tag by its STORED
+// ID (a targeted op — pendingSessionViews shows it at once and the kernel's tagEditAck settles it), plus
+// the `editTag` wire for every remote home the edit belongs to, whose mirror shows until that kernel's
+// next push carries the truth (the lifetime the flyout's remote half has). A clear has one route per tag
+// and they ride ONE optimistic blob, so the strip never shows a half-cleared session. Returns whether
+// anything was written.
+function postTabDropTag(d: TabDrop, id: string): boolean {
+  if (!writesTag(d) || !d.tags.length) return false;
+  const add = d.kind === "join";
+  let nv = JSON.parse(JSON.stringify(effViews() || {})) as SessionViews;
+  const ops: TagEditOp[] = [];
+  for (const route of d.tags) {
+    if (route.tid) {
+      const edit: TagEditOp = { op: add ? "addMember" : "removeMember", tid: route.tid, sids: [id] };
+      nv = applyTagEdit(nv, edit);   // the shared applier, so the copy and the kernel's merge agree by construction
+      ops.push(edit);
+    }
+    for (const host of route.hosts) {
+      vscodeApi?.postMessage({ type: "editTag", edit: add ? { host, name: route.tag, add: [id] } : { host, name: route.tag, remove: [id] } });
+      const rt = (nv.remoteTags || []).find((x) => (x.name || "") === route.tag && (x.host || "") === host);
+      if (rt) rt.members = add ? Array.from(new Set((rt.members || []).concat([id]))) : (rt.members || []).filter((m) => m !== id);
+    }
+  }
+  if (ops.length) for (const op of ops) postTagEdit(nv, op);   // N ops, the ONE copy shown for all of them (the flyout's postUnionEdits)
+  else { pendingSessionViews = nv; renderTabs(); }              // remote only: no ack to wait on, that kernel's next push is the truth
+  return true;
+}
+
 // Rich tab hover tooltip (the user 2026-06-23): a CUSTOM DOM tooltip (a native `title` can't colour/bold).
 // Shows the full directory path, then labelled field rows — git branch, mode / model / effort, backend —
 // the context battery, a labelled "Summary" row, and a labelled "Latest" row = the collapsed ledger's
@@ -6329,17 +6432,26 @@ function makeTrailSep(): HTMLElement {
   sep.title = "sessions in no tag";
   return sep;
 }
-/** The section header a strip node belongs to: itself for a header, else the nearest header before
- *  it; null past the untagged boundary (the trail's row break, or its divider) or on a flat strip. */
-function sectionHeadOf(node: HTMLElement): HTMLElement | null {
+/** The ZONE a strip node sits in: the section header it belongs to (itself for a header, else the
+ *  nearest header before it), or `trail` — it has passed the untagged boundary (the trail's row break,
+ *  or its divider). Neither, with `trail` false, is the head of the strip, ahead of every header, or a
+ *  flat strip that has none. The two are DISTINCT for the drag (drag-join.ts): the ungrouped row is
+ *  where a tab leaves its group, and the strip's head, which finds no header either, is not — so a
+ *  drop aimed a little left of the first group's chip can never strip a tag. */
+function dropZoneOf(node: HTMLElement): { head: HTMLElement | null; trail: boolean } {
   let n: Element | null = node;
   while (n) {
     const h = n as HTMLElement;
-    if (h.classList.contains("tab-group-head") && h.dataset.group) return h;
-    if (h.classList.contains("tab-group-sep")) return null;
+    if (h.classList.contains("tab-group-head") && h.dataset.group) return { head: h, trail: false };
+    if (h.classList.contains("tab-group-sep")) return { head: null, trail: true };
     n = n.previousElementSibling;
   }
-  return null;
+  return { head: null, trail: false };
+}
+/** The section header a strip node belongs to: itself for a header, else the nearest header before
+ *  it; null past the untagged boundary (the trail's row break, or its divider) or on a flat strip. */
+function sectionHeadOf(node: HTMLElement): HTMLElement | null {
+  return dropZoneOf(node).head;
 }
 
 // ── tab builders shared by the loaded tab (renderTabs) and the skeleton tab (2026-09-07) ──────────────────────
@@ -6431,6 +6543,8 @@ function wireTabDrag(tab: HTMLElement, id: string): void {
     tab.classList.add("dragging");
     hideTabTip();                        // defect 2 (2026-08-28): the hover popover pinned open through the gesture
     snapshotDragGeometry(tab);           // widths once at dragstart — the virtual hit-test's stable input (dragslot.ts)
+    dragUnions = viewTagUnion(effViews());   // …and the tags the strip was drawn from: the drag cue describes THAT strip, which no push rebuilds mid-gesture (the drop re-reads the live blob, which is what it writes against)
+    dragCueKey = "";
     postTabDrag(true, id);               // the shell mounts its drop zones: the other columns, the right edge (the chat split, 2026-09-11)
   });
   // dragend closes EVERY drag (drop, Escape, released outside). The pointerdown that started the
@@ -6443,6 +6557,7 @@ function wireTabDrag(tab: HTMLElement, id: string): void {
     const cancelled = !tabDragCommitted;
     draggedId = null; draggedEl = null; tabDragCommitted = false;
     tab.classList.remove("dragging");
+    clearDragCue();                      // the join ring and the leave line belong to the gesture, however it ended
     tabPointerHeld = false;
     const pending = renderPendingWhilePressed;
     renderPendingWhilePressed = false;
@@ -21373,6 +21488,24 @@ setupSettings();
     if (ref && ref.classList.contains("tab-group-head") && isBreak(before(ref as HTMLElement))) ref = before(ref as HTMLElement);
     if (ref !== dragged && dragged.nextElementSibling !== ref)
       flipTabs(() => tabs.insertBefore(dragged, ref));
+    // …and the CUE for what a release here would do to this session's TAGS (drag into / out of a group,
+    // the user 2026-09-23): the group about to be joined wears the accent ring, a tag about to come off
+    // says which. Read from the tab's place AFTER the insert above — the row the user is looking at — so
+    // the cue and the drop below can only agree; a plain reorder shows nothing at all. Off the unions
+    // snapshotted at dragstart (dragUnions), the ones this frozen strip was drawn from, so the tick costs
+    // no blob walk; the drop re-reads the live blob, which is what it writes against.
+    const { drop: d, head } = tabDropFor(dragged, draggedId, dragUnions);
+    paintDragCue(tabs, dragged, d, head, dragUnions);
+  });
+  // The cue goes when the pointer leaves the strip (a drag on its way to the composer, another pane, or
+  // out of the window): the dragover stops firing there, so nothing else would take it down until
+  // dragend. A dragleave whose point is still inside the strip is a move between its children, not a
+  // leave — the relatedTarget of a drag event names nothing to test (Chromium leaves it null).
+  tabs.addEventListener("dragleave", (e) => {
+    if (!draggedId) return;
+    const r = tabs.getBoundingClientRect();
+    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return;
+    clearDragCue();
   });
   // Drop commits the LIVE DOM position through the same reorderTo the strip has always used —
   // neighbor id + side — so persistence and the kernel write are byte-identical, and ids that a
@@ -21395,6 +21528,11 @@ setupSettings();
     e.preventDefault();
     const dragged = draggedEl && draggedEl.isConnected ? draggedEl : null;   // THIS copy, not the first tab wearing the id (T264b)
     if (!dragged) return;
+    // WHAT THIS DROP DOES TO THE SESSION'S TAGS, read BEFORE the reorder moves anything (drag-join.ts;
+    // the same rule the cue painted, off the same zone): a drop in a group's row the session is not in
+    // ADDS that tag, a drop on the ungrouped trail REMOVES the tag of the copy that was dragged, and
+    // anything else is the plain reorder below and nothing more.
+    const d = tabDropFor(dragged, draggedId, viewTagUnion(effViews())).drop;
     // the neighbours are TABS IN THE DRAGGED COPY'S OWN GROUP first (T264b): a drop at a group's head
     // used to anchor on the group above's last tab — a tab whose place in the global order says
     // nothing about the group dragged in — so the drop landed elsewhere and the session's other copy
@@ -21418,6 +21556,9 @@ setupSettings();
     // only this session's copies) dragend takes the cancel path and FLIPs the copy home
     if (prev?.dataset?.id) tabDragCommitted = reorderTo(draggedId, prev.dataset.id, true);
     else if (next?.dataset?.id) tabDragCommitted = reorderTo(draggedId, next.dataset.id, false);   // a refused reorder is a cancelled drag: dragend FLIPs the strip home
+    // the tag write rides the SAME gesture, after the position (both are this drop's): a tag written is a
+    // committed drag too, so dragend flushes the render instead of FLIPping the copy home
+    if (postTabDropTag(d, draggedId)) tabDragCommitted = true;
   });
 })();
 // The chat page's hidden word for the kernel's pane shim (chat-visibility.ts): the chat gates no paint, so this
