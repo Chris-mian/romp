@@ -10,14 +10,15 @@ seams of tests/test_postal_bus_scope.py and tests/test_cut_turn_tree_kill.py).
     then the bus), and the real SdkBackend._end_cli_tree on the sh pid with a real `ps` listing: systemd-run execs the
     bus in place, so the bus is still in that tree, and the walk must spare it.
 
-Run only when ROMP_BUS_SCOPE_LIVE=1, on Linux, with a user manager that starts a transient scope: otherwise the class
+Run only when ROMP_BUS_SCOPE_LIVE=1 and ROMP_BUS_SCOPE_LIVE_DIR names a writable directory outside the temporary
+directory (for example /var/tmp), on Linux, with a user manager that starts a transient scope: otherwise the class
 is skipped (a class-level skip, so a run of this module alone exits 0, and nothing touches systemd at import; the
 preflight scope starts in setUpClass, fold 2 of that review), and CI and every default run execute nothing here. It
 starts and stops real transient units
 on this machine's user manager, which is why it is opt-in: the caller's scope (`romp-session-TESTHOST-live-…`, a name
 the kernel's sweep never matches, since TESTHOST is not a hex session id) and the bus's own (`romp-postal-bus-…`), and
-it stops every one it made. Everything else is private: the state root sits under /var/tmp, outside the temporary
-directory, because under a temporary root the bus starts in place by design (_test_root_signal); HOME sits inside it;
+it stops every one it made. Everything else is private: the state root sits under ROMP_BUS_SCOPE_LIVE_DIR, outside the
+temporary directory, because under a temporary root the bus starts in place by design (_test_root_signal); HOME sits inside it;
 the port is a free loopback one, never the machine's; ROMP_KERNEL_PORT=1 answers nothing; the serve token is
 synthetic. The children get an environment built from scratch, without PYTEST_CURRENT_TEST, for the same reason. Only
 a process carrying this test's own state root is ever signaled by the cleanup.
@@ -36,7 +37,11 @@ import unittest
 import urllib.request
 
 LIVE_VAR = "ROMP_BUS_SCOPE_LIVE"
-STATE_PARENT = "/var/tmp"   # outside the temporary directory (the docstring)
+DIR_VAR = "ROMP_BUS_SCOPE_LIVE_DIR"
+# The state root must sit OUTSIDE the temporary directory, since under it the bus is a test's and starts in place
+# (_test_root_signal), so the operator names a writable directory for the opt-in run; the tests' hygiene rule forbids
+# pinning a temp path to a literal directory, so there is no default (2026-09-23, the CI run of this lane)
+STATE_PARENT = os.environ.get(DIR_VAR, "")
 
 
 def _gate():
@@ -45,6 +50,8 @@ def _gate():
         return "opt-in: %s=1 starts real transient scopes on this machine's user manager" % LIVE_VAR
     if not sys.platform.startswith("linux") or not (shutil.which("systemd-run") and shutil.which("systemctl")):
         return "no systemd here"
+    if not STATE_PARENT:
+        return "opt-in: %s names a writable directory outside the temporary directory for the state root" % DIR_VAR
     if not os.access(STATE_PARENT, os.W_OK):
         return "%s is not writable" % STATE_PARENT
     return None
