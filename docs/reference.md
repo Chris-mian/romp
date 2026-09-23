@@ -286,7 +286,10 @@ turn ends.
 
 Above the composer, a box headed **Needs you** lists what the session you are reading needs from you.
 It opens in steps: collapsed to its header line (the label and the count) until you click it, a first
-click showing the items, a second the full context under each. Each item has a way to act: a question a
+click showing the items, a second the full context under each, a third folding it back to the header line;
+the header is a button, so Tab reaches it and Enter or Space opens it, and the header's own gear opens the
+setting below. While a row says romp's judges are refused their credential, the box stands open to the items,
+so the fault is not hidden under the header. Each item has a way to act: a question a
 judge filed (the card's title and its decision brief, with **Reply**, which points the composer at that
 card the way Follow up does, and **Clear**), and a held message from another session with its own **Approve** and
 **Deny**; and, when romp's judges cannot read the session because the credential they bill is
@@ -299,8 +302,8 @@ the session has nothing for you. An item leaves with the frame that resolves it:
 judges file it, the decision, the clear. A clear is a row in the state directory's `cleared.jsonl`, the
 clears log; a card an undo could not finish bringing back is noted in `cleared-owed.jsonl` beside it, so
 the next Undo brings that card back first, across a restart. The gear's **Needs you box** setting, under Chat in the
-section **Boxes below the transcript**, on by default, hides the box; the tab ring and the feed still say what needs
-you. It is per browser, like the other chat settings.
+section **Boxes below the transcript**, on by default, hides the box; the tab (its count dot, or the outline ring with
+the badge off) and the feed still say what needs you. It is per browser, like the other chat settings.
 
 ### Fast mode, from the chat statusline
 

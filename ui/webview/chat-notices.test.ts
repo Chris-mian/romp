@@ -1,11 +1,12 @@
 // The chat page's NEEDS YOU BOX (#notices; plans/needs-you.md, phase three; the approval box of plans/notice-cards.md, "Action
 // kinds and the held-mail card", 2026-09-19, before it): the active session's Needs you items that are not hard stops, listed
 // above the background box under a "Needs you · N" header, rendered from status.notices on every status change. A goal row
-// (kind "goal") offers Reply (the composer takes the card), Continue where the card offers it and Clear, on the card's own
-// wires; a notice row posts the same noticeAction wire the feed card posts (the action's KIND with the stored body, a deny's
-// optional note as the click's input), re-armed or removed on noticeActionDone, or Clear when it has no stored action. The
-// gear's Needs you box switch hides the box and leaves the ring. Source pins (the chat renderer has no jsdom harness); the
-// behaviour rides tests/test_held_mail_chat_served.py and tests/test_needs_you_box_chat_served.py.
+// (kind "goal") offers Reply (the composer takes the card) and Clear, on the card's own wires (the Continue button left the
+// row on 2026-09-23; the stored offer and its wire stay); a notice row posts the same noticeAction wire the feed card posts
+// (the action's KIND with the stored body, a deny's optional note as the click's input), re-armed or removed on
+// noticeActionDone, or Clear when it has no stored action. The gear's Needs you box switch hides the box; the tab's cue and
+// the feed still say it. Source pins (the chat renderer has no jsdom harness); the behaviour rides
+// tests/test_held_mail_chat_served.py and tests/test_needs_you_box_chat_served.py.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -114,14 +115,19 @@ test("a refused act re-arms the row the kernel's reply names, with the reason in
   assert.ok(KERNEL.includes("if _ids and LEDGER_KEY not in _skipped:"), "...and so does the batch clear");
 });
 
-test("the box is collapsed by default and opens in steps (the user 2026-09-23): three levels the page holds per session, the header's click advancing them, the sheet hiding the rows below level 1 and the background below level 2", () => {
-  assert.match(RENDER, /const noticeBoxLevel = new Map<string, number>\(\);/, "the page's state, never a timer");
-  assert.match(fn("noticeBoxLevelOf"), /return noticeBoxLevel\.get\(sid\) \|\| 0;/, "collapsed by default");
-  assert.match(fn("applyNoticeBoxLevel"), /host\.classList\.toggle\("ntc-l0", level === 0\); host\.classList\.toggle\("ntc-l1", level === 1\); host\.classList\.toggle\("ntc-l2", level === 2\);/, "one class per level on the box");
-  assert.match(fn("renderNotices"), /applyNoticeBoxLevel\(host, s\.id\);/, "applied on every render, before the rows");
+test("the box is collapsed by default and opens in steps (the user 2026-09-23): three levels the page holds per session in the one fold store, the header's click advancing them, the sheet hiding the rows below level 1 and the background below level 2", () => {
+  // the level lives in openFolds, the ONE fold store (ui/CLAUDE.md), as two boolean keys per session set together by the click (the second
+  // contributor's post-merge review of PR 2093: a Map of its own stood outside the census of merged keys and every reset that walks the store)
+  assert.match(RENDER, /function noticeBoxKeys\(sid: string\): \[string, string\] \{ return \["ntcbox:" \+ sid \+ ":items", "ntcbox:" \+ sid \+ ":context"\]; \}/, "one key per level above 0");
+  assert.doesNotMatch(RENDER, /noticeBoxLevel\b/, "the Map of its own is gone");
+  assert.match(fn("noticeBoxLevelOf"), /const \[k1, k2\] = noticeBoxKeys\(sid\); return openFolds\.has\(k2\) \? 2 : openFolds\.has\(k1\) \? 1 : 0;/, "collapsed by default: neither key");
+  assert.match(fn("setNoticeBoxLevel"), /for \(const \[k, on\] of \[\[k1, level >= 1\], \[k2, level >= 2\]\] as \[string, boolean\]\[\]\) \{ if \(on\) openFolds\.add\(k\); else openFolds\.delete\(k\); \}/, "both keys set together");
+  assert.match(fn("applyNoticeBoxLevel"), /const level = noticeBoxShownLevel\(sid, rows\);\s*\n\s*host\.classList\.toggle\("ntc-l0", level === 0\); host\.classList\.toggle\("ntc-l1", level === 1\); host\.classList\.toggle\("ntc-l2", level === 2\);/, "one class per level on the box, the shown level (a credential row floors it)");
+  assert.match(fn("renderNotices"), /applyNoticeBoxLevel\(host, s\.id, rows\);/, "applied on every render, before the rows");
+  assert.doesNotMatch(fn("renderNotices"), /setNoticeBoxLevel|openFolds\.(add|delete)\(/, "the renderer never writes the level");
   const i = RENDER.indexOf('const host = document.getElementById("notices");\n  if (!host) return;\n  const rowOf');
   const d = RENDER.slice(i, RENDER.indexOf("})();", i));
-  assert.match(d, /"ntc-fold": \(\) => \{ if \(!activeId\) return; noticeBoxLevel\.set\(activeId, \(noticeBoxLevelOf\(activeId\) \+ 1\) % 3\); renderNotices\(\); \},/, "the header's click: the items, then the full context, then folded back");
+  assert.match(d, /"ntc-fold": \(\) => \{ if \(!activeId\) return; const s = liveSession\(activeId\); setNoticeBoxLevel\(activeId, \(noticeBoxShownLevel\(activeId, \(s && s\.status && s\.status\.notices\) \|\| \[\]\) \+ 1\) % 3\); renderNotices\(\); \},/, "the header's click: the items, then the full context, then folded back, from the level shown");
   assert.match(CSS, /#notices\.ntc-l0 \.ntc-row \{ display: none; \}/, "level 0: the rows hidden");
   assert.match(CSS, /#notices:not\(\.ntc-l2\) \.ntc-body, #notices:not\(\.ntc-l2\) \.ntc-attach, #notices:not\(\.ntc-l2\) \.ntc-more \{ display: none; \}/, "below level 2: the background paragraph, its disclosure and the attachment hidden");
   assert.match(CSS, /\.ntc-head \.ntc-caret \{[^}]*font-size: 0\.72em; width: 10px;/, "the awaiting box's caret");
@@ -129,7 +135,10 @@ test("the box is collapsed by default and opens in steps (the user 2026-09-23): 
 
 test("phase three: a goal row's Reply and Clear on the card's own wires (Continue stored, its button gone since 2026-09-23); a no-action notice's Clear; the kind and the offer ride the row's face and its type", () => {
   assert.match(RENDER, /kind\?: "goal" \| "notice";/, "the row says its kind"); assert.match(RENDER, /cont\?: boolean;/, "and whether Continue is offered");
-  assert.match(fn("noticeActionsSig"), /JSON\.stringify\(\[n\.kind \|\| "notice", !!n\.cont, n\.fix \|\| "", \(n\.actions \|\| \[\]\)\.map/, "the face signature carries the kind, the offer and the fix: a Continue that appears rebuilds the buttons");
+  const sigLine = (RENDER.match(/function noticeActionsSig\(n: ChatNotice\): string \{ return [^\n]*/) || [""])[0];
+  assert.match(sigLine, /JSON\.stringify\(\[n\.kind \|\| "notice", n\.fix \|\| "", \(n\.actions \|\| \[\]\)\.map/, "the face signature carries the kind, the fix and the actions");
+  assert.doesNotMatch(sigLine, /n\.cont/, "and NOT the Continue offer while no button reads it (the second contributor's post-merge review of PR 2093: a backend going up or down flipped it and rebuilt the row, wiping a refusal line and re-enabling a latched Clear)");
+  assert.match(fn("awaitKey"), /!!n\.cont/, "the frame's key still carries the offer: the row repaints when it returns with the button");
   const plain = fn("noticeRowPlain");
   assert.match(plain, /if \(n\.kind === "goal"\) \{[^]*?acts\.appendChild\(noticeButton\("Reply", "ntc-ok", "ntc-reply", 0\)\);[^\n]*\n\s*acts\.appendChild\(noticeButton\("Clear", "ntc-clear", "ntc-clear", 1\)\);[^\n]*\n\s*return;/, "a goal row: Reply, then Clear at the next index; no Continue button (the user 2026-09-23: Reply and Clear only for now, the stored offer and its wire kept)");
   assert.doesNotMatch(plain, /noticeButton\("Continue"/, "the Continue button is gone from every row");
@@ -153,6 +162,39 @@ test("phase three: a goal row's Reply and Clear on the card's own wires (Continu
   assert.match(CSS, /\.ntc-head \{[^}]*border-bottom: 1px solid var\(--box-border\);/, "the header bar in the background box's grammar");
   assert.match(CSS, /\.ntc-head \.ntc-dot \{[^}]*background: var\(--st-needs-bg\); \}/, "the dot in the token");
   assert.doesNotMatch(CSS.slice(CSS.indexOf("#notices {"), CSS.indexOf("\n", CSS.indexOf("#notices {") + 200)), /--st-working-bg|border-left: 3px/, "the working gold's thick edge is gone: one thin line in the token, the awaiting box's dress");
+});
+
+test("the keyboard reaches both box headers (the second contributor's post-merge review of PR 2093): a button role and a tab stop, Enter or Space pressing the header, the expanded state with the level, the caret decoration, the next step as the title", () => {
+  const h = fn("buildNoticeHead");
+  assert.match(h, /head\.setAttribute\("role", "button"\); head\.tabIndex = 0;/, "the Needs you header is a button the keyboard can reach");
+  assert.match(h, /head\.addEventListener\("keydown", \(e\) => \{ if \(e\.target !== head\) return; if \(e\.key === "Enter" \|\| e\.key === " "\) \{ e\.preventDefault\(\); head\.click\(\); \} \}\);/, "Enter or Space press the header through its click (the delegate's path), focus kept; a key on the gear inside is the gear's own");
+  assert.match(h, /const caret = el\("span", "ntc-caret"\); caret\.setAttribute\("aria-hidden", "true"\); head\.appendChild\(caret\);/, "the caret is decoration");
+  assert.doesNotMatch(h, /head\.setAttribute\("aria-label"/, "no aria-label: it would drop 'Needs you · N' from the name");
+  const a = fn("applyNoticeBoxLevel");
+  assert.match(a, /head\.setAttribute\("aria-expanded", level > 0 \? "true" : "false"\); head\.title = level === 0 \? "Show the items" : level === 1 \? "Show the full context" : "Collapse";/, "the expanded state and the next step as the title move with the level");
+  assert.doesNotMatch(a, /caret\.title/, "the title is the header's, not the hidden caret's");
+  const bg = RENDER.split("function renderBgTasks(")[1].split("\nfunction ")[0];
+  assert.match(bg, /head\.setAttribute\("role", "button"\); head\.tabIndex = 0; head\.setAttribute\("aria-expanded", open \? "true" : "false"\);/, "the background box's header, the same gap at the base, has the same route");
+  assert.match(bg, /head\.addEventListener\("keydown", \(e\) => \{ if \(e\.target !== head\) return; if \(e\.key === "Enter" \|\| e\.key === " "\) \{ e\.preventDefault\(\); head\.click\(\); \} \}\);/);
+  assert.match(bg, /car\.setAttribute\("aria-hidden", "true"\)/);
+});
+
+test("a judges' credential row floors the box at the items while it shows (the second contributor's post-merge review of PR 2093): a fault must not hide under a header that reads like a question's", () => {
+  assert.match(fn("noticeBoxFloor"), /return rows\.some\(\(n\) => n\.kind === "goal" && n\.fix === "credential"\) \? 1 : 0;/);
+  assert.match(fn("noticeBoxShownLevel"), /return Math\.max\(noticeBoxLevelOf\(sid\), noticeBoxFloor\(rows\)\);/, "the shown level is the stored one or the floor, whichever is higher; the stored level is untouched, so the box folds back when the row leaves");
+});
+
+test("the box's own gear (the second contributor's post-merge review of PR 2093: the strip's gear lands on Tab strip with the box's section out of view): the shell's glyph at the header's right end, opening the settings' Chat tab at the Boxes section, drawn only where a settings card can open", () => {
+  const h = fn("buildNoticeHead");
+  assert.match(h, /if \(\(window as any\)\.__rompShowStrip \|\| inRompShell\(\)\) \{\s*\n\s*const gear = el\("button", "ntc-gear"\) as HTMLButtonElement; gear\.type = "button"; gear\.dataset\.act = "ntc-gear";/, "the same reachability gate as the strip's gear");
+  assert.match(h, /gear\.title = "Needs you box settings"; gear\.setAttribute\("aria-label", "Needs you box settings"\); gear\.textContent = GEAR_GLYPH;/);
+  const i = RENDER.indexOf('const host = document.getElementById("notices");\n  if (!host) return;\n  const rowOf');
+  const d = RENDER.slice(i, RENDER.indexOf("})();", i));
+  assert.match(d, /"ntc-gear": \(\) => openSettingsOn\("chat", "boxes"\),/, "straight to the section that holds the switch");
+  const GEAR = fs.readFileSync(path.join(UI, "gear.js"), "utf8");
+  assert.match(GEAR, /<div class='rs-sec' data-section=boxes>Boxes below the transcript<\/div>/, "the anchor showSection scrolls to");
+  assert.match(CSS, /\.ntc-head \.ntc-gear \{[^}]*font-size: 15px; line-height: 1; border: none; border-radius: 5px; background: transparent; color: var\(--dim\);/, "the strip gear's shape at the header's size, in the box's tokens");
+  assert.match(CSS, /\.ntc-head \.ntc-gear:hover \{ color: var\(--fg\); background: color-mix\(in srgb, var\(--fg\) 8%, transparent\); \}/, "the hover in tokens too (css-vocab.test.ts reads every .ntc- colour)");
 });
 
 test("the box's chrome: the background box's frame, its one thin edge in the Needs you token, a header bar with the dot, above the background box, dense-chrome aware", () => {

@@ -15034,7 +15034,9 @@ function renderSubHead(): void {
 // container (installed once, below, like the background box's), so a press lands whatever the rows did meanwhile. The body
 // and the attachment are the notice face the feed card shows (notice-face.ts): one face for both surfaces (low e).
 interface NoticeRowEl extends HTMLElement { _sig?: string; _title?: string; _body?: string; _att?: string }
-function noticeActionsSig(n: ChatNotice): string { return JSON.stringify([n.kind || "notice", !!n.cont, n.fix || "", (n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])]); }
+function noticeActionsSig(n: ChatNotice): string { return JSON.stringify([n.kind || "notice", n.fix || "", (n.actions || []).map((a) => [a.label, a.kind || "", a.route || "", a.body])]); }   // the Continue offer
+//   (n.cont) is not in it: no button reads it since 2026-09-23, and with it in, a backend going up or down rebuilt the row with the same buttons,
+//   wiping a refusal line and re-enabling a latched Clear (the second contributor's post-merge review of PR 2093); it returns with the button
 function noticeRowSelector(itemId: string): string { return '#notices .ntc-row[data-item="' + itemId.replace(/["\\]/g, "\\$&") + '"]'; }
 function noticeButton(label: string, cls: string, act: string, idx: number): HTMLButtonElement {
   const b = document.createElement("button"); b.className = "ntc-btn " + cls; b.textContent = label; (b as any)._idle = label;
@@ -15100,9 +15102,10 @@ function updateNoticeRow(row: NoticeRowEl, n: ChatNotice, sid: string): void {
 // the brief's disclosure button, on the row's own delegate (act ntc-more) and not on the body div; present only while the clamped body hides
 // lines, so a short brief shows no control; kept out of the latch (a disclosure is not a decision)
 function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
-  // a zero measure is no information (the post-merge review of PR 1967): a display:none pane lays nothing out, so the pass would remove a
-  // closed row's button or leave a fresh row without one until the next repaint; the row stands as it is, and the pane's return re-runs the
-  // pass (renderNoticeDisclosures, from the chat visibility watcher)
+  // a zero measure is no information (the post-merge review of PR 1967): a display:none pane lays nothing out, and so does the box below
+  // level 2, where the stylesheet hides the body itself (#notices:not(.ntc-l2) .ntc-body), so the pass would remove a closed row's button
+  // or leave a fresh row without one until the next repaint; the row stands as it is, and the pane's return re-runs the pass
+  // (renderNoticeDisclosures, from the chat visibility watcher), as the header's click to the full context re-renders the box
   if (body && body.style.display !== "none" && body.clientHeight === 0 && body.scrollHeight === 0) return;
   let b = row.querySelector<HTMLButtonElement>(".ntc-more");
   const overflows = !!body && body.style.display !== "none" && body.scrollHeight > body.clientHeight + 1;
@@ -15114,23 +15117,52 @@ function noticeMoreButton(row: HTMLElement, body: HTMLElement | null): void {
 function buildNoticeHead(): HTMLElement {
   const head = document.createElement("div"); head.className = "ntc-head";
   head.dataset.act = "ntc-fold";   // the header line is the box's fold control (the user 2026-09-23): a click advances the level, on the box's delegate
-  head.appendChild(el("span", "ntc-caret"));
+  // THE KEYBOARD ROUTE (the second contributor's post-merge review of PR 2093): level 0 hides every row, so a header the keyboard could not
+  // reach left Tab and Shift+Tab nothing to stop on inside the box, where before the levels they reached every row's buttons. A button role
+  // and a tab stop, as the tab group head has; Enter or Space press the header through its click, the delegate's path, with focus kept on it
+  // (a key on the gear below is the gear's own); the expanded state moves with the level (applyNoticeBoxLevel), which also puts the next step
+  // in the header's title, never an aria-label, which would drop "Needs you · N" from the name; the caret is decoration
+  head.setAttribute("role", "button"); head.tabIndex = 0;
+  head.addEventListener("keydown", (e) => { if (e.target !== head) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } });
+  const caret = el("span", "ntc-caret"); caret.setAttribute("aria-hidden", "true"); head.appendChild(caret);
   head.appendChild(el("span", "ntc-dot"));
   head.appendChild(el("span", "ntc-label"));
+  // THE BOX'S OWN GEAR (the second contributor's post-merge review of PR 2093: the strip's gear, the one section-targeted opener, lands on
+  // Tab strip with the box's section out of view above it): the shell's gear glyph at the header's right end, opening the settings' Chat tab
+  // scrolled to the "Boxes below the transcript" section (gear.js showSection), so the switch is reachable from the box the person is
+  // looking at; drawn only where a settings card can open, as the strip's gear is
+  if ((window as any).__rompShowStrip || inRompShell()) {
+    const gear = el("button", "ntc-gear") as HTMLButtonElement; gear.type = "button"; gear.dataset.act = "ntc-gear";
+    gear.title = "Needs you box settings"; gear.setAttribute("aria-label", "Needs you box settings"); gear.textContent = GEAR_GLYPH;
+    head.appendChild(gear);
+  }
   return head;
 }
 // THE BOX'S THREE LEVELS (the user 2026-09-23, who wanted the box collapsed by default like the awaiting box and opened in steps): 0, the
 // header line alone (the label and the count); 1, the items (each row's title and its buttons); 2, the full context (the background paragraph
 // under each title, with its disclosure where the brief runs long, and the attachment). The level is the PAGE's state for the session,
-// never a timer: kept here across the per-frame re-render (renderNotices never writes it) and reset only with the page. The header's
-// caret says which way the next click goes; a click at the last level folds the box back to its header line.
-const noticeBoxLevel = new Map<string, number>();
-function noticeBoxLevelOf(sid: string): number { return noticeBoxLevel.get(sid) || 0; }
-function applyNoticeBoxLevel(host: HTMLElement, sid: string): void {
-  const level = noticeBoxLevelOf(sid);
+// never a timer: kept in openFolds, the ONE fold store (ui/CLAUDE.md; the second contributor's post-merge review of PR 2093: a Map of its own
+// stood outside the census of the merged keys and every reset that walks the store), as two boolean keys per session, one per level above 0,
+// set together by the header's click; the per-frame re-render only reads them (renderNotices never writes the level), and the page's reload
+// resets them. The header's title names the next step; the caret points right below the last level and down at it, the awaiting box's
+// grammar; a click at the last level folds the box back to its header line. A judges' credential row FLOORS the box at level 1 while it
+// shows (the same review: at level 0 the refusal hid under a header that read like a question's; a fault must not hide), so the click
+// cycles between the items and the full context until the row leaves.
+function noticeBoxKeys(sid: string): [string, string] { return ["ntcbox:" + sid + ":items", "ntcbox:" + sid + ":context"]; }
+function noticeBoxLevelOf(sid: string): number { const [k1, k2] = noticeBoxKeys(sid); return openFolds.has(k2) ? 2 : openFolds.has(k1) ? 1 : 0; }
+function setNoticeBoxLevel(sid: string, level: number): void {
+  const [k1, k2] = noticeBoxKeys(sid);
+  for (const [k, on] of [[k1, level >= 1], [k2, level >= 2]] as [string, boolean][]) { if (on) openFolds.add(k); else openFolds.delete(k); }
+}
+function noticeBoxFloor(rows: ChatNotice[]): number { return rows.some((n) => n.kind === "goal" && n.fix === "credential") ? 1 : 0; }
+function noticeBoxShownLevel(sid: string, rows: ChatNotice[]): number { return Math.max(noticeBoxLevelOf(sid), noticeBoxFloor(rows)); }
+function applyNoticeBoxLevel(host: HTMLElement, sid: string, rows: ChatNotice[]): void {
+  const level = noticeBoxShownLevel(sid, rows);
   host.classList.toggle("ntc-l0", level === 0); host.classList.toggle("ntc-l1", level === 1); host.classList.toggle("ntc-l2", level === 2);
+  const head = host.querySelector<HTMLElement>(".ntc-head");
+  if (head) { head.setAttribute("aria-expanded", level > 0 ? "true" : "false"); head.title = level === 0 ? "Show the items" : level === 1 ? "Show the full context" : "Collapse"; }
   const caret = host.querySelector<HTMLElement>(".ntc-head .ntc-caret");
-  if (caret) { caret.textContent = level === 2 ? "\u25be" : "\u25b8"; caret.title = level === 0 ? "Show the items" : level === 1 ? "Show the full context" : "Collapse"; }
+  if (caret) caret.textContent = level === 2 ? "\u25be" : "\u25b8";
 }
 function renderNotices(): void {
   const host = document.getElementById("notices");
@@ -15142,7 +15174,7 @@ function renderNotices(): void {
   let head = host.querySelector<HTMLElement>(".ntc-head");
   if (!head) { head = buildNoticeHead(); host.prepend(head); }
   const lab = head.querySelector<HTMLElement>(".ntc-label"); if (lab) lab.textContent = "Needs you · " + rows.length;
-  applyNoticeBoxLevel(host, s.id);   // the level the page holds for this session, before the rows so a fresh row lands under the right classes
+  applyNoticeBoxLevel(host, s.id, rows);   // the level the page holds for this session (a credential row floors it), before the rows so a fresh row lands under the right classes
   const want = new Set(rows.map((n) => n.itemId));
   for (const r of Array.from(host.querySelectorAll<HTMLElement>(".ntc-row"))) if (!want.has(r.dataset.item || "")) r.remove();
   let prev: HTMLElement = head;   // the rows follow the header, in the frame's order
@@ -15211,7 +15243,12 @@ function renderBgTasks() {
   const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, tasks.length ? (tasks[0].status || "running") : "running");
   const head = el("div", "bg-fold-head " + (why ? "bg-await" : "bg-" + worst) + (open ? " open" : ""));
   head.dataset.act = "bg-fold"; head.dataset.id = sid;
-  const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);   // ▸ closed → ▾ open (expands DOWNWARD beneath the header)
+  // the keyboard's route to the rows (the second contributor's post-merge review of PR 2093: the same gap as the Needs you box's header): a
+  // button role and a tab stop, Enter or Space pressing the header through its click, the expanded state with the fold, the caret decoration
+  head.setAttribute("role", "button"); head.tabIndex = 0; head.setAttribute("aria-expanded", open ? "true" : "false");
+  head.title = open ? "Collapse" : "Show the rows";
+  head.addEventListener("keydown", (e) => { if (e.target !== head) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.click(); } });
+  const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; car.setAttribute("aria-hidden", "true"); head.appendChild(car);   // ▸ closed → ▾ open (expands DOWNWARD beneath the header)
   head.appendChild(el("span", "bg-dot"));
   const lab = el("span", "bg-fold-label");
   // THE HEADER'S RULE (T394 round three, lows 1 and 2; round four): the leading word is the wait and its count is the awaited rows
@@ -21278,7 +21315,8 @@ setupSettings();
     "ntc-deny-step": (el) => { const p = pick(el); if (p) noticeRowDenyStep(p[0], Number(el.dataset.idx)); },
     "ntc-deny-note": (el) => { const p = pick(el); if (!p) return; const t = (p[0].querySelector<HTMLTextAreaElement>(".ntc-note")?.value || "").trim(); go(p[0], p[1], p[2], el as HTMLButtonElement, t ? { note: t } : undefined); },
     "ntc-deny-bare": (el) => { const p = pick(el); if (p) go(p[0], p[1], p[2], el as HTMLButtonElement); },
-    "ntc-fold": () => { if (!activeId) return; noticeBoxLevel.set(activeId, (noticeBoxLevelOf(activeId) + 1) % 3); renderNotices(); },   // the header line: one click the items, a second the full context, a third folds back; the page's state, never a timer (the user 2026-09-23)
+    "ntc-fold": () => { if (!activeId) return; const s = liveSession(activeId); setNoticeBoxLevel(activeId, (noticeBoxShownLevel(activeId, (s && s.status && s.status.notices) || []) + 1) % 3); renderNotices(); },   // the header line: one click the items, a second the full context, a third folds back; the page's state, never a timer (the user 2026-09-23)
+    "ntc-gear": () => openSettingsOn("chat", "boxes"),   // the box's own gear: the settings' Chat tab scrolled to the section that holds the box's switch
     "ntc-more": (el) => { const row = rowOf(el); if (!row) return; const key = "notice:" + (row.dataset.item || "") + ":brief"; if (openFolds.has(key)) openFolds.delete(key); else openFolds.add(key); row.classList.toggle("ntc-open", openFolds.has(key)); noticeMoreButton(row, row.querySelector<HTMLElement>(".ntc-body")); },   // the brief's disclosure: no latch, a toggle (the second contributor's review)
     "ntc-back": (el) => { const row = rowOf(el); const n = row && noticeOf(row); if (row && n) noticeRowPlain(row, n); },
     "ntc-reply": (el) => { const p = item(el); if (p && activeId) setCitation(activeId, { itemId: p[1].itemId, title: p[1].title }); },
