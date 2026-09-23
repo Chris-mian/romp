@@ -3147,6 +3147,9 @@ _router_status_note = [None]                 # the standing EVENT-sourced adviso
 #                                              declared, no gateway, a settings fault) are derived LIVE in _router_status, never frozen
 #                                              here (verify find, 2026-09-22)
 _ROUTER_FETCH_GEN = [None]                   # the generation whose listing fetch is in flight (None when none): the create door reads it
+_ROUTER_SEEN_ON = [False]                    # this kernel life applied the switch ON (a flip, or a boot that installed): a read fault
+#                                              of the switch file holds a create's seed only then; with the switch never seen on, a
+#                                              fault reads as off, as the boot and the payload read it (review round fifteen)
 _ROUTER_FETCH_FAILED_GEN = [None]            # the generation whose listing fetch FAILED (None when none, or once a later flip owns the
 #                                              catalog): a remembered listing-sourced pick is not a removal while this is the current
 #                                              generation, nothing retrying a failed listing (the second reviewer's note, 2026-09-22)
@@ -3159,6 +3162,7 @@ ROUTER_NOTE_NO_GATEWAY = "No gateway configured: ANTHROPIC_BASE_URL is unset or 
 ROUTER_NOTE_LISTING_FAILED = "The gateway's model list could not be fetched; the declared models are offered"
 ROUTER_NOTE_LISTING_FAILED_NONE = "The gateway's model list could not be fetched and nothing is declared; no gateway model is offered"
 ROUTER_NOTE_COUNT_UNKNOWN = "The live sessions could not be counted; one may still run a removed model"
+ROUTER_NOTE_SWITCH_FAULT = "The extra models switch file could not be read; the switch reads as off until it can"
 
 
 def _parse_router_models(raw):
@@ -3557,6 +3561,8 @@ def _set_router_models(enabled, gt=None):
             gen = _ROUTER_GEN[0]            # (review rounds eleven and twelve)
             if enabled and lists:
                 _ROUTER_FETCH_GEN[0] = gen
+            if enabled:
+                _ROUTER_SEEN_ON[0] = True
     # The models frame goes out on EVERY applied flip, the stale paths included (the second reviewer's note, 2026-09-22): the gear's line and
     # the pickers redraw from that frame alone, and a flip whose catalog work a later flip superseded still changed the
     # store the frame's readers consult.
@@ -3601,12 +3607,12 @@ def _router_status():
     """The authed /models payload's `router` section, what the gear's status line reads: the switch, the ids THIS
     kernel parsed at start (after the first-party skip), whether a gateway is configured (null while off: not
     probed), and the standing advisory (or null)."""
-    on = _router_models_on()
+    on, sfault = _router_switch_state()
     gw, gerr = _router_gateway_configured() if on else (None, None)   # not probed while off: null, and no fault line for a
     #                                                                   feature never turned on (review find, 2026-09-21)
     declared = _router_declared_effective()
-    live = None
-    if on:
+    live = ROUTER_NOTE_SWITCH_FAULT if sfault else None   # the switch file could not be read: said in the gear whatever the switch
+    if on and not live:
         # the probe-shaped advisories, LIVE from this call's probe and declaration, never a note frozen at flip time: an
         # operator who fixes the gateway or the declaration sees the line clear on the next read (verify find, 2026-09-22).
         # Composed AHEAD of the event note: a failed listing must not hide that no gateway is configured (review round
@@ -3633,6 +3639,7 @@ def _router_models_boot():
             with _catalog_lock:
                 _ROUTER_GEN[0] += 1
                 gen = _ROUTER_GEN[0]
+                _ROUTER_SEEN_ON[0] = True
             # no early mark here: every create door passes _sdk_ready(), which holds _sdk_lock while this boot runs, so
             # the apply's own guarded write below is in place before a create can read (review round twelve)
     if not on:
@@ -17510,9 +17517,13 @@ def _reset_unvouched_seed():
             on_now, fault = _router_switch_state()   # the switch as it reads NOW, before ANY hold: an off flip in the window
     #                                                  is a removal whatever the listing was doing (review round thirteen),
     #                                                  so every hold below is conditioned on the switch reading on
+    if fault and not _ROUTER_SEEN_ON[0]:
+        fault = None                        # the switch was never applied on in this kernel life: a fault reads as off, as the
+        #                                     boot and the payload read it; holding here would hold every create forever
     if fault and not _router_first_party(seed):
-        # the file could not be READ (an OS fault, not an off): no evidence of a removal, and a reset would name an
-        # untrue cause. Held, said so; this row starts on the account default (review round fourteen)
+        # the file could not be READ (an OS fault, not an off) after this kernel saw the switch on: no evidence of a
+        # removal, and a reset would name an untrue cause. Held, said so; this row starts on the account default (review
+        # rounds fourteen and fifteen)
         sys.stderr.write("sdk-defaults model %r is not offered yet; the extra models switch could not be read (%s), so the seed "
                          "is kept and this session starts on the account default\n" % (seed, fault))
         return "hold"

@@ -298,6 +298,22 @@ class GenerationBumpsUnderTheLock(unittest.TestCase):
         reads = [n for n in ast.walk(inner[0]) if isinstance(n, ast.Name) and n.id in ("_ROUTER_GEN", "_ROUTER_FETCH_GEN", "_ROUTER_FETCH_FAILED_GEN")]
         self.assertTrue(reads, "the marks are read inside both holds")
 
+    def test_the_reset_re_reads_the_switch_inside_the_two_holds(self):
+        # review round fifteen: read after the holds, an on flip landing between the moved check and the switch read
+        # resets a listing seed with the list blamed; pinned: the _router_switch_state call sits in the _catalog_lock body
+        # nested in the _SETTINGS_LOCK body of _reset_unvouched_seed
+        tree = ast.parse(textwrap.dedent(inspect.getsource(km._reset_unvouched_seed)))
+        outer = [w for w in ast.walk(tree) if isinstance(w, ast.With)
+                 and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_SETTINGS_LOCK" for i in w.items)]
+        self.assertEqual(len(outer), 1)
+        inner = [w for w in ast.walk(outer[0]) if isinstance(w, ast.With)
+                 and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_catalog_lock" for i in w.items)]
+        self.assertEqual(len(inner), 1)
+        calls = [n for n in ast.walk(inner[0]) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_router_switch_state"]
+        self.assertEqual(len(calls), 1, "the switch is re-read inside both holds")
+        elsewhere = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_router_switch_state"]
+        self.assertEqual(len(elsewhere), 1, "and nowhere else in the reset")
+
     def test_the_setter_and_the_boot_bump_the_generation_under_the_settings_lock(self):
         self.assertTrue(self._bump_is_locked(km._set_router_models))
         self.assertTrue(self._bump_is_locked(km._router_models_boot))

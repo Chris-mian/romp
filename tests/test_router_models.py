@@ -82,6 +82,7 @@ class _Catalog(unittest.TestCase):
         self._ever = set(km._ROUTER_EVER)
         self._gen = km._ROUTER_GEN[0]
         km._ROUTER_FETCH_GEN[0] = None; km._ROUTER_FETCH_FAILED_GEN[0] = None   # a previous test's generation numbers recur here
+        self._seen_on = km._ROUTER_SEEN_ON[0]
         self._note = km._router_status_note[0]
         self._said = km._router_probe_said[0]
         self._sb_ids = sb._ROUTER_IDS
@@ -117,6 +118,7 @@ class _Catalog(unittest.TestCase):
         km._ROUTER_EVER.clear(); km._ROUTER_EVER.update(self._ever)
         km._ROUTER_GEN[0] = self._gen
         km._ROUTER_FETCH_GEN[0] = None; km._ROUTER_FETCH_FAILED_GEN[0] = None
+        km._ROUTER_SEEN_ON[0] = self._seen_on
         km._router_status_note[0] = self._note
         km._router_probe_said[0] = self._said
         sb._ROUTER_IDS = self._sb_ids
@@ -813,6 +815,20 @@ class Gateway(unittest.TestCase):
         self.assertEqual(km._router_gateway_configured(), (False, None))
         self._settings(None)
         self.assertEqual(km._router_gateway_configured(), (False, None))
+
+    def test_an_unreadable_switch_file_is_said_in_the_payload(self):
+        # review round fifteen: a kernel over an unreadable switch file read it as off with no advisory
+        import os as _os
+        if _os.geteuid() == 0:
+            self.skipTest("root reads any file: the fault cannot be staged")
+        path = km.jd.STATE / km.ROUTER_MODELS_FILE
+        path.write_text(json.dumps({"enabled": True, "gt": 1}))
+        path.chmod(0)
+        try:
+            st = km._router_status()
+            self.assertEqual((st["enabled"], st["gateway"], st["error"]), (False, None, km.ROUTER_NOTE_SWITCH_FAULT))
+        finally:
+            path.chmod(0o644); path.unlink(missing_ok=True)
 
     def test_the_status_runs_no_probe_while_off(self):
         # the second reviewer's note: a probe run unconditionally and masked while off passed the tests; over a bad settings file and no

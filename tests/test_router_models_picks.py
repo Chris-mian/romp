@@ -104,6 +104,8 @@ class _OnThenOff(unittest.TestCase):
         self._ever = set(km._ROUTER_EVER)
         self._gen = km._ROUTER_GEN[0]
         km._ROUTER_FETCH_GEN[0] = None; km._ROUTER_FETCH_FAILED_GEN[0] = None
+        self._seen_on = km._ROUTER_SEEN_ON[0]
+        self.addCleanup(lambda: km._ROUTER_SEEN_ON.__setitem__(0, self._seen_on))
         self._sb_ids = sb._ROUTER_IDS
         for v in ("ROMP_ROUTER_MODELS", "ROMP_ROUTER_MODELS_URL", "ROMP_MODEL_CATALOG", "ANTHROPIC_BASE_URL"):
             _env(self, v, None)
@@ -688,6 +690,58 @@ class SeedInflight(_OnThenOff):
         self.assertIn("(the extra models switch is off)", self.err.getvalue())
         self.assertNotIn("not offered yet", self.err.getvalue())
 
+    def test_the_switch_reader_tells_off_from_a_fault(self):
+        # review round fifteen: the reader's off side had no test; a mutant reading absence or junk as a fault would hold
+        # every listing seed forever on a box with no switch file
+        import os as _os
+        path = km.jd.STATE / km.ROUTER_MODELS_FILE
+        path.unlink(missing_ok=True)
+        self.assertEqual(km._router_switch_state(), (False, None), "absent: off, no fault")
+        path.write_text("{not json")
+        self.assertEqual(km._router_switch_state(), (False, None), "garbled: off, no fault")
+        path.write_text(json.dumps({"enabled": "yes", "gt": 5}))
+        self.assertEqual(km._router_switch_state(), (False, None), "a non-boolean: off, no fault")
+        path.write_text(json.dumps([1, 2]))
+        self.assertEqual(km._router_switch_state(), (False, None), "a non-object: off, no fault")
+        path.write_text(json.dumps({"enabled": True, "gt": 5}))
+        self.assertEqual(km._router_switch_state(), (True, None))
+        if _os.geteuid() != 0:
+            path.chmod(0)
+            try:
+                on, fault = km._router_switch_state()
+                self.assertEqual(on, False)
+                self.assertIn("PermissionError", fault or "", "unreadable: a fault, named")
+            finally:
+                path.chmod(0o644)
+
+    def test_a_deleted_switch_file_resets_a_gateway_seed_with_the_switch_off_cause(self):
+        # the create door over a removed store: off, no fault, the reset with the switch-off cause
+        self._seed("gw-7-nova")
+        (km.jd.STATE / km.ROUTER_MODELS_FILE).unlink(missing_ok=True)
+        self.assertIsNone(km._reset_unvouched_seed())
+        self.assertEqual(self._read(), "default")
+        self.assertIn("(the extra models switch is off)", self.err.getvalue())
+
+    def test_a_fault_before_the_switch_was_ever_on_reads_as_off(self):
+        # review round fifteen: a fault that persists held every create while boot and the payload read it as off; a
+        # fault holds only once this kernel life applied the switch on
+        import os as _os
+        if _os.geteuid() == 0:
+            self.skipTest("root reads any file: the fault cannot be staged")
+        self._seed("gw-7-nova")
+        path = km.jd.STATE / km.ROUTER_MODELS_FILE
+        path.write_text(json.dumps({"enabled": True, "gt": 1}))
+        km._ROUTER_SEEN_ON[0] = False                        # as a kernel booted over an unreadable file: never applied on
+        path.chmod(0)
+        try:
+            self.assertIsNone(km._reset_unvouched_seed(), "never seen on: the fault reads as off")
+            self.assertEqual(self._read(), "default")
+            self.assertIn("(the extra models switch is off)", self.err.getvalue())
+            self.assertNotIn("could not be read", self.err.getvalue())
+        finally:
+            if path.exists():
+                path.chmod(0o644)
+
     def test_a_switch_file_that_cannot_be_read_holds_rather_than_resets(self):
         # review round fourteen: the re-read folded a read fault into "off" and cleared the outage holds, resetting the
         # pick with an untrue cause; a fault is no evidence of a removal
@@ -697,6 +751,7 @@ class SeedInflight(_OnThenOff):
         self._seed("gw-7-nova")
         path = km.jd.STATE / km.ROUTER_MODELS_FILE
         path.write_text(json.dumps({"enabled": True, "gt": 1}))
+        km._ROUTER_SEEN_ON[0] = True                          # this kernel life applied the switch on (the fixture's flip did)
         km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]           # a listing in flight under an on switch
         real_state = km._router_listing_state
 
@@ -757,8 +812,10 @@ class SeedInflight(_OnThenOff):
             if str(path).endswith(km.ROUTER_MODELS_FILE) and not inside.is_set():
                 inside.set()
                 go.wait(5)                  # the flip parks here: the store is written ON, the bump and the mark not yet, all
-            return r                        # inside its settings hold (review round thirteen: parked before the store write
-        #                                     the test pinned nothing about the snapshot's settings lock)
+            return r                        # inside its settings hold. In rounds twelve and thirteen the park sat in
+        #                                     _router_fetch_allowed, also after the store write; parked there the test could not
+        #                                     tell a catalog-only snapshot from the two-lock one. The one-hold and two-lock
+        #                                     claims themselves are carried by two structural pins in the pins module.
 
         def listing(url, timeout=4):
             listing_gate.wait(5)
