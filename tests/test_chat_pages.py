@@ -832,8 +832,13 @@ class Proto2Wire(Harness):
         m1 = dict(m); m1["events"] = list(m["events"]) + [{"kind": "apiError", "uuid": "apiError", "text": "x", "status": 500}]
         km._send_chat_locked(c, m1, None, 0, False)
         self.assertEqual(c["echat"][SID]["last"], m["events"][-1]["uuid"], "the base ends on the last transcript event, not the notice")
-        km._send_chat_locked(c, m1, None, len(m1["events"]), False)                  # nothing changed: an empty suffix
-        self.assertEqual((sent[-1]["type"], sent[-1]["events"]), ("chatTail", []))
+        n = len(sent)
+        km._send_chat_locked(c, m1, None, len(m1["events"]), False)                  # nothing changed: the page holds it all
+        self.assertEqual(len(sent), n, "no frame: the empty suffix would leave the page as it is (2026-09-23, test_chat_noop_tail.py)")
+        m1s = dict(m1, status={"state": "working", "sinceEpoch": 1790000000000})   # a status flip alone: an empty suffix
+        km._send_chat_locked(c, m1s, None, len(m1s["events"]), False)
+        self.assertEqual((sent[-1]["type"], sent[-1]["afterUuid"], sent[-1]["events"]), ("chatTail", "apiError", []),
+                         "anchored at the card the client holds, which the base itself never ends on")
         m2 = dict(m); m2["events"] = list(m["events"]) + [{"kind": "user", "md": "next", "uuid": "u_next"}]   # the notice gone, a record appended
         km._send_chat_locked(c, m2, None, len(m["events"]), False)
         d = sent[-1]
@@ -894,7 +899,8 @@ class Proto2Wire(Harness):
         m1 = self._with(m, [echo])
         km._send_chat_locked(c2, m, None, 0, False)
         km._send_chat_locked(c2, m1, None, len(m["events"]), False)
-        km._send_chat_locked(c2, m1, None, len(m1["events"]), False)
+        m1s = dict(m1, status={"state": "working", "sinceEpoch": 1790000000000})     # the status flips (an unchanged one is no frame at all: test_chat_noop_tail.py)
+        km._send_chat_locked(c2, m1s, None, len(m1s["events"]), False)
         self.assertEqual(self._frame(sent2[-1]), ("chatTail", echo["uuid"], []))
         self.assertEqual(c2["echat"][SID]["last"], last_rec)
 

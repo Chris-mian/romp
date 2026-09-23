@@ -31878,7 +31878,7 @@ def _agent_steps(agent_path):
     append-incrementally over the file (em.fold_records: a growing file steps only its new records; a
     finished file costs one read, then a stat per build). None when unreadable or empty. Shipped on the
     event as agentSteps + stepsTotal whether the agent runs or has finished (the fold shows the list
-    either way); the running preview's clock (agentGist: calls/since/last) rides only while it runs."""
+    either way); the running preview's clock (agentGist: calls/since, _gist_of) rides only while it runs."""
     _chat_dep_note_taskout(str(agent_path), _chat_stat_key(str(agent_path)))   # a growing agent file moves the key
     try:
         st = em.fold_records(_AGENT_GIST_CACHE, str(agent_path), _gist_fresh, _gist_step, ckpt="agentGist", drop_after="quiescent")
@@ -31895,7 +31895,12 @@ def _stamp_steps(ev, st):
 
 
 def _gist_of(st):
-    return {"calls": st["calls"], "since": st["since"], "last": st["last"]}
+    """The running preview's clock as the chat ships it: the call count and the first record's stamp, the two fields the
+    page reads (subagent-view.ts clockMeta: the count and the time since `since`). The fold's `last`, the newest record's
+    stamp, stays off the wire (2026-09-23): it moved on every record the agent wrote, and no page reads it, so every move
+    was a card that differed from what the clients held, which a delta can only send as the card and every event after it
+    (a chatTail truncates after its anchor). A session idle while its agents worked took a frame every few seconds for it."""
+    return {"calls": st["calls"], "since": st["since"]}
 
 
 def _launch_fresh():
@@ -51044,6 +51049,37 @@ def _chat_wm_note(client, sid, m):
         client.setdefault("echatWm", {})[sid] = wm
 
 
+# WHAT A CLIENT HOLDS (2026-09-23). The slot dedup (_send_client) compares a frame with the client's LAST frame, which is
+# right for a whole frame and wrong for a delta: after a tail that carried events, the empty tail the next quiet cycle builds
+# (the list unchanged against the baseline, the suffix empty, anchored at the list's last event) differs from that tail
+# byte for byte and went, though applying it changes nothing on the page: the same status, flags and watermark over a list
+# the page already holds to its last event. An observer page on a session idle in awaitingBg while its background agents
+# worked took one after every agent-progress delta, half its chat frames, and rebuilt its window for each (the empty tail
+# dates from the proto-2 wire, a6c57f42; the index wire's empty `from == total` tail is the same frame). So beside every
+# echat write the senders record the VIEW the client holds once the frame lands (_chat_view_key: the key its tail ends on,
+# the status, the three per-session view flags, the watermark), and an empty-suffix tail whose view equals it is not sent.
+# Every other frame goes as before: a tail with events, a status, flag or watermark change, an empty tail that truncates (a
+# trailing card that left the list moves the key the tail ends on), a changed ledger, and every full. The record goes
+# wherever the base goes (a ready, a needFull, a tab leaving the strip), so a page that asked for anything gets it.
+def _chat_view_key(m, end):
+    """The view a client holds of session `m` once a frame cut from it lands: `end` (the key the list's last event carries on
+    the uuid wire, the list's length on the index wire), the status, the notify / hideFromFeed / postalServiceOff flags and
+    the build's watermark, every field an empty-suffix tail carries besides its anchor. A string, compared whole."""
+    return json.dumps([end, m.get("status"), m.get("notify"), m.get("hideFromFeed"), m.get("postalServiceOff"), m.get("wm")],
+                      sort_keys=True, default=str)
+
+
+def _chat_view_held(c, sid, view):
+    """True when client `c` already holds `view` of `sid` (recorded by the last frame it was handed): the empty tail the caller
+    was about to send changes nothing on the page, so it is counted where a deduped frame is and not sent."""
+    if (c.get("echatView") or {}).get(sid) != view:
+        return False
+    road = getattr(_SEND_ROAD, "name", None)
+    _perf("send", slot=_perf_slot(("chat", sid)), bytes=0, deduped=1, held=1)
+    _PERF_STATS.send(("chat", sid), "deduped", 0, road=road)
+    return True
+
+
 def _note_chat_stale(client, sid, new, last, now=None):
     """A chat build OLDER than the one this client already holds was refused (2026-09-22): one stderr line per sid per kernel
     life, and one client-diag row per refusal (surface kernel, what chatStale: the client, the session, both watermarks'
@@ -51786,6 +51822,7 @@ def _client_reset_chat_sid(client, sid):
     skeleton before the full that answers the ask goes out (the mark below)."""
     with _client_lock(client):
         client.get("echat", {}).pop(sid, None)
+        client.get("echatView", {}).pop(sid, None)   # …and the view it held (2026-09-23): the ask's answer is a full, never withheld
         client.get("sent", {}).pop(("chat", sid), None)
         # the watermark floor (echatWm) STAYS (2026-09-23): the page still holds its frames and refuses an older one, so the
         # ask's answer must not be older (_send_chat_locked refuses one once, and the cycle builds afresh); `ready` drops it
@@ -51825,6 +51862,7 @@ def _client_reset_chat_base(client):
     with _client_lock(client):
         client.get("echat", {}).clear()
         client.get("echatWm", {}).clear()   # the watermark floors go with the bases (2026-09-22)
+        client.get("echatView", {}).clear()   # …and the views they held (2026-09-23)
         # …and the reconnect skeleton set (2026-09-07): a renderer that just evaluated holds NOTHING, so there
         # is nothing it could lazily reload — every tab must arrive whole, and the status slots go with the set;
         # and the asked-whole marks (2026-09-19): it asked nothing either, and the connect push below serves the set
@@ -53550,18 +53588,24 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
             else:
                 start = min(change_from, pl + 1) if change_from > 0 else 0   # from the change, or from after the held
             if start > pf:                                #  last record (the overlay cards after it ride the suffix)
-                tail = {"type": "chatTail", "id": sid, "afterUuid": _event_key(evs[start - 1]),
-                        "events": evs[start:], "status": m.get("status"),
-                        # the per-session view flags ride this delta as they ride the index client's (2026-09-11, the bell
-                        # on a key): the empty-suffix tail a flag-only change sends is how another window learns the flip
-                        "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
-                tail["wm"] = m.get("wm")              # what the build read (_chat_wm), for the page's own stale-build rule (2026-09-22)
-                # …and the base it assumes (2026-09-23): the keys of the events ending at the anchor, from the client's own first
-                # edge at most, so a page that holds anything else before the anchor refuses the delta and asks for the full
-                tail["baseFp"] = _chat_base_fp(evs, max(pf, start - CHAT_BASE_FP_K), start)
-                if led_changed:
-                    tail["ledger"] = m.get("ledger")
-                _send_client(c, ("chat", sid), tail, kind="delta")
+                view = _chat_view_key(m, _event_key(evs[-1]))
+                # an EMPTY suffix that would leave the page exactly as it is (the view it holds, no ledger riding) is not sent
+                # (2026-09-23, _chat_view_key's comment); the entries below are written as for a frame that went, since the page
+                # already holds what this one would have left it holding
+                if not (start == total and not led_changed and _chat_view_held(c, sid, view)):
+                    tail = {"type": "chatTail", "id": sid, "afterUuid": _event_key(evs[start - 1]),
+                            "events": evs[start:], "status": m.get("status"),
+                            # the per-session view flags ride this delta as they ride the index client's (2026-09-11, the bell
+                            # on a key): the empty-suffix tail a flag-only change sends is how another window learns the flip
+                            "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
+                    tail["wm"] = m.get("wm")          # what the build read (_chat_wm), for the page's own stale-build rule (2026-09-22)
+                    # …and the base it assumes (2026-09-23): the keys of the events ending at the anchor, from the client's own
+                    # first edge at most, so a page that holds anything else before the anchor refuses the delta and asks for the full
+                    tail["baseFp"] = _chat_base_fp(evs, max(pf, start - CHAT_BASE_FP_K), start)
+                    if led_changed:
+                        tail["ledger"] = m.get("ledger")
+                    _send_client(c, ("chat", sid), tail, kind="delta")
+                c.setdefault("echatView", {})[sid] = view
                 st[sid] = {"first": pc["first"], "last": _last_anchor(evs)}
                 _chat_wm_note(c, sid, m)                  # …and the watermark of the build it now holds (2026-09-22)
                 _note_chat_handed(sid)                    # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
@@ -53651,10 +53695,12 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     # deliberately no delivery and records nothing.
     if total:
         st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
+        c.setdefault("echatView", {})[sid] = _chat_view_key(m, m_send["lastUuid"])   # the view it now holds (2026-09-23)
         _chat_wm_note(c, sid, m)                      # …and the watermark of the build it now holds (2026-09-22)
         _note_chat_handed(sid)                        # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     else:
         st.pop(sid, None)
+        c.get("echatView", {}).pop(sid, None)
     return ms
 
 
@@ -53751,18 +53797,23 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
         pc = None                                     # a proto-2 base cannot serve an index client (a reconnect resets anyway)
     if (pc is not None and change_from > 0 and pc[1] <= change_from <= total
             and pc[0] == (evs[pc[1]].get("uuid") if pc[1] < total else None)):
-        tail = {"type": "chatTail", "id": sid, "from": change_from,
-                "events": evs[change_from:], "total": total, "status": m.get("status"),
-                # the per-session view flags ride the delta as the status does (2026-09-11): a flag flipped in one
-                # window — the bell, the feed mute, the mail mute — reached a caught-up client only with its next FULL
-                # frame, so the other column of a split, or another browser, showed the old bell until something else
-                # changed. An empty suffix with the new flags is the frame a flag-only change rides (the dedup
-                # signature reads them, so the flip alone sends it)
-                "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
-        tail["wm"] = m.get("wm")                      # what the build read (_chat_wm): the page's own copy of the stale-build rule reads it (2026-09-22)
-        if led_changed:                               # the TOC only changed on a judge pass → usually omitted
-            tail["ledger"] = m.get("ledger")
-        _send_client(c, ("chat", sid), tail, kind="delta")   # the chat's delta form, for /perf's sends split
+        view = _chat_view_key(m, total)
+        # the index wire's empty suffix that leaves the page as it is (the view it holds, no ledger riding) is not sent either
+        # (2026-09-23, _chat_view_key's comment)
+        if not (change_from == total and not led_changed and _chat_view_held(c, sid, view)):
+            tail = {"type": "chatTail", "id": sid, "from": change_from,
+                    "events": evs[change_from:], "total": total, "status": m.get("status"),
+                    # the per-session view flags ride the delta as the status does (2026-09-11): a flag flipped in one
+                    # window — the bell, the feed mute, the mail mute — reached a caught-up client only with its next FULL
+                    # frame, so the other column of a split, or another browser, showed the old bell until something else
+                    # changed. An empty suffix with the new flags is the frame a flag-only change rides (the dedup
+                    # signature reads them, so the flip alone sends it)
+                    "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
+            tail["wm"] = m.get("wm")                  # what the build read (_chat_wm): the page's own copy of the stale-build rule reads it (2026-09-22)
+            if led_changed:                           # the TOC only changed on a judge pass → usually omitted
+                tail["ledger"] = m.get("ledger")
+            _send_client(c, ("chat", sid), tail, kind="delta")   # the chat's delta form, for /perf's sends split
+        c.setdefault("echatView", {})[sid] = view
         st[sid] = (pc[0], pc[1])                       # same tail base, now caught up through `total`
         _chat_wm_note(c, sid, m)                       # …and the watermark of the build it now holds (2026-09-22)
         _note_chat_handed(sid)                         # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
@@ -53779,6 +53830,7 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
         m_send = dict(m); m_send["events"] = evs[head_from:]; m_send["headFrom"] = head_from; m_send["headTotal"] = total
         _send_client(c, ("chat", sid), m_send)
     st[sid] = ((evs[head_from].get("uuid") if head_from < total else None), head_from)
+    c.setdefault("echatView", {})[sid] = _chat_view_key(m, total)   # the view it now holds (2026-09-23)
     _chat_wm_note(c, sid, m)                          # …and the watermark of the build it now holds (2026-09-22)
     _note_chat_handed(sid)                            # the entry written: this loop's delivery, for the seed's gate (2026-09-21)
     return ms
@@ -57205,6 +57257,7 @@ def _push(targets, connect=False, live_map=None):
                         for sid in gone:
                             c.get("echat", {}).pop(sid, None)
                             c.get("echatWm", {}).pop(sid, None)   # the watermark floor goes with the base (2026-09-22)
+                            c.get("echatView", {}).pop(sid, None)   # …and the view it held (2026-09-23)
                             c.get("sent", {}).pop(("chat", sid), None)
             # …and every fold entry for a sid no longer shown (loadOlder / connect-push builds) — EXCEPT the
             # comment THREADS the loop below is about to rebuild (2026-09-08): evicting their prefixes here
