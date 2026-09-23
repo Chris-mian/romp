@@ -370,8 +370,8 @@ test("the 5xx marks of the API-health cell clear the validator's two floors agai
 // both filled, no shape apart) recorded for the user's decision, not fixed in this PR (like the compacting pair above).
 test("badge mode: the SIX left-slot dot classes are told apart by shape or colour; each pre-existing filled miss is conceded on the user's decision", () => {
   const css = read("styles.css");
-  const body = (re, what) => { const m = css.match(re); assert.ok(m, what + " rule present"); return m[1]; };
-  const nc = (x) => x.replace(/\/\*[\s\S]*?\*\//g, "");
+  const body = (re: RegExp, what: string) => { const m = css.match(re); assert.ok(m, what + " rule present"); return m[1]; };
+  const nc = (x: string) => x.replace(/\/\*[\s\S]*?\*\//g, "");
   // (a) the SHAPE of each of the six classes styles.css paints in the left slot. HOLLOW (an inset ring, a distinct form):
   // retrying (amber) and unknown (grey). FILLED discs: working (gold), awaiting (green), idle (dim grey, 45% opacity),
   // opening (accent). retrying now SHARES the hollow form with unknown.
@@ -384,21 +384,21 @@ test("badge mode: the SIX left-slot dot classes are told apart by shape or colou
     assert.match(d, new RegExp("background:\\s*var\\(" + tok + "\\)"), sel + " is a FILLED disc (" + tok + ")");
     assert.doesNotMatch(d, /box-shadow/, sel + " has no ring");
   }
-  const SHAPE = { working: "filled", awaiting: "filled", idle: "filled", opening: "filled", retrying: "hollow", unknown: "hollow" };
+  const SHAPE: Record<string, string> = { working: "filled", awaiting: "filled", idle: "filled", opening: "filled", retrying: "hollow", unknown: "hollow" };
   // (b) the amended rule for every pair among the six, both themes: a pair whose shapes DIFFER is told apart by form (no
   // colour floor). A same-shape pair needs the categorical floors (15 full colour, 8 under a red-green deficiency). A
   // same-shape pair whose hues cannot reach them is a PRE-EXISTING miss conceded on the user's decision (relayed by the
   // manager 2026-09-22), recorded here at a floor set to its measured deficiency figure LESS a 0.3 margin, so a drift
   // toward collapse still reds while today's value passes. retrying's hue vs the filled dots is BELOW the floor (dark
   // retrying-vs-awaiting 2.7, light retrying-vs-working 3.3); the hollow shape is what carries those, so they skip the floor.
-  const CONCEDE = {   // theme|a|b (a,b sorted) -> measured deficiency figure; the floor is this less 0.3 (LOW 3)
+  const CONCEDE: Record<string, number> = {   // theme|a|b (a,b sorted) -> measured deficiency figure; the floor is this less 0.3 (LOW 3)
     "dark|awaiting|working": 4.2, "light|opening|working": 2.4,
   };
   for (const [name, theme] of [["dark", props(block(css, ":root {"))], ["light", props(block(css, "body.theme-light {"))]] as const) {
     const page = rgbOf(theme.get("--bg")!, [30, 30, 30])!;
-    const tok = (t) => rgbOf(theme.get(t)!, page)!;
+    const tok = (t: string) => rgbOf(theme.get(t)!, page)!;
     const dim = tok("--dim");
-    const rgb = { working: tok("--st-working-bg"), awaiting: tok("--st-awaitbg-bg"), retrying: tok("--st-retrying-bg"),
+    const rgb: Record<string, [number, number, number]> = { working: tok("--st-working-bg"), awaiting: tok("--st-awaitbg-bg"), retrying: tok("--st-retrying-bg"),
                   unknown: rgbOf("#8a8a8a", page)!, opening: tok("--accent"),
                   idle: [0, 1, 2].map((i) => Math.round(dim[i] * 0.45 + page[i] * 0.55)) as [number, number, number] };
     const names = Object.keys(SHAPE);

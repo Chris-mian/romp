@@ -3439,6 +3439,13 @@ sixteen files, least recently read out first. Slugs come from the file's heading
 through the viewer's own rule, the Not-coinages heading included, so a card opens
 the viewer on the heading the viewer gave that id.
 
+The comments frame follows the same own-slot model. The `{type: "comments"}` frame carries a
+thread's anchorUuid, which the chat page joins with the anchored reply turn (`data-uuid`) to draw
+the reply's mark, and it reaches a page on four roads: the pusher's full cycle, the targeted
+per-session push (`_push_session_now`, so a mark lands with its turn when a page connects before
+the session is built), the create handler's direct send when a comment is written, and the ready
+reset's re-send once a reconnecting page's listeners are up.
+
 The chat page compiles one matcher per index (`glossary-links.ts`): every form
 (the term, its aliases, and their plurals by the everyday rule; nothing shorter
 than two characters) whole-word and case-insensitive, longest first, minus the
