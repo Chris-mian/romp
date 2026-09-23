@@ -205,11 +205,11 @@ var GEAR_HTML =
   '</span></label>' +
   // BOXES BELOW THE TRANSCRIPT (the user 2026-09-23, who looked for the switch and did not find it under Display): the Needs you box's
   // switch in a section of its own, named for where the box sits, so a scan of the section heads lands on it. plans/needs-you.md, phase
-  // three; on by default: render.ts hides the box on the save; the tab ring and the feed keep saying it
+  // three; on by default: render.ts hides the box on the save; the tab (its badge, or the ring with the badge off) and the feed keep saying it
   "<div class='rs-sec' data-section=boxes>Boxes below the transcript</div>" +
   '<label class=rs-row><input type=checkbox id=rs-needsbox checked>' +
   '<span><b>Needs you box</b>' +
-  '<span class=rs-sub>Between the transcript and the composer, collapsed to its header line until you open it: what this session needs from you, a question to answer or a message to approve. Off, the tab ring and the feed still say it.</span>' +
+  '<span class=rs-sub>Between the transcript and the composer, collapsed to its header line until you open it: what this session needs from you, a question to answer or a message to approve. Off, the tab and the feed still say it.</span>' +
   '</span></label>' +
   "<div class='rs-sec'>Comments</div>" +
   "<div class='rs-row rs-jrow'><b>Comment model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model NEW comment threads start on. Same as the session (the default) keeps each thread on the model of the conversation it branches from; pinning one here starts every new thread on it. The comment dialog shows this default and its own pick still wins. Follows to every connected machine's kernel.</span><select id=rs-cmtmodel></select></div>" +
