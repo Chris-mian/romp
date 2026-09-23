@@ -224,7 +224,7 @@ export function prunePending(pending: { text: string; t: number }[], msgs: Comme
  *  two comments, and a memo keyed on the words alone answered the second with the first thread and
  *  wrote its name nowhere (review, 2026-09-09). */
 export type CommentCreate = { sid: string; uuid: string; exact: string; text: string; name: string;
-  model: string; effort: string; fast: string; color: string; createId: string; tries: number };
+  model: string; effort: string; fast: string; color: string; src: string; createId: string; tries: number };
 
 /** One id per send gesture: the moment and a random tail, in the same shape as a provisional tab's id.
  *  Random, not a counter: a reloaded viewer starts its counters over, and the kernel's memo outlives it. */
@@ -235,17 +235,17 @@ export function mintCreateId(): string {
 /** The create a send gesture holds: stamped with a fresh id, picks defaulted to "" (the kernel's
  *  default-comment settings, then the parent's), the retry count at zero. */
 export function newCommentCreate(anchor: { sid: string; uuid: string; exact: string; model?: string; effort?: string;
-                                           fast?: string; color?: string },
+                                           fast?: string; color?: string; src?: string },
                                  text: string, name: string): CommentCreate {
   return { sid: anchor.sid, uuid: anchor.uuid, exact: anchor.exact, text, name, model: anchor.model || "",
-           effort: anchor.effort || "", fast: anchor.fast || "", color: anchor.color || "",
+           effort: anchor.effort || "", fast: anchor.fast || "", color: anchor.color || "", src: anchor.src || "",
            createId: mintCreateId(), tries: 0 };
 }
 
 /** The commentCreate frame for a held create: the send and every re-post of it build the same one, so
  *  the kernel sees one id for one gesture. */
 export function commentCreateFrame(c: CommentCreate): { type: "commentCreate"; id: string; uuid: string; exact: string;
-    text: string; name: string; model: string; effort: string; fast: string; color: string; createId: string } {
+    text: string; name: string; model: string; effort: string; fast: string; color: string; src: string; createId: string } {
   return { type: "commentCreate", id: c.sid, uuid: c.uuid, exact: c.exact, text: c.text, name: c.name,
-           model: c.model, effort: c.effort, fast: c.fast, color: c.color, createId: c.createId };
+           model: c.model, effort: c.effort, fast: c.fast, color: c.color, src: c.src, createId: c.createId };
 }

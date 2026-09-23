@@ -157,6 +157,47 @@ class CreateIsIdempotent(unittest.TestCase):
     def _acks(self):
         return [f for f in self.sent if f.get("type") == "commentCreated"]
 
+    def _file_create(self, text="Which of these still matter?"):
+        return self._drive({"type": "commentCreate", "id": PARENT, "uuid": "", "exact": "Kept gates:",
+                            "text": text, "src": "~/notes/decisions.md", "createId": "c-file-1"})
+
+    def test_a_file_passage_create_with_no_uuid_mints_a_thread_anchored_at_the_tip(self):
+        """A FILE passage carries a src and no message uuid; its thread is anchored at the conversation
+        tip, so the row is one the chat can open, and the opener names the file."""
+        sends = []
+        self.be.send = lambda sid, text: sends.append(text) or True
+        self._file_create()
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["anchorUuid"], "a1", "the tip, so the thread row is openable")
+        self.assertEqual(rows[0]["cutUuid"], "", "still a tip fork: the whole conversation")
+        self.assertEqual(rows[0]["src"], "~/notes/decisions.md")
+        self.assertEqual([a["uuid"] for a in self._acks()], [""], "the ack keeps the file viewer's empty uuid")
+        self.assertTrue(any(t.startswith("About this part of ~/notes/decisions.md:") for t in sends), sends)
+
+    def test_a_fork_that_dies_after_the_ack_is_rolled_back_and_recorded(self):
+        """The ack goes on the durable row, ahead of the fork. A fork that then raises rolls the row
+        back, sends the failure frames, and records the reason where every pane shows it."""
+        def boom(*a, **k):
+            raise RuntimeError("spawn refused")
+        self.be.fork = boom
+        before = len(km._SDK_BOOT_PROBLEMS)
+        self._file_create()
+        kinds = [f.get("type") for f in self.sent]
+        self.assertEqual(kinds[kinds.index("commentCreated"):], ["commentCreated", "warn", "commentCreateFailed"])
+        self.assertEqual(self._rows(), [], "the half-born row is rolled back")
+        problems = km._SDK_BOOT_PROBLEMS[before:]
+        self.assertEqual(len(problems), 1)
+        self.assertIn("spawn refused", problems[0]["text"])
+
+    def test_a_refusal_before_the_row_records_no_problem(self):
+        """A refusal the user provoked is answered on the socket alone; nothing was acked, so nothing
+        is recorded as a failed start."""
+        before = len(km._SDK_BOOT_PROBLEMS)
+        self._create(name="no spaces!")
+        self.assertEqual(self._acks(), [])
+        self.assertEqual(len(km._SDK_BOOT_PROBLEMS), before)
+
     def test_the_same_create_twice_yields_one_thread_and_two_acks_naming_it(self):
         self._create(); self._create()
         self.assertEqual(len(self._rows()), 1, "one comment, one thread")

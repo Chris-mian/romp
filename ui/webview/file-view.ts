@@ -334,6 +334,17 @@ export function hostStub(sid: string): FileViewIdentity | null {
 }
 let saveSeq = 0;
 let editHooks: { reqId: number; saved: (mtimeNs: string) => void; failed: (err: string) => void } | null = null;
+// The open comment box's verdict hooks, the same shape: a box that said "Sent" on the POST alone lied,
+// because a refusal lands nowhere this overlay renders (the chat's warn toast sits under it, the feed
+// page has no toasts). The ack is keyed on an EMPTY anchor uuid — a file passage has none, which is what
+// tells it apart from the chat's own transcript-comment popover on the same channel.
+// `viaHost` marks a note that went to the kernel as a comment thread, which only the composer-less
+// feed pane does: a host-drop warn or a socket drop can fail THAT one, and must not touch a note
+// staged locally, which never needed the connection.
+let cmtHooks: { sid: string; viaHost: boolean; landed: () => void; failed: (err: string) => void } | null = null;
+// The open viewer's Submit button, fed by the host document's composerPending count. A pane with no
+// composer never sends one, so the button never appears there.
+let submitHooks: { sid: string; count: (n: number) => void } | null = null;
 // Set by the open viewer: returns false to VETO a close (an editor holding unsaved changes asks
 // first). The guard must live in closeFileView itself, because the browser overlay and the Escape
 // handler both close through it without knowing an edit is in progress.
@@ -491,6 +502,8 @@ export function closeFileView(): void {
   if (closeGuard && !closeGuard()) return;   // unsaved edits, and the user chose to keep them
   closeGuard = null;
   editHooks = null;
+  cmtHooks = null;                                     // a verdict landing after the close paints nothing
+  submitHooks = null;
   gitHooks = null;                                     // a reply landing after the close decorates nothing
   dropMediaUrl();                                      // an image/PDF view's bytes leave with the viewer
   dropUrlRead();                                       // …and a URL view's in-flight read is cancelled
@@ -499,6 +512,15 @@ export function closeFileView(): void {
   wrap.remove();
   document.body.classList.remove("fileview-open");
 }
+
+const CTX_MENU_WIDTH_PX = 160;
+const CTX_MENU_HEIGHT_PX = 90;
+const CMT_POP_WIDTH_PX = 360;
+const CMT_POP_HEIGHT_PX = 200;
+const CMT_QUOTE_MAX_CHARS = 240;
+const CMT_SENT_CLOSE_MS = 700;
+const CMT_MARK_TITLE = "Noted — the passage rides a note for this file's session";
+const COMPOSER_STAGED_ID = "composer-staged";
 
 /** A click on a file — a path in the chat, a file-browser row — WITH its gesture. A Cmd/Ctrl- or
  *  middle-click on a PDF (or Cmd/Ctrl+Enter on a file-browser row) opens the browser's own tab (preview.ts
@@ -531,6 +553,8 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
   if (document.getElementById("romp-fileview") && closeGuard && !closeGuard()) return false;
   closeGuard = null;
   editHooks = null;
+  cmtHooks = null;
+  submitHooks = null;
   gitHooks = null;                                     // the replace path skips closeFileView — same drop
   dropMediaUrl();                                      // …and the old viewer's image bytes (the Reload path)
   dropUrlRead();                                       // …and a URL viewer's in-flight read, if that is what was up
@@ -595,6 +619,42 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
     sess.title = "Opened from the " + owner.name + " session";
   }
   const acts = el("div", "fileview-acts");
+
+  // A landed comment's trace, counted for THIS open: the passage mark below is painted into the rendered
+  // DOM and a format toggle re-renders it away, so the count is the trace that survives the toggle. There
+  // is no per-file comment store to read on open — a note lives in the session's composer, not beside the file.
+  let commentsLanded = 0;
+  const cmtCount = el("div", "fileview-cmt-count");
+  cmtCount.hidden = true;
+  const noteCommentLanded = (): void => {
+    commentsLanded += 1;
+    cmtCount.textContent = commentsLanded === 1 ? "1 note" : commentsLanded + " notes";
+    cmtCount.title = "Noted for this session while this file was open";
+    cmtCount.hidden = false;
+  };
+
+  // Submit: sends what the composer is holding for this file's session without leaving the viewer —
+  // reading a doc and sending the notes it produced used to mean scrolling back down to the chat. The
+  // host document owns the send (and the count), so this is a poster and a label, nothing more. It
+  // stays hidden until a count arrives, which is also how the FEED pane shows none: no chips there.
+  const submit = el("button", "fileview-btn fileview-send") as HTMLButtonElement;
+  submit.type = "button";
+  submit.hidden = true;
+  submit.title = "Send the notes staged for this session";
+  submit.addEventListener("click", () => {
+    if (!sid) return;
+    try { window.postMessage({ romp: "submitComposer", sid }, "*"); }
+    catch { /* messaging our own window cannot really fail */ }
+  });
+  submitHooks = sid ? { sid, count: (n) => {
+    submit.hidden = n < 1;
+    submit.textContent = n === 1 ? "Submit 1 note" : "Submit " + n + " notes";
+  } } : null;
+  // Notes staged BEFORE this open still count, and the host only announces on a render of its own.
+  if (sid) {
+    try { window.postMessage({ romp: "composerPendingAsk", sid }, "*"); }
+    catch { /* messaging our own window cannot really fail */ }
+  }
 
   // ── format toggles (the user 2026-08-09) ── A markdown file opens RENDERED, its Raw form one click
   // away; everything else keeps the code view, whose long lines the Wrap toggle can soft-wrap. Both
@@ -772,7 +832,9 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
   close.setAttribute("aria-label", "Close the file viewer");
   close.addEventListener("click", closeFileView);
   fileGroup.appendChild(copy);
-  acts.appendChild(viewGroup); acts.appendChild(fileGroup); acts.appendChild(close);
+  // the note count and Submit sit after the file group, so the row still reads view | file | notes | close
+  acts.appendChild(viewGroup); acts.appendChild(fileGroup);
+  acts.appendChild(cmtCount); acts.appendChild(submit); acts.appendChild(close);
   bar.appendChild(name); if (sess) bar.appendChild(sess); bar.appendChild(acts);
 
   const body = el("div", "fileview-body");
@@ -1016,6 +1078,117 @@ export function openFileView(path: string, sid?: string | null, opts?: { line?: 
         catch { /* messaging our own window or the same-origin shell cannot really fail */ }
       });
   });
+
+  // Comment on a passage, owned by the viewer so every pane that mounts it gets the affordance — the
+  // chat bundle and the feed bundle both bind `post`. Routes to the sid the file was opened for.
+  const menuEl = { cur: null as HTMLElement | null };
+  const dropMenu = () => { menuEl.cur?.remove(); menuEl.cur = null; };
+  box.addEventListener("contextmenu", (ev: MouseEvent) => {
+    if (editing || !sid) return;
+    const sel = window.getSelection();
+    const picked = sel && !sel.isCollapsed && sel.anchorNode && box.contains(sel.anchorNode)
+      ? sel.toString().trim() : "";
+    if (!picked) return;
+    ev.preventDefault();
+    dropMenu();
+    const menu = el("div", "fileview-ctx");
+    const item = (label: string, fn: () => void) => {
+      const row = el("div", "fileview-ctx-item");
+      row.textContent = label;
+      row.addEventListener("click", (e) => { e.stopPropagation(); dropMenu(); fn(); });
+      menu.appendChild(row);
+    };
+    // The range is cloned HERE, not read back when the ack lands: by then the box has taken focus and
+    // the selection is gone, so a mark painted later would have nothing to wrap.
+    const marked = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    item("Comment", () => openCommentBox(picked, ev.clientX, ev.clientY, marked));
+    item("Copy", () => { try { void navigator.clipboard?.writeText(picked); } catch { /* no clipboard */ } });
+    menu.style.left = Math.min(ev.clientX, window.innerWidth - CTX_MENU_WIDTH_PX) + "px";
+    menu.style.top = Math.min(ev.clientY, window.innerHeight - CTX_MENU_HEIGHT_PX) + "px";
+    document.body.appendChild(menu);
+    menuEl.cur = menu;
+    setTimeout(() => document.addEventListener("click", dropMenu, { once: true }), 0);
+  });
+
+  /** Paint the commented passage, if the range can be wrapped: a selection crossing element boundaries
+   *  (a sentence running into a list item) cannot be, and the count chip is the trace in that case. */
+  function markCommentedRange(range: Range | null): void {
+    if (!range) return;
+    try {
+      const mark = el("span", "fileview-cmt-mark");
+      mark.title = CMT_MARK_TITLE;
+      range.surroundContents(mark);
+    } catch { /* partially-selected nodes: the count chip carries the trace */ }
+  }
+
+  /** The viewer's own note box, so commenting never depends on a composer being on screen. In a pane
+   *  that HAS a composer the note stages there — instant, and it survives an unreachable host; the
+   *  composer-less feed pane sends it to the kernel as a comment thread instead. Prints a refusal in
+   *  place rather than on a toast the pane may not render. */
+  function openCommentBox(picked: string, x: number, y: number, marked: Range | null): void {
+    const pop = el("div", "fileview-cmt");
+    pop.style.left = Math.min(x, window.innerWidth - CMT_POP_WIDTH_PX) + "px";
+    pop.style.top = Math.min(y, window.innerHeight - CMT_POP_HEIGHT_PX) + "px";
+    const quote = el("div", "fileview-cmt-quote");
+    quote.textContent = picked.length > CMT_QUOTE_MAX_CHARS ? picked.slice(0, CMT_QUOTE_MAX_CHARS) + "…" : picked;
+    const ta = el("textarea", "fileview-cmt-input") as HTMLTextAreaElement;
+    ta.placeholder = "Comment on this passage…";
+    const acts = el("div", "fileview-cmt-acts");
+    const send = el("button", "fileview-btn") as HTMLButtonElement;
+    send.type = "button"; send.textContent = "Comment";
+    const cancel = el("button", "fileview-btn") as HTMLButtonElement;
+    cancel.type = "button"; cancel.textContent = "Cancel";
+    const err = el("div", "fileview-cmt-err");
+    err.hidden = true;
+    const close = () => { if (cmtHooks) cmtHooks = null; pop.remove(); };
+    cancel.addEventListener("click", close);
+    send.addEventListener("click", () => {
+      const body = ta.value.trim();
+      if (!body) { ta.focus(); return; }
+      if (!sid) return;
+      // Presence of the staged strip IS the composer test, the import-free idiom the Back button uses:
+      // this file is bundled into panes that have no composer at all.
+      const hasComposer = !!document.getElementById(COMPOSER_STAGED_ID);
+      send.disabled = true; send.textContent = hasComposer ? "Saving…" : "Sending…";
+      err.hidden = true;
+      cmtHooks = {
+        sid,
+        viaHost: !hasComposer,
+        landed: () => {
+          cmtHooks = null;
+          send.textContent = hasComposer ? "Saved" : "Sent";
+          markCommentedRange(marked);
+          noteCommentLanded();
+          setTimeout(close, CMT_SENT_CLOSE_MS);
+        },
+        // The draft is KEPT and Comment re-armed: the text is only in this box, so a refusal that
+        // closed over it would destroy the thing the retry needs.
+        failed: (why: string) => {
+          cmtHooks = null;
+          send.disabled = false; send.textContent = "Comment";
+          err.textContent = why;
+          err.hidden = false;
+          ta.focus();
+        },
+      };
+      const src = quoteSrcLabel(path, text, picked);
+      if (hasComposer) {
+        try { window.postMessage({ romp: "stageNote", sid, text: body, exact: picked, src }, "*"); }
+        catch { /* messaging our own window cannot really fail */ }
+      } else {
+        // An empty anchor asks the kernel to resolve it to the transcript leaf: a file passage has none.
+        post({ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body, src });
+      }
+    });
+    ta.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); close(); }
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send.click(); }
+    });
+    acts.appendChild(send); acts.appendChild(cancel);
+    pop.appendChild(quote); pop.appendChild(ta); pop.appendChild(err); pop.appendChild(acts);
+    document.body.appendChild(pop);
+    ta.focus();
+  }
 
   // ── edit mode (the raw-mode slice) ── a plain textarea holding the raw bytes: an embedded editor
   // is a different project, and a textarea that keeps your changes beats a half-editor. The kernel's
@@ -1746,15 +1919,32 @@ export function initFileView(poster: (m: Record<string, unknown>) => void,
     } else if (m.type === "fileSaveFailed" && editHooks && m.reqId === editHooks.reqId) {
       const h = editHooks; editHooks = null;
       h.failed(String(m.error || "the save failed"));
-    } else if (m.type === "warn" && typeof m.sid !== "string" && editHooks) {
+    } else if (m.romp === "composerPending" && submitHooks && m.sid === submitHooks.sid) {
+      submitHooks.count(Number(m.n) || 0);
+    } else if (m.romp === "noteStaged" && cmtHooks && m.sid === cmtHooks.sid) {
+      cmtHooks.landed();
+    } else if (m.type === "commentCreated" && cmtHooks && m.id === cmtHooks.sid && !m.uuid) {
+      cmtHooks.landed();
+    } else if (m.type === "commentCreateFailed" && cmtHooks && m.id === cmtHooks.sid && !m.uuid) {
+      // A TRANSIENT refusal is anchor-parse lag, which retrying resolves — say so rather than
+      // handing back the kernel's own wording for a state that is about to pass.
+      cmtHooks.failed(m.transient
+        ? "the transcript is still catching up — send it again in a moment"
+        : String(m.text || "the comment was refused"));
+    } else if (m.type === "warn" && typeof m.sid !== "string" && (editHooks || cmtHooks)) {
       // A federation drop (the session's host unreachable) answers a saveFile with a warn instead
       // of a reply — the feed page renders no toasts, so without this the button spins forever
-      // (the same hole the browse overlay closed for listDir).
+      // (the same hole the browse overlay closed for listDir). A refused comment thread arrives the
+      // same way, carrying the reason the kernel refused it (an SDK-less session has nothing to fork).
       // A warn carrying a session id answers a send INTO that session (the kernel's refusal of a slash command a
-      // Codex session cannot take, broadcast to every chat pane when no socket carried it; 2026-09-19), never this
-      // save: mid-save it read as the save failing. A save's own failure names no session.
-      const h = editHooks; editHooks = null;
-      h.failed(String(m.text || "the session's host is not answering — the save was not sent"));
+      // Codex session cannot take, broadcast to every chat pane when no socket carried it), never this save or
+      // this comment: mid-save it read as the save failing. A save's own failure names no session.
+      if (editHooks) {
+        const h = editHooks; editHooks = null;
+        h.failed(String(m.text || "the session's host is not answering — the save was not sent"));
+      } else if (cmtHooks?.viaHost) {
+        cmtHooks.failed(String(m.text || "the session's host is not answering — the comment was not sent"));
+      }
     }
   });
   // A socket drop mid-save loses the ack, and the frame itself may or may not have reached the
@@ -1762,6 +1952,10 @@ export function initFileView(poster: (m: Record<string, unknown>) => void,
   // refuse the retry as "changed on disk", and Reload resolves it from there. Keying on the shim's
   // own drop event (not a timer) is the house rule; the browse overlay set the precedent.
   window.addEventListener("romp:wsdown", () => {
+    if (cmtHooks?.viaHost) {
+      cmtHooks.failed("the connection dropped before the kernel ruled on this thread — it may or may "
+        + "not have landed; check the session's threads before sending it again");
+    }
     if (!editHooks) return;
     const h = editHooks; editHooks = null;
     h.failed("the connection dropped mid-save — it may or may not have landed; "
