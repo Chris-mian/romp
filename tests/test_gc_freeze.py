@@ -75,7 +75,8 @@ class TriggerLogic(unittest.TestCase):
         ins = 3 + 24
         self.assertEqual(c.tick(inserts=ins), "load", "one load fold-in since the backstop (_foldins -> 1)")
         owner = _Owner()                                          # held in a local: alive with a finished worker -> owed (the FakeGc collect is a no-op)
-        c.note_ended(owner, thread=_FakeThread(alive=False))
+        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        c.note_ended(owner, thread=fin)
         self.assertEqual(c.tick(inserts=ins), "release", "the owed cyclic ref reclaims and resets _foldins")
         ins += 8; self.assertEqual(c.tick(inserts=ins), "load", "fold-in 1 since the release")
         ins += 8; self.assertEqual(c.tick(inserts=ins), "load", "fold-in 2 since the release: still a load, not an early backstop")
@@ -106,7 +107,8 @@ class TriggerLogic(unittest.TestCase):
         c = gf.GcFreeze(enabled=False, gc=fake)
         self.assertIsNone(c.tick(inserts=100))
         self.assertEqual(fake.calls, [], "a disabled controller never touches the collector")
-        c.note_ended(_Owner(), thread=_FakeThread(alive=False))   # PR 1999 review: note_ended early-returns when disabled
+        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        c.note_ended(_Owner(), thread=fin)   # PR 1999 review: note_ended early-returns when disabled
         self.assertEqual(c._ended, [], "a disabled controller registers no ended session (else it would leak a pair per end for the process life)")
 
     def test_the_load_threshold_parses_safely_and_floors_at_one(self):
@@ -140,7 +142,8 @@ class EndedTruthTable(unittest.TestCase):
     def test_a_dead_ref_is_acyclic_and_owes_no_reclaim(self):     # (a) run to exit: died by refcount
         c = self._controller()
         s = _Owner()
-        c.note_ended(s, thread=_FakeThread(alive=False))
+        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        c.note_ended(s, thread=fin)
         del s
         self.assertFalse(c.resolve_ended(), "a ref that died by refcount owes no reclaim (acyclic)")
         self.assertEqual(c._ended, [], "and it is dropped")
@@ -379,7 +382,8 @@ class RealCollector(unittest.TestCase):
         a = Cyclic(); b = Cyclic(); a.other = b; b.other = a
         wcyc = weakref.ref(a)
         c.tick(inserts=2)                            # a load fold-in that freezes the cycle
-        c.note_ended(a, thread=_FakeThread(alive=False))   # the cycle's owner ended, its thread finished
+        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        c.note_ended(a, thread=fin)   # the cycle's owner ended, its thread finished
         del a, b
         c.tick(inserts=2)                            # the tick observes the cyclic ended ref and reclaims
         self.assertIsNone(wcyc(), "the frozen cycle is reclaimed once the ended tick unfreezes and collects")
@@ -391,9 +395,12 @@ class RealCollector(unittest.TestCase):
         gc.disable(); self.addCleanup(gc.enable)
         c = gf.GcFreeze(enabled=True, load_trees=1, gc=gc)
         c.tick(inserts=1)                            # initial freeze
-        root = _Owner()                              # a live strong ROOT, acyclic: the reclaim cannot free it
-        c.note_ended(root, thread=_FakeThread(alive=False))
+        root = _Owner(); root.sid = "abcdef12-3456-7890-abcd-ef1234567890"   # a synthetic sid so the release names it (review PR 2042 low)
+        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        c.note_ended(root, thread=fin)
         self.assertEqual(c.tick(inserts=1), "release", "a live ref with a finished worker is judged a surviving cycle: a release runs")
+        # the REAL resolve_ended gathered the owed sid onto last_release_sids (its first 8 chars): deleting the gather reds this
+        self.assertEqual(c.last_release_sids, ["abcdef12"], "the release names the owed session by its sid's first 8 chars: %r" % c.last_release_sids)
         self.assertEqual(c.survivors, 1, "the live root kept it through the reclaim: one survivor counted")
         self.assertIsNone(c.tick(inserts=1), "the survivor was dropped, never re-registered: no second reclaim owed")
         self.assertEqual(c.survivors, 1, "and not double-counted")
@@ -401,7 +408,8 @@ class RealCollector(unittest.TestCase):
         a = Cyclic(); b = Cyclic(); a.other = b; b.other = a
         wcyc = weakref.ref(a)
         c.tick(inserts=2)                            # fold the cycle in (freeze it)
-        c.note_ended(a, thread=_FakeThread(alive=False)); del a, b
+        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        c.note_ended(a, thread=fin); del a, b
         c.tick(inserts=2)                            # a real reclaim
         self.assertIsNone(wcyc(), "the genuine cycle is freed")
         self.assertEqual(c.survivors, before, "a freed cycle adds no survivor")
@@ -416,7 +424,8 @@ class RealCollector(unittest.TestCase):
         reclaims0, foldins0 = c.reclaims, c._foldins
         a = Cyclic(); b = Cyclic(); a.other = b; b.other = a   # allocated AFTER the freeze: unfrozen
         wcyc = weakref.ref(a)
-        c.note_ended(a, thread=_FakeThread(alive=False)); del a, b
+        fin = _FakeThread(alive=False)   # a local, so the weakref resolves and is_alive() False is what decides (review PR 2042 low)
+        c.note_ended(a, thread=fin); del a, b
         self.assertEqual(c.tick(inserts=1), "load", "the cheap collect took the released cycle whole: counted as a load pass")
         self.assertEqual(c.reclaims, reclaims0, "no full-heap reclaim ran: the backstop bound is not stretched")
         self.assertGreater(c._foldins, foldins0, "the cheap release folded in like a load")

@@ -446,8 +446,12 @@ class Harness(unittest.TestCase):
         # the 2026-09-22 PR 2022 review, item 3 (+ PR 2040 low 1): the builds' inputs are IDENTICAL up to the per-call
         # security mark, made a fact PER BUILD-TRIPLE, not merely as an aggregate collapse (which would pass a build-dependent
         # byte confined to one ending). Every RAW input is unique (a fresh mark per call); and every distinct mark-normalized
-        # input recurs a MULTIPLE of the build count (each of the three builds sends it once), so a byte that differs across
-        # the builds of ONE ending splits that ending's hashes into counts of one and reds this.
+        # input recurs a MULTIPLE of the build count, not exactly it: a bucket can hold SEVERAL endings that send a
+        # byte-identical planner input (this fixture has buckets of six beside buckets of three), and each of them recurs once
+        # per build. A byte that differs across the builds of ONE ending splits that ending's hashes into counts of one, which
+        # is not a multiple of the build count, and reds this. (The property would also false-red if a crash or a parse retry
+        # fired in only some builds, changing the per-ending call count; that is unreachable under the deterministic fake
+        # because the comparable assertion above would red first on the failure.)
         import collections as _c
         base_planner = [r for r in self._calls("planner") if not r["candidate"]]
         raw = [r["rawHash"] for r in base_planner]
@@ -455,7 +459,7 @@ class Harness(unittest.TestCase):
         counts = _c.Counter(r["markNorm"] for r in base_planner)
         self.assertGreater(len(counts), 1, "several distinct planner inputs were observed: %d" % len(counts))
         self.assertTrue(all(v % 3 == 0 for v in counts.values()),
-                        "every mark-normalized planner input recurs once per build (a multiple of three); a build-dependent byte in one ending would split it: %r" % dict(counts))
+                        "every mark-normalized planner input recurs once per build (a multiple of the build count; a bucket may hold several endings); a build-dependent byte in one ending would split it: %r" % dict(counts))
 
     def _add_node_log(self, sid, suffix, ev):
         """Append an event to a live top-level node's log (a helper for the unblocker-ruling pins)."""
@@ -541,7 +545,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(score({"ev_t": c + 900, "src": "unblocker", "kind": "unblock", "why": "answered in passing"}), (1, 0),
                          "L1: a judge lift AFTER the clear is not the reply this clear crossed off: a false interrupt")
         self.assertEqual(score({"ev_t": c, "src": "unblocker", "kind": "unblock", "why": "answered in passing"}), (1, 0),
-                         "PR 2035 low 6: a judge lift AT the cut is not strictly after it, so it does not suppress (a non-strict `<` would): a false interrupt")
+                         "the 2026-09-22 PR 2035 review, low 6: a judge lift AT the cut is not strictly after it, so it does not suppress (a non-strict `<` would): a false interrupt")
 
     def test_later_gestures_key_on_the_cut_not_the_placement_time(self):
         """Review item 2: a placed top's 'later' user gestures key on the ending's CUT, not the placement's own ev_t (a
@@ -574,7 +578,7 @@ class Harness(unittest.TestCase):
                           "a lone mid-turn clear is before the cut: not a later verdict, so no tier-one label")
 
     def test_a_gesture_exactly_at_the_cut_is_not_later_in_either_function(self):
-        """PR 2035 low 6: the later-gesture boundary is STRICT (> cut). A cross-off or a follow-up landing exactly AT the cut
+        """the 2026-09-22 PR 2035 review, low 6: the later-gesture boundary is STRICT (> cut). A cross-off or a follow-up landing exactly AT the cut
         is not a later gesture, in both placement_gestures (the measure) and tier_one_label; a non-strict `>=` would count
         it. Nothing in the earlier pins sat exactly at the cut."""
         sid = SIDS[1]
@@ -1380,7 +1384,7 @@ class Harness(unittest.TestCase):
         after = set(glob.glob(os.path.join(_tf.gettempdir(), "je-em-*")))
         self.assertEqual(after - before, set(), "no je-em-* scratch root is left behind: %r" % (after - before))
 
-    # ── round on ksarma's review of 1937 (folded on main after 1946) ──
+    # ── round on the second contributor's review of #1937 (folded on main after #1946) ──
     def _archive_cleared_top(self, sid, cut_t, cleared_at):
         """A cleared top in goals-archive (where the kernel's compaction moves it), with a closer done before the cut and the
         user's clear at `cleared_at`; the clear also rides the override journal, as append_clear writes it."""
@@ -1395,7 +1399,7 @@ class Harness(unittest.TestCase):
         return node
 
     def test_a_cleared_top_in_the_archive_is_visible_to_all_four_readers(self):
-        """ksarma's review: the kernel's compaction moves a cleared top into goals-archive/<sid>.json, and the harness read only
+        """The second contributor's review of #1937: the kernel's compaction moves a cleared top into goals-archive/<sid>.json, and the harness read only
         the live store, so the top was missing from the done times, the eligibility mark, tier one and the seed (the plan counts
         640 clears against 22 resolves, so the finished signal lived mostly there). store_with_archive unions the archive in."""
         fn = getattr(self.je, "store_with_archive", None)
@@ -1417,7 +1421,7 @@ class Harness(unittest.TestCase):
         self.assertIn(self._ending(m2, sid, 1)["id"] + ":gA", seed["nodes"], "the top cleared after the cut is in the ending's seed")
 
     def test_the_window_excludes_the_next_turns_done(self):
-        """ksarma's review: the window ran to cut + SETTLE_S, but no done carries an evidence time after its own cut, so a done
+        """The second contributor's review of #1937: the window ran to cut + SETTLE_S, but no done carries an evidence time after its own cut, so a done
         in that tail is the next turn's; the window ends at the cut."""
         self.assertTrue(self.je.in_turn_window(1000.0, 900.0, 1000.0), "a done at the cut is in the window")
         self.assertFalse(self.je.in_turn_window(1000.5, 900.0, 1000.0), "a done after the cut belongs to the next turn")
@@ -1726,7 +1730,7 @@ class Harness(unittest.TestCase):
         self.assertEqual((unstable["labellerStable"], unstable["stablePct"], unstable["gatePassed"]), (0, 0.0, False),
                          "an order-dependent labeller agrees with itself on no ending: below the 90 percent stability gate: %r" % unstable)
 
-    # ── ksarma's review of 1946 ──
+    # ── the second contributor's review of #1946 ──
     def test_store_with_archive_skips_rewind_swept_nodes(self):
         sid = SIDS[0]
         (self.state / "goals" / (sid + ".json")).write_text(json.dumps({"rompUuid": sid, "seq": 2, "nodes": {}, "status": {},
@@ -2099,7 +2103,7 @@ class Harness(unittest.TestCase):
             self.assertEqual((mm["leaks"], mm["flaps"]), (0, 1), "sentinel-tie card: no leak, one flap, order %r: %r" % (cols, mm))
 
     def test_a_column_needs_a_strict_majority_of_the_builds(self):
-        """PR 2035 round one MEDIUM: a card wins a column only on a STRICT majority of ALL builds, else no column (the
+        """the 2026-09-22 PR 2035 review, MEDIUM: a card wins a column only on a STRICT majority of ALL builds, else no column (the
         sentinel), so no single build decides in any order. The pre-fix rule (first-seen among the modal real columns) let
         the first build decide an all-real tie: [completed, needs_input, working] scored `completed` and a leak, and a
         two-build [completed, needs_input] scored `completed` while its reverse scored `needs_input`. The odd-first and
@@ -2130,7 +2134,7 @@ class Harness(unittest.TestCase):
             self.assertEqual(mm["leaks"], 1, "a real 2-of-3 majority completed scores the leak, order %r: %r" % (cols, mm))
 
     def test_report_records_a_wrong_shape_labels_file_as_unreadable_not_a_raise(self):
-        """PR 2040 round one: a labels.json that is valid JSON of the WRONG SHAPE (a top-level object, a list of strings, a
+        """the 2026-09-22 PR 2040 review: a labels.json that is valid JSON of the WRONG SHAPE (a top-level object, a list of strings, a
         number) must be recorded as labellerKeying `unreadable`, never raise out of report. The head caught only OSError and
         ValueError, so a wrong shape raised (AttributeError / TypeError) out of the report."""
         dest, m = self._corpus(name="lblshape")
@@ -2144,7 +2148,7 @@ class Harness(unittest.TestCase):
             self.assertEqual(r.get("labellerKeying"), "unreadable", "a wrong-shape labels.json (%s) is recorded unreadable, not raised: %r" % (shape[:20], r.get("labellerKeying")))
 
     def test_report_keys_labeller_buckets_from_labels_and_records_a_torn_file(self):
-        """PR 2035 round one MEDIUM: report keys the labeller buckets from labels.json's `label` (not the heuristic
+        """the 2026-09-22 PR 2035 review, MEDIUM: report keys the labeller buckets from labels.json's `label` (not the heuristic
         `class`), adds an `unlabeled` bucket so the buckets sum to the totals, and stamps the keying's source; a torn
         labels.json is recorded (labellerKeying `unreadable`), never a silent empty pass. The head fell back to an empty
         mapping and dropped unlabeled endings, so a torn or missing file read as zero leaks in every stratum."""
@@ -2170,7 +2174,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(r2.get("leaksByLabellerClass"), {"unlabeled": 1}, "a torn file buckets the leak under unlabeled, summing to the total: %r" % r2.get("leaksByLabellerClass"))
 
     def test_non_arm_failures_are_carried_and_printed_beside_the_comparable_count(self):
-        """Review PR 2022: an excluded (non-arm) failure is counted nowhere else, so the measure carries nonArmFailures into
+        """The 2026-09-22 PR 2022 review: an excluded (non-arm) failure is counted nowhere else, so the measure carries nonArmFailures into
         the record and the report prints it in the failures cell (a comparable arm reads '0 (2 non-arm)')."""
         dest, m = self._corpus(name="nonarm")
         e = self._ending(m, SIDS[0], 0)
@@ -2186,7 +2190,7 @@ class Harness(unittest.TestCase):
         self.assertIn("0 (2 non-arm)", Path(run_root, "table.md").read_text(), "the failures cell surfaces the excluded count")
 
     def test_a_crashed_ending_is_padded_to_the_build_count_before_scoring(self):
-        """PR 2035 round one low 4: a crash leaves fewer builds than buildsPerCard, so the finished builds must be padded to
+        """the 2026-09-22 PR 2035 review, low 4: a crash leaves fewer builds than buildsPerCard, so the finished builds must be padded to
         buildsPerCard with the sentinel before scoring, or one surviving build decides the column with no flap. A crashed
         one-of-three ending on a re-opened card scores no leak (the one completed build is a minority once padded) and one
         flap. The head scored it from the single build: a leak."""

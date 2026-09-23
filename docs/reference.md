@@ -2071,14 +2071,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   sub-block carries `enabled`, `active` (whether a freeze is held now; named
   apart from the integer `frozen` above, which is `gc.get_freeze_count()`),
   `loadTrees` and `backstopFoldins` (the two thresholds), `freezes` and
-  `reclaims` (each ran one collection, so the organic full collections are
-  `gen."2".collections` less their sum), `endedPending` (ended sessions
+  `reclaims` (a freeze ran one collection and a reclaim ran one, EXCEPT a full
+  release that unfroze runs TWO generation-2 collections for its one reclaim, so
+  the organic full collections are `gen."2".collections` less `freezes`, less
+  `reclaims`, less one more per full release; the exact residue needs that count,
+  and the served lab keeps the inequality rather than the equality), `endedPending` (ended sessions
   registered by weakref and not yet judged, awaiting their worker thread to
   finish), `lastReconcileMs` and
   `lastReconcileKind` (`initial`, `load`, `release` or `backstop`), `survivors`
   (owed refs a live root kept through a reclaim, a wasted pause each),
-  `lastReleaseSids` (the first eight characters of the sids the last release was
-  owed for, so a release names its sessions; a release also writes one stderr line),
+  `lastReleaseSids` (the first eight characters of the sids the LAST JUDGEMENT
+  owed a reclaim for, cleared each judgement, so a tick that owed nothing clears
+  it and a cheap-collect release judged `load` shows them too; a full release also
+  writes one stderr line naming the sessions),
   `totalReconcileMs` and `errors` (a reconcile that raised is counted here and
   said once on stderr, never ending the pusher). The reconcile's own collection
   pause lands after the cycle closed its ring row, so the pusher and jobs rings
