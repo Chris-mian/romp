@@ -226,7 +226,8 @@ class HostTransport(_Base):
     The session's receive loop is the same either way, which is the point."""
 
     def __init__(self, sock_path=None, *, kernel=None, ack=sh.ACK_NONE, end_grace=sh.END_GRACE_DEFAULT_S,
-                 on_ack=None, on_hello=None, on_stderr=None, on_exit=None, on_fault=None, journal_dir=None, on_reexec=None):
+                 on_ack=None, on_hello=None, on_stderr=None, on_exit=None, on_fault=None, journal_dir=None, on_reexec=None,
+                 on_lost=None):
         self.sock_path = str(sock_path) if sock_path else None
         self.kernel = dict(kernel or {})
         self.ack_offset = int(ack)
@@ -238,6 +239,9 @@ class HostTransport(_Base):
         self.end_grace = float(end_grace)
         self.on_ack, self.on_hello, self.on_stderr, self.on_exit, self.on_fault = on_ack, on_hello, on_stderr, on_exit, on_fault
         self.on_reexec = on_reexec      # the host's `reexec-now`: it is about to exec into the kernel's code and close this socket
+        self.on_lost = on_lost          # the socket ended without this kernel asking (no detach, no close): called with this
+        #                                 transport before the stream's error, so the backend can tell a handover whose
+        #                                 `reexec-now` frame never reached it from a lost host (2026-09-22)
         self.journal_dir = str(journal_dir) if journal_dir else None
         self.detach_mode = False
         self.hello = None
@@ -472,7 +476,20 @@ class HostTransport(_Base):
                     else:
                         yield self._take(out)
                     if self.ack_offset - self._last_ack_sent >= ACK_BATCH or time.time() - self._last_ack_t >= ACK_INTERVAL_S:
-                        await self._flush_ack()
+                        lost = False
+                        try:
+                            await self._flush_ack()
+                        except (ConnectionError, OSError):
+                            # the host closed the socket under this ack: the socket's end, read as the end below reads it
+                            # (2026-09-22, the refresh review: a bare ConnectionResetError escaped the stream here instead)
+                            if self.detach_mode or self._closed:
+                                return
+                            lost = True
+                        if lost:
+                            # raised past the handler, not inside it: on_lost's lines are then logged with no exception
+                            # live, so the backend's log does not count a planned handover's informational lines as
+                            # problems for the error center (2026-09-23, the review of this lane)
+                            raise self._lost()
                 if self.exit_info is not None:
                     held, self._hold = self._hold, []       # the CLI is gone: whatever was held goes out first
                     for h in held:
@@ -493,8 +510,19 @@ class HostTransport(_Base):
             if not chunk:
                 if self.detach_mode or self._closed:
                     return
-                raise CLIConnectionError("the host's socket closed")
+                raise self._lost()
             pending = self._fr.feed(chunk)
+
+    def _lost(self):
+        """The socket ended without this kernel asking: `on_lost` first, then the error the read stream ends on. A host's
+        handover can end the socket with its `reexec-now` frame unread (2026-09-22, the refresh review): the kernel's own
+        write at the same result (the context refresh, an ack) hits the closed socket first, asyncio's failed write closes
+        the whole connection, and the bytes still in the receive buffer are never read. Both callers call it outside any
+        `except` block, so a line on_lost logs counts as a problem only when it says so, never because a socket error is
+        still being handled (2026-09-23, the review of this lane)."""
+        if self.on_lost:
+            self.on_lost(self)
+        return CLIConnectionError("the host's socket closed")
 
     # ── replay ──
     async def _synth_write(self, data: str) -> None:

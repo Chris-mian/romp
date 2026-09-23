@@ -1657,9 +1657,8 @@ it hands over and the journal agree, writes a handoff file
 conversation id, the three pipe descriptors, the read count, the open turns,
 the open requests and the acknowledged offset), marks the descriptors
 inheritable, writes `reexec-now` to the kernel (its backlog empty, the frame
-reaches the socket at once; a kernel whose socket is full at that instant
-misses it and reads the close as unplanned, the lease holding for its next
-connect), closes its socket, and calls `execv` on the same pid: the CLI stays
+reaches the socket at once), logs the `reexec` line, closes its socket, and
+calls `execv` on the same pid: the CLI stays
 its child, the pipes stay open (descriptors survive an execve), the lease
 holder's pid and start time are unchanged, so `hostAck` still names this host
 and the replay offset holds, and the journal is reopened from its segment
@@ -1672,17 +1671,41 @@ lease with the new version (in that order, so a kernel that reads the new
 version finds a listener; the kernel's wait for the re-executed host also
 connects before it trusts the lease), and waits for the kernel's attach; the
 kernel, told `reexec-now`, treats the socket's close as the planned handover,
-not a host death: no `host.died` row, no orphan replay, no resume, one
-re-attach from the same acknowledged offset, and a `host.reexeced` row. A
-re-exec that fails before the exec leaves the old host running and says so (a
-`reexec-failed` line in the host's log; a `fault` to an attached kernel, which
-files a `host.reexec-failed` row, as does a kernel whose wait for the
-re-executed host runs out); one that fails inside the new process, on a
-handoff that does not check out, makes the new host exit with the CLI still
-running, which the kernel's existing orphan road handles as a host death: the
-CLI finishes its turn on end-of-file and the session resumes from the
-transcript. The worst case is the pre-host behaviour for one session, never a
-dead one. What the guarantee covers: every record parsed off the CLI before
+not a host death: no `host.died` row, no orphan replay, no resume, a wait for
+the re-executed host (its lease with the new version under the same holder and
+a listener that accepts, as on the `now` road, never a second request), one
+re-attach from the same acknowledged offset, and a `host.reexeced` row. The
+frame can miss the kernel: a socket full at that instant, or the kernel's own
+write at the same `result` (its context refresh, an acknowledgment) hitting
+the closed socket first, which makes asyncio close the whole connection with
+the frame still unread. A kernel holding an accepted handover whose socket
+ends unasked therefore reads the host's log, and when the latest re-exec line
+since its own attach is `reexec` (or `reexeced`, the new code already
+serving) and the lease still names the same live holder, it takes the same
+planned road; a deferral, a failure, a dead host or no such line leaves the
+close the lost host it reads as (2026-09-22). A re-exec that fails before the
+exec leaves the old host running and says so (a `reexec-failed` line in the
+host's log; a `fault` to an attached kernel, which files a
+`host.reexec-failed` row, as does a kernel whose wait for the re-executed host
+runs out); the fault also clears the wait its `reexec-now` frame armed, so the
+next attach asks again. One that fails inside the new process, on a handoff
+that does not check out, makes the new host exit with the CLI still running (a
+`cli-adopt-failed` line), which the kernel's existing orphan road handles as a
+host death: the CLI finishes its turn on end-of-file and the session resumes
+from the transcript. The kernel's wait for the re-executed host ends the
+moment that happens, with no row of its own: when the lease goes, names
+another holder, or names a CLI or a holder that is no longer alive, or when
+the host log's newest line records the new process ending (`cli-adopt-failed`
+or `host-crashed`). A stale heartbeat alone does not end it: nothing beats
+between the exec and the new code's first lease write, so a slow start is
+still waited for, up to the bound. After any wait the connect reads the lease
+again and takes the orphan road for a host that is gone, never an attach into
+a socket nobody serves; past the whole bound, a lease that has not beaten
+within its twelve seconds reads as it does at any connect's first read, an
+orphan (2026-09-23). A connect that finds the host gone also drops the
+handover it had asked for, so the next host's hello files no `host.reexeced`
+row. The worst case is the pre-host behavior for one session, never
+a dead one. What the guarantee covers: every record parsed off the CLI before
 the exec is in the journal, numbered as the kernel was told; every byte still
 in the pipe reaches the new host. What it cannot cover is a line the SDK's
 reader has split across two chunks (its framer holds the first part between

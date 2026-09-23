@@ -550,8 +550,12 @@ class BackendHostRules(unittest.TestCase):
         hdir = ht.host_dir(d, SID); hdir.mkdir(parents=True, exist_ok=True)
         (hdir / "spawn.json").write_text(json.dumps({"sid": SID, "version": "abc12345"}))
         sock = str(ht.host_sock(d, SID))
-        old = {"sid": SID, "fsid": SID, "name": "web", "pid": 11, "start": "c", "holder": {"pid": 10, "start": "h", "kind": "host"},
+        # a live holder with its lease on disk, as a host that answers has: the wait ends at once when the lease stops naming
+        # a live host (2026-09-23, the review of the turn-end handover), and the fake pids this used read as a host gone
+        me = {"pid": os.getpid(), "start": sb.proc_start(os.getpid())}
+        old = {"sid": SID, "fsid": SID, "name": "web", "pid": me["pid"], "start": me["start"], "holder": dict(me, kind="host"),
                "version": "abc12345", "t": time.time()}
+        sb.write_lease(d, old)
         def rows():
             p = Path(d) / "session-events.jsonl"
             return [r["kind"] for r in (json.loads(l) for l in p.read_text().splitlines() if l.strip())] if p.exists() else []
