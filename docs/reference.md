@@ -1593,8 +1593,13 @@ only on what carries the kernel's own tag. Anything with another kernel's tag,
 or with none (a unit or CLI started by a build from before the tag, or a process
 whose environment cannot be read), is left alone along with its CLI's scope,
 and the kernel log names all of it on one `boot reconcile: left alone` line. A
-kernel's own leftovers from before the upgrade carry no tag either, so the
-first boot on the new build leaves them in place too and names them there.
+kernel's own leftovers from before the upgrade carry no tag either, so every
+boot on the new build leaves them in place and names them, until they exit or
+are stopped by hand (`systemctl --user stop <unit>` for a scope, `kill` for an
+orphaned CLI). A session whose conversation one of those spared processes still
+holds is not resumed by that boot either, since a second CLI on the transcript
+would be two writers on one conversation; the log says the session stays down,
+and once the process is gone the next boot resumes it as usual.
 
 A session can outlive the kernel that started it. By default, on every machine
 on this version, a new session's CLI runs under a small per-session host

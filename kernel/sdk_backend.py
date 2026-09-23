@@ -11881,7 +11881,9 @@ class SdkBackend:
         said = ", ".join("%s (%s)" % (name, ("state tag %s, another kernel's" % tag) if tag else "no state tag")
                          for name, tag in items)
         self._log("boot reconcile: left alone %d process(es) and unit(s) on this kernel's session ids that it cannot "
-                  "prove it started (its own state tag is %s): %s" % (len(items), state_tag_of(self.state_dir), said))
+                  "prove it started (its own state tag is %s): %s; each stays until it exits or is stopped by hand "
+                  "(systemctl --user stop <unit> for a scope, kill <pid> for a claude process)"
+                  % (len(items), state_tag_of(self.state_dir), said))
 
     def _stop_leftover_scopes(self, lastsids: list[str], run=None, owned=(), left=None) -> int:
         """Stop the session scopes of OUR sessions whose CLI is not OWNED — `owned` is lease_census's
@@ -11959,7 +11961,9 @@ class SdkBackend:
         on the boot itself plus each session's state tail, never on ages or timers:
           * REAP orphaned SDK CLIs still resuming our sessions: a dead kernel's children re-parent
             (to launchd on macOS, to the `systemd --user` subreaper on Linux) and keep writing the
-            transcript, so a resume would give the conversation two writers.
+            transcript, so a resume would give the conversation two writers. Only an orphan carrying
+            this kernel's state tag is ended; one the tag check spares keeps its conversation, and
+            that session is not resumed by this boot (the guard in the per-session loop below).
           * A session whose state tail is 'working' had its turn CUT by the kernel death — a user
             interrupt writes 'idle', a finished turn 'waiting'; only a kill leaves 'working' — so resume
             it with a visible continuation nudge (BOOT_RESUME_NUDGE) ahead of its restored queue. The
@@ -11984,6 +11988,10 @@ class SdkBackend:
             scopes_stopped = 0
             lastsids = [str(r.get("lastSid") or "") for r in alive if r.get("lastSid")]
             by_fsid = {str(r.get("lastSid")): r for r in alive if r.get("lastSid")}   # conversation id -> its reg
+            # conversation ids a SPARED orphan still holds (the tag check below): their sessions are not resumed by
+            # this boot, whatever their state tail says, or the resume would put a second CLI on a transcript a process
+            # of another kernel's is still writing, two writers on one conversation. Empty when nothing is spared
+            spared_fsids: set[str] = set()
             if lastsids:
                 try:
                     ps = subprocess.run(PS_ARGV, capture_output=True, text=True, timeout=10).stdout
@@ -11999,8 +12007,9 @@ class SdkBackend:
                         r0 = by_fsid.get(fsid) or {}
                         problem_row(self.state_dir,
                                     "boot: %d claude processes were holding session %s's conversation at once "
-                                    "(pids %s); the orphans are being ended" % (len(pids), r0.get("name") or fsid[:8],
-                                                                                 ", ".join(str(p) for p in pids)),
+                                    "(pids %s); the orphans this kernel started are being ended, any other kernel's "
+                                    "is left alone and named below" % (len(pids), r0.get("name") or fsid[:8],
+                                                                       ", ".join(str(p) for p in pids)),
                                     "reconcile.duplicate-cli", log=self._log, sid=r0.get("sid"), name=r0.get("name"),
                                     fsid=fsid, pids=",".join(str(p) for p in pids), n=len(pids))
                     # Ownership by lease (T305): a CLI with a valid lease is owned whatever its parent; every
@@ -12023,6 +12032,7 @@ class SdkBackend:
                         else:
                             left.append(("claude pid %d" % pid, tag))
                     spared = {pid for pid in census["orphans"] if pid not in orphans and pid != os.getpid()}
+                    spared_fsids.update(s for s in (cli_sid_of(cmd_of.get(pid, ""), lastsids) for pid in spared) if s)
                     problems = [p for p in census["problems"] if p.get("cliPid") not in spared]
                     sid_of = {str(r.get("lastSid")): str(r.get("sid")) for r in alive if r.get("lastSid")}
                     for prob in problems:
@@ -12096,6 +12106,17 @@ class SdkBackend:
                     # heals the same way for ones that respawn.
                     if r.get("effortPending") or r.get("modelPending"):
                         self._update_reg(sid, effortPending=False, modelPending=False)
+                    if str(r.get("lastSid") or "") in spared_fsids:
+                        # A claude process this kernel did not start (another kernel's state tag, or none) still holds
+                        # this session's conversation: the reap above spared it and named it on its left-alone line.
+                        # Before the state tag the orphan was ended first, so the resume below was safe; now a resume
+                        # would spawn a second CLI with --resume on the same transcript, two writers on one
+                        # conversation, the hazard the reap exists to prevent. So the session stays down: no resume
+                        # nudge, no machine-cut stamp, no spawn. Its cut tail, queue, dead tasks and pending ask stay on
+                        # disk for the boot that finds the conversation free.
+                        self._log("boot reconcile: %s stays down: a claude process this kernel did not start still holds "
+                                  "its conversation (the process is named above)" % (r.get("name") or sid[:8]))
+                        continue
                     queued = [t for t in (r.get("queue") or []) if isinstance(t, str) and t]
                     if _ht().host_lease_state(read_lease(self.state_dir, sid), time.time()) == "attach":
                         if self._attach_stand_down_holds(sid, r):

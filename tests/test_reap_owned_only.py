@@ -12,6 +12,8 @@ ownership from the session id plus the booting kernel's OWN state directory:
 Now every session CLI carries its kernel's state tag in its environment (ROMP_STATE_TAG) and every session or host scope
 carries `romp-state=<tag>` in its Description, and a boot reaps only what carries its own tag. Another kernel's tag is
 left alone; no tag at all (an older build's unit or CLI) is left alone too, and one log line names everything left.
+A session whose conversation a spared process still holds is not resumed by that boot either (its resume would put a
+second CLI on the transcript, two writers on one conversation): it stays down, said once, whatever its state tail says.
 
 Synthetic fixtures only: placeholder session ids, fake pids above pid_max, injected listings and stop calls. Nothing here
 lists, creates or stops a real systemd unit, and every backend's state root has session hosts off.
@@ -38,6 +40,7 @@ os.environ["ROMP_CLI_SCOPE"] = "0"
 sb = load_source("romp_sdk_backend_reap_owned", os.path.join(BIN, "romp_sdk_backend.py"))
 
 SID = "11111111-2222-3333-4444-5555aaaa0923"          # the one session id both kernels hold
+SID2 = "11111111-2222-3333-4444-5555bbbb0923"         # a second session of the booting kernel, held by nobody else
 LINUX = sys.platform.startswith("linux") and os.path.isdir("/proc")
 
 
@@ -69,8 +72,8 @@ def _root() -> str:
     return d
 
 
-def _reg(d, sid):
-    r = {"sid": sid, "name": "api", "cwd": "/tmp", "alive": True, "lastSid": sid}
+def _reg(d, sid, name="api"):
+    r = {"sid": sid, "name": name, "cwd": "/tmp", "alive": True, "lastSid": sid}
     sb.write_reg(Path(d), sid, r)
     return r
 
@@ -85,13 +88,14 @@ def _scope_line(unit, desc):
 
 class Boot:
     """One boot of a backend over `d`, against a scripted machine: `ps` (PS_ARGV lines), the two scope listings, the
-    CLIs' environment tags and the processes' start times. Records every systemctl stop, every signal and every log
-    line; nothing reaches a real process or unit."""
+    CLIs' environment tags and the processes' start times. Records every systemctl stop, every signal, every log
+    line and every session the boot went on to start (`started`: the sids handed to _ensure, which is stubbed); nothing
+    reaches a real process or unit. `sids` are the registry rows the boot reconciles, SID alone by default."""
 
-    def __init__(self, d, ps, sessions, hosts, tags, starts=None):
+    def __init__(self, d, ps, sessions, hosts, tags, starts=None, sids=(SID,)):
         self.d, self.ps, self.sessions, self.hosts = d, ps, sessions, hosts
-        self.tags, self.starts = tags, dict(starts or {})
-        self.runs, self.killed, self.said = [], [], []
+        self.tags, self.starts, self.sids = tags, dict(starts or {}), tuple(sids)
+        self.runs, self.killed, self.said, self.started = [], [], [], []
 
     def run(self, argv, **kw):
         self.runs.append(list(argv))
@@ -113,8 +117,8 @@ class Boot:
              mock.patch.object(sb, "proc_start", lambda p, run=None: self.starts.get(p)), \
              mock.patch.object(sb, "proc_state_tag", lambda p, **k: self.tags.get(p), create=True), \
              mock.patch.object(sb.SdkBackend, "_pid_alive", lambda self_, p: False), \
-             mock.patch.object(sb.SdkBackend, "_ensure", lambda self_, sid, **k: None):
-            be._boot_reconcile([sb.read_reg(Path(self.d), SID)])
+             mock.patch.object(sb.SdkBackend, "_ensure", lambda self_, sid, **k: self.started.append(sid)):
+            be._boot_reconcile([sb.read_reg(Path(self.d), s) for s in self.sids])
         return be
 
     def stops(self):
@@ -227,6 +231,74 @@ class OwnCrashLeftoverIsStillReaped(unittest.TestCase):
         self.assertEqual(boot.stops(), [unit])
         self.assertIsNone(sb.read_lease(d, SID), "the lease that did not hold went with its CLI")
         self.assertEqual([m for m in boot.said if "left alone" in m], [])
+
+
+class ASparedOrphanHoldsItsConversation(unittest.TestCase):
+    """The resume rule meets the tag check. A session whose state tail is machine-active (its turn was cut by the
+    kernel's death) is resumed at boot, and until the state tag its orphan was ended FIRST, so the resume never met a
+    second writer. An orphan the tag check spares keeps its conversation, so the same boot must not resume that session
+    on top of it: _ensure with --resume would be two writers on one transcript, the hazard the reap exists to prevent.
+    The session stays down, said once, with nothing of the resume on its disk; a session with no spared orphan resumes
+    exactly as before, and so does one whose orphan was this kernel's own and was ended."""
+
+    def _states(self, d, sid):
+        return [json.loads(l) for l in (Path(d) / "states" / (sid + ".jsonl")).read_text().splitlines() if l.strip()]
+
+    def test_the_spared_orphans_session_stays_down_and_a_session_without_one_still_resumes(self):
+        dA, dB = _root(), _root()
+        _reg(dB, SID)
+        _reg(dB, SID2, name="web")
+        sb.append_state(Path(dB), SID, "working")      # a machine-active tail on each: the resume rule fires on both
+        sb.append_state(Path(dB), SID2, "working")
+        ps = ["  %d 1 /usr/lib/systemd/systemd --user" % MANAGER,
+              _cli(CLI_A, MANAGER)]         # kernel A's CLI on SID: an orphan by B's census, spared by the tag check
+        boot = Boot(dB, ps, [], [], tags={CLI_A: _tag(dA)}, sids=(SID, SID2))
+        boot.go()
+        self.assertNotIn(CLI_A, boot.signaled())
+        self.assertEqual(boot.started, [SID2], "the spared orphan's session is never started; the other one resumes")
+        down = [m for m in boot.said if "stays down" in m]
+        self.assertEqual(len(down), 1, boot.said)
+        self.assertIn("api", down[0], "the session is named")
+        self.assertIn("did not start", down[0])
+        self.assertEqual(len([m for m in boot.said if "left alone" in m]), 1, "the spared process is still named once")
+        # nothing of the resume reached SID's disk: no nudge in its queue, no machine-cut stamp on its tail, and the cut
+        # tail itself is still there for the boot that finds the conversation free
+        self.assertEqual(sb.read_reg(Path(dB), SID).get("queue") or [], [])
+        self.assertFalse([r for r in self._states(dB, SID) if "machineCut" in r], self._states(dB, SID))
+        self.assertEqual(sb.last_state_value(Path(dB), SID), "working")
+        # ...and all of it reached SID2's, as before
+        self.assertEqual((sb.read_reg(Path(dB), SID2).get("queue") or [])[:1], [sb.BOOT_RESUME_NUDGE])
+        self.assertTrue([r for r in self._states(dB, SID2) if r.get("machineCut") == "restart"])
+        rows = [json.loads(l) for l in (Path(dB) / sb.SESSION_EVENTS_FILE).read_text().splitlines()]
+        summary = [r for r in rows if r.get("kind") == "reconcile.boot"]
+        self.assertEqual(len(summary), 1, rows)
+        self.assertEqual((summary[0]["sessions"], summary[0]["resumed"], summary[0]["toStart"]), (2, 1, 1))
+
+    def test_an_untagged_orphan_holds_the_conversation_too(self):
+        d = _root()
+        _reg(d, SID)
+        sb.append_state(Path(d), SID, "retrying")       # any machine-active state, not just working
+        ps = ["  %d 1 /usr/lib/systemd/systemd --user" % MANAGER, _cli(CLI_U, MANAGER)]
+        boot = Boot(d, ps, [], [], tags={})             # no tag readable: an older build's CLI, spared
+        boot.go()
+        self.assertEqual(boot.signaled(), [])
+        self.assertEqual(boot.started, [], "no resume on top of the untagged CLI")
+        self.assertEqual(len([m for m in boot.said if "stays down" in m]), 1, boot.said)
+        self.assertEqual(sb.read_reg(Path(d), SID).get("queue") or [], [])
+        self.assertFalse([r for r in self._states(d, SID) if "machineCut" in r])
+
+    def test_a_session_whose_own_orphan_was_ended_resumes_as_before(self):
+        d = _root()
+        _reg(d, SID)
+        sb.append_state(Path(d), SID, "working")
+        ps = ["  %d 1 /usr/lib/systemd/systemd --user" % MANAGER, _cli(CLI_B, MANAGER)]
+        boot = Boot(d, ps, [], [], tags={CLI_B: _tag(d)})   # this kernel's own tag: ended first, as before
+        boot.go()
+        self.assertEqual(boot.signaled(), [CLI_B], "this kernel's own orphan is ended first")
+        self.assertEqual(boot.started, [SID], "...and the session resumes, the conversation free")
+        self.assertEqual([m for m in boot.said if "stays down" in m], [])
+        self.assertEqual((sb.read_reg(Path(d), SID).get("queue") or [])[:1], [sb.BOOT_RESUME_NUDGE])
+        self.assertTrue([r for r in self._states(d, SID) if r.get("machineCut") == "restart"])
 
 
 class TheTag(unittest.TestCase):
