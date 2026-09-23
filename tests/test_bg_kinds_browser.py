@@ -75,6 +75,35 @@ await page.waitForSelector("#bg-tasks .bg-fold-head", { timeout: 15000 });
 // frame's header (a whole session frame replaces the status, upsert) and never lands on a header the injected repaint is swapping out
 await page.waitForFunction(() => ((document.querySelector("#bg-tasks .bg-fold-label") || {}).textContent || "").startsWith("In the background"), null, { timeout: 15000 });
 await page.click("#bg-tasks .bg-fold-head");   // collapsed by default: open the list
+// THE HEADER KEEPS THE KEYBOARD (the box arc's round three, the second contributor's post-merge review of PR 2105): the box is emptied and its
+// header rebuilt on every render, the one the header's own click makes included, so Enter toggled the rows and dropped focus to the body (a
+// second Enter reached the bare-area handler and the composer); a push changing an awaited field and a full session frame dropped it too. The
+// focus is walked in by the KEYBOARD (Shift+Tab from the composer), so it is a focus-visible one; a mouse click's focus is deliberately not kept
+const bgActive = () => page.evaluate(() => { const a = document.activeElement; return { head: !!a && a.classList.contains("bg-fold-head"), composer: !!a && a.id === "composer-input", tag: a ? a.tagName : null, open: !!document.querySelector("#bg-tasks .bg-list") }; });
+await page.focus("#composer-input");
+const keys = { entered: false };
+for (let i = 0; i < 40; i++) {   // loop-ok: bounded; the walk stops on the header
+  await page.keyboard.press("Shift+Tab");
+  const a = await bgActive(); if (a.head) { keys.entered = true; break; }
+}
+if (keys.entered) {
+  await page.keyboard.press("Enter"); await page.waitForFunction(() => !document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); keys.enter1 = await bgActive();   // closes the rows
+  await page.keyboard.press("Enter"); await page.waitForFunction(() => !!document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); keys.enter2 = await bgActive();   // a second Enter opens them again (before: it reached the composer)
+  await page.keyboard.press(" "); await page.waitForFunction(() => !document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); keys.space = await bgActive();
+  await page.keyboard.press(" "); await page.waitForFunction(() => !!document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); keys.space2 = await bgActive();
+  // a push changing an awaited field (awaitChanged re-renders the box), then a full session frame: the header keeps the keyboard through both
+  const f0 = cfg.frame;
+  const pushed = async (frame, until) => { await page.evaluate((x) => window.postMessage(x, "*"), frame); await page.waitForFunction(until, null, { timeout: 6000 }).catch(() => {}); return bgActive(); };
+  keys.statusPush = await pushed({ type: "status", id: f0.id, status: { ...f0.status, awaitingWhy: "waiting on 1 background agent: the docs build" } }, () => ((document.querySelector("#bg-tasks .bg-fold-label") || {}).textContent || "").includes("docs build") || true);
+  keys.framePush = await pushed(f0, () => !!document.querySelector("#bg-tasks .bg-fold-head"));
+  // a mouse click on the header, then Enter: the click's focus is not a keyboard's, so the rebuilt header does not take it back and Enter reaches the composer, as before.
+  // The keyboard's focus is first moved off the header by the mouse (a click in the composer), so the header's click is a mouse focus, not a keyboard one still standing
+  await page.click("#composer-input");
+  await page.click("#bg-tasks .bg-fold-head"); await page.waitForFunction(() => !document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {});
+  keys.afterClick = await bgActive();
+  await page.keyboard.press("Enter"); keys.clickThenEnter = await bgActive();
+  if (!(await bgActive()).open) { await page.click("#bg-tasks .bg-fold-head"); await page.waitForFunction(() => !!document.querySelector("#bg-tasks .bg-list"), null, { timeout: 5000 }).catch(() => {}); }   // the list open again for the roads below
+}
 await page.waitForFunction(() => document.querySelectorAll("#bg-tasks .bg-list .bg-task").length >= 6, null, { timeout: 15000 });
 await page.waitForTimeout(200);
 const probe = () => page.evaluate(() => {
@@ -156,7 +185,7 @@ const idleOne = await settle({ ...f0, status: { ...f0.status, state: "idle", awa
 if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/romp_chat-T394-bg-kinds-light-served.png" }); }
 const frames = await page.evaluate(() => window.__frames); const held = await page.evaluate(() => window.__held);
 await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ dark, light, placedOnly, placedKept, doneOnly, idleOne, peerIdle, nested, frames, errors, held, replay, afterReplay }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ headKeys: keys, dark, light, placedOnly, placedKept, doneOnly, idleOne, peerIdle, nested, frames, errors, held, replay, afterReplay }) + "\n", () => process.exit(0));
 """
 
 
@@ -280,6 +309,21 @@ class ServedBgKinds(unittest.TestCase):
             cls._r = json.loads(line[len("RESULT:"):])
         print("RESULT:" + json.dumps(cls._r), file=sys.stderr)   # the whole measurement rides every test's captured stderr (-rA shows it for a pass)
         return cls._r
+
+    def test_the_header_keeps_the_keyboard_through_its_own_toggle_and_every_push_but_not_a_mouse_clicks_focus(self):
+        """The box arc's round three (the second contributor's post-merge review of PR 2105): the box is emptied and its header rebuilt on every
+        render, so Enter toggled the rows and dropped focus to the body, a second Enter reached the composer, and a push changing an awaited
+        field or a full session frame dropped it too. A keyboard focus on the header (focus-visible) is remembered before the box is emptied
+        and the new header takes it back; a mouse click's focus is not, so Enter after a click still reaches the composer."""
+        r = self._result(); k = r["headKeys"]
+        self.assertTrue(k["entered"], "Shift+Tab from the composer reaches the header: %r" % k)
+        self.assertEqual((k["enter1"]["head"], k["enter1"]["open"]), (True, False), "Enter closes the rows and the header keeps focus: %r" % k["enter1"])
+        self.assertEqual((k["enter2"]["head"], k["enter2"]["open"]), (True, True), "a second Enter opens them again (before: it reached the composer): %r" % k["enter2"])
+        self.assertEqual((k["space"]["head"], k["space"]["open"], k["space2"]["head"], k["space2"]["open"]), (True, False, True, True), "Space toggles and keeps focus both ways: %r %r" % (k["space"], k["space2"]))
+        self.assertTrue(k["statusPush"]["head"], "a push changing an awaited field keeps the focus on the header: %r" % k["statusPush"])
+        self.assertTrue(k["framePush"]["head"], "and so does a full session frame: %r" % k["framePush"])
+        self.assertFalse(k["clickThenEnter"]["head"], "after a mouse click the rebuilt header does not take the focus back (kept on purpose): %r" % k["clickThenEnter"])
+        self.assertTrue(k["clickThenEnter"]["composer"], "so Enter reaches the composer, as before: %r" % k["clickThenEnter"])
 
     def test_every_row_sits_in_its_kinds_section_and_the_kept_task_wears_the_verdict_as_a_suffix(self):
         r = self._result()

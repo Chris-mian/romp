@@ -1125,19 +1125,22 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 #notices { flex: 0 0 auto; min-height: 0; max-height: min(40vh, 280px); overflow: auto; box-sizing: border-box; margin: 8px 10px 0;
   border: 1px solid var(--st-needs-bg); border-radius: 8px; background: var(--box-bg);
   display: flex; flex-direction: column; }
-.ntc-head { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; padding: 7px 11px; font-size: 0.92em; user-select: none;
+.ntc-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 7px 11px;
   border-bottom: 1px solid var(--box-border); position: sticky; top: 0; z-index: 1;
-  background: linear-gradient(var(--box-bg), var(--box-bg)), var(--bg); }   /* an opaque ground under the box's wash, above the rows: a row scrolled under the header no longer prints through it (the second contributor's review, 2026-09-22) */
+  background: linear-gradient(var(--box-bg), var(--box-bg)), var(--bg); }   /* the BAR (the box arc's round three): the header and the gear side by side, never a button inside the role=button header; the bar carries what the header carried: the sticky place, the opaque ground, the rule */
+.ntc-head { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 0.92em; user-select: none; }   /* an opaque ground under the box's wash, above the rows: a row scrolled under the header no longer prints through it (the second contributor's review, 2026-09-22) */
 .ntc-head { cursor: pointer; }   /* the header line is the fold control (the user 2026-09-23): the box opens in steps, collapsed by default like the awaiting box */
+.ntc-head:focus-visible, .bg-fold-head:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }   /* the keyboard's focus on either header (the box arc's round three): the boxes' overflow clips the browser's ring, and the accent reads 9.54:1 dark and 4.06:1 light; -2px keeps it off the rule below */
 .ntc-head .ntc-caret { flex: 0 0 auto; color: var(--dim); font-size: 0.72em; width: 10px; opacity: 0.7; }   /* the awaiting box's caret (.bg-caret): closed points right, the last level down */
-#notices.ntc-l0 .ntc-head { border-bottom-color: transparent; }   /* collapsed: the header line alone, no rule under it */
+#notices.ntc-l0 .ntc-bar { border-bottom-color: transparent; }   /* collapsed: the header line alone, no rule under it */
 #notices.ntc-l0 .ntc-row { display: none; }   /* level 0: the items hidden */
-#notices:not(.ntc-l2) .ntc-body, #notices:not(.ntc-l2) .ntc-attach, #notices:not(.ntc-l2) .ntc-more { display: none; }   /* below level 2: the background paragraph, its disclosure and the attachment hidden; the title and the buttons stand */
+#notices:not(.ntc-l2) .ntc-body, #notices:not(.ntc-l2) .ntc-attach, #notices:not(.ntc-l2) .ntc-more { display: none; }
+#notices:not(.ntc-l2) .ntc-row.ntc-fault .ntc-body { display: -webkit-box; }   /* the credential row's body, the fault's explanation, shows at the items too (the box arc's round three: it hid with every body) */   /* below level 2: the background paragraph, its disclosure and the attachment hidden; the title and the buttons stand */
 .ntc-head .ntc-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs-bg); }
 .ntc-head .ntc-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
-.ntc-head .ntc-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin: -4px 0 -4px 4px; padding: 2px 4px; cursor: pointer;
+.ntc-bar .ntc-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin: -4px 0 -4px 4px; padding: 2px 4px; cursor: pointer;
   font-size: 15px; line-height: 1; border: none; border-radius: 5px; background: transparent; color: var(--dim); transition: color 0.1s, background 0.1s; }   /* the box's own gear at the header's right end: the strip gear's shape (.tab-widgets-gear) at the header's size, its colours the box's tokens (css-vocab.test.ts: no literal in a .ntc- rule); margins so the line's height does not grow */
-.ntc-head .ntc-gear:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.ntc-bar .ntc-gear:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 8%, transparent); }
 .ntc-row { padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
 .ntc-row + .ntc-row { border-top: 1px solid var(--box-border); }
 .ntc-title { font-weight: 600; font-size: 0.92em; }
@@ -4691,7 +4694,7 @@ body.dense-chrome .bg-list { padding: 2px 2px; }                                
 body.dense-chrome .bg-list:not(:has(.bg-task.open)) { max-height: 100px; }              /* no cap of its own; the panel's min(50vh, 340px) bounds it */
 body.dense-chrome .bg-group-head { padding: 3px 9px 1px; }                              /* 6px 9px 2px */
 body.dense-chrome .bg-head { gap: 6px; padding: 3px 9px; line-height: 1.3; }            /* 8px; 5px 9px; the body's 1.6 */
-body.dense-chrome .ntc-head { padding: 5px 11px; }                                      /* 7px 11px; the Needs you box's header compacts with the background box's (the second contributor's review) */
+body.dense-chrome .ntc-bar { padding: 5px 11px; }                                      /* 7px 11px; the Needs you box's header compacts with the background box's (the second contributor's review) */
 body.dense-chrome .bg-sum { font-size: 11px; }                                          /* 0.92em */
 body.dense-chrome .bg-since { font-size: 10px; }                                        /* 0.82em */
 /* the trailing status word goes where the dot already says it: a row's caption IS its status (taskRowSpec and

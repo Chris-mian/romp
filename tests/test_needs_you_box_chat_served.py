@@ -60,6 +60,9 @@ try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
 await page.addInitScript(() => { try { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.tabStateBadge = false; localStorage.setItem("romp:settings", JSON.stringify(s)); } catch (e) {} });   // RING mode: this lab's subject is the ring, not the badge (the 2026-09-23 default flip; the dot is the badge lab's + test 5's)
+await page.addInitScript((sid) => { window.__frameN = 0; window.__injN = 0; window.__lastStatus = null; window.addEventListener("message", (e) => { const m = e.data; if (!m || typeof m !== "object" || typeof m.type !== "string") return; if (e.source === window) { window.__injN++; return; } window.__frameN++;
+  const rows = m.status && Array.isArray(m.status.notices) ? m.status.notices : null;   // only a frame that carries the box's rows: an early frame without them would empty the box when posted back
+  if (m.id === sid && rows && rows.length && (m.type === "status" || m.type === "session" || m.type === "chatTail")) window.__lastStatus = { type: "status", id: sid, status: m.status }; }, true); }, cfg.sid);   // the kernel's frames counted and the session's latest status (the box's rows ride the chatTail frames' status here) kept, so a scene can post a status frame of its own that differs in one field and wait for the page to handle it, never on a delay   // the kernel's frames counted and the session's latest status kept, so a scene can post a frame of its own that differs in one field and wait for the page to handle it, never on a delay
 const errors = []; page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
 const out = { errors };
 const mark = () => process.stdout.write("PARTIAL:" + JSON.stringify(out) + "\n");   // the record so far, after every scene: what a run that hits the driver's budget still reports
@@ -75,7 +78,7 @@ const readBox = () => page.evaluate(() => {
            head: box ? ((box.querySelector(".ntc-head .ntc-label") || {}).textContent || null) : null,
            dot: box && box.querySelector(".ntc-head .ntc-dot") ? getComputedStyle(box.querySelector(".ntc-head .ntc-dot")).backgroundColor : null,
            level, caret: box && box.querySelector(".ntc-head .ntc-caret") ? box.querySelector(".ntc-head .ntc-caret").textContent : null,
-           head2: (() => { const h = box && box.querySelector(".ntc-head"); return h ? { role: h.getAttribute("role"), tabIndex: h.tabIndex, expanded: h.getAttribute("aria-expanded"), title: h.title, border: getComputedStyle(h).borderBottomColor, caretHidden: (h.querySelector(".ntc-caret") || {}).getAttribute ? h.querySelector(".ntc-caret").getAttribute("aria-hidden") : null, gear: !!h.querySelector(".ntc-gear") } : null; })(),   // the header as a control: its role, its tab stop, its expanded state and title, its rule's colour, the caret's aria, the gear
+           head2: (() => { const h = box && box.querySelector(".ntc-head"); return h ? { role: h.getAttribute("role"), tabIndex: h.tabIndex, expanded: h.getAttribute("aria-expanded"), title: h.title, border: getComputedStyle(h.closest(".ntc-bar") || h).borderBottomColor, focusable: h.querySelectorAll("button, [tabindex], a[href], input, select, textarea").length, caretHidden: (h.querySelector(".ntc-caret") || {}).getAttribute ? h.querySelector(".ntc-caret").getAttribute("aria-hidden") : null, gear: !!(h.closest(".ntc-bar") || h).querySelector(".ntc-gear") } : null; })(),   // the header as a control: its role, its tab stop, its expanded state and title, its rule's colour, the caret's aria, the gear
            laidTitles: rows.map((r) => { const t = r.querySelector(".ntc-title"); return !!t && t.getBoundingClientRect().height > 0; }),   // LAID OUT, by rect: a hidden ancestor keeps a child's computed display and its textContent (the second contributor's post-merge review of PR 2093)
            laidButtons: rows.map((r) => Array.from(r.querySelectorAll(".ntc-actions button")).filter((b) => b.getBoundingClientRect().height > 0).length),
            headVisible: box ? vis(box.querySelector(".ntc-head")) : null, rowsVisible: rows.map((r) => vis(r)), bodiesVisible: rows.map((r) => vis(r.querySelector(".ntc-body"))),
@@ -118,6 +121,10 @@ if (out.keys.entered) {
   out.keys.opened = await page.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l1"), null, { timeout: 5000 }).then(() => true).catch(() => false);
   out.keys.afterEnter = await readBox(); out.keys.focusAfterEnter = await active();
   await page.keyboard.press("Tab"); out.keys.afterTab = await active();
+  await page.keyboard.press("Shift+Tab");   // back on the header: Space advances the level too (the box arc's round three: only a regex pinned it)
+  await page.keyboard.press(" ");
+  out.keys.spaced = await page.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l2"), null, { timeout: 5000 }).then(() => true).catch(() => false);
+  out.keys.focusAfterSpace = await active();
 }
 mark();
 // 0c. THE LEVEL IS THE SESSION'S OWN (the same review: a mutant copying the last level to an unseen session passed the source pin): web at
@@ -138,6 +145,11 @@ out.floor.shown = await readBox();
 await page.click("#notices .ntc-head"); out.floor.up = await page.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l2"), null, { timeout: 5000 }).then(() => true).catch(() => false);
 await page.click("#notices .ntc-head"); out.floor.down = await page.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l1"), null, { timeout: 5000 }).then(() => true).catch(() => false);
 out.floor.after = await readBox();
+// the floor's RELEASE (the box arc's round three): the seed removed, the credential row leaves, and the level stays at the items (the click stores
+// the level after the shown one, never below the floor, so two clicks from the items keep 1 stored; before: 0 stored, the box dropped to its header line)
+fs.unlinkSync(cfg.judgeAuth); fs.utimesSync(cfg.order, new Date(), new Date());
+out.floor.released = await page.waitForSelector('#notices .ntc-row button[data-act="ntc-fix"]', { state: "detached", timeout: 60000 }).then(() => true).catch(() => false);
+out.floor.afterRelease = await readBox();
 out.floor.web = await switchTo(cfg.sid, 4);
 await foldTo(2);   // the rest of the scenes read the bodies and their disclosures: the full context open
 mark();
@@ -230,6 +242,29 @@ out.refused.rowErr = await page.evaluate((s) => { const r = document.querySelect
 await page.evaluate(() => { const b = Array.from(document.querySelectorAll("#confirm button")).find((x) => /Dismiss/.test(x.textContent || "")); if (b) b.click(); });
 await page.waitForSelector("#confirm", { state: "detached", timeout: 10000 }).catch(() => {});
 fs.chmodSync(cfg.ledger, 0o644);
+// 2a'. THE SIGNATURE WITHOUT THE CONTINUE FLAG, executed (the box arc's round three: the flag's absence from the row signature had a source pin
+// alone): the session's liveness flips (its sdk record's alive bit), so the kernel's next frame changes the rows' Continue flag and nothing the
+// rows show; the composer's placeholder is the frame's visible mark. The refused row's line and its re-armed buttons must survive that frame
+// (with the flag in the signature the row was rebuilt: the line wiped, a latched Clear re-enabled)
+// the frame is the session's latest status frame with every row's Continue flag flipped and nothing else, posted to the page the way the
+// kernel's socket frames arrive (a window message; the background lab drives its box the same way); the wait is on the page HANDLING it (the
+// injected-frame count), never a delay
+const errRow = () => page.evaluate((s) => { const r = document.querySelector(s); const e = r && r.querySelector(".ntc-err"); return { err: e && e.style.display !== "none" ? e.textContent : null, buttons: r ? Array.from(r.querySelectorAll(".ntc-actions button")).map((b) => [b.textContent, b.disabled]) : null, injected: window.__injN, haveStatus: !!window.__lastStatus, cont: window.__lastStatus ? (window.__lastStatus.status.notices || []).map((n) => !!n.cont) : null }; }, rowSel(cfg.g3));
+const postFlipped = async () => {
+  const n0 = await page.evaluate(() => window.__injN);
+  const posted = await page.evaluate(() => { const st = window.__lastStatus; if (!st) return false;   // the latest frame with the rows, so the posted one differs in the flag alone
+    const shown = Array.from(document.querySelectorAll("#notices .ntc-row")).map((r) => r.dataset.item); const ids = (st.status.notices || []).map((n) => n.itemId);
+    if (shown.length !== ids.length || shown.some((id) => !ids.includes(id))) return "stale:" + JSON.stringify({ shown, ids });   // the frame must list the rows the box shows
+    const copy = JSON.parse(JSON.stringify(st)); copy.status.notices = copy.status.notices.map((n) => ({ ...n, cont: !n.cont })); window.postMessage(copy, "*"); return true; });
+  if (posted !== true) return { posted, handled: false };
+  const handled = posted && await page.waitForFunction((n) => window.__injN > n, n0, { timeout: 15000 }).then(() => true).catch(() => false);
+  return { posted, handled };
+};
+out.sigFlip = { before: await errRow() };
+out.sigFlip.flip = await postFlipped();
+out.sigFlip.after = await errRow();
+out.sigFlip.flipBack = await postFlipped();   // the flags back as the kernel sends them, so the kernel's next frame changes nothing
+out.sigFlip.restored = await errRow();
 mark();
 // 2. Clear on the third question: the card's own askClear wire; the row leaves with the next frame
 await page.click(rowSel(cfg.g3) + ' [data-act="ntc-clear"]');
@@ -328,20 +363,31 @@ if (fr) {
     await shell.keyboard.press("Enter");
     out.shellKeys.opened = await fr.waitForFunction(() => document.getElementById("notices").classList.contains("ntc-l1"), null, { timeout: 5000 }).then(() => true).catch(() => false);
     await shell.keyboard.press("Tab"); out.shellKeys.afterTab1 = await frActive();
+    // Enter on the FOCUSED GEAR opens the settings and leaves the level alone (the box arc's round three: only the keydown's target guard's regex
+    // pinned that a key on the gear is the gear's own); the card is closed again by the shell's Escape chain
+    out.shellKeys.levelBeforeGearEnter = await fr.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c)));
+    await shell.keyboard.press("Enter");
+    out.shellKeys.gearEnterOpened = await shell.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 15000 }).then(() => true).catch(() => false);
+    out.shellKeys.levelAfterGearEnter = await fr.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c)));
+    await shell.keyboard.press("Escape");
+    await shell.waitForFunction(() => !document.body.classList.contains("settings-open"), null, { timeout: 10000 }).catch(() => {});
+    await fr.focus("#notices .ntc-bar .ntc-gear", { timeout: 5000 }).catch(() => {});   // fail-soft: a page without the bar (the base) reads whatever it shows
     await shell.keyboard.press("Tab"); out.shellKeys.afterTab2 = await frActive();
+    out.shellKeys.headFocusable = await fr.evaluate(() => document.querySelector("#notices .ntc-head").querySelectorAll("button, [tabindex], a[href], input, select, textarea").length);   // no focusable descendant: the gear is a sibling (axe nested-interactive)
   }
   await openNeedsBox(fr, 2);
   // 6a. THE HEADER'S OWN GEAR, in the shell where a settings card can open (the second contributor's post-merge review of PR 2093: the strip's
   // gear lands on Tab strip with the box's section out of view): its click opens the settings' Chat tab with the Boxes section in the card's
   // view, and the box's level does not move
-  out.gear = { present: await fr.evaluate(() => !!document.querySelector("#notices .ntc-head .ntc-gear")), levelBefore: (await fr.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c)))) };
+  out.gear = { present: await fr.evaluate(() => !!document.querySelector("#notices .ntc-bar .ntc-gear")), levelBefore: (await fr.evaluate(() => ["ntc-l0", "ntc-l1", "ntc-l2"].findIndex((c) => document.getElementById("notices").classList.contains(c)))) };
   if (out.gear.present) {
-    await fr.click("#notices .ntc-head .ntc-gear");
+    await fr.click("#notices .ntc-bar .ntc-gear");
     out.gear.opened = await shell.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 15000 }).then(() => true).catch(() => false);
     let setF = null; for (let i = 0; i < 50 && !setF; i++) { setF = shell.frames().find((f) => /\/settings(\?|$)/.test(f.url())) || null; if (!setF) await shell.waitForTimeout(100); }   // loop-ok: bounded
     out.gear.frame = !!setF;
     if (setF) {
       await setF.waitForSelector("#rsettings:not([hidden])", { timeout: 15000 }).catch(() => {});
+      out.gear.mark = await setF.waitForFunction(() => (document.querySelector("#rsettings .rs-card") || {}).getAttribute && document.querySelector("#rsettings .rs-card").getAttribute("data-section-landed") === "boxes", null, { timeout: 15000 }).then(() => true).catch(() => false);   // the LANDING's mark (gear.js): a plain settings open shows the section in this window too, so only the mark tells the jump apart (the box arc's round three)
       out.gear.landed = await setF.waitForFunction(() => { const sec = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="boxes"]'); const card = document.querySelector("#rsettings .rs-card"); if (!sec || !card) return false; const s = sec.getBoundingClientRect(), c = card.getBoundingClientRect(); return s.top >= c.top - 1 && s.bottom <= c.bottom + 1; }, null, { timeout: 10000 }).then(() => true).catch(() => false);
       out.gear.view = await setF.evaluate(() => { const shown = Array.from(document.querySelectorAll("#rsettings .rs-pane")).filter((pn) => !pn.hidden && getComputedStyle(pn).display !== "none").map((pn) => pn.dataset.pane);
         const sec = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="boxes"]'); const card = document.querySelector("#rsettings .rs-card"); const cb = document.getElementById("rs-needsbox");
@@ -647,6 +693,20 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertEqual(d["box"]["head"], "Needs you · 4")
         self.assertEqual(d["rowErr"], "That clear did not land", "and the row says why, the frame's title alone (the verifier's low: no doubled refusal): %r" % d["rowErr"])
 
+    def test_a_frame_changing_only_the_continue_flag_leaves_the_refusal_line_and_the_buttons_alone(self):
+        """The box arc's round three: the Continue flag left the row signature in PR 2105 with a source pin alone. Executed: the session's
+        latest status frame, with every row's Continue flag flipped and nothing else, is posted to the page as the kernel's frames arrive,
+        and the refused row keeps its refusal line and its re-armed buttons once the page has handled it (with the flag in the signature the
+        row was rebuilt: the line wiped, a latched Clear re-enabled)."""
+        r = self._result(); sf = r["sigFlip"]
+        self.assertEqual(sf["before"]["err"], "That clear did not land", "premise: the refusal line stands before the flip: %r" % sf["before"])
+        self.assertTrue(sf["before"]["haveStatus"], "premise: the session's latest status with the box's rows is in hand: %r" % sf["before"])
+        self.assertIn(True, sf["before"]["cont"] or [], "premise: a live session's rows carry the Continue offer, so the flip changes the flag")
+        self.assertEqual((sf["flip"]["posted"], sf["flip"]["handled"]), (True, True), "the frame with every row's flag flipped and nothing else was posted and handled: %r" % sf["flip"])
+        self.assertEqual(sf["after"]["err"], "That clear did not land", "the refusal line survives that frame (before: the flag in the signature rebuilt the row and wiped the line): %r" % sf["after"])
+        self.assertEqual([b[1] for b in sf["after"]["buttons"]], [False, False], "and the re-armed buttons stay re-armed: %r" % sf["after"])
+        self.assertTrue(sf["flipBack"]["handled"], "the flags posted back as the kernel sends them: %r" % sf["restored"])
+
     def test_clear_takes_its_row_off_the_box_with_the_next_frame(self):
         r = self._result()
         self.assertTrue(r["clearLatched"], "the row's buttons latch on the press")
@@ -703,6 +763,8 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertRegex(((k.get("headName") or "").splitlines() or [""])[0], r'^- button "Needs you · \d+"$', "the computed accessible name on the standalone page: the label's text, a button (no gear here): %r" % k.get("headName"))
         self.assertTrue(k["focusAfterEnter"]["head"], "focus stays on the header after Enter: %r" % k["focusAfterEnter"])
         self.assertEqual((k["afterTab"]["inBox"], k["afterTab"]["text"], k["afterTab"]["act"]), (True, "Reply", "ntc-reply"), "Tab lands on the first row's Reply: %r" % k["afterTab"])
+        self.assertTrue(k.get("spaced"), "Space on the header advances the level too (the box arc's round three): %r" % k.get("focusAfterSpace"))
+        self.assertTrue((k.get("focusAfterSpace") or {}).get("head"), "and focus stays on the header")
 
     def test_the_level_is_the_sessions_own(self):
         """The second contributor's post-merge review of PR 2093: the level pin spelled the code, so a mutant copying the last level to a
@@ -722,7 +784,19 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertTrue(f["up"], "a click goes to the full context")
         self.assertTrue(f["down"], "the next comes back to the items, not the header line: %r" % f["after"])
         self.assertEqual((f["after"]["level"], f["after"]["head2"]["expanded"]), (1, "true"))
+        self.assertEqual(f["shown"]["bodiesVisible"], [True], "the fault's explanation, the row's body, shows at the items (the box arc's round three: it hid with every body): %r" % f["shown"])
+        self.assertEqual(f["shown"]["head2"]["title"], "Show the full context", "the title names the next step at the floor")
+        self.assertEqual(f["after"]["head2"]["title"], "Show the full context", "and after the round trip too: 'Collapse' is never said where the next click cannot fold to the header line")
         self.assertEqual(f["web"]["level"], 2, "web's box stands where it was: %r" % f["web"])
+
+    def test_the_floor_releases_to_the_items_when_the_credential_row_leaves(self):
+        """The box arc's round three: a click at the floor stored the level after the SHOWN one, so two clicks from the items stored 0 and the
+        box dropped to its header line when the credential row left. The click stores the maximum of that and the floor; the seed removed, the
+        row leaves and the items stay."""
+        r = self._result(); f = r["floor"]
+        self.assertTrue(f["up"] and f["down"], "premise: the two clicks at the floor ran")
+        self.assertTrue(f["released"], "the seed removed, the credential row leaves: %r (kernel: %s)" % ({k: v for k, v in f.items() if k in ("row", "up", "down", "released")}, self._kernel_tail()))
+        self.assertEqual((f["afterRelease"]["level"], f["afterRelease"]["head"]), (1, "Needs you · 1"), "the box keeps the items when the row leaves (before: 0 stored, the box dropped to its header line): %r" % f["afterRelease"])
 
     def test_where_the_gear_is_drawn_the_keyboard_meets_it_then_the_header_named_by_its_label(self):
         """The round-one verifier of PR 2105: the order pin ran only on the standalone page, where no gear is drawn, and the gear nested in the
@@ -739,6 +813,9 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         self.assertNotIn("settings", first, "and nothing of the gear in it")
         self.assertTrue(k["opened"], "Enter opens the items")
         self.assertEqual(k["afterTab1"]["act"], "ntc-gear", "Tab from the header: the gear: %r" % k["afterTab1"])
+        self.assertTrue(k.get("gearEnterOpened"), "Enter on the focused gear opens the settings card (the box arc's round three: a key on the gear is the gear's own): %r" % k)
+        self.assertEqual((k.get("levelBeforeGearEnter"), k.get("levelAfterGearEnter")), (1, 1), "and leaves the level alone")
+        self.assertEqual(k.get("headFocusable"), 0, "the header has no focusable descendant: the gear is its sibling in the bar (axe nested-interactive)")
         self.assertEqual((k["afterTab2"]["inBox"], k["afterTab2"]["text"], k["afterTab2"]["act"]), (True, "Reply", "ntc-reply"), "then the first row's Reply: %r" % k["afterTab2"])
 
     def test_the_headers_gear_opens_the_settings_at_the_boxes_section_in_the_shell(self):
@@ -749,6 +826,7 @@ class NeedsYouBoxChatServed(unittest.TestCase):
         r = self._result(); g = r["gear"]
         self.assertTrue(g["present"], "the gear is drawn in the shell's chat pane: %r" % g)
         self.assertTrue(g["opened"] and g["frame"], "its click opens the settings card: %r" % g)
+        self.assertTrue(g.get("mark"), "the landing's own mark, data-section-landed=boxes, on the card (a plain settings open shows the section in this window too; the box arc's round three): %r" % g)
         self.assertTrue(g["landed"], "with the Boxes section head inside the card's view: %r" % g)
         self.assertEqual((g["view"]["shown"], g["view"]["headText"], g["view"]["headInView"], g["view"]["rowInView"]), (["chat"], "Boxes below the transcript", True, True), "the Chat tab, the section and the switch's row in view: %r" % g["view"])
         self.assertEqual((g["levelBefore"], g["levelAfter"]), (2, 2), "the gear's click is the gear's, not the fold's")
