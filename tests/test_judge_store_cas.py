@@ -504,14 +504,16 @@ class StoreCas(unittest.TestCase):
         self._seed()
         g1 = self._nid(1)
         holder = jd.load_goals(SID)                  # stands on V0
-        for i in range(3):                           # loop-ok: the three cycles the review executed
+        n = 4                                        # a judge pass's cycles (the round-four verifier: three kept versions lost the base on the fourth)
+        for i in range(n):                           # loop-ok: a pass's worth of cycles
             w = jd.load_goals(SID); w["nodes"][g1]["parentId"] = "V%d" % (i + 1); jd.save_goals(SID, w)   # a load (the memo rolls), then a publish (a text kept)
         before = dict(jd._GOAL_IO)
         jd.record_verdict(holder, holder["nodes"][g1], "unblocker", "note", T0 + 40, why="ours"); jd.save_goals(SID, holder)
         after = json.loads((jd.GOALDIR / (SID + ".json")).read_text())["nodes"][g1]
-        self.assertEqual(after.get("parentId"), "V3", "the other writer's last move is carried: the holder's base survived three of the other's cycles (before: evicted by the published texts, nothing carried, the holder's copy published over it)")
+        self.assertEqual(after.get("parentId"), "V%d" % n, "the other writer's last move is carried: the holder's base survived a pass's worth of the other's cycles (before: evicted, nothing carried, the holder's copy published over it)")
         self.assertEqual((jd._GOAL_IO["carryBase"] - before["carryBase"], jd._GOAL_IO["carryNoBase"] - before["carryNoBase"]), (1, 0), "and the counters say the base was found")
         self.assertTrue(any(e.get("why") == "ours" for e in after.get("log") or []), "with the holder's own event")
+        self.assertGreaterEqual(jd._RAW_HISTORY_KEEP, n, "the readers' history keeps a pass's worth of versions (the design line beside the constant says why)")
 
     def test_the_retry_after_a_raised_write_stands_on_the_version_it_rebased_onto(self):
         """The second contributor's pre-merge review of PR 2101: after a raised write the finally hands the holder the identity the loop last
