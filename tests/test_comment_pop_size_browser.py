@@ -79,7 +79,8 @@ const page = await browser.newPage({ viewport: { width: cfg.W, height: cfg.H } }
 // after navigation) BEFORE the bundle registered its message listeners (2.6-2.8s), and the page never acted on it; the
 // ready arm's connect push then re-sent an IDENTICAL comments frame that was DEDUPED for _DEDUP_REPOST_S (the ready
 // reset cleared the chat/status/taborder/activeChat slots but not the comments slot), so the mark attached only at the
-// 60s repost. The kernel fix rides the frame on the targeted push AND clears the comments slot on ready; this lab still
+// 60s repost. The kernel fix clears the comments slot on ready (a targeted-push emission tried alongside it was removed
+// post-merge: it ran on no lab road, and the reset alone closed the labs); this lab still
 // gates the load on the kernel's OWN delivery of the frame, not a wall clock, so it is robust either way. Both the
 // socket's frames and the shim's reposts reach the page as a window `message` event (the bg-kinds lab's note), so
 // capture the comments frame HERE, before any navigation; addInitScript re-runs on every navigation, so the counter is

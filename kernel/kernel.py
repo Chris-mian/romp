@@ -17217,6 +17217,8 @@ def _seed_fork_stores(parent_sid, sid, path, cut_uuid):
 # (judge seeds first, names/ last: the fork() ordering contract). The thread REGISTRY lives in
 # comments/<parent sid>.json (anchor, thread sid, status); the CONVERSATION lives in the thread's
 # own transcript — the authoritative store — projected into the {type:"comments"} frame per push.
+# DELIVERY of that frame: the pusher cycle (_push, 57360) on a per-sid dedup slot, re-served to a just-connected page by
+# the ready reset (_client_reset_chat_base, 51893); the client joins it with the anchored turn to draw the mark (render.ts applyCommentMarks).
 
 _comments_lock = threading.Lock()          # store read-modify-writes from WS handler threads
 _thread_msgs_cache = {}                    # thread sid -> (path, mtime, cut_uuid, msgs)
@@ -17904,7 +17906,11 @@ def _comments_frame(sid, live_map=None):
     projection the popover renders. `replyOwed` — the green in-flight wash — means a reply is still
     owed: the thread has no exchange yet, the user's message is the newest, or the turn is in progress.
     Neither is a client-side latch or a timer: an intermediate record of a multi-record turn flips
-    nothing; the end_turn record flips both in the same frame the popover can show the reply."""
+    nothing; the end_turn record flips both in the same frame the popover can show the reply.
+
+    DELIVERY: this frame rides the full pusher cycle (_push's comment-threads loop, 57360) on its OWN per-sid dedup slot;
+    a page that connected before its listeners existed is re-served it by the ready reset (_client_reset_chat_base, 51893,
+    which clears that slot). The client joins it with the anchored turn to draw the mark (render.ts applyCommentMarks)."""
     p = _comments_path(sid)
     if not p.exists():
         return None
@@ -51937,8 +51943,17 @@ def _client_reset_chat_base(client):
         # BEFORE the bundle registered its message listeners (2.6-2.8s); the page never acted on it, and with the slot
         # kept the ready arm's connect push re-sent an IDENTICAL comments frame that deduped for _DEDUP_REPOST_S, so a
         # comment's mark attached only at the 60s repost. The glossary frame rides its own per-sid slot the same way.
-        # A renderer that just evaluated holds neither, so both go with the others (one duplicate frame per ready).
-        for k in [k for k in snt if isinstance(k, tuple) and k and k[0] in ("chat", "status", "taborder", "activeChat", "comments", "glossary")]:
+        # …and, by the SAME accept-to-listener race, three more slots _push and the ask poll send a chat socket before
+        # ready: the ("working",) dots, the ("globalRetryPaused",) pause and the ("asklive", sid) live ask picker. The
+        # ask is the costliest: a poll tick landing in the accept-to-listener window left the picker unshown for up to
+        # _DEDUP_REPOST_S while a question waited. A renderer that just evaluated holds none of them, so they go with the
+        # others. Cost, corrected: one frame per strip session with a comments store, plus one per session whose group
+        # has a glossary, plus the listed single-slot frames, per ready, and ONLY when the accept-time cycle reached the
+        # socket before the listeners. The census test (test_cold_tab_gate) pins that every chat-client slot _push or the
+        # ask poll sends is on this list or carries a stated reason. The ("timeline",) slot is NOT here: it goes to
+        # timeline-app clients, not chat. The feed page's feed/timeline/data/bars slots ride _send_slot_delta, which
+        # pops and reads `sent` for its rebase dedup, so clearing the whole map would break that; they are left as they are.
+        for k in [k for k in snt if isinstance(k, tuple) and k and k[0] in ("chat", "status", "taborder", "activeChat", "comments", "glossary", "working", "globalRetryPaused", "asklive")]:
             snt.pop(k, None)
 
 
@@ -57879,20 +57894,6 @@ def _push_session_now(sid):
             _seed_chat_baseline(sid, m, _seen)       # loop's own writes, not the bases after it, where a racing sender's write
         #                                              on a target read as this loop's (test 38); established when absent, never
         #                                              advanced, declined while the detector's mark stands (the docstring)
-        # THE COMMENTS FRAME rides this targeted push too (2026-09-23): before, it rode ONLY the full pusher cycle, so a
-        # page that connected before the session was alive got the chat frame here but the comments frame a full cycle
-        # later (tens of seconds under a CPU quota), and a comment's highlight trailed its turn by that much. Emit it now
-        # on the SAME per-sid dedup slot the cycle uses, so a mark lands WITH its turn. `_comments_frame` is None for a
-        # session that never had a thread (a bare stat, the common case) and an unchanged frame dedups on the slot and
-        # costs nothing on the wire: the "changed since its last frame" guard, the cycle's own.
-        try:
-            _cfr = _comments_frame(sid, live_map)
-        except Exception:
-            _cfr = None
-            sys.stderr.write("comments frame failed for %s (targeted): %s\n" % (sid, traceback.format_exc()))
-        if _cfr:
-            for c in targets:
-                _send_client(c, ("comments", sid), _cfr)
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
     finally:
