@@ -253,6 +253,7 @@ ROUTER_FUNCTIONS = (km._parse_router_models, km._router_label, km._apply_router_
                     km._fetch_router_models,
                     km._router_first_party, km._router_tell_backend, km._router_live_on, km._router_gateway_configured,
                     km._router_declared_effective, km._router_tiers_on, km._router_fetch_allowed, km._router_status,
+                    km._router_declared_families, km._reset_unvouched_seed, km._router_switch_state,
                     sb.pretty_model, sb.model_label, sb._alias_label, sb._router_declared, sb.set_router_ids,
                     sb._router_first_party)
 

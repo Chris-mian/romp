@@ -3346,6 +3346,23 @@ def _router_models_on():
     return isinstance(d, dict) and d.get("enabled") is True
 
 
+def _router_switch_state():
+    """(on, fault): the switch as the file reads, and whether it could not be READ. _router_models_on folds every fault
+    into off (a setting's documented contract: junk reads off), which is right for the pickers and wrong for the create
+    door's holds: a read fault at the moment of the re-read is not evidence the operator turned the switch off, so the
+    door holds and says so (review round fourteen). Absent and malformed both read off with no fault; an OS error
+    other than absence is the fault."""
+    try:
+        d = json.loads((jd.STATE / ROUTER_MODELS_FILE).read_text())
+    except FileNotFoundError:
+        return (False, None)
+    except OSError as e:
+        return (False, "%s: %s" % (type(e).__name__, e))
+    except Exception:
+        return (False, None)
+    return (isinstance(d, dict) and d.get("enabled") is True, None)
+
+
 def _router_models_gt():
     """The switch's last applied gesture stamp; 0 for an absent, unreadable or garbled store."""
     try:
@@ -3400,18 +3417,18 @@ def _router_listing_failed_now():
 
 
 def _router_listing_state():
-    """(in_flight, failed, generation, on) for the CURRENT generation's listing, read as ONE snapshot under
-    _SETTINGS_LOCK and _catalog_lock in that order: a flip writes its store, bumps the generation and publishes the
-    in-flight mark under the same two holds, so a reader never sees the store on with the old generation, or the new
-    generation without its mark (review round twelve). A reader that took the fields in turn could see a listing land
-    between them and word its line by a state that no longer held. The generation rides along so the reader can tell
-    whether a flip moved it after the snapshot."""
+    """(in_flight, failed, generation) for the CURRENT generation's listing, read as ONE snapshot under _SETTINGS_LOCK
+    and _catalog_lock in that order: a flip writes its store, bumps the generation and publishes the in-flight mark under
+    the same two holds, so a reader never sees the new generation without its mark, and a reader holding the settings
+    lock waits out a flip in progress (review round twelve). A reader that took the fields in turn could see a listing
+    land between them and word its line by a state that no longer held. The generation rides along so the reader can
+    tell whether a flip moved it after the snapshot; the switch itself is re-read then, under the same locks."""
     with _SETTINGS_LOCK:
         with _catalog_lock:
             cur = _ROUTER_GEN[0]
             return (_ROUTER_FETCH_GEN[0] is not None and _ROUTER_FETCH_GEN[0] == cur,
                     _ROUTER_FETCH_FAILED_GEN[0] is not None and _ROUTER_FETCH_FAILED_GEN[0] == cur,
-                    cur, _router_models_on())
+                    cur)
 
 
 def _router_declared_effective():
@@ -17481,7 +17498,7 @@ def _reset_unvouched_seed():
     seed = str(sbmod.read_sdk_defaults(jd.STATE).get("model") or "")
     if not seed or seed == "default":
         return
-    in_flight, failed, gen, on = _router_listing_state()   # one snapshot, taken BEFORE the vouch: a listing that lands in
+    in_flight, failed, gen = _router_listing_state()   # one snapshot, taken BEFORE the vouch: a listing that lands in
     #                                                        between installs the id before it clears its mark, so the
     #                                                        vouch below sees it (the other order reset a pick offered at
     #                                                        that moment; review round ten)
@@ -17490,9 +17507,15 @@ def _reset_unvouched_seed():
     with _SETTINGS_LOCK:
         with _catalog_lock:
             moved = _ROUTER_GEN[0] != gen
-            on_now = _router_models_on()   # the switch as it reads NOW, read before ANY hold: an off flip in the window is a
-    #                                        removal whatever the listing was doing (review round thirteen), so every hold
-    #                                        below is conditioned on the switch reading on
+            on_now, fault = _router_switch_state()   # the switch as it reads NOW, before ANY hold: an off flip in the window
+    #                                                  is a removal whatever the listing was doing (review round thirteen),
+    #                                                  so every hold below is conditioned on the switch reading on
+    if fault and not _router_first_party(seed):
+        # the file could not be READ (an OS fault, not an off): no evidence of a removal, and a reset would name an
+        # untrue cause. Held, said so; this row starts on the account default (review round fourteen)
+        sys.stderr.write("sdk-defaults model %r is not offered yet; the extra models switch could not be read (%s), so the seed "
+                         "is kept and this session starts on the account default\n" % (seed, fault))
+        return "hold"
     if not on_now:
         in_flight = failed = False         # the holds are for a switch that is on; off falls through to the cause read
     if not _router_first_party(seed) and not (in_flight or failed):

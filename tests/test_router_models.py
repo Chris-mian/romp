@@ -901,6 +901,7 @@ class SdkBadge(unittest.TestCase):
                    km._fetch_router_models,
                    km._router_first_party, km._router_tell_backend, km._router_live_on, km._router_gateway_configured,
                    km._router_declared_effective, km._router_tiers_on, km._router_fetch_allowed,
+                   km._router_declared_families, km._reset_unvouched_seed, km._router_switch_state,
                    sb.pretty_model, sb.model_label, sb._alias_label, sb._router_declared, sb.set_router_ids):
             node = ast.parse(inspect.getsource(fn)).body[0]
             code = "\n".join(ast.dump(s) for s in node.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)))

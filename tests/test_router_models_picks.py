@@ -688,6 +688,32 @@ class SeedInflight(_OnThenOff):
         self.assertIn("(the extra models switch is off)", self.err.getvalue())
         self.assertNotIn("not offered yet", self.err.getvalue())
 
+    def test_a_switch_file_that_cannot_be_read_holds_rather_than_resets(self):
+        # review round fourteen: the re-read folded a read fault into "off" and cleared the outage holds, resetting the
+        # pick with an untrue cause; a fault is no evidence of a removal
+        import os as _os
+        if _os.geteuid() == 0:
+            self.skipTest("root reads any file: the fault cannot be staged")
+        self._seed("gw-7-nova")
+        path = km.jd.STATE / km.ROUTER_MODELS_FILE
+        path.write_text(json.dumps({"enabled": True, "gt": 1}))
+        km._ROUTER_FETCH_GEN[0] = km._ROUTER_GEN[0]           # a listing in flight under an on switch
+        real_state = km._router_listing_state
+
+        def state_then_fault():
+            snap = real_state()
+            path.chmod(0)                                      # the fault lands between the snapshot and the re-read
+            return snap
+        try:
+            with mock.patch.object(km, "_router_listing_state", state_then_fault):
+                self.assertEqual(km._reset_unvouched_seed(), "hold")
+            self.assertEqual(self._read(), "gw-7-nova", "kept: a read fault is not an off")
+            self.assertIn("could not be read", self.err.getvalue())
+            self.assertNotIn("switch is off", self.err.getvalue())
+        finally:
+            if path.exists():
+                path.chmod(0o644)                              # before the fixture's unlink, and only while it is there
+
     def test_an_off_flip_in_the_window_resets_even_while_the_listing_is_in_flight_or_failed(self):
         # review round thirteen: the in-flight and failed holds fired after an off flip too, keeping a just-removed id
         # as "not offered yet"; the switch is re-read before ANY hold
@@ -738,21 +764,30 @@ class SeedInflight(_OnThenOff):
             listing_gate.wait(5)
             return ["gw-7-nova"]
         verdict = {}
+        threads = []
         with mock.patch.object(km, "_atomic_write", write_then_pause), \
                 mock.patch.object(km, "_fetch_router_models", listing), mock.patch.object(km, "_models_changed", lambda: None):
-            flip = threading.Thread(target=lambda: km._set_router_models(True, gt=1700000000010))
-            flip.start()
-            self.assertTrue(inside.wait(5), "the flip wrote the store and parked before its bump")
-            create = threading.Thread(target=lambda: verdict.__setitem__("v", km._reset_unvouched_seed()))
-            create.start()
-            create.join(0.3)
-            self.assertTrue(create.is_alive(), "the create waits on the flip's settings hold")
-            go.set()
-            flip.join(5); create.join(5)
-            self.assertEqual(verdict.get("v"), "hold", "after the hold the create reads the mark and holds")
-            self.assertEqual(self._read(), "gw-7-nova")
-            listing_gate.set()
-            self._wait(lambda: not self._fetch_threads(), "the listing to land")
+            try:
+                flip = threading.Thread(target=lambda: km._set_router_models(True, gt=1700000000010)); threads.append(flip)
+                flip.start()
+                self.assertTrue(inside.wait(5), "the flip wrote the store and parked before its bump")
+                create = threading.Thread(target=lambda: verdict.__setitem__("v", km._reset_unvouched_seed())); threads.append(create)
+                create.start()
+                create.join(0.3)
+                self.assertTrue(create.is_alive(), "the create waits on the flip's settings hold")
+                go.set()
+                flip.join(5); create.join(5)
+                self.assertEqual(verdict.get("v"), "hold", "after the hold the create reads the mark and holds")
+                # the IN-FLIGHT hold, not the moved-generation one: the create read the mark the flip published in its
+                # bump's hold (a catalog-only snapshot would still hold, through the other branch: review round fourteen)
+                self.assertIn("still being fetched", self.err.getvalue())
+                self.assertNotIn("switch changed", self.err.getvalue())
+                self.assertEqual(self._read(), "gw-7-nova")
+            finally:
+                inside.set(); go.set(); listing_gate.set()      # on any path: nothing parked, nothing gated
+                for t in threads:
+                    t.join(5)
+                self._wait(lambda: not self._fetch_threads(), "the listing to land")
 
     def test_a_slower_earlier_apply_cannot_overwrite_a_later_flips_mark(self):
         # review round twelve: the apply's pre-thread mark write was unguarded, so a slower first apply wrote its
@@ -777,17 +812,20 @@ class SeedInflight(_OnThenOff):
         with mock.patch.object(km, "_router_set_note", note_then_park), \
                 mock.patch.object(km, "_fetch_router_models", listing), mock.patch.object(km, "_models_changed", lambda: None):
             first = threading.Thread(target=lambda: km._set_router_models(True, gt=1700000000010))
-            first.start()
-            self._wait(lambda: notes, "the first apply to park past its note write")
-            km._set_router_models(False, gt=1700000000011)
-            km._set_router_models(True, gt=1700000000012)   # the second on: its mark is the current one
-            gen2 = km._ROUTER_GEN[0]
-            self.assertEqual(km._ROUTER_FETCH_GEN[0], gen2)
-            park.set(); first.join(5)                       # the first apply resumes and reaches the guarded mark write, stale
-            self.assertEqual(km._ROUTER_FETCH_GEN[0], gen2, "the later flip's mark stands (an unguarded write put gen1 here)")
-            self.assertTrue(km._router_listing_inflight())
-            listing_gate.set()
-            self._wait(lambda: not self._fetch_threads(), "the listings to land")
+            try:
+                first.start()
+                self._wait(lambda: notes, "the first apply to park past its note write")
+                km._set_router_models(False, gt=1700000000011)
+                km._set_router_models(True, gt=1700000000012)   # the second on: its mark is the current one
+                gen2 = km._ROUTER_GEN[0]
+                self.assertEqual(km._ROUTER_FETCH_GEN[0], gen2)
+                park.set(); first.join(5)                       # the first apply resumes and reaches the guarded mark write, stale
+                self.assertEqual(km._ROUTER_FETCH_GEN[0], gen2, "the later flip's mark stands (an unguarded write put gen1 here)")
+                self.assertTrue(km._router_listing_inflight())
+            finally:
+                park.set(); listing_gate.set()                  # on any path: nothing parked, nothing gated
+                first.join(5)
+                self._wait(lambda: not self._fetch_threads(), "the listings to land")
 
     def test_a_declared_seed_is_held_while_its_install_is_under_way(self):
         # review round twelve: with no URL there is no mark, so a create between the flip's bump and its declared
