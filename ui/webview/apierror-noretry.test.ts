@@ -1,11 +1,14 @@
 // The failed compaction's card carries no retry action (2026-09-21). A compaction that fails on Codex's side ends the
 // backend's compaction bracket loudly, as a launch error, and the chat renders every launch error on the API-error card:
 // a "retrying soon" meta and two Retry buttons, whose press sent the literal word "retry" into the thread as a turn,
-// cleared the card, and compacted nothing. The bracket's end notices (systemError, notLoaded, the app-server's death) now
-// carry `noRetry`; build_session lifts it onto the status as `apiNoRetry` (the apiRefusal precedent: the card reads its
-// flags from the live session status, never the event); renderApiError then draws no meta and no actions. Scoped to the
-// bracket's ends: a failed turn's card keeps its button. The chat renderer has no jsdom harness, so the wiring is pinned
-// at the source; the kernel's half is executed in tests/test_codex_compact_route.py. Synthetic values only.
+// cleared the card, and compacted nothing. The bracket's end notices (systemError, notLoaded, the app-server's death, and
+// the registry load's restart end, a kernel restart whose outcome the new kernel cannot learn, listed here 2026-09-22
+// beside the writer count below that already read it) carry `noRetry`; build_session lifts it onto the status as
+// `apiNoRetry` (the apiRefusal precedent: the card reads its flags from the live session status, never the event);
+// renderApiError then draws no meta and no actions. Scoped to the bracket's ends: a failed turn's card keeps its button.
+// The chat renderer has no jsdom harness, so the wiring is pinned at the source; the kernel's half is executed in
+// tests/test_codex_compact_route.py and tests/test_codex_backend.py, where the restart end's test runs. Synthetic values
+// only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";

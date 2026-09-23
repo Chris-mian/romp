@@ -41110,7 +41110,9 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     # 2026-06-24). Mirrors the feed, which gates the same _api_error on `not who_working` and treats awaiting
     # as a working flavor (build_feed).
     aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
-    _launch_no_retry = False   # the launch-error card below is one nothing retries (a failed compaction); status apiNoRetry
+    _launch_no_retry = False   # the launch-error card below is one nothing retries (the Codex bracket's end notices, per
+                               # SessionBackend.launch_error; count-free since 2026-09-22, when the restart end outgrew a
+                               # gloss of one failed compaction); lifted onto the status as apiNoRetry
     if aerr:
         # While the session is still blocked on THIS error, the live card below carries the same record
         # with the buttons and countdown — drop the durable note so the error doesn't show twice. The
@@ -41320,9 +41322,11 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # tab), and never auto-retried: a refusal is deterministic on the same input, so a
                   # retry re-sends the same prompt and manufactures the same refusal (12/12 in the
                   # audited storm) — rewrite the ask or drop the thread (the user 2026-08-15)
-                  # the blocking notice is one nothing retries (a compaction that failed on the backend's side, the
-                  # launch error's noRetry): renderApiError draws no Retry, no Stop-all and no retrying-soon meta for
-                  # it, the apiRefusal precedent read off the live status (review find, 2026-09-21)
+                  # the blocking notice is one nothing retries (the launch error's noRetry, the Codex bracket's end
+                  # notices: a compaction Codex could not run, the app-server's death, or a kernel restart whose
+                  # outcome the new kernel cannot learn; the ends named 2026-09-22, when the restart end outgrew a
+                  # gloss of one failed compaction): renderApiError draws no Retry, no Stop-all and no retrying-soon
+                  # meta for it, the apiRefusal precedent read off the live status (review find, 2026-09-21)
                   "apiNoRetry": _launch_no_retry,
                   "apiRefusal": bool(aerr and aerr.get("refusal")),
                   # the FEED's per-session needs-you verdict, on the STATUS so the tab strip's rule reads it
