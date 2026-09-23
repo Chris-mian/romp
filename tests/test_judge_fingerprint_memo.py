@@ -67,8 +67,7 @@ class FingerprintMemoTest(unittest.TestCase):
         self._td = tempfile.mkdtemp()
         jd._rebind_state(Path(self._td))
         jd.PROJECTS = Path(self._td) / "projects"
-        jd._discover_cache["fp"] = None                      # module-globals → reset between tests
-        jd._discover_cache["result"] = None
+        jd._discover_cache.clear()                           # module-globals → reset between tests
         jd._namefp_memo.clear()
         jd._lastsid_memo.clear()
         self.cdir = str(Path(self._td) / "work")
@@ -146,8 +145,9 @@ class FingerprintMemoTest(unittest.TestCase):
                         rm = os.stat(os.path.dirname(rec)).st_mtime
                     except OSError:
                         rm = 0
-                out.append((f.name, mt, pm, jd._sdk_last_sid(f.name) or "", rec, rm,
-                            jd._in_window(jd._signed_transcript(f.name, jd._proj_dir(cdir) if cdir else None))))
+                last = jd._sdk_last_sid(f.name) or ""
+                signed = jd._signed_mtime(f.name, rec, last, jd._proj_dir(cdir) if cdir else None)
+                out.append((f.name, mt, pm, last, rec, rm, jd._in_window(signed, int(time.time()))))
             return tuple(out)
 
         (jd.NAMES / OTHER).write_text("%s\t%s" % ("TESTHOST-two", self.cdir))
@@ -217,6 +217,36 @@ class FingerprintMemoTest(unittest.TestCase):
         os.utime(recorded, None)
         self.assertEqual([row[0] for row in jd.discover(now)], [SID],
                          "the recorded file's wake moves the fingerprint, so discover() re-walks")
+
+    def _age_out_and_wake(self, current, *aged):
+        """Age `current` and every `aged` file out of WINDOW, check discover() drops the session, then
+        touch only `current` and return what discover() lists."""
+        dormant = time.time() - (jd.WINDOW + 3600)
+        for path in (current,) + aged:
+            os.utime(path, (dormant, dormant))
+        now = int(time.time())
+        self.assertEqual(jd.discover(now), [], "every transcript is out of the window")
+        os.utime(current, None)
+        return [row[0] for row in jd.discover(now)]
+
+    def test_a_woken_CLEARED_session_re_enters_discover(self):
+        """After a /clear the session reads its lastSid file, so that file's wake is what gets signed."""
+        self._write_transcript(OTHER)
+        cleared = self.proj / (OTHER + ".jsonl")
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True)
+        (jd.SDKDIR / (SID + ".json")).write_text(json.dumps({"lastSid": OTHER}))
+        self.assertEqual(self._age_out_and_wake(cleared, self.proj / (SID + ".jsonl")), [SID])
+
+    def test_a_woken_RELOCATED_and_CLEARED_session_re_enters_discover(self):
+        """A relocated session after a /clear reads the lastSid sibling of its recorded file."""
+        moved = Path(self._td) / "projects" / "relocated"
+        moved.mkdir(parents=True, exist_ok=True)
+        recorded, sibling = moved / (SID + ".jsonl"), moved / (OTHER + ".jsonl")
+        for path in (recorded, sibling):
+            path.write_text(json.dumps({"type": "user", "uuid": "u1"}) + "\n")
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True)
+        (jd.SDKDIR / (SID + ".json")).write_text(json.dumps({"transcriptPath": str(recorded), "lastSid": OTHER}))
+        self.assertEqual(self._age_out_and_wake(sibling, recorded, self.proj / (SID + ".jsonl")), [SID])
 
     def test_an_append_inside_the_window_still_serves_the_cache(self):
         """The counterpart: a live session's append must NOT invalidate, or the cache buys nothing."""

@@ -9063,28 +9063,32 @@ def _recorded_transcript(sid):
     return cand if os.path.isfile(cand) else rec
 
 
-def _signed_transcript(sid, pdir):
-    """The transcript whose window crossing the fingerprint signs: the recorded one when discover()
-    takes the recorded branch, else the launch dir's file for the current fsid. A fork LANE's own
-    crossing is not signed; a new lane bumps its project dir's mtime, which the fingerprint signs."""
-    rec = _recorded_transcript(sid)
-    if rec is not None:
-        return rec
+def _mtime_or_none(path):
+    """`path`'s mtime, or None when it cannot be stat'd."""
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
+def _signed_mtime(sid, rec, last, pdir):
+    """The mtime of the transcript discover() reads for `sid`, resolved as discover() resolves it but
+    from the registry values the fingerprint already holds: the recorded file (or its lastSid sibling)
+    when the record exists, else the launch dir's file for the current fsid. Fork LANES are not
+    signed: a new lane bumps its project dir's mtime, but a dormant lane waking in place stays unseen."""
+    rec_mtime = _mtime_or_none(rec) if rec else None
+    if rec_mtime is not None:
+        sibling = _mtime_or_none(os.path.join(os.path.dirname(rec), last + ".jsonl")) if last else None
+        return rec_mtime if sibling is None else sibling
     if pdir is None:
         return None
-    return os.path.join(pdir, (_sdk_last_sid(sid) or sid) + ".jsonl")
+    return _mtime_or_none(os.path.join(pdir, (last or sid) + ".jsonl"))
 
 
-def _in_window(path, now=None):
-    """True iff `path` was touched inside WINDOW. Signed as a boolean so an append inside the window
-    keeps discover()'s cache, while a dormant session waking (or aging out) invalidates it."""
-    if path is None:
-        return False
-    now = time.time() if now is None else now
-    try:
-        return os.stat(path).st_mtime >= now - WINDOW
-    except OSError:
-        return False
+def _in_window(mtime, now):
+    """True iff `mtime` falls inside WINDOW of `now`. Signed as a boolean so an append inside the
+    window keeps discover()'s cache, while a dormant session waking (or aging out) invalidates it."""
+    return mtime is not None and mtime >= now - WINDOW
 
 
 def _codex_rows(cutoff, seen):
@@ -9130,8 +9134,8 @@ def _discover_fingerprint():
     """A cheap structural signature of the transcript namespace that changes EXACTLY when discover()'s
     output would: a session ADDED/RENAMED (a names/ entry's set or mtime changes), a FORK appearing (a
     .jsonl added to a project dir bumps that dir's mtime), or a session crossing discover()'s WINDOW in
-    either direction (_in_window above). A plain transcript APPEND to a session already inside the window
-    leaves this unchanged — which is the whole point: discover()'s LIST doesn't change on such an append, so
+    either direction (_in_window above; a fork lane's own crossing is not signed). A plain transcript APPEND
+    to a session already inside the window leaves this unchanged — which is the whole point: discover()'s LIST doesn't change on such an append, so
     we must not re-walk ~80 project dirs + read every fork's head 2-4× per push for nothing. Same (mtime)
     change-detection idiom as the parse cache; NOT a time heuristic. ~2ms vs ~60-250ms for a full discover.
     The signature also carries each session's diverged SDK lastSid (mtime-memoized, see _sdk_last_sid): an
@@ -9151,6 +9155,7 @@ def _discover_fingerprint():
         entries = sorted(e for e in NAMES.iterdir() if not e.name.endswith(".tmp"))
     except OSError:
         return None
+    now = int(time.time())                                  # discover()'s callers pass the same rounding
     fp = []
     for f in entries:
         try:
@@ -9182,14 +9187,14 @@ def _discover_fingerprint():
         # unsigned, every surface stayed on the pre-clear transcript until the next Stop hook re-recorded
         # the path (review find). pm stays in the tuple: a stale record falls back to the launch-dir walk.
         rec = _sdk_transcript_path(f.name) or ""
+        last = _sdk_last_sid(f.name) or ""
         rm = 0
         if rec:
             try:
                 rm = os.stat(os.path.dirname(rec)).st_mtime
             except OSError:
                 rm = 0
-        fp.append((f.name, mt, pm, _sdk_last_sid(f.name) or "", rec, rm,
-                   _in_window(_signed_transcript(f.name, pdir))))
+        fp.append((f.name, mt, pm, last, rec, rm, _in_window(_signed_mtime(f.name, rec, last, pdir), now)))
     if len(_namefp_memo) > len(fp):                             # a retired session's entry is gone from the
         live = {row[0] for row in fp}                           # walk → evict it, so the memo stays bounded
         for name in [k for k in _namefp_memo if k not in live]:  # by the sessions that currently EXIST
