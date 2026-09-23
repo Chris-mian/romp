@@ -53444,17 +53444,19 @@ def _last_anchor(evs):
     a queued or api-error notice comes and goes between builds), nor one of the kernel's transient live-tail keys (an input
     echo, the command chip: _transient_key, 2026-09-19), nor a STREAMED event (a stream atom the transcript has not recorded
     yet, marked by build_session, 2026-09-23). Anchoring on an overlay or a transient key left the next push unable to map
-    the base and sent a full frame; all three ride every later delta's suffix instead, so the landing that replaces an echo
-    with the CLI's record is a chatTail after the record before the echo, the road proto-1 clients take.
+    the base and sent a full frame; all three ride a later delta's suffix instead (where they changed, since 2026-09-23:
+    _chat_skip_held), so the landing that replaces an echo with the CLI's record is a chatTail after the record before the
+    echo, the road proto-1 clients take.
 
-    The streamed exclusion is what makes every delta re-send the page's whole undurable tail. A stream atom's key is its
+    The streamed exclusion is what cuts every delta from the last RECORD, not from the live tail. A stream atom's key is its
     future record's uuid, so fa92e8a4's rule took it for a record and a base could end on it; the atom then left the next
     list before its record joined it (a retried try's atoms never land, and a settle could retire them before the build's
     parse had read the record), and the send that followed was a full frame for a base the list no longer held, or, with
     the shared baseline describing a list this client never took, a delta anchored past a turn it never received. Ending
-    on the last recorded event, the next delta starts at or before the first event the transcript has not recorded, so
-    whatever the page holds past that point is replaced by the kernel's current view every time. The cost is the live
-    suffix riding each delta while the stream leads the disk, a few events.
+    on the last recorded event, the next delta starts at or before the first event the transcript has not recorded.
+    _chat_skip_held (2026-09-23) then moves that start past the events the client holds unchanged right after the edge
+    (the record _chat_view_note keeps: key and content digest per event), so the live suffix rides a delta again only
+    where something in it changed; a page holding a different run there still gets the kernel's current view from the edge.
 
     Known, accepted residue: a list of nothing but such events (a transcript-less session whose only events are its first
     echo and the stream answering it) anchors on its last non-overlay, non-transient event, else its last event, and sends
@@ -53634,7 +53636,7 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                     #                                       answers with a full ask, the frame the targeted push stopped sending
             else:
                 start = min(change_from, pl + 1) if change_from > 0 else 0   # from the change, or from after the held
-            if start > pf:                                #  last record (the overlay cards after it ride the suffix)
+            if start > pf:                                #  last record (changed overlay cards after it ride the suffix)
                 start = _chat_skip_held(c, sid, evs, start)   # …past what the client holds unchanged there (2026-09-23)
                 view = _chat_view_key(m, _event_key(evs[-1]))
                 # an EMPTY suffix that would leave the page exactly as it is (the view it holds, no ledger riding) is not sent
