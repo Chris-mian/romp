@@ -36780,7 +36780,9 @@ def _drop_parked_on_end(sid, client=None):
     which is what the two socketless route tests drive; the post-merge review of 2026-09-21 read the earlier "aimed
     at the socket, else every chat pane" here as stale in both halves against the picker).
 
-    Only the USER's words are handed back: a parked send or command wearing the user flag (_op_user) or a
+    Only the USER's words are handed back, and as typed: what comes back is the typed words under the verb the live
+    refusal of the same send would carry (_handed_back), never the body the kernel composed around them for a card
+    reply or a Continue press (2026-09-22). Those words are a parked send or command wearing the user flag (_op_user) or a
     press-minted copy id (_op_qid); the predicate reads the flag and the id, never the text's shape, so a typed
     slash command parked as a flagged command (a /clear typed behind a turn on a Claude Code session) raises the
     dialog by design. A machine's send parks through the same road (a watch notice, the spend-ceiling body, a tagged
@@ -36914,6 +36916,37 @@ _end_latch_gen = 0               # the monotonic counter every cancel bumps unde
                                  # (_end_latch_now) so its lift can tell a latch that predates the call from one an End wrote
                                  # while the call was in flight, whose kill the fresh liveness read cannot yet see
 
+def _handed_back(op):
+    """The not-delivered verb and message a parked send or command the user typed comes back as (_drop_parked_on_end):
+    the TYPED words, never the body the kernel composed around them (2026-09-21, the post-merge review of the End
+    hand-back). A card reply or a Continue press parks the wrapper the askFollowUp door built, the goal quote when the
+    card has a summary, the romp-note and romp-goal-id comments, and for Continue the canned words with their marker
+    (with no card id, the canned words and the marker alone); handed back whole, the copy slot, undelivered.jsonl and
+    the log carried romp's quote and markers as the user's words, where the queued bubble and the live refusal of the
+    same follow-up carry the typed words alone. The op holds only the wrapped body, so the words come back through the
+    bubble's own split (_parked_md), and the frame takes the live refusal's shape, the reply verb and the card id read
+    from the goal marker, so the dialog, the undelivered row and the log name the reply and the card the way the live
+    refusal does. (A feed pane re-arms the Continue it latched off such a frame only when it is the End's client, which
+    no End door makes it today: the frame goes to the ending pane when that pane renders it, else to one chat pane.) A
+    Continue press typed nothing and its canned words are romp's, so it comes back as the live refusal of a Continue
+    sends it, empty text under the reply verb, with or without a card id: the romp-canned marker is read on the body
+    BEFORE the follow-up test and the split, since the split strips every comment and would leave the canned prose as
+    if typed, and a press with no card id parks no goal marker for the follow-up test to find. Handed back rather than
+    dropped with the machine sends because the press was the user's gesture: the dialog tells them it went nowhere and
+    the undelivered row records it. Two edges inherited from the split and not changed here, since narrowing the strip
+    would change the bubble too: a reply typed under a card with no quote composed, whose first line starts with a
+    greater-than sign, loses that line to the quote read; and a reply that itself contains an HTML comment comes back
+    without it, where the live refusal carries the text verbatim. A command comes back as typed."""
+    text = _parked_md(op)
+    if op[0] != "send":
+        return "sendCommand", {"text": text}
+    canned = "<!-- romp-canned: continue -->" in op[1]    # on the body, before the split strips it
+    m = _FOLLOWUP_GOAL_RE.search(op[1])
+    if not canned and not _split_followup(op[1])[2]:
+        return "sendMessage", {"text": text}
+    return "askFollowUp", {"text": "" if canned else text, "itemId": m.group(1) if m else ""}
+
+
 _ERR_FRAME_APPS = ("chat", "feed")   # the panes whose bundles render an err frame (the modal, the bell entry); the
                                      # Sessions pane, the timeline, files and artifacts drop it (2026-09-21)
 
@@ -36922,13 +36955,15 @@ def _hand_back_parked(op, sid, target, why, how):
     """ONE parked op's hand-back (2026-09-21), shared by the End doors' cancel (_drop_parked_on_end) and the drain's
     refusal road (_hand_back_refused_send), so the two never drift on WHOSE words come back: a send or command
     wearing the user flag (_op_user) or a press-minted copy id (_op_qid) takes the not-delivered path at `target`
-    (_refuse_drive: the modal with the text in its copy slot, undelivered.jsonl verbatim, one stderr line) with `why`
+    (_refuse_drive: the modal with the typed words in its copy slot under the verb and card id the live refusal of the
+    same send would carry, _handed_back; undelivered.jsonl verbatim, one stderr line) with `why`
     as the reason; anything else (a machine's send, an op with no typed text) is dropped with one stderr line that
     names the kind and `how`, never the body. Returns 1 when a text was handed back, else 0."""
     typed = (op[0] in ("send", "command") and isinstance(op[1], str) and op[1].strip()
              and (_op_user(op) or _op_qid(op)))
     if typed:
-        _refuse_drive(target, "sendMessage" if op[0] == "send" else "sendCommand", sid, {"text": op[1]}, why=why)
+        verb, msg = _handed_back(op)      # the typed words under the live refusal's verb, never the composed body (2026-09-22)
+        _refuse_drive(target, verb, sid, msg, why=why)
         return 1
     sys.stderr.write("parked %s op dropped %s %s\n" % (op[0], how, sid))
     return 0
