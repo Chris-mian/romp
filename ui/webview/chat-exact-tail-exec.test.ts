@@ -7,7 +7,8 @@
 // `from` to the rewind pass as the bound, a gap asks for the full session; and the footer patch adds, removes
 // and re-homes the fork spot by unit, skips a day divider sharing its turn's unit number, maps compact-mode
 // units, and never marks the view stale for a reply with no row of its own: a collapsed run's member is left alone, an
-// expanded run's unit is marked for repaint (2026-09-23). Synthetic events; epochs are seconds.
+// expanded run's member row is patched in place like any other node, and only a run outside the painted window is marked
+// for repaint (2026-09-23). Synthetic events; epochs are seconds.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -192,7 +193,7 @@ test("a landing that replaces the sender's hidden kernel echo arrives as a delta
 
 // ── patchWorkedFooters ────────────────────────────────────────────────────────────────────────────
 
-/** Enough of Element for the footer patch: children, a class list, data-unit, and the two selector shapes it uses. */
+/** Enough of Element for the footer patch: children, a class list, data-unit, and the three selector shapes it uses. */
 class FakeEl {
   children: FakeEl[] = []; parent: FakeEl | null = null; dataset: Record<string, string> = {}; textContent = ""; title = "";
   constructor(public tag: string, public className = "") {}
@@ -206,6 +207,13 @@ class FakeEl {
     if (!m) throw new Error("unsupported selector " + sel);
     const attr = /\[data-unit="([^"]*)"\]/.exec(m[1]), cls = /^\.([\w-]+)/.exec(m[1]), not = /:not\(\.([\w-]+)\)/.exec(m[1]);
     return this.children.find((c) => (!attr || c.dataset.unit === attr[1]) && (!cls || c.has(cls[1])) && (!not || !c.has(not[1]))) ?? null;
+  }
+  querySelectorAll(sel: string): FakeEl[] {
+    // ':scope > [data-unit="N"].tg-child', the patch's third shape: an expanded run's rows, in document order
+    const m = /^:scope > (.+)$/.exec(sel);
+    if (!m) throw new Error("unsupported selector " + sel);
+    const attr = /\[data-unit="([^"]*)"\]/.exec(m[1]), cls = /\.([\w-]+)$/.exec(m[1]);
+    return this.children.filter((c) => (!attr || c.dataset.unit === attr[1]) && (!cls || c.has(cls[1])));
   }
 }
 type FootHooks = { FakeEl: typeof FakeEl; workedFooterPlan: typeof workedFooterPlan; open?: Set<string> };
@@ -238,6 +246,14 @@ function footWorld(events: any[], units: number, spotOn: number, open?: Set<stri
   const spot = new FakeEl("span", "fork-spot"); nodes[spotOn].appendChild(spot);
   const v: any = { el, winStart: 0, stale: false };
   return { patch, v, s: { events }, nodes, spot };
+}
+/** An expanded run's rows as appendItem paints them: right after the run's head, one per member in it.indices order, each
+ *  tagged with the run's unit and tg-child, the last tg-last. */
+function runRows(el: FakeEl, head: FakeEl, unit: number, n: number): FakeEl[] {
+  const rows: FakeEl[] = [];
+  for (let j = 0; j < n; j++) { const r = new FakeEl("div", "turn tg-child" + (j === n - 1 ? " tg-last" : "")); r.dataset.unit = String(unit); r.parent = el; rows.push(r); }
+  el.children.splice(el.children.indexOf(head) + 1, 0, ...rows);
+  return rows;
 }
 
 test("the footer patch adds the elapsed row to the turn's last reply once its turn completes, moving the fork spot into it; a repeat adds nothing", () => {
@@ -299,13 +315,25 @@ test("compact mode: the window start is a unit and the plan wants an event index
   assert.equal(w2.v.stale, false, "unit < 0 in a collapsed run: no window rebuild");
   assert.equal(w2.v.rediff, undefined, "…and no repaint: nothing it would draw differs");
   assert.ok(w2.nodes.every((n) => !n.querySelector(":scope > .turn-elapsed")), "…and nothing was patched by hand");
-  // an EXPANDED run draws its rows, the reply's among them: that one unit repaints on the next paint, the rest of the window stands
+  // an EXPANDED run draws its rows after its head, the reply's among them: that row is patched in this call like any other
+  // node, and nothing is marked for a later paint (both callers return on the state they read before the patch, and an idle
+  // session gets no later frame; review find, 2026-09-23)
   const w4 = footWorld(events, 3, 1, new Set(["tg:110"]));
+  const rows = runRows(w4.v.el, w4.nodes[1], 1, 3);
   w4.v.painted = { sig: ["s0", "s1", "s2"] };
   w4.patch(w4.v, w4.s, 4, true, folded);
   assert.equal(w4.v.stale, false, "no window rebuild");
-  assert.deepEqual(w4.v.painted.sig, ["s0", undefined, "s2"], "the run's unit alone is marked for repaint");
-  assert.equal(w4.v.rediff, true, "…and the next paint compares the window, so it is not skipped");
+  assert.equal(rows[2].querySelector(":scope > .turn-elapsed")?.textContent, "60", "the footer lands on the reply's own row, the run's third");
+  assert.ok([...w4.nodes, rows[0], rows[1]].every((n) => !n.querySelector(":scope > .turn-elapsed")), "no other node gained one: not the head, not the other rows");
+  assert.deepEqual(w4.v.painted.sig, ["s0", "s1", "s2"], "no unit is marked for repaint");
+  assert.equal(w4.v.rediff, undefined, "…and no rediff is asked for: the footer is already there");
+  // the same run with none of its rows painted (it sits outside the window): the mark, for the paint that brings it in
+  const w6 = footWorld(events, 1, 0, new Set(["tg:110"]));
+  w6.v.painted = { sig: ["s0"] };
+  w6.patch(w6.v, w6.s, 4, true, folded);
+  assert.deepEqual(w6.v.painted.sig, ["s0", undefined], "the run's unit alone is marked for repaint");
+  assert.equal(w6.v.rediff, true, "…and the next paint compares the window, so it is not skipped");
+  assert.ok(w6.nodes.every((n) => !n.querySelector(":scope > .turn-elapsed")), "…and nothing was patched by hand");
   // a hidden thinking row (compact mode shows none) belongs to no unit at all: nothing to patch
   const w5 = footWorld([user(100), tool(110), { kind: "thinking", t: 150 }, user(200)], 3, 1);
   w5.patch(w5.v, w5.s, 3, true, [{ kind: "event", index: 0 }, { kind: "event", index: 1 }, { kind: "event", index: 3 }]);
@@ -314,4 +342,21 @@ test("compact mode: the window start is a unit and the plan wants an event index
   const w3 = footWorld(events, 4, 2); w3.v.winStart = 9;
   w3.patch(w3.v, w3.s, 4, true, items);
   assert.ok(w3.nodes.every((n) => !n.querySelector(":scope > .turn-elapsed")));
+});
+
+test("a reply inside an expanded run: the session going idle puts the footer on the run's row, going back to work takes it off, the fork spot moving with it", () => {
+  const events = [user(100), tool(110), tool(120), reply(160)];   // the final turn ends inside the run
+  const items = [{ kind: "event", index: 0 }, { kind: "toolgroup", indices: [1, 2, 3] }];
+  const { patch, v, s, nodes, spot } = footWorld(events, 2, 1, new Set(["tg:110"]));
+  const rows = runRows(v.el, nodes[1], 1, 3);
+  rows[2].appendChild(spot);   // the reply's row carries the turn's fork spot
+  v.painted = { sig: ["s0", "s1"] };
+  patch(v, s, 4, false, items);
+  const f = rows[2].querySelector(":scope > .turn-elapsed");
+  assert.ok(f, "idle: the footer, on the reply's row"); assert.equal(f!.textContent, "60");
+  assert.equal(spot.parent, f, "the fork spot moved into the elapsed row");
+  patch(v, s, 4, true, items);
+  assert.equal(rows[2].querySelector(":scope > .turn-elapsed"), null, "back to work on the same turn: the footer comes off the row");
+  assert.equal(spot.parent, rows[2], "the fork spot is back on the row itself");
+  assert.deepEqual(v.painted.sig, ["s0", "s1"], "no repaint mark either way"); assert.equal(v.rediff, undefined); assert.equal(v.stale, false);
 });

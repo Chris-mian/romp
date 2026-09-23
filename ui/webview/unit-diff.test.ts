@@ -50,6 +50,14 @@ test("the content half of a signature: the same fields hash the same, any change
   assert.match(hash53(""), /^[0-9a-z]+\.0$/, "the length rides beside the hash");
 });
 
+test("the kernel's streamed mark is not content: an event with and without it hashes the same, a changed field under it still differs", () => {
+  const a = { kind: "assistant", uuid: "11111111-2222-3333-4444-000000000002", md: "On it." };
+  assert.equal(contentHash({ ...a, streamed: true }), contentHash(a), "a record that replaced its stream atom, re-sent without the mark: the same unit");
+  assert.equal(contentHash({ kind: "assistant", streamed: true, md: "x" }), contentHash({ kind: "assistant", md: "x" }), "wherever the mark sits among the fields");
+  assert.notEqual(contentHash({ ...a, streamed: true }), contentHash({ ...a, md: "On it, revised." }), "a content change under the mark still repaints");
+  assert.notEqual(contentHash({ kind: "user", md: "x" }), contentHash({ kind: "user", md: "x", hiddenByPending: true }), "the page's own marks still count");
+});
+
 test("the first swapped object: every pass that changes an event swaps it, one that leaves it keeps it", () => {
   const e = [{ i: 0 }, { i: 1 }, { i: 2 }];
   assert.equal(firstReplaced(e, e.slice()), -1, "nothing swapped");

@@ -12158,11 +12158,11 @@ function syncView(id: string, atBottom?: boolean): View {
 }
 
 function syncViewInner(id: string, atBottom?: boolean): View {
-  // atBottom (passed by appendActive): false ⇒ the user is scrolled UP reading. A compact append must then
-  // NOT evict the window top — evicting shifts the content above the viewport, and since the compact path
-  // FULL-REBUILDS (clears the DOM, resetting scrollTop), the caller can only restore the position if the
-  // content above is unchanged. true/undefined ⇒ free to evict the top (we're at the bottom, or it's a
-  // non-append sync).
+  // atBottom (passed by appendActive): false ⇒ the user is scrolled UP reading. The keyed paint (tailDiff) touches the
+  // tail units alone and never evicts the window top, so the content above the viewport stands on its own; on the
+  // REBUILD branch below (a stale view, a shape change above the window, a spacer coming or going) atBottom === false
+  // keeps winStart, so the content above the viewport is unchanged there too and the caller's anchor restore lands.
+  // true/undefined ⇒ the rebuild is free to evict the top (we're at the bottom, or it's a non-append sync).
   renderingSid = id;          // so renderSystem can key the pinned card's persisted open-state by session
   renderingOwnerSid = id;     // preview/image URLs bake THIS session's id (host prefix included), never activeId's
   const subOf = subParts(id);
@@ -12220,8 +12220,9 @@ function syncViewInner(id: string, atBottom?: boolean): View {
   // v.stale or v.rediff, so this never skips an actual update. A shrink leaves v.rendered === len with fewer units
   // than were painted, so the painted list's length is read too.
   // …except the "worked …" footer on a status-only tail: nothing re-rendered, and the footer follows the flip.
-  // (The patch marks the view stale when the reply's unit is not addressable — a folded run — so the fast
-  // path stands down and the window path below re-renders it.)
+  // (The patch finds the reply's row itself, an expanded run's member row included, and patches it in this call:
+  // `current` is read once, so a mark set by the patch would ride no frame of an idle session. Only a run outside
+  // the painted window is left as a repaint mark for the paint that brings it in.)
   const current = v.rendered === len && !v.stale && !v.rediff && v.el.childNodes.length > 0 && !!v.painted && v.painted.items.length === total;
   if (workFlip && current) patchWorkedFooters(v, s, len, working, items);
   if (current) return v;
@@ -12370,25 +12371,37 @@ function sizeBottomSpacer(v: View, bot: HTMLElement, top: HTMLElement | null): v
 // index is not its unit's number in normal mode either, and reading it as one patched the row above the reply):
 // the window's start maps to its first event and the reply's event index back to the unit whose node carries it.
 // A reply with no node of its own shows no footer: a thinking row compact mode hides, or a member of a COLLAPSED
-// run (its head carries no footer), so there is nothing to patch; an EXPANDED run's row carries one, and that one
-// unit is repainted on the next paint. Both used to mark the whole view stale, a window rebuild for a footer no
-// rebuild could show (compact mode hit it whenever a reply followed a hidden thinking row).
+// run (its head carries no footer), so there is nothing to patch. An EXPANDED run's member row carries one, and that
+// row is patched here like any other node (found by the run's unit and the reply's place in the run): both callers
+// return on the state they read before the patch, so a repaint mark set here would wait for a frame an idle session
+// never gets (review find, 2026-09-23). Only a run outside the painted window keeps the mark, for the paint that brings
+// it in. Both node-less cases used to mark the whole view stale, a window rebuild for a footer no rebuild could show
+// (compact mode hit it whenever a reply followed a hidden thinking row).
 function patchWorkedFooters(v: View, s: Session, from: number, working: boolean, items: DisplayItem[] | null = null): void {
   const winStart = v.winStart ?? 0;
   const winEv = items ? (items[winStart] ? itemFirstEvent(items[winStart]) : s.events.length) : winStart;
   const unitOfEvent = (i: number): number => items ? items.findIndex((it) => it.kind === "event" && it.index === i) : i;
   for (const { unit: ev, secs } of workedFooterPlan(s.events, from, winEv, working, eventEpoch)) {
     const unit = unitOfEvent(ev);
+    let node: HTMLElement | null = null;
     if (unit < 0) {
+      // the reply is a member of a run (or a row compact mode hides): a collapsed run's head carries no footer; an expanded
+      // run's rows follow its head in it.indices order, each tagged with the run's unit and tg-child (appendItem)
       const run = items ? items.findIndex((it) => (it.kind === "toolgroup" || it.kind === "noticegroup") && it.indices.includes(ev)) : -1;
       const it = run >= 0 ? items![run] : null;
-      const open = !!it && it.kind !== "event" && it.kind !== "gap"
-        && openFolds.has(it.kind === "toolgroup" ? toolGroupKey(s.events[it.indices[0]]) : noticeGroupKey(s.events[it.indices[0]]));
-      if (open && v.painted) { v.painted.sig[run] = undefined; v.rediff = true; }   // its expanded row repaints with the footer
-      continue;
+      if (!it || (it.kind !== "toolgroup" && it.kind !== "noticegroup")) continue;
+      if (!openFolds.has(it.kind === "toolgroup" ? toolGroupKey(s.events[it.indices[0]]) : noticeGroupKey(s.events[it.indices[0]]))) continue;
+      const rows = v.el.querySelectorAll(`:scope > [data-unit="${run}"].tg-child`);
+      const at = it.indices.indexOf(ev);
+      node = at < rows.length ? (rows[at] as HTMLElement) : null;
+      // The row is patched in this call, never left to a repaint: both callers return on the state they read before the
+      // patch, and an idle session gets no next frame for it to ride (review find, 2026-09-23). Only a run outside the painted
+      // window takes the mark, for the paint that brings it in.
+      if (!node) { if (v.painted) { v.painted.sig[run] = undefined; v.rediff = true; } continue; }
+    } else {
+      node = v.el.querySelector(`:scope > [data-unit="${unit}"]:not(.day-divider)`) as HTMLElement | null;
+      if (!node) continue;
     }
-    const node = v.el.querySelector(`:scope > [data-unit="${unit}"]:not(.day-divider)`) as HTMLElement | null;
-    if (!node) continue;
     const have = node.querySelector(":scope > .turn-elapsed") as HTMLElement | null;
     if (secs != null && !have) {
       const f = elapsedFooter(secs);
@@ -13835,9 +13848,11 @@ function restoreScrollAnchor(content: HTMLElement, v: View, a: { uuid: string; y
 
 // Live tail-append to the ACTIVE view. At the bottom → follow it. Scrolled UP reading → keep the viewport
 // exactly where it is: a new message must NOT move what you're looking at (the user 2026-06-25 — incoming
-// messages were jumping the view "backwards"; the compact path FULL-REBUILDS on append, clearing the DOM and
-// resetting scrollTop). Pass atBottom=false so the rebuild keeps winStart, then restore ANCHOR-relative
-// (captureScrollAnchor) — the raw scrollTop only as the eviction fallback.
+// messages were jumping the view "backwards"; the compact path at the time rebuilt the window on every append,
+// clearing the DOM and resetting scrollTop). The keyed paint (tailDiff) touches the tail units alone and never
+// evicts the top; atBottom=false keeps winStart on the rebuild branch only (a stale view, a shape change above
+// the window, a spacer coming or going), so the content above the viewport is unchanged either way. Then restore
+// ANCHOR-relative (captureScrollAnchor), the raw scrollTop only as the eviction fallback.
 // A disconnected host's transcript SAYS SO where it ends (the user 2026-07-30). The tab mark is
 // peripheral once you are reading — you notice it after the fact, if at all — so the note goes at the
 // bottom of the conversation, which is where the eye already lands and where "nothing more is coming"

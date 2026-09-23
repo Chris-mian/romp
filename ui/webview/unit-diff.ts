@@ -63,11 +63,14 @@ export function hash53(str: string): string {
 let unserializable = 0;
 /** An event's content as its signature half: the JSON of every field the kernel sent and the page added (a hide mark, a
  *  rewind dim, a pending bubble's label), so an event re-sent unchanged hashes the same and one with any field changed does
- *  not. A field set to undefined serializes as absent, the shape a strip leaves. An event JSON cannot carry (never expected)
- *  gets a value no other call returns: it always repaints, never silently stands. */
+ *  not. A field set to undefined serializes as absent, the shape a strip leaves. The kernel's `streamed` mark is left out:
+ *  it is not content the page paints, so a stream atom the page holds and a later delta re-carrying its record without the
+ *  mark hash the same and the unit stands (2026-09-23). An event JSON cannot carry
+ *  (never expected) gets a value no other call returns: it always repaints, never silently stands. */
 export function contentHash(ev: unknown): string {
   let json: string;
-  try { json = JSON.stringify(ev) ?? "undefined"; } catch { return "!" + (++unserializable); }
+  const body = ev !== null && typeof ev === "object" && "streamed" in ev ? { ...(ev as Record<string, unknown>), streamed: undefined } : ev;
+  try { json = JSON.stringify(body) ?? "undefined"; } catch { return "!" + (++unserializable); }
   return hash53(json);
 }
 
