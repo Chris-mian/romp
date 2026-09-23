@@ -232,7 +232,10 @@ class PlacementIdentityCanary(unittest.TestCase):
         # v14 (2026-09-11, T333, the harness skill-load wrapper skip): this fixture carries no such
         # wrapper, so every pinned id is UNCHANGED; the bump seals transcripts that DO carry it, whose
         # command atom drops out and whose prompt segment grows to hold the work.
-        self.assertEqual(jd.PLACEMENTS_V, 14, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=14: "
+        # v15 (2026-09-23, the parallel tool batch keep): this fixture makes no parallel tool calls, so every
+        # pinned id and atom is UNCHANGED; the bump seals transcripts that DO carry a batch, whose results of every
+        # call but the last rejoin the set (tests/test_parallel_tool_batch.py covers the keep itself).
+        self.assertEqual(jd.PLACEMENTS_V, 15, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=15: "
                          "re-pin the ids and this version together, in the same commit")
 
 
