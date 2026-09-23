@@ -212,6 +212,50 @@ class StoreCas(unittest.TestCase):
         self.assertIn(self._nid(2), nodes, "the other writer's minted node survives the stale save")
         self.assertIn(self._nid(1), nodes)
 
+    def test_an_in_place_rewrite_that_leaves_rev_alone_is_a_publication_the_holders_save_rebases_onto(self):
+        """The CI red of 2026-09-23 on the box lab: its driver edits the store IN PLACE (a node added, `seq` bumped, `rev` untouched, the
+        shape of a hand edit too), and a judge pass whose store predates the edit saved after it. The CAS compared revisions alone, saw the
+        file's revision where it loaded it, and published the pass's store over the edit: the new node gone, the driver's seq reverted, the
+        card never built. The CAS now compares the identity of the file the base was read from as well, so the rewrite reads as a
+        publication and the save rebases onto it: the minted node survives, the holder's own event lands beside it."""
+        self._seed()
+        holder = jd.load_goals(SID)                  # the pass's private copy, loaded before the edit
+        path = jd.GOALDIR / (SID + ".json")
+        st = json.loads(path.read_text())           # the editor: read, mutate, seq bumped, rev untouched, written in place
+        g9 = self._nid(9)
+        st["nodes"][g9] = {"id": g9, "text": "Their in-place goal", "parentId": None, "nodeComplete": False, "blocked": True, "blockWhy": "q",
+                           "cleared": False, "trail": [], "t": T0 + 30, "log": [{"ev_t": T0 + 30, "src": "planner", "kind": "block", "why": "asked: q", "at": T0 + 30}]}
+        st["status"][g9] = "blocked"; st["seq"] = (st.get("seq") or 0) + 1
+        path.write_text(json.dumps(st))
+        jd.record_verdict(holder, holder["nodes"][self._nid(1)], "unblocker", "note", T0 + 40, why="the pass ends with a save")
+        jd.save_goals(SID, holder)
+        after = json.loads(path.read_text())
+        self.assertIn(g9, after["nodes"], "the in-place edit's node survives the holder's save (before: published over, the revision unmoved)")
+        self.assertEqual(after["nodes"][g9].get("blockSummary"), None); self.assertEqual(after["status"].get(g9), "blocked")
+        self.assertTrue(any(e.get("why") == "the pass ends with a save" for e in after["nodes"][self._nid(1)]["log"]), "and the holder's own event landed beside it")
+        self.assertNotIn("_baseIdent", after, "the identity base is transient, never serialized")
+        self.assertNotIn("_baseIdent", json.loads(path.read_text()).keys())
+        # the holder's next save is uncontended: the identity re-stamped after the publish is the file's, so no second rebase
+        jd.record_verdict(holder, holder["nodes"][self._nid(1)], "unblocker", "note", T0 + 50, why="a second event")
+        with mock.patch.object(jd, "_rebase_onto_disk", side_effect=AssertionError("no rebase owed")) as rb:
+            jd.save_goals(SID, holder)
+        self.assertEqual(rb.call_count, 0, "an uncontended second save rebases nothing (the identity written is the identity read back)")
+
+    def test_a_file_created_after_a_fresh_load_is_a_publication_too(self):
+        """No file at the load (a fresh store, base 0, no identity); an editor creates one without a revision before the first save. On the
+        revision alone (0 against 0) the save published the fresh store over it; the file's presence is the moved identity."""
+        holder = jd.load_goals(SID)                  # absent: the fresh store
+        path = jd.GOALDIR / (SID + ".json"); path.parent.mkdir(parents=True, exist_ok=True)
+        g7 = self._nid(7)                            # an id the pass's mint (g1) cannot collide with
+        path.write_text(json.dumps({"rompUuid": SID, "seq": 1, "nodes": {g7: {"id": g7, "text": "Created outside", "parentId": None, "nodeComplete": False,
+                                                                                 "blocked": False, "cleared": False, "trail": [], "t": T0, "log": []}},
+                                    "placements": {}, "status": {g7: "working"}}))
+        jd.apply_plan(holder, "s1", T0 + 10, [{"do": "mint", "why": "x", "text": "The pass's goal"}], [])
+        jd.save_goals(SID, holder)
+        after = json.loads(path.read_text())
+        self.assertIn(g7, after["nodes"], "the node the editor created survives the fresh store's first save (before: 0 against 0 passed the CAS)")
+        self.assertEqual(sorted(after["nodes"]), sorted([self._nid(1), g7]), "both writers' nodes: %r" % sorted(after["nodes"]))
+
     def test_rebase_folds_a_duplicate_verdict_instead_of_doubling_it(self):
         # verdict identity is (ev_t, src, kind) - the same triple _replay_overrides dedups on
         self._seed()
@@ -370,16 +414,16 @@ class ReadFaultCas(unittest.TestCase):
         s = jd.load_goals(self.FSID)
         base = s["_baseRev"]
         jd.record_verdict(s, s["nodes"][self._gid()], "planner", "done", T0 + 30, why="shipped")
-        real = jd._disk_rev
+        real = jd._disk_rev_ident                    # the loop's revision read (the revision and the file's identity since 2026-09-23)
 
         def faulting(fsid):
             raise OSError(errno.EIO, "Input/output error", fsid)
-        jd._disk_rev = faulting
+        jd._disk_rev_ident = faulting
         try:
             with self.assertRaises(OSError):
                 jd.save_goals(self.FSID, s)
         finally:
-            jd._disk_rev = real
+            jd._disk_rev_ident = real
         self.assertEqual(s.get("_baseRev"), base, "a raise inside the loop: the object keeps the base it was loaded at")
         self.assertEqual(self._file().read_bytes(), before, "nothing was published")
 
