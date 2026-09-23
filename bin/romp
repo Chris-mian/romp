@@ -2025,8 +2025,11 @@ else:
             # notice when it latches a new bracket, so a later clean wait on the same thread would otherwise exit 1
             # over a notice from before it; and it is read whether or not a compacting sample was caught, since a
             # compaction can run and fail between two polls. It must also be MARKED a compaction's end (the kernel's
-            # noRetry, which every loud end of the Codex compaction bracket carries, the writers pinned by
-            # ui/webview/apierror-noretry.test.ts, and a turn's rejection or failure does not): a queued wait's arming
+            # noRetry, which every end NOTICE of the Codex compaction bracket carries (the writers pinned by
+            # ui/webview/apierror-noretry.test.ts: the status handler's systemError and notLoaded ends, the app-server's
+            # death, and the registry load's restart end) and a turn's rejection or failure does not; the kill, the
+            # raising request and the accepted turn end the bracket loudly with no notice and are judged through the
+            # end record above): a queued wait's arming
             # sample is read during the turn it waits behind, so that turn's own end notice is new against the
             # baseline while the compaction it queued proceeds, and read here it exited 1 with the turn's words over a
             # thread that was compacted (review, 2026-09-21; count-free since 2026-09-22: a count here was a second
